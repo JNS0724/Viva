@@ -4,3 +4,4 @@ smoke/
 smoke.log
 .DS_Store
 .ruff_cache/
+.claude/

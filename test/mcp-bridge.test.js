@@ -1,13 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openMemoryDb } from '../plugins/memory/lib/store.js'
 import { createAcpBridge, failingMcpServer } from '../src/main/acp-bridge.js'
 import { openHistoryDb } from '../src/main/history-db.js'
 import { createPersonal } from '../src/main/personal.js'
+import { scratch } from './fixtures/scratch.js'
 
 /** The user's MCP servers through the real bridge and the fake dsh, and what the app reports after a turn. */
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -16,19 +15,17 @@ const FAKE_DSH = path.join(ROOT, 'test', 'fixtures', 'fake-dsh.js')
 const BROKEN_SERVER = { name: 'broken', command: process.execPath, args: ['-e', 'process.exit(1)'], env: [{ name: 'ELECTRON_RUN_AS_NODE', value: '1' }] }
 
 function setup(t, { now } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-bridge-'))
+  const { dir, defer } = scratch(t, 'mcp-bridge-')
   const memoryDb = openMemoryDb({ file: path.join(dir, 'memory.db'), now })
   const historyDb = openHistoryDb({ file: path.join(dir, 'history.db') })
   const personal = createPersonal({ memoryDb, historyDb, mcpStore: { list: () => [] }, ...(now ? { now } : {}) })
-  t.after(() => {
-    memoryDb.close()
-    historyDb.close()
-    fs.rmSync(dir, { recursive: true, force: true })
-  })
-  return { dir, memoryDb, personal }
+  defer(() => memoryDb.close())
+  defer(() => historyDb.close())
+  return { dir, defer, memoryDb, personal }
 }
 
-function fakeBridge(t, { mcpServers, cwd }) {
+/** The fake dsh runs in `cwd`: it is stopped, and waited for, before the directory goes. */
+function fakeBridge({ defer }, { mcpServers, cwd }) {
   const bridge = createAcpBridge({
     dshBin: FAKE_DSH,
     nodeBin: 'node',
@@ -37,13 +34,14 @@ function fakeBridge(t, { mcpServers, cwd }) {
     mcpServers,
     emit: () => {},
   })
-  t.after(() => bridge.dispose())
+  defer(() => bridge.dispose())
   return bridge
 }
 
 test('a failing MCP server is left out and reported', async (t) => {
-  const { dir, personal } = setup(t)
-  const bridge = fakeBridge(t, { mcpServers: () => [BROKEN_SERVER], cwd: dir })
+  const scratchDir = setup(t)
+  const { dir, personal } = scratchDir
+  const bridge = fakeBridge(scratchDir, { mcpServers: () => [BROKEN_SERVER], cwd: dir })
 
   const info = await bridge.start()
 
@@ -54,9 +52,10 @@ test('a failing MCP server is left out and reported', async (t) => {
 })
 
 test('reloading the session picks up a changed server list and keeps the session', async (t) => {
-  const { dir } = setup(t)
+  const scratchDir = setup(t)
+  const { dir } = scratchDir
   let servers = []
-  const bridge = fakeBridge(t, { mcpServers: () => servers, cwd: dir })
+  const bridge = fakeBridge(scratchDir, { mcpServers: () => servers, cwd: dir })
   const started = await bridge.start()
   servers = [BROKEN_SERVER]
 

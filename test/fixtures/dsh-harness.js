@@ -7,6 +7,7 @@ import { createAcpBridge } from '../../src/main/acp-bridge.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../../src/main/app-plugins.js'
 import { DSH_PROFILE } from '../../src/main/config.js'
 import { ensureDshProfile } from '../../src/main/dsh-profile.js'
+import { removeTree } from '../../src/main/remove-tree.js'
 import { startFakeLlm } from './fake-llm.js'
 
 /**
@@ -24,6 +25,7 @@ export const DSH_TIMEOUT_MS = 60_000
  * @param {{ memoryFile?: string, mcpServers?: object[], allow?: boolean }} [options]
  *   memoryFile: where the memory plugin's store goes; mcpServers: declared on every session;
  *   allow: answer every approval request with "allow once" (otherwise they stay pending)
+ * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  */
 export async function startHarness(t, { memoryFile, mcpServers = [], allow = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
@@ -38,12 +40,18 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
   ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA })
   const llm = await startFakeLlm()
   const bridges = []
+  const closers = []
   t.after(async () => {
-    bridges.forEach((bridge) => bridge.dispose())
-    await llm.close()
-    // dsh may still be flushing its session log as it exits.
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    // dsh runs in the workspace and holds memory.db: on Windows neither can go until it has exited.
+    try {
+      await Promise.all(bridges.map((bridge) => bridge.dispose()))
+      for (const close of [...closers].reverse()) close()
+      await llm.close()
+    } finally {
+      removeTree(dir)
+    }
   })
+  const defer = (close) => { closers.push(close) }
   const events = []
   function bridge() {
     const created = createAcpBridge({
@@ -60,7 +68,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
     bridges.push(created)
     return created
   }
-  return { dir, dshHome, userData, workspace, file, llm, events, bridge }
+  return { dir, dshHome, userData, workspace, file, llm, events, bridge, defer }
 }
 
 /** The assistant's visible text, in order. */

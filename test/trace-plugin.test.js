@@ -47,14 +47,14 @@ test('the store keeps steps per session, updates a finished tool, and refuses a 
 })
 
 test('inside dsh the plugin records each turn, and the app reads it without dsh logs', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { userData, bridge } = await startHarness(t)
+  const { userData, bridge, defer } = await startHarness(t)
   const agent = bridge()
   const { sessionId } = await agent.start()
 
   await agent.prompt('查一下 张三')
 
   const db = openTraceDb({ file: path.join(userData, 'trace.db') })
-  t.after(() => db.close())
+  defer(() => db.close())
   await eventually(() => db.hasSession(sessionId))
   assert.deepEqual(db.stepsOf(sessionId).map((step) => [step.kind, step.name, step.args, step.status]), [
     ['tool', 'memory_recall', { query: '张三' }, 'completed'],

@@ -1,7 +1,5 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { contextForTurn } from '../plugins/memory/lib/inject.js'
@@ -9,18 +7,16 @@ import { openMemoryDb } from '../plugins/memory/lib/store.js'
 import {
   checkSynthesis, SYNTHESIS_INTERVAL_MS, SYNTHESIS_MIN_CHANGES, synthesisDue, synthesisInput, synthesizeProfile,
 } from '../plugins/memory/lib/synthesize.js'
+import { scratch } from './fixtures/scratch.js'
 
 const HOUR = 60 * 60 * 1000
 
-function tempDir(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-synthesis-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
-  return dir
-}
+const tempDir = (t) => scratch(t, 'memory-synthesis-').dir
 
 function tempDb(t, now) {
-  const db = openMemoryDb({ file: path.join(tempDir(t), 'memory.db'), now })
-  t.after(() => db.close())
+  const { dir, defer } = scratch(t, 'memory-synthesis-')
+  const db = openMemoryDb({ file: path.join(dir, 'memory.db'), now })
+  defer(() => db.close())
   return db
 }
 
@@ -106,7 +102,8 @@ test('a new synthesis sends the fixed layer again; a memory learned mid-session 
 })
 
 test('what the agent once appended to the profile becomes its memories; the user fields stay', (t) => {
-  const file = path.join(tempDir(t), 'memory.db')
+  const { dir, defer } = scratch(t, 'memory-synthesis-')
+  const file = path.join(dir, 'memory.db')
   const old = new DatabaseSync(file)
   old.exec(`CREATE TABLE profile (field TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL);
     INSERT INTO profile VALUES ('people', '张三：直属上级' || char(10) || '李四', 'agent', 1);
@@ -122,7 +119,7 @@ test('what the agent once appended to the profile becomes its memories; the user
   assert.deepEqual(db.claimChanges(0, 'conv').memories, [], 'moved, not newly learned: no "已记住" for them')
   db.close()
   const reopened = openMemoryDb({ file })
-  t.after(() => reopened.close())
+  defer(() => reopened.close())
   assert.equal(reopened.listMemories().total, 2, 'runs once')
 })
 

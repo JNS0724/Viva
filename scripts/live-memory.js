@@ -18,6 +18,7 @@ import { createAcpBridge } from '../src/main/acp-bridge.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.js'
 import { DSH_PROFILE } from '../src/main/config.js'
 import { ensureDshProfile } from '../src/main/dsh-profile.js'
+import { removeTree } from '../src/main/remove-tree.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ENV_FILE = process.env.LIVE_ENV || path.join(os.homedir(), '.config', 'viva', 'live-test.env')
@@ -49,7 +50,8 @@ function readKey() {
   if (!fs.existsSync(ENV_FILE)) {
     throw new Error(`没有 DEEPSEEK_API_KEY 环境变量，也没有找到 ${ENV_FILE}。`)
   }
-  if ((fs.statSync(ENV_FILE).mode & 0o077) !== 0) throw new Error(`${ENV_FILE} 其他用户也能读，请先运行 chmod 600 ${ENV_FILE}`)
+  // Windows has no group or other permission bits to check.
+  if (process.platform !== 'win32' && (fs.statSync(ENV_FILE).mode & 0o077) !== 0) throw new Error(`${ENV_FILE} 其他用户也能读，请先运行 chmod 600 ${ENV_FILE}`)
   const line = fs.readFileSync(ENV_FILE, 'utf8').split('\n').find((l) => l.startsWith('DEEPSEEK_API_KEY='))
   const key = line?.slice('DEEPSEEK_API_KEY='.length).trim()
   if (!key) throw new Error(`${ENV_FILE} 里没有 DEEPSEEK_API_KEY=...`)
@@ -109,7 +111,7 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
     db.close()
     return { sessionId, model, turns, injected }
   } finally {
-    bridge.dispose()
+    await bridge.dispose()
   }
 }
 
@@ -138,7 +140,7 @@ async function main() {
   } finally {
     fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true })
     fs.writeFileSync(OUT_FILE, `${JSON.stringify(report, null, 2)}\n`)
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    removeTree(dir)
   }
   process.stdout.write(`\n记下的记忆：${JSON.stringify(report.memories)}\n已失效：${JSON.stringify(report.invalid)}\n你填写的画像：${JSON.stringify(report.profile)}\n助手整理的画像（${report.synthesis ? new Date(report.synthesis.createdAt).toLocaleString() : '无'}）：\n${report.synthesis?.text ?? ''}\n完整记录：${OUT_FILE}\n`)
 }

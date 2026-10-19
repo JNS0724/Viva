@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
@@ -15,6 +16,7 @@ import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
 import { createMcpConfigStore } from './mcp-config.js'
 import { registerMemoryIpc } from './memory-ipc.js'
 import { createPersonal } from './personal.js'
+import { removeTree } from './remove-tree.js'
 import { CONFIG_IDS } from './session-info.js'
 import { createSettingsStore, keyHint } from './settings-store.js'
 import { skillRoots } from './skills.js'
@@ -57,7 +59,7 @@ function isolateSmokeUserData() {
   // `relaunch` reopens what `walkthrough` left; the other phases start from nothing of their own.
   const shared = smokePhase === 'walkthrough' || smokePhase === 'relaunch'
   const dir = path.join(smokeOut, shared ? 'userData' : `userData-${smokePhase}`)
-  if (smokePhase !== 'relaunch') fs.rmSync(dir, { recursive: true, force: true })
+  if (smokePhase !== 'relaunch') removeTree(dir)
   app.setPath('userData', dir)
   // The app writes its dsh profile on launch; a smoke run must not touch the real ~/.dsh.
   process.env.DSH_HOME = path.join(dir, 'dsh-home')
@@ -361,7 +363,8 @@ isolateSmokeUserData()
 
 /** The memory smoke run talks to the real dsh, which calls a local stand-in for the DeepSeek API. */
 async function startSmokeModel() {
-  const { startFakeLlm } = await import(path.join(APP_ROOT, 'test', 'fixtures', 'fake-llm.js'))
+  // A file URL: import() takes `C:\...` for a URL scheme on Windows.
+  const { startFakeLlm } = await import(pathToFileURL(path.join(APP_ROOT, 'test', 'fixtures', 'fake-llm.js')).href)
   process.env.DEEPSEEK_BASE_URL = (await startFakeLlm()).url
 }
 
@@ -391,6 +394,11 @@ app.whenReady().then(async () => {
   openHistory(config)
   openPersonal(config)
   createWindow(config)
+}).catch((err) => {
+  // Without a window there is nothing to show the error in, and the process would stay on with nothing to see.
+  console.error('[viva] could not start:', err)
+  dialog.showErrorBox('Viva 无法启动', err?.message ?? String(err))
+  app.exit(1)
 })
 
 app.on('window-all-closed', () => app.quit())

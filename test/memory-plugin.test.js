@@ -8,9 +8,9 @@ import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fi
 
 /** The memory plugin inside the real dsh, with the app's whole profile and a fake model. */
 
-function openDb(t, file) {
+function openDb(defer, file) {
   const db = openMemoryDb({ file })
-  t.after(() => db.close())
+  defer(() => db.close())
   return db
 }
 
@@ -23,8 +23,8 @@ function contextOf(request) {
 const lastContext = (llm) => contextOf(llm.requests[llm.requests.length - 1])
 
 test('the fixed layer goes out once per session, names push their memories once', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { file, llm, bridge } = await setup(t)
-  const db = openDb(t, file)
+  const { file, llm, bridge, defer } = await setup(t)
+  const db = openDb(defer, file)
   db.setProfile({ role: '后端负责人', people: '张三（直属上级）' })
   db.addMemory({ text: '周报每周五下班前交给张三', keywords: ['周报', '张三'] })
   db.addMemory({ text: '回答先给结论', kind: 'preference' })
@@ -52,13 +52,13 @@ test('the fixed layer goes out once per session, names push their memories once'
 })
 
 test('the agent remembers through the plugin tool, with keywords and without asking', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { file, events, bridge } = await setup(t)
+  const { file, events, bridge, defer } = await setup(t)
   const agent = bridge()
   await agent.start()
 
   await agent.prompt('记住：周报每周五下班前交给张三')
 
-  const db = openDb(t, file)
+  const db = openDb(defer, file)
   assert.equal(events.some((e) => e.type === 'permission'), false)
   assert.ok(replies(events).join('').includes('好的，我记住了：周报每周五下班前交给张三'))
   assert.deepEqual(db.listMemories().items.map((m) => [m.text, m.source, m.keywords]), [['周报每周五下班前交给张三', 'agent', ['周报', '张三']]])
@@ -67,8 +67,8 @@ test('the agent remembers through the plugin tool, with keywords and without ask
 })
 
 test('a resumed session keeps its state across a restart', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { file, llm, bridge } = await setup(t)
-  openDb(t, file).setProfile({ role: '后端负责人' })
+  const { file, llm, bridge, defer } = await setup(t)
+  openDb(defer, file).setProfile({ role: '后端负责人' })
   const first = bridge()
   const { sessionId } = await first.start()
   await first.prompt('你好')
@@ -98,8 +98,8 @@ test('dsh keeps working when the memory plugin cannot open its store', { timeout
 })
 
 test('a preference the model did not save is picked up in the background after the turn', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { file, llm, events, bridge } = await setup(t)
-  const db = openDb(t, file)
+  const { file, llm, events, bridge, defer } = await setup(t)
+  const db = openDb(defer, file)
   const agent = bridge()
   await agent.start()
 
@@ -115,8 +115,8 @@ test('a preference the model did not save is picked up in the background after t
 })
 
 test('a changed fact replaces the agent memory it contradicts, which stays as history', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { file, bridge } = await setup(t)
-  const db = openDb(t, file)
+  const { file, bridge, defer } = await setup(t)
+  const db = openDb(defer, file)
   const old = db.addMemory({ text: '张三是直属上级', kind: 'person', keywords: ['张三'], source: 'agent' }).memory
   const agent = bridge()
   await agent.start()
@@ -131,8 +131,8 @@ test('a changed fact replaces the agent memory it contradicts, which stays as hi
 })
 
 test('the background pass never overrides what the user wrote: the whole change is dropped', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { file, llm, bridge } = await setup(t)
-  const db = openDb(t, file)
+  const { file, llm, bridge, defer } = await setup(t)
+  const db = openDb(defer, file)
   const mine = db.addMemory({ text: '张三是直属上级', kind: 'person', keywords: ['张三'], source: 'user' }).memory
   const agent = bridge()
   await agent.start()
@@ -146,8 +146,8 @@ test('the background pass never overrides what the user wrote: the whole change 
 })
 
 test('after a turn the profile is synthesised from the memories, and the next session starts with it', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { file, llm, bridge } = await setup(t)
-  const db = openDb(t, file)
+  const { file, llm, bridge, defer } = await setup(t)
+  const db = openDb(defer, file)
   const agent = bridge()
   await agent.start()
 

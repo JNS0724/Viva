@@ -187,12 +187,15 @@ export function createAcpBridge({
     return broker.resolve(requestId, optionId)
   }
 
+  /** Asks dsh to stop (closing its input, then a signal after a grace period); resolves once it has exited. */
   function dispose() {
     disposed = true
     broker.cancelAll()
-    if (!child) return
+    if (!child || (child.exitCode ?? child.signalCode ?? null) !== null) return Promise.resolve()
+    const exited = new Promise((resolve) => child.once('exit', resolve))
     child.stdin?.end()
     setTimeout(() => child.kill('SIGTERM'), SHUTDOWN_GRACE_MS).unref?.()
+    return exited
   }
 
   return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, dispose }

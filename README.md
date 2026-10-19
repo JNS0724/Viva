@@ -87,7 +87,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 188 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 190 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
 npm run smoke       # 真的启动 Electron，分四次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
@@ -113,6 +113,6 @@ npm run smoke       # 真的启动 Electron，分四次：
 - 旧对话的「过程」依赖 dsh 私有的 v4 日志格式，dsh 升级后可能读不出来；读不出时只是不显示过程，对话本身不受影响。
 - 测试必须用 Electron 自带的 Node：系统 Node 24.14 的 zstd 只能解开多帧文件的第一帧，而 dsh 的日志正是多帧的。
 - 记忆插件依赖 dsh 的插件接口，插件声明的 dsh 版本是精确的 `0.2.0-rc.2`，升级 dsh 时要同步更新 `plugins/memory/package.json`，否则 dsh 会拒绝加载插件（对话不受影响，只是没有记忆）。
-- 记忆插件还没在 Windows 上验证（junction 链接、路径写入 YAML）。对话压缩后重新带上画像的逻辑有单元测试，但还没在真实 dsh 里触发过压缩来验证。
-- Windows 已在真实的 Windows 11（x64，4K 屏）上跑通全部单元测试和三个阶段的 smoke（记忆插件改造之前）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实 dsh 和模型在 Windows 上的对话还没验证（需要 key）。
+- 对话压缩后重新带上画像的逻辑有单元测试，但还没在真实 dsh 里触发过压缩来验证。
+- Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（junction 链接、profile 写入）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
 - 字体从 Google Fonts 加载，离线时回退到系统字体。

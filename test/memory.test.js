@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { activeHours, MIN_SAMPLES } from '../src/main/habits.js'
 import { buildContext, MAX_CONTEXT_CHARS } from '../plugins/memory/lib/context.js'
@@ -9,16 +8,14 @@ import { recallMatches, termsOf } from '../plugins/memory/lib/match.js'
 import { looksSecret, openMemoryDb } from '../plugins/memory/lib/store.js'
 import { memoryTools } from '../plugins/memory/lib/tools.js'
 import { copyIntoWorkspace, DOCS_DIR_NAME, registerMemoryIpc } from '../src/main/memory-ipc.js'
+import { scratch } from './fixtures/scratch.js'
 
-function tempDir(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-test-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
-  return dir
-}
+const tempDir = (t) => scratch(t, 'memory-test-').dir
 
 function tempDb(t, now = () => 1_760_000_000_000) {
-  const db = openMemoryDb({ file: path.join(tempDir(t), 'memory.db'), now })
-  t.after(() => db.close())
+  const { dir, defer } = scratch(t, 'memory-test-')
+  const db = openMemoryDb({ file: path.join(dir, 'memory.db'), now })
+  defer(() => db.close())
   return db
 }
 

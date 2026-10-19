@@ -1,22 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { contextForTurn } from '../plugins/memory/lib/inject.js'
 import { initialSession, LONG_PROMPT_CHARS, ownWords, planTurn, PUSH_LIMIT, retrievalBasis } from '../plugins/memory/lib/layers.js'
 import { buildLexicon, namesIn } from '../plugins/memory/lib/names.js'
 import { openMemoryDb } from '../plugins/memory/lib/store.js'
+import { scratch } from './fixtures/scratch.js'
 
 function tempDb(t, now) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-layers-'))
+  const { dir, defer } = scratch(t, 'memory-layers-')
   const file = path.join(dir, 'memory.db')
   const db = openMemoryDb({ file, now })
-  t.after(() => {
-    db.close()
-    fs.rmSync(dir, { recursive: true, force: true })
-  })
+  defer(() => db.close())
   return { db, file }
 }
 
@@ -104,8 +100,7 @@ test('keywords are cleaned, merged into an equal memory, and kept through undo',
 })
 
 test('a memory.db from before keywords gains the column and keeps its memories', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-old-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const { dir, defer } = scratch(t, 'memory-old-')
   const file = path.join(dir, 'memory.db')
   const old = new DatabaseSync(file)
   old.exec(`CREATE TABLE memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, norm TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
@@ -114,7 +109,7 @@ test('a memory.db from before keywords gains the column and keeps its memories',
   old.close()
 
   const db = openMemoryDb({ file })
-  t.after(() => db.close())
+  defer(() => db.close())
   assert.deepEqual(db.listMemories().items.map((m) => [m.text, m.keywords]), [['回答先给结论', []]])
 })
 

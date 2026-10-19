@@ -9,6 +9,8 @@
 param([switch]$Live)
 
 $ErrorActionPreference = 'Continue'
+# node and npm print UTF-8; read it as such, and write every log as UTF-8 too.
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $report = Join-Path $root 'smoke\windows-report'
@@ -18,8 +20,10 @@ $results = [ordered]@{}
 function Step($name, [scriptblock]$block) {
   Write-Host "== $name" -ForegroundColor Cyan
   $log = Join-Path $report "$name.log"
-  & $block *>&1 | Tee-Object -FilePath $log
+  $lines = & $block *>&1 | ForEach-Object { "$_" }
   $ok = $LASTEXITCODE -eq 0
+  $lines | Set-Content -Path $log -Encoding UTF8
+  $lines | Write-Host
   $results[$name] = if ($ok) { 'PASS' } else { "FAIL (exit $LASTEXITCODE)" }
   Write-Host "== $name -> $($results[$name])" -ForegroundColor $(if ($ok) { 'Green' } else { 'Red' })
 }
@@ -61,5 +65,7 @@ if (Test-Path $profileModules) {
 }
 Get-ChildItem 'smoke\*.png' -ErrorAction SilentlyContinue | Copy-Item -Destination $report
 
-$results.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" } | Tee-Object -FilePath (Join-Path $report 'summary.txt')
+$summary = $results.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" }
+$summary | Set-Content -Path (Join-Path $report 'summary.txt') -Encoding UTF8
+$summary | Write-Host
 Write-Host "Report: $report"
