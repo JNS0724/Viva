@@ -195,6 +195,8 @@ const handlers = {
   openDrawer: (tab) => dispatch({ type: 'open_drawer', tab }),
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
   toggleIsland: () => dispatch({ type: 'toggle_island' }),
+  /** A link in an answer opens in the browser (or mail app), never inside the window. */
+  openLink: (url) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
 }
 
 function saveNotice(info) {

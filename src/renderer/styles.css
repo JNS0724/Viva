@@ -226,6 +226,41 @@ html:not([data-platform="darwin"]) {
 .msg-agent { display: flex; gap: 14px; }
 .msg-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .msg-text { margin: 0; font-size: 16px; line-height: 1.8; white-space: pre-wrap; word-break: break-word; }
+.msg-text.markdown { white-space: normal; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 .75em; }
+.markdown .md-heading { margin: 1.1em 0 .5em; line-height: 1.4; font-weight: 700; color: var(--ink); }
+.markdown h3 { font-size: 19px; }
+.markdown h4 { font-size: 17px; }
+.markdown h5 { font-size: 16px; color: var(--ink-2); }
+.markdown ul, .markdown ol { margin: 0 0 .75em; padding-left: 1.6em; }
+.markdown li { margin: .2em 0; }
+.markdown li > ul, .markdown li > ol { margin: .2em 0 .3em; }
+.markdown li::marker { color: var(--ink-3); }
+.markdown .md-task { list-style: none; }
+.markdown ul:has(> .md-task) { padding-left: .2em; }
+/* A list under a task item starts below its text, past the checkbox. */
+.markdown .md-task > ul, .markdown .md-task > ol { margin-left: 1.5em; }
+.markdown .md-task input { margin: 0 .5em 0 0; vertical-align: -0.1em; accent-color: var(--accent); }
+.markdown strong { font-weight: 700; color: var(--ink); }
+.markdown del { color: var(--ink-3); }
+.markdown .md-link { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(90, 169, 255, .4); cursor: pointer; word-break: break-all; }
+.markdown .md-link:hover { text-decoration-color: var(--accent); }
+.markdown .md-code-inline { font-family: var(--font-mono); font-size: .88em; padding: .1em .4em; border-radius: 6px; background: var(--raised); border: 1px solid var(--line); }
+.markdown .md-code { position: relative; margin: 0 0 .9em; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); overflow-x: auto; }
+.markdown .md-code code { font-family: var(--font-mono); font-size: 13.5px; line-height: 1.65; white-space: pre; color: var(--ink); }
+.markdown .md-code-lang { display: block; margin-bottom: 8px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
+.markdown blockquote { margin: 0 0 .9em; padding: 2px 0 2px 14px; border-left: 3px solid var(--line-2); color: var(--ink-2); }
+.markdown hr { margin: 1.2em 0; border: none; border-top: 1px solid var(--line); }
+.markdown .md-table-wrap { margin: 0 0 .9em; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+.markdown .md-table { width: 100%; border-collapse: collapse; font-size: 14.5px; line-height: 1.6; }
+.markdown .md-table th, .markdown .md-table td { padding: 8px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.markdown .md-table th { background: var(--panel-2); font-weight: 700; color: var(--ink); white-space: nowrap; }
+.markdown .md-table tr:last-child td { border-bottom: none; }
+.markdown .md-table tbody tr:nth-child(even) td { background: rgba(255, 255, 255, .015); }
+.markdown .md-table .md-align-center { text-align: center; }
+.markdown .md-table .md-align-right { text-align: right; }
 .msg-note { margin-left: 44px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .receipt {
   align-self: flex-start; display: flex; align-items: center; gap: 8px; padding: 4px 0; border: none; background: none;

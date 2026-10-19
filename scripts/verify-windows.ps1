@@ -58,23 +58,45 @@ if ($Live) {
   }
 }
 
+# A built Viva.exe through the memory smoke run. The built app has no test folder: SMOKE_FIXTURES lends it
+# the repository's fake model. A GUI program has no console, so its output goes to files and its exit
+# code is passed on.
+function SmokeApp($exe, $name) {
+  $out = Join-Path $report $name
+  New-Item -ItemType Directory -Force -Path $out | Out-Null
+  $env:SMOKE_PHASE = 'memory'; $env:SMOKE_OUT = $out; $env:SMOKE_FIXTURES = Join-Path $root 'test\fixtures'; $env:DEEPSEEK_API_KEY = 'smoke-fake-key'
+  try {
+    $app = Start-Process -FilePath $exe -Wait -PassThru -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
+    Get-Content (Join-Path $out 'stdout.log'), (Join-Path $out 'stderr.log') -Encoding UTF8
+    cmd /c exit $app.ExitCode
+  } finally {
+    Remove-Item env:SMOKE_PHASE, env:SMOKE_OUT, env:SMOKE_FIXTURES, env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+  }
+}
+
 if ($Package) {
   Step 'package' { npm run dist:win }
-  # The built app has no test folder: SMOKE_FIXTURES lends it the repository's fake model. A GUI program
-  # has no console, so its output goes to files and its exit code is passed on.
-  Step 'packaged-smoke' {
-    $out = Join-Path $report 'packaged'
-    New-Item -ItemType Directory -Force -Path $out | Out-Null
-    $env:SMOKE_PHASE = 'memory'; $env:SMOKE_OUT = $out; $env:SMOKE_FIXTURES = Join-Path $root 'test\fixtures'; $env:DEEPSEEK_API_KEY = 'smoke-fake-key'
-    try {
-      $app = Start-Process -FilePath (Join-Path $root 'dist\win-unpacked\Viva.exe') -Wait -PassThru -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
-      Get-Content (Join-Path $out 'stdout.log'), (Join-Path $out 'stderr.log') -Encoding UTF8
-      cmd /c exit $app.ExitCode
-    } finally {
-      Remove-Item env:SMOKE_PHASE, env:SMOKE_OUT, env:SMOKE_FIXTURES, env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+  # Not dist\win-unpacked: inside the repository the app would find packages in the repo's node_modules.
+  # The installer itself, as a user gets it: installed silently into a folder of its own, smoked, removed.
+  $installer = Get-ChildItem (Join-Path $root 'dist\*-setup.exe') | Select-Object -First 1
+  if ($installer) {
+    "installer: $($installer.Name) $([math]::Round($installer.Length / 1MB)) MB" | Add-Content (Join-Path $report 'environment.txt')
+    $installDir = Join-Path $env:TEMP 'viva-installed'
+    Step 'install-app' {
+      $setup = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
+      if (Test-Path (Join-Path $installDir 'Viva.exe')) { "installed into $installDir" } else { 'Viva.exe not found after installing' }
+      cmd /c exit $(if ($setup.ExitCode -eq 0 -and (Test-Path (Join-Path $installDir 'Viva.exe'))) { 0 } else { 1 })
     }
+    Step 'installed-smoke' { SmokeApp (Join-Path $installDir 'Viva.exe') 'installed' }
+    Step 'uninstall-app' {
+      $uninstaller = Get-ChildItem (Join-Path $installDir 'Uninstall*.exe') | Select-Object -First 1
+      $removed = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru
+      Start-Sleep -Seconds 3
+      cmd /c exit $(if ($removed.ExitCode -eq 0 -and -not (Test-Path (Join-Path $installDir 'Viva.exe'))) { 0 } else { 1 })
+    }
+  } else {
+    $results['install-app'] = 'FAIL (no installer built)'
   }
-  Get-ChildItem (Join-Path $root 'dist\*.exe') -ErrorAction SilentlyContinue | ForEach-Object { "installer: $($_.Name) $([math]::Round($_.Length / 1MB)) MB" } | Add-Content (Join-Path $report 'environment.txt')
 }
 
 # Written by a real launch (npm start), not by the smoke runs: the plugin links must be junctions that resolve.

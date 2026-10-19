@@ -46,16 +46,17 @@ dsh 是应用的一部分，和你自己装的 dsh 完全隔离：
 ### 打包
 
 ```bash
-npm run dist:mac    # macOS：dist/mac-arm64/Viva.app（未签名）
-npm run dist:win    # Windows：在 Windows 上运行，dist/Viva Setup x.y.z.exe（NSIS，可选安装目录）
+npm run dist:mac    # macOS：dist/Viva-x.y.z-mac-arm64.dmg（未签名）
+npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-setup.exe（NSIS，可选安装目录）
 ```
 
 - **不用 asar**：dsh 是单独的进程，要直接读 `node_modules` 里的文件，插件还要以链接方式挂进 dsh 的 profile，这些都不能放在 asar 归档里；dsh 的原生模块按平台预编译，也不重新编译（`npmRebuild: false`）。
+- **补齐依赖（`scripts/after-pack.cjs`）**：dsh 的各个包互相声明为 peerDependency，electron-builder 不会收集这些包（实际少了 46 个）。打包后的钩子按 `npm ls --omit=dev --all` 把缺的包复制进应用，再逐个核对，还缺就让打包失败。
 - **工作区**：打包后的应用目录是只读的，工作区放在应用数据目录下的 `workspace/`；开发时（`npm start`）仍是仓库里的 `workspace/`。
 - **体积**：macOS 约 735MB，大头是 Electron 和 dsh 自带的依赖，其中 Office 转 PDF 用的 `libreoffice-kit` 约 158MB。
-- **验证打包产物**：对打包后的应用跑 memory 阶段的 smoke，用 `SMOKE_FIXTURES` 指向仓库的 `test/fixtures`（应用里没有测试目录）、`SMOKE_OUT` 指向输出目录：
-  `SMOKE_PHASE=memory SMOKE_OUT=/tmp/viva-smoke SMOKE_FIXTURES=$PWD/test/fixtures DEEPSEEK_API_KEY=smoke-fake-key dist/mac-arm64/Viva.app/Contents/MacOS/Viva`。
-  Windows 上 `scripts\verify-windows.ps1 -Package` 会打安装包并对 `dist\win-unpacked\Viva.exe` 做同样的检查。
+- **验证打包产物**：必须在仓库之外运行。在仓库里（`dist/` 下）运行时，Node 会顺着上级目录找到仓库自己的 `node_modules`，缺包也看不出来。对打包后的应用跑 memory 阶段的 smoke，用 `SMOKE_FIXTURES` 指向仓库的 `test/fixtures`（应用里没有测试目录）、`SMOKE_OUT` 指向输出目录：
+  - macOS：只读挂载 dmg，运行里面的应用：`hdiutil attach -nobrowse -readonly dist/Viva-*.dmg`，然后 `SMOKE_PHASE=memory SMOKE_OUT=/tmp/viva-smoke SMOKE_FIXTURES=$PWD/test/fixtures DEEPSEEK_API_KEY=smoke-fake-key "/Volumes/Viva x.y.z/Viva.app/Contents/MacOS/Viva"`。
+  - Windows：`scripts\verify-windows.ps1 -Package` 打安装包，静默安装到临时目录，对装好的 `Viva.exe` 跑 smoke，再卸载。
 - **还没做**：代码签名和公证、自动更新、Intel Mac 和 Windows ARM 的包。
 
 | 环境变量 | 作用 | 默认 |
@@ -64,6 +65,14 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva Setup x.y.z.ex
 | `AGENT_CWD` | 助手的工作区（dsh 会话的 cwd） | `./workspace` |
 | `DSH_BIN` | 指定 dsh：`.js` 入口用 Node 运行，其他按可执行文件运行 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | `DSH_NODE` | 开发用：改用这个 Node 运行 dsh | 应用自己的 Electron |
+
+## 消息里的 Markdown
+
+助手的回答按 Markdown 显示：标题、粗体 / 斜体 / 删除线、行内代码和代码块（带语言标签）、有序 / 无序 / 任务列表（可嵌套）、表格（含对齐）、引用、分隔线、链接。用户自己发的消息保持原文。
+
+- **只解析、不注入**：用 `marked` 的词法分析把文本拆成结构，每个元素都用 `h()` 自己建，不经过 `innerHTML`。回答里的原始 HTML（例如 `<script>`）按原文显示，图片不加载（只显示成指向原地址的「[图片：…]」链接）。
+- **链接**：只有 http(s) 和 mailto 会成为链接，点击后由主进程再校验一次，用系统浏览器或邮件应用打开；页面本身不能跳转、不能开新窗口。
+- **逐字显示**：回答边生成边解析，没写完的代码块也按代码块显示；每条回答只在可见文字变化时重新解析。
 
 ## macOS 与 Windows
 
@@ -133,7 +142,8 @@ npm run smoke       # 真的启动 Electron，分四次：
                     #   walkthrough：模型菜单、流式输出、标题栏布局（macOS 和模拟的 Windows，各在正常宽度和最窄 880px 下检查
                     #     胶囊居中、不和按钮重叠，窄窗口抽屉浮层）、确认卡片、长任务滚动、设置面板；
                     #   relaunch：同一份数据再启动，检查上次的对话完整回来、助手接回会话，再走一遍历史面板
-                    #     （⌘K、第二段对话、搜索高亮、打开旧对话、重命名、删除和撤销）；
+                    #     （⌘K、第二段对话、搜索高亮、打开旧对话、重命名、删除和撤销），最后检查 Markdown 渲染
+                    #     和其中不该生效的脚本、链接、图片，以及页面不能跳转；
                     #   memory：真实的 dsh 加记忆插件，配假模型：引导、「记住」、关于你页面里的关键词、
                     #     提到名称时带上记忆、「过程」里的「带上记忆」、设置页的插件状态，
                     #     再在设置里添加一个模型提供方，从模型菜单选中它并对话（当前对话保留）；

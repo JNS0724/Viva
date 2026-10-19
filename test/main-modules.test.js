@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { APP_ROOT, dshLaunch, resolveConfig } from '../src/main/config.js'
+import { externalUrl } from '../src/main/links.js'
 import { createPermissionBroker } from '../src/main/permission-broker.js'
 import { currentModelName, describeConfig, describeError } from '../src/main/session-info.js'
 
@@ -108,4 +109,12 @@ test('describeError keeps the message and a short stderr tail', () => {
   assert.equal(describeError({ message: 'Internal error', data: { details: 'unknown model option: x' } }), 'Internal error: unknown model option: x')
   assert.equal(describeError({ message: 'Bad request', data: 'quota exceeded' }), 'Bad request: quota exceeded')
   assert.equal(describeError('plain', 'a\nb\nc\nd\n'), 'plain（dsh: b | c | d）')
+})
+
+test('only web and mail links leave the app, whatever the window sends', () => {
+  assert.equal(externalUrl('https://example.com/a?b=1'), 'https://example.com/a?b=1')
+  assert.equal(externalUrl('mailto:a@example.com'), 'mailto:a@example.com')
+  for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'vscode://x', 'not a url', '', 42, 'https://x/' + 'a'.repeat(5000)]) {
+    assert.throws(() => externalUrl(bad))
+  }
 })

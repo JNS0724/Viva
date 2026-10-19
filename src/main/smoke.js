@@ -26,6 +26,7 @@ const SECOND_PROMPT = '第二段对话：明天的天气'
 const RENAMED_TITLE = '周报摘要'
 const SEARCH_TEXT = '整理成'
 const LONG_PROMPT = '演示一个长任务'
+const MARKDOWN_PROMPT = '格式演示'
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 /** Both prompts the walkthrough sends; the relaunch expects to find them again. */
@@ -251,6 +252,53 @@ async function walkthrough(win, outDir) {
   return failures
 }
 
+/** What the window made of the fake dsh's Markdown answer (test/fixtures/fake-dsh.js MARKDOWN_ANSWER). */
+const MARKDOWN_STATE = `(() => {
+  const md = [...document.querySelectorAll('.msg-agent .markdown')].at(-1)
+  if (!md) return null
+  const text = (selector) => md.querySelector(selector)?.textContent ?? null
+  return {
+    heading: text('h3'), strong: text('strong'), del: text('del'), code: text('.md-code-inline'),
+    link: md.querySelector('a.md-link')?.getAttribute('href') ?? null, links: md.querySelectorAll('a').length,
+    tasks: [...md.querySelectorAll('.md-task input')].map((input) => input.checked), nested: md.querySelectorAll('ul ol li').length,
+    headers: [...md.querySelectorAll('th')].map((th) => th.textContent), right: text('td.md-align-right'),
+    block: text('pre.md-code code'), lang: text('.md-code-lang'), quote: Boolean(md.querySelector('blockquote')), hr: Boolean(md.querySelector('hr')),
+    loaded: md.querySelectorAll('script, img, iframe').length, hacked: window.hacked === true,
+    stars: md.textContent.includes('**'), shownAsText: md.textContent.includes('<script>window.hacked = true</script>'),
+  }
+})()`
+
+/** Markdown in an answer becomes real headings, lists, tables and code; nothing in it runs, loads or navigates. */
+async function checkMarkdown(win, outDir) {
+  const failures = []
+  await click(win, 'new-session')
+  await wait(UI_WAIT_MS)
+  await submit(win, MARKDOWN_PROMPT)
+  await waitForIdle(win)
+  await wait(UI_WAIT_MS)
+  const seen = await run(win, MARKDOWN_STATE)
+  const expected = {
+    heading: '本周进展', strong: '按计划推进', del: '周三上线', code: 'recon_service', link: 'https://example.com/spec', links: 2,
+    tasks: [true, false], nested: 2, headers: ['模块', '负责人', '进度'], right: '80%',
+    block: 'def settle(day):\n    return [t for t in trades(day) if t.ok]', lang: 'python', quote: true, hr: true,
+    loaded: 0, hacked: false, stars: false, shownAsText: true,
+  }
+  for (const [key, value] of Object.entries(expected)) {
+    if (JSON.stringify(seen?.[key]) !== JSON.stringify(value)) failures.push(`markdown ${key}: expected ${JSON.stringify(value)}, saw ${JSON.stringify(seen?.[key])}`)
+  }
+  await run(win, `[...document.querySelectorAll('.markdown')].at(-1).scrollIntoView({ block: 'start' })`)
+  await capture(win, outDir, 'markdown')
+  await run(win, `[...document.querySelectorAll('.markdown')].at(-1).scrollIntoView({ block: 'end' })`)
+  await capture(win, outDir, 'markdown-end')
+  // Neither a page script nor a link may take the window away from the app or open another one.
+  const before = await run(win, 'location.href')
+  await run(win, `window.location.assign('https://example.com/'); window.__opened = window.open('https://example.com/') !== null`)
+  await wait(UI_WAIT_MS)
+  const after = await run(win, '({ href: location.href, opened: window.__opened })')
+  if (after.href !== before || after.opened) failures.push(`the window should stay on the app: ${JSON.stringify(after)}`)
+  return failures
+}
+
 const PANEL_STATE = `(() => ({
   open: document.getElementById('history-panel').dataset.open === 'true',
   titles: [...document.querySelectorAll('.history-title')].map((el) => el.textContent),
@@ -367,7 +415,7 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hook
     await fs.mkdir(outDir, { recursive: true })
     await wait(BOOT_WAIT_MS)
     if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
-    else if (smokePhase === 'relaunch') problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir))
+    else if (smokePhase === 'relaunch') problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, report, hooks))
     else problems.push(...await walkthrough(win, outDir))
   } catch (err) {

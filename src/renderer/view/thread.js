@@ -1,5 +1,6 @@
 import { permissionDetail, receiptLine, restoredNote, statusView } from '../selectors.js'
 import { h, label } from './dom.js'
+import { caretHost, renderMarkdown } from './markdown.js'
 
 const avatar = () => h('span', { class: 'orb-avatar', 'aria-hidden': 'true' })
 
@@ -23,12 +24,30 @@ function visibleText(text, shown) {
   return text.slice(0, code >= 0xD800 && code <= 0xDBFF ? end + 1 : end)
 }
 
+/**
+ * The thread is rebuilt on every frame while an answer types out; each answer is parsed again only when
+ * its visible text changed. The element is reused as is (its links keep their handlers).
+ */
+const renderedAnswers = new Map()
+
+function answerText(message, handlers) {
+  const text = visibleText(message.text, message.shown)
+  const cached = renderedAnswers.get(message.id)
+  if (cached?.text === text) return cached.el
+  const el = renderMarkdown(text, handlers)
+  renderedAnswers.set(message.id, { text, el })
+  return el
+}
+
 function assistantView(message, handlers, traceReady) {
   const typing = message.open || (message.shown ?? message.text.length) < message.text.length
+  const text = answerText(message, handlers)
+  text.querySelector('.caret')?.remove()
+  if (typing) caretHost(text).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
   return h('div', { class: 'msg-agent' },
     avatar(),
     h('div', { class: 'msg-body' },
-      h('p', { class: 'msg-text' }, visibleText(message.text, message.shown), typing ? h('span', { class: 'caret', 'aria-hidden': 'true' }) : null),
+      text,
       message.receipt && !typing ? receiptButton(message, handlers, traceReady) : null))
 }
 

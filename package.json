@@ -16,12 +16,13 @@
     "smoke:relaunch": "cross-env SMOKE_PHASE=relaunch DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key electron .",
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
-    "dist:mac": "electron-builder --mac dir",
+    "dist:mac": "electron-builder --mac dmg",
     "dist:win": "electron-builder --win nsis"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",
     "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "marked": "18.0.14",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -46,9 +47,10 @@
     "npmRebuild": false,
     "mac": {
       "target": [
-        "dir"
+        "dmg"
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "win": {
       "target": [
@@ -57,7 +59,12 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-win-${arch}-setup.${ext}"
+    },
+    "dmg": {
+      "title": "${productName} ${version}"
+    },
+    "afterPack": "scripts/after-pack.cjs"
   }
 }

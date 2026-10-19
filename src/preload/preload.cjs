@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('agent', {
   newSession: () => ipcRenderer.invoke('agent:new-session'),
   setConfig: (configId, value) => ipcRenderer.invoke('agent:set-config', configId, value),
   respondPermission: (requestId, optionId) => ipcRenderer.invoke('agent:permission', requestId, optionId),
+  openLink: (url) => ipcRenderer.invoke('shell:open-link', url),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveApiKey: (key) => ipcRenderer.invoke('settings:save-key', key),
   clearApiKey: () => ipcRenderer.invoke('settings:clear-key'),

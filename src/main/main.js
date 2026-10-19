@@ -16,6 +16,7 @@ import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
 import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
+import { externalUrl } from './links.js'
 import { createMcpConfigStore } from './mcp-config.js'
 import { registerMemoryIpc } from './memory-ipc.js'
 import { createModelStore, defaultModel, modelValue, parseModelValue, piAiProviders, providerEnv } from './model-providers.js'
@@ -314,6 +315,7 @@ function registerAgentIpc() {
 }
 
 function registerSettingsIpc() {
+  ipcMain.handle('shell:open-link', (_event, url) => shell.openExternal(externalUrl(url)))
   ipcMain.handle('settings:get', () => settingsView())
   ipcMain.handle('settings:save-key', async (_event, key) => {
     settingsStore.saveApiKey(assertText(key, 'API key', MAX_KEY_CHARS))
@@ -436,6 +438,9 @@ function createWindow(config) {
     },
   })
   win.once('ready-to-show', () => win.show())
+  // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
+  win.webContents.on('will-navigate', (event) => event.preventDefault())
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.once('did-finish-load', () => {
     startBridge()
     if (config.smoke) {

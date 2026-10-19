@@ -16,6 +16,34 @@ const STEP_MS = Number(process.env.FAKE_DSH_DELAY_MS ?? 450)
 const PIECE_CHARS = 3
 const PIECE_RATIO = 1 / 12
 const LONG_TASK = /长任务/
+/** Asked for 格式演示, the answer is Markdown of every kind the window renders, plus what it must not run. */
+const MARKDOWN_DEMO = /格式演示/
+export const MARKDOWN_ANSWER = [
+  '## 本周进展',
+  '',
+  '对账系统重构**按计划推进**，*接口联调*还差一步，~~周三上线~~改为周五。详见 [需求文档](https://example.com/spec) 和 `recon_service`。',
+  '',
+  '- [x] 完成数据迁移',
+  '- [ ] 补齐回归测试',
+  '  1. 结算口径',
+  '  2. 退款链路',
+  '',
+  '| 模块 | 负责人 | 进度 |',
+  '|:--|:--|--:|',
+  '| 结算 | 张三 | 80% |',
+  '| 退款 | 李四 | 45% |',
+  '',
+  '```python',
+  'def settle(day):',
+  '    return [t for t in trades(day) if t.ok]',
+  '```',
+  '',
+  '> 风险：测试环境下周二维护。',
+  '',
+  '---',
+  '',
+  '这些不该生效：<script>window.hacked = true</script> [点我](javascript:window.hacked=true) ![远程图](https://example.com/x.png)',
+].join('\n')
 const LONG_STEPS = 16
 const LONG_STEP_RATIO = 1 / 3
 const LONG_PIECE_CHARS = 12
@@ -210,6 +238,7 @@ function createAgent(conn) {
       const text = params.prompt.map((block) => block.text ?? '').join('\n')
       try {
         if (LONG_TASK.test(text)) await longScript(params.sessionId, session, controller.signal)
+        else if (MARKDOWN_DEMO.test(text)) await turnTools(params.sessionId, controller.signal).stream('agent_message_chunk', MARKDOWN_ANSWER, LONG_PIECE_CHARS, LONG_PIECE_RATIO)
         else await defaultScript(params.sessionId, session, text, controller.signal)
         return { stopReason: 'end_turn' }
       } catch (err) {
