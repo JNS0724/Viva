@@ -87,7 +87,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 185 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 188 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
 npm run smoke       # 真的启动 Electron，分四次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
@@ -99,6 +99,7 @@ npm run smoke       # 真的启动 Electron，分四次：
                     #     提到名称时带上记忆、「过程」里的「带上记忆」、设置页的插件状态
 ```
 
+- **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和四个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。
 - **数据隔离**：smoke 用 `smoke/userData` 作为独立的数据目录，不会碰你自己的历史记录和 key。
 - **假模型**：记忆相关的测试和 smoke 用真实的 dsh，把 `DEEPSEEK_BASE_URL` 指向 `test/fixtures/fake-llm.js`。它记录 dsh 发给模型的每个请求，并按固定规则回复（「记住：…」会调用 `memory_remember`），不需要 key。
 - **假 dsh**：其余 smoke 和集成测试里的 dsh 换成 `test/fixtures/fake-dsh.js`。它讲真实的 ACP 协议，按固定剧本回复：提问里带「长任务」会连续调用 16 次工具，再输出长回复。这样走的是和真实使用完全相同的代码路径，只是不调用模型。应用里没有演示模式。
