@@ -50,6 +50,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
                                             memory.db ◀──────── 同一个文件 ────────┘
 ```
 
+- **插件化分层**：模型看到什么、能做什么（记忆、过程记录、工具策略、人设）放在应用自己 profile 里的 dsh 插件中；会话怎么跑留在 ACP；界面和本机数据留在应用。插件和应用只通过带版本号的数据约定协作。详见 [docs/architecture.md](docs/architecture.md)。
 - **主进程** 启动 `dsh --profile my-agent`（应用自己的 profile，见下文「记忆」），用官方 `@agentclientprotocol/sdk` 的 `ClientSideConnection` 说 ACP：`initialize → session/new → session/prompt`，`session/cancel` 停止，`session/close` 开新对话。
 - **事件分流**（对应设计稿的「对话不含思考和工具调用」）：
   - `agent_message_chunk` → 对话区
@@ -85,7 +86,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 153 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 185 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
 npm run smoke       # 真的启动 Electron，分四次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；

@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "cross-env": "7.0.3",
     "electron": "44.9.0"
   }

@@ -31,7 +31,7 @@
 
 ## 2. 总体结构
 
-记忆整体是一个 dsh 插件（`plugins/memory`），挂在 app 自己的 dsh profile 里。app 只负责界面，两者共用同一个 SQLite 文件 `memory.db`。
+记忆整体是一个 dsh 插件（`plugins/memory`），和「过程」插件、工具策略插件一起挂在 app 自己的 dsh profile 里。app 只负责界面，两者共用同一个 SQLite 文件 `memory.db`。整个应用的插件化分层见 [architecture.md](architecture.md)。
 
 ```
 Electron 主进程                                    dsh 进程（--profile my-agent）
@@ -56,6 +56,7 @@ Electron 主进程                                    dsh 进程（--profile my-
 | `plugins/memory/lib/tools.js` | 三个记忆工具 |
 | `plugins/memory/lib/extract.js` | 轮次结束后的后台提取 |
 | `plugins/memory/lib/synthesize.js` | 定时整理画像 |
+| `src/main/app-plugins.js` | 插件清单、人设、兼容性检查（约定版本、dsh 版本） |
 | `src/main/dsh-profile.js` | 每次启动 dsh 前写好 `~/.dsh/profiles/my-agent` |
 | `src/main/personal.js` | 汇报插件写了什么、带上了什么；把使用习惯写进库 |
 | `src/main/memory-ipc.js` | 「关于你」页面的 IPC |
@@ -64,9 +65,10 @@ Electron 主进程                                    dsh 进程（--profile my-
 
 `dsh-profile.js` 在每次启动 dsh 前写好 `<DSH_HOME>/profiles/my-agent`，只写有变化的文件：
 
-- `package.json`：组合包和 dsh 自带的 `acp` 模板相同（`dsh-base`、`dsh-acp-app`），另加依赖 `"my-agent-memory": "link:<app>/plugins/memory"`。
-- `node_modules/my-agent-memory`：指向插件目录的链接，Windows 上用 junction。
-- `cordis.patch.yml`：插入插件，并把 `memory.db` 的路径写进 `config.file`。
+- `package.json`：组合包和 dsh 自带的 `acp` 模板相同（`dsh-base`、`dsh-acp-app`），另加每个插件的 `link:` 依赖，比如 `"my-agent-memory": "link:<app>/plugins/memory"`。
+- `node_modules/my-agent-*`：指向插件目录的链接，Windows 上用 junction。
+- `cordis.patch.yml`：写入人设，插入每个插件，并把 `memory.db` 的路径写进记忆插件的 `config.file`。
+- 启动前先做兼容性检查：插件声明的约定版本（`package.json` 的 `myAgent.contract.memory`）必须等于 app 需要的版本，dsh 依赖必须等于当前安装的 dsh 版本。不通过就不写进 profile，原因显示在设置页。
 - `cordis.yml`、`pnpm-workspace.yaml`：只在缺失时写入。
 
 用户的其他 profile（包括 `acp`）不会被读写。profile 写不了时，app 退回 `acp` profile：助手照常可用，只是没有记忆。插件加载失败时，dsh 会输出一条带插件名的警告，会话照常进行。
@@ -82,7 +84,7 @@ Electron 主进程                                    dsh 进程（--profile my-
 | `syntheses` | 助手整理的画像（`text, created_at`），保留最近 20 版 | 插件（定时整理） |
 | `sessions` | 每个 dsh 会话的检索状态（JSON） | 插件 |
 | `injections` | 每轮实际带给模型的内容，保留最近 1000 条 | 插件；app 读来显示在「过程」里 |
-| `meta` | `onboarding`、`habits`（使用习惯文本，app 写）、`plugin_started_at`（插件心跳）、`profile_migrated` | 各自所有者 |
+| `meta` | `contract_version`（约定版本，当前为 1；遇到更新版本写入的库会直接报错，不会误读）、`onboarding`、`habits`（使用习惯文本，app 写）、`plugin_started_at`（插件心跳）、`profile_migrated` | 各自所有者 |
 
 `memories` 的字段：
 
@@ -160,6 +162,7 @@ Electron 主进程                                    dsh 进程（--profile my-
 - **检查时机**：每轮结束、后台提取完成之后检查一次。这时手上正好有模型路由可以复用。所以「定时」的实际含义是：app 开着并且有对话时，满足条件就整理。
 - **触发条件**：自上次整理以来有记忆被写入、刷新或失效，并且满足以下任一条：
   - 还没有过画像；
+  - 有画像类记忆失效（画像里可能写着已经不成立的事，比如旧上级），立即重新整理；
   - 距上次整理已满 24 小时；
   - 已经积累了 5 处改动。
 - **输入**：用户填写的画像（不含邮箱），以及最多 150 条有效的画像类记忆（带日期）。**不把上一版画像交给模型**，否则失效的旧事实可能被抄回来。
@@ -257,9 +260,9 @@ Electron 主进程                                    dsh 进程（--profile my-
 
 记忆是独立的 dsh 插件，替换时：
 
-1. 写一个新的 dsh 插件，在 `src/main/dsh-profile.js` 里把 `MEMORY_PLUGIN` 和插件目录换掉。
-2. app 只通过 `memory.db` 和插件打交道。新方案只要继续提供 `profile`、`memories`（含失效字段）、`syntheses`、`injections` 这几张表和 `store.js` 的接口，「关于你」和「过程」就不用改。如果换了数据结构，就要同时修改 `memory-ipc.js`、`personal.js` 和对应的界面。
-3. 插件声明的 dsh 版本是精确的 `0.2.0-rc.2`，升级 dsh 时要同步修改 `plugins/memory/package.json`，否则 dsh 会拒绝加载插件（对话不受影响，只是没有记忆）。
+1. 写一个新的 dsh 插件，名字以 `my-agent-` 开头，在 `package.json` 里声明 `"myAgent": { "contract": { "memory": 1 } }`，然后在 `src/main/app-plugins.js` 的 `APP_PLUGINS` 里把原来的记忆插件换掉。
+2. app 只通过 `memory.db` 和插件打交道。新方案只要提供约定 `memory@1`，也就是 `profile`、`memories`（含失效字段）、`syntheses`、`injections` 这几张表和 `store.js` 的接口，「关于你」和「过程」就不用改。如果改了数据结构，就把约定升到 2，并同时修改 `memory-ipc.js`、`personal.js` 和对应的界面。
+3. 插件声明的 dsh 版本是精确的 `0.2.0-rc.2`。升级 dsh 后，兼容性检查会把它排除并在设置页说明原因（对话不受影响，只是没有记忆），要同步修改 `plugins/memory/package.json`。
 
 ## 12. 测试
 
@@ -269,7 +272,8 @@ Electron 主进程                                    dsh 进程（--profile my-
 | `test/memory-layers.test.js` | 名称词表、检索依据、三层规划、每轮串联、关键词、数据库迁移 |
 | `test/memory-extract.test.js` | 提取门槛、候选范围、输出校验、整批回滚、失效与恢复、界面状态 |
 | `test/memory-synthesis.test.js` | 整理时机、格式校验、输入范围、固定层组成、旧画像迁移 |
-| `test/memory-plugin.test.js` | **真实 dsh + 插件 + 假模型**：注入次数、名称推送、工具写入、重启恢复、插件故障、后台提取、替换旧事实、用户条目保护、画像整理 |
+| `test/memory-plugin.test.js` | **真实 dsh + app 的完整 profile + 假模型**（`test/fixtures/dsh-harness.js`）：注入次数、名称推送、工具写入、重启恢复、插件故障、后台提取（含读到助手回答）、替换旧事实、用户条目保护、画像整理、人设 |
+| `test/app-plugins.test.js` | 插件清单、约定版本和 dsh 版本检查、数据库的约定版本 |
 | `test/dsh-profile.test.js` | profile 写入、幂等、链接替换、出错时不覆盖 |
 | `npm run smoke`（memory 阶段） | 在 Electron 里用真实 dsh + 假模型走完整个界面流程 |
 | `npm run live:memory` | **真实 DeepSeek 模型**，手动运行，会产生少量费用 |
@@ -303,6 +307,7 @@ Electron 主进程                                    dsh 进程（--profile my-
 - **对话压缩后重新发送固定层**的逻辑有单元测试，但还没在真实 dsh 里触发压缩来验证。
 - **Windows 未验证**：junction 链接、路径写入 YAML。
 - **dsh 版本锁定**：插件声明的版本是精确的 `0.2.0-rc.2`，见 11。
+- **【记忆规则】随固定层作为 user 消息发送**：放进系统提示词能利用前缀缓存，需要先确认 dsh 的提示词段注册接口，见 [architecture.md](architecture.md) 第 8 节。
 - **打包**：插件目录需要放在 asar 包外面，目前还没有配置打包。
 
 ## 15. 设计取舍与依据

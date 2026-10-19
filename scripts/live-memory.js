@@ -15,6 +15,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openMemoryDb } from '../plugins/memory/lib/store.js'
 import { createAcpBridge } from '../src/main/acp-bridge.js'
+import { installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.js'
 import { DSH_PROFILE } from '../src/main/config.js'
 import { ensureDshProfile } from '../src/main/dsh-profile.js'
 
@@ -119,7 +120,8 @@ async function main() {
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
   fs.mkdirSync(workspace)
-  ensureDshProfile({ dshHome, profile: DSH_PROFILE, pluginDir: path.join(ROOT, 'plugins', 'memory'), memoryFile })
+  const { plugins } = resolvePlugins({ appRoot: ROOT, userData: dir, dshVersion: installedDshVersion(ROOT) })
+  ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA })
   // The real API, not a fake endpoint left in the environment.
   const { DEEPSEEK_BASE_URL: _ignored, ...env } = process.env
   const report = { startedAt: new Date().toISOString(), sessions: [] }

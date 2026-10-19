@@ -1,0 +1,79 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createAcpBridge } from '../../src/main/acp-bridge.js'
+import { installedDshVersion, PERSONA, resolvePlugins } from '../../src/main/app-plugins.js'
+import { DSH_PROFILE } from '../../src/main/config.js'
+import { ensureDshProfile } from '../../src/main/dsh-profile.js'
+import { startFakeLlm } from './fake-llm.js'
+
+/**
+ * The app's plugins inside the real dsh: the app's bridge, the app's profile (persona and every plugin that
+ * passes the compatibility check), and a fake Messages endpoint in place of DeepSeek, so every request the
+ * model would get can be inspected. Everything lives in a temporary directory removed after the test.
+ */
+export const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+const DSH_BIN = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+const NODE_BIN = process.env.DSH_NODE || 'node'
+export const DSH_TIMEOUT_MS = 60_000
+
+/**
+ * @param {import('node:test').TestContext} t
+ * @param {{ memoryFile?: string, mcpServers?: object[], allow?: boolean }} [options]
+ *   memoryFile: where the memory plugin's store goes; mcpServers: declared on every session;
+ *   allow: answer every approval request with "allow once" (otherwise they stay pending)
+ */
+export async function startHarness(t, { memoryFile, mcpServers = [], allow = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
+  const dshHome = path.join(dir, 'dsh-home')
+  const workspace = path.join(dir, 'workspace')
+  fs.mkdirSync(workspace)
+  const userData = path.join(dir, 'userData')
+  const { plugins, problems } = resolvePlugins({ appRoot: ROOT, userData, dshVersion: installedDshVersion(ROOT) })
+  assert.deepEqual(problems, [], 'every app plugin passes the compatibility check')
+  const file = memoryFile ?? path.join(userData, 'memory.db')
+  const withFile = plugins.map((plugin) => (plugin.name === 'my-agent-memory' ? { ...plugin, config: { file } } : plugin))
+  ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA })
+  const llm = await startFakeLlm()
+  const bridges = []
+  t.after(async () => {
+    bridges.forEach((bridge) => bridge.dispose())
+    await llm.close()
+    // dsh may still be flushing its session log as it exits.
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
+  const events = []
+  function bridge() {
+    const created = createAcpBridge({
+      dshBin: DSH_BIN,
+      nodeBin: NODE_BIN,
+      cwd: workspace,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '', DSH_HOME: dshHome, DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url },
+      mcpServers: () => mcpServers,
+      emit: (event) => {
+        events.push(event)
+        if (allow && event.type === 'permission') setImmediate(() => created.respondPermission(event.requestId, 'allow-once'))
+      },
+    })
+    bridges.push(created)
+    return created
+  }
+  return { dir, dshHome, userData, workspace, file, llm, events, bridge }
+}
+
+/** The assistant's visible text, in order. */
+export const replies = (events) => events
+  .filter((e) => e.update?.sessionUpdate === 'agent_message_chunk')
+  .map((e) => e.update.content.text)
+
+/** The background pass writes after a turn; wait for what it writes. */
+export async function eventually(read, { timeoutMs = 15_000, intervalMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const value = read()
+    if (value || Date.now() > deadline) return value
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+}

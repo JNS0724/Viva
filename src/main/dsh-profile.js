@@ -2,11 +2,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * The app's own dsh profile: the stock ACP composition plus the memory plugin. It is written before every
- * launch, so a moved app or memory.db is picked up, and only files that changed are touched. The user's
- * other profiles (including `acp`) are never read or written.
+ * The app's own dsh profile: the stock ACP composition, the app's persona, and the app's plugins
+ * (app-plugins.js). It is written before every launch, so a moved app or data file is picked up, and only
+ * files that changed are touched. The user's other profiles (including `acp`) are never read or written.
  */
-export const MEMORY_PLUGIN = 'my-agent-memory'
+/** The app's plugins are all named like this, so ones dropped from the list can be told apart and removed. */
+export const APP_PLUGIN_PREFIX = 'my-agent-'
 /** Same bundles as dsh's own `acp` template (`dsh --from-default-profile acp`). */
 const BUNDLES = Object.freeze(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'])
 const ROOT_CONFIG = `# dsh profile root — an empty entry list; the bundles and cordis.patch.yml compose the app.
@@ -21,15 +22,28 @@ autoInstallPeers: false
 
 /** YAML single-quoted scalar: only the quote itself needs escaping, backslashes stay as they are. */
 const yamlString = (value) => `'${String(value).replaceAll("'", "''")}'`
+const yamlValue = (value) => (typeof value === 'boolean' || typeof value === 'number' ? String(value) : yamlString(value))
 
-function patchFor(memoryFile) {
-  return `# Written by my-agent on every launch; edits here are replaced.
-- insert:
-    - id: ${MEMORY_PLUGIN}
-      name: ${MEMORY_PLUGIN}
-      config:
-        file: ${yamlString(memoryFile)}
-`
+function configLines(config, indent) {
+  const entries = Object.entries(config ?? {})
+  if (entries.length === 0) return []
+  return [`${indent}config:`, ...entries.map(([key, value]) => `${indent}  ${key}: ${yamlValue(value)}`)]
+}
+
+/**
+ * The system-prompt entry is replaced whole (dsh patches by id do not merge), so both persona parts are
+ * stated; then the plugins are inserted.
+ */
+export function patchFor({ plugins, persona }) {
+  const lines = ['# Written by my-agent on every launch; edits here are replaced.']
+  if (persona) {
+    lines.push('- id: system-prompt', '  config:', `    personaPrefix: ${yamlString(persona.prefix)}`, `    personaSuffix: ${yamlString(persona.suffix)}`)
+  }
+  if (plugins.length) {
+    lines.push('- insert:')
+    for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${plugin.name}`, ...configLines(plugin.config, '      '))
+  }
+  return `${lines.join('\n')}\n`
 }
 
 /** Writes `text` unless the file already says exactly that. */
@@ -47,47 +61,68 @@ function readManifest(file) {
   }
 }
 
-/** Keeps whatever else the manifest declares; only the plugin dependency and a missing bundle list are filled in. */
-function manifestFor(current, pluginDir) {
+const isOurs = (name) => name.startsWith(APP_PLUGIN_PREFIX)
+
+/** Keeps whatever else the manifest declares; the app's plugin dependencies are exactly the given ones. */
+function manifestFor(current, plugins) {
   const bundles = current.dsh?.profile?.bundles?.length ? current.dsh.profile.bundles : BUNDLES
+  const others = Object.fromEntries(Object.entries(current.dependencies ?? {}).filter(([name]) => !isOurs(name)))
+  const ours = Object.fromEntries(plugins.map((plugin) => [plugin.name, `link:${plugin.dir}`]))
   return {
     name: 'dsh-profile-my-agent',
     ...current,
     private: true,
-    dependencies: { ...current.dependencies, [MEMORY_PLUGIN]: `link:${pluginDir}` },
+    dependencies: { ...others, ...ours },
     dsh: { ...current.dsh, profile: { ...current.dsh?.profile, bundles } },
   }
 }
 
 /**
- * Points `node_modules/my-agent-memory` at the plugin: a junction on Windows, which needs no admin rights.
+ * Points `node_modules/<name>` at the plugin: a junction on Windows, which needs no admin rights.
  * A real directory in its place is reported, not deleted: it is not ours.
  */
-function linkPlugin(profileDir, pluginDir, platform) {
-  const modules = path.join(profileDir, 'node_modules')
-  const link = path.join(modules, MEMORY_PLUGIN)
-  fs.mkdirSync(modules, { recursive: true })
+function linkPlugin(modules, { name, dir }, platform) {
+  const link = path.join(modules, name)
   const existing = fs.lstatSync(link, { throwIfNoEntry: false })
   if (existing && !existing.isSymbolicLink()) throw new Error(`${link} 不是链接，请手动移走后重启`)
   if (existing) {
-    if (path.resolve(path.dirname(link), fs.readlinkSync(link)) === path.resolve(pluginDir)) return
+    if (path.resolve(path.dirname(link), fs.readlinkSync(link)) === path.resolve(dir)) return
     fs.unlinkSync(link)
   }
-  fs.symlinkSync(pluginDir, link, platform === 'win32' ? 'junction' : 'dir')
+  fs.symlinkSync(dir, link, platform === 'win32' ? 'junction' : 'dir')
+}
+
+/** Links to app plugins no longer in the list go, so dsh stops loading them. */
+function unlinkDropped(modules, plugins) {
+  const keep = new Set(plugins.map((plugin) => plugin.name))
+  for (const name of fs.readdirSync(modules).filter((entry) => isOurs(entry) && !keep.has(entry))) {
+    const link = path.join(modules, name)
+    if (fs.lstatSync(link).isSymbolicLink()) fs.unlinkSync(link)
+  }
 }
 
 /**
- * @param {{ dshHome: string, profile: string, pluginDir: string, memoryFile: string, platform?: string }} options
+ * @param {{
+ *   dshHome: string,
+ *   profile: string,
+ *   plugins: Array<{ name: string, dir: string, config?: Record<string, string | boolean | number> }>,
+ *   persona?: { prefix: string, suffix: string },
+ *   platform?: string,
+ * }} options
  * @returns {string} the profile directory
  */
-export function ensureDshProfile({ dshHome, profile, pluginDir, memoryFile, platform = process.platform }) {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, platform = process.platform }) {
+  const bad = plugins.find((plugin) => !isOurs(plugin.name))
+  if (bad) throw new Error(`插件名必须以 ${APP_PLUGIN_PREFIX} 开头：${bad.name}`)
   const dir = path.join(dshHome, 'profiles', profile)
-  fs.mkdirSync(dir, { recursive: true })
+  const modules = path.join(dir, 'node_modules')
+  fs.mkdirSync(modules, { recursive: true })
   const manifestFile = path.join(dir, 'package.json')
-  writeIfChanged(manifestFile, `${JSON.stringify(manifestFor(readManifest(manifestFile), pluginDir), null, 2)}\n`)
+  writeIfChanged(manifestFile, `${JSON.stringify(manifestFor(readManifest(manifestFile), plugins), null, 2)}\n`)
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
-  writeIfChanged(path.join(dir, 'cordis.patch.yml'), patchFor(memoryFile))
-  linkPlugin(dir, pluginDir, platform)
+  writeIfChanged(path.join(dir, 'cordis.patch.yml'), patchFor({ plugins, persona }))
+  unlinkDropped(modules, plugins)
+  for (const plugin of plugins) linkPlugin(modules, plugin, platform)
   return dir
 }

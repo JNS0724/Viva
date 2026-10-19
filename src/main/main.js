@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
+import { openTraceDb } from '../../plugins/trace/lib/store.js'
+import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
 import { APP_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
 import { createAcpBridge } from './acp-bridge.js'
 import { ensureDshProfile } from './dsh-profile.js'
@@ -20,7 +22,6 @@ import { windowChrome, windowSize } from './window-options.js'
 
 const MAX_PROMPT_CHARS = 20_000
 const MAX_KEY_CHARS = 1_000
-const MEMORY_PLUGIN_DIR = path.join(APP_ROOT, 'plugins', 'memory')
 /** dsh's stock ACP profile: used, without memory, when the app's own profile can't be written. */
 const FALLBACK_PROFILE = 'acp'
 /** After a turn the memory plugin's background pass may still write; look again this often, this long. */
@@ -30,7 +31,10 @@ const LATE_MEMORY_WINDOW_MS = 30_000
 let settingsStore = null
 let historyDb = null
 let memoryDb = null
-let memoryFile = ''
+/** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
+let traceDb = null
+/** Plugins left out of the profile at the last launch, and why; shown in settings. */
+let pluginProblems = []
 /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.js. */
 let personal = null
 /** When the running dsh was launched: the memory plugin must have started after it to count as working. */
@@ -92,13 +96,21 @@ function reportTurnMemories() {
   }, LATE_MEMORY_POLL_MS)
 }
 
-/** Writes the app's dsh profile (memory plugin included); without it, dsh still runs, with no memory. */
+/**
+ * Writes the app's dsh profile: the persona and the plugins that pass the compatibility check. Without it
+ * dsh still runs on its stock profile, with no memory, trace or policy.
+ */
 function prepareProfile(config) {
   try {
-    ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, pluginDir: MEMORY_PLUGIN_DIR, memoryFile })
+    const { plugins, problems } = resolvePlugins({
+      appRoot: APP_ROOT, userData: app.getPath('userData'), dshVersion: installedDshVersion(APP_ROOT),
+    })
+    pluginProblems = problems
+    problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
+    ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA })
     return DSH_PROFILE
   } catch (err) {
-    console.error('[memory] could not prepare the dsh profile, starting without memory:', err.message)
+    console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
     return FALLBACK_PROFILE
   }
 }
@@ -269,7 +281,7 @@ function registerPersonalIpc(config, mcpStore) {
   registerExtensionsIpc(ipcMain, {
     store: mcpStore,
     roots: () => skillRoots({ dshHome: config.dshHome, cwd: config.cwd }),
-    mcpStatus: () => personal.mcpStatus(lastInfo, launchedAt),
+    mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
     applyMcp: applyMcpChange,
     chooseSkill: async () => (await pickFiles({
       title: '选择 skill 文件夹（含 SKILL.md）或 .md 文件',
@@ -284,8 +296,12 @@ function registerPersonalIpc(config, mcpStore) {
 /** Profile and memories live next to the history; the memory plugin inside dsh opens the same file. */
 function openPersonal(config) {
   const userData = app.getPath('userData')
-  memoryFile = path.join(userData, 'memory.db')
-  memoryDb = openMemoryDb({ file: memoryFile })
+  memoryDb = openMemoryDb({ file: path.join(userData, 'memory.db') })
+  try {
+    traceDb = openTraceDb({ file: path.join(userData, 'trace.db') })
+  } catch (err) {
+    console.error('[trace] could not open trace.db; reopened conversations fall back to dsh logs:', err.message)
+  }
   const mcpStore = createMcpConfigStore({
     file: path.join(userData, 'mcp-servers.json'),
     crypto: safeStorage,
@@ -310,6 +326,7 @@ function openHistory(config) {
   registerHistoryIpc(ipcMain, {
     db: historyDb,
     dshHome: config.dshHome,
+    traceDb: () => traceDb,
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
     agentInfo: () => lastInfo,
@@ -370,4 +387,5 @@ app.on('will-quit', () => {
   clearInterval(lateMemoryTimer)
   historyDb?.close()
   memoryDb?.close()
+  traceDb?.close()
 })

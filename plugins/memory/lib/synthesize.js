@@ -22,10 +22,13 @@ export const SYNTHESIS_SYSTEM = [
   `用户自己填写的画像优先，不要改写它的意思。总长度不超过 ${Math.floor(MAX_SYNTHESIS_CHARS * 0.6)} 字。只输出画像本身，不要任何解释。`,
 ].join('\n')
 
-/** Whether a new synthesis is due: something changed, and either there is none yet, it is old, or much changed. */
-export function synthesisDue({ latest, changes, now }) {
+/**
+ * Whether a new synthesis is due: something changed, and either there is none yet, it is old, much changed,
+ * or a profile memory it may repeat stopped being true (a profile saying the old manager is wrong at once).
+ */
+export function synthesisDue({ latest, changes, invalidated = 0, now }) {
   if (changes === 0) return false
-  if (!latest) return true
+  if (!latest || invalidated > 0) return true
   return now - latest.createdAt >= SYNTHESIS_INTERVAL_MS || changes >= SYNTHESIS_MIN_CHANGES
 }
 
@@ -71,7 +74,8 @@ export function checkSynthesis(text) {
  */
 export async function synthesizeProfile({ db, complete, now = Date.now() }) {
   const latest = db.latestSynthesis()
-  if (!synthesisDue({ latest, changes: db.changesSince(latest?.createdAt ?? 0), now })) return null
+  const since = latest?.createdAt ?? 0
+  if (!synthesisDue({ latest, changes: db.changesSince(since), invalidated: db.profileInvalidationsSince(since), now })) return null
   const input = synthesisInput({ profile: db.getProfile(), memories: db.profileMemories({ limit: SYNTHESIS_MEMORY_LIMIT }) })
   return db.saveSynthesis(checkSynthesis(await complete(SYNTHESIS_SYSTEM, input)))
 }

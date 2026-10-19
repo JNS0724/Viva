@@ -23,6 +23,7 @@ function assertQuery(value) {
  * @param {{
  *   db: ReturnType<import('./history-db.js').openHistoryDb>,
  *   dshHome: string,
+ *   traceDb?: () => ReturnType<import('../../plugins/trace/lib/store.js').openTraceDb> | null,
  *   current: () => object, setCurrent: (conversation: object) => void,
  *   agentInfo: () => object, switchAgent: (sessionId: string | null) => Promise<object>,
  *   chooseExportPath: (defaultName: string) => Promise<string | null>,
@@ -30,7 +31,7 @@ function assertQuery(value) {
  * }} deps
  */
 export function registerHistoryIpc(ipcMain, deps) {
-  const { db, dshHome, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
+  const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
   const schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms).unref?.())
   const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
 
@@ -58,6 +59,7 @@ export function registerHistoryIpc(ipcMain, deps) {
 
   handle('history:trace', (id, until) => readSessionTrace({
     dshHome,
+    traceDb: traceDb?.() ?? null,
     sessionIds: db.sessionIds(assertId(id)),
     until: Number.isFinite(until) ? until : Date.now(),
   }))

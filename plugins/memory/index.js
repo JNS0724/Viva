@@ -60,9 +60,10 @@ function userWords(agent, turn, proposed) {
   return [...entered, ...proposed].filter(isFromUser).map(textOf).join('\n')
 }
 
+/** dsh logs an assistant message as `{ turn, step, message }`, unlike a user message, which is the message itself. */
 const replyOf = (agent, turn) => turnEvents(agent, turn)
   .filter((event) => event.type === 'assistant/message')
-  .map((event) => textOf(event.data))
+  .map((event) => textOf(event.data.message))
   .join('\n')
 
 function registerTools(ctx, db) {

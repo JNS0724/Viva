@@ -77,10 +77,15 @@ function skillItem(skill, extensions, handlers) {
     }) : null)
 }
 
+/** Why the memory plugin was left out of the profile, if it was. */
+const memoryProblem = (status) => (status.plugins ?? []).find((plugin) => plugin.contract === 'memory')?.problem
+
 const memoryLine = (status) => h('p', { class: 'ext-memory', 'data-on': String(status.memory) },
   status.memory
     ? '记忆插件已加载：助手会自己记住重要的事，提到相关的人和事时带上记忆，也会在需要时自己回忆。'
-    : '记忆插件没有加载，这次对话不会自动记忆。可以重启应用再试。')
+    : memoryProblem(status)
+      ? `记忆插件版本不兼容，这次对话不会自动记忆：${memoryProblem(status)}`
+      : '记忆插件没有加载，这次对话不会自动记忆。可以重启应用再试。')
 
 /** The 扩展 part of settings: MCP servers the agent can call, and skills it can load. */
 export function extensionsSection(extensions, handlers, { connected }) {

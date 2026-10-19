@@ -16,6 +16,8 @@ const KNOWN_NAMES = ['张三', '李四', '王五', '周报', '对账系统', '�
 const REMEMBER = /记住[:：]\s*(.+)$/s
 const RECALL = /查一下\s*(.+)$/s
 const CONTEXT_OPEN = '<about-user>'
+/** 「发邮件…」 / 「存草稿…」 call the MCP tool whose name ends so; dsh prefixes it with the hashed server name. */
+const MAIL = [[/^发邮件/, '__send_email'], [/^存草稿/, '__create_draft']]
 
 const partsOf = (message) => (Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }])
 const textParts = (message) => partsOf(message).filter((part) => part.type === 'text').map((part) => part.text)
@@ -98,6 +100,9 @@ export function decide(request) {
   }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }
+  const mail = MAIL.find(([pattern]) => pattern.test(question))
+  const mailTool = mail && (request.tools ?? []).find((tool) => tool.name.endsWith(mail[1]))
+  if (mailTool) return { tool: { name: mailTool.name, input: { to: '张三', body: question } } }
   return { text: `${backgroundOf(texts)}收到：「${question}」` }
 }
 

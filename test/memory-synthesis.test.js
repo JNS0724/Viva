@@ -34,6 +34,7 @@ test('a synthesis is due when something changed and there is none, it is a day o
   assert.equal(synthesisDue({ latest, changes: 1, now: SYNTHESIS_INTERVAL_MS }), true)
   assert.equal(synthesisDue({ latest, changes: SYNTHESIS_MIN_CHANGES, now: HOUR }), true)
   assert.equal(synthesisDue({ latest, changes: 0, now: 10 * SYNTHESIS_INTERVAL_MS }), false, 'nothing changed, nothing to redo')
+  assert.equal(synthesisDue({ latest, changes: 2, invalidated: 1, now: HOUR }), true, 'a profile fact that stopped being true is redone at once')
 })
 
 test('only the agreed form is kept: known headings in order, then "- " lines', () => {
@@ -123,4 +124,16 @@ test('what the agent once appended to the profile becomes its memories; the user
   const reopened = openMemoryDb({ file })
   t.after(() => reopened.close())
   assert.equal(reopened.listMemories().total, 2, 'runs once')
+})
+
+test('a profile memory that stops being true brings the synthesis up to date after the turn, not a day later', async (t) => {
+  let clock = 1000
+  const db = tempDb(t, () => clock)
+  const old = db.addMemory({ text: '张三是直属上级', kind: 'person', source: 'agent' }).memory
+  await synthesizeProfile({ db, complete: reply('【常打交道的人】\n- 张三是直属上级'), now: clock })
+  clock = 2000
+  db.applyExtraction({ add: [{ text: '李四是直属上级', kind: 'person', replaces: old.id }], invalidate: [], shown: new Set([old.id]) })
+
+  const redone = await synthesizeProfile({ db, complete: reply('【常打交道的人】\n- 李四是直属上级'), now: clock + HOUR })
+  assert.equal(redone?.text, '【常打交道的人】\n- 李四是直属上级')
 })

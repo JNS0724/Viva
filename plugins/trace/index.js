@@ -1,0 +1,46 @@
+/**
+ * my-agent-trace: records what each turn did (thoughts, tool calls and their outcome) into trace.db, so the
+ * app can show the 过程 of a reopened conversation without reading dsh's private session log format.
+ * Loaded by the app's dsh profile (src/main/dsh-profile.js) with `config.file` = trace.db.
+ */
+import z from '@deepseek-ai/schemastery'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import { stepsFrom } from './lib/steps.js'
+import { openTraceDb } from './lib/store.js'
+
+export const name = 'my-agent-trace'
+export const inject = ['agents']
+export const Config = z.object({ file: z.string() })
+
+const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
+
+/** The session's events of `turn`, oldest first (the turn is the latest one). */
+function turnEvents(agent, turn) {
+  const events = []
+  for (let seq = agent.session.seq - 1; seq >= 0; seq -= 1) {
+    const event = agent.session.eventAt(SessionSeq(seq))
+    if (event?.type === 'turn/start' && event.data.turn === turn) break
+    if (event) events.push(event)
+  }
+  return events.reverse()
+}
+
+/**
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {{ file: string }} config
+ */
+export function apply(ctx, config) {
+  if (!config?.file) throw new Error(`${name}: config.file (the trace.db path) is required`)
+  const db = openTraceDb({ file: config.file })
+  ctx.effect(() => () => db.close(), 'trace.db')
+
+  ctx.on('agent/turn-stopping', ({ agent, turn }) => {
+    try {
+      const steps = stepsFrom(turnEvents(agent, turn))
+      if (steps.length) db.recordSteps(String(agent.session.id), steps)
+    } catch (err) {
+      // The trace is a convenience: failing to record it must never touch the turn.
+      log(`could not record turn ${turn}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  })
+}

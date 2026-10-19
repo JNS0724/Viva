@@ -16,5 +16,10 @@
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4",
     "zod": "^4.0.0"
+  },
+  "myAgent": {
+    "contract": {
+      "memory": 1
+    }
   }
 }

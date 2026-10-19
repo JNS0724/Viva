@@ -8,6 +8,8 @@ export const MEMORY_KINDS = Object.freeze(['fact', 'preference', 'person', 'proj
 /** The kinds a profile is made of: the synthesis summarises them, the fixed layer lists the newest. */
 export const PROFILE_KINDS = Object.freeze(['role', 'person', 'project', 'preference'])
 export const MAX_SYNTHESIS_CHARS = 1200
+/** The version of the memory.db contract this code reads and writes (see docs/memory.md). */
+export const CONTRACT_VERSION = 1
 export const MEMORY_SOURCES = Object.freeze(['user', 'agent'])
 export const ONBOARDING_STATES = Object.freeze(['pending', 'done', 'skipped'])
 export const MAX_MEMORY_CHARS = 500
@@ -227,6 +229,8 @@ export function openMemoryDb({ file, now = Date.now }) {
     profileKinds: db.prepare(`SELECT * FROM memories WHERE invalid_at IS NULL AND kind IN (${PROFILE_KINDS.map(() => '?').join(', ')})
       ORDER BY updated_at DESC, id DESC LIMIT ?`),
     changesSince: db.prepare('SELECT COUNT(*) AS n FROM memories WHERE updated_at > ? OR invalid_at > ?'),
+    profileInvalidationsSince: db.prepare(`SELECT COUNT(*) AS n FROM memories
+      WHERE invalid_at > ? AND kind IN (${PROFILE_KINDS.map(() => '?').join(', ')})`),
     latestSynthesis: db.prepare('SELECT * FROM syntheses ORDER BY id DESC LIMIT 1'),
     saveSynthesis: db.prepare('INSERT INTO syntheses (text, created_at) VALUES (?, ?)'),
     pruneSyntheses: db.prepare('DELETE FROM syntheses WHERE id <= ? - ?'),
@@ -283,6 +287,16 @@ export function openMemoryDb({ file, now = Date.now }) {
     const at = now()
     transaction(() => entries.forEach(([key, text]) => writeField(key, text, source, at)))
     return getProfile()
+  }
+
+  /** Refuses a database a newer contract wrote, rather than misreading it; records the version otherwise. */
+  function claimContract() {
+    const found = Number(sql.meta.get('contract_version')?.value ?? 0)
+    if (found > CONTRACT_VERSION) {
+      db.close()
+      throw new Error(`memory.db 由更新的版本（约定 ${found}）写入，当前只支持到 ${CONTRACT_VERSION}`)
+    }
+    if (found < CONTRACT_VERSION) sql.setMeta.run('contract_version', String(CONTRACT_VERSION))
   }
 
   /**
@@ -492,6 +506,8 @@ export function openMemoryDb({ file, now = Date.now }) {
 
   /** How many memories were written, refreshed or invalidated after `since`. */
   const changesSince = (since) => sql.changesSince.get(since, since).n
+  /** Profile memories that stopped being true after `since`: the synthesis may now say something false. */
+  const profileInvalidationsSince = (since) => sql.profileInvalidationsSince.get(since, ...PROFILE_KINDS).n
 
   /** Keeps a new synthesis (and the last few before it). Checked like any memory text: no secrets, bounded. */
   function saveSynthesis(input) {
@@ -563,9 +579,10 @@ export function openMemoryDb({ file, now = Date.now }) {
   const setOnboarding = (status) => sql.setMeta.run('onboarding', assertOneOf(status, ONBOARDING_STATES, 'onboarding state'))
 
   migrateAgentProfile()
+  claimContract()
 
   return {
-    getProfile, setProfile, profileMemories, latestSynthesis, saveSynthesis, changesSince,
+    getProfile, setProfile, profileMemories, latestSynthesis, saveSynthesis, changesSince, profileInvalidationsSince,
     addMemory, getMemory, updateMemory, deleteMemory, restoreMemory, listMemories, allMemories, ofKind,
     listInvalid, invalidateMemory, reviveMemory, invalidatedSince, applyExtraction,
     claimChanges, onboarding, setOnboarding,
