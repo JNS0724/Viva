@@ -133,7 +133,8 @@ export function startFakeLlm() {
     let body = ''
     req.on('data', (chunk) => { body += chunk })
     req.on('end', () => {
-      if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
+      // The path, not the whole URL: SDK clients add a query (`/v1/messages?beta=true`).
+      if (req.method !== 'POST' || !new URL(req.url, 'http://fake').pathname.endsWith('/messages')) {
         res.writeHead(404, { 'content-type': 'application/json' }).end('{}')
         return
       }

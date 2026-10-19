@@ -1,6 +1,7 @@
 import { h, keepingInput, label } from './dom.js'
 import { extensionsSection } from './extensions.js'
 import { icon } from './icons.js'
+import { modelsSection } from './models.js'
 
 const SOURCE_COPY = { saved: '已保存在本机', env: '来自环境变量 DEEPSEEK_API_KEY' }
 
@@ -63,10 +64,10 @@ function feedback(settings) {
 }
 
 /**
- * Modal settings panel: the key, then MCP servers and skills. Re-rendered only when its slices change,
- * and typed text survives a re-render.
+ * Modal settings panel: the DeepSeek key, other models, then MCP servers and skills. Re-rendered only when
+ * its slices change, and typed text survives a re-render.
  */
-export function renderSettings(container, settings, extensions, handlers, { connected }) {
+export function renderSettings(container, settings, models, extensions, handlers, { connected }) {
   if (!settings.open) {
     container.replaceChildren()
     return
@@ -90,8 +91,9 @@ export function renderSettings(container, settings, extensions, handlers, { conn
     h('p', {
       class: 'help',
       id: 'settings-help',
-      text: 'key 用系统钥匙串（Electron safeStorage）加密后保存在本机，界面只显示末 4 位。保存后会用新 key 重新连接 DeepSeek Harness，当前对话会清空。',
+      text: 'key 用系统钥匙串（Electron safeStorage）加密后保存在本机，界面只显示末 4 位。保存后会用新 key 重新连接 DeepSeek Harness，当前对话会清空。已添加其他模型时，DeepSeek key 可以不填。',
     }),
+    modelsSection(models, handlers),
     extensionsSection(extensions, handlers, { connected })))))
   if (isFirstShow && !input.disabled) input.focus()
 }

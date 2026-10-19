@@ -148,13 +148,13 @@ test('setup state: the island says not connected, and the home card says what to
   const noKey = run([{ type: 'ready', info: { mode: 'setup', problem: 'no-key', cwd: '/w', model: '' } }])
   const noDsh = run([{ type: 'ready', info: { mode: 'setup', problem: 'no-dsh', cwd: '/w', model: '' } }])
 
-  assert.deepEqual(statusView(noKey, T0), { tone: 'pending', label: '未连接', event: '需要 API KEY' })
+  assert.deepEqual(statusView(noKey, T0), { tone: 'pending', label: '未连接', event: '需要配置模型' })
   assert.equal(statusView(noDsh, T0).event, '未安装 DSH')
   assert.deepEqual(setupView(noKey.info), {
-    title: '连接 DeepSeek',
-    body: '填写 API key 后就能开始。key 用系统钥匙串加密保存，只留在这台电脑上。',
-    action: '填写 API key',
-    placeholder: '先填写 API key 才能发送…',
+    title: '连接模型',
+    body: '填写 DeepSeek API key，或在设置里添加其他模型，就能开始。key 用系统钥匙串加密保存，只留在这台电脑上。',
+    action: '去设置',
+    placeholder: '先配置模型才能发送…',
   })
   assert.equal(setupView(noDsh.info).action, null)
   assert.equal(setupView(live.info), null)

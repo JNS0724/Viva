@@ -26,7 +26,7 @@ function heroTile(state, date, now) {
       heroOrb(status.tone),
       h('div', { class: 'hero-copy' },
         h('h1', { class: 'greeting', text: greeting(date) }),
-        h('p', { class: 'greeting-sub', text: offline ? '先连接 DeepSeek，我们就能开始。' : '今天想让我帮你做什么？' }))),
+        h('p', { class: 'greeting-sub', text: offline ? '先连接模型，我们就能开始。' : '今天想让我帮你做什么？' }))),
     h('div', { class: 'hero-foot' }, label('MODE'), h('span', { text: modeLine(state.info) })))
 }
 

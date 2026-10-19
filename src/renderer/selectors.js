@@ -133,7 +133,7 @@ export function statusView(state, now = Date.now()) {
   if (state.phase === 'working') return { tone: 'working', label: '工作中', event: workingEvent(state, now) }
   if (state.phase === 'error') return { tone: 'error', label: '出错', event: truncate(state.error, EVENT_LIMIT) }
   if (state.info.mode === 'connecting') return { tone: 'pending', label: '连接中', event: 'DEEPSEEK HARNESS' }
-  if (state.info.mode === 'setup') return { tone: 'pending', label: '未连接', event: state.info.problem === 'no-dsh' ? '未安装 DSH' : '需要 API KEY' }
+  if (state.info.mode === 'setup') return { tone: 'pending', label: '未连接', event: state.info.problem === 'no-dsh' ? '未安装 DSH' : '需要配置模型' }
   if (state.lastReceipt) {
     const stopped = state.lastReceipt.stopReason === 'cancelled'
     return { tone: stopped ? 'idle' : 'done', label: stopped ? '已停止' : '已完成', event: formatElapsed(state.lastReceipt.ms) }
@@ -231,10 +231,10 @@ export function modeLine(info) {
 
 const SETUP_COPY = {
   'no-key': {
-    title: '连接 DeepSeek',
-    body: '填写 API key 后就能开始。key 用系统钥匙串加密保存，只留在这台电脑上。',
-    action: '填写 API key',
-    placeholder: '先填写 API key 才能发送…',
+    title: '连接模型',
+    body: '填写 DeepSeek API key，或在设置里添加其他模型，就能开始。key 用系统钥匙串加密保存，只留在这台电脑上。',
+    action: '去设置',
+    placeholder: '先配置模型才能发送…',
   },
   'no-dsh': {
     title: '没有找到 DeepSeek Harness',

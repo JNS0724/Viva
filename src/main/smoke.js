@@ -163,7 +163,7 @@ async function checkSetup(win, outDir) {
   report(`setup: ${JSON.stringify(seen)}`)
   await capture(win, outDir, 'setup')
   const failures = []
-  if (seen.title !== '连接 DeepSeek' || seen.pill !== '未连接') failures.push(`setup card missing: ${JSON.stringify(seen)}`)
+  if (seen.title !== '连接模型' || seen.pill !== '未连接') failures.push(`setup card missing: ${JSON.stringify(seen)}`)
   if (!seen.composerDisabled || !seen.sendDisabled) failures.push('composer should be disabled without a key')
   if (seen.titlebarLeft !== '') failures.push(`title bar left should be empty, was "${seen.titlebarLeft}"`)
   await run(win, `document.querySelector('.setup-action').click()`)
@@ -358,7 +358,7 @@ async function historyPanelSteps(win, outDir, failures) {
  * `memory`) and screenshots each step into `smokeOut`.
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
-export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit) {
+export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hooks = {}) {
   const problems = []
   win.webContents.on('console-message', (event) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)
@@ -368,7 +368,7 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit) {
     await wait(BOOT_WAIT_MS)
     if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
     else if (smokePhase === 'relaunch') problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir))
-    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, report))
+    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, report, hooks))
     else problems.push(...await walkthrough(win, outDir))
   } catch (err) {
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)

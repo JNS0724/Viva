@@ -1,13 +1,16 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, safeStorage, screen, shell } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
 import { APP_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
 import { createAcpBridge } from './acp-bridge.js'
+import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.js'
 import { ensureDshProfile } from './dsh-profile.js'
+import { dshEnv, restartDelay } from './dsh-runtime.js'
 import { registerExtensionsIpc } from './extensions-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
@@ -15,6 +18,8 @@ import { migrateLegacyHistory } from './history-migrate.js'
 import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
 import { createMcpConfigStore } from './mcp-config.js'
 import { registerMemoryIpc } from './memory-ipc.js'
+import { createModelStore, defaultModel, modelValue, parseModelValue, piAiProviders, providerEnv } from './model-providers.js'
+import { registerModelsIpc } from './models-ipc.js'
 import { createPersonal } from './personal.js'
 import { removeTree } from './remove-tree.js'
 import { CONFIG_IDS } from './session-info.js'
@@ -32,6 +37,8 @@ const LATE_MEMORY_POLL_MS = 2_000
 const LATE_MEMORY_WINDOW_MS = 30_000
 
 let settingsStore = null
+/** Model providers the user added besides DeepSeek; see model-providers.js. */
+let modelStore = null
 let historyDb = null
 let memoryDb = null
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
@@ -50,6 +57,13 @@ let conversation = null
 let win = null
 let bridge = null
 let bridgeGeneration = 0
+/** When dsh died on its own lately; see restartDelay. */
+let crashes = []
+let restartTimer = null
+/** Set once quitting has begun: dsh is being stopped and must not be started again. */
+let quitting = false
+/** How long quitting waits for dsh to finish before the app goes anyway. */
+const QUIT_WAIT_MS = 5_000
 let lastInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
 
 /** Smoke runs get their own userData, so they never read or overwrite the real history and key. */
@@ -60,9 +74,8 @@ function isolateSmokeUserData() {
   const shared = smokePhase === 'walkthrough' || smokePhase === 'relaunch'
   const dir = path.join(smokeOut, shared ? 'userData' : `userData-${smokePhase}`)
   if (smokePhase !== 'relaunch') removeTree(dir)
+  // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too.
   app.setPath('userData', dir)
-  // The app writes its dsh profile on launch; a smoke run must not touch the real ~/.dsh.
-  process.env.DSH_HOME = path.join(dir, 'dsh-home')
 }
 
 function emitToRenderer(event) {
@@ -71,7 +84,9 @@ function emitToRenderer(event) {
   if (win && !win.isDestroyed()) win.webContents.send('agent:event', event)
 }
 
-const currentConfig = () => resolveConfig(process.env, fs.existsSync, settingsStore.getApiKey())
+const currentConfig = () => resolveConfig(process.env, fs.existsSync, settingsStore.getApiKey(), modelStore.list().length > 0, {
+  userData: app.getPath('userData'), execPath: process.execPath, packaged: app.isPackaged,
+})
 
 /** Tells the window what the agent remembered or replaced, and what background the plugin sent. */
 function reportMemoryChanges() {
@@ -110,12 +125,19 @@ function prepareProfile(config) {
     })
     pluginProblems = problems
     problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
-    ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA })
+    ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config) })
     return DSH_PROFILE
   } catch (err) {
     console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
     return FALLBACK_PROFILE
   }
+}
+
+/** The models dsh offers: DeepSeek with a key, the user's providers, and the one new sessions start with. */
+function profileModels(config) {
+  const providers = modelStore.list()
+  const hasDeepSeek = Boolean(config.apiKey)
+  return { providers: piAiProviders(providers), deepseek: hasDeepSeek, defaultModel: defaultModel({ lastModel: modelStore.lastModel(), providers, hasDeepSeek }) }
 }
 
 /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
@@ -126,19 +148,59 @@ function createBridge(config) {
     nodeBin: config.nodeBin,
     profile: prepareProfile(config),
     cwd: config.cwd,
-    env: { ...process.env, DEEPSEEK_API_KEY: config.apiKey },
+    env: dshEnv({ base: process.env, dshHome: config.dshHome, runtime: config.runtime, settings: dshSettings(config) }),
     mcpServers: () => personal.mcpServers(),
     emit: (event) => {
       if (generation !== bridgeGeneration) return
       emitToRenderer(event)
       if (event.type === 'turn_end' || event.type === 'error') reportTurnMemories()
     },
+    onExit: (exit) => {
+      if (generation === bridgeGeneration) recoverFromCrash(exit)
+    },
   })
+}
+
+/** What the app hands dsh: the keys, and in the memory smoke run the fake model's address. */
+function dshSettings(config) {
+  return {
+    DEEPSEEK_API_KEY: config.apiKey,
+    ...providerEnv(modelStore.list()),
+    ...(config.smoke && process.env.DEEPSEEK_BASE_URL ? { DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL } : {}),
+  }
+}
+
+/** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
+function recoverFromCrash({ message }) {
+  console.error('[dsh] exited unexpectedly:', message)
+  bridge = null
+  turn = { active: false, startedAt: 0 }
+  if (quitting) return
+  const now = Date.now()
+  crashes = [...crashes.filter((at) => now - at < 10 * 60_000), now]
+  const delay = restartDelay(crashes, now)
+  if (delay === null) {
+    emitToRenderer({ type: 'error', message: `助手连续意外退出，已停止重试：${message}。可以检查设置后重新打开应用。` })
+    return
+  }
+  emitToRenderer({ type: 'error', message: `助手意外退出，${Math.round(delay / 1000)} 秒后自动重新连接…` })
+  clearTimeout(restartTimer)
+  restartTimer = setTimeout(() => {
+    if (!bridge && !quitting) startBridge()
+  }, delay)
+}
+
+/** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
+async function stopBridge() {
+  clearTimeout(restartTimer)
+  const running = bridge
+  bridge = null
+  await running?.dispose()
 }
 
 /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
 const setupInfo = (config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '' })
-const SETUP_MESSAGES = { 'no-key': '请先在设置里填写 DeepSeek API key', 'no-dsh': '没有找到 DeepSeek Harness，请在项目目录运行 npm install' }
+const SETUP_MESSAGES = { 'no-key': '请先在设置里填写 DeepSeek API key，或添加其他模型', 'no-dsh': '没有找到 DeepSeek Harness，请在项目目录运行 npm install' }
 
 function requireBridge() {
   if (!bridge) throw new Error(SETUP_MESSAGES[lastInfo.problem] ?? '助手还没有连接')
@@ -164,16 +226,33 @@ async function startBridge() {
     return info
   } catch (err) {
     console.error('[main] failed to start agent bridge:', err)
-    emitToRenderer({ type: 'error', message: `连接 DeepSeek Harness 失败：${err.message}` })
+    emitToRenderer({ type: 'error', message: `连接助手失败：${err.message}` })
     return null
   }
 }
 
+/** New models for the same conversation: dsh restarts and resumes the session on screen. */
+async function restartKeepingConversation() {
+  await stopBridge()
+  return startBridge()
+}
+
+/**
+ * dsh starts a session in the same process on the model its profile named at launch; the user may have
+ * picked another one since, and new conversations follow the latest pick.
+ */
+async function withLastModel(info) {
+  const last = modelStore.lastModel()
+  if (!last) return info
+  const value = modelValue(last)
+  if (info.modelValue === value || !info.models?.some((model) => model.value === value)) return info
+  return { ...info, ...await bridge.setConfig('model', value) }
+}
+
 /** A new key (or none) means a different agent, so the conversation starts over. */
-function restartWithNewConversation() {
+async function restartWithNewConversation() {
   conversation = historyDb.create()
-  bridge?.dispose()
-  bridge = null
+  await stopBridge()
   return startBridge()
 }
 
@@ -214,7 +293,7 @@ function registerAgentIpc() {
       conversation = historyDb.create()
       return lastInfo
     }
-    const info = { ...await bridge.newSession(), remembersHistory: true }
+    const info = { ...await withLastModel(await bridge.newSession()), remembersHistory: true }
     conversation = historyDb.create({ sessionId: info.sessionId })
     lastInfo = info
     return info
@@ -223,6 +302,8 @@ function registerAgentIpc() {
     if (!CONFIG_IDS.includes(configId)) throw new Error(`invalid config option: ${configId}`)
     const info = await requireBridge().setConfig(configId, assertText(value, 'config value', 200))
     lastInfo = { ...lastInfo, ...info }
+    const picked = configId === 'model' ? parseModelValue(value) : null
+    if (picked) modelStore.setLastModel(picked)
     return info
   })
   ipcMain.handle('agent:permission', (_event, requestId, optionId) => {
@@ -281,6 +362,7 @@ function registerPersonalIpc(config, mcpStore) {
     cwd: () => config.cwd,
     chooseDocs: () => pickFiles({ title: '选择常用文档', properties: ['openFile', 'multiSelections'] }),
   })
+  registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
   registerExtensionsIpc(ipcMain, {
     store: mcpStore,
     roots: () => skillRoots({ dshHome: config.dshHome, cwd: config.cwd }),
@@ -349,22 +431,37 @@ function createWindow(config) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // A smoke run goes on unwatched in the background, where the page and timers would be slowed down.
+      backgroundThrottling: !config.smoke,
     },
   })
   win.once('ready-to-show', () => win.show())
   win.webContents.once('did-finish-load', () => {
     startBridge()
-    if (config.smoke) runSmoke(win, config, (code) => app.exit(code))
+    if (config.smoke) {
+      // Nor may macOS App Nap suspend the app (and the fake model it serves) while nobody looks.
+      powerSaveBlocker.start('prevent-app-suspension')
+      runSmoke(win, config, (code) => app.exit(code), { agentPid: () => bridge?.pid() ?? null })
+    }
   })
   win.loadFile(path.join(APP_ROOT, 'src', 'renderer', 'index.html'))
 }
 
 isolateSmokeUserData()
+// dsh's home is the app's own now, so a second copy of the app would share it: hand over to the first.
+if (!app.requestSingleInstanceLock()) app.exit(0)
+app.on('second-instance', () => {
+  if (!win || win.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.focus()
+})
 
 /** The memory smoke run talks to the real dsh, which calls a local stand-in for the DeepSeek API. */
 async function startSmokeModel() {
   // A file URL: import() takes `C:\...` for a URL scheme on Windows.
-  const { startFakeLlm } = await import(pathToFileURL(path.join(APP_ROOT, 'test', 'fixtures', 'fake-llm.js')).href)
+  // The installed app has no test folder; SMOKE_FIXTURES points a smoke run of it at the repository's.
+  const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
+  const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
   process.env.DEEPSEEK_BASE_URL = (await startFakeLlm()).url
 }
 
@@ -378,6 +475,24 @@ function bringLegacyData() {
   }
 }
 
+/**
+ * The app's dsh used to live in the user's own ~/.dsh: its sessions come along (old conversations still
+ * resume) and the profiles it wrote there go. The user's own sessions and profiles stay where they are.
+ */
+function bringDshData(config) {
+  const fromHome = process.env.DSH_HOME ? path.resolve(process.env.DSH_HOME) : path.join(os.homedir(), '.dsh')
+  try {
+    const sessions = adoptDshSessions({ fromHome, toHome: config.dshHome, cwd: config.cwd })
+    const skills = adoptDshSkills({ fromHome, toHome: config.dshHome })
+    const removed = removeOwnProfiles({ fromHome, toHome: config.dshHome })
+    if (sessions || skills.length || removed.length) {
+      process.stdout.write(`[viva] moved to the app's own dsh home: ${sessions} sessions, skills ${skills.join(', ') || 'none'}; profiles removed: ${removed.join(', ') || 'none'}\n`)
+    }
+  } catch (err) {
+    console.error(`[viva] could not bring the sessions over from ${fromHome}:`, err.message)
+  }
+}
+
 app.whenReady().then(async () => {
   // macOS needs its app menu for ⌘C / ⌘V; elsewhere the hidden title bar has no room for a menu bar.
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
@@ -386,11 +501,19 @@ app.whenReady().then(async () => {
     crypto: safeStorage,
     onError: (err) => console.error('[settings] could not read saved settings:', err.message),
   })
+  modelStore = createModelStore({
+    file: path.join(app.getPath('userData'), 'models.json'),
+    crypto: safeStorage,
+    onError: (err) => console.error('[models] could not read the model providers:', err.message),
+  })
   registerAgentIpc()
   registerSettingsIpc()
   const config = currentConfig()
   if (config.smokePhase === 'memory') await startSmokeModel()
-  if (!config.smoke) bringLegacyData()
+  if (!config.smoke) {
+    bringLegacyData()
+    bringDshData(config)
+  }
   openHistory(config)
   openPersonal(config)
   createWindow(config)
@@ -402,7 +525,17 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => app.quit())
-app.on('before-quit', () => bridge?.dispose())
+/** Quitting waits for dsh to finish (it may still be writing the session), up to QUIT_WAIT_MS. */
+app.on('before-quit', (event) => {
+  if (quitting || !bridge) {
+    quitting = true
+    return
+  }
+  event.preventDefault()
+  quitting = true
+  const timeout = new Promise((resolve) => setTimeout(resolve, QUIT_WAIT_MS))
+  Promise.race([stopBridge(), timeout]).finally(() => app.quit())
+})
 app.on('will-quit', () => {
   clearInterval(lateMemoryTimer)
   historyDb?.close()

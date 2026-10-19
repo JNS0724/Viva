@@ -4,9 +4,10 @@
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1          # tests + smoke
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Live    # also the real model
+#   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Package # also build the installer and smoke the built app
 #
 # -Live needs DEEPSEEK_API_KEY in the environment; the key is never written to the report.
-param([switch]$Live)
+param([switch]$Live, [switch]$Package)
 
 $ErrorActionPreference = 'Continue'
 # node and npm print UTF-8; read it as such, and write every log as UTF-8 too.
@@ -57,8 +58,27 @@ if ($Live) {
   }
 }
 
+if ($Package) {
+  Step 'package' { npm run dist:win }
+  # The built app has no test folder: SMOKE_FIXTURES lends it the repository's fake model. A GUI program
+  # has no console, so its output goes to files and its exit code is passed on.
+  Step 'packaged-smoke' {
+    $out = Join-Path $report 'packaged'
+    New-Item -ItemType Directory -Force -Path $out | Out-Null
+    $env:SMOKE_PHASE = 'memory'; $env:SMOKE_OUT = $out; $env:SMOKE_FIXTURES = Join-Path $root 'test\fixtures'; $env:DEEPSEEK_API_KEY = 'smoke-fake-key'
+    try {
+      $app = Start-Process -FilePath (Join-Path $root 'dist\win-unpacked\Viva.exe') -Wait -PassThru -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
+      Get-Content (Join-Path $out 'stdout.log'), (Join-Path $out 'stderr.log') -Encoding UTF8
+      cmd /c exit $app.ExitCode
+    } finally {
+      Remove-Item env:SMOKE_PHASE, env:SMOKE_OUT, env:SMOKE_FIXTURES, env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+    }
+  }
+  Get-ChildItem (Join-Path $root 'dist\*.exe') -ErrorAction SilentlyContinue | ForEach-Object { "installer: $($_.Name) $([math]::Round($_.Length / 1MB)) MB" } | Add-Content (Join-Path $report 'environment.txt')
+}
+
 # Written by a real launch (npm start), not by the smoke runs: the plugin links must be junctions that resolve.
-$profileModules = Join-Path $env:USERPROFILE '.dsh\profiles\viva\node_modules'
+$profileModules = Join-Path $env:APPDATA 'Viva\dsh\profiles\viva\node_modules'
 if (Test-Path $profileModules) {
   Get-ChildItem $profileModules | Select-Object Name, LinkType, Target | Format-Table -AutoSize | Out-String |
     Set-Content -Path (Join-Path $report 'profile-links.txt')

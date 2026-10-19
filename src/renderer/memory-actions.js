@@ -80,7 +80,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     const sources = lines(values.sources)
     const wantsReading = analyze && (sources.length > 0 || docs.length > 0)
     if (wantsReading && ask(introPrompt({ sources, docs }))) return
-    showToast(wantsReading ? '已保存。连接 DeepSeek 后，可以再让助手阅读这些资料' : '已保存，可以在「关于你」里随时补充', {
+    showToast(wantsReading ? '已保存。连接模型后，可以再让助手阅读这些资料' : '已保存，可以在「关于你」里随时补充', {
       action: { label: '查看', kind: 'open-profile' }, ms: NOTICE_TOAST_MS,
     })
   }

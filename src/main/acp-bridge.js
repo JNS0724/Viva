@@ -7,6 +7,7 @@ import { createPermissionBroker } from './permission-broker.js'
 import { describeConfig, describeError } from './session-info.js'
 
 const STDERR_TAIL_LIMIT = 4000
+/** dsh gets this long to finish after its input closes, then its process tree is ended; then killed outright. */
 const SHUTDOWN_GRACE_MS = 1500
 const CLIENT_INFO = { name: 'viva', version: '0.1.0' }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
@@ -33,13 +34,19 @@ function launchError(err, { command, nodeBin, cwd }) {
     : `找不到 dsh：${command}`
 }
 
+/** Not yet exited. A finished process's id may already belong to another one, so it is never signalled. */
+const isRunning = (target) => (target.exitCode ?? target.signalCode ?? null) === null
+
 /**
  * Drives `dsh --profile <profile>` over stdio. Everything the agent reports is forwarded through `emit`
  * as plain objects: ready / update / config / permission / turn_end / error.
  * `mcpServers()` lists the MCP servers to attach to each session (read again on every new or resumed session).
+ * `onExit`, when given, hears about dsh ending on its own (a crash) instead of the window getting an error,
+ * so the owner can start it again.
  */
 export function createAcpBridge({
-  dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
+  dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP, onExit = null,
+  platform = process.platform,
 }) {
   const broker = createPermissionBroker()
   let mcp = { active: [], dropped: [] }
@@ -76,7 +83,10 @@ export function createAcpBridge({
     })
     child.on('error', (err) => emit({ type: 'error', message: launchError(err, { command, nodeBin, cwd }) }))
     child.on('exit', (code, signal) => {
-      if (!disposed) emit({ type: 'error', message: describeError(`dsh 已退出（${code ?? signal}）`, stderrTail) })
+      if (disposed) return
+      const message = describeError(`dsh 已退出（${code ?? signal}）`, stderrTail)
+      if (onExit) onExit({ code, signal, message })
+      else emit({ type: 'error', message })
     })
     return ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout))
   }
@@ -187,16 +197,31 @@ export function createAcpBridge({
     return broker.resolve(requestId, optionId)
   }
 
-  /** Asks dsh to stop (closing its input, then a signal after a grace period); resolves once it has exited. */
+  /**
+   * Ends what dsh started too (MCP servers): on Windows a signal reaches only the one process, so the
+   * tree goes through taskkill; elsewhere dsh ends its own children on SIGTERM.
+   */
+  function endTree(target) {
+    if (!isRunning(target)) return
+    if (platform === 'win32' && target.pid) spawnFn('taskkill', ['/pid', String(target.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on?.('error', () => target.kill())
+    else target.kill('SIGTERM')
+  }
+
+  /** Asks dsh to stop (closing its input, then ending its tree, then killing it); resolves once it has exited. */
   function dispose() {
     disposed = true
     broker.cancelAll()
-    if (!child || (child.exitCode ?? child.signalCode ?? null) !== null) return Promise.resolve()
-    const exited = new Promise((resolve) => child.once('exit', resolve))
-    child.stdin?.end()
-    setTimeout(() => child.kill('SIGTERM'), SHUTDOWN_GRACE_MS).unref?.()
+    if (!child || !isRunning(child)) return Promise.resolve()
+    const target = child
+    const exited = new Promise((resolve) => target.once('exit', resolve))
+    target.stdin?.end()
+    setTimeout(() => endTree(target), SHUTDOWN_GRACE_MS).unref?.()
+    setTimeout(() => isRunning(target) && target.kill('SIGKILL'), SHUTDOWN_GRACE_MS * 2).unref?.()
     return exited
   }
 
-  return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, dispose }
+  /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
+  const pid = () => (child && isRunning(child) ? child.pid : null)
+
+  return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, dispose, pid }
 }

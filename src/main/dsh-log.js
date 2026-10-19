@@ -1,9 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
-import zlib from 'node:zlib'
 import { stepsFrom } from '../../plugins/trace/lib/steps.js'
 import { assertId } from './history-schema.js'
+import { decompressZstdFrames } from './zstd-frames.js'
 
 /**
  * The 过程 of saved conversations. The trace plugin records every turn into trace.db (its contract);
@@ -14,7 +13,6 @@ import { assertId } from './history-schema.js'
 const LOG_FILE = 'session.v4.jsonl.zstd'
 const MAX_LOG_BYTES = 64 * 1024 * 1024
 const TITLE_CHARS = 60
-const zstdDecompress = promisify(zlib.zstdDecompress)
 
 const shorten = (text) => {
   const value = String(text ?? '').replace(/\s+/g, ' ').trim()
@@ -99,7 +97,7 @@ const mergeTraces = (a, b) => ({
 async function traceFromLog(dshHome, sessionId, until) {
   const file = await findLog(dshHome, sessionId)
   if (!file) throw new Error('not found')
-  const text = (await zstdDecompress(await fs.readFile(file))).toString('utf8')
+  const text = (await decompressZstdFrames(await fs.readFile(file))).toString('utf8')
   return parseSessionLog(text, { sessionId, until })
 }
 

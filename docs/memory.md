@@ -57,13 +57,13 @@ Electron 主进程                                    dsh 进程（--profile viv
 | `plugins/memory/lib/extract.js` | 轮次结束后的后台提取 |
 | `plugins/memory/lib/synthesize.js` | 定时整理画像 |
 | `src/main/app-plugins.js` | 插件清单、人设、兼容性检查（约定版本、dsh 版本） |
-| `src/main/dsh-profile.js` | 每次启动 dsh 前写好 `~/.dsh/profiles/viva` |
+| `src/main/dsh-profile.js` | 每次启动 dsh 前写好应用 dsh 目录里的 `profiles/viva` |
 | `src/main/personal.js` | 汇报插件写了什么、带上了什么；把使用习惯写进库 |
 | `src/main/memory-ipc.js` | 「关于你」页面的 IPC |
 
 ### profile 与插件挂载
 
-`dsh-profile.js` 在每次启动 dsh 前写好 `<DSH_HOME>/profiles/viva`，只写有变化的文件：
+`dsh-profile.js` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`，只写有变化的文件：
 
 - `package.json`：组合包和 dsh 自带的 `acp` 模板相同（`dsh-base`、`dsh-acp-app`），另加每个插件的 `link:` 依赖，比如 `"viva-memory": "link:<app>/plugins/memory"`。
 - `node_modules/viva-*`：指向插件目录的链接，Windows 上用 junction。
@@ -308,7 +308,7 @@ Electron 主进程                                    dsh 进程（--profile viv
 - **Windows 未验证**：junction 链接、路径写入 YAML。
 - **dsh 版本锁定**：插件声明的版本是精确的 `0.2.0-rc.2`，见 11。
 - **【记忆规则】随固定层作为 user 消息发送**：放进系统提示词能利用前缀缓存，需要先确认 dsh 的提示词段注册接口，见 [architecture.md](architecture.md) 第 8 节。
-- **打包**：插件目录需要放在 asar 包外面，目前还没有配置打包。
+- **打包**：已配置（electron-builder，不用 asar，插件随应用目录一起），见 README「打包」。
 
 ## 15. 设计取舍与依据
 

@@ -93,24 +93,25 @@ test('frontmatter: plain, quoted and folded values', () => {
 
 test('skills are listed from every root, with the reason dsh would skip a broken one', (t) => {
   const dir = tempDir(t)
-  const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws'), env: { DSH_AGENTS_HOME: path.join(dir, 'agents') } })
+  const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
+  assert.deepEqual(roots.map((root) => root.id), ['user', 'workspace', 'workspace-agents'], "the user's ~/.agents is not the app's")
   writeSkill(roots[0].dir, 'weekly', 'name: weekly\ndescription: 按团队模板写周报')
   writeSkill(roots[0].dir, '.system', 'name: hidden\ndescription: x')
-  writeSkill(roots[2].dir, 'broken', 'name: broken')
-  fs.mkdirSync(roots[1].dir, { recursive: true })
-  fs.writeFileSync(path.join(roots[1].dir, 'flat.md'), '---\nname: flat\ndescription: 单文件 skill\n---')
-  fs.writeFileSync(path.join(roots[1].dir, 'notes.txt'), 'not a skill')
+  writeSkill(roots[1].dir, 'broken', 'name: broken')
+  fs.mkdirSync(roots[2].dir, { recursive: true })
+  fs.writeFileSync(path.join(roots[2].dir, 'flat.md'), '---\nname: flat\ndescription: 单文件 skill\n---')
+  fs.writeFileSync(path.join(roots[2].dir, 'notes.txt'), 'not a skill')
 
   assert.deepEqual(listSkills(roots).map((s) => [s.name, s.root, s.managed, s.problem]), [
     ['weekly', 'user', true, ''],
-    ['flat', 'agents', false, ''],
     ['broken', 'workspace', false, '缺少 name 或 description'],
+    ['flat', 'workspace-agents', false, ''],
   ])
 })
 
 test('importing copies into the user root; removing goes to the trash, only there', async (t) => {
   const dir = tempDir(t)
-  const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws'), env: {} })
+  const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
   const source = path.join(dir, 'downloads')
   writeSkill(source, 'weekly', 'name: weekly\ndescription: 按团队模板写周报')
   writeSkill(source, 'bad', 'name: bad')
@@ -124,14 +125,14 @@ test('importing copies into the user root; removing goes to the trash, only ther
   const trashed = []
   assert.equal(await removeSkill('user:weekly', roots, async (file) => trashed.push(file)), 'weekly')
   assert.deepEqual(trashed, [path.join(roots[0].dir, 'weekly')])
-  writeSkill(roots[2].dir, 'team', 'name: team\ndescription: x')
+  writeSkill(roots[1].dir, 'team', 'name: team\ndescription: x')
   await assert.rejects(removeSkill('workspace:team', roots, async () => {}), /不在本应用管理的目录里/)
 })
 
 test('extensions IPC applies MCP changes to the session and never returns secrets', async (t) => {
   const dir = tempDir(t)
   const store = createMcpConfigStore({ file: path.join(dir, 'mcp.json'), crypto: fakeCrypto() })
-  const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws'), env: {} })
+  const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
   const handlers = new Map()
   let applied = 0
   registerExtensionsIpc({ handle: (channel, fn) => handlers.set(channel, fn) }, {

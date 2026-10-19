@@ -24,7 +24,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 ┌─────────────────────────────────────┐                ┌───────────────────────────────────────────┐
 │ app-plugins.js  人设 + 插件清单       │                │ system-prompt  ← 人设（profile patch）      │
 │                 兼容性检查            │── 写 profile ─▶│ viva-memory      上下文 / 记忆工具 / 后台   │
-│ dsh-profile.js  写 ~/.dsh/profiles/  │                │ viva-trace       每轮步骤 → trace.db        │
+│ dsh-profile.js  写 dsh/profiles/     │                │ viva-trace       每轮步骤 → trace.db        │
 │ acp-bridge.js   ACP 会话、MCP 声明    │── ACP stdio ──▶│ viva-policy      工具执行前拦截             │
 │ 「关于你」「过程」「设置」             │                └──────────────┬────────────────────────────┘
 └──────────────┬──────────────────────┘                               │
@@ -52,14 +52,15 @@ app（Electron 主进程）                                   dsh 进程：--pro
 
 ## 4. profile 的写法
 
-`src/main/dsh-profile.js` 在每次启动 dsh 前写好 `<DSH_HOME>/profiles/viva`，只写有变化的文件：
+`src/main/dsh-profile.js` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`（dsh 内嵌在应用里，home 是应用自己的，见 README「内嵌的 dsh」），只写有变化的文件：
 
 - 组合包和 dsh 自带的 `acp` 模板相同；
 - `cordis.patch.yml` 写入 `system-prompt`（人设前后缀，按 id 打补丁会整体替换配置，所以两部分都要写）和每个插件的插入项与配置；
+- 同一个文件里还写模型（`src/main/model-providers.js`）：用户添加的提供方作为 dsh 自带 `llm-pi-ai` 插件的 `providers`；没有 DeepSeek key 时关掉 `llm-deepseek` 和 `llm-deepseek-account`；新会话的默认模型覆盖 `acp` 一项的 `provider` / `model`。key 不进 profile，只以环境变量交给 dsh 进程；
 - 每个插件以 `link:` 依赖加 `node_modules` 链接挂入（Windows 用 junction）；
 - 清单里已经没有的 `viva-*` 插件，链接和依赖都会被移除，dsh 就不再加载它。
 
-用户自己的 profile 不会被读写。profile 写不了时，退回 dsh 自带的 `acp` profile，助手照常可用，只是没有 app 的插件和人设。
+用户自己的 `~/.dsh` 不会被读写。profile 写不了时，退回 dsh 自带的 `acp` profile，助手照常可用，只是没有 app 的插件和人设。
 
 ## 5. 各插件的 dsh 接口
 
@@ -81,6 +82,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | **「过程」改为插件导出** | 已完成。新会话由 trace 插件写入 `trace.db`，app 优先读它；插件出现之前的老会话才去解析 dsh 的私有日志。两条路径共用 `plugins/trace/lib/steps.js` |
 | **工具策略下沉** | 已完成一条规则：MCP 工具名里含有 send、reply、forward、post、publish、deliver、broadcast 等词的（下划线和驼峰写法都识别），一律在执行前拒绝，并告诉模型「只起草，由用户自己发送」。**实测发现 dsh 对 MCP 工具完全不弹授权**，所以这个插件是「不代为发送」唯一的硬保障 |
 | **用 ACP 扩展通知代替轮询** | **当前做不到。** dsh 0.2.0-rc.2 的 ACP 实现只会向客户端发 `session/update` 和授权请求，没有给插件开放发送自定义通知的接口。app 继续在每轮结束后的 30 秒内每 2 秒查一次 `memory.db` |
+| **其他模型和协议** | 已完成，复用 dsh 自带的 `llm-pi-ai`（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种协议），不写新插件。实测：配置的路由出现在 ACP 的模型选项里、按提供方分组，选中后请求发到它的 baseURL 并带上 key，记忆插件照常注入；默认模型由 `acp` 一项的配置决定，`agent-default-model` 对 ACP 会话不起作用 |
 | **顺带修复** | 记忆插件取助手回答的路径写错了（`assistant/message` 的正文在 `data.message` 下面），后台提取之前一直看不到助手的回答，已修复并加了测试；画像类记忆失效时立即重新整理画像，不再等 24 小时 |
 
 ## 7. 测试
@@ -88,7 +90,8 @@ app（Electron 主进程）                                   dsh 进程：--pro
 - **真实 dsh + 本地假模型**（`test/fixtures/dsh-harness.js`）：用 app 真实的插件清单和人设写 profile，模型请求发给 `test/fixtures/fake-llm.js`。
   - `test/memory-plugin.test.js`：记忆和人设；
   - `test/trace-plugin.test.js`：「过程」记录，以及 app 不依赖 dsh 日志也能读回来；
-  - `test/policy-plugin.test.js`：用假邮件 MCP 服务器（`test/fixtures/mail-mcp.js`）证明发送被拦下、没有发出去，起草照常。
+  - `test/policy-plugin.test.js`：用假邮件 MCP 服务器（`test/fixtures/mail-mcp.js`）证明发送被拦下、没有发出去，起草照常；
+  - `test/model-routes.test.js`：用户添加的提供方。没有 DeepSeek key 时只提供它、新会话从它开始；OpenAI 兼容提供方（`test/fixtures/fake-openai.js`）和 DeepSeek 并存，选中后由它回答、带上 key。
 - **插件清单**（`test/app-plugins.test.js`）：约定版本不对、dsh 版本不对、找不到插件时，都会被排除并给出原因；数据文件拒绝更新版本写入的内容。
 - **profile 写入**（`test/dsh-profile.test.js`）：人设、多个插件和配置、移除已下线插件、不覆盖无法读取的文件。
 

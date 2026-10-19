@@ -18,9 +18,12 @@ import { createAcpBridge } from '../src/main/acp-bridge.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.js'
 import { DSH_PROFILE } from '../src/main/config.js'
 import { ensureDshProfile } from '../src/main/dsh-profile.js'
+import { dshEnv, dshRuntime } from '../src/main/dsh-runtime.js'
 import { removeTree } from '../src/main/remove-tree.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+/** The app's runtime: this script runs on the app's Electron as Node (or DSH_NODE), and so does dsh. */
+const RUNTIME = dshRuntime({ env: process.env, execPath: process.execPath })
 const ENV_FILE = process.env.LIVE_ENV || path.join(os.homedir(), '.config', 'viva', 'live-test.env')
 const OUT_FILE = path.join(ROOT, 'smoke', 'live-memory.json')
 const TURN_TIMEOUT_MS = 180_000
@@ -88,9 +91,9 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
   const events = []
   const bridge = createAcpBridge({
     dshBin: path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
-    nodeBin: process.env.DSH_NODE || 'node',
+    nodeBin: RUNTIME.nodeBin,
     cwd: workspace,
-    env: { ...env, ELECTRON_RUN_AS_NODE: '', DSH_HOME: dshHome, DEEPSEEK_API_KEY: key },
+    env: dshEnv({ base: env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: key } }),
     emit: (event) => {
       events.push(event)
       if (event.type === 'permission') setImmediate(() => bridge.respondPermission(event.requestId, null))
@@ -124,8 +127,8 @@ async function main() {
   fs.mkdirSync(workspace)
   const { plugins } = resolvePlugins({ appRoot: ROOT, userData: dir, dshVersion: installedDshVersion(ROOT) })
   ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA })
-  // The real API, not a fake endpoint left in the environment.
-  const { DEEPSEEK_BASE_URL: _ignored, ...env } = process.env
+  // dshEnv drops any DEEPSEEK_BASE_URL left in the environment: this is the real API.
+  const env = process.env
   const report = { startedAt: new Date().toISOString(), sessions: [] }
   try {
     for (const questions of SESSIONS) {

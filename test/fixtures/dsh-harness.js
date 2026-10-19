@@ -7,6 +7,7 @@ import { createAcpBridge } from '../../src/main/acp-bridge.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../../src/main/app-plugins.js'
 import { DSH_PROFILE } from '../../src/main/config.js'
 import { ensureDshProfile } from '../../src/main/dsh-profile.js'
+import { dshEnv, dshRuntime } from '../../src/main/dsh-runtime.js'
 import { removeTree } from '../../src/main/remove-tree.js'
 import { startFakeLlm } from './fake-llm.js'
 
@@ -17,17 +18,19 @@ import { startFakeLlm } from './fake-llm.js'
  */
 export const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DSH_BIN = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-const NODE_BIN = process.env.DSH_NODE || 'node'
+/** The app's runtime: this test process is the app's Electron running as Node (or DSH_NODE). */
+const RUNTIME = dshRuntime({ env: process.env, execPath: process.execPath })
 export const DSH_TIMEOUT_MS = 60_000
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {{ memoryFile?: string, mcpServers?: object[], allow?: boolean }} [options]
+ * @param {{ memoryFile?: string, mcpServers?: object[], allow?: boolean, models?: (llm: object) => object, env?: Record<string, string> }} [options]
  *   memoryFile: where the memory plugin's store goes; mcpServers: declared on every session;
- *   allow: answer every approval request with "allow once" (otherwise they stay pending)
+ *   allow: answer every approval request with "allow once" (otherwise they stay pending);
+ *   models: the profile's model section (see dsh-profile.js), given the fake Messages endpoint; env: added to dsh's
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  */
-export async function startHarness(t, { memoryFile, mcpServers = [], allow = false } = {}) {
+export async function startHarness(t, { memoryFile, mcpServers = [], allow = false, models, env: extraEnv = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
@@ -37,8 +40,8 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
   assert.deepEqual(problems, [], 'every app plugin passes the compatibility check')
   const file = memoryFile ?? path.join(userData, 'memory.db')
   const withFile = plugins.map((plugin) => (plugin.name === 'viva-memory' ? { ...plugin, config: { file } } : plugin))
-  ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA })
   const llm = await startFakeLlm()
+  ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA, models: models?.(llm) })
   const bridges = []
   const closers = []
   t.after(async () => {
@@ -56,9 +59,9 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
   function bridge() {
     const created = createAcpBridge({
       dshBin: DSH_BIN,
-      nodeBin: NODE_BIN,
+      nodeBin: RUNTIME.nodeBin,
       cwd: workspace,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '', DSH_HOME: dshHome, DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url },
+      env: dshEnv({ base: process.env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, ...extraEnv } }),
       mcpServers: () => mcpServers,
       emit: (event) => {
         events.push(event)

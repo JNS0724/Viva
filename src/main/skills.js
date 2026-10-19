@@ -1,5 +1,4 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 
 /**
@@ -14,15 +13,14 @@ const MAX_DESCRIPTION_CHARS = 300
 const SKIPPED_DIRS = new Set(['.system'])
 
 /**
- * The folders dsh scans, in its priority order. The project root is the workspace (dsh uses the nearest
- * folder with `.git`; the default workspace has none).
- * @param {{ dshHome: string, cwd: string, env?: NodeJS.ProcessEnv }} options
+ * The folders dsh scans that hold skills, in its priority order. The home ones are the app's own dsh home
+ * (dsh-runtime.js), not the user's ~/.dsh or ~/.agents; the project root is the workspace (dsh uses the
+ * nearest folder with `.git`; the default workspace has none).
+ * @param {{ dshHome: string, cwd: string }} options
  */
-export function skillRoots({ dshHome, cwd, env = process.env }) {
-  const agentsHome = env.DSH_AGENTS_HOME || path.join(os.homedir(), '.agents')
+export function skillRoots({ dshHome, cwd }) {
   return [
-    { id: 'user', dir: path.join(dshHome, 'skills'), label: '本机 · ~/.dsh/skills', managed: true },
-    { id: 'agents', dir: path.join(agentsHome, 'skills'), label: '本机 · ~/.agents/skills', managed: false },
+    { id: 'user', dir: path.join(dshHome, 'skills'), label: '本机 · Viva 的 skill 文件夹', managed: true },
     { id: 'workspace', dir: path.join(cwd, '.dsh', 'skills'), label: '工作区 · .dsh/skills', managed: false },
     { id: 'workspace-agents', dir: path.join(cwd, '.agents', 'skills'), label: '工作区 · .agents/skills', managed: false },
   ]

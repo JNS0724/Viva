@@ -67,7 +67,7 @@ function errorRow(message) {
   return h('div', { class: 'msg-error', role: 'alert' },
     label('ERROR'),
     h('div', { text: message }),
-    h('div', { class: 'muted', text: '检查 DEEPSEEK_API_KEY、网络，或查看启动 demo 的终端日志。' }))
+    h('div', { class: 'muted', text: '检查模型的 key 和接口地址、网络，或查看终端日志。' }))
 }
 
 /** Conversation column: only user text, assistant text, receipts and the confirmation card. */

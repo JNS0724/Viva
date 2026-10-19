@@ -19,10 +19,10 @@ let renderedToast = null
 
 function renderSettingsIfChanged(container, state, handlers) {
   const connected = state.info.mode === 'live'
-  const inputs = [state.settings, state.extensions, connected]
+  const inputs = [state.settings, state.models, state.extensions, connected]
   if (inputs.every((value, i) => value === renderedSettings[i])) return
   renderedSettings = inputs
-  renderSettings(container, state.settings, state.extensions, handlers, { connected })
+  renderSettings(container, state.settings, state.models, state.extensions, handlers, { connected })
 }
 
 function renderProfileIfChanged(container, memory, handlers) {

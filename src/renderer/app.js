@@ -1,6 +1,7 @@
 import { createExtensionActions } from './extension-actions.js'
 import { createHistoryActions } from './history-actions.js'
 import { createMemoryActions } from './memory-actions.js'
+import { createModelActions } from './model-actions.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { render, renderStream, renderTick } from './view/render.js'
@@ -126,6 +127,7 @@ function ask(text) {
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
+const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 
 /** What a toast's button does; history's undo keeps its own handler. */
 const TOAST_ACTIONS = {
@@ -138,6 +140,7 @@ const handlers = {
   ...historyActions,
   ...memoryActions,
   ...extensionActions,
+  ...modelActions,
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     const text = dom.input.value.trim()
@@ -171,6 +174,7 @@ const handlers = {
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
+    modelActions.loadModels()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })
     } catch (err) {

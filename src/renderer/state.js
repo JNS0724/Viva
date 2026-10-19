@@ -1,4 +1,5 @@
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
+import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.js'
 
 /**
@@ -29,6 +30,7 @@ export const initialState = Object.freeze({
   history: initialHistory,
   memory: initialMemory,
   extensions: initialExtensions,
+  models: initialModels,
   toast: null,
   /** A new or reopened conversation is on its way; sending now would land in the one being replaced. */
   switching: false,
@@ -318,6 +320,7 @@ const ACTION_HANDLERS = {
   close_island: (state) => (state.island ? { ...state, island: false } : state),
   ...HISTORY_ACTIONS,
   ...PERSONAL_ACTIONS,
+  ...MODEL_ACTIONS,
 }
 
 /**

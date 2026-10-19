@@ -15,7 +15,9 @@
     "smoke:walkthrough": "cross-env SMOKE_PHASE=walkthrough DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "smoke:relaunch": "cross-env SMOKE_PHASE=relaunch DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key electron .",
-    "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js"
+    "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
+    "dist:mac": "electron-builder --mac dir",
+    "dist:win": "electron-builder --win nsis"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",
@@ -26,6 +28,36 @@
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "cross-env": "7.0.3",
-    "electron": "44.9.0"
+    "electron": "44.7.0",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "app.viva.desktop",
+    "productName": "Viva",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "package.json",
+      "src/**/*",
+      "plugins/**/*"
+    ],
+    "asar": false,
+    "npmRebuild": false,
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

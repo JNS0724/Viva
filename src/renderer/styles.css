@@ -272,7 +272,7 @@ html:not([data-platform="darwin"]) {
 .drawer[data-open="false"] { width: var(--rail-width); }
 .rail { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 16px; }
 .rail-btn { width: 46px; height: 46px; border-radius: 12px; position: relative; }
-.badge { position: absolute; top: 7px; right: 7px; width: 9px; height: 9px; border-radius: 50%; background: var(--orange); border: 2px solid var(--panel); }
+.rail-dot { position: absolute; top: 7px; right: 7px; width: 9px; height: 9px; border-radius: 50%; background: var(--orange); border: 2px solid var(--panel); }
 .drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .tabs { flex: 1; display: flex; gap: 4px; padding: 4px; background: var(--panel-2); border-radius: 12px; }
 .tab { flex: 1; height: 34px; border: none; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; background: transparent; color: var(--ink-2); }

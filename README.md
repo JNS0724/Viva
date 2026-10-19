@@ -4,27 +4,66 @@ Electron 外壳 + [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-har
 
 ## 运行
 
-需要 Node.js（dsh 依赖它；macOS、Windows 都一样）。
+开发需要 Node.js（npm）。dsh 内嵌在应用里，运行时用应用自己的 Electron，不需要用户另装 Node；用 `npx` 等启动的 MCP 服务器仍需要用户机器上的 Node。
 
 ```bash
 npm install
 npm start
 ```
 
-首次启动没有 key 时，首页会显示「连接 DeepSeek」卡片，输入框暂时禁用。点卡片上的按钮或标题栏的齿轮，在设置面板里填入 DeepSeek API key 并保存，就会自动连接。
+首次启动还没有可用的模型时，首页会显示「连接模型」卡片，输入框暂时禁用。点卡片上的按钮或标题栏的齿轮，在设置面板里填入 DeepSeek API key，或添加其他模型，就会自动连接。
 
 - key 用系统钥匙串加密（Electron `safeStorage`：macOS 用钥匙串，Windows 用 DPAPI），保存在应用数据目录的 `settings.json` 里（权限 600）；钥匙串不可用时拒绝保存，不会退回明文。
 - key 只留在主进程，界面只显示末 4 位；保存或清除后会重启 dsh 连接，并开始一段新对话。
 - 设置面板里保存的 key 优先于环境变量。
 - 找不到 dsh（安装不完整）时，首页会提示重新运行 `npm install`。
 
+### 其他模型
+
+设置面板的「模型」部分可以添加 DeepSeek 以外的模型：填名称、接口协议、接口地址（baseURL）、模型 ID（每行一个）和 API key（本地模型可不填）。添加后在输入框左下的模型菜单里按提供方分组出现。
+
+- **协议**：OpenAI 兼容（Chat Completions）、OpenAI Responses、Anthropic 兼容（Messages），即 dsh 的 `llm-pi-ai` 插件支持的三种。Kimi、智谱、通义、OpenRouter、Ollama、LM Studio 等大多用 OpenAI 兼容。
+- **实现**：没有自己写模型适配器。dsh 的组合包里本来就挂着 `llm-pi-ai`，只是没有配置时不启用；Viva 把提供方写进自己 profile 的 `llm-pi-ai.providers`，每个提供方一条路由（id 为 `custom-xxxxxxxx`，不会和 pi-ai 自带目录里的 openai、anthropic 等重名）。
+- **key**：和 DeepSeek key 一样用系统钥匙串加密，存在应用数据目录的 `models.json`；启动 dsh 时以环境变量 `VIVA_MODEL_KEY_XXXXXXXX` 交给 dsh 进程，profile 里只写变量名。
+- **DeepSeek 变为可选**：有了其他模型，可以不填 DeepSeek key；没有 DeepSeek key 时，profile 里关掉 `llm-deepseek` 和 `llm-deepseek-account`，菜单里就不出现 DeepSeek。
+- **默认模型**：记住上次在菜单里选的模型（`models.json` 的 `lastModel`），写进 profile 里 `acp` 一项的 `provider` / `model`，新对话和重启后都从它开始；同一次运行里新建对话也会切到它。上次选的模型不在了，就回到 DeepSeek，没有 DeepSeek 就用第一个添加的模型。
+- **修改**：添加或删除后 dsh 会重启并接回当前对话，对话不会清空；任务进行中不能修改。目前只能添加和删除，不能编辑。
+
+### 内嵌的 dsh
+
+dsh 是应用的一部分，和你自己装的 dsh 完全隔离：
+
+- **运行时**：用应用自己的 Electron 运行，不依赖、也不读取系统里的 Node 和 `dsh` 命令。
+- **数据目录**：dsh 的 home 在应用数据目录下的 `dsh/`（macOS 上是 `~/Library/Application Support/Viva/dsh`），里面是 profile、会话、凭据和 skill。你的 `~/.dsh`、`~/.agents/skills` 都不会被读写。
+- **环境变量**：交给 dsh 的环境去掉了所有 `DSH_*`、`DEEPSEEK_*`、`ELECTRON_*` 和 `VIVA_*` 变量，再放入应用自己设定的（dsh 目录、key、提供方的 key）。所以你在终端里设的 `DSH_HOME`、`DEEPSEEK_BASE_URL` 等不会影响 Viva。`DEEPSEEK_API_KEY` 仍可作为 key 的来源，由应用读出后再交给 dsh。
+- **生命周期**：
+  - 只允许运行一个 Viva（dsh 目录是它独占的），再次打开会切回已有的窗口。
+  - dsh 意外退出时自动重启并接回当前对话，依次等 1、3、10 秒；两分钟内连续三次后停止重试，在对话里说明原因。
+  - 换 key、增删模型时，先等旧的 dsh 完全退出，再启动新的，两者不会同时写同一个会话。
+  - 退出应用时等 dsh 结束（最多 5 秒）：先关闭它的输入，1.5 秒后结束整个进程树（Windows 上用 `taskkill /T`，连同它启动的 MCP 服务器），再过 1.5 秒强制结束。
+- **从 `~/.dsh` 迁移**：首次启动时，把 Viva 工作区在 `~/.dsh/sessions` 里的会话复制过来（不移动、不覆盖；dsh 按工作目录分组会话，你自己项目的会话不会被带走），旧对话照常接着聊、能看「过程」；再删除 Viva 以前写在 `~/.dsh/profiles` 里的 `viva`、`my-agent` profile（只删清单名称确认是 Viva 写的）。`~/.dsh/skills` 里的 skill 也复制一次（同名的跳过；只在首次迁移时做，之后在 Viva 里删掉的 skill 不会再被复制回来；你自己的 dsh 的 skill 文件夹保持原样）。
+
+### 打包
+
+```bash
+npm run dist:mac    # macOS：dist/mac-arm64/Viva.app（未签名）
+npm run dist:win    # Windows：在 Windows 上运行，dist/Viva Setup x.y.z.exe（NSIS，可选安装目录）
+```
+
+- **不用 asar**：dsh 是单独的进程，要直接读 `node_modules` 里的文件，插件还要以链接方式挂进 dsh 的 profile，这些都不能放在 asar 归档里；dsh 的原生模块按平台预编译，也不重新编译（`npmRebuild: false`）。
+- **工作区**：打包后的应用目录是只读的，工作区放在应用数据目录下的 `workspace/`；开发时（`npm start`）仍是仓库里的 `workspace/`。
+- **体积**：macOS 约 735MB，大头是 Electron 和 dsh 自带的依赖，其中 Office 转 PDF 用的 `libreoffice-kit` 约 158MB。
+- **验证打包产物**：对打包后的应用跑 memory 阶段的 smoke，用 `SMOKE_FIXTURES` 指向仓库的 `test/fixtures`（应用里没有测试目录）、`SMOKE_OUT` 指向输出目录：
+  `SMOKE_PHASE=memory SMOKE_OUT=/tmp/viva-smoke SMOKE_FIXTURES=$PWD/test/fixtures DEEPSEEK_API_KEY=smoke-fake-key dist/mac-arm64/Viva.app/Contents/MacOS/Viva`。
+  Windows 上 `scripts\verify-windows.ps1 -Package` 会打安装包并对 `dist\win-unpacked\Viva.exe` 做同样的检查。
+- **还没做**：代码签名和公证、自动更新、Intel Mac 和 Windows ARM 的包。
+
 | 环境变量 | 作用 | 默认 |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | 模型凭据（也可以在设置面板里填） | — |
 | `AGENT_CWD` | 助手的工作区（dsh 会话的 cwd） | `./workspace` |
 | `DSH_BIN` | 指定 dsh：`.js` 入口用 Node 运行，其他按可执行文件运行 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
-| `DSH_NODE` | 运行 dsh 的 Node | `node` |
-| `DSH_HOME` | dsh 的数据目录（读取旧对话的「过程」用） | `~/.dsh` |
+| `DSH_NODE` | 开发用：改用这个 Node 运行 dsh | 应用自己的 Electron |
 
 ## macOS 与 Windows
 
@@ -37,7 +76,7 @@ npm start
 - **窗口大小**：按屏幕可用区域计算，开了 125% 到 150% 显示缩放的笔记本也放得下；最小 880×600。
 - **窄窗口**：宽度不到 1100px 时，展开的抽屉浮在对话上面，不再挤压对话。
 - **快捷键**：历史面板在 macOS 上是 ⌘K，在 Windows 上是 Ctrl+K，提示文字跟着平台变。
-- **启动 dsh**：直接用 Node 运行 dsh 的入口文件，不经过 `.bin/dsh(.cmd)` 包装脚本（Windows 不允许不经 shell 启动 `.cmd`）。不用 Electron 自带的 Node，因为 dsh 只认它列出的几个 Electron 版本。
+- **启动 dsh**：用应用自己的 Electron（`ELECTRON_RUN_AS_NODE=1`）运行 dsh 的入口文件，不经过 `.bin/dsh(.cmd)` 包装脚本（Windows 不允许不经 shell 启动 `.cmd`）。dsh 的原生模块只认它列出的几个 Electron 版本（43.0.0、44.0.0、44.7.0、45.0.0-alpha.6），所以 `package.json` 把 Electron 固定在 44.7.0；升级 Electron 前要先确认 dsh 支持。
 - **npm 脚本**：用 `cross-env`，在 cmd、PowerShell 里也能跑。
 
 ## 架构
@@ -67,12 +106,12 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
   - **历史面板**：点标题栏的时钟按钮或按 ⌘K，左侧会滑出面板，按「置顶 / 今天 / 昨天 / 7 天内 / 更早」分组。
   - **搜索**：搜索框能搜全部对话的正文和标题，命中处高亮。3 个字以上走 FTS5 trigram 全文索引，更短的退回模糊匹配。
   - **单段操作**：每段对话的 ⋯ 菜单里有重命名、置顶、导出 Markdown、删除。
-  - **删除**：删除后底部出现「撤销」，8 秒后彻底清除。数据库开了 `secure_delete`，删掉的文字不会残留在文件里。dsh 自己在 `~/.dsh/sessions` 的日志不会被删。
-  - **旧对话的「过程」**：打开旧对话时，从 dsh 自己的日志（`~/.dsh/sessions/…/session.v4.jsonl.zstd`）读回思考和工具调用，读到后回执重新出现「VIEW TRACE」。读不到时，抽屉里会说明原因。
+  - **删除**：删除后底部出现「撤销」，8 秒后彻底清除。数据库开了 `secure_delete`，删掉的文字不会残留在文件里。dsh 自己在应用 dsh 目录 `sessions/` 下的日志不会被删。
+  - **旧对话的「过程」**：打开旧对话时，从 dsh 自己的日志（应用 dsh 目录的 `sessions/…/session.v4.jsonl.zstd`）读回思考和工具调用，读到后回执重新出现「VIEW TRACE」。读不到时，抽屉里会说明原因。
   - **任务进行中**：不能切换到别的对话；切换过程中（新对话、打开旧对话）发送按钮暂时禁用，避免消息落进正在被替换的对话。
   - **旧版迁移**：旧版的 `history/*.json` 会在首次启动时自动导入，旧目录改名为 `history-imported` 留作备份。
 - **记忆（dsh 插件）**：记忆整体是 `plugins/memory` 这个 dsh 插件，应用只负责界面。换一种记忆方案，就是换掉这个插件。完整设计见 [docs/memory.md](docs/memory.md)。
-  - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好 `~/.dsh/profiles/viva`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖、`node_modules` 链接，Windows 上用 junction），并把 `memory.db` 的路径写进插件配置。你自己的 `acp` 等 profile 不会被改动。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
+  - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好应用 dsh 目录里的 `profiles/viva`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖、`node_modules` 链接，Windows 上用 junction），并把 `memory.db` 的路径写进插件配置。你自己的 `~/.dsh` 不会被读写。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
   - **约定**：插件和应用共用 `memory.db`（`plugins/memory/lib/store.js`）。应用在「关于你」里读写画像和记忆，把使用习惯写进去；插件写入它记下的内容、每个会话的检索状态，以及每轮带上了什么。
   - **三层检索**：① 记忆规则、画像、偏好、使用习惯，在会话第一轮、内容变化后、以及 dsh 压缩对话之后各带一次，不检索；② 你自己的话里提到画像或记忆里的人名、项目名、系统名时，带上相关的记忆，最多 3 条，同一会话不重复；粘贴的长文本只看首尾你自己写的那几行，「那第二个呢」这类追问会结合上一个问题；③ 其余由模型自己用 `memory_recall` 带关键词查，查不到就返回空。
   - **工具**：`memory_remember`（带关键词）、`memory_recall`、`memory_update_profile`、`memory_forget` 是 dsh 原生工具，不弹确认卡片。密码、密钥、验证码、证件号会被拒绝保存。
@@ -87,7 +126,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 190 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 211 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
 npm run smoke       # 真的启动 Electron，分四次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
@@ -96,7 +135,9 @@ npm run smoke       # 真的启动 Electron，分四次：
                     #   relaunch：同一份数据再启动，检查上次的对话完整回来、助手接回会话，再走一遍历史面板
                     #     （⌘K、第二段对话、搜索高亮、打开旧对话、重命名、删除和撤销）；
                     #   memory：真实的 dsh 加记忆插件，配假模型：引导、「记住」、关于你页面里的关键词、
-                    #     提到名称时带上记忆、「过程」里的「带上记忆」、设置页的插件状态
+                    #     提到名称时带上记忆、「过程」里的「带上记忆」、设置页的插件状态，
+                    #     再在设置里添加一个模型提供方，从模型菜单选中它并对话（当前对话保留）；
+                    #     最后直接杀掉 dsh，检查提示重连、自动重启并接回同一段对话
 ```
 
 - **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和四个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。

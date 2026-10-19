@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { parseSessionLog, readSessionTrace } from '../src/main/dsh-log.js'
+import { decompressZstdFrames, splitZstdFrames } from '../src/main/zstd-frames.js'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
 const event = (type, time, data) => JSON.stringify({ type, seq: time, time, data })
@@ -81,4 +82,15 @@ test('readSessionTrace finds compressed logs by session id and merges several se
 
 test('readSessionTrace refuses session ids that could escape the dsh folder', async () => {
   await assert.rejects(readSessionTrace({ dshHome: '/tmp', sessionIds: ['../etc'], until: 1 }), /id/)
+})
+
+test('zstd frames are split by their own layout: several frames, a skippable one, and a cut-off end', async () => {
+  const skippable = Buffer.concat([Buffer.from([0x50, 0x2a, 0x4d, 0x18]), Buffer.from([3, 0, 0, 0]), Buffer.from('xyz')])
+  const big = 'r'.repeat(300_000)
+  const data = Buffer.concat([zlib.zstdCompressSync(Buffer.from('a\n')), skippable, zlib.zstdCompressSync(Buffer.from(big)), zlib.zstdCompressSync(Buffer.from('c\n'))])
+
+  assert.equal(splitZstdFrames(data).length, 3)
+  assert.equal((await decompressZstdFrames(data)).toString(), `a\n${big}c\n`)
+  assert.throws(() => splitZstdFrames(data.subarray(0, data.length - 2)), /ends inside a frame/)
+  assert.throws(() => splitZstdFrames(Buffer.from('not zstd')), /not a frame/)
 })
