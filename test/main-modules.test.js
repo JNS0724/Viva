@@ -1,0 +1,108 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import path from 'node:path'
+import { APP_ROOT, dshLaunch, resolveConfig } from '../src/main/config.js'
+import { createPermissionBroker } from '../src/main/permission-broker.js'
+import { currentModelName, describeConfig, describeError } from '../src/main/session-info.js'
+
+const always = () => true
+const never = () => false
+
+test('config reports what is missing before the agent can start, or nothing when ready', () => {
+  assert.equal(resolveConfig({}, always).problem, 'no-key')
+  assert.equal(resolveConfig({ DEEPSEEK_API_KEY: 'k' }, never).problem, 'no-dsh')
+
+  const ready = resolveConfig({ DEEPSEEK_API_KEY: 'k', DSH_BIN: '/opt/dsh', AGENT_CWD: 'rel/dir' }, always)
+  assert.equal(ready.problem, null)
+  assert.equal(ready.dshBin, path.resolve('/opt/dsh'))
+  assert.equal(ready.cwd, path.resolve('rel/dir'))
+})
+
+test('config defaults live under the app root, and smoke phases are named', () => {
+  const config = resolveConfig({ SMOKE_PHASE: 'walkthrough' }, never)
+  assert.equal(config.dshBin, path.join(APP_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
+  assert.equal(config.nodeBin, 'node')
+  assert.equal(config.cwd, path.join(APP_ROOT, 'workspace'))
+  assert.deepEqual([config.smoke, config.smokePhase], [true, 'walkthrough'])
+  assert.equal(config.smokeOut, path.join(APP_ROOT, 'smoke'))
+  assert.equal(resolveConfig({ DSH_HOME: '/tmp/dsh', DSH_NODE: '/opt/node' }, never).dshHome, path.resolve('/tmp/dsh'))
+  assert.equal(resolveConfig({ DSH_NODE: '/opt/node' }, never).nodeBin, '/opt/node')
+  assert.equal(resolveConfig({ DSH_BIN: 'test/fake.js' }, never).dshBin, path.resolve('test/fake.js'))
+  assert.equal(resolveConfig({ DSH_BIN: 'dsh' }, never).dshBin, 'dsh', 'a bare command is looked up on PATH')
+  assert.deepEqual([resolveConfig({ SMOKE_PHASE: 'nope' }, never).smoke, resolveConfig({}, never).smokePhase], [false, null])
+})
+
+test('a JavaScript entry point runs under node (no .cmd shim on Windows); anything else runs directly', () => {
+  assert.deepEqual(dshLaunch('/a/bin.js', 'node'), { command: 'node', args: ['/a/bin.js', '--profile', 'my-agent'] })
+  assert.deepEqual(dshLaunch('/a/bin.js', 'node', 'acp').args, ['/a/bin.js', '--profile', 'acp'])
+  assert.deepEqual(dshLaunch('C:\\dsh\\bin.mjs', 'node.exe').command, 'node.exe')
+  assert.deepEqual(dshLaunch('/usr/local/bin/dsh', 'node'), { command: '/usr/local/bin/dsh', args: ['--profile', 'my-agent'] })
+})
+
+test('permission broker resolves known options, cancels unknown ones, and cancels everything on demand', async () => {
+  // Arrange
+  const broker = createPermissionBroker()
+  const options = [{ optionId: 'allow', name: '允许', kind: 'allow_once' }]
+  const a = broker.create({ options })
+  const b = broker.create({ options })
+  const c = broker.create({ options })
+
+  // Act
+  assert.equal(broker.resolve(a.requestId, 'allow'), true)
+  assert.equal(broker.resolve(b.requestId, 'made-up'), true)
+  assert.equal(broker.resolve('missing', 'allow'), false)
+  broker.cancelAll()
+
+  // Assert
+  assert.deepEqual(await a.promise, { outcome: { outcome: 'selected', optionId: 'allow' } })
+  assert.deepEqual(await b.promise, { outcome: { outcome: 'cancelled' } })
+  assert.deepEqual(await c.promise, { outcome: { outcome: 'cancelled' } })
+  assert.equal(broker.size, 0)
+})
+
+test('current model name handles flat options, grouped options and fallbacks', () => {
+  const flat = [{ id: 'model', type: 'select', currentValue: 'v4', options: [{ value: 'v4', name: 'DeepSeek V4' }] }]
+  const grouped = [{ id: 'x', category: 'model', currentValue: 'b', options: [{ group: 'g', name: 'G', options: [{ value: 'b', name: 'Beta' }] }] }]
+  const unnamed = [{ id: 'model', currentValue: 'raw-id', options: [] }]
+
+  assert.equal(currentModelName(flat), 'DeepSeek V4')
+  assert.equal(currentModelName(grouped), 'Beta')
+  assert.equal(currentModelName(unnamed), 'raw-id')
+  assert.equal(currentModelName([{ id: 'reasoning_effort' }]), '')
+  assert.equal(currentModelName(undefined), '')
+})
+
+test('describeConfig reads the shape real dsh returns (grouped models + reasoning effort)', () => {
+  // Arrange: copied from a live `dsh --profile acp` session/new response
+  const flash = '["deepseek-official","deepseek-v4-flash"]'
+  const pro = '["deepseek-official","deepseek-v4-pro"]'
+  const configOptions = [
+    { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: pro, options: [
+      { group: 'deepseek-official', name: 'DeepSeek', options: [{ value: flash, name: 'deepseek-v4-flash' }, { value: pro, name: 'DeepSeek-V4-Pro' }] },
+    ] },
+    { id: 'reasoning_effort', name: 'Reasoning effort', category: 'thought_level', type: 'select', currentValue: 'high', options: [
+      { value: 'off', name: 'Off' }, { value: 'high', name: 'High' },
+    ] },
+  ]
+
+  // Act
+  const config = describeConfig(configOptions)
+
+  // Assert
+  assert.deepEqual(config, {
+    model: 'DeepSeek-V4-Pro',
+    modelValue: pro,
+    models: [{ value: flash, name: 'deepseek-v4-flash', group: 'DeepSeek' }, { value: pro, name: 'DeepSeek-V4-Pro', group: 'DeepSeek' }],
+    effort: 'high',
+    efforts: [{ value: 'off', name: 'Off' }, { value: 'high', name: 'High' }],
+  })
+  assert.deepEqual(describeConfig(undefined), { model: '', modelValue: '', models: [], effort: '', efforts: [] })
+})
+
+test('describeError keeps the message and a short stderr tail', () => {
+  assert.equal(describeError(new Error('boom')), 'boom')
+  assert.equal(describeError({ message: 'rpc failed' }), 'rpc failed')
+  assert.equal(describeError({ message: 'Internal error', data: { details: 'unknown model option: x' } }), 'Internal error: unknown model option: x')
+  assert.equal(describeError({ message: 'Bad request', data: 'quota exceeded' }), 'Bad request: quota exceeded')
+  assert.equal(describeError('plain', 'a\nb\nc\nd\n'), 'plain（dsh: b | c | d）')
+})

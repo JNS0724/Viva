@@ -1,0 +1,102 @@
+/* 关于你 · 认识你 · 扩展 — same tokens as styles.css (A 方案 · 工业饱和 Bento · 深海蓝) */
+
+.btn-small { height: 34px; padding: 0 14px; font-size: 13px; border-radius: 10px; }
+.btn-outline:hover:not(:disabled) { border-color: var(--accent); }
+.link-btn { margin-left: auto; padding: 0; border: none; background: none; color: var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; }
+.link-btn:hover { text-decoration: underline; }
+.badge {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 6px; background: var(--raised);
+  color: var(--ink-2); font-size: 11px; font-weight: 500; white-space: nowrap;
+}
+textarea.field { height: auto; padding: 12px 14px; line-height: 1.6; resize: vertical; font-family: var(--font-sans); }
+select.field { cursor: pointer; font-family: var(--font-sans); }
+
+/* ---------- dialog ---------- */
+.profile { width: min(760px, 100%); }
+.profile-head-actions { display: flex; align-items: center; gap: 8px; }
+.profile-intro { display: flex; flex-direction: column; gap: 8px; }
+.profile-section { display: flex; flex-direction: column; gap: 12px; }
+.profile-section > .row-between .field { max-width: 220px; height: 36px; font-size: 13px; }
+.profile-heading { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
+
+.profile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.profile-field {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 16px; border-radius: 16px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.profile-field[data-filled="true"] { border-color: var(--line-2); }
+.profile-field-head { display: flex; align-items: center; gap: 8px; color: var(--ink-3); }
+.profile-value { margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.profile-field[data-filled="false"] .profile-value { color: var(--mute); font-size: 13px; }
+.profile-edit { display: flex; flex-direction: column; gap: 8px; }
+.profile-edit-actions { display: flex; gap: 8px; }
+.profile-habits {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px;
+  border: 1px dashed var(--line-2); font-size: 13px; color: var(--ink-2);
+}
+.profile-habits .label { color: var(--ink-3); }
+.profile-synthesis {
+  margin: 0; padding: 14px 16px; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+}
+
+.memory-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.memory-item {
+  display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 14px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.memory-item[data-source="agent"] { border-left: 3px solid var(--accent); }
+.memory-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.memory-text { font-size: 14px; line-height: 1.6; word-break: break-word; }
+.memory-meta { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
+.memory-delete { width: 30px; height: 30px; border-color: transparent; background: transparent; opacity: .6; }
+.memory-item:hover .memory-delete, .memory-delete:focus-visible { opacity: 1; }
+.memory-invalid { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.memory-invalid .link-btn { margin-left: 0; }
+.memory-invalid .memory-list { align-self: stretch; }
+.memory-item[data-invalid="true"] .memory-text { color: var(--ink-3); text-decoration: line-through; }
+
+/* ---------- intro ---------- */
+.intro-form { display: flex; flex-direction: column; gap: 14px; }
+.intro-item { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.intro-item > .label { color: var(--ink-3); }
+/* .field grows along a row; in this column it would collapse to its padding. */
+.intro-item > .field { flex: none; }
+.intro-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.intro-docs { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.doc-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.doc-chips .chip { gap: 6px; }
+.intro-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.6; color: var(--ink-2); cursor: pointer; }
+.intro-check input { margin-top: 4px; accent-color: var(--accent); }
+
+.tile-intro { justify-content: flex-start; border-color: var(--accent); }
+.tile-intro .label { color: var(--accent); }
+.intro-copy { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.intro-title { margin: 0; font-size: 22px; line-height: 1.25; }
+.intro-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- settings · 扩展 ---------- */
+.ext { display: flex; flex-direction: column; gap: 16px; padding-top: 18px; border-top: 1px solid var(--line); }
+.ext > .label { color: var(--ink-3); }
+.ext-group { display: flex; flex-direction: column; gap: 10px; }
+.ext-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ext-item {
+  display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; border-radius: 14px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.ext-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ext-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ext-name { font-size: 14px; font-weight: 700; }
+.ext-status { font-size: 12px; }
+.ext-status[data-tone="ok"] { color: var(--accent); }
+.ext-status[data-tone="off"] { color: var(--orange); }
+.ext-detail { font-size: 12px; line-height: 1.6; color: var(--ink-3); }
+.ext-memory { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ink-2); }
+.ext-memory[data-on="false"] { color: var(--orange); }
+.ext-form { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; border: 1px solid var(--line-2); }
+.ext-stdio, .ext-http { display: flex; flex-direction: column; gap: 12px; }
+.ext-form[data-type="stdio"] .ext-http, .ext-form[data-type="http"] .ext-stdio { display: none; }
+
+@media (max-width: 720px) {
+  .intro-pair { grid-template-columns: minmax(0, 1fr); }
+}

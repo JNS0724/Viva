@@ -1,0 +1,115 @@
+import { isBusy } from '../state.js'
+import { setupView, workspaceName } from '../selectors.js'
+import { h } from './dom.js'
+import { renderDrawer } from './drawer.js'
+import { renderHistoryPanel, renderToast } from './history-panel.js'
+import { renderHome } from './home.js'
+import { icon } from './icons.js'
+import { renderIsland } from './island.js'
+import { renderModelPicker } from './model-picker.js'
+import { renderProfilePanel } from './profile-panel.js'
+import { renderSettings } from './settings.js'
+import { renderThread } from './thread.js'
+
+let renderedSettings = []
+let renderedProfile = null
+let renderedDrawerInputs = []
+let renderedHistoryInputs = []
+let renderedToast = null
+
+function renderSettingsIfChanged(container, state, handlers) {
+  const connected = state.info.mode === 'live'
+  const inputs = [state.settings, state.extensions, connected]
+  if (inputs.every((value, i) => value === renderedSettings[i])) return
+  renderedSettings = inputs
+  renderSettings(container, state.settings, state.extensions, handlers, { connected })
+}
+
+function renderProfileIfChanged(container, memory, handlers) {
+  if (memory === renderedProfile) return
+  renderedProfile = memory
+  renderProfilePanel(container, memory, handlers)
+}
+
+function latestQuestionTop(thread) {
+  const questions = thread.querySelectorAll('.msg-user')
+  return questions.length ? questions[questions.length - 1].offsetTop : null
+}
+
+/** Re-render the thread, then let the follower decide whether (and how far) to scroll. */
+function renderThreadFollowing(dom, state, handlers, now) {
+  renderThread(dom.thread, state, handlers, now)
+  dom.follower.afterRender({ anchorTop: latestQuestionTop(dom.thread) })
+}
+
+/** The drawer only depends on these slices; skipping identical renders keeps its scroll and hover state intact. */
+function renderDrawerIfChanged(container, state, handlers) {
+  const inputs = [state.drawer, state.timeline, state.tools, state.thoughts, state.usage, state.phase, state.restoredTrace]
+  if (inputs.every((value, i) => value === renderedDrawerInputs[i])) return
+  renderedDrawerInputs = inputs
+  renderDrawer(container, state, handlers)
+}
+
+/** The panel only depends on its own slice; skipping identical renders keeps an inline rename field alive. */
+function renderHistoryIfChanged(dom, state, handlers) {
+  const inputs = [state.history, state.conversationId]
+  if (inputs.every((value, i) => value === renderedHistoryInputs[i])) return
+  renderedHistoryInputs = inputs
+  renderHistoryPanel(dom, state, handlers)
+}
+
+function renderToastIfChanged(container, toast, handlers) {
+  if (toast === renderedToast) return
+  renderedToast = toast
+  renderToast(container, toast, handlers)
+}
+
+/** While the agent cannot start, the composer is disabled and says why; while switching, only sending waits. */
+function renderComposerAvailability(dom, setup, switching) {
+  dom.input.dataset.placeholder ??= dom.input.placeholder
+  dom.input.disabled = Boolean(setup)
+  dom.input.placeholder = setup?.placeholder ?? dom.input.dataset.placeholder
+  dom.sendBtn.disabled = Boolean(setup) || switching
+}
+
+function renderComposer(dom, state, handlers) {
+  renderComposerAvailability(dom, setupView(state.info), state.switching)
+  const busy = isBusy(state)
+  dom.sendBtn.dataset.busy = String(busy)
+  dom.sendBtn.setAttribute('aria-label', busy ? '停止' : '发送')
+  dom.sendBtn.replaceChildren(icon(busy ? 'stop' : 'send', 22))
+  dom.context.textContent = `@ ${workspaceName(state.info.cwd)}`
+  dom.toggleDrawer.setAttribute('aria-pressed', String(Boolean(state.drawer)))
+  renderModelPicker(dom, state, handlers)
+}
+
+/** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */
+export function render(dom, state, handlers, now = Date.now()) {
+  const isHome = state.messages.length === 0
+  if (isHome) dom.island.replaceChildren()
+  else renderIsland(dom.island, state, handlers, now)
+  dom.home.hidden = !isHome
+  dom.thread.hidden = isHome
+  if (isHome) renderHome(dom.home, state, handlers, now)
+  else renderThreadFollowing(dom, state, handlers, now)
+  renderDrawerIfChanged(dom.drawer, state, handlers)
+  renderComposer(dom, state, handlers)
+  renderSettingsIfChanged(dom.settings, state, handlers)
+  renderProfileIfChanged(dom.profile, state.memory, handlers)
+  dom.openProfile.setAttribute('aria-pressed', String(state.memory.open))
+  renderHistoryIfChanged(dom, state, handlers)
+  renderToastIfChanged(dom.toast, state.toast, handlers)
+}
+
+/** Per-frame update while text is being typed out: only the thread and the status island. */
+export function renderStream(dom, state, handlers, now = Date.now()) {
+  if (state.messages.length === 0) return
+  renderThreadFollowing(dom, state, handlers, now)
+  renderIsland(dom.island, state, handlers, now)
+}
+
+/** Once-a-second refresh of the time-dependent bits only (clock, elapsed timer). */
+export function renderTick(dom, state, handlers, now = Date.now()) {
+  if (state.messages.length === 0) renderHome(dom.home, state, handlers, now)
+  else if (isBusy(state)) renderIsland(dom.island, state, handlers, now)
+}

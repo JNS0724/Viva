@@ -1,0 +1,81 @@
+import fs from 'node:fs/promises'
+import { readSessionTrace } from './dsh-log.js'
+import { exportFileName, toMarkdown } from './history-export.js'
+import { assertId } from './history-schema.js'
+
+/** How long "已删除 · 撤销" stays up; the conversation is purged for good after that. */
+export const UNDO_WINDOW_MS = 8000
+const PURGE_SLACK_MS = 1000
+const MAX_QUERY_CHARS = 200
+
+const summaryOf = (conversation) => ({ id: conversation.id, title: conversation.title, updatedAt: conversation.updatedAt })
+const viewOf = (found) => (found ? { ...summaryOf(found.conversation), messages: found.messages } : null)
+
+function assertQuery(value) {
+  if (typeof value !== 'string' || value.length > MAX_QUERY_CHARS) throw new Error('invalid search query')
+  return value
+}
+
+/**
+ * IPC for the history panel. The main process owns "the conversation on screen" and the agent;
+ * they are reached through the callbacks so this module stays testable without Electron.
+ * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
+ * @param {{
+ *   db: ReturnType<import('./history-db.js').openHistoryDb>,
+ *   dshHome: string,
+ *   current: () => object, setCurrent: (conversation: object) => void,
+ *   agentInfo: () => object, switchAgent: (sessionId: string | null) => Promise<object>,
+ *   chooseExportPath: (defaultName: string) => Promise<string | null>,
+ *   schedule?: (fn: () => void, ms: number) => void,
+ * }} deps
+ */
+export function registerHistoryIpc(ipcMain, deps) {
+  const { db, dshHome, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
+  const schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms).unref?.())
+  const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
+
+  handle('history:load', () => viewOf(db.get(current().id)))
+
+  handle('history:save', (messages) => {
+    const { mode, model } = agentInfo()
+    const saved = db.save({ ...current(), mode, model }, messages)
+    setCurrent(saved)
+    return summaryOf(saved)
+  })
+
+  handle('history:list', (offset = 0) => db.list({ offset: Number(offset) || 0 }))
+  handle('history:search', (query) => db.search(assertQuery(query)))
+
+  /** Shows an older conversation and reattaches the agent to its dsh session when it still can. */
+  handle('history:open', async (id) => {
+    const found = db.get(assertId(id))
+    if (!found) throw new Error('找不到这段对话，可能已被删除')
+    if (found.conversation.id === current().id) return { conversation: viewOf(found), info: agentInfo() }
+    const started = await switchAgent(found.conversation.sessionId)
+    setCurrent({ ...found.conversation, sessionId: started.sessionId })
+    return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed } }
+  })
+
+  handle('history:trace', (id, until) => readSessionTrace({
+    dshHome,
+    sessionIds: db.sessionIds(assertId(id)),
+    until: Number.isFinite(until) ? until : Date.now(),
+  }))
+
+  handle('history:rename', (id, title) => db.rename(id, title))
+  handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))
+  handle('history:delete', (id) => {
+    db.softDelete(id)
+    schedule(() => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS }), UNDO_WINDOW_MS + PURGE_SLACK_MS)
+  })
+  handle('history:restore', (id) => db.restore(id))
+
+  handle('history:export', async (id) => {
+    const found = db.get(assertId(id))
+    if (!found) throw new Error('找不到这段对话，可能已被删除')
+    const file = await chooseExportPath(exportFileName(found.conversation.title))
+    if (!file) return { saved: false }
+    await fs.writeFile(file, toMarkdown(found.conversation, found.messages), 'utf8')
+    return { saved: true, file }
+  })
+}

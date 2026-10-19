@@ -1,0 +1,29 @@
+{
+  "name": "my-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "个人桌面助手 demo：Electron 外壳 + DeepSeek Harness（ACP）",
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.js\"",
+    "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.js\"",
+    "smoke": "npm run smoke:setup && npm run smoke:walkthrough && npm run smoke:relaunch && npm run smoke:memory",
+    "smoke:setup": "cross-env SMOKE_PHASE=setup DEEPSEEK_API_KEY= electron .",
+    "smoke:walkthrough": "cross-env SMOKE_PHASE=walkthrough DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
+    "smoke:relaunch": "cross-env SMOKE_PHASE=relaunch DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
+    "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key electron .",
+    "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.9.0",
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "cross-env": "7.0.3",
+    "electron": "44.9.0"
+  }
+}

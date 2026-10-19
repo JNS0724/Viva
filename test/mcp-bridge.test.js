@@ -1,0 +1,116 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { openMemoryDb } from '../plugins/memory/lib/store.js'
+import { createAcpBridge, failingMcpServer } from '../src/main/acp-bridge.js'
+import { openHistoryDb } from '../src/main/history-db.js'
+import { createPersonal } from '../src/main/personal.js'
+
+/** The user's MCP servers through the real bridge and the fake dsh, and what the app reports after a turn. */
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+const FAKE_DSH = path.join(ROOT, 'test', 'fixtures', 'fake-dsh.js')
+/** Exits at once, so its MCP handshake fails: stands in for a misconfigured user server. */
+const BROKEN_SERVER = { name: 'broken', command: process.execPath, args: ['-e', 'process.exit(1)'], env: [{ name: 'ELECTRON_RUN_AS_NODE', value: '1' }] }
+
+function setup(t, { now } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-bridge-'))
+  const memoryDb = openMemoryDb({ file: path.join(dir, 'memory.db'), now })
+  const historyDb = openHistoryDb({ file: path.join(dir, 'history.db') })
+  const personal = createPersonal({ memoryDb, historyDb, mcpStore: { list: () => [] }, ...(now ? { now } : {}) })
+  t.after(() => {
+    memoryDb.close()
+    historyDb.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  return { dir, memoryDb, personal }
+}
+
+function fakeBridge(t, { mcpServers, cwd }) {
+  const bridge = createAcpBridge({
+    dshBin: FAKE_DSH,
+    nodeBin: 'node',
+    cwd,
+    env: { ...process.env, FAKE_DSH_DELAY_MS: '0', ELECTRON_RUN_AS_NODE: '' },
+    mcpServers,
+    emit: () => {},
+  })
+  t.after(() => bridge.dispose())
+  return bridge
+}
+
+test('a failing MCP server is left out and reported', async (t) => {
+  const { dir, personal } = setup(t)
+  const bridge = fakeBridge(t, { mcpServers: () => [BROKEN_SERVER], cwd: dir })
+
+  const info = await bridge.start()
+
+  assert.deepEqual(info.mcp.active, [])
+  assert.deepEqual(info.mcp.dropped.map((d) => d.name), ['broken'])
+  assert.match(info.mcp.dropped[0].reason, /initial connection/)
+  assert.deepEqual(personal.mcpStatus(info, 0).dropped, info.mcp.dropped)
+})
+
+test('reloading the session picks up a changed server list and keeps the session', async (t) => {
+  const { dir } = setup(t)
+  let servers = []
+  const bridge = fakeBridge(t, { mcpServers: () => servers, cwd: dir })
+  const started = await bridge.start()
+  servers = [BROKEN_SERVER]
+
+  const reloaded = await bridge.reloadSession()
+
+  assert.equal(reloaded.sessionId, started.sessionId)
+  assert.equal(reloaded.resumed, true)
+  assert.deepEqual(reloaded.mcp.dropped.map((d) => d.name), ['broken'])
+})
+
+test('the failing server is found by name or by position, and nothing else counts', () => {
+  const servers = [{ name: 'memory' }, { name: 'github' }]
+  assert.equal(failingMcpServer({ message: 'Internal error', data: { details: 'mcp-client(github): initial connection failed' } }, servers), servers[1])
+  assert.equal(failingMcpServer(new Error('Invalid params: mcpServers[0].command must be an absolute path'), servers), servers[0])
+  assert.equal(failingMcpServer(new Error('session is not resumable'), servers), null)
+  assert.equal(failingMcpServer(new Error('mcp-client(other): failed'), servers), null)
+})
+
+test('the app hears once about what was saved, replaced and sent, including what comes in after the turn', (t) => {
+  let clock = 1000
+  const { memoryDb, personal } = setup(t, { now: () => clock })
+  const old = memoryDb.addMemory({ text: '张三是直属上级', source: 'agent' }).memory
+  memoryDb.claimChanges(0, 'conv-0')
+  clock = 5000
+  memoryDb.addMemory({ text: '周报每周五交给张三', source: 'agent' })
+  memoryDb.logInjection({ sessionId: 's-1', turn: 3, fixed: 'first', pushed: [{ text: '回答先给结论', names: ['结论'] }] })
+  memoryDb.logInjection({ sessionId: 's-2', turn: 1, fixed: 'first', pushed: [] })
+
+  const report = personal.collect({ conversationId: 'conv-1', sessionId: 's-1' })
+  assert.deepEqual(report.memories, ['周报每周五交给张三'])
+  assert.deepEqual(report.injected.map((entry) => [entry.turn, entry.fixed, entry.pushed[0].text]), [[3, 'first', '回答先给结论']])
+  clock = 6000
+  assert.equal(personal.collect({ conversationId: 'conv-1', sessionId: 's-1' }), null, 'nothing new, nothing to tell')
+
+  clock = 8000
+  memoryDb.applyExtraction({ add: [{ text: '直属上级是李四', replaces: old.id }], invalidate: [], shown: new Set([old.id]) })
+  const late = personal.collect({ conversationId: 'conv-1', sessionId: 's-1' })
+  assert.deepEqual([late.memories, late.invalidated], [['直属上级是李四'], ['张三是直属上级']])
+})
+
+test('memory counts as working only when the plugin started inside the current dsh', (t) => {
+  let clock = 1000
+  const { memoryDb, personal } = setup(t, { now: () => clock })
+  memoryDb.markPluginStarted()
+
+  assert.equal(personal.mcpStatus(null, 0).memory, false, 'no dsh launched')
+  assert.equal(personal.mcpStatus(null, 2000).memory, false, 'started before this launch')
+  clock = 2500
+  memoryDb.markPluginStarted()
+  assert.equal(personal.mcpStatus(null, 2000).memory, true)
+})
+
+test('habits read from the history reach the plugin through memory.db', (t) => {
+  const { memoryDb, personal } = setup(t)
+  assert.deepEqual(personal.habits(), { text: '', samples: 0 })
+  assert.equal(memoryDb.habits(), '')
+})

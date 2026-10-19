@@ -1,0 +1,118 @@
+/** How close to the bottom still counts as "at the bottom". */
+const BOTTOM_SLACK_PX = 32
+/** Breathing room kept above the latest question when a long answer stops auto-scrolling. */
+const ANCHOR_GAP_PX = 24
+const KEYS_THAT_SCROLL_UP = new Set(['PageUp', 'ArrowUp', 'Home'])
+
+/** @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} el */
+export const distanceFromBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight
+
+/**
+ * Where to scroll while following new output: the bottom, but never so far that the
+ * latest question (at `anchorTop`) leaves the top of the viewport.
+ * @returns {{ scrollTop: number, capped: boolean }}
+ */
+export function followTarget({ scrollHeight, clientHeight, anchorTop }) {
+  const bottom = Math.max(0, scrollHeight - clientHeight)
+  if (anchorTop === null || anchorTop === undefined) return { scrollTop: bottom, capped: false }
+  const cap = Math.max(0, anchorTop - ANCHOR_GAP_PX)
+  return bottom > cap ? { scrollTop: cap, capped: true } : { scrollTop: bottom, capped: false }
+}
+
+/**
+ * Scroll behaviour for the conversation:
+ * - follows new output while the reader is at the bottom;
+ * - stops once a long answer would push the latest question off screen, and shows the jump button;
+ * - hands control to the reader the moment they scroll up, and resumes when they come back down.
+ * @param {HTMLElement} scrollEl
+ * @param {{ hidden: boolean }} jumpButton
+ */
+export function createScrollFollower(scrollEl, jumpButton) {
+  let following = true
+  let anchorSpent = false
+  let lastWrite = Number.NaN
+
+  const updateJump = () => {
+    jumpButton.hidden = following || distanceFromBottom(scrollEl) <= BOTTOM_SLACK_PX
+  }
+
+  const write = (top) => {
+    scrollEl.scrollTop = top
+    lastWrite = scrollEl.scrollTop
+  }
+
+  const yieldToReader = () => {
+    following = false
+    anchorSpent = true
+    updateJump()
+  }
+
+  scrollEl.addEventListener('wheel', (event) => {
+    if (event.deltaY < 0) yieldToReader()
+  }, { passive: true })
+  scrollEl.addEventListener('keydown', (event) => {
+    if (KEYS_THAT_SCROLL_UP.has(event.key)) yieldToReader()
+  })
+  scrollEl.addEventListener('scroll', () => {
+    if (Math.abs(scrollEl.scrollTop - lastWrite) < 1) return
+    if (distanceFromBottom(scrollEl) <= BOTTOM_SLACK_PX) {
+      following = true
+      updateJump()
+    } else {
+      yieldToReader()
+    }
+  }, { passive: true })
+
+  return {
+    /** Call after the thread re-renders. `anchorTop` is the latest user message's offset, or null. */
+    afterRender({ anchorTop }) {
+      if (following) {
+        const target = followTarget({
+          scrollHeight: scrollEl.scrollHeight,
+          clientHeight: scrollEl.clientHeight,
+          anchorTop: anchorSpent ? null : anchorTop,
+        })
+        write(target.scrollTop)
+        if (target.capped) {
+          following = false
+          anchorSpent = true
+        }
+      }
+      updateJump()
+    },
+    /** A new question: follow again, anchored on it. */
+    resetForPrompt() {
+      following = true
+      anchorSpent = false
+    },
+    jumpToLatest() {
+      following = true
+      anchorSpent = true
+      write(scrollEl.scrollHeight)
+      updateJump()
+    },
+    /** Content changed size without a re-render (web fonts, wrapping): stay on the bottom if that is where we are following. */
+    onContentResize() {
+      if (!following || !anchorSpent) return
+      write(scrollEl.scrollHeight)
+      updateJump()
+    },
+    isFollowing: () => following,
+  }
+}
+
+/**
+ * Where the drawer list should sit after a re-render: on the latest step when the trace opens,
+ * stuck to the bottom if the reader was there, otherwise exactly where they left it.
+ * @param {{ tab: string, top: number, atBottom: boolean } | null} prev
+ * @param {string} tab
+ */
+export function drawerScrollPlan(prev, tab) {
+  if (!prev || prev.tab !== tab) return { stickToBottom: tab === 'trace', top: 0 }
+  return { stickToBottom: prev.atBottom, top: prev.top }
+}
+
+/** Snapshot of a scroll container before it is replaced. */
+export function scrollSnapshot(el, tab) {
+  return el ? { tab, top: el.scrollTop, atBottom: distanceFromBottom(el) <= BOTTOM_SLACK_PX } : null
+}
