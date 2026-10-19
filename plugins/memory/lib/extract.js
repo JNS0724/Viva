@@ -21,7 +21,8 @@ const MAX_REPLY_CHARS = 1500
 
 export const EXTRACT_SYSTEM = [
   '你是记忆整理员。读一轮对话（用户的话和助手的回答）以及若干条已有记忆，决定是否需要更新用户的长期记忆。',
-  '只记录以后仍然有用、关于用户本人或其工作的信息：身份与职责、常打交道的人、在推进的项目、约定和决定、用户对回答方式的偏好。',
+  '只记录以后仍然有用、关于用户本人或其工作的信息：身份与职责、常打交道的人、在推进的项目、约定和决定、用户对回答方式的偏好，以及常住城市、所在时区这类稳定的个人情况。',
+  'answers（如果有）是用户这一轮对助手提问的回答，和用户自己说的话同等可信；只回答了一次性任务细节的，不要记。',
   '不要记录：一次性的任务内容、助手自己的建议或推测、闲聊、密码密钥验证码证件号等敏感信息、画像或已有记忆里已经有的内容。',
   '每条记忆一句话，写清主语；日期写成具体日期（今天的日期在输入里）。keywords 只写这条记忆的核心对象（人名、项目名、系统名），1–3 个。',
   'kind：role 用户的身份、部门、职责；person 常打交道的人；project 在推进的事；preference 对回答方式的偏好；fact 其他。',
@@ -48,11 +49,12 @@ export function candidatesFor(userWords, memories, lexicon) {
 }
 
 /** Everything goes in as JSON, so nothing the user typed can pose as an instruction or a delimiter. */
-export function extractionInput({ userWords, reply, today, candidates, profile = {} }) {
+export function extractionInput({ userWords, answers = [], reply, today, candidates, profile = {} }) {
   return JSON.stringify({
     today,
     profile: Object.fromEntries(Object.entries(profile).filter(([field]) => field !== 'email').map(([field, entry]) => [field, entry.value])),
     user: userWords,
+    ...(answers.length ? { answers } : {}),
     assistant: String(reply ?? '').slice(0, MAX_REPLY_CHARS),
     memories: candidates.map((memory) => ({ id: memory.id, text: memory.text, kind: memory.kind, writtenBy: memory.source })),
   })
@@ -91,16 +93,19 @@ export function parseExtraction(text) {
 
 /**
  * One background pass. `complete(system, input)` calls the model and resolves to its text.
+ * `answers`: what the user answered to the agent's questions this turn ({ question, answer }).
  * @returns {Promise<null | { added: object[], invalidated: number[] }>} null when the turn was skipped
  * @throws when the model call fails or its answer is unusable; nothing has been written then
  */
-export async function extractTurn({ db, userWords, reply, today, complete }) {
+export async function extractTurn({ db, userWords, answers = [], reply, today, complete }) {
   const memories = db.allMemories()
   const profile = db.getProfile()
   const lexicon = buildLexicon(profile, memories)
-  if (!worthExtracting(userWords, lexicon)) return null
-  const candidates = candidatesFor(userWords, memories, lexicon)
-  const answer = await complete(EXTRACT_SYSTEM, extractionInput({ userWords, reply, today, candidates, profile }))
+  // An answer to the agent's question is the user telling it something: always worth a look.
+  if (answers.length === 0 && !worthExtracting(userWords, lexicon)) return null
+  const said = [userWords, ...answers.map((item) => `${item.question} ${item.answer}`)].join('\n')
+  const candidates = candidatesFor(said, memories, lexicon)
+  const answer = await complete(EXTRACT_SYSTEM, extractionInput({ userWords, answers, reply, today, candidates, profile }))
   const changes = parseExtraction(answer)
   if (changes.add.length === 0 && changes.invalidate.length === 0) return { added: [], invalidated: [] }
   return db.applyExtraction({ ...changes, shown: new Set(candidates.map((memory) => memory.id)) })

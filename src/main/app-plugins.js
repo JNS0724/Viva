@@ -7,24 +7,42 @@ import path from 'node:path'
  * so a plugin can be replaced by any other that provides the same contract version.
  */
 
-/** dsh's ACP template calls the model a coding agent; this app is a personal work assistant. */
+/**
+ * dsh's ACP template calls the model a coding agent; this app is a personal work assistant.
+ * The middle part is when to ask instead of guessing (ask_user_question, from the questions plugin) and to
+ * keep what the user said for next time (memory_remember, from the memory plugin).
+ */
 export const PERSONA = Object.freeze({
   prefix: [
     '你是用户的个人工作助手，运行在用户自己的电脑上，由 {{model}} 模型驱动。',
     '你帮助用户处理日常工作：写作、整理资料、检索信息、分析问题和编程。用用户使用的语言回答。',
     '涉及对外发送的事（邮件、即时消息等），你只起草，由用户自己决定是否发送。',
+    '缺少信息时：如果答案取决于一项用户没说的关键信息（例如地点、时间范围、对象、账号、版本），',
+    '先看对话和关于用户的记忆（不确定时用 memory_recall 查）。',
+    '仍然没有，或者只有时区、IP、系统语言这类不可靠的线索，而猜错会让回答白做时，先用 ask_user_question 问用户，',
+    '给出 2–4 个最可能的选项，不要先猜着做完再让用户纠正。',
+    '只问会改变结果的信息，一次问完；猜错代价很小、或用户要你直接给结果时，就按最可能的情况做，并在回答开头说明你的假设。',
+    '用户告诉你的是以后还用得上的稳定信息（例如常住城市、所在时区、常用账号）时，用 memory_remember 记下来，下次就不用再问。',
   ].join(''),
   suffix: '你的工作目录是 {{cwd}}。',
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1 })
+export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1 })
 
-/** config: built from the app's data directory, written into the profile for the plugin. */
+/**
+ * config: built from the app's data directory, written into the profile for the plugin.
+ * stock: dsh's own entries the plugin is for, switched on only while the plugin is (an ask tool nobody
+ * answers would leave the model waiting).
+ */
 export const APP_PLUGINS = Object.freeze([
   { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData }) => ({ file: path.join(userData, 'memory.db') }) },
   { name: 'viva-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
   { name: 'viva-policy', dir: 'plugins/policy', contract: 'policy', config: () => ({}) },
+  {
+    name: 'viva-questions', dir: 'plugins/questions', contract: 'questions', config: () => ({}),
+    stock: [{ id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' }],
+  },
 ])
 
 /** The dsh version installed with the app; plugins pin their dsh peers to it. */
@@ -60,7 +78,7 @@ export function pluginProblem(plugin, { dir, dshVersion }) {
 
 /**
  * The plugins to put in the profile, with their config, and the ones left out with the reason.
- * @returns {{ plugins: Array<{ name: string, dir: string, config: object }>, problems: Array<{ name: string, contract: string, problem: string }> }}
+ * @returns {{ plugins: Array<{ name: string, dir: string, config: object, stock: Array<{ id: string, name: string }> }>, problems: Array<{ name: string, contract: string, problem: string }> }}
  */
 export function resolvePlugins({ appRoot, userData, dshVersion, plugins = APP_PLUGINS }) {
   return plugins.reduce(({ plugins: usable, problems }, plugin) => {
@@ -68,6 +86,6 @@ export function resolvePlugins({ appRoot, userData, dshVersion, plugins = APP_PL
     const problem = pluginProblem(plugin, { dir, dshVersion })
     return problem
       ? { plugins: usable, problems: [...problems, { name: plugin.name, contract: plugin.contract, problem }] }
-      : { plugins: [...usable, { name: plugin.name, dir, config: plugin.config({ userData }) }], problems }
+      : { plugins: [...usable, { name: plugin.name, dir, config: plugin.config({ userData }), stock: plugin.stock ?? [] }], problems }
   }, { plugins: [], problems: [] })
 }

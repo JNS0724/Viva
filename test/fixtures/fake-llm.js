@@ -5,6 +5,7 @@
  *
  * - 「记住：X」 → calls memory_remember with X, and the names from KNOWN_NAMES in X as keywords;
  * - 「查一下 X」 → calls memory_recall with X;
+ * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
  * - after a tool result → says what the tool did;
  * - anything else → 「收到：…」, prefixed with what background it was given;
  * - the memory plugin's background extractor gets the answers of `extract` below.
@@ -15,6 +16,10 @@ import http from 'node:http'
 const KNOWN_NAMES = ['张三', '李四', '王五', '周报', '对账系统', '结算口径']
 const REMEMBER = /记住[:：]\s*(.+)$/s
 const RECALL = /查一下\s*(.+)$/s
+const WEATHER = /明天.*天气/
+export const CITY_QUESTION = Object.freeze({
+  id: 'city', question: '你想看哪个城市的天气？', header: '城市', options: [{ label: '上海' }, { label: '北京' }],
+})
 const CONTEXT_OPEN = '<about-user>'
 /** 「发邮件…」 / 「存草稿…」 call the MCP tool whose name ends so; dsh prefixes it with the hashed server name. */
 const MAIL = [[/^发邮件/, '__send_email'], [/^存草稿/, '__create_draft']]
@@ -40,8 +45,24 @@ function lastToolUse(messages) {
   return null
 }
 
+const resultText = (result) => (Array.isArray(result.content) ? result.content.map((part) => part.text ?? '').join('') : String(result.content ?? ''))
+
+/** What the user answered to the city question, or null when the tool came back without an answer. */
+function cityFrom(result) {
+  try {
+    const answer = JSON.parse(resultText(result)).answers?.find((item) => item.id === CITY_QUESTION.id)
+    return answer?.custom || answer?.selected?.[0] || null
+  } catch {
+    return null
+  }
+}
+
 function afterTool(messages, result) {
   const use = lastToolUse(messages)
+  if (use?.name === 'ask_user_question') {
+    const city = cityFrom(result)
+    return { text: city ? `好的，按${city}来看：明天多云转晴。` : `没问到城市：${resultText(result)}` }
+  }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
   const saved = output.includes('已记住') || output.includes('之前已经记过')
@@ -53,13 +74,16 @@ const EXTRACTOR = '记忆整理员'
 const NEW_MANAGER = /现在(?:我的)?(?:直属)?上级是(\S{2,4}?)[，。,.]?$/
 
 /**
- * Plays the background extractor (plugins/memory/lib/extract.js): 「以后…」 becomes a preference, and a new
- * manager replaces the agent's memory about the old one. Anything else: no change.
+ * Plays the background extractor (plugins/memory/lib/extract.js): 「以后…」 becomes a preference, a new
+ * manager replaces the agent's memory about the old one, and a city the user answered with is kept.
+ * Anything else: no change.
  */
 function extract(request) {
   const input = JSON.parse(textParts(request.messages[request.messages.length - 1])[0])
   const add = []
   if (/^以后/.test(input.user)) add.push({ text: input.user.replace(/^以后/, '').replace(/[，,]/, ''), kind: 'preference', keywords: [] })
+  const city = input.answers?.find((item) => item.question.includes('城市'))?.answer
+  if (city) add.push({ text: `用户在${city}`, kind: 'fact', keywords: [city] })
   const manager = NEW_MANAGER.exec(input.user)
   if (manager) {
     const old = input.memories.find((memory) => memory.text.includes('上级'))
@@ -98,6 +122,7 @@ export function decide(request) {
     const keywords = KNOWN_NAMES.filter((name) => text.includes(name)).sort((a, b) => text.indexOf(a) - text.indexOf(b))
     return { tool: { name: 'memory_remember', input: { text, keywords } } }
   }
+  if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }
   const mail = MAIL.find(([pattern]) => pattern.test(question))

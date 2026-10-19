@@ -6,7 +6,8 @@
  *   source-attributed user message: today's date, rules and profile when due, and memories about names
  *   the user mentioned.
  * - It registers the memory tools (lib/tools.js), which the model uses when the user asks it to remember.
- * - After each turn, in the background, a second model call proposes what else to keep (lib/extract.js);
+ * - After each turn, in the background, a second model call proposes what else to keep (lib/extract.js),
+ *   from what the user said, including answers to the agent's questions (ask_user_question);
  *   the store applies it all or nothing, and never over what the user wrote. Then, when it is due
  *   (a day old, or enough has changed), the profile is synthesised again from the valid memories
  *   (lib/synthesize.js). Both reuse the agent's own model route.
@@ -58,6 +59,48 @@ function turnEvents(agent, turn) {
 function userWords(agent, turn, proposed) {
   const entered = turnEvents(agent, turn).filter((event) => event.type === 'user/message').map((event) => event.data)
   return [...entered, ...proposed].filter(isFromUser).map(textOf).join('\n')
+}
+
+const ASK_TOOL = 'ask_user_question'
+
+const argumentsOf = (block) => {
+  if (typeof block.arguments !== 'string') return block.arguments ?? {}
+  try {
+    return JSON.parse(block.arguments)
+  } catch {
+    return {}
+  }
+}
+
+/** One answer of ask_user_question's result, as the user would say it. */
+const saidOf = (answer) => [...(answer.selected ?? []), answer.custom].filter(Boolean).join('、')
+
+/**
+ * What the user answered this turn when the agent asked (ask_user_question): each question with its answer.
+ * The question is in the agent's tool call, the answer in the tool's result.
+ */
+function answersOf(agent, turn) {
+  const events = turnEvents(agent, turn)
+  const asked = new Map(events
+    .filter((event) => event.type === 'assistant/message')
+    .flatMap((event) => event.data.message?.content ?? [])
+    .filter((block) => block.type === 'tool-call' && block.name === ASK_TOOL)
+    .map((block) => [block.id, argumentsOf(block).questions ?? []]))
+  return events
+    .filter((event) => event.type === 'tool/result' && asked.has(event.data.message?.toolCallId) && !event.data.message.isError)
+    .flatMap((event) => {
+      let result
+      try {
+        result = JSON.parse(textOf(event.data.message))
+      } catch {
+        return []
+      }
+      const questions = asked.get(event.data.message.toolCallId)
+      return (result.answers ?? []).map((answer) => ({
+        question: questions.find((item) => item.id === answer.id)?.question ?? '',
+        answer: saidOf(answer),
+      })).filter((item) => item.answer)
+    })
 }
 
 /** dsh logs an assistant message as `{ turn, step, message }`, unlike a user message, which is the message itself. */
@@ -122,7 +165,9 @@ function registerAfterTurn(ctx, db, enabled) {
     running.add(controller)
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(AFTER_TURN_TIMEOUT_MS)])
     const call = (maxTokens) => (system, input) => complete(ctx, agent, { system, input, signal, maxTokens })
-    const extract = () => extractTurn({ db, userWords: words.text, reply: replyOf(agent, turn), today: dateLine(), complete: call(EXTRACT_MAX_TOKENS) })
+    const extract = () => extractTurn({
+      db, userWords: words.text, answers: answersOf(agent, turn), reply: replyOf(agent, turn), today: dateLine(), complete: call(EXTRACT_MAX_TOKENS),
+    })
       .catch((err) => log(`background extraction skipped: ${messageOf(err)}`))
     const synthesize = () => synthesizeProfile({ db, complete: call(SYNTHESIS_MAX_TOKENS) })
       .catch((err) => log(`profile synthesis skipped: ${messageOf(err)}`))

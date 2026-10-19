@@ -114,6 +114,22 @@ test('a preference the model did not save is picked up in the background after t
   assert.equal(saved?.source, 'agent')
 })
 
+test('what the user answers to the agent\'s question is kept for next time', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const { file, events, bridge, defer } = await setup(t)
+  const db = openDb(defer, file)
+  const agent = bridge()
+  await agent.start()
+
+  const turn = agent.prompt('明天天气怎么样')
+  const asked = await eventually(() => events.find((event) => event.type === 'question'))
+  agent.answerQuestion(asked.questionId, [{ id: 'city', selected: ['上海'] }])
+  await turn
+
+  const saved = await eventually(() => db.listMemories().items.find((m) => m.text.includes('上海')))
+  assert.equal(saved?.text, '用户在上海')
+  assert.equal(saved?.source, 'agent')
+})
+
 test('a changed fact replaces the agent memory it contradicts, which stays as history', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { file, bridge, defer } = await setup(t)
   const db = openDb(defer, file)

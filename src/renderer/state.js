@@ -1,5 +1,7 @@
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
+import { QUESTION_ACTIONS } from './question-state.js'
+import { closeLast, closeStreams } from './streams.js'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.js'
 
 /**
@@ -14,6 +16,8 @@ export const initialState = Object.freeze({
   tools: {},
   timeline: [],
   permission: null,
+  /** A question the agent is waiting on (question-state.js). */
+  question: null,
   turn: null,
   lastReceipt: null,
   drawer: null,
@@ -73,18 +77,6 @@ function contentText(content) {
   if (!content) return ''
   if (content.type === 'text') return content.text ?? ''
   return `[${content.type}]`
-}
-
-function closeLast(list) {
-  const last = list[list.length - 1]
-  if (!last?.open) return list
-  return [...list.slice(0, -1), { ...last, open: false }]
-}
-
-function closeStreams(state) {
-  const messages = closeLast(state.messages)
-  const thoughts = closeLast(state.thoughts)
-  return messages === state.messages && thoughts === state.thoughts ? state : { ...state, messages, thoughts }
 }
 
 function appendStream(list, chunk, makeItem) {
@@ -222,6 +214,7 @@ const ACTION_HANDLERS = {
       ...closed,
       phase: 'idle',
       permission: null,
+      question: null,
       turn: null,
       lastReceipt: receipt,
       messages: attachReceipt(closed.messages, receipt),
@@ -234,6 +227,7 @@ const ACTION_HANDLERS = {
     phase: 'error',
     error: message || '未知错误',
     permission: null,
+    question: null,
     turn: null,
   }),
 
@@ -321,6 +315,7 @@ const ACTION_HANDLERS = {
   ...HISTORY_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,
+  ...QUESTION_ACTIONS,
 }
 
 /**
@@ -334,4 +329,4 @@ export function reduce(state, action) {
 }
 
 /** @param {typeof initialState} state */
-export const isBusy = (state) => state.phase === 'working' || state.phase === 'waiting'
+export const isBusy = (state) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'

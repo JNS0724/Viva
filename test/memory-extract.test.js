@@ -41,6 +41,17 @@ test('chit-chat skips the model call; talk about the user, their work or named t
   assert.equal(worthExtracting('张三下周去上海出差', lexicon), true)
 })
 
+test('an answer to the agent\'s question always gets a look, and reaches the extractor beside the user\'s words', async (t) => {
+  const db = tempDb(t, () => 1000)
+  const inputs = []
+  await extractTurn({
+    db, userWords: '明天天气', answers: [{ question: '你想看哪个城市的天气？', answer: '上海' }], reply: '', today: 'x',
+    complete: async (_system, input) => { inputs.push(JSON.parse(input)); return '{"add":[],"invalidate":[]}' },
+  })
+  assert.deepEqual(inputs.map((input) => [input.user, input.answers]), [['明天天气', [{ question: '你想看哪个城市的天气？', answer: '上海' }]]])
+  assert.equal(JSON.parse(extractionInput({ userWords: 'x', reply: '', today: 'x', candidates: [] })).answers, undefined, 'no answers, no field')
+})
+
 test('the extractor sees the profile, so it does not repeat it, but never the email', () => {
   const input = JSON.parse(extractionInput({
     userWords: '我是后端负责人', reply: '', today: 'x', candidates: [],

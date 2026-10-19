@@ -130,6 +130,7 @@ function workingEvent(state, now) {
 /** Copy and tone for the avatar/status island. */
 export function statusView(state, now = Date.now()) {
   if (state.phase === 'waiting') return { tone: 'waiting', label: '等待你确认', event: truncate(state.permission?.title, EVENT_LIMIT) }
+  if (state.phase === 'asking') return { tone: 'waiting', label: '等你回答', event: truncate(state.question?.questions[0]?.question, EVENT_LIMIT) }
   if (state.phase === 'working') return { tone: 'working', label: '工作中', event: workingEvent(state, now) }
   if (state.phase === 'error') return { tone: 'error', label: '出错', event: truncate(state.error, EVENT_LIMIT) }
   if (state.info.mode === 'connecting') return { tone: 'pending', label: '连接中', event: 'DEEPSEEK HARNESS' }
@@ -178,6 +179,10 @@ const TRACE_BUILDERS = {
     return tool && { title: tool.title, detail: toolDetail(tool), tone: TOOL_TONE[tool.status] ?? 'pending' }
   },
   permission: (_state, entry) => ({ title: '请求你确认', detail: entry.title, tone: 'waiting' }),
+  question: (_state, entry) => ({ title: '向你提问', detail: entry.title, tone: 'waiting' }),
+  answer: (_state, entry) => (entry.answered
+    ? { title: '你的回答', detail: entry.title, tone: 'done' }
+    : { title: '问题未回答', detail: entry.title, tone: 'idle' }),
   decision: (_state, entry) => ({
     title: entry.allowed ? `你选择了「${entry.choice}」` : `未授权 · ${entry.choice}`,
     detail: entry.title,

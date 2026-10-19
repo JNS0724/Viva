@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ensureDshProfile } from '../src/main/dsh-profile.js'
+import { ensureDshProfile, patchFor } from '../src/main/dsh-profile.js'
 
 function setup(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-profile-'))
@@ -97,4 +97,12 @@ test('an unreadable manifest stops with its path instead of being overwritten', 
 
   assert.throws(() => ensureDshProfile(options), /package\.json 无法读取/)
   assert.equal(read(dir, 'package.json'), '{ not json')
+})
+
+test('a plugin\'s stock dsh entries are switched on with it, and only with it', () => {
+  const questions = { name: 'viva-questions', dir: '/app/plugins/questions', config: {}, stock: [{ id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' }] }
+  const policy = { name: 'viva-policy', dir: '/app/plugins/policy', config: {} }
+
+  assert.match(patchFor({ plugins: [policy, questions] }), /- id: viva-questions\n {6}name: viva-questions\n {4}- id: tool-ask-user\n {6}name: '@deepseek-ai\/dsh-tool-ask-user'\n/)
+  assert.doesNotMatch(patchFor({ plugins: [policy] }), /tool-ask-user/)
 })

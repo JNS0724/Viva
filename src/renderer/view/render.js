@@ -64,16 +64,21 @@ function renderToastIfChanged(container, toast, handlers) {
   renderToast(container, toast, handlers)
 }
 
-/** While the agent cannot start, the composer is disabled and says why; while switching, only sending waits. */
-function renderComposerAvailability(dom, setup, switching) {
+const ANSWER_PLACEHOLDER = '输入你的回答 · Enter 发送'
+
+/**
+ * While the agent cannot start, the composer is disabled and says why; while switching, only sending waits;
+ * while the agent asks, it takes the answer.
+ */
+function renderComposerAvailability(dom, setup, switching, asking) {
   dom.input.dataset.placeholder ??= dom.input.placeholder
   dom.input.disabled = Boolean(setup)
-  dom.input.placeholder = setup?.placeholder ?? dom.input.dataset.placeholder
+  dom.input.placeholder = setup?.placeholder ?? (asking ? ANSWER_PLACEHOLDER : dom.input.dataset.placeholder)
   dom.sendBtn.disabled = Boolean(setup) || switching
 }
 
 function renderComposer(dom, state, handlers) {
-  renderComposerAvailability(dom, setupView(state.info), state.switching)
+  renderComposerAvailability(dom, setupView(state.info), state.switching, Boolean(state.question))
   const busy = isBusy(state)
   dom.sendBtn.dataset.busy = String(busy)
   dom.sendBtn.setAttribute('aria-label', busy ? '停止' : '发送')

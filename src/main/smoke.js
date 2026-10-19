@@ -1,17 +1,11 @@
 import fs from 'node:fs/promises'
-import path from 'node:path'
+import { capture, click, finishTurn, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 import { checkMemory } from './smoke-memory.js'
 
 const BOOT_WAIT_MS = 1500
-const UI_WAIT_MS = 600
-const STREAM_PEEK_MS = 3300
-const TURN_WAIT_MS = 4500
-const ALLOW_WAIT_MS = 2500
 const DRAWER_PARK_AFTER_MS = 2200
 const DRAWER_HOLD_MS = 1500
 const LONG_ANSWER_WAIT_MS = 5500
-const IDLE_POLL_MS = 200
-const IDLE_TIMEOUT_MS = 20_000
 const DRAWER_PARK_TOP = 120
 /** The latest question may sit a little below the top (gap + padding), but must stay on screen. */
 const QUESTION_TOP_RANGE = [0, 80]
@@ -28,27 +22,8 @@ const SEARCH_TEXT = '整理成'
 const LONG_PROMPT = '演示一个长任务'
 const MARKDOWN_PROMPT = '格式演示'
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 /** Both prompts the walkthrough sends; the relaunch expects to find them again. */
 const WALKTHROUGH_QUESTIONS = 2
-
-function report(line) {
-  process.stdout.write(`[smoke] ${line}\n`)
-}
-
-async function capture(win, outDir, name) {
-  const image = await win.webContents.capturePage()
-  const file = path.join(outDir, `${name}.png`)
-  await fs.writeFile(file, image.toPNG())
-  report(`saved ${file}`)
-}
-
-const run = (win, code) => win.webContents.executeJavaScript(code)
-const click = (win, id) => run(win, `document.getElementById(${JSON.stringify(id)}).click()`)
-const submit = (win, text) => run(win, `(() => {
-  document.getElementById('composer-input').value = ${JSON.stringify(text)}
-  document.getElementById('composer').requestSubmit()
-})()`)
 
 const THREAD_METRICS = `(() => {
   const scroll = document.getElementById('scroll')
@@ -175,20 +150,6 @@ async function checkSetup(win, outDir) {
   return failures
 }
 
-/** The turn is over and fully typed out, so it has been saved to history. */
-async function waitForIdle(win) {
-  const deadline = Date.now() + IDLE_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    const idle = await run(win, `(() => {
-      const send = document.getElementById('send-btn')
-      return send.dataset.busy === 'false' && !send.disabled && !document.querySelector('.caret')
-    })()`)
-    if (idle) return
-    await wait(IDLE_POLL_MS)
-  }
-  throw new Error('the long task never finished')
-}
-
 /** Second launch on the same profile: last launch's conversation is back, at the bottom, and the agent resumed it. */
 async function checkRelaunch(win, outDir) {
   const restored = await run(win, `(() => {
@@ -227,28 +188,16 @@ async function checkIslandOnTop(win, outDir) {
   return seen.open && seen.onTop ? [] : [`the island popover should sit on top of the thread: ${JSON.stringify(seen)}`]
 }
 
-/** Tour from a clean profile on the fake dsh: model menu, streaming, layouts, permission, the long task, settings. */
+/** Tour from a clean profile on the fake dsh: an answer waiting on a permission card, the layouts around it, the long task. */
 async function walkthrough(win, outDir) {
   await capture(win, outDir, 'home')
-  await click(win, 'model-btn')
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'model-menu')
-  await run(win, `document.querySelector('.effort[aria-pressed="false"]').click()`)
-  await wait(UI_WAIT_MS)
-  await run(win, 'document.body.click()')
   await submit(win, SMOKE_PROMPT)
-  await wait(STREAM_PEEK_MS)
-  await capture(win, outDir, 'streaming')
-  await wait(TURN_WAIT_MS)
+  await until(win, `Boolean(document.querySelector('.confirm .btn-ink'))`, 'the permission card')
   await capture(win, outDir, 'chat')
-  const layoutFailures = [...await checkIslandOnTop(win, outDir), ...await checkLayouts(win, outDir)]
-  await run(win, `document.querySelector('.confirm .btn-ink').click()`)
-  await wait(ALLOW_WAIT_MS)
-  const failures = [...layoutFailures, ...await checkLongTask(win, outDir)]
-  await waitForIdle(win)
-  await click(win, 'open-settings')
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'settings')
+  const failures = [...await checkIslandOnTop(win, outDir), ...await checkLayouts(win, outDir)]
+  await finishTurn(win)
+  failures.push(...await checkLongTask(win, outDir))
+  await finishTurn(win)
   return failures
 }
 
@@ -274,7 +223,7 @@ async function checkMarkdown(win, outDir) {
   await click(win, 'new-session')
   await wait(UI_WAIT_MS)
   await submit(win, MARKDOWN_PROMPT)
-  await waitForIdle(win)
+  await finishTurn(win)
   await wait(UI_WAIT_MS)
   const seen = await run(win, MARKDOWN_STATE)
   const expected = {
@@ -288,8 +237,6 @@ async function checkMarkdown(win, outDir) {
   }
   await run(win, `[...document.querySelectorAll('.markdown')].at(-1).scrollIntoView({ block: 'start' })`)
   await capture(win, outDir, 'markdown')
-  await run(win, `[...document.querySelectorAll('.markdown')].at(-1).scrollIntoView({ block: 'end' })`)
-  await capture(win, outDir, 'markdown-end')
   // Neither a page script nor a link may take the window away from the app or open another one.
   const before = await run(win, 'location.href')
   await run(win, `window.location.assign('https://example.com/'); window.__opened = window.open('https://example.com/') !== null`)
@@ -348,11 +295,9 @@ async function historyPanelSteps(win, outDir, failures) {
 
   await run(win, 'document.body.click()')
   await click(win, 'new-session')
-  await waitForIdle(win)
+  await finishTurn(win)
   await submit(win, SECOND_PROMPT)
-  await wait(STREAM_PEEK_MS + TURN_WAIT_MS)
-  await run(win, `document.querySelector('.confirm .btn-ink').click()`)
-  await waitForIdle(win)
+  await finishTurn(win)
   await click(win, 'toggle-history')
   await wait(UI_WAIT_MS)
   seen = await panel()
@@ -416,7 +361,7 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hook
     await wait(BOOT_WAIT_MS)
     if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
     else if (smokePhase === 'relaunch') problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
-    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, report, hooks))
+    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
     else problems.push(...await walkthrough(win, outDir))
   } catch (err) {
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)

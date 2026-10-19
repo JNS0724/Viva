@@ -2,6 +2,7 @@ import { createExtensionActions } from './extension-actions.js'
 import { createHistoryActions } from './history-actions.js'
 import { createMemoryActions } from './memory-actions.js'
 import { createModelActions } from './model-actions.js'
+import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { render, renderStream, renderTick } from './view/render.js'
@@ -125,6 +126,16 @@ function ask(text) {
   return true
 }
 
+/** Answers the agent's open question; the reply shows at once, like an approval. */
+function answer(answers) {
+  const question = state.question
+  if (!question) return
+  dispatch({ type: 'question_answered', questionId: question.questionId, answers, at: Date.now() })
+  api.answerQuestion(question.questionId, answers)
+    .then((accepted) => accepted || historyActions.showToast('这个问题已经结束，回答没有送出'))
+    .catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+}
+
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
@@ -144,7 +155,27 @@ const handlers = {
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     const text = dom.input.value.trim()
-    if (ask(text)) dom.input.value = ''
+    if (state.question) {
+      if (!text) return
+      answer(answersFrom(state.question, text))
+      dom.input.value = ''
+    } else if (ask(text)) dom.input.value = ''
+  },
+  /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
+  pickOption(id, label) {
+    const question = state.question
+    if (!question) return
+    const only = question.questions.length === 1 && !question.questions[0].multiSelect
+    if (only) answer([{ id, selected: [label] }])
+    else dispatch({ type: 'question_pick', id, label })
+  },
+  submitAnswer() {
+    if (!state.question) return
+    answer(answersFrom(state.question, dom.input.value))
+    dom.input.value = ''
+  },
+  skipQuestion() {
+    if (state.question) answer(state.question.questions.map((item) => ({ id: item.id, selected: [] })))
   },
   toastAction(toast) {
     dispatch({ type: 'toast_hide', key: toast.key })
@@ -225,6 +256,8 @@ const EVENT_ACTIONS = {
   permission: (event) => ({
     type: 'permission_request', requestId: event.requestId, toolCall: event.toolCall, options: event.options, at: Date.now(),
   }),
+  question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
+  question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
   turn_end: (event) => ({ type: 'turn_end', stopReason: event.stopReason, at: Date.now() }),
   memory_context: (event) => ({ type: 'memory_context', injected: event.injected }),
   error: (event) => ({ type: 'error', message: event.message }),
@@ -233,7 +266,9 @@ const EVENT_ACTIONS = {
 function wireComposer() {
   dom.composer.addEventListener('submit', (event) => {
     event.preventDefault()
-    if (isBusy(state)) handlers.cancel()
+    // While the agent asks, words in the composer answer it; with none, the button stops the turn.
+    if (state.question && dom.input.value.trim()) handlers.send()
+    else if (isBusy(state)) handlers.cancel()
     else handlers.send()
   })
   dom.input.addEventListener('keydown', (event) => {

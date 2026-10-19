@@ -312,6 +312,7 @@ function registerAgentIpc() {
     const option = optionId === null ? null : assertText(optionId, 'optionId', 200)
     return bridge?.respondPermission(id, option) ?? false
   })
+  ipcMain.handle('agent:answer', (_event, questionId, answers) => bridge?.answerQuestion(assertText(questionId, 'questionId', 200), answers) ?? false)
 }
 
 function registerSettingsIpc() {

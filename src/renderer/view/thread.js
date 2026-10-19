@@ -51,8 +51,13 @@ function assistantView(message, handlers, traceReady) {
       message.receipt && !typing ? receiptButton(message, handlers, traceReady) : null))
 }
 
+/** A reply to the agent's question shows what it answers. */
+const userView = (message) => (message.asked
+  ? h('div', { class: 'msg-user msg-answer' }, h('div', { class: 'msg-asked', text: message.asked }), h('div', { text: message.text }))
+  : h('div', { class: 'msg-user', text: message.text }))
+
 const MESSAGE_VIEWS = {
-  user: (message) => h('div', { class: 'msg-user', text: message.text }),
+  user: userView,
   assistant: assistantView,
   note: (message, handlers, traceReady) => h('div', { class: 'msg-note' },
     h('span', { text: message.text }),
@@ -76,6 +81,38 @@ function permissionCard(permission, handlers) {
       h('span', { class: 'confirm-hint', text: '有风险的操作总会先问你' })))
 }
 
+function questionItem(item, question, handlers) {
+  const picked = question.picks[item.id] ?? []
+  return h('div', { class: 'ask-item' },
+    item.header ? h('span', { class: 'ask-header', text: item.header }) : null,
+    h('div', { class: 'ask-question', text: item.question }),
+    item.options.length ? h('div', { class: 'ask-options', role: item.multiSelect ? 'group' : 'radiogroup', 'aria-label': item.question },
+      item.options.map((option) => h('button', {
+        class: picked.includes(option.label) ? 'btn btn-ink ask-option' : 'btn btn-ghost-ink ask-option',
+        'aria-pressed': String(picked.includes(option.label)),
+        title: option.description ?? null,
+        text: option.label,
+        onClick: () => handlers.pickOption(item.id, option.label),
+      }))) : null)
+}
+
+/**
+ * The agent's question, mid-turn. A single question with single choice is answered by its option; otherwise
+ * picks are gathered and sent with 提交. Words typed in the composer (Enter) answer it too.
+ */
+function questionCard(question, handlers) {
+  const single = question.questions.length === 1 && !question.questions[0].multiSelect
+  return h('section', { class: 'confirm ask', 'aria-label': '助手在问你' },
+    h('div', { class: 'confirm-head' },
+      h('span', { text: 'QUESTION · 需要你回答' }),
+      h('span', { class: 'pulse-dot' })),
+    question.questions.map((item) => questionItem(item, question, handlers)),
+    h('div', { class: 'confirm-actions' },
+      single ? null : h('button', { class: 'btn btn-ink ask-submit', text: '提交', onClick: () => handlers.submitAnswer() }),
+      h('button', { class: 'btn btn-ghost-ink ask-skip', text: '跳过', onClick: () => handlers.skipQuestion() }),
+      h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' })))
+}
+
 function workingRow(state, now) {
   return h('div', { class: 'msg-working', role: 'status' },
     h('span', { class: 'typing' }, h('i'), h('i'), h('i')),
@@ -89,7 +126,7 @@ function errorRow(message) {
     h('div', { class: 'muted', text: '检查模型的 key 和接口地址、网络，或查看终端日志。' }))
 }
 
-/** Conversation column: only user text, assistant text, receipts and the confirmation card. */
+/** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container, state, handlers, now) {
   const last = state.messages[state.messages.length - 1]
   const note = restoredNote(state, now)
@@ -98,6 +135,7 @@ export function renderThread(container, state, handlers, now) {
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',
+    state.question ? questionCard(state.question, handlers) : '',
     state.phase === 'working' && !last?.open ? workingRow(state, now) : '',
     state.phase === 'error' ? errorRow(state.error) : '',
   )

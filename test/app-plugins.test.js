@@ -31,8 +31,12 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-memory', { file: path.join('/data', 'memory.db') }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
     ['viva-policy', {}],
+    ['viva-questions', {}],
   ])
+  assert.deepEqual(plugins.find((plugin) => plugin.name === 'viva-questions').stock.map((entry) => entry.name), ['@deepseek-ai/dsh-tool-ask-user'])
   assert.match(PERSONA.prefix, /个人工作助手/)
+  assert.match(PERSONA.prefix, /ask_user_question/, 'the model is told when to ask instead of guessing')
+  assert.match(PERSONA.prefix, /memory_remember/, 'and to keep what the user told it')
   assert.doesNotMatch(PERSONA.prefix, /coding agent/)
 })
 

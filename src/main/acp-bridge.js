@@ -4,6 +4,7 @@ import { Readable, Writable } from 'node:stream'
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { dshLaunch } from './config.js'
 import { createPermissionBroker } from './permission-broker.js'
+import { createQuestionDesk } from './question-channel.js'
 import { describeConfig, describeError } from './session-info.js'
 
 const STDERR_TAIL_LIMIT = 4000
@@ -39,7 +40,8 @@ const isRunning = (target) => (target.exitCode ?? target.signalCode ?? null) ===
 
 /**
  * Drives `dsh --profile <profile>` over stdio. Everything the agent reports is forwarded through `emit`
- * as plain objects: ready / update / config / permission / turn_end / error.
+ * as plain objects: ready / update / config / permission / question / question_closed / turn_end / error.
+ * Questions come from the app's dsh plugin over an IPC channel beside stdio (question-channel.js).
  * `mcpServers()` lists the MCP servers to attach to each session (read again on every new or resumed session).
  * `onExit`, when given, hears about dsh ending on its own (a crash) instead of the window getting an error,
  * so the owner can start it again.
@@ -56,6 +58,13 @@ export function createAcpBridge({
   let canResume = false
   let stderrTail = ''
   let disposed = false
+  const questions = createQuestionDesk({
+    send: (message) => {
+      if (child?.connected) child.send(message)
+    },
+    emit,
+    sessionId: () => sessionId,
+  })
 
   const infoFrom = (configOptions) => ({ mode: 'live', cwd, reason: '', sessionId, mcp, ...describeConfig(configOptions) })
 
@@ -77,7 +86,8 @@ export function createAcpBridge({
 
   function spawnRuntime() {
     const { command, args } = dshLaunch(dshBin, nodeBin, profile)
-    child = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    child = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
+    child.on('message', (message) => questions.receive(message))
     child.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
     })
@@ -177,6 +187,7 @@ export function createAcpBridge({
   /** Leaves the current session for `targetSessionId` (a reopened conversation), or for a fresh one when null. */
   async function switchSession(targetSessionId) {
     await cancel()
+    questions.declineAll()
     try {
       await connection.closeSession({ sessionId })
     } catch (err) {
@@ -196,6 +207,9 @@ export function createAcpBridge({
   function respondPermission(requestId, optionId) {
     return broker.resolve(requestId, optionId)
   }
+
+  /** @returns {boolean} false when the question is no longer waiting; throws when the answer does not fit it */
+  const answerQuestion = (questionId, answers) => questions.answer(questionId, answers)
 
   /**
    * Ends what dsh started too (MCP servers): on Windows a signal reaches only the one process, so the
@@ -223,5 +237,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, dispose, pid }
+  return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, dispose, pid }
 }

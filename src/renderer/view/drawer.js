@@ -81,7 +81,7 @@ function rail(state, handlers) {
     'aria-label': tab.name,
     title: tab.name,
     onClick: () => handlers.openDrawer(tab.id),
-  }, icon(tab.icon, 20), tab.id === 'trace' && state.phase === 'waiting' ? h('span', { class: 'rail-dot' }) : null)))
+  }, icon(tab.icon, 20), tab.id === 'trace' && (state.phase === 'waiting' || state.phase === 'asking') ? h('span', { class: 'rail-dot' }) : null)))
 }
 
 /** Right-hand drawer: an icon rail when closed, tabbed tool panels when open. */

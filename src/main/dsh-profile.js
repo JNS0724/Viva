@@ -52,7 +52,7 @@ function modelLines({ providers, deepseek, defaultModel }) {
 
 /**
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
- * stated; then the plugins are inserted.
+ * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
 export function patchFor({ plugins, persona, models }) {
   const lines = ['# Written by Viva on every launch; edits here are replaced.']
@@ -63,6 +63,7 @@ export function patchFor({ plugins, persona, models }) {
   if (plugins.length) {
     lines.push('- insert:')
     for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${plugin.name}`, ...configLines(plugin.config, '      '))
+    for (const entry of plugins.flatMap((plugin) => plugin.stock ?? [])) lines.push(`    - id: ${entry.id}`, `      name: ${yamlString(entry.name)}`)
   }
   return `${lines.join('\n')}\n`
 }
