@@ -4,6 +4,12 @@
   "version": "0.1.0",
   "private": true,
   "description": "Viva：个人桌面助手，Electron 外壳 + DeepSeek Harness（ACP）",
+  "license": "MIT",
+  "author": "JNS0724",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JNS0724/Viva.git"
+  },
   "type": "module",
   "main": "src/main/main.js",
   "scripts": {
@@ -43,7 +49,7 @@
       "src/**/*",
       "plugins/**/*"
     ],
-    "asar": false,
+    "asar": true,
     "npmRebuild": false,
     "mac": {
       "target": [

@@ -83,11 +83,22 @@ if ($Package) {
     "installer: $($installer.Name) $([math]::Round($installer.Length / 1MB)) MB" | Add-Content (Join-Path $report 'environment.txt')
     $installDir = Join-Path $env:TEMP 'viva-installed'
     Step 'install-app' {
+      $started = Get-Date
       $setup = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
-      if (Test-Path (Join-Path $installDir 'Viva.exe')) { "installed into $installDir" } else { 'Viva.exe not found after installing' }
+      $seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
+      $count = (Get-ChildItem $installDir -Recurse -File -Force).Count
+      "install took $seconds s, $count files" | Add-Content (Join-Path $report 'environment.txt')
+      if (Test-Path (Join-Path $installDir 'Viva.exe')) { "installed into $installDir in $seconds s ($count files)" } else { 'Viva.exe not found after installing' }
       cmd /c exit $(if ($setup.ExitCode -eq 0 -and (Test-Path (Join-Path $installDir 'Viva.exe'))) { 0 } else { 1 })
     }
     Step 'installed-smoke' { SmokeApp (Join-Path $installDir 'Viva.exe') 'installed' }
+    # What the licenses ask to travel with every copy (see THIRD_PARTY_NOTICES.txt).
+    Step 'installed-licenses' {
+      $files = 'LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources\LICENSE', 'resources\THIRD_PARTY_NOTICES.txt', 'resources\app.asar'
+      $missing = $files | Where-Object { -not (Test-Path (Join-Path $installDir $_)) }
+      if ($missing) { "missing: $($missing -join ', ')" } else { "all present: $($files -join ', ')" }
+      cmd /c exit $(if ($missing) { 1 } else { 0 })
+    }
     Step 'uninstall-app' {
       $uninstaller = Get-ChildItem (Join-Path $installDir 'Uninstall*.exe') | Select-Object -First 1
       $removed = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru

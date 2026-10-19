@@ -66,7 +66,7 @@ Electron 主进程                                    dsh 进程（--profile viv
 `dsh-profile.js` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`，只写有变化的文件：
 
 - `package.json`：组合包和 dsh 自带的 `acp` 模板相同（`dsh-base`、`dsh-acp-app`），另加每个插件的 `link:` 依赖，比如 `"viva-memory": "link:<app>/plugins/memory"`。
-- `node_modules/viva-*`：指向插件目录的链接，Windows 上用 junction。
+- `node_modules/viva-*`：转发到插件入口的小包（`export * from '<插件入口的文件 URL>'`），插件本身留在应用里（安装后在 app.asar 内）。
 - `cordis.patch.yml`：写入人设，插入每个插件，并把 `memory.db` 的路径写进记忆插件的 `config.file`。
 - 启动前先做兼容性检查：插件声明的约定版本（`package.json` 的 `viva.contract.memory`）必须等于 app 需要的版本，dsh 依赖必须等于当前安装的 dsh 版本。不通过就不写进 profile，原因显示在设置页。
 - `cordis.yml`、`pnpm-workspace.yaml`：只在缺失时写入。
@@ -305,10 +305,10 @@ Electron 主进程                                    dsh 进程（--profile viv
 - **分类可能不准**：例如把周报约定标成了偏好。目前只靠提示约束。
 - **去重只识别完全相同的文本**（规范化后），换个说法写的同一件事会存成两条。
 - **对话压缩后重新发送固定层**的逻辑有单元测试，但还没在真实 dsh 里触发压缩来验证。
-- **Windows 未验证**：junction 链接、路径写入 YAML。
+- **Windows**：已在 Windows 11 上验证，包括安装后的应用。
 - **dsh 版本锁定**：插件声明的版本是精确的 `0.2.0-rc.2`，见 11。
 - **【记忆规则】随固定层作为 user 消息发送**：放进系统提示词能利用前缀缓存，需要先确认 dsh 的提示词段注册接口，见 [architecture.md](architecture.md) 第 8 节。
-- **打包**：已配置（electron-builder，不用 asar，插件随应用目录一起），见 README「打包」。
+- **打包**：已配置（electron-builder 加 asar，只打包 ACP 组合用到的 dsh），见 README「打包」。
 
 ## 15. 设计取舍与依据
 

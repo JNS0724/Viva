@@ -2,6 +2,8 @@
 
 Electron 外壳 + [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`），界面是设计稿里选定的 **A 方案 · 工业饱和 Bento**（深海蓝配色：蓝调深底 + 亮蓝 `#5AA9FF`，点阵数字，编号标签）。
 
+> Viva 是个人项目，不是 DeepSeek 的官方产品。它使用 DeepSeek 开源的 DeepSeek Harness（MIT 许可），可以连接 DeepSeek 或其他模型的 API。
+
 ## 运行
 
 开发需要 Node.js（npm）。dsh 内嵌在应用里，运行时用应用自己的 Electron，不需要用户另装 Node；用 `npx` 等启动的 MCP 服务器仍需要用户机器上的 Node。
@@ -50,10 +52,13 @@ npm run dist:mac    # macOS：dist/Viva-x.y.z-mac-arm64.dmg（未签名）
 npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-setup.exe（NSIS，可选安装目录）
 ```
 
-- **不用 asar**：dsh 是单独的进程，要直接读 `node_modules` 里的文件，插件还要以链接方式挂进 dsh 的 profile，这些都不能放在 asar 归档里；dsh 的原生模块按平台预编译，也不重新编译（`npmRebuild: false`）。
-- **补齐依赖（`scripts/after-pack.cjs`）**：dsh 的各个包互相声明为 peerDependency，electron-builder 不会收集这些包（实际少了 46 个）。打包后的钩子按 `npm ls --omit=dev --all` 把缺的包复制进应用，再逐个核对，还缺就让打包失败。
+- **只打包用得到的 dsh（`scripts/dsh-closure.cjs`）**：`@deepseek-ai/dsh` 依赖了所有 profile 可能用到的包（网页版界面、TUI、用 LibreOffice 转换 Office 文档、语音输入等），Viva 只启动 ACP 组合。打包时用 dsh 自己的 `--dump-config` 列出 ACP 组合启用的插件，从它们、dsh 入口导入的包、Viva 自己的依赖和插件的 peer 依赖出发，顺着依赖、peer 依赖和可选依赖算出闭包，其余不打包（macOS 上 542 个生产依赖里保留 373 个，去掉了 LibreOffice 和语音识别等约 266MB）。
+- **去掉运行时用不到的文件**：source map、类型声明、TypeScript 源码、README 和 CHANGELOG、测试和示例目录（约 7 千个文件）；许可证和 skill 文件保留。
+- **asar**：其余文件打成一个 `app.asar`。之前上万个小文件逐个写入、被杀毒软件逐个扫描，是 Windows 上安装慢的原因；现在整个应用约 300 个文件。含原生代码或可执行程序的包（原生模块、libvips、ripgrep、node-pty）自动识别后解包放在 `app.asar.unpacked`，供系统直接加载和运行。dsh 用应用自己的 Electron 以 Node 模式从 asar 里运行；dsh 的原生模块按平台预编译，不重新编译（`npmRebuild: false`）。
+- **插件入口**：dsh 的 profile 里每个插件是一个很小的转发包（`package.json` 加一行 `export * from '<插件的文件 URL>'`），插件本身留在 asar 里，它 import 的包在 asar 里解析；不需要符号链接或 junction。
+- **打包后的处理（`scripts/after-pack.cjs`）**：electron-builder 自己收集依赖时，漏掉了 dsh 各包之间的 peer 依赖，又带上了 dsh 为其他 profile 准备的包。打包后的钩子把 electron-builder 打出的 asar 解开，按闭包增删包，删掉无用文件，写入许可文件，再按自己的解包规则重新打成 asar；还缺包就让打包失败。
 - **工作区**：打包后的应用目录是只读的，工作区放在应用数据目录下的 `workspace/`；开发时（`npm start`）仍是仓库里的 `workspace/`。
-- **体积**：macOS 约 735MB，大头是 Electron 和 dsh 自带的依赖，其中 Office 转 PDF 用的 `libreoffice-kit` 约 158MB。
+- **体积**：macOS 的 dmg 约 152MB（裁剪前 259MB），应用解开后约 388MB，大头是 Electron 本身。
 - **验证打包产物**：必须在仓库之外运行。在仓库里（`dist/` 下）运行时，Node 会顺着上级目录找到仓库自己的 `node_modules`，缺包也看不出来。对打包后的应用跑 memory 阶段的 smoke，用 `SMOKE_FIXTURES` 指向仓库的 `test/fixtures`（应用里没有测试目录）、`SMOKE_OUT` 指向输出目录：
   - macOS：只读挂载 dmg，运行里面的应用：`hdiutil attach -nobrowse -readonly dist/Viva-*.dmg`，然后 `SMOKE_PHASE=memory SMOKE_OUT=/tmp/viva-smoke SMOKE_FIXTURES=$PWD/test/fixtures DEEPSEEK_API_KEY=smoke-fake-key "/Volumes/Viva x.y.z/Viva.app/Contents/MacOS/Viva"`。
   - Windows：`scripts\verify-windows.ps1 -Package` 打安装包，静默安装到临时目录，对装好的 `Viva.exe` 跑 smoke，再卸载。
@@ -120,7 +125,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
   - **任务进行中**：不能切换到别的对话；切换过程中（新对话、打开旧对话）发送按钮暂时禁用，避免消息落进正在被替换的对话。
   - **旧版迁移**：旧版的 `history/*.json` 会在首次启动时自动导入，旧目录改名为 `history-imported` 留作备份。
 - **记忆（dsh 插件）**：记忆整体是 `plugins/memory` 这个 dsh 插件，应用只负责界面。换一种记忆方案，就是换掉这个插件。完整设计见 [docs/memory.md](docs/memory.md)。
-  - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好应用 dsh 目录里的 `profiles/viva`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖、`node_modules` 链接，Windows 上用 junction），并把 `memory.db` 的路径写进插件配置。你自己的 `~/.dsh` 不会被读写。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
+  - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好应用 dsh 目录里的 `profiles/viva`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖，`node_modules` 里放一个转发到插件入口的小包，见「打包」），并把 `memory.db` 的路径写进插件配置。你自己的 `~/.dsh` 不会被读写。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
   - **约定**：插件和应用共用 `memory.db`（`plugins/memory/lib/store.js`）。应用在「关于你」里读写画像和记忆，把使用习惯写进去；插件写入它记下的内容、每个会话的检索状态，以及每轮带上了什么。
   - **三层检索**：① 记忆规则、画像、偏好、使用习惯，在会话第一轮、内容变化后、以及 dsh 压缩对话之后各带一次，不检索；② 你自己的话里提到画像或记忆里的人名、项目名、系统名时，带上相关的记忆，最多 3 条，同一会话不重复；粘贴的长文本只看首尾你自己写的那几行，「那第二个呢」这类追问会结合上一个问题；③ 其余由模型自己用 `memory_recall` 带关键词查，查不到就返回空。
   - **工具**：`memory_remember`（带关键词）、`memory_recall`、`memory_update_profile`、`memory_forget` 是 dsh 原生工具，不弹确认卡片。密码、密钥、验证码、证件号会被拒绝保存。
@@ -165,5 +170,17 @@ npm run smoke       # 真的启动 Electron，分四次：
 - 测试必须用 Electron 自带的 Node：系统 Node 24.14 的 zstd 只能解开多帧文件的第一帧，而 dsh 的日志正是多帧的。
 - 记忆插件依赖 dsh 的插件接口，插件声明的 dsh 版本是精确的 `0.2.0-rc.2`，升级 dsh 时要同步更新 `plugins/memory/package.json`，否则 dsh 会拒绝加载插件（对话不受影响，只是没有记忆）。
 - 对话压缩后重新带上画像的逻辑有单元测试，但还没在真实 dsh 里触发过压缩来验证。
-- Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（junction 链接、profile 写入）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
+- Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（profile 写入、插件加载）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
 - 字体从 Google Fonts 加载，离线时回退到系统字体。
+
+## 许可证
+
+Viva 以 [MIT 许可证](LICENSE) 发布。
+
+安装包里还带有第三方软件，各自遵循自己的许可证（大部分是 MIT、Apache-2.0、BSD、ISC；DeepSeek Harness 是 MIT）。完整清单、许可证原文和源码获取方式在应用里的 `THIRD_PARTY_NOTICES.txt`，打包时由 `scripts/third-party-notices.cjs` 按实际打进去的依赖生成（各平台的依赖不完全相同），同一份也会放在 Release 里：
+
+- **Electron 和 Chromium**：许可文件随应用一起分发（`LICENSE.electron.txt`、`LICENSES.chromium.html`）。
+- **LibreOffice（MPL-2.0）**：dsh 用来转换 Office 文档的 `libreoffice-kit`。声明里写明 LibreOffice 源码的仓库和提交，对它的改动补丁随包附带。
+- **libvips（LGPL-3.0）**：图片处理库 `sharp` 用到的。它是独立的动态库，可以替换；声明里写明版本和源码地址。
+- 也可以在 [Issues](https://github.com/JNS0724/Viva/issues) 里索取以上源码。
+

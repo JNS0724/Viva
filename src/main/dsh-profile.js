@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 /**
  * The app's own dsh profile: the stock ACP composition, the app's persona, and the app's plugins
@@ -97,27 +98,52 @@ function manifestFor(current, plugins) {
   }
 }
 
-/**
- * Points `node_modules/<name>` at the plugin: a junction on Windows, which needs no admin rights.
- * A real directory in its place is reported, not deleted: it is not ours.
- */
-function linkPlugin(modules, { name, dir }, platform) {
-  const link = path.join(modules, name)
-  const existing = fs.lstatSync(link, { throwIfNoEntry: false })
-  if (existing && !existing.isSymbolicLink()) throw new Error(`${link} 不是链接，请手动移走后重启`)
-  if (existing) {
-    if (path.resolve(path.dirname(link), fs.readlinkSync(link)) === path.resolve(dir)) return
-    fs.unlinkSync(link)
+/** First line of every forwarding package the app writes, so it knows which folders are its own. */
+const SHIM_MARK = '// Written by Viva: forwards to the plugin inside the app.'
+
+/** The plugin's manifest, kept as it is (dsh checks its peer versions), pointing at the forwarder. */
+function shimManifest({ name, dir }) {
+  let manifest = {}
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
+  } catch {
+    // a plugin folder without a manifest (tests): the name is enough
   }
-  fs.symlinkSync(dir, link, platform === 'win32' ? 'junction' : 'dir')
+  return { ...manifest, name, type: 'module', main: 'index.js', exports: { '.': './index.js', './package.json': './package.json' }, vivaPlugin: dir }
 }
 
-/** Links to app plugins no longer in the list go, so dsh stops loading them. */
-function unlinkDropped(modules, plugins) {
+const pluginEntry = (dir) => path.join(dir, 'index.js')
+const isShim = (folder) => {
+  try {
+    return fs.readFileSync(path.join(folder, 'index.js'), 'utf8').startsWith(SHIM_MARK)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Puts a small forwarding package at `node_modules/<name>`: its index re-exports the plugin by file URL.
+ * The plugin stays where the app keeps it (inside app.asar when installed, where a link cannot point),
+ * so its own imports resolve among the app's packages; and no junction is needed on Windows. A link left
+ * by an earlier version is replaced; a folder the app did not write is reported, never deleted.
+ */
+function writeShim(modules, plugin) {
+  const folder = path.join(modules, plugin.name)
+  const existing = fs.lstatSync(folder, { throwIfNoEntry: false })
+  if (existing?.isSymbolicLink()) fs.unlinkSync(folder)
+  else if (existing && !isShim(folder)) throw new Error(`${folder} 不是 Viva 写的插件入口，请手动移走后重启`)
+  fs.mkdirSync(folder, { recursive: true })
+  writeIfChanged(path.join(folder, 'package.json'), `${JSON.stringify(shimManifest(plugin), null, 2)}\n`)
+  writeIfChanged(path.join(folder, 'index.js'), `${SHIM_MARK}\nexport * from ${JSON.stringify(pathToFileURL(pluginEntry(plugin.dir)).href)}\n`)
+}
+
+/** Entries for app plugins no longer in the list go, so dsh stops loading them. */
+function removeDropped(modules, plugins) {
   const keep = new Set(plugins.map((plugin) => plugin.name))
   for (const name of fs.readdirSync(modules).filter((entry) => isOurs(entry) && !keep.has(entry))) {
-    const link = path.join(modules, name)
-    if (fs.lstatSync(link).isSymbolicLink()) fs.unlinkSync(link)
+    const folder = path.join(modules, name)
+    if (fs.lstatSync(folder).isSymbolicLink()) fs.unlinkSync(folder)
+    else if (isShim(folder)) fs.rmSync(folder, { recursive: true, force: true })
   }
 }
 
@@ -128,11 +154,10 @@ function unlinkDropped(modules, plugins) {
  *   plugins: Array<{ name: string, dir: string, config?: Record<string, string | boolean | number> }>,
  *   persona?: { prefix: string, suffix: string },
  *   models?: { providers: Record<string, object>, deepseek: boolean, defaultModel: { provider: string, model: string } | null },
- *   platform?: string,
  * }} options
  * @returns {string} the profile directory
  */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models, platform = process.platform }) {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models }) {
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
   if (bad) throw new Error(`插件名必须以 ${APP_PLUGIN_PREFIX} 开头：${bad.name}`)
   const dir = path.join(dshHome, 'profiles', profile)
@@ -143,7 +168,7 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, p
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
   writeIfChanged(path.join(dir, 'cordis.patch.yml'), patchFor({ plugins, persona, models }))
-  unlinkDropped(modules, plugins)
-  for (const plugin of plugins) linkPlugin(modules, plugin, platform)
+  removeDropped(modules, plugins)
+  for (const plugin of plugins) writeShim(modules, plugin)
   return dir
 }

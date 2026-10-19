@@ -57,7 +57,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 - 组合包和 dsh 自带的 `acp` 模板相同；
 - `cordis.patch.yml` 写入 `system-prompt`（人设前后缀，按 id 打补丁会整体替换配置，所以两部分都要写）和每个插件的插入项与配置；
 - 同一个文件里还写模型（`src/main/model-providers.js`）：用户添加的提供方作为 dsh 自带 `llm-pi-ai` 插件的 `providers`；没有 DeepSeek key 时关掉 `llm-deepseek` 和 `llm-deepseek-account`；新会话的默认模型覆盖 `acp` 一项的 `provider` / `model`。key 不进 profile，只以环境变量交给 dsh 进程；
-- 每个插件以 `link:` 依赖加 `node_modules` 链接挂入（Windows 用 junction）；
+- 每个插件以 `link:` 依赖挂入，`node_modules/viva-*` 是一个转发包（`export * from '<插件入口的文件 URL>'`）：插件留在应用里（安装后在 app.asar 内），它的 import 在应用的包里解析，不需要符号链接或 junction；
 - 清单里已经没有的 `viva-*` 插件，链接和依赖都会被移除，dsh 就不再加载它。
 
 用户自己的 `~/.dsh` 不会被读写。profile 写不了时，退回 dsh 自带的 `acp` profile，助手照常可用，只是没有 app 的插件和人设。
