@@ -22,15 +22,15 @@ function fakePlugin(root, manifest) {
   return dir
 }
 
-const memoryOnly = [APP_PLUGINS.find((plugin) => plugin.name === 'my-agent-memory')]
+const memoryOnly = [APP_PLUGINS.find((plugin) => plugin.name === 'viva-memory')]
 
 test('the plugins shipped with the app all pass, each with its data file under userData', () => {
   const { plugins, problems } = resolvePlugins({ appRoot: ROOT, userData: '/data', dshVersion: installedDshVersion(ROOT) })
   assert.deepEqual(problems, [])
   assert.deepEqual(plugins.map((plugin) => [plugin.name, plugin.config]), [
-    ['my-agent-memory', { file: path.join('/data', 'memory.db') }],
-    ['my-agent-trace', { file: path.join('/data', 'trace.db') }],
-    ['my-agent-policy', {}],
+    ['viva-memory', { file: path.join('/data', 'memory.db') }],
+    ['viva-trace', { file: path.join('/data', 'trace.db') }],
+    ['viva-policy', {}],
   ])
   assert.match(PERSONA.prefix, /个人工作助手/)
   assert.doesNotMatch(PERSONA.prefix, /coding agent/)
@@ -42,12 +42,12 @@ test('a plugin with another contract version, another dsh, or no manifest is lef
     if (manifest) fakePlugin(dir, manifest)
     return resolvePlugins({ appRoot: dir, userData: '/data', dshVersion: '0.2.0-rc.2', plugins: memoryOnly })
   }
-  const ok = { name: 'my-agent-memory', myAgent: { contract: { memory: CONTRACTS.memory } }, peerDependencies: { '@deepseek-ai/dsh-llm': '0.2.0-rc.2', zod: '^4.0.0' } }
+  const ok = { name: 'viva-memory', viva: { contract: { memory: CONTRACTS.memory } }, peerDependencies: { '@deepseek-ai/dsh-llm': '0.2.0-rc.2', zod: '^4.0.0' } }
 
   assert.match(resolve(null).problems[0].problem, /找不到插件/)
   assert.deepEqual(resolve(ok).problems, [])
-  assert.match(resolve({ ...ok, myAgent: { contract: { memory: 2 } } }).problems[0].problem, /约定 memory 的版本是 2，应用需要 1/)
-  assert.match(resolve({ ...ok, myAgent: undefined }).problems[0].problem, /未声明/)
+  assert.match(resolve({ ...ok, viva: { contract: { memory: 2 } } }).problems[0].problem, /约定 memory 的版本是 2，应用需要 1/)
+  assert.match(resolve({ ...ok, viva: undefined }).problems[0].problem, /未声明/)
   assert.match(resolve({ ...ok, peerDependencies: { '@deepseek-ai/dsh-llm': '0.3.0' } }).problems[0].problem, /需要 dsh 0\.3\.0，当前是 0\.2\.0-rc\.2/)
   assert.deepEqual(resolve({ ...ok, peerDependencies: { '@deepseek-ai/cordis': '~4.0.4' } }).problems, [], 'ranges are left to dsh')
   assert.match(resolve({ ...ok, name: 'other' }).problems[0].problem, /插件名是 other/)

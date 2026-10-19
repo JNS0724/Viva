@@ -1,8 +1,9 @@
 {
-  "name": "my-agent",
+  "name": "viva",
+  "productName": "Viva",
   "version": "0.1.0",
   "private": true,
-  "description": "个人桌面助手 demo：Electron 外壳 + DeepSeek Harness（ACP）",
+  "description": "Viva：个人桌面助手，Electron 外壳 + DeepSeek Harness（ACP）",
   "type": "module",
   "main": "src/main/main.js",
   "scripts": {

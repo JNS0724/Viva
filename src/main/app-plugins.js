@@ -22,9 +22,9 @@ export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1 })
 
 /** config: built from the app's data directory, written into the profile for the plugin. */
 export const APP_PLUGINS = Object.freeze([
-  { name: 'my-agent-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData }) => ({ file: path.join(userData, 'memory.db') }) },
-  { name: 'my-agent-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
-  { name: 'my-agent-policy', dir: 'plugins/policy', contract: 'policy', config: () => ({}) },
+  { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData }) => ({ file: path.join(userData, 'memory.db') }) },
+  { name: 'viva-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
+  { name: 'viva-policy', dir: 'plugins/policy', contract: 'policy', config: () => ({}) },
 ])
 
 /** The dsh version installed with the app; plugins pin their dsh peers to it. */
@@ -51,7 +51,7 @@ export function pluginProblem(plugin, { dir, dshVersion }) {
     return '找不到插件，或者它的 package.json 无法读取'
   }
   if (manifest.name !== plugin.name) return `插件名是 ${manifest.name}，应为 ${plugin.name}`
-  const provided = manifest.myAgent?.contract?.[plugin.contract]
+  const provided = manifest.viva?.contract?.[plugin.contract]
   if (provided !== CONTRACTS[plugin.contract]) {
     return `约定 ${plugin.contract} 的版本是 ${provided ?? '（未声明）'}，应用需要 ${CONTRACTS[plugin.contract]}`
   }

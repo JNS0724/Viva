@@ -1,7 +1,7 @@
 /**
  * Test double for `dsh --profile <name>`: a real ACP agent over stdio that plays fixed scripts,
  * so integration tests and the smoke run exercise the same bridge code as a real session.
- * Started as `node fake-dsh.js --profile my-agent`. FAKE_DSH_DELAY_MS sets the pace (default 450 ms per step).
+ * Started as `node fake-dsh.js --profile viva`. FAKE_DSH_DELAY_MS sets the pace (default 450 ms per step).
  * Like dsh, it connects to the stdio MCP servers a session declares and refuses the session when one fails.
  * It has no plugins: memory is tested with the real dsh and a fake model (test/fixtures/fake-llm.js).
  */

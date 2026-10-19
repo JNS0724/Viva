@@ -109,8 +109,8 @@ test('acp bridge initializes, opens a session, relays updates and answers permis
   assert.deepEqual([info.mode, info.model, info.modelValue, info.cwd], ['live', 'DeepSeek V4 Flash', 'v4-flash', '/work'])
   assert.deepEqual(info.models.map((m) => [m.name, m.group]), [['DeepSeek V4 Flash', 'DeepSeek'], ['DeepSeek V4 Pro', 'DeepSeek']])
   assert.deepEqual(log, [
-    ['spawn', '/fake/dsh', '--profile my-agent', '/work'],
-    ['initialize', 1, 'my-agent'],
+    ['spawn', '/fake/dsh', '--profile viva', '/work'],
+    ['initialize', 1, 'viva'],
     ['newSession', '/work'],
     ['prompt', '写个笔记'],
     ['decision', { outcome: 'selected', optionId: 'yes' }],

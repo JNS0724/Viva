@@ -34,7 +34,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
   const { plugins, problems } = resolvePlugins({ appRoot: ROOT, userData, dshVersion: installedDshVersion(ROOT) })
   assert.deepEqual(problems, [], 'every app plugin passes the compatibility check')
   const file = memoryFile ?? path.join(userData, 'memory.db')
-  const withFile = plugins.map((plugin) => (plugin.name === 'my-agent-memory' ? { ...plugin, config: { file } } : plugin))
+  const withFile = plugins.map((plugin) => (plugin.name === 'viva-memory' ? { ...plugin, config: { file } } : plugin))
   ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA })
   const llm = await startFakeLlm()
   const bridges = []

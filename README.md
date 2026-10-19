@@ -1,4 +1,4 @@
-# my-agent · 个人桌面助手
+# Viva · 个人桌面助手
 
 Electron 外壳 + [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`），界面是设计稿里选定的 **A 方案 · 工业饱和 Bento**（深海蓝配色：蓝调深底 + 亮蓝 `#5AA9FF`，点阵数字，编号标签）。
 
@@ -43,7 +43,7 @@ npm start
 ## 架构
 
 ```
-渲染进程（界面）                主进程                        node dsh/lib/bin.js --profile my-agent
+渲染进程（界面）                主进程                        node dsh/lib/bin.js --profile viva
 app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio──▶ DeepSeek Harness
    │        selectors.js           │        history-db.js            （ACP v1 JSON-RPC）
    └─ view/*  ◀── preload.cjs ──IPC┘        dsh-profile.js                 └─ plugins/memory（记忆插件）
@@ -51,7 +51,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ```
 
 - **插件化分层**：模型看到什么、能做什么（记忆、过程记录、工具策略、人设）放在应用自己 profile 里的 dsh 插件中；会话怎么跑留在 ACP；界面和本机数据留在应用。插件和应用只通过带版本号的数据约定协作。详见 [docs/architecture.md](docs/architecture.md)。
-- **主进程** 启动 `dsh --profile my-agent`（应用自己的 profile，见下文「记忆」），用官方 `@agentclientprotocol/sdk` 的 `ClientSideConnection` 说 ACP：`initialize → session/new → session/prompt`，`session/cancel` 停止，`session/close` 开新对话。
+- **主进程** 启动 `dsh --profile viva`（应用自己的 profile，见下文「记忆」），用官方 `@agentclientprotocol/sdk` 的 `ClientSideConnection` 说 ACP：`initialize → session/new → session/prompt`，`session/cancel` 停止，`session/close` 开新对话。
 - **事件分流**（对应设计稿的「对话不含思考和工具调用」）：
   - `agent_message_chunk` → 对话区
   - `agent_thought_chunk`、`tool_call`、`tool_call_update` → 抽屉「过程」、顶部状态胶囊；读写过的文件进「文件」，抓取的网页进「网页」
@@ -59,7 +59,8 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 - **模型切换**：输入框左下角的选择器，列出 dsh 返回的模型和推理强度（Off / Low / High / Max），通过 ACP 的 `session/set_config_option` 切换，从下一轮生效；回复进行中禁用。
 - **流式输出**：回复按打字机节奏逐字显示（基础约 90 字/秒，积压多时自动加速，最多落后约 1.2 秒）。注意：dsh 的 ACP 接口只推送「已完成的整段消息」，不推送模型的逐字增量，所以首字要等整段生成完才出现。dsh 将来若推送增量片段，无需改代码即可逐字显示。
 - **滚动**：对话区新内容到来时跟随到底部，但长回复只滚到「最新提问贴近顶部」就停，回答从提问下方往下长，底部出现「↓ 新内容」；你一往上翻就停止自动跟随，滚回底部再恢复。抽屉重绘时保留滚动位置，停在底部时像日志一样跟随最新一步，打开「过程」直接定位到最新。
-- **历史对话（永久保存）**：全部存在 `~/Library/Application Support/my-agent/history.db`，用 Electron 自带的 `node:sqlite`，不依赖原生模块。
+- **改名（原 my-agent）**：应用原名 my-agent，Electron 按应用名存放数据。改名后首次启动时，会把旧目录里的历史对话、记忆和过程记录**复制**过来，旧目录原样保留作为备份。加密保存的 API key 无法迁移（系统钥匙串的条目按应用名区分），需要在设置里重新填一次，或者用 `DEEPSEEK_API_KEY` 环境变量。
+- **历史对话（永久保存）**：全部存在 `~/Library/Application Support/Viva/history.db`，用 Electron 自带的 `node:sqlite`，不依赖原生模块。
   - **存什么**：只存对话区看得到的内容，也就是提问、回复和回执，外加每条消息来自哪个 dsh 会话。思考和工具调用不存。
   - **怎么存**：每轮开始、结束和出错时增量写入，只追加新消息、更新最后一条，不整份重写。
   - **启动时**：自动打开最近一段对话，并用 ACP 的 `session/resume` 接回原来的 dsh 会话。接不回时开新会话，分隔线会写明「助手已不记得这些内容」。
@@ -71,7 +72,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
   - **任务进行中**：不能切换到别的对话；切换过程中（新对话、打开旧对话）发送按钮暂时禁用，避免消息落进正在被替换的对话。
   - **旧版迁移**：旧版的 `history/*.json` 会在首次启动时自动导入，旧目录改名为 `history-imported` 留作备份。
 - **记忆（dsh 插件）**：记忆整体是 `plugins/memory` 这个 dsh 插件，应用只负责界面。换一种记忆方案，就是换掉这个插件。完整设计见 [docs/memory.md](docs/memory.md)。
-  - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好 `~/.dsh/profiles/my-agent`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖、`node_modules` 链接，Windows 上用 junction），并把 `memory.db` 的路径写进插件配置。你自己的 `acp` 等 profile 不会被改动。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
+  - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好 `~/.dsh/profiles/viva`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖、`node_modules` 链接，Windows 上用 junction），并把 `memory.db` 的路径写进插件配置。你自己的 `acp` 等 profile 不会被改动。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
   - **约定**：插件和应用共用 `memory.db`（`plugins/memory/lib/store.js`）。应用在「关于你」里读写画像和记忆，把使用习惯写进去；插件写入它记下的内容、每个会话的检索状态，以及每轮带上了什么。
   - **三层检索**：① 记忆规则、画像、偏好、使用习惯，在会话第一轮、内容变化后、以及 dsh 压缩对话之后各带一次，不检索；② 你自己的话里提到画像或记忆里的人名、项目名、系统名时，带上相关的记忆，最多 3 条，同一会话不重复；粘贴的长文本只看首尾你自己写的那几行，「那第二个呢」这类追问会结合上一个问题；③ 其余由模型自己用 `memory_recall` 带关键词查，查不到就返回空。
   - **工具**：`memory_remember`（带关键词）、`memory_recall`、`memory_update_profile`、`memory_forget` 是 dsh 原生工具，不弹确认卡片。密码、密钥、验证码、证件号会被拒绝保存。

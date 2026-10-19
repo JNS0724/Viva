@@ -1,8 +1,8 @@
 {
-  "name": "my-agent-trace",
+  "name": "viva-trace",
   "version": "0.1.0",
   "private": true,
-  "description": "my-agent 的过程记录：把每轮的思考和工具调用写进 trace.db，供应用重新打开对话时显示",
+  "description": "Viva 的过程记录：把每轮的思考和工具调用写进 trace.db，供应用重新打开对话时显示",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -14,7 +14,7 @@
     "@deepseek-ai/dsh-session": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4"
   },
-  "myAgent": {
+  "viva": {
     "contract": {
       "trace": 1
     }

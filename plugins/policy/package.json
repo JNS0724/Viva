@@ -1,8 +1,8 @@
 {
-  "name": "my-agent-policy",
+  "name": "viva-policy",
   "version": "0.1.0",
   "private": true,
-  "description": "my-agent 的工具策略：在 dsh 里、工具执行前用代码判断，例如只起草、不代为发送邮件和消息",
+  "description": "Viva 的工具策略：在 dsh 里、工具执行前用代码判断，例如只起草、不代为发送邮件和消息",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -14,7 +14,7 @@
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4"
   },
-  "myAgent": {
+  "viva": {
     "contract": {
       "policy": 1
     }

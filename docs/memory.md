@@ -1,6 +1,6 @@
 # 记忆方案
 
-本文描述 my-agent 当前的长期记忆设计：记忆如何写入、更新、检索，画像如何生成，以及插件和 app 之间的约定。实现以代码为准，文中的数字都对应代码里的常量。
+本文描述 Viva 当前的长期记忆设计：记忆如何写入、更新、检索，画像如何生成，以及插件和 app 之间的约定。实现以代码为准，文中的数字都对应代码里的常量。
 
 ## 目录
 
@@ -34,9 +34,9 @@
 记忆整体是一个 dsh 插件（`plugins/memory`），和「过程」插件、工具策略插件一起挂在 app 自己的 dsh profile 里。app 只负责界面，两者共用同一个 SQLite 文件 `memory.db`。整个应用的插件化分层见 [architecture.md](architecture.md)。
 
 ```
-Electron 主进程                                    dsh 进程（--profile my-agent）
+Electron 主进程                                    dsh 进程（--profile viva）
 ┌───────────────────────────────┐                 ┌──────────────────────────────────────────┐
-│ dsh-profile.js 写 profile     │──启动──────────▶│ 插件 my-agent-memory（plugins/memory）    │
+│ dsh-profile.js 写 profile     │──启动──────────▶│ 插件 viva-memory（plugins/memory）        │
 │ memory-ipc.js 「关于你」读写  │                 │  · pre-step：注入固定层 + 名称推送        │
 │ personal.js 汇报变化、写习惯  │                 │  · 工具：remember / recall / forget       │
 └──────────────┬────────────────┘                 │  · 轮次结束：后台提取 → 画像整理          │
@@ -57,18 +57,18 @@ Electron 主进程                                    dsh 进程（--profile my-
 | `plugins/memory/lib/extract.js` | 轮次结束后的后台提取 |
 | `plugins/memory/lib/synthesize.js` | 定时整理画像 |
 | `src/main/app-plugins.js` | 插件清单、人设、兼容性检查（约定版本、dsh 版本） |
-| `src/main/dsh-profile.js` | 每次启动 dsh 前写好 `~/.dsh/profiles/my-agent` |
+| `src/main/dsh-profile.js` | 每次启动 dsh 前写好 `~/.dsh/profiles/viva` |
 | `src/main/personal.js` | 汇报插件写了什么、带上了什么；把使用习惯写进库 |
 | `src/main/memory-ipc.js` | 「关于你」页面的 IPC |
 
 ### profile 与插件挂载
 
-`dsh-profile.js` 在每次启动 dsh 前写好 `<DSH_HOME>/profiles/my-agent`，只写有变化的文件：
+`dsh-profile.js` 在每次启动 dsh 前写好 `<DSH_HOME>/profiles/viva`，只写有变化的文件：
 
-- `package.json`：组合包和 dsh 自带的 `acp` 模板相同（`dsh-base`、`dsh-acp-app`），另加每个插件的 `link:` 依赖，比如 `"my-agent-memory": "link:<app>/plugins/memory"`。
-- `node_modules/my-agent-*`：指向插件目录的链接，Windows 上用 junction。
+- `package.json`：组合包和 dsh 自带的 `acp` 模板相同（`dsh-base`、`dsh-acp-app`），另加每个插件的 `link:` 依赖，比如 `"viva-memory": "link:<app>/plugins/memory"`。
+- `node_modules/viva-*`：指向插件目录的链接，Windows 上用 junction。
 - `cordis.patch.yml`：写入人设，插入每个插件，并把 `memory.db` 的路径写进记忆插件的 `config.file`。
-- 启动前先做兼容性检查：插件声明的约定版本（`package.json` 的 `myAgent.contract.memory`）必须等于 app 需要的版本，dsh 依赖必须等于当前安装的 dsh 版本。不通过就不写进 profile，原因显示在设置页。
+- 启动前先做兼容性检查：插件声明的约定版本（`package.json` 的 `viva.contract.memory`）必须等于 app 需要的版本，dsh 依赖必须等于当前安装的 dsh 版本。不通过就不写进 profile，原因显示在设置页。
 - `cordis.yml`、`pnpm-workspace.yaml`：只在缺失时写入。
 
 用户的其他 profile（包括 `acp`）不会被读写。profile 写不了时，app 退回 `acp` profile：助手照常可用，只是没有记忆。插件加载失败时，dsh 会输出一条带插件名的警告，会话照常进行。
@@ -260,7 +260,7 @@ Electron 主进程                                    dsh 进程（--profile my-
 
 记忆是独立的 dsh 插件，替换时：
 
-1. 写一个新的 dsh 插件，名字以 `my-agent-` 开头，在 `package.json` 里声明 `"myAgent": { "contract": { "memory": 1 } }`，然后在 `src/main/app-plugins.js` 的 `APP_PLUGINS` 里把原来的记忆插件换掉。
+1. 写一个新的 dsh 插件，名字以 `viva-` 开头，在 `package.json` 里声明 `"viva": { "contract": { "memory": 1 } }`，然后在 `src/main/app-plugins.js` 的 `APP_PLUGINS` 里把原来的记忆插件换掉。
 2. app 只通过 `memory.db` 和插件打交道。新方案只要提供约定 `memory@1`，也就是 `profile`、`memories`（含失效字段）、`syntheses`、`injections` 这几张表和 `store.js` 的接口，「关于你」和「过程」就不用改。如果改了数据结构，就把约定升到 2，并同时修改 `memory-ipc.js`、`personal.js` 和对应的界面。
 3. 插件声明的 dsh 版本是精确的 `0.2.0-rc.2`。升级 dsh 后，兼容性检查会把它排除并在设置页说明原因（对话不受影响，只是没有记忆），要同步修改 `plugins/memory/package.json`。
 

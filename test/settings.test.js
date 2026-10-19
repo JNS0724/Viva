@@ -23,7 +23,7 @@ function fakeCrypto(available = true) {
 }
 
 function tempFile() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'my-agent-settings-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-settings-'))
   return path.join(dir, 'nested', 'settings.json')
 }
 

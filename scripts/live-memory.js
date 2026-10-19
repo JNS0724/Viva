@@ -4,7 +4,7 @@
  * so it is run by hand (`npm run live:memory`), never by `npm test`.
  *
  * The key comes from the DEEPSEEK_API_KEY environment variable, or else from LIVE_ENV (default
- * ~/.config/my-agent/live-test.env, one line `DEEPSEEK_API_KEY=...`), and is never printed. Everything else is isolated: a temporary dsh home,
+ * ~/.config/viva/live-test.env, one line `DEEPSEEK_API_KEY=...`), and is never printed. Everything else is isolated: a temporary dsh home,
  * memory.db and workspace, removed afterwards; the user's ~/.dsh and app data are not touched.
  * Any permission the model asks for (writing files, running commands) is refused.
  * The transcript, tool calls and what was injected go to smoke/live-memory.json.
@@ -20,7 +20,7 @@ import { DSH_PROFILE } from '../src/main/config.js'
 import { ensureDshProfile } from '../src/main/dsh-profile.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-const ENV_FILE = process.env.LIVE_ENV || path.join(os.homedir(), '.config', 'my-agent', 'live-test.env')
+const ENV_FILE = process.env.LIVE_ENV || path.join(os.homedir(), '.config', 'viva', 'live-test.env')
 const OUT_FILE = path.join(ROOT, 'smoke', 'live-memory.json')
 const TURN_TIMEOUT_MS = 180_000
 

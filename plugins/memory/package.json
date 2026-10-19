@@ -1,8 +1,8 @@
 {
-  "name": "my-agent-memory",
+  "name": "viva-memory",
   "version": "0.1.0",
   "private": true,
-  "description": "my-agent 的长期记忆：分层检索与记忆工具，作为 dsh 插件挂进应用自己的 profile",
+  "description": "Viva 的长期记忆：分层检索与记忆工具，作为 dsh 插件挂进应用自己的 profile",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -17,7 +17,7 @@
     "@deepseek-ai/schemastery": "~3.18.4",
     "zod": "^4.0.0"
   },
-  "myAgent": {
+  "viva": {
     "contract": {
       "memory": 1
     }

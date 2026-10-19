@@ -15,7 +15,7 @@ const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs'])
 const SMOKE_PHASES = new Set(['walkthrough', 'relaunch', 'setup', 'memory'])
 
 /** The app's own dsh profile: the ACP template plus the memory plugin; see dsh-profile.js. */
-export const DSH_PROFILE = 'my-agent'
+export const DSH_PROFILE = 'viva'
 
 /**
  * How to start dsh in ACP mode. A JavaScript entry runs under `nodeBin` (dsh refuses to run inside

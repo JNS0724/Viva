@@ -7,7 +7,7 @@ import path from 'node:path'
  * files that changed are touched. The user's other profiles (including `acp`) are never read or written.
  */
 /** The app's plugins are all named like this, so ones dropped from the list can be told apart and removed. */
-export const APP_PLUGIN_PREFIX = 'my-agent-'
+export const APP_PLUGIN_PREFIX = 'viva-'
 /** Same bundles as dsh's own `acp` template (`dsh --from-default-profile acp`). */
 const BUNDLES = Object.freeze(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'])
 const ROOT_CONFIG = `# dsh profile root — an empty entry list; the bundles and cordis.patch.yml compose the app.
@@ -35,7 +35,7 @@ function configLines(config, indent) {
  * stated; then the plugins are inserted.
  */
 export function patchFor({ plugins, persona }) {
-  const lines = ['# Written by my-agent on every launch; edits here are replaced.']
+  const lines = ['# Written by Viva on every launch; edits here are replaced.']
   if (persona) {
     lines.push('- id: system-prompt', '  config:', `    personaPrefix: ${yamlString(persona.prefix)}`, `    personaSuffix: ${yamlString(persona.suffix)}`)
   }
@@ -69,7 +69,7 @@ function manifestFor(current, plugins) {
   const others = Object.fromEntries(Object.entries(current.dependencies ?? {}).filter(([name]) => !isOurs(name)))
   const ours = Object.fromEntries(plugins.map((plugin) => [plugin.name, `link:${plugin.dir}`]))
   return {
-    name: 'dsh-profile-my-agent',
+    name: 'dsh-profile-viva',
     ...current,
     private: true,
     dependencies: { ...others, ...ours },

@@ -1,5 +1,5 @@
 /**
- * my-agent-trace: records what each turn did (thoughts, tool calls and their outcome) into trace.db, so the
+ * viva-trace: records what each turn did (thoughts, tool calls and their outcome) into trace.db, so the
  * app can show the 过程 of a reopened conversation without reading dsh's private session log format.
  * Loaded by the app's dsh profile (src/main/dsh-profile.js) with `config.file` = trace.db.
  */
@@ -8,7 +8,7 @@ import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { stepsFrom } from './lib/steps.js'
 import { openTraceDb } from './lib/store.js'
 
-export const name = 'my-agent-trace'
+export const name = 'viva-trace'
 export const inject = ['agents']
 export const Config = z.object({ file: z.string() })
 

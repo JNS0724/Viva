@@ -8,7 +8,7 @@ import { describeConfig, describeError } from './session-info.js'
 
 const STDERR_TAIL_LIMIT = 4000
 const SHUTDOWN_GRACE_MS = 1500
-const CLIENT_INFO = { name: 'my-agent', version: '0.1.0' }
+const CLIENT_INFO = { name: 'viva', version: '0.1.0' }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
 const NO_MCP = () => []
 

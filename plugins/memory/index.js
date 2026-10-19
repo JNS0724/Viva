@@ -1,5 +1,5 @@
 /**
- * my-agent-memory: the app's long-term memory as a dsh plugin. Loaded by the app's own dsh profile
+ * viva-memory: the app's long-term memory as a dsh plugin. Loaded by the app's own dsh profile
  * (src/main/dsh-profile.js) with `config.file` = the memory.db the app's "关于你" page also edits.
  *
  * - Before the first step of each user turn it adds the retrieval layers (lib/layers.js) as one
@@ -28,11 +28,11 @@ import { openMemoryDb } from './lib/store.js'
 import { synthesizeProfile } from './lib/synthesize.js'
 import { memoryTools } from './lib/tools.js'
 
-export const name = 'my-agent-memory'
+export const name = 'viva-memory'
 export const inject = ['agents', 'tools', 'sessionProjections', 'llm']
 export const Config = z.object({ file: z.string(), extract: z.boolean(), synthesize: z.boolean() })
 
-const PROJECTION = 'myAgentMemory'
+const PROJECTION = 'vivaMemory'
 /** The work after a turn (extraction, then maybe a synthesis) gives up after this. */
 const AFTER_TURN_TIMEOUT_MS = 120_000
 const EXTRACT_MAX_TOKENS = 800

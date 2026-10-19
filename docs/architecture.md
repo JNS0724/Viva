@@ -1,6 +1,6 @@
 # 架构：在 dsh 插件体系上解耦
 
-本文说明 my-agent 如何借助 DeepSeek Harness（dsh）的插件体系分层：哪些能力放进 dsh 插件，哪些留在 ACP 协议层，哪些留在 app；插件和 app 之间靠什么约定协作；以及几个经过验证但没有采用的方案。记忆插件的细节见 [memory.md](memory.md)。
+本文说明 Viva 如何借助 DeepSeek Harness（dsh）的插件体系分层：哪些能力放进 dsh 插件，哪些留在 ACP 协议层，哪些留在 app；插件和 app 之间靠什么约定协作；以及几个经过验证但没有采用的方案。记忆插件的细节见 [memory.md](memory.md)。
 
 ## 1. 分层原则
 
@@ -20,12 +20,12 @@
 ## 2. 组成
 
 ```
-app（Electron 主进程）                                   dsh 进程：--profile my-agent
+app（Electron 主进程）                                   dsh 进程：--profile viva
 ┌─────────────────────────────────────┐                ┌───────────────────────────────────────────┐
 │ app-plugins.js  人设 + 插件清单       │                │ system-prompt  ← 人设（profile patch）      │
-│                 兼容性检查            │── 写 profile ─▶│ my-agent-memory  上下文 / 记忆工具 / 后台   │
-│ dsh-profile.js  写 ~/.dsh/profiles/  │                │ my-agent-trace   每轮步骤 → trace.db        │
-│ acp-bridge.js   ACP 会话、MCP 声明    │── ACP stdio ──▶│ my-agent-policy  工具执行前拦截             │
+│                 兼容性检查            │── 写 profile ─▶│ viva-memory      上下文 / 记忆工具 / 后台   │
+│ dsh-profile.js  写 ~/.dsh/profiles/  │                │ viva-trace       每轮步骤 → trace.db        │
+│ acp-bridge.js   ACP 会话、MCP 声明    │── ACP stdio ──▶│ viva-policy      工具执行前拦截             │
 │ 「关于你」「过程」「设置」             │                └──────────────┬────────────────────────────┘
 └──────────────┬──────────────────────┘                               │
                └────── memory.db（约定 memory@1）、trace.db（约定 trace@1）
@@ -33,16 +33,16 @@ app（Electron 主进程）                                   dsh 进程：--pro
 
 | 插件 | 约定 | 插件写 | app 读 / 写 |
 |---|---|---|---|
-| `my-agent-memory`（`plugins/memory`） | `memory@1`：`memory.db` | 记忆、会话状态、注入记录、画像整理 | 「关于你」读写画像和记忆，写使用习惯；读注入记录用于「过程」 |
-| `my-agent-trace`（`plugins/trace`） | `trace@1`：`trace.db` | 每轮的思考和工具调用 | 重新打开对话时读，用于「过程」 |
-| `my-agent-policy`（`plugins/policy`） | `policy@1`：无数据，只有行为 | — | — |
+| `viva-memory`（`plugins/memory`） | `memory@1`：`memory.db` | 记忆、会话状态、注入记录、画像整理 | 「关于你」读写画像和记忆，写使用习惯；读注入记录用于「过程」 |
+| `viva-trace`（`plugins/trace`） | `trace@1`：`trace.db` | 每轮的思考和工具调用 | 重新打开对话时读，用于「过程」 |
+| `viva-policy`（`plugins/policy`） | `policy@1`：无数据，只有行为 | — | — |
 
 人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/main/app-plugins.js` 的 `PERSONA`。
 
 ## 3. 插件清单与约定版本
 
 - **清单**：`src/main/app-plugins.js` 的 `APP_PLUGINS` 列出每个插件的名字、目录、要提供的约定，以及配置（例如数据文件放在 userData 的哪个位置）。
-- **声明**：插件在自己的 `package.json` 里写明提供的约定，例如 `"myAgent": { "contract": { "memory": 1 } }`。
+- **声明**：插件在自己的 `package.json` 里写明提供的约定，例如 `"viva": { "contract": { "memory": 1 } }`。
 - **启动前检查**（`resolvePlugins`），任何一项不通过，这个插件就**不写进 profile**，原因显示在设置页：
   - 插件存在，`package.json` 可读，名字和清单一致；
   - 提供的约定版本等于 app 需要的版本（`CONTRACTS`）；
@@ -52,12 +52,12 @@ app（Electron 主进程）                                   dsh 进程：--pro
 
 ## 4. profile 的写法
 
-`src/main/dsh-profile.js` 在每次启动 dsh 前写好 `<DSH_HOME>/profiles/my-agent`，只写有变化的文件：
+`src/main/dsh-profile.js` 在每次启动 dsh 前写好 `<DSH_HOME>/profiles/viva`，只写有变化的文件：
 
 - 组合包和 dsh 自带的 `acp` 模板相同；
 - `cordis.patch.yml` 写入 `system-prompt`（人设前后缀，按 id 打补丁会整体替换配置，所以两部分都要写）和每个插件的插入项与配置；
 - 每个插件以 `link:` 依赖加 `node_modules` 链接挂入（Windows 用 junction）；
-- 清单里已经没有的 `my-agent-*` 插件，链接和依赖都会被移除，dsh 就不再加载它。
+- 清单里已经没有的 `viva-*` 插件，链接和依赖都会被移除，dsh 就不再加载它。
 
 用户自己的 profile 不会被读写。profile 写不了时，退回 dsh 自带的 `acp` profile，助手照常可用，只是没有 app 的插件和人设。
 

@@ -11,6 +11,7 @@ import { registerExtensionsIpc } from './extensions-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
+import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
 import { createMcpConfigStore } from './mcp-config.js'
 import { registerMemoryIpc } from './memory-ipc.js'
 import { createPersonal } from './personal.js'
@@ -364,6 +365,16 @@ async function startSmokeModel() {
   process.env.DEEPSEEK_BASE_URL = (await startFakeLlm()).url
 }
 
+/** Conversations and memories kept under the app's old name, my-agent, come along on the first launch as Viva. */
+function bringLegacyData() {
+  try {
+    const copied = adoptLegacyData({ userData: app.getPath('userData'), legacyDir: path.join(app.getPath('appData'), LEGACY_NAME) })
+    if (copied.length) process.stdout.write(`[viva] copied ${copied.join(', ')} from the ${LEGACY_NAME} data folder\n`)
+  } catch (err) {
+    console.error(`[viva] could not copy the ${LEGACY_NAME} data:`, err.message)
+  }
+}
+
 app.whenReady().then(async () => {
   // macOS needs its app menu for ⌘C / ⌘V; elsewhere the hidden title bar has no room for a menu bar.
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
@@ -376,6 +387,7 @@ app.whenReady().then(async () => {
   registerSettingsIpc()
   const config = currentConfig()
   if (config.smokePhase === 'memory') await startSmokeModel()
+  if (!config.smoke) bringLegacyData()
   openHistory(config)
   openPersonal(config)
   createWindow(config)

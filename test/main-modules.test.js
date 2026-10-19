@@ -33,10 +33,10 @@ test('config defaults live under the app root, and smoke phases are named', () =
 })
 
 test('a JavaScript entry point runs under node (no .cmd shim on Windows); anything else runs directly', () => {
-  assert.deepEqual(dshLaunch('/a/bin.js', 'node'), { command: 'node', args: ['/a/bin.js', '--profile', 'my-agent'] })
+  assert.deepEqual(dshLaunch('/a/bin.js', 'node'), { command: 'node', args: ['/a/bin.js', '--profile', 'viva'] })
   assert.deepEqual(dshLaunch('/a/bin.js', 'node', 'acp').args, ['/a/bin.js', '--profile', 'acp'])
   assert.deepEqual(dshLaunch('C:\\dsh\\bin.mjs', 'node.exe').command, 'node.exe')
-  assert.deepEqual(dshLaunch('/usr/local/bin/dsh', 'node'), { command: '/usr/local/bin/dsh', args: ['--profile', 'my-agent'] })
+  assert.deepEqual(dshLaunch('/usr/local/bin/dsh', 'node'), { command: '/usr/local/bin/dsh', args: ['--profile', 'viva'] })
 })
 
 test('permission broker resolves known options, cancels unknown ones, and cancels everything on demand', async () => {
