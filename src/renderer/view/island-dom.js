@@ -16,8 +16,8 @@ const NS = 'http://www.w3.org/2000/svg'
 /** The island's border, on both sides: its content is this much narrower than the shape. */
 const BORDER = 3
 const SIZES = {
-  bar: { head: 36, panel: 360, maxHead: 360, cat: 30 },
-  desk: { head: 48, panel: 392, maxHead: 420, cat: 40 },
+  bar: { head: 36, panel: 360, maxHead: 360, cat: 24 },
+  desk: { head: 48, panel: 392, maxHead: 420, cat: 36 },
 }
 
 /** Forms whose panel opens by itself on the desktop: they need the user. */

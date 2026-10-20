@@ -1,6 +1,6 @@
 /* ---------- Viva island (view/island-dom.js): the title bar's and the desktop's ---------- */
 .isl {
-  --isl-head: 36px; --isl-pad: 40px; --isl-rim: var(--line);
+  --isl-head: 36px; --isl-pad: 38px; --isl-rim: var(--line);
   position: relative; box-sizing: border-box; width: 120px; height: var(--isl-head); flex: none;
   border: 1.5px solid var(--isl-rim); border-radius: calc(var(--isl-head) / 2);
   background: #070C18; color: var(--ink); font-family: var(--font-sans);
@@ -9,9 +9,8 @@
 }
 /* In the title bar it never grows past the room left between the window's buttons. */
 .isl[data-host="bar"] { max-width: 100%; }
-.isl[data-host="desk"] { --isl-head: 48px; --isl-pad: 56px; box-shadow: 0 12px 36px rgba(0, 0, 0, .45); }
-.isl[data-open="true"] { border-radius: 22px; box-shadow: 0 24px 60px rgba(0, 0, 0, .6); }
-.isl[data-host="desk"][data-open="true"] { border-radius: 28px; }
+.isl[data-host="desk"] { --isl-head: 48px; --isl-pad: 52px; box-shadow: 0 12px 36px rgba(0, 0, 0, .45); }
+.isl[data-open="true"] { border-radius: calc(var(--isl-head) / 2); box-shadow: 0 24px 60px rgba(0, 0, 0, .6); }
 .isl[data-tone="pending"] { --isl-rim: var(--line-2); }
 .isl[data-tone="waiting"] { --isl-rim: var(--orange); }
 .isl[data-tone="error"] { --isl-rim: var(--red); }
@@ -19,8 +18,8 @@
 
 /* The content is clipped to the shape; the cat is not, so its ears may rise over the edge. */
 .isl-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
-.isl-cat { position: absolute; left: 3px; top: 1px; pointer-events: none; }
-.isl[data-host="desk"] .isl-cat { left: 5px; top: 0; }
+/* Concentric with the capsule's rounded end: the same gap all round. */
+.isl-cat { position: absolute; left: 4.5px; top: 4.5px; pointer-events: none; }
 
 .isl-head {
   display: flex; align-items: center; gap: 8px; box-sizing: border-box; height: calc(var(--isl-head) - 3px);
@@ -28,6 +27,8 @@
   white-space: nowrap; text-align: left; cursor: pointer;
 }
 .isl-head:disabled { cursor: default; }
+/* Ending in the progress ring, the ring sits in the right end the way the cat sits in the left. */
+.isl-head:has(> .isl-ring:last-child) { padding-right: calc((var(--isl-head) - 3px - 16px) / 2); }
 .isl-label { flex: none; font-size: 14px; font-weight: 700; }
 .isl[data-host="desk"] .isl-label { font-size: 15px; }
 .isl[data-tone="waiting"] .isl-label { color: var(--orange); }
@@ -39,13 +40,13 @@
 .isl-ring circle { stroke: var(--line-2); }
 .isl-ring path { stroke: var(--accent); }
 
-.isl-panel { position: absolute; left: 0; top: calc(var(--isl-head) - 3px); box-sizing: border-box; padding: 2px 14px 14px; }
-.isl[data-host="desk"] .isl-panel { padding: 4px 16px 16px; }
+.isl-panel { position: absolute; left: 0; top: calc(var(--isl-head) - 3px); box-sizing: border-box; padding: 2px 14px 14px var(--isl-pad); }
+.isl[data-host="desk"] .isl-panel { padding: 4px 16px 16px var(--isl-pad); }
 .isl-in { display: flex; flex-direction: column; gap: 12px; animation: isl-in .3s .15s ease-out both; }
-.isl-steps { margin: 0; padding: 4px 0 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
-.isl-steps li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.isl-steps { margin: 0 0 0 -17px; padding: 4px 0 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
+.isl-steps li { position: relative; padding-left: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .isl-steps li::before {
-  content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 10px; border-radius: 2px; vertical-align: 1px; background: var(--mute);
+  content: ''; position: absolute; left: 0; top: calc(50% - 3.5px); width: 7px; height: 7px; border-radius: 2px; background: var(--mute);
 }
 .isl-steps li[data-tone="done"]::before { background: var(--accent); }
 .isl-steps li[data-tone="working"] { color: var(--ink); }
@@ -62,7 +63,7 @@
 .isl-btn-line { border-color: var(--line-2); }
 .isl-btn-line:hover { border-color: var(--ink-3); }
 .isl-btn-hot { background: var(--orange); color: var(--bg); }
-.isl-btn-ghost { padding: 0 6px; color: var(--ink-2); font-weight: 500; }
+.isl-btn-ghost { padding: 0; color: var(--ink-2); font-weight: 500; }
 .isl-btn-ghost:hover { color: var(--ink); }
 .isl-push { margin-left: auto; }
 .isl :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
