@@ -13,7 +13,6 @@ export const MAX_CONTEXT_CHARS = 3200
 export const RECENT_LIMIT = 8
 const FIELD_CHARS = 300
 /** Only used once mail is connected; the model has no use for the address itself. */
-const PRIVATE_FIELDS = new Set(['email'])
 
 const FIXED_INTRO = '以下是本机保存的用户画像和长期偏好，帮助你理解用户的背景。与当前请求无关的部分请忽略，也不必向用户复述。'
 /** How to use the memory tools; sent with the fixed layer, so the model has it from a session's first turn. */
@@ -47,7 +46,7 @@ export function dateLine(date = new Date()) {
 
 function profileLines(profile) {
   return PROFILE_FIELDS
-    .filter(({ key }) => profile[key]?.value && !PRIVATE_FIELDS.has(key))
+    .filter(({ key }) => profile[key]?.value)
     .map(({ key, label }) => `${label}：${clip(profile[key].value.replace(/\n+/g, '；'), FIELD_CHARS)}`)
 }
 

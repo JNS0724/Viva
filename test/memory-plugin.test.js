@@ -25,7 +25,7 @@ const lastContext = (llm) => contextOf(llm.requests[llm.requests.length - 1])
 test('the fixed layer goes out once per session, names push their memories once', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { file, llm, bridge, defer } = await setup(t)
   const db = openDb(defer, file)
-  db.setProfile({ role: '后端负责人', people: '张三（直属上级）' })
+  db.setProfile({ role: '后端负责人' })
   db.addMemory({ text: '周报每周五下班前交给张三', keywords: ['周报', '张三'] })
   db.addMemory({ text: '回答先给结论', kind: 'preference' })
   // An up-to-date synthesis, so none is due during the test and the fixed layer stays the same.

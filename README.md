@@ -1,6 +1,6 @@
 # Viva · 个人桌面助手
 
-Electron 外壳 + [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`），界面是设计稿里选定的 **A 方案 · 工业饱和 Bento**（深海蓝配色：蓝调深底 + 亮蓝 `#5AA9FF`，点阵数字，编号标签）。
+Electron 外壳 + [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`），界面是深海蓝配色（蓝调深底 + 亮蓝 `#5AA9FF`）：首页只有猫和问候语，状态在标题栏的 Viva 岛上，思考和工具调用收在右侧抽屉的「过程」里。
 
 > Viva 是个人项目，不是 DeepSeek 的官方产品。它使用 DeepSeek 开源的 DeepSeek Harness（MIT 许可），可以连接 DeepSeek 或其他模型的 API。
 
@@ -88,6 +88,7 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 - **窗口里**：在标题栏正中，只说整体进度（用时、第几步）。鼠标移上去或点一下，原地展开成最近几步，可以「停止」或「查看完整过程」。助手等你确认或回答时只写「需要你处理」，点一下滚到对话里的卡片；要确认什么、问了什么，只在卡片里出现一次。正在做什么，由对话底部的猫头像那一行说。
 - **桌面上**：窗口不在前台时（切到别的应用或最小化），屏幕顶部正中出现同一个岛：工作中显示当前步骤和用时，悬停展开最近几步和「停止」；需要你确认时自动展开，可以直接「允许」「拒绝」；反问时单个单选题可以直接点选项，其余情况点「打开窗口回答」；出错时显示原因。一轮完成后显示 5 秒，猫再待 8 秒后离开。点岛回到窗口；窗口回到前台时它自动收起。
+- **可以关掉**：设置里的「桌面岛」开关，保存在应用数据目录的 `preferences.json`。
 - **不打扰**：桌面岛不抢键盘焦点，不出现在录屏和屏幕共享里，只有指针在岛上时才接收点击，其余地方的点击直接落到下面的应用；macOS 上不出现在全屏应用里。
 - **实现**：两处是同一个组件（`src/renderer/view/island-dom.js`），显示的内容由 `island-view.js` 从状态算出。桌面岛是主进程里的一个透明小窗口（`src/main/desk-island.js`，页面 `desk.html`）；窗口把岛的内容交给主进程转发，桌面岛的点击再经主进程回到窗口。两个方向的消息都由 `island-ipc.js` 校验：岛上的按钮只能回答它正显示的那个请求或问题，不能做别的事。冒烟测试会在等待确认时打开桌面岛，在岛上点「允许」，确认对话里的卡片随之消失。
 
@@ -127,7 +128,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 - **主进程** 启动 `dsh --profile viva`（应用自己的 profile，见下文「记忆」），用官方 `@agentclientprotocol/sdk` 的 `ClientSideConnection` 说 ACP：`initialize → session/new → session/prompt`，`session/cancel` 停止，`session/close` 开新对话。
 - **事件分流**（对应设计稿的「对话不含思考和工具调用」）：
   - `agent_message_chunk` → 对话区
-  - `agent_thought_chunk`、`tool_call`、`tool_call_update` → 抽屉「过程」、标题栏的 Viva 岛；读写过的文件进「文件」，抓取的网页进「网页」
+  - `agent_thought_chunk`、`tool_call`、`tool_call_update` → 抽屉「过程」、标题栏的 Viva 岛；读写过的文件进「文件」
   - `session/request_permission` → 对话里的亮蓝确认卡片；你的选择经 `permission-broker` 回给 dsh
 - **模型切换**：输入框左下角的选择器，列出 dsh 返回的模型和推理强度（Off / Low / High / Max），通过 ACP 的 `session/set_config_option` 切换，从下一轮生效；回复进行中禁用。
 - **流式输出**：回复按打字机节奏逐字显示（基础约 90 字/秒，积压多时自动加速，最多落后约 1.2 秒）。注意：dsh 的 ACP 接口只推送「已完成的整段消息」，不推送模型的逐字增量，所以首字要等整段生成完才出现。dsh 将来若推送增量片段，无需改代码即可逐字显示。
@@ -141,7 +142,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
   - **搜索**：搜索框能搜全部对话的正文和标题，命中处高亮。3 个字以上走 FTS5 trigram 全文索引，更短的退回模糊匹配。
   - **单段操作**：每段对话的 ⋯ 菜单里有重命名、置顶、导出 Markdown、删除。
   - **删除**：删除后底部出现「撤销」，8 秒后彻底清除。数据库开了 `secure_delete`，删掉的文字不会残留在文件里。dsh 自己在应用 dsh 目录 `sessions/` 下的日志不会被删。
-  - **旧对话的「过程」**：打开旧对话时，从 dsh 自己的日志（应用 dsh 目录的 `sessions/…/session.v4.jsonl.zstd`）读回思考和工具调用，读到后回执重新出现「VIEW TRACE」。读不到时，抽屉里会说明原因。
+  - **旧对话的「过程」**：打开旧对话时，从 dsh 自己的日志（应用 dsh 目录的 `sessions/…/session.v4.jsonl.zstd`）读回思考和工具调用，读到后回执重新出现「查看过程」。读不到时，抽屉里会说明原因。
   - **任务进行中**：不能切换到别的对话；切换过程中（新对话、打开旧对话）发送按钮暂时禁用，避免消息落进正在被替换的对话。
   - **旧版迁移**：旧版的 `history/*.json` 会在首次启动时自动导入，旧目录改名为 `history-imported` 留作备份。
 - **记忆（dsh 插件）**：记忆整体是 `plugins/memory` 这个 dsh 插件，应用只负责界面。换一种记忆方案，就是换掉这个插件。完整设计见 [docs/memory.md](docs/memory.md)。
@@ -160,7 +161,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 243 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 248 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
 npm run smoke       # 真的启动 Electron，分四次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
@@ -184,8 +185,6 @@ npm run smoke       # 真的启动 Electron，分四次：
 ## 已知限制
 
 - `@deepseek-ai/dsh` 还是 0.2.0-rc，官方说明会有不兼容改动；ACP profile 是「自动化」定位，不提供 plan、todo 等 DSH 专有界面数据。
-- 「邮件」页是占位：需要通过 MCP 服务器接入（`session/new` 的 `mcpServers`）。
-- 「网页」页目前只列出抓取过的地址，还没有嵌入实时网页画面和「我来接管」。
 - 聊天内容以明文保存在本机（key 是加密的）。
 - 旧对话的「过程」依赖 dsh 私有的 v4 日志格式，dsh 升级后可能读不出来；读不出时只是不显示过程，对话本身不受影响。
 - 测试必须用 Electron 自带的 Node：系统 Node 24.14 的 zstd 只能解开多帧文件的第一帧，而 dsh 的日志正是多帧的。

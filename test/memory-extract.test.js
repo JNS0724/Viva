@@ -6,7 +6,7 @@ import path from 'node:path'
 import { candidatesFor, extractionInput, extractTurn, parseExtraction, worthExtracting } from '../plugins/memory/lib/extract.js'
 import { buildLexicon } from '../plugins/memory/lib/names.js'
 import { openMemoryDb } from '../plugins/memory/lib/store.js'
-import { memoryNotice } from '../src/renderer/memory-actions.js'
+import { introChanges, introPrompt, memoryNotice } from '../src/renderer/memory-actions.js'
 import { initialState, reduce } from '../src/renderer/state.js'
 
 function tempDb(t, now) {
@@ -34,7 +34,7 @@ test('the extractor answer is taken only in its exact shape', () => {
 })
 
 test('chit-chat skips the model call; talk about the user, their work or named things does not', () => {
-  const lexicon = buildLexicon({ people: { value: '张三' } }, [])
+  const lexicon = buildLexicon({}, [{ keywords: ['张三'] }])
   assert.equal(worthExtracting('好的', lexicon), false)
   assert.equal(worthExtracting('帮我算一下 17 乘 23', lexicon), false)
   assert.equal(worthExtracting('以后回答先给结论', lexicon), true)
@@ -52,10 +52,10 @@ test('an answer to the agent\'s question always gets a look, and reaches the ext
   assert.equal(JSON.parse(extractionInput({ userWords: 'x', reply: '', today: 'x', candidates: [] })).answers, undefined, 'no answers, no field')
 })
 
-test('the extractor sees the profile, so it does not repeat it, but never the email', () => {
+test('the extractor sees the profile, so it does not repeat it', () => {
   const input = JSON.parse(extractionInput({
     userWords: '我是后端负责人', reply: '', today: 'x', candidates: [],
-    profile: { role: { value: '后端负责人' }, email: { value: 'me@corp.example' } },
+    profile: { role: { value: '后端负责人' } },
   }))
   assert.deepEqual(input.profile, { role: '后端负责人' })
 })
@@ -138,4 +138,10 @@ test('the invalid list opens, and a revived memory moves back among the valid on
   assert.deepEqual([opened.memory.invalidOpen, opened.memory.invalid], [true, 1])
   assert.deepEqual([revived.memory.invalid, revived.memory.invalidItems, revived.memory.items.map((m) => m.id), revived.memory.total], [0, [], [7], 1])
   assert.equal(reduce(opened, { type: 'memory_invalid_closed' }).memory.invalidOpen, false)
+})
+
+test('the intro keeps the three profile fields it asks for; sites and documents only go to the reading prompt', () => {
+  assert.deepEqual(introChanges({ role: ' 后端负责人 ', projects: '', preferences: '先给结论', sources: 'https://wiki.example', email: 'x' }),
+    { role: '后端负责人', preferences: '先给结论' })
+  assert.match(introPrompt({ sources: ['https://wiki.example'], docs: [{ path: '/w/我的资料/周报.md' }] }), /- https:\/\/wiki\.example\n- \/w\/我的资料\/周报\.md$/)
 })

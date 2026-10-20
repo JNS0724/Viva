@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { fieldLabel, MAX_FIELD_CHARS, PROFILE_KEYS } from '../../../src/shared/profile-fields.js'
+import { fieldLabel, MAX_FIELD_CHARS, PROFILE_KEYS, RETIRED_FIELDS } from '../../../src/shared/profile-fields.js'
 
 /** role: who the user is (job, team, field); person / project: who and what they deal with. */
 export const MEMORY_KINDS = Object.freeze(['fact', 'preference', 'person', 'project', 'role'])
@@ -160,6 +160,8 @@ function addLaterColumns(db) {
 }
 
 const lines = (text) => text.split('\n').map((line) => line.trim()).filter(Boolean)
+/** "张三（上级）" → "张三", "李四：风控对接人" → "李四". */
+const nameIn = (line) => line.replace(/[（(][^）)]*[）)]/g, ' ').split(/[:：]/)[0].replace(/^[-*•\s]+/, '').trim()
 const clipTo = (text, max) => ([...text].length > max ? `${[...text].slice(0, max - 1).join('')}…` : text)
 
 const toMemory = (row) => ({
@@ -318,6 +320,31 @@ export function openMemoryDb({ file, now = Date.now }) {
         sql.dropField.run(field)
       }
       sql.setMeta.run('profile_migrated', String(at))
+    })
+  }
+
+  /**
+   * Once per database: what the user wrote in fields the profile no longer has becomes their own memories,
+   * one per line, a name field's name as the keyword. A private field (the email) is left where it was.
+   */
+  function migrateRetiredFields() {
+    if (sql.meta.get('profile_trimmed')) return
+    transaction(() => {
+      if (sql.meta.get('profile_trimmed')) return
+      const at = now()
+      for (const field of RETIRED_FIELDS.filter((item) => !item.private)) {
+        const row = sql.field.get(field.key)
+        if (!row) continue
+        for (const line of lines(row.value)) {
+          const text = clipTo(`${field.label}：${line}`, MAX_MEMORY_CHARS)
+          const keywords = field.names ? joinKeywords(cleanKeywords([nameIn(line)])) : ''
+          if (!looksSecret(text) && !sql.byNorm.get(normalize(text))) {
+            sql.insert.run(text, normalize(text), field.kind, 'user', 'profile-migration', at, at, keywords)
+          }
+        }
+        sql.dropField.run(field.key)
+      }
+      sql.setMeta.run('profile_trimmed', String(at))
     })
   }
 
@@ -579,6 +606,7 @@ export function openMemoryDb({ file, now = Date.now }) {
   const setOnboarding = (status) => sql.setMeta.run('onboarding', assertOneOf(status, ONBOARDING_STATES, 'onboarding state'))
 
   migrateAgentProfile()
+  migrateRetiredFields()
   claimContract()
 
   return {

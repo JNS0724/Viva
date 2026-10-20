@@ -53,13 +53,14 @@ test('secrets are refused, mentions and document links are not', () => {
 
 test('profile fields belong to the user: replaced as written, cleared when empty', (t) => {
   const db = tempDb(t)
-  db.setProfile({ role: '后端负责人', department: '支付平台部' })
-  assert.deepEqual(Object.keys(db.getProfile()).sort(), ['department', 'role'])
+  db.setProfile({ role: '后端负责人', projects: '对账系统重构' })
+  assert.deepEqual(Object.keys(db.getProfile()).sort(), ['projects', 'role'])
   assert.equal(db.getProfile().role.source, 'user')
   assert.equal(db.appendProfile, undefined, 'the agent has no way to write the profile')
 
-  db.setProfile({ department: '' })
-  assert.equal(db.getProfile().department, undefined)
+  db.setProfile({ projects: '' })
+  assert.equal(db.getProfile().projects, undefined)
+  assert.throws(() => db.setProfile({ department: '支付平台部' }), /profile field/, 'fields the profile no longer has are refused')
   assert.throws(() => db.setProfile({ nickname: 'x' }), /invalid profile field/)
   assert.throws(() => db.setProfile({ role: 'token: abcdef1234567' }), /不会被记住/)
 })

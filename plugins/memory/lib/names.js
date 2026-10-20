@@ -6,8 +6,8 @@ import { STOP_BIGRAMS } from './match.js'
  * question names one of them. An exact name says far more than two texts sharing a few characters.
  */
 
-/** Profile fields that list names; the others are sentences. */
-const NAME_FIELDS = ['people', 'projects', 'domain', 'department']
+/** Profile fields that list names; the others are sentences. People and teams come from memories' keywords. */
+const NAME_FIELDS = ['projects']
 const NAME_SEPARATORS = /[\n、，,;；/|]+/
 const MIN_NAME_CHARS = 2
 const MAX_NAME_CHARS = 20

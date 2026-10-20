@@ -30,11 +30,6 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .profile-field[data-filled="false"] .profile-value { color: var(--mute); font-size: 13px; }
 .profile-edit { display: flex; flex-direction: column; gap: 8px; }
 .profile-edit-actions { display: flex; gap: 8px; }
-.profile-habits {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px;
-  border: 1px dashed var(--line-2); font-size: 13px; color: var(--ink-2);
-}
-.profile-habits .label { color: var(--ink-3); }
 .profile-synthesis {
   margin: 0; padding: 14px 16px; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--line);
   font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;

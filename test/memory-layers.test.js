@@ -18,12 +18,12 @@ function tempDb(t, now) {
 
 const memory = (id, text, keywords = [], updatedAt = id) => ({ id, text, keywords, updatedAt })
 
-test('names come from the profile lists and memory keywords, cleaned and without generic words', () => {
+test('names come from the projects in the profile and from memory keywords, cleaned and without generic words', () => {
   const lexicon = buildLexicon(
-    { people: { value: '张三（直属上级）、李四：产品\n- 王五' }, projects: { value: 'Q4 对账系统重构' }, role: { value: '后端负责人' } },
+    { projects: { value: '- Q4 对账系统重构（主负责）、PR：评审' }, role: { value: '后端负责人' } },
     [{ keywords: ['周报', '项目', 'x'] }, { keywords: ['张三'] }],
   )
-  assert.deepEqual(lexicon.map((entry) => entry.name), ['张三', '李四', '王五', 'Q4 对账系统重构', '周报'])
+  assert.deepEqual(lexicon.map((entry) => entry.name), ['Q4 对账系统重构', 'PR', '周报', '张三'])
 })
 
 test('a name is found whole, by four of its characters, and never inside a longer Latin word', () => {
@@ -52,7 +52,7 @@ test('the fixed layer goes out first, after a change and after a compaction', ()
 })
 
 test('memories are pushed only for named things, best first, at most a few, once per session', () => {
-  const lexicon = buildLexicon({ people: { value: '张三' } }, [{ keywords: ['周报'] }])
+  const lexicon = buildLexicon({}, [{ keywords: ['张三'] }, { keywords: ['周报'] }])
   const memories = [
     memory(1, '周报每周五下班前交给张三', ['周报']),
     memory(2, '张三是直属上级'),

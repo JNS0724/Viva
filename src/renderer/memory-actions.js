@@ -2,9 +2,8 @@
 const SEARCH_DEBOUNCE_MS = 200
 const UNDO_TOAST_MS = 8000
 const NOTICE_TOAST_MS = 6000
-/** The intro fields; the rest of the profile fills in over time. */
-export const INTRO_FIELDS = Object.freeze(['role', 'projects', 'sources', 'email', 'im'])
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+/** The profile fields the intro asks for: all three. Sites and documents are only read, not kept. */
+export const INTRO_FIELDS = Object.freeze(['role', 'projects', 'preferences'])
 
 const lines = (text) => String(text ?? '').split('\n').map((line) => line.trim()).filter(Boolean)
 
@@ -24,14 +23,9 @@ export function introPrompt({ sources, docs }) {
 /**
  * The intro form's values as profile changes: only filled fields, so skipping one never clears it.
  * @param {Record<string, string>} values
- * @param {Array<{ path: string }>} docs
  */
-export function introChanges(values, docs) {
-  const email = String(values.email ?? '').trim()
-  if (email && !EMAIL_PATTERN.test(email)) throw new Error('工作邮箱的格式不对，可以留空')
-  const sources = [...lines(values.sources), ...docs.map((doc) => doc.path)]
-  const filled = { ...values, sources: sources.join('\n'), email }
-  return Object.fromEntries(INTRO_FIELDS.map((key) => [key, String(filled[key] ?? '').trim()]).filter(([, value]) => value))
+export function introChanges(values) {
+  return Object.fromEntries(INTRO_FIELDS.map((key) => [key, String(values[key] ?? '').trim()]).filter(([, value]) => value))
 }
 
 /** "已记住：周报每周五交给张三" / "已记住 3 条" / "已补充画像：在推进的事". */
@@ -72,7 +66,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
 
   async function saveIntro(values, analyze) {
     const { docs } = getState().memory
-    const changes = introChanges(values, docs)
+    const changes = introChanges(values)
     const profile = await api.saveProfile(changes)
     dispatch({ type: 'memory_profile_saved', profile })
     dispatch({ type: 'memory_onboarding', status: await api.setOnboarding('done') })

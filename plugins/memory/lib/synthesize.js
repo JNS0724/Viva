@@ -13,7 +13,6 @@ export const SYNTHESIS_MIN_CHANGES = 5
 /** Profile memories are one-line facts; this many fit comfortably in one call. */
 const SYNTHESIS_MEMORY_LIMIT = 150
 export const SYNTHESIS_SECTIONS = Object.freeze(['身份与职责', '常打交道的人', '在推进的事', '偏好'])
-const PRIVATE_FIELDS = new Set(['email'])
 
 export const SYNTHESIS_SYSTEM = [
   '你是画像整理员。根据用户自己填写的画像和长期记忆，写一份关于用户的简短画像，供另一个助手在对话开始时阅读。',
@@ -41,7 +40,7 @@ const day = (ts) => {
 /** As JSON, so nothing in a memory can pose as an instruction. */
 export function synthesisInput({ profile, memories }) {
   return JSON.stringify({
-    userProfile: Object.fromEntries(Object.entries(profile).filter(([field]) => !PRIVATE_FIELDS.has(field)).map(([field, entry]) => [field, entry.value])),
+    userProfile: Object.fromEntries(Object.entries(profile).map(([field, entry]) => [field, entry.value])),
     memories: memories.map((memory) => ({ date: day(memory.updatedAt), kind: memory.kind, text: memory.text })),
   })
 }

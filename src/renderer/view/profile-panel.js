@@ -7,10 +7,10 @@ const KIND_LABEL = { fact: '事实', preference: '偏好', person: '人', projec
 const SOURCE_LABEL = { user: '你添加', agent: '助手记下' }
 const INTRO_ITEMS = [
   { key: 'role', label: '你的工作', hint: '例如：支付平台部的后端负责人，负责清结算', multiline: false },
-  { key: 'projects', label: '最近在推进的事', hint: '例如：Q4 对账系统重构', multiline: false },
-  { key: 'sources', label: '常用网站', hint: '一行一个网址，例如内部 wiki、项目看板', multiline: true },
+  { key: 'projects', label: '在推进的事', hint: '例如：Q4 对账系统重构', multiline: false },
+  { key: 'preferences', label: '偏好与习惯', hint: '例如：回答先给结论；对比方案时用表格', multiline: false },
+  { key: 'sources', label: '常用网站（只用来让助手读一遍）', hint: '一行一个网址，例如内部 wiki、项目看板', multiline: true },
 ]
-const PRIVACY_NOTE = '这些内容只保存在这台电脑上。每次对话开始时会把画像和偏好发给模型；你提到画像或记忆里的人和事时，才会带上相关的几条记忆。删除对话不会删除这里的记忆。'
 
 function fieldEditor(field, entry, memory, handlers) {
   const input = h('textarea', {
@@ -46,6 +46,11 @@ function fieldCard(field, memory, handlers) {
       : h('p', { class: 'profile-value', text: entry?.value ?? field.hint }))
 }
 
+/** Once there is something to say: it goes along with each conversation, so it is shown here too. */
+const habitsRow = (habits) => (habits.text
+  ? h('p', { class: 'help', text: `使用习惯（根据最近 ${habits.samples} 次提问）：${habits.text}` })
+  : null)
+
 /** Read-only: it is rebuilt from the memories, so changing a memory is how it changes. */
 function synthesisSection(memory, now) {
   const synthesis = memory.synthesis
@@ -56,14 +61,7 @@ function synthesisSection(memory, now) {
     synthesis
       ? h('p', { class: 'profile-synthesis', text: synthesis.text })
       : h('p', { class: 'empty', text: '助手记下一些关于你的事之后，会定期把它们整理成画像，大约每天一次。' }),
-    h('p', { class: 'help', text: '由下面的记忆整理而来：想纠正哪一点，修改或删除对应的记忆即可，下次整理时会更新。' }))
-}
-
-function habitsRow(habits) {
-  const text = habits.text
-    ? `${habits.text}（根据最近 ${habits.samples} 次提问）`
-    : `提问满 20 次后，会根据你的使用时段自动分析（目前 ${habits.samples} 次）`
-  return h('div', { class: 'profile-habits' }, label('使用习惯 · 自动分析'), h('span', { text }))
+    h('p', { class: 'help', text: '由下面的记忆整理而来；想纠正，改对应的记忆即可。' }))
 }
 
 function memoryMeta(memory, now) {
@@ -143,13 +141,9 @@ function memoriesSection(memory, handlers, now) {
 function profileView(memory, handlers, now) {
   return [
     h('div', { class: 'row-between' },
-      label('06 / ABOUT YOU'),
-      h('div', { class: 'profile-head-actions' },
-        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '快速引导', onClick: () => handlers.openProfile('intro') }),
-        h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', onClick: handlers.closeProfile }, icon('close', 16)))),
-    h('div', { class: 'profile-intro' },
       h('h2', { class: 'settings-title', id: 'profile-title', text: '关于你' }),
-      h('p', { class: 'help', text: `助手对你的了解都在这里，每一条都可以修改或删除。${PRIVACY_NOTE}` })),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', onClick: handlers.closeProfile }, icon('close', 16))),
+    h('p', { class: 'help', text: '助手对你的了解都在这里，每一条都可以改或删，只保存在这台电脑上。' }),
     memory.error ? h('p', { class: 'form-error', role: 'alert', text: memory.error }) : null,
     h('section', { class: 'profile-section' },
       h('h3', { class: 'profile-heading', text: '你填写的画像' }),
@@ -169,7 +163,7 @@ function introInput(item, value) {
 
 function introValues(form) {
   const value = (key) => form.elements.namedItem(`intro-${key}`)?.value ?? ''
-  return { role: value('role'), projects: value('projects'), sources: value('sources'), email: value('email'), im: value('im') }
+  return { role: value('role'), projects: value('projects'), preferences: value('preferences'), sources: value('sources') }
 }
 
 function introView(memory, handlers) {
@@ -189,9 +183,6 @@ function introView(memory, handlers) {
     h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: memory.busy, onClick: handlers.addDocs }, '添加常用文档'),
     h('span', { class: 'help', text: '会复制一份到工作区的「我的资料」，原文件不动' })),
   docs,
-  h('div', { class: 'intro-pair' },
-    introInput({ key: 'email', label: '工作邮箱（可留空）', hint: 'name@company.com' }, current('email')),
-    introInput({ key: 'im', label: '工作 IM（可留空）', hint: '飞书、钉钉、企业微信、Slack…' }, current('im'))),
   h('label', { class: 'intro-check' },
     h('input', { type: 'checkbox', name: 'intro-analyze', checked: true }),
     h('span', { text: '保存后让助手阅读这些网站和文档，补全画像（会在对话里进行，你能看到每一步）' })),
@@ -201,11 +192,9 @@ function introView(memory, handlers) {
     h('button', { class: 'btn btn-outline btn-field', type: 'button', text: '以后再说', onClick: handlers.skipIntro })))
   return [
     h('div', { class: 'row-between' },
-      label('06 / GET TO KNOW YOU'),
-      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', onClick: handlers.closeProfile }, icon('close', 16))),
-    h('div', { class: 'profile-intro' },
       h('h2', { class: 'settings-title', id: 'profile-title', text: '让我认识你' }),
-      h('p', { class: 'help', text: `花一分钟，之后的回答会更贴合你的工作。每一项都可以留空，以后在「关于你」里随时补充。${PRIVACY_NOTE}` })),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', onClick: handlers.closeProfile }, icon('close', 16))),
+    h('p', { class: 'help', text: '每一项都可以留空，以后在「关于你」里随时改。' }),
     form,
   ]
 }

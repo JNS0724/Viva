@@ -52,7 +52,7 @@ export function candidatesFor(userWords, memories, lexicon) {
 export function extractionInput({ userWords, answers = [], reply, today, candidates, profile = {} }) {
   return JSON.stringify({
     today,
-    profile: Object.fromEntries(Object.entries(profile).filter(([field]) => field !== 'email').map(([field, entry]) => [field, entry.value])),
+    profile: Object.fromEntries(Object.entries(profile).map(([field, entry]) => [field, entry.value])),
     user: userWords,
     ...(answers.length ? { answers } : {}),
     assistant: String(reply ?? '').slice(0, MAX_REPLY_CHARS),
