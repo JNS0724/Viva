@@ -25,7 +25,7 @@ function trailingMessage(events) {
 }
 
 /** A bridge on the fake dsh that answers permission requests with `answer` (or never, when null). */
-function fakeBridge(answer = 'allow') {
+function fakeBridge(answer = 'allow-once') {
   const events = []
   const bridge = createAcpBridge({
     dshBin: FAKE_DSH,
@@ -41,7 +41,7 @@ function fakeBridge(answer = 'allow') {
 }
 
 test('fake dsh plays the full script through the real bridge and honours an allow decision', async () => {
-  const { events, bridge } = fakeBridge('allow')
+  const { events, bridge } = fakeBridge('allow-once')
   const info = await bridge.start()
 
   await bridge.prompt('整理一下')
@@ -56,11 +56,12 @@ test('fake dsh plays the full script through the real bridge and honours an allo
   assert.equal(lastToolStatus(events), 'completed')
   assert.equal(trailingMessage(events), '已写入 summary.md（假 dsh，没有真正写入磁盘）。')
   assert.equal(events.at(-1).stopReason, 'end_turn')
+  assert.deepEqual(Object.keys(events.find((e) => e.type === 'permission').toolCall), ['toolCallId'], 'like real dsh, the request names only the tool call')
   bridge.dispose()
 })
 
 test('fake dsh honours a reject decision', async () => {
-  const { events, bridge } = fakeBridge('reject')
+  const { events, bridge } = fakeBridge('reject-once')
   await bridge.start()
 
   await bridge.prompt('整理一下')

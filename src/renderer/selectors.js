@@ -120,10 +120,15 @@ function latestActiveTool(state) {
   return null
 }
 
-function workingEvent(state, now) {
+/** What the agent is doing right now, in a few words: the running tool, or replying, or thinking. */
+export function currentAction(state) {
   const active = latestActiveTool(state)
-  const replying = state.messages[state.messages.length - 1]?.open
-  const what = active ? active.title : replying ? '正在回复' : '正在思考'
+  if (active) return active.title
+  return state.messages[state.messages.length - 1]?.open ? '正在回复' : '正在思考'
+}
+
+function workingEvent(state, now) {
+  const what = currentAction(state)
   return state.turn ? `${truncate(what, EVENT_LIMIT)} · ${formatElapsed(now - state.turn.startedAt)}` : what
 }
 
@@ -232,9 +237,11 @@ export function webItems(state) {
     .map((tool) => ({ id: tool.id, title: tool.title, url: urlOf(tool) || tool.title, tone: TOOL_TONE[tool.status] ?? 'pending' }))
 }
 
-/** Pretty-printed tool arguments for the confirmation card. */
+/** What the confirmation card shows of the tool's arguments: a command as itself, anything else pretty-printed. */
 export function permissionDetail(permission) {
   if (!permission?.rawInput) return ''
+  const { command } = permission.rawInput
+  if (typeof command === 'string' && Object.keys(permission.rawInput).length === 1) return truncate(command, 600)
   try {
     return truncate(JSON.stringify(permission.rawInput, null, 2), 600)
   } catch {

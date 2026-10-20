@@ -1,3 +1,4 @@
+import { optionName } from '../approval.js'
 import { catMood, permissionDetail, receiptLine, restoredNote, statusView } from '../selectors.js'
 import { catFor } from './cat.js'
 import { h, label } from './dom.js'
@@ -83,7 +84,7 @@ function permissionCard(permission, handlers) {
     h('div', { class: 'confirm-actions' },
       permission.options.map((option) => h('button', {
         class: option.kind.startsWith('allow') ? 'btn btn-ink' : 'btn btn-ghost-ink',
-        text: option.name,
+        text: optionName(option),
         onClick: () => handlers.respond(permission.requestId, option.optionId),
       })),
       h('span', { class: 'confirm-hint', text: '有风险的操作总会先问你' })))

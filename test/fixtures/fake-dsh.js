@@ -54,9 +54,10 @@ const MODELS = [
   { value: '["fake","fake-pro"]', name: 'Fake Pro' },
 ]
 const EFFORTS = ['off', 'low', 'high', 'max']
+/** As real dsh offers them (dsh-acp): English names, which the window shows in Chinese. */
 const PERMISSION_OPTIONS = [
-  { optionId: 'allow', name: '允许', kind: 'allow_once' },
-  { optionId: 'reject', name: '拒绝', kind: 'reject_once' },
+  { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+  { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
 ]
 
 const cancelled = new Error('cancelled')
@@ -159,14 +160,16 @@ function createAgent(conn) {
     await step(tool(fetch, '查找相关资料', 'fetch', { rawInput: { url: `https://example.com/search?q=${encodeURIComponent(text.slice(0, 40))}` } }))
     await step(status(fetch, 'completed'))
     await stream('agent_message_chunk', `收到：「${text}」。这是测试用的假 dsh 的固定回复（模型 ${model}，推理强度 ${session.effort}）。思考和工具调用会出现在右侧「过程」里。`)
-    await step(tool(write, '写入 summary.md', 'edit', { status: 'pending', locations: [{ path: path.join(session.cwd, 'summary.md') }] }))
+    // Like real dsh: the tool call carries the tool's name and arguments, the request only its id.
+    const summary = path.join(session.cwd, 'summary.md')
+    await step(tool(write, 'write', 'other', { status: 'pending', rawInput: { path: summary, content: '# 摘要' }, locations: [{ path: summary }] }))
     const decision = await conn.requestPermission({
       sessionId,
-      toolCall: { toolCallId: write, title: '写入 summary.md', kind: 'edit' },
+      toolCall: { toolCallId: write },
       options: PERMISSION_OPTIONS,
     })
     if (signal.aborted) throw cancelled
-    const allowed = decision.outcome.outcome === 'selected' && decision.outcome.optionId === 'allow'
+    const allowed = decision.outcome.outcome === 'selected' && decision.outcome.optionId === 'allow-once'
     await step(status(write, allowed ? 'completed' : 'failed'))
     await stream('agent_message_chunk', allowed ? '已写入 summary.md（假 dsh，没有真正写入磁盘）。' : '好的，没有写入。')
   }

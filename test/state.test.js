@@ -91,6 +91,29 @@ test('permission request waits, resolution records the decision and resumes', ()
   assert.deepEqual(resumed.timeline.at(-1), { kind: 'decision', ref: 'p1', at: T0 + 40, title: '写入 a.md', allowed: true, choice: '允许' })
 })
 
+test('dsh asks with the tool call id only: the card takes what to approve from that tool call', () => {
+  const realOptions = [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }, { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' }]
+  const call = (toolCallId, title, rawInput) => ({ type: 'acp_update', at: T0 + 10, update: { sessionUpdate: 'tool_call', toolCallId, title, kind: 'other', status: 'in_progress', rawInput } })
+  const ask = (toolCallId) => ({ type: 'permission_request', requestId: `p-${toolCallId}`, toolCall: { toolCallId }, options: realOptions, at: T0 + 20 })
+
+  const bash = run([prompt, call('c1', 'bash', { command: 'rm -rf build' }), ask('c1')])
+  assert.equal(bash.permission.title, '运行命令：rm -rf build')
+  assert.deepEqual(bash.permission.rawInput, { command: 'rm -rf build' })
+  assert.equal(bash.timeline.at(-1).title, '运行命令：rm -rf build')
+
+  const write = run([prompt, call('c2', 'write', { path: '/w/notes/summary.md', content: '# 摘要' }), ask('c2')])
+  assert.equal(write.permission.title, '写入 summary.md')
+  const edit = run([prompt, call('c3', 'str_replace_editor', { command: 'str_replace', path: '/w/a.js' }), ask('c3')])
+  assert.equal(edit.permission.title, '修改 a.js')
+  const other = run([prompt, call('c4', 'web_fetch', { url: 'https://example.com' }), ask('c4')])
+  assert.equal(other.permission.title, 'web_fetch')
+  const unknown = run([prompt, ask('nope')])
+  assert.equal(unknown.permission.title, '需要你确认')
+
+  const decided = reduce(bash, { type: 'permission_resolved', requestId: 'p-c1', optionId: 'allow-once', at: T0 + 30 })
+  assert.equal(decided.timeline.at(-1).choice, '允许', 'dsh\'s English option names are shown in Chinese')
+})
+
 test('a stale permission answer is ignored', () => {
   const waiting = run([prompt, { type: 'permission_request', requestId: 'p2', toolCall: null, options: [], at: T0 }])
 

@@ -1,3 +1,4 @@
+import { approvalTitle, optionName } from './approval.js'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { QUESTION_ACTIONS } from './question-state.js'
@@ -171,17 +172,19 @@ const ACTION_HANDLERS = {
     return handler ? handler(state, update, at) : state
   },
 
+  /** dsh names only the tool call; what it does comes from that call, announced just before (approval.js). */
   permission_request: (state, { requestId, toolCall, options, at }) => {
-    const title = toolCall?.title || '需要你确认'
+    const known = toolCall?.toolCallId ? state.tools[toolCall.toolCallId] : null
+    const title = toolCall?.title || approvalTitle(known) || '需要你确认'
     return {
       ...closeStreams(state),
       phase: 'waiting',
       permission: {
         requestId,
         title,
-        kind: toolCall?.kind ?? 'other',
+        kind: toolCall?.kind ?? known?.kind ?? 'other',
         toolCallId: toolCall?.toolCallId ?? null,
-        rawInput: toolCall?.rawInput ?? null,
+        rawInput: toolCall?.rawInput ?? known?.rawInput ?? null,
         options: Array.isArray(options) ? options : [],
       },
       timeline: [...state.timeline, { kind: 'permission', ref: requestId, at, title }],
@@ -201,7 +204,7 @@ const ACTION_HANDLERS = {
         at,
         title: state.permission.title,
         allowed: Boolean(option?.kind?.startsWith('allow')),
-        choice: option?.name ?? '已取消',
+        choice: option ? optionName(option) : '已取消',
       }],
     }
   },

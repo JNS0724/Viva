@@ -95,6 +95,7 @@ test('tool detail falls back from path to url to compact JSON', () => {
 test('permission detail pretty-prints arguments', () => {
   assert.equal(permissionDetail({ rawInput: { path: 'a' } }), '{\n  "path": "a"\n}')
   assert.equal(permissionDetail({ rawInput: null }), '')
+  assert.equal(permissionDetail({ rawInput: { command: 'rm -rf build\nls' } }), 'rm -rf build\nls', 'a command is shown as itself')
 })
 
 test('formatting helpers', () => {
