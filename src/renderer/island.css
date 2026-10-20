@@ -144,6 +144,10 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .desk-stage[data-dir="up"] { align-items: flex-end; padding: 0 20px 10px; }
 .desk-stage[data-align="start"] { justify-content: flex-start; }
 .desk-stage[data-align="end"] { justify-content: flex-end; }
+/* Dragged, the window is just the cat (desk-place.js DRAG_SIZE): it sits in the middle, changes shape at
+   once, and casts a short shadow that fits; a long blur would be drawn again at every move. */
+.desk-stage[data-dragging="true"] { padding: 0; align-items: center; justify-content: center; }
+.desk-stage[data-dragging="true"] .isl { transition: none; box-shadow: 0 3px 10px rgba(0, 0, 0, .5); cursor: grabbing; }
 
 @keyframes isl-spin { to { transform: rotate(360deg); } }
 @keyframes isl-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }

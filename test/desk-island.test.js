@@ -113,6 +113,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     showInactive() { this.visible = true }
     hide() { this.visible = false }
     setBounds(bounds) { this.bounds = bounds }
+    setPosition(x, y) { this.bounds = { ...this.bounds, x, y } }
     getBounds() { return this.bounds }
     setFocusable(value) { this.focusable = value }
     focus() { this.focused = this.focusable }
@@ -124,7 +125,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     getAllDisplays: () => [display],
     getDisplayMatching: () => display,
     getDisplayNearestPoint: () => display,
-    getCursorScreenPoint: () => cursor,
+    getCursorScreenPoint: () => ({ ...cursor }),
   }
   let saved = { last: null, places: {} }
   const places = { get: () => saved, set: (value) => { saved = value } }
@@ -183,7 +184,7 @@ test('clicks reach the island only while the pointer is over it', (t) => {
   desk.destroy()
 })
 
-test('dragged, the island follows the pointer and is remembered where it is let go', (t) => {
+test('dragged, the island shrinks to the cat, follows the pointer at each frame, and is remembered where it is let go', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
   const desk = deskIsland(env)
@@ -191,11 +192,14 @@ test('dragged, the island follows the pointer and is remembered where it is let 
   const [win] = env.windows
   win.handlers['did-finish-load']()
   desk.startDrag()
-  assert.equal(win.lastView().dragging, true)
+  assert.deepEqual([win.lastView().dragging, win.bounds], [true, { x: -12, y: 13, width: 72, height: 72 }], 'just the cat, under the pointer, kept on the screen')
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
-  t.mock.timers.tick(20)
-  assert.deepEqual([win.bounds.x, win.lastView().dir], [780, 'up'])
+  t.mock.timers.tick(200)
+  assert.equal(win.bounds.x, -12, 'no timer moves it: the page\'s frames do')
+  desk.dragMove()
+  assert.deepEqual(win.bounds, { x: 1044, y: 645, width: 72, height: 72 })
   desk.endDrag()
+  assert.deepEqual([win.bounds.width, win.bounds.height, win.lastView().dir], [600, 320, 'up'], 'its full size again, opening upwards')
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 0.75, fy: 0.75 } } })
   assert.equal(win.lastView().dragging, false)
   desk.resetPlace()

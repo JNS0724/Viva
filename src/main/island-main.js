@@ -50,7 +50,7 @@ export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, swi
 
   const LOCAL = {
     rect: (island, { x, y, width, height }) => island.setIslandRect({ x, y, width, height }),
-    drag: (island, { phase }) => (phase === 'start' ? island.startDrag() : island.endDrag()),
+    drag: (island, { phase }) => ({ start: island.startDrag, move: island.dragMove, end: island.endDrag })[phase](),
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
     open: openWindow,

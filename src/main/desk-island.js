@@ -1,4 +1,4 @@
-import { DESK_SIZE, deskLayout, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.js'
+import { DESK_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.js'
 
 /**
  * The Viva island on the desktop: a small transparent window, at the top centre of the screen unless the
@@ -15,9 +15,11 @@ export { DESK_SIZE }
  */
 export const DESK_TIMES = Object.freeze({ done: 5_000, mini: 8_000, linger: 2_000 })
 const SHOWN = new Set(['working', 'waiting', 'asking', 'error'])
-/** How often the pointer is checked against the island, and the island moved while dragged. */
+/**
+ * How often the pointer is checked against the island. While it is dragged the island moves at the page's
+ * frames instead (desk.js), so in step with the screen and only when the pointer moved.
+ */
 const POINTER_MS = 50
-const DRAG_MS = 16
 /** The island takes the pointer this far beyond its edge. */
 const POINTER_SLOP = 4
 
@@ -71,7 +73,9 @@ function openWindow({ BrowserWindow, preload, page }) {
   win.setAlwaysOnTop(true, 'floating')
   if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false })
   win.setContentProtection(true)
-  win.setIgnoreMouseEvents(true, { forward: true })
+  // Without `forward`: on Windows it hooks every mouse move on the system (WH_MOUSE_LL) through this process.
+  // Where the pointer is comes from checkPointer instead.
+  win.setIgnoreMouseEvents(true)
   win.webContents.on('will-navigate', (event) => event.preventDefault())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.loadFile(page)
@@ -119,7 +123,9 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
 
   function send() {
     if (!alive() || !loaded || !form) return
-    win.webContents.send('island:view', { view, form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached })
+    win.webContents.send('island:view', {
+      view, form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached, hover: hovering,
+    })
   }
 
   /** The display the island was last dragged to, while it is connected; else the one the app's window is on. */
@@ -137,12 +143,13 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   function setIgnoring(value) {
     if (value === ignoring || !alive()) return
     ignoring = value
-    win.setIgnoreMouseEvents(value, { forward: true })
+    win.setIgnoreMouseEvents(value)
   }
 
   /**
    * Clicks and dropped files reach the island only while the pointer is over it. The pointer is checked from
-   * here rather than from the page, which hears nothing while it lets the pointer through, as during a drag.
+   * here rather than from the page, which hears nothing while it lets the pointer through; the page hears
+   * from here whether the pointer rests on the island (`hover`).
    */
   function checkPointer() {
     if (!alive() || !win.isVisible()) return
@@ -155,11 +162,11 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     return setHovering(inside)
   }
 
-  /** Done waits while the pointer rests on it, so it does not go from under the pointer. */
+  /** The page shows the island's tools under a resting pointer; done waits while the pointer rests on it. */
   function setHovering(value) {
     if (value === hovering) return
     hovering = value
-    if (form !== 'done') return
+    if (form !== 'done') return send()
     if (!value) doneAt = Math.max(doneAt, Date.now() - DESK_TIMES.done + DESK_TIMES.linger)
     refresh()
   }
@@ -229,17 +236,20 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     refresh()
   }
 
-  function moveWithPointer() {
+  /**
+   * One step of a drag, at a frame of the page: the window follows the pointer, if it moved. Only its position
+   * changes, except onto another display, where the size is set again for that display's scale.
+   */
+  function dragMove() {
     if (!alive() || !drag) return
     const cursor = screen.getCursorScreenPoint()
+    if (drag.cursor?.x === cursor.x && drag.cursor?.y === cursor.y) return
     const display = screen.getDisplayNearestPoint(cursor)
     const point = keepInside(cursor, display.workArea)
-    const next = deskLayout(point, display.workArea, { dragging: true })
-    win.setBounds(next.bounds)
-    const turned = next.dir !== layout?.dir || next.align !== layout?.align
-    layout = next
-    drag = { ...drag, display, point }
-    if (turned) send()
+    const bounds = dragBounds(point)
+    if (display.id === drag.display.id && drag.point) win.setPosition(bounds.x, bounds.y)
+    else win.setBounds(bounds)
+    drag = { cursor, display, point }
   }
 
   return {
@@ -273,16 +283,17 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     },
     closeInput,
     inputOpen: () => input,
-    /** The user holds the island and moves it: it follows the pointer until let go. */
+    /** The user holds the island and moves it: it shrinks to the cat and follows the pointer until let go. */
     startDrag() {
       if (drag || !alive()) return
       markCoached()
-      drag = { display: currentDisplay(), point: null, timer: setInterval(moveWithPointer, DRAG_MS) }
+      drag = { cursor: null, display: currentDisplay(), point: null }
       send()
+      dragMove()
     },
+    dragMove,
     endDrag() {
       if (!drag) return
-      clearInterval(drag.timer)
       const { display, point } = drag
       drag = null
       if (point) {
@@ -328,7 +339,6 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     destroy() {
       clearTimeout(timer)
       clearInterval(pointerTimer)
-      if (drag) clearInterval(drag.timer)
       drag = null
       if (alive()) win.destroy()
       win = null

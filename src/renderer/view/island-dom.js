@@ -237,24 +237,19 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     layout(open, wide)
   }
 
-  // On the desktop a pointer resting on the island shows its tools; one passing by on its way elsewhere does not.
-  if (host === 'desk') {
-    let hoverTimer = null
-    const setHover = (on) => {
-      clearTimeout(hoverTimer)
+  /**
+   * On the desktop, whether the pointer is over the island, as the main process sees it (desk.js): a pointer
+   * resting on it shows its tools, one passing by on its way elsewhere does not.
+   */
+  let hoverTimer = null
+  function setPointer(on) {
+    clearTimeout(hoverTimer)
+    hoverTimer = setTimeout(() => {
       if (hovered === on) return
       hovered = on
       if (last) update(last.view, last)
-    }
-    el.addEventListener('mouseenter', () => {
-      clearTimeout(hoverTimer)
-      hoverTimer = setTimeout(() => setHover(true), HOVER_MS)
-    })
-    el.addEventListener('mouseleave', () => {
-      clearTimeout(hoverTimer)
-      hoverTimer = setTimeout(() => setHover(false), LEAVE_MS)
-    })
+    }, on ? HOVER_MS : LEAVE_MS)
   }
 
-  return { el, update }
+  return { el, update, setPointer }
 }

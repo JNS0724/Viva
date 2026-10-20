@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deskLayout, homePoint, keepInside, pointOf, readPlaces, settle, withPlace } from '../src/main/desk-place.js'
+import { deskLayout, DRAG_SIZE, dragBounds, homePoint, keepInside, pointOf, readPlaces, settle, withPlace } from '../src/main/desk-place.js'
 
 const mac = { x: 0, y: 25, width: 1440, height: 875 }
 const left = { x: -1920, y: 0, width: 1920, height: 1040 }
@@ -22,8 +22,10 @@ test('near a side it keeps to that side, so what it unfolds stays on the screen'
   assert.deepEqual([nearLeft.align, nearLeft.bounds.x], ['start', 0])
   const nearRight = deskLayout({ x: 1400, y: 300 }, mac)
   assert.deepEqual([nearRight.align, nearRight.bounds.x], ['end', 1440 - 600])
-  const held = deskLayout({ x: 100, y: 300 }, mac, { dragging: true })
-  assert.deepEqual([held.align, held.bounds.x], ['center', -200], 'while dragged it stays under the pointer')
+})
+
+test('dragged, the window is just the cat, centred under the pointer', () => {
+  assert.deepEqual(dragBounds({ x: 100, y: 300.4 }), { x: 64, y: 264, ...DRAG_SIZE })
 })
 
 test('dropped near home it goes home; elsewhere it is kept as fractions of the screen', () => {

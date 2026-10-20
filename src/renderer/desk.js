@@ -79,8 +79,9 @@ api.onView((next) => {
     error = null
   }
   payload = next
-  Object.assign(stage.dataset, { align: next.align, dir: next.dir })
+  Object.assign(stage.dataset, { align: next.align, dir: next.dir, dragging: String(Boolean(next.dragging)) })
   island.el.dataset.dir = next.dir
+  island.setPointer(Boolean(next.hover))
   show()
 })
 setInterval(show, TICK_MS)
@@ -92,12 +93,18 @@ function reportRect() {
   api.act({ kind: 'rect', x, y, width, height })
 }
 new ResizeObserver(reportRect).observe(island.el)
-new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFilter: ['data-align', 'data-dir'] })
+new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFilter: ['data-align', 'data-dir', 'data-dragging'] })
 
 // Holding the island and moving it drags it; the main process moves the window with the pointer, and the
-// island shrinks to its cat meanwhile. The click that ends a drag is not a click on the island.
+// island shrinks to its cat meanwhile. It moves at this page's frames, so in step with the screen at any
+// refresh rate, and not at all while the pointer rests. The click that ends a drag is not a click on the island.
 let press = null
 let dragged = false
+let frame = 0
+function dragFrame() {
+  api.act({ kind: 'drag', phase: 'move' })
+  frame = requestAnimationFrame(dragFrame)
+}
 island.el.addEventListener('pointerdown', (event) => {
   if (event.button !== 0 || event.target.closest('textarea, button:not(.isl-head)')) return
   press = { x: event.screenX, y: event.screenY, id: event.pointerId }
@@ -109,8 +116,10 @@ island.el.addEventListener('pointermove', (event) => {
   dragged = true
   island.el.setPointerCapture(press.id)
   api.act({ kind: 'drag', phase: 'start' })
+  frame = requestAnimationFrame(dragFrame)
 })
 const endPress = () => {
+  cancelAnimationFrame(frame)
   if (dragged) api.act({ kind: 'drag', phase: 'end' })
   press = null
 }
