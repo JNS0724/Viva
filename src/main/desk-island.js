@@ -237,8 +237,9 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   }
 
   /**
-   * One step of a drag, at a frame of the page: the window follows the pointer, if it moved. Only its position
-   * changes, except onto another display, where the size is set again for that display's scale.
+   * One step of a drag, at a frame of the page: the window follows the pointer, if it moved. Its size is given
+   * at every step, not just its position: on Windows at a fractional scale (175%) `setPosition` rounds the
+   * size it keeps, and the window grows a little at every move.
    */
   function dragMove() {
     if (!alive() || !drag) return
@@ -246,9 +247,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (drag.cursor?.x === cursor.x && drag.cursor?.y === cursor.y) return
     const display = screen.getDisplayNearestPoint(cursor)
     const point = keepInside(cursor, display.workArea)
-    const bounds = dragBounds(point)
-    if (display.id === drag.display.id && drag.point) win.setPosition(bounds.x, bounds.y)
-    else win.setBounds(bounds)
+    win.setBounds(dragBounds(point))
     drag = { cursor, display, point }
   }
 

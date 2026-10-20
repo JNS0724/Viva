@@ -6,6 +6,18 @@ import { canOpen, listFolder, previewFile, PREVIEW_LIMIT, resolveInside } from '
 import { registerFilesIpc } from '../src/main/files-ipc.js'
 import { scratch } from './fixtures/scratch.js'
 
+/** Windows lets only administrators or Developer Mode make symbolic links; without them the link check is skipped. */
+function linked(t, target, link) {
+  try {
+    fs.symlinkSync(target, link)
+    return true
+  } catch (err) {
+    if (err.code !== 'EPERM') throw err
+    t.diagnostic('symbolic links are not allowed here: the link check is skipped')
+    return false
+  }
+}
+
 function workspace(t) {
   const { dir } = scratch(t, 'workspace-files-')
   const root = path.join(dir, 'workspace')
@@ -40,8 +52,9 @@ test('nothing outside the workspace can be listed or read, however the path is w
   for (const rel of ['../secret.txt', '/etc/passwd', 'notes/../../secret.txt', path.join(outside, 'secret.txt')]) {
     assert.throws(() => resolveInside(root, rel), /不在工作区里/, rel)
   }
-  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'))
-  assert.throws(() => previewFile(root, 'link.txt'), /不在工作区里/, 'a link pointing out is refused too')
+  if (linked(t, path.join(outside, 'secret.txt'), path.join(root, 'link.txt'))) {
+    assert.throws(() => previewFile(root, 'link.txt'), /不在工作区里/, 'a link pointing out is refused too')
+  }
   assert.equal(resolveInside(root, 'notes/day-01.md'), path.join(fs.realpathSync(root), 'notes', 'day-01.md'))
 })
 

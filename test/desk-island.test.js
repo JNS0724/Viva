@@ -113,7 +113,6 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     showInactive() { this.visible = true }
     hide() { this.visible = false }
     setBounds(bounds) { this.bounds = bounds }
-    setPosition(x, y) { this.bounds = { ...this.bounds, x, y } }
     getBounds() { return this.bounds }
     setFocusable(value) { this.focusable = value }
     focus() { this.focused = this.focusable }
