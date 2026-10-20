@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, powerSaveBlocker, safeStorage, screen, shell } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
@@ -17,7 +17,7 @@ import { registerFilesIpc } from './files-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
-import { checkIslandAction, checkIslandView } from './island-ipc.js'
+import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.js'
 import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
 import { externalUrl } from './links.js'
 import { createMcpConfigStore, parseServerInput } from './mcp-config.js'
@@ -70,6 +70,8 @@ let conversation = null
 let win = null
 /** The island on the desktop, shown while the window is in the background (desk-island.js). */
 let desk = null
+/** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
+let shortcutHeld = null
 let bridge = null
 let bridgeGeneration = 0
 /** When dsh died on its own lately; see restartDelay. */
@@ -330,6 +332,7 @@ function settingsView() {
     source: saved ? 'saved' : envKey ? 'env' : null,
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
     deskIsland: preferences.get().deskIsland,
+    shortcut: shortcutHeld === null ? null : { keys: ASK_SHORTCUT, held: shortcutHeld },
   }
 }
 
@@ -395,23 +398,16 @@ function showWindow() {
   win.focus()
 }
 
-/**
- * The window tells what its island shows; the desktop island sends back what was clicked. Each side may
- * only speak on its own channel, and every message is checked (island-ipc.js).
- */
-function registerIslandIpc() {
-  ipcMain.on('island:view', (event, raw) => {
-    if (event.sender !== win?.webContents) return
-    const view = checkIslandView(raw)
-    if (view) desk?.setView(view)
-  })
-  ipcMain.on('island:act', (event, raw) => {
-    if (!desk?.owns(event.sender)) return
-    const action = checkIslandAction(raw)
-    if (!action) return
-    if (action.kind === 'pointer') desk.setPointerInside(action.inside)
-    else if (action.kind === 'open') showWindow()
-    else win?.webContents.send('island:action', action)
+const windowInFront = () => Boolean(win && !win.isDestroyed() && win.isFocused() && win.isVisible() && !win.isMinimized())
+
+/** The shortcut that opens the island's input, from any app; not in smoke runs, which share the machine. */
+function registerShortcut(config) {
+  if (config.smoke) return
+  shortcutHeld = registerAskShortcut(globalShortcut, {
+    foreground: windowInFront,
+    focusComposer: () => win.webContents.send('composer:focus'),
+    openInput: () => desk?.openInput() ?? false,
+    showWindow,
   })
 }
 
@@ -425,8 +421,9 @@ function attachDeskIsland(config) {
     page: path.join(APP_ROOT, 'src', 'renderer', 'desk.html'),
     mainWindow: win,
     enabled: deskAllowed && preferences.get().deskIsland,
+    places: { get: () => preferences.get().deskPlaces, set: (places) => preferences.set('deskPlaces', places) },
   })
-  const follow = () => desk?.setForeground(win.isFocused() && win.isVisible() && !win.isMinimized())
+  const follow = () => desk?.setForeground(windowInFront())
   for (const event of ['focus', 'blur', 'show', 'hide', 'minimize', 'restore']) win.on(event, follow)
   win.on('closed', () => {
     desk?.destroy()
@@ -445,6 +442,11 @@ function registerSettingsIpc() {
     if (typeof on !== 'boolean') throw new Error('invalid desk island switch')
     preferences.set('deskIsland', on)
     desk?.setEnabled(on && deskAllowed)
+    return settingsView()
+  })
+  ipcMain.handle('settings:reset-desk-place', () => {
+    desk?.resetPlace()
+    if (!desk) preferences.set('deskPlaces', { last: null, places: {} })
     return settingsView()
   })
   ipcMain.handle('settings:clear-key', async () => {
@@ -654,7 +656,7 @@ app.whenReady().then(async () => {
   })
   registerAgentIpc()
   registerSettingsIpc()
-  registerIslandIpc()
+  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, busy: () => turn.active, showWindow })
   const config = currentConfig()
   registerFilesIpc(ipcMain, { root: () => config.cwd, shell, notify: emitToRenderer })
   if (config.smokePhase === 'memory') await startSmokeModel()
@@ -665,6 +667,7 @@ app.whenReady().then(async () => {
   openHistory(config)
   openPersonal(config)
   createWindow(config)
+  registerShortcut(config)
 }).catch((err) => {
   // Without a window there is nothing to show the error in, and the process would stay on with nothing to see.
   console.error('[viva] could not start:', err)
@@ -685,6 +688,7 @@ app.on('before-quit', (event) => {
   Promise.race([stopBridge(), timeout]).finally(() => app.quit())
 })
 app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
   clearInterval(lateMemoryTimer)
   historyDb?.close()
   memoryDb?.close()

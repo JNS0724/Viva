@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { checkDeskAsk } from './smoke-desk.js'
 import { capture, click, finishTurn, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 import { checkMemory } from './smoke-memory.js'
 
@@ -456,7 +457,11 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hook
     await fs.mkdir(outDir, { recursive: true })
     await wait(BOOT_WAIT_MS)
     if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
-    else if (smokePhase === 'relaunch') problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
+    else if (smokePhase === 'relaunch') {
+      problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
+      // Last on this profile: it adds a question to the conversation the checks above look at.
+      problems.push(...await checkDeskAsk(win, outDir, hooks.desk?.()))
+    }
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
     else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {

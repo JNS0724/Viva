@@ -8,7 +8,13 @@ const MAX_VIEW_CHARS = 20_000
 const MAX_ID_CHARS = 200
 const MAX_LABEL_CHARS = 200
 
+/** What the island's input may send: a question of this length, with at most this many files. */
+export const ASK_LIMITS = Object.freeze({ chars: 4000, files: 10, pathChars: 1024 })
+/** The island's place in its window, in pixels (desk-place.js DESK_SIZE, with room to spare). */
+const MAX_RECT_PX = 2000
+
 const isText = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max
+const isPx = (value) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_RECT_PX
 
 /** @returns {object | null} the view as given, or null when it is not one */
 export function checkIslandView(view) {
@@ -24,7 +30,13 @@ export function checkIslandView(view) {
 const ACTIONS = {
   open: () => ({ kind: 'open' }),
   cancel: () => ({ kind: 'cancel' }),
-  pointer: ({ inside }) => (typeof inside === 'boolean' ? { kind: 'pointer', inside } : null),
+  /** Files dropped on the island, or the input closed with Esc. */
+  input: () => ({ kind: 'input' }),
+  dismiss: () => ({ kind: 'dismiss' }),
+  rect: ({ x, y, width, height }) => ([x, y, width, height].every(isPx) && width >= 0 && height >= 0
+    ? { kind: 'rect', x, y, width, height }
+    : null),
+  drag: ({ phase }) => (phase === 'start' || phase === 'end' ? { kind: 'drag', phase } : null),
   permission: ({ requestId, optionId }) => (isText(requestId, MAX_ID_CHARS) && isText(optionId, MAX_ID_CHARS)
     ? { kind: 'permission', requestId, optionId }
     : null),
@@ -37,4 +49,18 @@ const ACTIONS = {
 export function checkIslandAction(action) {
   if (!action || typeof action !== 'object' || !Object.hasOwn(ACTIONS, action.kind)) return null
   return ACTIONS[action.kind](action)
+}
+
+/** @returns {string[] | null} paths of files dropped on the island, or null when they are not that */
+export function checkDroppedPaths(paths) {
+  if (!Array.isArray(paths) || paths.length === 0 || paths.length > ASK_LIMITS.files) return null
+  return paths.every((item) => isText(item, ASK_LIMITS.pathChars)) ? [...paths] : null
+}
+
+/** @returns {{ text: string, files: string[] } | null} a question from the island's input */
+export function checkAsk(ask) {
+  if (!ask || typeof ask !== 'object' || !isText(ask.text?.trim?.(), ASK_LIMITS.chars)) return null
+  const files = ask.files ?? []
+  if (!Array.isArray(files) || (files.length > 0 && !checkDroppedPaths(files))) return null
+  return { text: ask.text.trim(), files: [...files] }
 }

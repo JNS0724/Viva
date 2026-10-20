@@ -1,3 +1,4 @@
+import { fileName, splitFiles } from '../../shared/attachments.js'
 import { optionName } from '../approval.js'
 import { catMood, currentAction, permissionDetail, receiptLine, restoredNote } from '../selectors.js'
 import { catFor } from './cat.js'
@@ -60,10 +61,21 @@ function assistantView(message, handlers, traceReady, look) {
       message.receipt && !typing ? receiptButton(message, handlers, traceReady) : null))
 }
 
+const fileChip = (filePath) => h('span', { class: 'msg-file', title: filePath }, h('span', { class: 'doc-ico', 'aria-hidden': 'true' }), fileName(filePath))
+
+/** A question with the files handed over with it (attachments.js): the files as chips above the text. */
+function askedView(message) {
+  const { text, files } = splitFiles(message.text)
+  const bubble = h('div', { class: 'msg-user' },
+    files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
+    text)
+  return message.via === 'island' ? [bubble, h('div', { class: 'msg-via', text: '从 Viva 岛发送' })] : bubble
+}
+
 /** A reply to the agent's question shows what it answers. */
 const userView = (message) => (message.asked
   ? h('div', { class: 'msg-user msg-answer' }, h('div', { class: 'msg-asked', text: message.asked }), h('div', { text: message.text }))
-  : h('div', { class: 'msg-user', text: message.text }))
+  : askedView(message))
 
 const MESSAGE_VIEWS = {
   user: userView,
@@ -177,7 +189,7 @@ export function renderThread(container, state, handlers, now) {
   const mood = catMood(state)
   const views = state.messages.map((message) => MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null)
   container.replaceChildren(
-    ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).filter(Boolean),
+    ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',
     state.question ? questionCard(state.question, handlers) : '',
     state.secret ? secretCard(state.secret, handlers) : '',

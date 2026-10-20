@@ -6,7 +6,8 @@ import path from 'node:path'
  * Nothing secret goes here: keys live in settings-store.js and model-providers.js, encrypted.
  */
 const FILE_VERSION = 1
-const DEFAULTS = Object.freeze({ deskIsland: true })
+/** deskPlaces: where the desktop island was dragged to, per display (desk-place.js checks what is read). */
+const DEFAULTS = Object.freeze({ deskIsland: true, deskPlaces: Object.freeze({ last: null, places: Object.freeze({}) }) })
 
 /** @param {{ file: string, onError?: (err: Error) => void }} options */
 export function createPreferences({ file, onError = () => {} }) {
@@ -20,10 +21,10 @@ export function createPreferences({ file, onError = () => {} }) {
     }
   }
 
-  /** @returns {{ deskIsland: boolean }} */
+  /** @returns {{ deskIsland: boolean, deskPlaces: object }} */
   const get = () => read()
 
-  /** @returns {{ deskIsland: boolean }} the preferences after the change */
+  /** @returns {{ deskIsland: boolean, deskPlaces: object }} the preferences after the change */
   function set(key, value) {
     if (!Object.hasOwn(DEFAULTS, key)) throw new Error(`unknown preference: ${key}`)
     if (typeof value !== typeof DEFAULTS[key]) throw new Error(`${key} must be a ${typeof DEFAULTS[key]}`)

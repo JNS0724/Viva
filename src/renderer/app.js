@@ -1,3 +1,4 @@
+import { withFiles } from '../shared/attachments.js'
 import { createExtensionActions } from './extension-actions.js'
 import { createFilesActions } from './files-actions.js'
 import { createHistoryActions } from './history-actions.js'
@@ -97,6 +98,10 @@ const ISLAND_ACTIONS = {
   answer: ({ questionId, id, label }) => {
     if (state.question?.questionId === questionId) handlers.pickOption(id, label)
   },
+  /** Asked on the desktop island, with the files dropped there: into this conversation, as if typed here. */
+  ask: ({ text, files }) => {
+    if (!ask(withFiles(text, files), { via: 'island' })) historyActions.showToast('Viva 岛上的问题没有送出：助手现在还不能接收')
+  },
 }
 
 function saveHistory() {
@@ -155,11 +160,14 @@ const historyActions = createHistoryActions({
   },
 })
 
-/** Sends `text` as the user's next question. @returns {boolean} false when the agent can't take it now */
-function ask(text) {
+/**
+ * Sends `text` as the user's next question; `via: 'island'` when it was asked on the desktop island.
+ * @returns {boolean} false when the agent can't take it now
+ */
+function ask(text, { via = null } = {}) {
   if (!text || setupView(state.info) || isBusy(state) || state.switching) return false
   dom.follower.resetForPrompt()
-  dispatch({ type: 'user_prompt', text, at: Date.now() })
+  dispatch({ type: 'user_prompt', text, at: Date.now(), via })
   api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   return true
 }
@@ -267,6 +275,14 @@ const handlers = {
   async setDeskIsland(on) {
     try {
       dispatch({ type: 'settings_loaded', view: await api.setDeskIsland(on) })
+    } catch (err) {
+      dispatch({ type: 'settings_failed', message: errorMessage(err) })
+    }
+  },
+  async resetDeskPlace() {
+    try {
+      dispatch({ type: 'settings_loaded', view: await api.resetDeskPlace() })
+      historyActions.showToast('Viva 岛已放回屏幕顶部正中')
     } catch (err) {
       dispatch({ type: 'settings_failed', message: errorMessage(err) })
     }
@@ -412,6 +428,7 @@ async function boot() {
     return
   }
   api.onIslandAction?.((action) => handlers.islandAction(action))
+  api.onFocusComposer?.(() => dom.input.focus())
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)

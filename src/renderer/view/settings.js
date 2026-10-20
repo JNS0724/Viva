@@ -63,17 +63,30 @@ function feedback(settings) {
   return null
 }
 
-/** The desktop island can be turned off; it is on by default. */
+/** The shortcut as the keyboard of this platform writes it. */
+const shortcutKeys = () => (document.documentElement.dataset.platform === 'darwin' ? '⌘ ⇧ Space' : 'Ctrl + Shift + Space')
+
+/** The shortcut works with the island switched off too; another app may already hold it. */
+function shortcutLine(settings) {
+  if (!settings.shortcut) return null
+  return settings.shortcut.held
+    ? h('span', { class: 'help', text: `在任何程序里按 ${shortcutKeys()}，在岛上问 Viva。` })
+    : h('span', { class: 'help form-error', text: `快捷键 ${shortcutKeys()} 被别的程序占用了，暂时不能在岛上提问。` })
+}
+
+/** The desktop island can be turned off (it is on by default) and put back at the top centre. */
 function deskSection(settings, handlers) {
   return h('section', { class: 'ext', 'aria-label': '桌面岛' },
     h('label', { class: 'pref-row' },
       h('span', { class: 'pref-copy' },
         h('span', { class: 'profile-heading', text: '桌面岛' }),
-        h('span', { class: 'help', text: '窗口在后台时，在屏幕顶部显示助手在做什么；需要你确认时可以直接在上面处理。' })),
+        h('span', { class: 'help', text: '窗口在后台时显示助手在做什么，需要你确认时可以直接在上面处理。可以拖到屏幕任意位置。' }),
+        shortcutLine(settings)),
       h('input', {
         type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': '桌面岛',
         onChange: (event) => handlers.setDeskIsland(event.target.checked),
-      })))
+      })),
+    h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: '放回顶部正中', onClick: () => handlers.resetDeskPlace() }))
 }
 
 /**

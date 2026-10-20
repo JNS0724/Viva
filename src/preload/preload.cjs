@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('agent', {
   saveApiKey: (key) => ipcRenderer.invoke('settings:save-key', key),
   clearApiKey: () => ipcRenderer.invoke('settings:clear-key'),
   setDeskIsland: (on) => ipcRenderer.invoke('settings:set-desk-island', on),
+  resetDeskPlace: () => ipcRenderer.invoke('settings:reset-desk-place'),
   getModels: () => ipcRenderer.invoke('models:get'),
   addModelProvider: (input) => ipcRenderer.invoke('models:add', input),
   removeModelProvider: (id) => ipcRenderer.invoke('models:remove', id),
@@ -56,7 +57,13 @@ contextBridge.exposeInMainWorld('agent', {
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
-  /** What was clicked on the desktop island: allow, answer, stop. */
+  /** The shortcut, pressed with the window in front: its own input takes the keyboard. */
+  onFocusComposer: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('composer:focus', listener)
+    return () => ipcRenderer.removeListener('composer:focus', listener)
+  },
+  /** What was clicked on the desktop island: allow, answer, stop, or a question asked there. */
   onIslandAction: (callback) => {
     const listener = (_event, action) => callback(action)
     ipcRenderer.on('island:action', listener)

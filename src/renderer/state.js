@@ -159,9 +159,9 @@ const ACTION_HANDLERS = {
     error: state.phase === 'error' ? null : state.error,
   }),
 
-  user_prompt: (state, { text, at }) => {
+  user_prompt: (state, { text, at, via = null }) => {
     const closed = closeStreams(state)
-    const message = { id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null }
+    const message = { id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, ...(via ? { via } : {}) }
     return {
       ...closed,
       phase: 'working',

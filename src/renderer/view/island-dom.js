@@ -1,6 +1,7 @@
 import { formatElapsed } from '../selectors.js'
 import { catFor } from './cat.js'
 import { h } from './dom.js'
+import { INPUT_FORMS } from './island-input.js'
 
 /**
  * The Viva island as an element, for its two hosts: the capsule in the window's title bar ('bar') and the
@@ -10,6 +11,9 @@ import { h } from './dom.js'
  *
  * Actions go to `act`: toggle, jump (to the card in the thread), cancel, trace, open (the window),
  * permission { requestId, optionId }, answer { questionId, id, label }.
+ *
+ * On the desktop the island may also be an input (island-input.js), given as `input`: its forms are as wide
+ * as the input, always open, and their field lies over the head.
  */
 
 const NS = 'http://www.w3.org/2000/svg'
@@ -17,7 +21,7 @@ const NS = 'http://www.w3.org/2000/svg'
 const BORDER = 3
 const SIZES = {
   bar: { head: 36, panel: 360, maxHead: 360, cat: 24 },
-  desk: { head: 48, panel: 392, maxHead: 420, cat: 36 },
+  desk: { head: 48, panel: 392, maxHead: 420, cat: 36, input: 560 },
 }
 
 /** Forms whose panel opens by itself on the desktop: they need the user. */
@@ -113,14 +117,16 @@ function headAction(view, host, unfolds) {
 /**
  * @param {'bar' | 'desk'} host
  * @param {(action: object) => void} act
+ * @param {{ input?: ReturnType<import('./island-input.js').createIslandInput> }} [options] the desktop's input
  */
-export function createIsland(host, act) {
+export function createIsland(host, act, { input = null } = {}) {
   const size = SIZES[host]
   const cats = new Map()
   const cat = h('span', { class: 'isl-cat', 'aria-hidden': 'true' })
   const head = h('button', { type: 'button', class: 'isl-head' })
   const panel = h('div', { class: 'isl-panel' })
-  const el = h('div', { class: 'isl', 'data-host': host }, h('div', { class: 'isl-clip' }, head, panel), cat)
+  const clip = h('div', { class: 'isl-clip' }, head, panel)
+  const el = h('div', { class: 'isl', 'data-host': host }, clip, cat)
   let last = null
   let signature = ''
   let hovered = false
@@ -128,13 +134,17 @@ export function createIsland(host, act) {
 
   head.addEventListener('click', () => onHead && act(onHead))
 
-  /** Sizes are set in pixels, so the shape can animate between them; never wider than its place allows. */
-  function layout(open) {
+  /**
+   * Sizes are set in pixels, so the shape can animate between them; never wider than its place allows.
+   * @param {boolean} open @param {boolean} wide the input's forms, as wide as the input
+   */
+  function layout(open, wide) {
     if (!el.isConnected) return
     const room = (parseFloat(getComputedStyle(el.parentElement).maxWidth) || Infinity) - BORDER
     head.style.width = 'max-content'
     const headWidth = Math.min(Math.ceil(head.getBoundingClientRect().width), size.maxHead, room)
-    const inner = open ? Math.min(size.panel - BORDER, room) : headWidth
+    const opened = open ? Math.min(size.panel - BORDER, room) : headWidth
+    const inner = wide ? Math.min(size.input - BORDER, room) : opened
     head.style.width = `${inner}px`
     panel.style.width = `${inner}px`
     el.style.width = `${inner + BORDER}px`
@@ -147,8 +157,9 @@ export function createIsland(host, act) {
    */
   function update(view, { now = Date.now(), pinned = false } = {}) {
     last = { view, now, pinned }
-    const unfolds = hasPanel(view, host)
-    const open = unfolds && (pinned || hovered || (host === 'desk' && NEEDS_USER.has(view.form)))
+    const wide = Boolean(input) && INPUT_FORMS.has(view.form)
+    const unfolds = wide || hasPanel(view, host)
+    const open = unfolds && (wide || pinned || hovered || (host === 'desk' && NEEDS_USER.has(view.form)))
     const next = JSON.stringify([view, open])
     if (next === signature) {
       const time = head.querySelector('.isl-time')
@@ -158,15 +169,20 @@ export function createIsland(host, act) {
     signature = next
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
-    head.replaceChildren(...headParts(view, host, now).filter(Boolean))
-    onHead = headAction(view, host, unfolds)
+    head.replaceChildren(...(view.form === 'input' ? [] : headParts(view, host, now).filter(Boolean)))
+    if (view.form === 'input') {
+      input.sync(view)
+      if (input.entry.parentNode !== clip) clip.append(input.entry)
+    } else input?.entry.remove()
+    onHead = wide ? null : headAction(view, host, unfolds)
     head.disabled = !onHead
     head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
-    panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, panelParts(view, host, act))] : []))
+    const parts = wide ? input.panel(view) : panelParts(view, host, act)
+    panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
     panel.inert = !open
-    layout(open)
+    layout(open, wide)
   }
 
   // Hovering (or tabbing into) the island unfolds its steps; leaving folds them unless a click pinned them.

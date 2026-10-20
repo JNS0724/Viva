@@ -13,6 +13,15 @@ export function truncate(text, limit) {
   return value.length > limit ? `${value.slice(0, limit - 1)}…` : value
 }
 
+const KB = 1024
+
+/** @param {number} bytes @returns {string} such as 248 KB */
+export function formatSize(bytes) {
+  if (bytes < KB) return `${bytes} B`
+  if (bytes < KB * KB) return `${Math.round(bytes / KB)} KB`
+  return `${(bytes / KB / KB).toFixed(1)} MB`
+}
+
 /** @param {number} ms @returns {string} mm:ss */
 export function formatElapsed(ms) {
   const total = Math.max(0, Math.floor(ms / 1000))

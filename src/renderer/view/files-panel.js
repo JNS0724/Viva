@@ -1,5 +1,6 @@
 import { MAX_ROWS, parseTable } from '../csv.js'
 import { touchedPaths } from '../files-state.js'
+import { formatSize } from '../selectors.js'
 import { h } from './dom.js'
 import { icon } from './icons.js'
 import { renderMarkdown } from './markdown.js'
@@ -8,16 +9,9 @@ import { renderMarkdown } from './markdown.js'
  * The 文件 tab: the workspace as a tree above, the picked file below. Files the agent touched in this
  * conversation carry a dot. Read-only; the two buttons hand the file to the system.
  */
-const KB = 1024
 const REVEAL = '显示文件位置'
 /** How close to its end the preview may be scrolled before the next page is read. */
 const MORE_MARGIN_PX = 400
-
-function formatSize(bytes) {
-  if (bytes < KB) return `${bytes} B`
-  if (bytes < KB * KB) return `${Math.round(bytes / KB)} KB`
-  return `${(bytes / KB / KB).toFixed(1)} MB`
-}
 
 /** The page's CSP allows no style attribute, so the indent goes in through the CSSOM. */
 function indented(row, depth) {
