@@ -4,8 +4,9 @@ import { createIslandInput } from './view/island-input.js'
 /**
  * The page of the desktop island's window (src/main/desk-island.js): the same island as in the title bar,
  * fed by the main process with what the window's island shows. Clicks go back as actions; the main process
- * checks them and passes them on to the window. Here too: the input (the shortcut, or files dropped on the
- * island), and moving the island, which the main process does while the user holds it.
+ * checks them and passes them on to the window. Here too: the input (the shortcut, a click on the resting
+ * cat, or files dropped on the island), moving the island, which the main process does while the user holds
+ * it, its right-click menu, which the main process shows, and the first-time note on what it can do.
  */
 const TICK_MS = 1000
 /** Moved this far with the button down, a press on the island is a drag, not a click. */
@@ -14,7 +15,10 @@ const MAX_FILES = 10
 const IDLE_VIEW = Object.freeze({ form: 'idle', tone: 'idle', mood: 'idle', label: '', recent: [] })
 const api = window.desk
 
-/** From the main process: the window's view, the form to show, where the island sits, whether it is dragged. */
+/**
+ * From the main process: the window's view, the form to show, where the island sits, whether it is dragged,
+ * whether the user has yet to see what it can do (coach).
+ */
 let payload = null
 /** The input's own state: files dropped so far, the last refusal, files being dragged over (their count). */
 let files = []
@@ -29,7 +33,7 @@ const input = createIslandInput({
     show()
   },
 })
-const island = createIsland('desk', (action) => api.act(action), { input })
+const island = createIsland('desk', (action) => api.act(action), { input, shortcut: api.shortcut })
 const stage = document.getElementById('desk')
 stage.append(island.el)
 
@@ -44,12 +48,12 @@ function busyOf(view) {
 function shownView() {
   const view = payload?.view ?? IDLE_VIEW
   if (dropping) return { form: 'drop', tone: 'done', mood: 'idle', label: '交给 Viva', recent: [], count: dropping }
-  if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle' }
+  if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle', dragging: true }
   // While the agent waits on the user the input steps aside: what it waits on comes first.
   if (payload?.form === 'input' && view.form !== 'waiting' && view.form !== 'asking') {
     return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), files, error }
   }
-  // After a turn the island rests as just the cat before it goes.
+  if (payload?.form === 'mini' && payload.coach) return { form: 'coach', tone: 'done', mood: 'idle', label: 'Viva 在这儿', recent: [] }
   return payload?.form === 'mini' ? { ...view, form: 'mini', tone: 'idle', mood: 'idle' } : view
 }
 
@@ -96,7 +100,7 @@ new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFil
 let press = null
 let dragged = false
 island.el.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0 || event.target.closest('textarea, .isl-panel button')) return
+  if (event.button !== 0 || event.target.closest('textarea, button:not(.isl-head)')) return
   press = { x: event.screenX, y: event.screenY, id: event.pointerId }
   dragged = false
 })
@@ -119,6 +123,12 @@ island.el.addEventListener('click', (event) => {
   event.stopPropagation()
   event.preventDefault()
 }, true)
+
+// The right-click menu is the main process's: a menu of the system's, not of the page.
+island.el.addEventListener('contextmenu', (event) => {
+  event.preventDefault()
+  api.act({ kind: 'menu' })
+})
 
 // Files dragged from any app onto the island: it opens to take them, and dropping opens the input with them.
 // While files are over it the page hears dragover again and again; when that stops, they have gone.

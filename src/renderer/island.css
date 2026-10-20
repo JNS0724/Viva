@@ -24,10 +24,32 @@
 /* Concentric with the capsule's rounded end: the same gap all round. */
 .isl-cat { position: absolute; left: 4.5px; top: 4.5px; pointer-events: none; }
 
+/* The head and, on the desktop under a resting pointer, its tools (view/island-dom.js deskTools). */
+.isl-row { display: flex; align-items: center; height: calc(var(--isl-head) - 3px); }
+.isl-tools { flex: none; display: flex; align-items: center; gap: 2px; }
+.isl-tools:not(:empty) { padding-right: 8px; animation: isl-in .2s ease-out both; }
+.isl-tool {
+  position: relative; width: 30px; height: 30px; border: none; border-radius: 9px; background: none; color: var(--ink-2); cursor: pointer;
+}
+.isl-tool:hover { background: var(--line); color: var(--ink); }
+.isl-tool-stop::before { content: ''; position: absolute; inset: 0; margin: auto; width: 10px; height: 10px; border-radius: 2px; background: currentColor; }
+.isl-tool-open { font-size: 17px; line-height: 30px; }
+/* Six dots: the grip the island is dragged by (the whole island drags; this says so). */
+.isl-grip {
+  width: 14px; height: 18px; margin-left: 4px; cursor: grab; opacity: .55;
+  background: radial-gradient(circle, var(--ink-2) 1.3px, transparent 1.6px) 0 0 / 7px 6px repeat;
+}
+.isl[data-host="desk"] .isl-row:hover .isl-grip { opacity: .9; }
+.isl-ask { color: var(--ink-3); font-size: 14px; }
+.isl-head .isl-kbd { min-width: 0; font-size: 11px; }
+.isl-tips { margin: 2px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
+.isl-tips li { position: relative; padding-left: 14px; }
+.isl-tips li::before { content: ''; position: absolute; left: 0; top: calc(50% - 2.5px); width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+
 .isl-head {
   display: flex; align-items: center; gap: 8px; box-sizing: border-box; height: calc(var(--isl-head) - 3px);
   padding: 0 14px 0 var(--isl-pad); border: none; background: none; color: inherit; font: inherit; font-size: 13px;
-  white-space: nowrap; text-align: left; cursor: pointer;
+  flex: none; white-space: nowrap; text-align: left; cursor: pointer;
 }
 .isl-head:disabled { cursor: default; }
 /* Ending in the progress ring, the ring sits in the right end the way the cat sits in the left. */
@@ -109,7 +131,7 @@
 .isl-drop span { font-size: 12px; color: var(--ink-3); }
 
 /* In the lower half of the screen the island unfolds upwards: the head stays put, the panel opens above it. */
-.isl[data-dir="up"] .isl-head, .isl[data-dir="up"] .isl-entry { position: absolute; top: auto; bottom: 0; left: 0; }
+.isl[data-dir="up"] .isl-row, .isl[data-dir="up"] .isl-entry { position: absolute; top: auto; bottom: 0; left: 0; }
 .isl[data-dir="up"] .isl-entry { left: var(--isl-pad); }
 .isl[data-dir="up"] .isl-panel { top: auto; bottom: calc(var(--isl-head) - 3px); }
 .isl[data-host="desk"][data-dir="up"] .isl-panel { padding: 16px 16px 4px var(--isl-pad); }

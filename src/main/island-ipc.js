@@ -33,6 +33,9 @@ const ACTIONS = {
   /** Files dropped on the island, or the input closed with Esc. */
   input: () => ({ kind: 'input' }),
   dismiss: () => ({ kind: 'dismiss' }),
+  /** The right-click menu, and the first-time note seen. */
+  menu: () => ({ kind: 'menu' }),
+  coached: () => ({ kind: 'coached' }),
   rect: ({ x, y, width, height }) => ([x, y, width, height].every(isPx) && width >= 0 && height >= 0
     ? { kind: 'rect', x, y, width, height }
     : null),

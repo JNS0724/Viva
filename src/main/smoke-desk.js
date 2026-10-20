@@ -55,8 +55,6 @@ export async function checkDeskAsk(win, outDir, desk) {
   if (!desk) return ['the desktop island was not created']
   desk.force(true)
   try {
-    // The shortcut opens the island's input only with the window away; hidden, nothing can bring it back in front.
-    win.hide()
     if (!desk.openInput()) return ['the desktop island would not open its input']
     const page = { webContents: desk.webContents() }
     const logged = []
@@ -83,7 +81,6 @@ export async function checkDeskAsk(win, outDir, desk) {
     await wait(UI_WAIT_MS)
     await capture(page, outDir, 'desk-busy')
     desk.closeInput()
-    win.showInactive()
     await finishTurn(win)
     await capture(win, outDir, 'desk-asked')
     report(`desk input: ${JSON.stringify({ opened, drop, refused, busy })}`)
@@ -96,6 +93,5 @@ export async function checkDeskAsk(win, outDir, desk) {
   } finally {
     desk.closeInput()
     desk.force(false)
-    if (!win.isVisible()) win.showInactive()
   }
 }

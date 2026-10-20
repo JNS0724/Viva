@@ -5,8 +5,8 @@ import { createIsland } from './island-dom.js'
 let island = null
 
 /**
- * The island centred in the title bar: overall progress beside the cat; hovering or clicking it unfolds the
- * latest steps. While the agent waits on the user it says so and leads to the card in the thread, which
+ * The island centred in the title bar: overall progress beside the cat; clicking it unfolds the latest
+ * steps (a pointer passing over it does not). While the agent waits on the user it says so and leads to the card in the thread, which
  * alone carries what is asked.
  */
 export function renderIsland(container, state, handlers, now) {

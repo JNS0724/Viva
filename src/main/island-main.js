@@ -1,3 +1,4 @@
+import { deskMenuTemplate } from './desk-menu.js'
 import { describeDropped, MISSING } from './island-files.js'
 import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from './island-ipc.js'
 
@@ -12,9 +13,12 @@ const NOT_SENT = '没能发送，请再试一次'
 
 /**
  * @param {object} ipcMain
- * @param {{ desk: () => object | null, window: () => object | null, busy: () => boolean, showWindow: () => void }} deps
+ * @param {{
+ *   desk: () => object | null, window: () => object | null, busy: () => boolean, showWindow: () => void,
+ *   Menu: object, switchOff: () => void,
+ * }} deps Menu: Electron's, for the island's right-click menu; switchOff: 关闭桌面岛 in that menu
  */
-export function registerIslandIpc(ipcMain, { desk, window, busy, showWindow }) {
+export function registerIslandIpc(ipcMain, { desk, window, busy, showWindow, Menu, switchOff }) {
   const fromDesk = (event) => {
     const island = desk()
     return island?.owns(event.sender) ? island : null
@@ -30,15 +34,28 @@ export function registerIslandIpc(ipcMain, { desk, window, busy, showWindow }) {
     if (view) desk()?.setView(view)
   })
 
+  const openWindow = (island) => {
+    island.closeInput()
+    showWindow()
+  }
+  const menu = (island) => Menu.buildFromTemplate(deskMenuTemplate({
+    working: island.working(),
+    shortcut: ASK_SHORTCUT,
+    ask: () => island.openInput(),
+    open: () => openWindow(island),
+    stop: () => toWindow({ kind: 'cancel' }),
+    resetPlace: () => island.resetPlace(),
+    switchOff,
+  }))
+
   const LOCAL = {
     rect: (island, { x, y, width, height }) => island.setIslandRect({ x, y, width, height }),
     drag: (island, { phase }) => (phase === 'start' ? island.startDrag() : island.endDrag()),
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
-    open: (island) => {
-      island.closeInput()
-      showWindow()
-    },
+    open: openWindow,
+    menu: (island) => island.popup(menu(island)),
+    coached: (island) => island.markCoached(),
   }
   ipcMain.on('island:act', (event, raw) => {
     const island = fromDesk(event)
@@ -70,8 +87,8 @@ export function registerIslandIpc(ipcMain, { desk, window, busy, showWindow }) {
 }
 
 /**
- * The shortcut: with the window in front it goes to the window's own input; otherwise it opens the
- * desktop island's input.
+ * The shortcut: with the window closed to the tray it opens the desktop island's input; otherwise it goes to
+ * the window's own input, bringing the window to the front if something covers it.
  * @param {object} globalShortcut
  * @param {{ foreground: () => boolean, focusComposer: () => void, openInput: () => boolean, showWindow: () => void }} deps
  * @returns {boolean} false when another app holds the shortcut
@@ -80,7 +97,10 @@ export function registerAskShortcut(globalShortcut, { foreground, focusComposer,
   try {
     return globalShortcut.register(ASK_SHORTCUT, () => {
       if (foreground()) focusComposer()
-      else if (!openInput()) showWindow()
+      else if (!openInput()) {
+        showWindow()
+        focusComposer()
+      }
     })
   } catch (err) {
     console.error('[island] could not register the shortcut:', err.message)
