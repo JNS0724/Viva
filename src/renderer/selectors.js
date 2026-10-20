@@ -127,6 +127,20 @@ function workingEvent(state, now) {
   return state.turn ? `${truncate(what, EVENT_LIMIT)} · ${formatElapsed(now - state.turn.startedAt)}` : what
 }
 
+/**
+ * What the cat (view/cat.js) is doing: thinking, typing (a tool runs or the answer is being written), holding
+ * up a ! or ? sign while it waits on the user, pleased once a turn is done, worried after an error.
+ * @returns {'idle' | 'thinking' | 'typing' | 'confirm' | 'ask' | 'done' | 'error'}
+ */
+export function catMood(state) {
+  if (state.phase === 'waiting') return 'confirm'
+  if (state.phase === 'asking') return 'ask'
+  if (state.phase === 'error') return 'error'
+  if (state.phase === 'working') return latestActiveTool(state) || state.messages.at(-1)?.open ? 'typing' : 'thinking'
+  if (state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled') return 'done'
+  return 'idle'
+}
+
 /** Copy and tone for the avatar/status island. */
 export function statusView(state, now = Date.now()) {
   if (state.phase === 'waiting') return { tone: 'waiting', label: '等待你确认', event: truncate(state.permission?.title, EVENT_LIMIT) }

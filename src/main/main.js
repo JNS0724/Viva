@@ -27,7 +27,7 @@ import { CONFIG_IDS } from './session-info.js'
 import { createSettingsStore, keyHint } from './settings-store.js'
 import { skillRoots } from './skills.js'
 import { runSmoke } from './smoke.js'
-import { windowChrome, windowSize } from './window-options.js'
+import { devIcon, windowChrome, windowSize } from './window-options.js'
 
 const MAX_PROMPT_CHARS = 20_000
 const MAX_KEY_CHARS = 1_000
@@ -423,10 +423,20 @@ function openHistory(config) {
   })
 }
 
+/** Run from the repository, the app shows its own icon instead of Electron's. */
+function useDevIcon() {
+  const icon = devIcon({ platform: process.platform, packaged: app.isPackaged, appRoot: APP_ROOT })
+  if (!icon || !fs.existsSync(icon)) return null
+  if (process.platform === 'darwin') app.dock?.setIcon(icon)
+  return process.platform === 'darwin' ? null : icon
+}
+
 function createWindow(config) {
+  const icon = useDevIcon()
   win = new BrowserWindow({
     ...windowSize(screen.getPrimaryDisplay().workAreaSize),
     ...windowChrome(process.platform),
+    ...(icon ? { icon } : {}),
     show: false,
     backgroundColor: '#060B16',
     webPreferences: {

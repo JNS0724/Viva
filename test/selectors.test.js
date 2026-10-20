@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
 import {
+  catMood,
   fileItems, formatElapsed, greeting, historyMessages, modeLine, permissionDetail, receiptLine, restoredNote, setupView, statusView,
   toolDetail, traceItems, truncate, usageLabel, webItems, workspaceName,
 } from '../src/renderer/selectors.js'
@@ -158,4 +159,19 @@ test('setup state: the island says not connected, and the home card says what to
   })
   assert.equal(setupView(noDsh.info).action, null)
   assert.equal(setupView(live.info), null)
+})
+
+test('the cat\'s mood follows the agent: thinking, typing, a sign while it waits on the user, pleased, worried', () => {
+  const asked = reduce(initialState, { type: 'user_prompt', text: '整理资料', at: 1 })
+  assert.equal(catMood(initialState), 'idle')
+  assert.equal(catMood(asked), 'thinking')
+  const tool = reduce(asked, { type: 'acp_update', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '读文件', status: 'in_progress' }, at: 2 })
+  assert.equal(catMood(tool), 'typing')
+  const writing = reduce(asked, { type: 'acp_update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '好' } }, at: 2 })
+  assert.equal(catMood(writing), 'typing', 'writing the answer is typing too')
+  assert.equal(catMood(reduce(asked, { type: 'permission_request', requestId: 'p1', toolCall: { title: '写入' }, options: [], at: 3 })), 'confirm')
+  assert.equal(catMood(reduce(asked, { type: 'question_request', questionId: 'q1', questions: [{ id: 'a', question: '哪里？', header: '', options: [], multiSelect: false }], at: 3 })), 'ask')
+  assert.equal(catMood(reduce(writing, { type: 'turn_end', stopReason: 'end_turn', at: 4 })), 'done')
+  assert.equal(catMood(reduce(asked, { type: 'turn_end', stopReason: 'cancelled', at: 4 })), 'idle', 'stopped is not done')
+  assert.equal(catMood(reduce(asked, { type: 'error', message: 'x' })), 'error')
 })

@@ -1,4 +1,6 @@
-/** Window chrome and size per platform. Pure, so the choices can be tested on any OS. */
+import path from 'node:path'
+
+/** Window chrome, size and icon per platform. Pure, so the choices can be tested on any OS. */
 
 /** Shared by both platforms; Windows draws its caption buttons at this height too. */
 export const TITLEBAR_HEIGHT = 48
@@ -26,6 +28,17 @@ export function windowChrome(platform) {
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: BACKGROUND, symbolColor: SYMBOL_COLOR, height: TITLEBAR_HEIGHT },
   }
+}
+
+/**
+ * The app's icon while it runs from the repository (`npm start`): a built app shows the icon packaged into
+ * it (build/icons, see package.json), but Electron itself would show its own. macOS takes it for the Dock,
+ * Windows and Linux for the window and taskbar.
+ * @returns {string | null} the icon file, or null for a built app
+ */
+export function devIcon({ platform, packaged, appRoot }) {
+  if (packaged) return null
+  return path.join(appRoot, 'build', 'icons', platform === 'win32' ? 'viva.ico' : 'viva.png')
 }
 
 /**

@@ -1,7 +1,7 @@
 {
   "name": "viva",
   "productName": "Viva",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Viva：个人桌面助手，Electron 外壳 + DeepSeek Harness（ACP）",
   "license": "MIT",
@@ -53,6 +53,7 @@
     "asar": true,
     "npmRebuild": false,
     "mac": {
+      "icon": "build/icons/viva.icns",
       "target": [
         "dmg"
       ],
@@ -60,6 +61,7 @@
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "win": {
+      "icon": "build/icons/viva.ico",
       "target": [
         "nsis"
       ]

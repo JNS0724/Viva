@@ -1,11 +1,15 @@
-import { statusView, traceItems } from '../selectors.js'
+import { catMood, statusView, traceItems } from '../selectors.js'
+import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { icon } from './icons.js'
 
 const POPOVER_ROWS = 5
 
-/** Black disc with two eyes; tone drives colour, spinner and pulse via CSS. */
-export const miniOrb = (tone) => h('span', { class: 'orb-mini', 'data-tone': tone }, h('i'), h('i'))
+const ISLAND_CAT_PX = 34
+const islandCats = new Map()
+
+/** The cat at the capsule's start, its ears over the top edge; its mood says what the agent is doing. */
+const islandCat = (state) => h('span', { class: 'cat-chip' }, catFor(islandCats, 'island', catMood(state), { size: ISLAND_CAT_PX }))
 
 function popover(state, handlers) {
   const rows = traceItems(state).slice(-POPOVER_ROWS)
@@ -33,7 +37,7 @@ export function renderIsland(container, state, handlers, now) {
       handlers.toggleIsland()
     },
   },
-  miniOrb(status.tone),
+  islandCat(state),
   h('span', { class: 'island-label', text: status.label }),
   status.event ? h('span', { class: 'island-event', text: status.event }) : null,
   icon('chevron', 14))

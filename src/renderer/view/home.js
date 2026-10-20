@@ -1,5 +1,6 @@
 import { isProfileEmpty } from '../personal-state.js'
-import { formatHM, greeting, modeLine, setupView, statusView, workspaceName } from '../selectors.js'
+import { catMood, formatHM, greeting, modeLine, setupView, statusView, workspaceName } from '../selectors.js'
+import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 
 const SUGGESTIONS = [
@@ -9,11 +10,12 @@ const SUGGESTIONS = [
 ]
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-/** Large conic-ring avatar used on the home screen. */
-const heroOrb = (tone) => h('div', { class: 'orb-hero', 'data-tone': tone },
-  h('span', { class: 'orb-glow' }),
-  h('span', { class: 'orb-ring' }),
-  h('span', { class: 'orb-core' }, h('i'), h('i')))
+const HERO_CAT_PX = 230
+const heroCats = new Map()
+
+/** The cat on its brand-blue disc (orange while it waits on the user), ears out past the edge. */
+const heroCat = (state, tone) => h('div', { class: 'cat-hero', 'data-tone': tone },
+  catFor(heroCats, 'hero', catMood(state), { size: HERO_CAT_PX, frame: true }))
 
 function heroTile(state, date, now) {
   const status = statusView(state, now)
@@ -23,7 +25,7 @@ function heroTile(state, date, now) {
       label(offline ? '00 / AGENT · OFFLINE' : '00 / AGENT · ONLINE'),
       h('span', { class: 'pill', 'data-tone': status.tone, text: status.label })),
     h('div', { class: 'hero-mid' },
-      heroOrb(status.tone),
+      heroCat(state, status.tone),
       h('div', { class: 'hero-copy' },
         h('h1', { class: 'greeting', text: greeting(date) }),
         h('p', { class: 'greeting-sub', text: offline ? '先连接模型，我们就能开始。' : '今天想让我帮你做什么？' }))),

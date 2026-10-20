@@ -1,8 +1,16 @@
-import { permissionDetail, receiptLine, restoredNote, statusView } from '../selectors.js'
+import { catMood, permissionDetail, receiptLine, restoredNote, statusView } from '../selectors.js'
+import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
 
-const avatar = () => h('span', { class: 'orb-avatar', 'aria-hidden': 'true' })
+const AVATAR_CAT_PX = 36
+/** While the agent waits on the user, the cat beside its answer holds up the same sign as the island's. */
+const AVATAR_MOODS = new Set(['confirm', 'ask'])
+const avatarCats = new Map()
+
+/** A small cat on its disc beside each answer; only the one of the turn in progress or just finished moves. */
+const avatar = (message, look) => h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
+  catFor(avatarCats, message.id, look.latest && AVATAR_MOODS.has(look.mood) ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
 
 /** A restored message links to the trace only once it has been read back from dsh's logs. */
 function receiptButton(message, handlers, traceReady) {
@@ -39,13 +47,13 @@ function answerText(message, handlers) {
   return el
 }
 
-function assistantView(message, handlers, traceReady) {
+function assistantView(message, handlers, traceReady, look) {
   const typing = message.open || (message.shown ?? message.text.length) < message.text.length
   const text = answerText(message, handlers)
   text.querySelector('.caret')?.remove()
   if (typing) caretHost(text).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
   return h('div', { class: 'msg-agent' },
-    avatar(),
+    avatar(message, look),
     h('div', { class: 'msg-body' },
       text,
       message.receipt && !typing ? receiptButton(message, handlers, traceReady) : null))
@@ -131,7 +139,10 @@ export function renderThread(container, state, handlers, now) {
   const last = state.messages[state.messages.length - 1]
   const note = restoredNote(state, now)
   const traceReady = state.restoredTrace === 'loaded'
-  const views = state.messages.map((message) => MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady) ?? null)
+  // The answer after the latest question; none while the agent has not started on it.
+  const latestAnswer = last?.role === 'assistant' ? last.id : null
+  const mood = catMood(state)
+  const views = state.messages.map((message) => MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null)
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',

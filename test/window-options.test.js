@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { TITLEBAR_HEIGHT, windowChrome, windowSize } from '../src/main/window-options.js'
+import path from 'node:path'
+import { TITLEBAR_HEIGHT, devIcon, windowChrome, windowSize } from '../src/main/window-options.js'
 
 test('macOS keeps its traffic lights, inset and centred in the shorter title bar', () => {
   const chrome = windowChrome('darwin')
@@ -27,4 +28,12 @@ test('the window fits the screen it opens on, including a scaled laptop display'
   assert.deepEqual(roomy, { width: 1360, height: 860, minWidth: 880, minHeight: 600 })
   assert.deepEqual(scaledLaptop, { width: 1152, height: 612, minWidth: 880, minHeight: 600 })
   assert.deepEqual(tiny, { width: 720, height: 504, minWidth: 720, minHeight: 504 }, 'minimums never exceed the window itself')
+})
+
+test('run from the repository, the app uses its own icon (the .ico on Windows); a built app keeps the packaged one', () => {
+  const appRoot = path.join('/repo')
+  assert.equal(devIcon({ platform: 'darwin', packaged: false, appRoot }), path.join(appRoot, 'build', 'icons', 'viva.png'))
+  assert.equal(devIcon({ platform: 'win32', packaged: false, appRoot }), path.join(appRoot, 'build', 'icons', 'viva.ico'))
+  assert.equal(devIcon({ platform: 'linux', packaged: false, appRoot }), path.join(appRoot, 'build', 'icons', 'viva.png'))
+  assert.equal(devIcon({ platform: 'darwin', packaged: true, appRoot }), null)
 })
