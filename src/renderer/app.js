@@ -1,4 +1,5 @@
 import { createExtensionActions } from './extension-actions.js'
+import { createFilesActions } from './files-actions.js'
 import { createHistoryActions } from './history-actions.js'
 import { createMemoryActions } from './memory-actions.js'
 import { createModelActions } from './model-actions.js'
@@ -176,6 +177,7 @@ function answer(answers) {
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
+const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
 /** What a toast's button does; history's undo keeps its own handler. */
 const TOAST_ACTIONS = {
@@ -189,6 +191,7 @@ const handlers = {
   ...memoryActions,
   ...extensionActions,
   ...modelActions,
+  ...filesActions,
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     const text = dom.input.value.trim()
@@ -263,7 +266,10 @@ const handlers = {
       dispatch({ type: 'error', message: `切换失败：${errorMessage(err)}` })
     }
   },
-  openDrawer: (tab) => dispatch({ type: 'open_drawer', tab }),
+  openDrawer(tab) {
+    dispatch({ type: 'open_drawer', tab })
+    if (tab === 'files') filesActions.loadFiles()
+  },
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
   islandAction: (action) => ISLAND_ACTIONS[action?.kind]?.(action),
   /** A link in an answer opens in the browser (or mail app), never inside the window. */
@@ -393,6 +399,7 @@ async function boot() {
     const toAction = EVENT_ACTIONS[event?.type]
     if (toAction) dispatch(toAction(event))
     if (event?.type === 'ready') reportMcpProblems(event.info)
+    if (event?.type === 'turn_end') filesActions.filesAfterTurn()
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory()])
   wireComposer()

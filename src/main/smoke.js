@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import { capture, click, finishTurn, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 import { checkMemory } from './smoke-memory.js'
 
@@ -236,6 +237,47 @@ async function walkthrough(win, outDir, hooks) {
   failures.push(...await checkIslandOnTop(win, outDir))
   failures.push(...await checkLongTask(win, outDir))
   await finishTurn(win)
+  failures.push(...await checkFiles(win, outDir, hooks.cwd))
+  return failures
+}
+
+const FILES_STATE = `(() => ({
+  rows: [...document.querySelectorAll('.file-row .file-name')].map((el) => el.textContent),
+  doc: document.querySelector('.file-doc')?.textContent ?? '',
+  heading: document.querySelector('.file-doc h1, .file-doc h2, .file-doc h3')?.textContent ?? '',
+  buttons: [...document.querySelectorAll('.file-actions button')].map((el) => el.textContent),
+  error: document.querySelector('.files .form-error')?.textContent ?? '',
+}))()`
+
+const clickRow = (name) => `[...document.querySelectorAll('.file-row')].find((el) => el.querySelector('.file-name')?.textContent === ${JSON.stringify(name)})?.click()`
+
+/** The 文件 tab lists the workspace, opens a folder, shows a Markdown file laid out, and never offers to run a script. */
+async function checkFiles(win, outDir, cwd) {
+  if (!cwd) return ['the smoke run did not get the workspace path']
+  await fs.mkdir(path.join(cwd, 'notes'), { recursive: true })
+  await fs.mkdir(path.join(cwd, 'tools'), { recursive: true })
+  await fs.writeFile(path.join(cwd, 'notes', '周报.md'), '# 周报\n\n- 完成对账\n')
+  await fs.writeFile(path.join(cwd, 'tools', 'run.sh'), 'echo hi\n')
+  const failures = []
+  const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
+  // The long task left the drawer open; open it only if it is not.
+  await run(win, `document.getElementById('drawer').dataset.open === 'true' || document.getElementById('toggle-drawer').click()`)
+  await run(win, `[...document.querySelectorAll('.drawer .tab')].find((el) => el.textContent === '文件').click()`)
+  await until(win, `[...document.querySelectorAll('.file-row .file-name')].some((el) => el.textContent === 'notes')`, 'the workspace tree')
+  await run(win, clickRow('notes'))
+  await until(win, `[...document.querySelectorAll('.file-row .file-name')].some((el) => el.textContent === '周报.md')`, 'the notes folder opening')
+  await run(win, clickRow('周报.md'))
+  const shown = await until(win, `(() => { const s = ${FILES_STATE}; return s.heading && s })()`, 'the Markdown preview')
+  report(`files: ${JSON.stringify(shown)}`)
+  expect(shown.heading === '周报' && shown.doc.includes('完成对账') && !shown.doc.includes('#'), 'Markdown should be laid out, not shown as source', shown)
+  expect(shown.buttons.length === 2 && shown.buttons.includes('打开'), 'a document offers reveal and open', shown)
+  await capture(win, outDir, 'files')
+  await run(win, clickRow('tools'))
+  await until(win, `[...document.querySelectorAll('.file-row .file-name')].some((el) => el.textContent === 'run.sh')`, 'the tools folder opening')
+  await run(win, clickRow('run.sh'))
+  const script = await until(win, `(() => { const s = ${FILES_STATE}; return document.querySelector('.file-text') && s })()`, 'the script preview')
+  expect(!script.buttons.includes('打开') && script.buttons.length === 1, 'a script is only shown in its folder, never opened', script)
+  await run(win, `document.querySelector('.drawer [aria-label="收起抽屉"]').click()`)
   return failures
 }
 

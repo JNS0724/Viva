@@ -1,4 +1,5 @@
 import { approvalTitle, optionName } from './approval.js'
+import { FILES_ACTIONS, initialFiles } from './files-state.js'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { QUESTION_ACTIONS } from './question-state.js'
@@ -33,6 +34,7 @@ export const initialState = Object.freeze({
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null,
   history: initialHistory,
+  files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
   models: initialModels,
@@ -319,6 +321,7 @@ const ACTION_HANDLERS = {
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,
   ...QUESTION_ACTIONS,
+  ...FILES_ACTIONS,
 }
 
 /**

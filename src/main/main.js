@@ -13,6 +13,7 @@ import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migra
 import { ensureDshProfile } from './dsh-profile.js'
 import { dshEnv, restartDelay } from './dsh-runtime.js'
 import { registerExtensionsIpc } from './extensions-ipc.js'
+import { registerFilesIpc } from './files-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
@@ -84,8 +85,10 @@ function isolateSmokeUserData() {
   const shared = smokePhase === 'walkthrough' || smokePhase === 'relaunch'
   const dir = path.join(smokeOut, shared ? 'userData' : `userData-${smokePhase}`)
   if (smokePhase !== 'relaunch') removeTree(dir)
-  // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too.
+  // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too; so is the workspace,
+  // so a smoke run never writes into the developer's.
   app.setPath('userData', dir)
+  process.env.AGENT_CWD ||= path.join(dir, 'workspace')
 }
 
 function emitToRenderer(event) {
@@ -522,7 +525,7 @@ function createWindow(config) {
     if (config.smoke) {
       // Nor may macOS App Nap suspend the app (and the fake model it serves) while nobody looks.
       powerSaveBlocker.start('prevent-app-suspension')
-      runSmoke(win, config, (code) => app.exit(code), { agentPid: () => bridge?.pid() ?? null, desk: () => desk })
+      runSmoke(win, config, (code) => app.exit(code), { agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd })
     }
   })
   win.loadFile(path.join(APP_ROOT, 'src', 'renderer', 'index.html'))
@@ -595,6 +598,7 @@ app.whenReady().then(async () => {
   registerSettingsIpc()
   registerIslandIpc()
   const config = currentConfig()
+  registerFilesIpc(ipcMain, { root: () => config.cwd, shell })
   if (config.smokePhase === 'memory') await startSmokeModel()
   if (!config.smoke) {
     bringLegacyData()

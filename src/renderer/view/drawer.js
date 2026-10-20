@@ -1,4 +1,5 @@
-import { fileItems, traceItems, usageLabel } from '../selectors.js'
+import { traceItems, usageLabel } from '../selectors.js'
+import { filesView } from './files-panel.js'
 import { h, label } from './dom.js'
 import { icon } from './icons.js'
 import { drawerScrollPlan, scrollSnapshot } from './scroll-follow.js'
@@ -31,18 +32,6 @@ function traceView(state) {
             h('span', { class: 'trace-time', text: item.time })),
           item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))))
       : empty('助手的思考和用到的工具会按顺序出现在这里。'),
-  ]
-}
-
-function filesView(state) {
-  const files = fileItems(state)
-  return [
-    files.length
-      ? files.map((file) => h('div', { class: 'list-row', title: file.path },
-        h('span', { class: 'dot', 'data-tone': file.tone }),
-        h('span', { class: 'grow', text: file.name }),
-        h('span', { class: 'mono muted', text: file.kind })))
-      : empty('助手读写过的文件会出现在这里。'),
   ]
 }
 
