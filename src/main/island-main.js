@@ -8,17 +8,16 @@ import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from 
  * is checked (island-ipc.js); the desktop island may only speak on its own channels, the window on its own.
  */
 export const ASK_SHORTCUT = 'CommandOrControl+Shift+Space'
-export const BUSY = '正在忙，完成后再问'
 const NOT_SENT = '没能发送，请再试一次'
 
 /**
  * @param {object} ipcMain
  * @param {{
- *   desk: () => object | null, window: () => object | null, busy: () => boolean, showWindow: () => void,
+ *   desk: () => object | null, window: () => object | null, showWindow: () => void,
  *   Menu: object, switchOff: () => void,
- * }} deps Menu: Electron's, for the island's right-click menu; switchOff: 关闭桌面岛 in that menu
+ * }} deps Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu
  */
-export function registerIslandIpc(ipcMain, { desk, window, busy, showWindow, Menu, switchOff }) {
+export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, switchOff }) {
   const fromDesk = (event) => {
     const island = desk()
     return island?.owns(event.sender) ? island : null
@@ -45,6 +44,7 @@ export function registerIslandIpc(ipcMain, { desk, window, busy, showWindow, Men
     open: () => openWindow(island),
     stop: () => toWindow({ kind: 'cancel' }),
     resetPlace: () => island.resetPlace(),
+    hide: () => island.hideUntilAway(),
     switchOff,
   }))
 
@@ -72,12 +72,14 @@ export function registerIslandIpc(ipcMain, { desk, window, busy, showWindow, Men
     return paths ? describeDropped(paths) : { error: MISSING }
   })
 
-  /** A question from the island's input goes to the window, which sends it as if typed there. */
+  /**
+   * A question from the island's input goes to the window, which sends it as if typed there: while the agent
+   * works, into its turn.
+   */
   ipcMain.handle('island:ask', (event, raw) => {
     const island = fromDesk(event)
     const ask = island && checkAsk(raw)
     if (!ask) return { ok: false, error: NOT_SENT }
-    if (busy()) return { ok: false, error: BUSY }
     const checked = ask.files.length ? describeDropped(ask.files) : { files: [] }
     if (checked.error) return { ok: false, error: checked.error }
     toWindow({ kind: 'ask', text: ask.text, files: ask.files })

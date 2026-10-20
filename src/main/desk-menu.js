@@ -4,17 +4,19 @@
  *
  * @param {{
  *   working: boolean, shortcut: string,
- *   ask: () => void, open: () => void, stop: () => void, resetPlace: () => void, switchOff: () => void,
- * }} deps shortcut: the ask shortcut, shown beside 提问… (it is registered elsewhere, as a global shortcut)
+ *   ask: () => void, open: () => void, stop: () => void, resetPlace: () => void, hide: () => void, switchOff: () => void,
+ * }} deps shortcut: the ask shortcut, shown beside 提问… (it is registered elsewhere, as a global shortcut);
+ *   hide: until the window is next closed to the tray; switchOff: for good, as the switch in settings
  * @returns {object[]} a template for Menu.buildFromTemplate
  */
-export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlace, switchOff }) {
+export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlace, hide, switchOff }) {
   return [
     { label: '提问…', accelerator: shortcut, registerAccelerator: false, click: ask },
     { label: '打开 Viva 窗口', click: open },
     { label: '停止', enabled: working, click: stop },
     { type: 'separator' },
     { label: '放回顶部正中', click: resetPlace },
-    { label: '关闭桌面岛', click: switchOff },
+    { label: '先隐藏（下次关闭窗口时再出现）', click: hide },
+    { label: '不再显示桌面岛（可在设置里打开）', click: switchOff },
   ]
 }

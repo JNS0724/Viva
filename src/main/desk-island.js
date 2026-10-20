@@ -90,6 +90,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   let coached = coach.get()
   /** The pointer is over the island. */
   let hovering = false
+  /** Hidden from its menu: switched off until the window is next closed to the tray. */
+  let hidden = false
   let win = null
   let view = null
   let doneAt = 0
@@ -197,7 +199,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     clearTimeout(timer)
     const held = hovering && form === 'done'
     const sinceDone = held ? 0 : Date.now() - doneAt
-    form = deskForm({ enabled: enabled || forced, away: away || forced, view, sinceDone, input, summoned })
+    form = deskForm({ enabled: (enabled && !hidden) || forced, away: away || forced, view, sinceDone, input, summoned })
     if (!form) {
       summoned = false
       hide()
@@ -250,6 +252,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     /** Whether the app's window was closed to the tray; shown again, it has its own island and input. */
     setAway(value) {
       away = value
+      if (value) hidden = false
       if (!value) closeInput()
       refresh()
     },
@@ -305,7 +308,12 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       if (alive() && win.isVisible()) menu.popup({ window: win })
     },
     working: () => view?.form === 'working',
-    /** The user's switch in settings, or 关闭桌面岛 in its menu. */
+    /** 先隐藏 in its menu: gone until the window is next closed to the tray; the shortcut still calls it up. */
+    hideUntilAway() {
+      hidden = true
+      refresh()
+    },
+    /** The user's switch in settings, or 不再显示桌面岛 in its menu. */
     setEnabled(value) {
       enabled = value
       refresh()

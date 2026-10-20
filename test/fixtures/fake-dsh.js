@@ -3,7 +3,8 @@
  * so integration tests and the smoke run exercise the same bridge code as a real session.
  * Started as `node fake-dsh.js --profile viva`. FAKE_DSH_DELAY_MS sets the pace (default 450 ms per step).
  * Like dsh, it connects to the stdio MCP servers a session declares and refuses the session when one fails.
- * It has no plugins: memory is tested with the real dsh and a fake model (test/fixtures/fake-llm.js).
+ * It has no plugins, but takes words sent mid-turn as viva-steer would: memory and steering are tested with the
+ * real dsh and a fake model (test/fixtures/fake-llm.js).
  */
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -123,6 +124,7 @@ const closeMcp = (session) => Promise.all([...(session?.mcp?.values() ?? [])].ma
 
 function createAgent(conn) {
   const sessions = new Map()
+  answerSteering(sessions)
 
   const openSession = (sessionId, cwd, mcp) => {
     const session = { cwd, model: MODELS[0].value, effort: 'high', turn: null, mcp }
@@ -255,6 +257,20 @@ function createAgent(conn) {
       sessions.get(params.sessionId)?.turn?.abort()
     },
   }
+}
+
+/**
+ * Stands in for the viva-steer plugin (plugins/steer): words sent while a turn runs are taken, else the turn
+ * is idle. The script does not change for them; the real plugin is tested with the real dsh.
+ */
+function answerSteering(sessions) {
+  if (typeof process.send !== 'function') return
+  process.channel?.unref?.()
+  process.on('message', (message) => {
+    if (message?.type !== 'steer') return
+    const running = Boolean(sessions.get(message.sessionId)?.turn)
+    process.send({ type: 'steer_result', id: message.id, ok: running, ...(running ? {} : { reason: 'idle' }) })
+  })
 }
 
 const stream = ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))

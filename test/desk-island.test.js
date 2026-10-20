@@ -256,21 +256,42 @@ test('the first time the cat rests on the desktop it says what it can do, until 
   dragged.destroy()
 })
 
-test('the right-click menu: ask, open, stop only while working, put back, switch off', () => {
+test('the right-click menu: ask, open, stop only while working, put back, hide for now or for good', () => {
   const calls = []
   const make = (working) => deskMenuTemplate({
     working, shortcut: 'CommandOrControl+Shift+Space',
     ask: () => calls.push('ask'), open: () => calls.push('open'), stop: () => calls.push('stop'),
-    resetPlace: () => calls.push('reset'), switchOff: () => calls.push('off'),
+    resetPlace: () => calls.push('reset'), hide: () => calls.push('hide'), switchOff: () => calls.push('off'),
   })
   const items = make(true).filter((item) => item.type !== 'separator')
-  assert.deepEqual(items.map((item) => item.label), ['提问…', '打开 Viva 窗口', '停止', '放回顶部正中', '关闭桌面岛'])
+  assert.deepEqual(items.map((item) => item.label), [
+    '提问…', '打开 Viva 窗口', '停止', '放回顶部正中', '先隐藏（下次关闭窗口时再出现）', '不再显示桌面岛（可在设置里打开）',
+  ])
   assert.equal(items[0].registerAccelerator, false, 'the shortcut is shown, not registered twice')
   for (const item of items) item.click()
-  assert.deepEqual(calls, ['ask', 'open', 'stop', 'reset', 'off'])
+  assert.deepEqual(calls, ['ask', 'open', 'stop', 'reset', 'hide', 'off'])
   assert.equal(make(false).find((item) => item.label === '停止').enabled, false)
 })
 
 test('the island may open its menu, open its input and say the user has seen what it can do', () => {
   assert.deepEqual([checkIslandAction({ kind: 'menu', x: 1 }), checkIslandAction({ kind: 'coached' })], [{ kind: 'menu' }, { kind: 'coached' }])
+})
+
+test('hidden from its menu, the island stays away until the window is next closed to the tray', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  desk.setView(view('working'))
+  const [win] = env.windows
+  desk.hideUntilAway()
+  assert.equal(win.visible, false)
+  desk.setView(view('waiting'))
+  assert.equal(win.visible, false, 'not even for what needs the user: the window still has it')
+  assert.equal(desk.openInput(), true, 'the shortcut still calls it up')
+  desk.closeInput()
+  assert.equal(win.visible, false)
+  desk.setAway(false)
+  desk.setAway(true)
+  assert.equal(win.visible, true, 'back once the window is closed again')
+  desk.destroy()
 })

@@ -39,9 +39,7 @@ stage.append(island.el)
 
 /** Why the input cannot take a question now, if it cannot. */
 function busyOf(view) {
-  if (view.form === 'working') return { action: view.action }
-  if (view.form === 'pending') return { text: '还没连上，先打开窗口看看' }
-  return null
+  return view.form === 'pending' ? { text: '还没连上，先打开窗口看看' } : null
 }
 
 /** What the island shows now, from what the main process said and what happens on this page. */
@@ -51,7 +49,8 @@ function shownView() {
   if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle', dragging: true }
   // While the agent waits on the user the input steps aside: what it waits on comes first.
   if (payload?.form === 'input' && view.form !== 'waiting' && view.form !== 'asking') {
-    return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), files, error }
+    // While the agent works, what is asked goes into the turn it is on.
+    return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), steering: view.form === 'working', files, error }
   }
   if (payload?.form === 'mini' && payload.coach) return { form: 'coach', tone: 'done', mood: 'idle', label: 'Viva 在这儿', recent: [] }
   return payload?.form === 'mini' ? { ...view, form: 'mini', tone: 'idle', mood: 'idle' } : view

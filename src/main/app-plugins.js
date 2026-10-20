@@ -30,7 +30,7 @@ export const PERSONA = Object.freeze({
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1 })
+export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1 })
 
 /**
  * config: built from the app's data directory, written into the profile for the plugin.
@@ -46,6 +46,7 @@ export const APP_PLUGINS = Object.freeze([
     stock: [{ id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' }],
   },
   { name: 'viva-config', dir: 'plugins/config', contract: 'config', config: () => ({}) },
+  { name: 'viva-steer', dir: 'plugins/steer', contract: 'steer', config: () => ({}) },
 ])
 
 /** The dsh version installed with the app; plugins pin their dsh peers to it. */

@@ -9,6 +9,7 @@ import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
 import { APP_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
 import { createAcpBridge } from './acp-bridge.js'
 import { createDeskIsland } from './desk-island.js'
+import { leaveFullScreen } from './full-screen.js'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.js'
 import { ensureDshProfile } from './dsh-profile.js'
 import { dshEnv, restartDelay } from './dsh-runtime.js'
@@ -359,6 +360,12 @@ function registerAgentIpc() {
     turn = { active: true, startedAt: Date.now() }
     return agent.prompt(question)
   })
+  /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
+  ipcMain.handle('agent:steer', (_event, text) => {
+    const words = assertText(text, 'steer', MAX_PROMPT_CHARS)
+    if (!turn.active) return { ok: false, reason: 'idle' }
+    return requireBridge().steer(words)
+  })
   ipcMain.handle('agent:cancel', () => bridge?.cancel())
   ipcMain.handle('agent:new-session', async () => {
     if (!bridge) {
@@ -416,6 +423,12 @@ function registerShortcut(config) {
 
 /** Closing the window keeps Viva running in the tray, with the island on the desktop. */
 function closeToTray() {
+  // A full-screen window hidden as it is would leave its Space behind, black (full-screen.js).
+  if (win.isFullScreen()) leaveFullScreen(win, hideToTray)
+  else hideToTray()
+}
+
+function hideToTray() {
   win.hide()
   tray ??= createTray({
     Tray, Menu, nativeImage,
@@ -689,7 +702,7 @@ app.whenReady().then(async () => {
   })
   registerAgentIpc()
   registerSettingsIpc()
-  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, busy: () => turn.active, showWindow, Menu, switchOffDesk })
+  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: switchOffDesk })
   const config = currentConfig()
   registerFilesIpc(ipcMain, { root: () => config.cwd, shell, notify: emitToRenderer })
   if (config.smokePhase === 'memory') await startSmokeModel()

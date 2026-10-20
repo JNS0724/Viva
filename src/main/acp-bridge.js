@@ -5,6 +5,7 @@ import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclie
 import { dshLaunch } from './config.js'
 import { createPermissionBroker } from './permission-broker.js'
 import { createConfigDesk } from './config-channel.js'
+import { createSteerDesk } from './steer-channel.js'
 import { createQuestionDesk } from './question-channel.js'
 import { describeConfig, describeError } from './session-info.js'
 
@@ -65,6 +66,8 @@ export function createAcpBridge({
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId })
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
   const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions }) : null
+  // What the user says while a turn runs goes to that turn (the viva-steer plugin), not to a new prompt.
+  const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId })
 
   const infoFrom = (configOptions) => ({ mode: 'live', cwd, reason: '', sessionId, mcp, ...describeConfig(configOptions) })
 
@@ -90,6 +93,7 @@ export function createAcpBridge({
     child.on('message', (message) => {
       questions.receive(message)
       config?.receive(message)
+      steering.receive(message)
     })
     child.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
@@ -192,6 +196,7 @@ export function createAcpBridge({
     await cancel()
     questions.declineAll()
     config?.closeAll()
+    steering.closeAll()
     try {
       await connection.closeSession({ sessionId })
     } catch (err) {
@@ -207,6 +212,14 @@ export function createAcpBridge({
   const newSession = () => switchSession(null)
   /** Reattaches the current session, so a changed list of MCP servers takes effect without losing context. */
   const reloadSession = () => switchSession(sessionId)
+
+  /**
+   * Hands `text` to the turn that is running. Not ok with reason 'idle' when the turn has just ended (the
+   * caller asks it as a new question), else when it could not be sent (steer-channel.js NO_PLUGIN, or the
+   * plugin's reasons).
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  const steer = (text) => steering.steer(text)
 
   function respondPermission(requestId, optionId) {
     return broker.resolve(requestId, optionId)
@@ -231,6 +244,7 @@ export function createAcpBridge({
   function dispose() {
     disposed = true
     broker.cancelAll()
+    steering.closeAll()
     if (!child || !isRunning(child)) return Promise.resolve()
     const target = child
     const exited = new Promise((resolve) => target.once('exit', resolve))
@@ -243,5 +257,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }

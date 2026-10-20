@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('agent', {
   platform: process.platform,
   getInfo: () => ipcRenderer.invoke('agent:info'),
   prompt: (text) => ipcRenderer.invoke('agent:prompt', text),
+  /** Words for the turn that is running (viva-steer): { ok, reason? }. */
+  steer: (text) => ipcRenderer.invoke('agent:steer', text),
   cancel: () => ipcRenderer.invoke('agent:cancel'),
   newSession: () => ipcRenderer.invoke('agent:new-session'),
   setConfig: (configId, value) => ipcRenderer.invoke('agent:set-config', configId, value),
