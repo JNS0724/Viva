@@ -3,6 +3,7 @@ import { FILES_ACTIONS, initialFiles } from './files-state.js'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { QUESTION_ACTIONS } from './question-state.js'
+import { SECRET_ACTIONS } from './secret-state.js'
 import { closeLast, closeStreams } from './streams.js'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.js'
 
@@ -20,6 +21,8 @@ export const initialState = Object.freeze({
   permission: null,
   /** A question the agent is waiting on (question-state.js). */
   question: null,
+  /** Keys a server set up from the conversation waits for (secret-state.js): which server, which names. */
+  secret: null,
   turn: null,
   lastReceipt: null,
   drawer: null,
@@ -220,6 +223,7 @@ const ACTION_HANDLERS = {
       phase: 'idle',
       permission: null,
       question: null,
+      secret: null,
       turn: null,
       lastReceipt: receipt,
       messages: attachReceipt(closed.messages, receipt),
@@ -233,6 +237,7 @@ const ACTION_HANDLERS = {
     error: message || '未知错误',
     permission: null,
     question: null,
+    secret: null,
     turn: null,
   }),
 
@@ -322,6 +327,7 @@ const ACTION_HANDLERS = {
   ...MODEL_ACTIONS,
   ...QUESTION_ACTIONS,
   ...FILES_ACTIONS,
+  ...SECRET_ACTIONS,
 }
 
 /**

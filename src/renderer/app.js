@@ -174,6 +174,18 @@ function answer(answers) {
     .catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
 }
 
+async function provideSecrets(values) {
+  const secret = state.secret
+  if (!secret) return
+  try {
+    const accepted = await api.provideSecrets(secret.requestId, values)
+    if (!accepted) historyActions.showToast('这次接入已经结束了')
+    dispatch({ type: 'secret_resolved', requestId: secret.requestId, provided: values !== null, at: Date.now() })
+  } catch (err) {
+    historyActions.showToast(errorMessage(err))
+  }
+}
+
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
@@ -214,6 +226,9 @@ const handlers = {
     answer(answersFrom(state.question, dom.input.value))
     dom.input.value = ''
   },
+  /** The card closes once the main process has the keys; a check that fails keeps it open and says why. */
+  submitSecrets: (values) => provideSecrets(values),
+  declineSecrets: () => provideSecrets(null),
   skipQuestion() {
     if (state.question) answer(state.question.questions.map((item) => ({ id: item.id, selected: [] })))
   },
@@ -304,6 +319,8 @@ const EVENT_ACTIONS = {
   }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
+  secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
+  secret_closed: (event) => ({ type: 'secret_closed', requestId: event.requestId }),
   turn_end: (event) => ({ type: 'turn_end', stopReason: event.stopReason, at: Date.now() }),
   memory_context: (event) => ({ type: 'memory_context', injected: event.injected }),
   error: (event) => ({ type: 'error', message: event.message }),

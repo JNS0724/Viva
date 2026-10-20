@@ -116,6 +116,23 @@ export function importSkill(source, targetDir) {
   return meta.name
 }
 
+/** One line without double quotes, safe inside a quoted frontmatter value. */
+const frontmatterValue = (text) => String(text).replace(/\s+/g, ' ').replace(/"/g, '”').trim()
+
+/**
+ * Writes a new skill, made in the conversation, into `targetDir`: a folder named after it holding SKILL.md.
+ * `name` follows dsh's rule (lower case, digits, hyphens), checked by the caller.
+ * @returns {string} the skill's name
+ */
+export function createSkill({ name, description, instructions }, targetDir) {
+  const target = path.join(targetDir, name)
+  if (fs.existsSync(target)) throw new Error(`已经有名为「${name}」的 skill 了`)
+  fs.mkdirSync(target, { recursive: true })
+  const text = `---\nname: "${frontmatterValue(name)}"\ndescription: "${frontmatterValue(description)}"\n---\n\n${String(instructions).trim()}\n`
+  fs.writeFileSync(path.join(target, SKILL_FILE), text)
+  return name
+}
+
 /**
  * Moves one of the user-root skills to the trash (via `trash`, Electron's shell.trashItem), so a
  * mistaken removal can be undone from the system trash.

@@ -71,6 +71,15 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 | `DSH_BIN` | 指定 dsh：`.js` 入口用 Node 运行，其他按可执行文件运行 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | `DSH_NODE` | 开发用：改用这个 Node 运行 dsh | 应用自己的 Electron |
 
+## 在对话里配置 MCP 和 skill
+
+设置里不再有添加 MCP 服务器和导入 skill 的表单，直接在对话里说就行，比如「帮我接入 GitHub」「把刚才写周报的做法存成 skill」。设置的「扩展」一节只列出已经接入的服务器和已有的 skill，可以删除。
+
+- **先确认**：模型用 `viva-config` 插件（`plugins/config`）的工具配置：`viva_mcp_add` / `viva_mcp_remove` / `viva_mcp_list`，`viva_skill_create` / `viva_skill_install` / `viva_skill_remove` / `viva_skill_list`。会改动配置的那几个，先弹出审批卡片（「接入 MCP 服务器「github」」，下面是要运行的命令和参数），你允许后才执行。
+- **密钥不进对话**：服务要令牌时，模型只写名字（比如 `GITHUB_TOKEN`），窗口里弹出一张输入卡片让你填写。填的值直接交给主进程，用系统钥匙串加密存进 `mcp-servers.json`，不经过 dsh，也不会出现在聊天记录或「过程」里；「过程」只记下「请你填写密钥」和「你填写了密钥」。
+- **谁来做**：插件只把请求交给应用（IPC，`config@1`，见 `plugins/config/lib/channel.js`）；应用在 `src/main/config-channel.js` 里逐项校验，再用和原来设置表单相同的代码写入。MCP 的改动在这一轮结束后重新接到会话上；skill 放进去就生效。新建的 skill 名字遵守 dsh 的规则（小写字母、数字和连字符），中文说明写在 description 里。
+- **人设**里写明：要接入服务或保存做法时用这些工具，绝不在对话里向用户要密钥的值。
+
 ## 助手反问
 
 回答取决于用户没说的关键信息（地点、时间范围、对象、账号……）、而记忆里也查不到时，助手先问再做，不拿时区或 IP 这类弱线索去猜。规则写在人设里（`src/main/app-plugins.js` 的 `PERSONA`）。
@@ -170,7 +179,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 256 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 268 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
 npm run smoke       # 真的启动 Electron，分四次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；

@@ -1,0 +1,22 @@
+{
+  "name": "viva-config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Viva 的对话配置：模型在用户确认后接入或移除 MCP 服务器、新建或安装 skill，由应用执行，密钥只由用户在窗口里填写",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "viva": {
+    "contract": {
+      "config": 1
+    }
+  }
+}

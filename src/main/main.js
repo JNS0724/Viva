@@ -20,7 +20,7 @@ import { migrateLegacyHistory } from './history-migrate.js'
 import { checkIslandAction, checkIslandView } from './island-ipc.js'
 import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
 import { externalUrl } from './links.js'
-import { createMcpConfigStore } from './mcp-config.js'
+import { createMcpConfigStore, parseServerInput } from './mcp-config.js'
 import { registerMemoryIpc } from './memory-ipc.js'
 import { createModelStore, defaultModel, modelValue, parseModelValue, piAiProviders, providerEnv } from './model-providers.js'
 import { registerModelsIpc } from './models-ipc.js'
@@ -29,7 +29,7 @@ import { createPreferences } from './preferences.js'
 import { removeTree } from './remove-tree.js'
 import { CONFIG_IDS } from './session-info.js'
 import { createSettingsStore, keyHint } from './settings-store.js'
-import { skillRoots } from './skills.js'
+import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.js'
 import { runSmoke } from './smoke.js'
 import { devIcon, windowChrome, windowSize } from './window-options.js'
 
@@ -49,6 +49,10 @@ let deskAllowed = true
 /** Model providers the user added besides DeepSeek; see model-providers.js. */
 let modelStore = null
 let historyDb = null
+/** The user's MCP servers, encrypted where they hold keys (mcp-config.js). */
+let mcpStore = null
+/** An MCP server was added or removed from the conversation: reattach the session once the turn is over. */
+let mcpReloadDue = false
 let memoryDb = null
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
 let traceDb = null
@@ -154,6 +158,52 @@ function profileModels(config) {
 }
 
 /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
+/** The settings form's shape, which parseServerInput checks: keys as "NAME=value" lines, env or headers by type. */
+function serverForm(spec, secrets) {
+  const pairs = Object.entries(secrets).map(([name, value]) => `${name}=${value}`).join('\n')
+  const http = Boolean(spec.url)
+  return { name: spec.name, type: http ? 'http' : 'stdio', command: spec.command, args: spec.args.join('\n'), url: spec.url, env: http ? '' : pairs, headers: http ? pairs : '' }
+}
+
+const takenServerNames = () => mcpStore.list().map((server) => server.name)
+
+/**
+ * What the model may change from the conversation (viva-config plugin, config-channel.js), each after the
+ * user approved it on the card: MCP servers through the encrypted store, skills in the app's own folder.
+ */
+function configActions(config) {
+  const roots = () => skillRoots({ dshHome: config.dshHome, cwd: config.cwd })
+  const userRoot = () => roots().find((root) => root.managed).dir
+  return {
+    listServers: () => mcpStore.list().map((server) => `${server.name}（${server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')}）`),
+    prepareServer: (spec) => {
+      parseServerInput(serverForm(spec, Object.fromEntries(spec.secrets.map((name) => [name, 'x']))), takenServerNames())
+    },
+    addServer: (spec, secrets) => {
+      mcpStore.add(parseServerInput(serverForm(spec, secrets), takenServerNames()))
+      mcpReloadDue = true
+      return `已接入 MCP 服务器「${spec.name}」，这一轮结束后生效${spec.secrets.length ? '；密钥由用户在窗口里填写并加密保存' : ''}。`
+    },
+    removeServer: (name) => {
+      if (!takenServerNames().includes(name)) throw new Error(`没有名为「${name}」的 MCP 服务器`)
+      mcpStore.remove(name)
+      mcpReloadDue = true
+      return `已移除 MCP 服务器「${name}」，这一轮结束后生效。`
+    },
+    listSkills: () => listSkills(roots()).map((skill) => `${skill.id}：${skill.name}${skill.description ? ` — ${skill.description}` : ''}${skill.problem ? `（${skill.problem}）` : ''}`),
+    createSkill: (spec) => `已新建 skill「${createSkill(spec, userRoot())}」，下次遇到同类事会用上。`,
+    installSkill: (source) => `已安装 skill「${importSkill(source, userRoot())}」。`,
+    removeSkill: async (id) => `已删除 skill「${await removeSkill(id, roots(), (file) => shell.trashItem(file))}」，可以在废纸篓里找回。`,
+  }
+}
+
+function reloadMcpAfterTurn() {
+  mcpReloadDue = false
+  applyMcpChange()
+    .then((info) => info && emitToRenderer({ type: 'config', info }))
+    .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
+}
+
 function createBridge(config) {
   const generation = ++bridgeGeneration
   return createAcpBridge({
@@ -163,10 +213,12 @@ function createBridge(config) {
     cwd: config.cwd,
     env: dshEnv({ base: process.env, dshHome: config.dshHome, runtime: config.runtime, settings: dshSettings(config) }),
     mcpServers: () => personal.mcpServers(),
+    configActions: configActions(config),
     emit: (event) => {
       if (generation !== bridgeGeneration) return
       emitToRenderer(event)
       if (event.type === 'turn_end' || event.type === 'error') reportTurnMemories()
+      if (event.type === 'turn_end' && mcpReloadDue) reloadMcpAfterTurn()
     },
     onExit: (exit) => {
       if (generation === bridgeGeneration) recoverFromCrash(exit)
@@ -326,6 +378,12 @@ function registerAgentIpc() {
     return bridge?.respondPermission(id, option) ?? false
   })
   ipcMain.handle('agent:answer', (_event, questionId, answers) => bridge?.answerQuestion(assertText(questionId, 'questionId', 200), answers) ?? false)
+  // Keys the user typed for a server the model set up: straight to the encrypted store, never to dsh.
+  ipcMain.handle('agent:secrets', (_event, requestId, values) => {
+    const id = assertText(requestId, 'requestId', 200)
+    if (values !== null && (typeof values !== 'object' || Array.isArray(values))) throw new Error('invalid secrets')
+    return bridge?.provideSecrets(id, values) ?? false
+  })
 }
 
 /** Brings the window to the front, from the desktop island. */
@@ -438,13 +496,7 @@ function registerPersonalIpc(config, mcpStore) {
     roots: () => skillRoots({ dshHome: config.dshHome, cwd: config.cwd }),
     mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
     applyMcp: applyMcpChange,
-    chooseSkill: async () => (await pickFiles({
-      title: '选择 skill 文件夹（含 SKILL.md）或 .md 文件',
-      properties: ['openDirectory', 'openFile'],
-      filters: [{ name: 'Skill', extensions: ['md'] }],
-    }))?.[0] ?? null,
     trash: (file) => shell.trashItem(file),
-    openPath: (dir) => shell.openPath(dir),
   })
 }
 
@@ -457,7 +509,7 @@ function openPersonal(config) {
   } catch (err) {
     console.error('[trace] could not open trace.db; reopened conversations fall back to dsh logs:', err.message)
   }
-  const mcpStore = createMcpConfigStore({
+  mcpStore = createMcpConfigStore({
     file: path.join(userData, 'mcp-servers.json'),
     crypto: safeStorage,
     onError: (err) => console.error('[mcp]', err.message),
@@ -525,7 +577,9 @@ function createWindow(config) {
     if (config.smoke) {
       // Nor may macOS App Nap suspend the app (and the fake model it serves) while nobody looks.
       powerSaveBlocker.start('prevent-app-suspension')
-      runSmoke(win, config, (code) => app.exit(code), { agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd })
+      runSmoke(win, config, (code) => app.exit(code), {
+        agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
+      })
     }
   })
   win.loadFile(path.join(APP_ROOT, 'src', 'renderer', 'index.html'))
@@ -540,13 +594,17 @@ app.on('second-instance', () => {
   win.focus()
 })
 
+/** The memory smoke run's stand-in model, kept so the run can check what the model was sent. */
+let smokeModel = null
+
 /** The memory smoke run talks to the real dsh, which calls a local stand-in for the DeepSeek API. */
 async function startSmokeModel() {
   // A file URL: import() takes `C:\...` for a URL scheme on Windows.
   // The installed app has no test folder; SMOKE_FIXTURES points a smoke run of it at the repository's.
   const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
   const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
-  process.env.DEEPSEEK_BASE_URL = (await startFakeLlm()).url
+  smokeModel = await startFakeLlm()
+  process.env.DEEPSEEK_BASE_URL = smokeModel.url
 }
 
 /** Conversations and memories kept under the app's old name, my-agent, come along on the first launch as Viva. */

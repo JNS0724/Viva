@@ -36,7 +36,6 @@ export const initialExtensions = Object.freeze({
   skills: [],
   skillDir: '',
   /** The add-server form is open. */
-  adding: false,
   busy: false,
   error: null,
   notice: null,
@@ -104,7 +103,6 @@ export const PERSONAL_ACTIONS = {
   extensions_busy: (state) => withExtensions(state, { busy: true, error: null, notice: null }),
   extensions_failed: (state, { message }) => withExtensions(state, { busy: false, error: message }),
   extensions_saved: (state, { view, notice }) => withExtensions(state, {
-    ...view, loaded: true, busy: false, error: null, notice, adding: false,
+    ...view, loaded: true, busy: false, error: null, notice,
   }),
-  extensions_adding: (state, { adding }) => withExtensions(state, { adding, error: null, notice: null }),
 }

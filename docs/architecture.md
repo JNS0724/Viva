@@ -27,6 +27,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 │ dsh-profile.js  写 dsh/profiles/     │                │ viva-trace       每轮步骤 → trace.db        │
 │ acp-bridge.js   ACP 会话、MCP 声明    │── ACP stdio ──▶│ viva-policy      工具执行前拦截             │
 │ question-channel.js 问题与回答        │◀── IPC ───────▶│ viva-questions   ask_user_question 的回答者 │
+│ config-channel.js  对话里的配置       │◀── IPC ───────▶│ viva-config      MCP / skill 配置工具       │
 │ 「关于你」「过程」「设置」             │                └──────────────┬────────────────────────────┘
 └──────────────┬──────────────────────┘                               │
                └────── memory.db（约定 memory@1）、trace.db（约定 trace@1）
@@ -38,6 +39,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | `viva-trace`（`plugins/trace`） | `trace@1`：`trace.db` | 每轮的思考和工具调用 | 重新打开对话时读，用于「过程」 |
 | `viva-policy`（`plugins/policy`） | `policy@1`：无数据，只有行为 | — | — |
 | `viva-questions`（`plugins/questions`） | `questions@1`：IPC 消息（见 `plugins/questions/lib/channel.js`） | 模型的问题 | 显示提问卡片，回传回答；同时在 profile 里打开 dsh 的 `tool-ask-user` |
+| `viva-config`（`plugins/config`） | `config@1`：IPC 消息（见 `plugins/config/lib/channel.js`） | 模型要接入或移除的 MCP 服务器、要新建或安装的 skill（审批卡片通过之后） | 校验后执行（`src/main/config-channel.js`），需要密钥时由窗口请用户填写，加密保存，不回传给 dsh |
 
 人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/main/app-plugins.js` 的 `PERSONA`。
 

@@ -23,12 +23,14 @@ export const PERSONA = Object.freeze({
     '给出 2–4 个最可能的选项，不要先猜着做完再让用户纠正。',
     '只问会改变结果的信息，一次问完；猜错代价很小、或用户要你直接给结果时，就按最可能的情况做，并在回答开头说明你的假设。',
     '用户告诉你的是以后还用得上的稳定信息（例如常住城市、所在时区、常用账号）时，用 memory_remember 记下来，下次就不用再问。',
+    '用户想接入一个服务或工具（MCP 服务器），或者想把一套做法存成 skill 时，用 viva_mcp_add、viva_skill_create 等工具配置，用户确认后生效；',
+    '需要令牌或密钥时只写名称，由用户在窗口里填写，绝不要在对话里向用户要密钥的值。',
   ].join(''),
   suffix: '你的工作目录是 {{cwd}}。',
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1 })
+export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1 })
 
 /**
  * config: built from the app's data directory, written into the profile for the plugin.
@@ -43,6 +45,7 @@ export const APP_PLUGINS = Object.freeze([
     name: 'viva-questions', dir: 'plugins/questions', contract: 'questions', config: () => ({}),
     stock: [{ id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' }],
   },
+  { name: 'viva-config', dir: 'plugins/config', contract: 'config', config: () => ({}) },
 ])
 
 /** The dsh version installed with the app; plugins pin their dsh peers to it. */

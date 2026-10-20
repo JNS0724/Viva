@@ -4,6 +4,7 @@ import { Readable, Writable } from 'node:stream'
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { dshLaunch } from './config.js'
 import { createPermissionBroker } from './permission-broker.js'
+import { createConfigDesk } from './config-channel.js'
 import { createQuestionDesk } from './question-channel.js'
 import { describeConfig, describeError } from './session-info.js'
 
@@ -48,7 +49,7 @@ const isRunning = (target) => (target.exitCode ?? target.signalCode ?? null) ===
  */
 export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP, onExit = null,
-  platform = process.platform,
+  platform = process.platform, configActions = null,
 }) {
   const broker = createPermissionBroker()
   let mcp = { active: [], dropped: [] }
@@ -58,13 +59,12 @@ export function createAcpBridge({
   let canResume = false
   let stderrTail = ''
   let disposed = false
-  const questions = createQuestionDesk({
-    send: (message) => {
-      if (child?.connected) child.send(message)
-    },
-    emit,
-    sessionId: () => sessionId,
-  })
+  const toPlugins = (message) => {
+    if (child?.connected) child.send(message)
+  }
+  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId })
+  // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
+  const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions }) : null
 
   const infoFrom = (configOptions) => ({ mode: 'live', cwd, reason: '', sessionId, mcp, ...describeConfig(configOptions) })
 
@@ -87,7 +87,10 @@ export function createAcpBridge({
   function spawnRuntime() {
     const { command, args } = dshLaunch(dshBin, nodeBin, profile)
     child = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
-    child.on('message', (message) => questions.receive(message))
+    child.on('message', (message) => {
+      questions.receive(message)
+      config?.receive(message)
+    })
     child.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
     })
@@ -188,6 +191,7 @@ export function createAcpBridge({
   async function switchSession(targetSessionId) {
     await cancel()
     questions.declineAll()
+    config?.closeAll()
     try {
       await connection.closeSession({ sessionId })
     } catch (err) {
@@ -210,6 +214,8 @@ export function createAcpBridge({
 
   /** @returns {boolean} false when the question is no longer waiting; throws when the answer does not fit it */
   const answerQuestion = (questionId, answers) => questions.answer(questionId, answers)
+  /** @returns {boolean} false when no key is asked for any more; throws when the values do not fit */
+  const provideSecrets = (requestId, values) => config?.provideSecrets(requestId, values) ?? false
 
   /**
    * Ends what dsh started too (MCP servers): on Windows a signal reaches only the one process, so the
@@ -237,5 +243,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, dispose, pid }
+  return { start, prompt, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }

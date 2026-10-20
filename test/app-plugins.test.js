@@ -32,6 +32,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
     ['viva-policy', {}],
     ['viva-questions', {}],
+    ['viva-config', {}],
   ])
   assert.deepEqual(plugins.find((plugin) => plugin.name === 'viva-questions').stock.map((entry) => entry.name), ['@deepseek-ai/dsh-tool-ask-user'])
   assert.match(PERSONA.prefix, /个人工作助手/)

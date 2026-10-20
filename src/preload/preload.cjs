@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('agent', {
   setConfig: (configId, value) => ipcRenderer.invoke('agent:set-config', configId, value),
   respondPermission: (requestId, optionId) => ipcRenderer.invoke('agent:permission', requestId, optionId),
   answerQuestion: (questionId, answers) => ipcRenderer.invoke('agent:answer', questionId, answers),
+  /** Keys typed for a server the model set up; null declines. They go to the main process only. */
+  provideSecrets: (requestId, values) => ipcRenderer.invoke('agent:secrets', requestId, values),
   openLink: (url) => ipcRenderer.invoke('shell:open-link', url),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveApiKey: (key) => ipcRenderer.invoke('settings:save-key', key),
@@ -45,11 +47,8 @@ contextBridge.exposeInMainWorld('agent', {
   revealFile: (rel) => ipcRenderer.invoke('files:reveal', rel),
   openFile: (rel) => ipcRenderer.invoke('files:open', rel),
   getExtensions: () => ipcRenderer.invoke('ext:get'),
-  addMcpServer: (input) => ipcRenderer.invoke('ext:add-mcp', input),
   removeMcpServer: (name) => ipcRenderer.invoke('ext:remove-mcp', name),
-  importSkill: () => ipcRenderer.invoke('ext:import-skill'),
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),
-  openSkillDir: () => ipcRenderer.invoke('ext:open-skill-dir'),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   /** What was clicked on the desktop island: allow, answer, stop. */

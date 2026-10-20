@@ -6,6 +6,7 @@
  * - 「记住：X」 → calls memory_remember with X, and the names from KNOWN_NAMES in X as keywords;
  * - 「查一下 X」 → calls memory_recall with X;
  * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
+ * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result;
  * - after a tool result → says what the tool did;
  * - anything else → 「收到：…」, prefixed with what background it was given;
  * - the memory plugin's background extractor gets the answers of `extract` below.
@@ -17,6 +18,9 @@ const KNOWN_NAMES = ['张三', '李四', '王五', '周报', '对账系统', '�
 const REMEMBER = /记住[:：]\s*(.+)$/s
 const RECALL = /查一下\s*(.+)$/s
 const WEATHER = /明天.*天气/
+const CONNECT = /接入演示服务/
+/** What the fake asks to set up: a local server whose key the user types in the window. */
+export const DEMO_SERVER = Object.freeze({ name: 'demo', command: 'node', args: ['demo-mcp.js'], secrets: ['DEMO_TOKEN'] })
 export const CITY_QUESTION = Object.freeze({
   id: 'city', question: '你想看哪个城市的天气？', header: '城市', options: [{ label: '上海' }, { label: '北京' }],
 })
@@ -63,6 +67,7 @@ function afterTool(messages, result) {
     const city = cityFrom(result)
     return { text: city ? `好的，按${city}来看：明天多云转晴。` : `没问到城市：${resultText(result)}` }
   }
+  if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
   const saved = output.includes('已记住') || output.includes('之前已经记过')
@@ -123,6 +128,7 @@ export function decide(request) {
     return { tool: { name: 'memory_remember', input: { text, keywords } } }
   }
   if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
+  if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }
   const mail = MAIL.find(([pattern]) => pattern.test(question))

@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { capture, finishTurn, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 
 /**
@@ -11,6 +13,32 @@ const ROLE = '支付平台部的后端负责人'
 const FACT = '周报每周五下班前交给张三'
 const PROVIDER = '本地网关'
 const PROVIDER_MODEL = 'gw-smoke'
+const DEMO_KEY = 'smoke-demo-key-7f3a'
+
+/**
+ * 「帮我接入演示服务」: the fake model sets up a server (viva_mcp_add). The approval card names it; allowed,
+ * the window asks for its key; the key goes to the encrypted store and never to the model.
+ */
+async function configSteps(win, outDir, expect, hooks) {
+  await submit(win, '帮我接入演示服务')
+  const card = await until(win, `(() => { const c = document.querySelector('.confirm:not(.ask)'); return c && { title: c.querySelector('.confirm-title')?.textContent ?? '' } })()`, 'the approval card')
+  expect(card.title === '接入 MCP 服务器「demo」', 'the card should say which server is set up', card)
+  await run(win, `document.querySelector('.confirm:not(.ask) .btn-ink').click()`)
+  const names = await until(win, `(() => { const inputs = [...document.querySelectorAll('.secret input')]; return inputs.length && inputs.map((el) => el.getAttribute('aria-label')) })()`, 'the key card')
+  expect(names.join() === 'DEMO_TOKEN', 'the key card should ask for the key by name', names)
+  await capture(win, outDir, 'config-secret')
+  await run(win, `(() => {
+    document.querySelector('.secret input').value = ${JSON.stringify(DEMO_KEY)}
+    document.querySelector('.secret').requestSubmit()
+  })()`)
+  await finishTurn(win)
+  const reply = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  expect(reply.includes('配置结果：已接入 MCP 服务器「demo」'), 'the model should hear the server was set up', reply)
+  const stored = fs.readFileSync(path.join(hooks.userData, 'mcp-servers.json'), 'utf8')
+  expect(stored.includes('demo') && !stored.includes(DEMO_KEY), 'the server is kept, its key only encrypted', stored.length)
+  const sent = JSON.stringify(hooks.model?.()?.requests ?? [])
+  expect(sent.length > 2 && !sent.includes(DEMO_KEY), 'the key should never reach the model', sent.length)
+}
 
 /**
  * 「明天天气怎么样」: the fake model asks which city (ask_user_question). The card offers the options, a click
@@ -42,7 +70,7 @@ async function questionSteps(win, outDir, expect) {
   expect(kept === '用户在上海', 'the answer should be remembered for next time', kept)
 }
 
-async function steps(win, outDir, expect) {
+async function steps(win, outDir, expect, hooks) {
   await run(win, `document.getElementById('new-session').click()`)
   await finishTurn(win)
   await wait(UI_WAIT_MS)
@@ -98,14 +126,18 @@ async function steps(win, outDir, expect) {
   await capture(win, outDir, 'memory-trace')
 
   await questionSteps(win, outDir, expect)
+  await configSteps(win, outDir, expect, hooks)
 
   await run(win, `document.getElementById('open-settings').click()`)
   await wait(UI_WAIT_MS * 2)
   const ext = await run(win, `({
-    memoryOn: document.querySelector('.ext-memory')?.dataset.on,
-    add: Boolean(document.getElementById('add-mcp')),
+    memoryProblem: document.querySelector('.ext-memory')?.textContent ?? '',
+    hint: document.querySelector('.ext-hint')?.textContent ?? '',
+    form: Boolean(document.querySelector('.ext-form, #add-mcp, #import-skill')),
+    servers: [...document.querySelectorAll('.ext-item .ext-name')].map((el) => el.textContent),
   })`)
-  expect(ext.memoryOn === 'true' && ext.add, 'settings should show the memory tool connected and offer MCP servers', ext)
+  expect(!ext.memoryProblem && ext.hint.includes('帮我接入 GitHub') && !ext.form, 'settings should say MCP and skills are set up in the conversation, with no form', ext)
+  expect(ext.servers.includes('demo'), 'the server set up in the conversation should be listed', ext)
   await run(win, `document.querySelector('.ext').scrollIntoView()`)
   await capture(win, outDir, 'memory-settings')
   await modelSteps(win, outDir, expect)
@@ -186,7 +218,7 @@ export async function checkMemory(win, outDir, hooks = {}) {
   const failures = []
   const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
   try {
-    await steps(win, outDir, expect)
+    await steps(win, outDir, expect, hooks)
     await crashSteps(win, outDir, expect, hooks)
   } catch (err) {
     failures.push(`memory: ${err instanceof Error ? err.message : String(err)}`)

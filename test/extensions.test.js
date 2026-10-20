@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { registerExtensionsIpc } from '../src/main/extensions-ipc.js'
 import { createMcpConfigStore, parseServerInput, resolveCommand, serverView, toAcpServers } from '../src/main/mcp-config.js'
-import { importSkill, listSkills, parseFrontmatter, removeSkill, skillRoots } from '../src/main/skills.js'
+import { createSkill, importSkill, listSkills, parseFrontmatter, removeSkill, skillRoots } from '../src/main/skills.js'
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'extensions-test-'))
@@ -109,6 +109,16 @@ test('skills are listed from every root, with the reason dsh would skip a broken
   ])
 })
 
+test('a skill made in the conversation is written so dsh can read it, and never over another', (t) => {
+  const dir = tempDir(t)
+  const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
+  assert.equal(createSkill({ name: 'weekly-report', description: '按团队模板写周报："先结论"', instructions: '1. 先写结论\n2. 再列进展' }, roots[0].dir), 'weekly-report')
+  const [skill] = listSkills(roots)
+  assert.deepEqual([skill.name, skill.description, skill.problem], ['weekly-report', '按团队模板写周报：”先结论”', ''])
+  assert.match(fs.readFileSync(path.join(roots[0].dir, 'weekly-report', 'SKILL.md'), 'utf8'), /\n---\n\n1\. 先写结论\n2\. 再列进展\n$/)
+  assert.throws(() => createSkill({ name: 'weekly-report', description: 'x', instructions: 'y' }, roots[0].dir), /已经有/)
+})
+
 test('importing copies into the user root; removing goes to the trash, only there', async (t) => {
   const dir = tempDir(t)
   const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
@@ -129,9 +139,10 @@ test('importing copies into the user root; removing goes to the trash, only ther
   await assert.rejects(removeSkill('workspace:team', roots, async () => {}), /不在本应用管理的目录里/)
 })
 
-test('extensions IPC applies MCP changes to the session and never returns secrets', async (t) => {
+test('extensions IPC lists and removes, never returns secrets, and has no way to add', async (t) => {
   const dir = tempDir(t)
   const store = createMcpConfigStore({ file: path.join(dir, 'mcp.json'), crypto: fakeCrypto() })
+  store.add(parseServerInput(STDIO_INPUT, []))
   const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
   const handlers = new Map()
   let applied = 0
@@ -140,18 +151,13 @@ test('extensions IPC applies MCP changes to the session and never returns secret
     roots: () => roots,
     mcpStatus: () => ({ active: ['github'], memory: true, dropped: [] }),
     applyMcp: async () => ({ mode: 'live', applied: ++applied }),
-    chooseSkill: async () => null,
     trash: async () => {},
-    openPath: async () => '',
   })
   const call = async (channel, ...args) => handlers.get(channel)({}, ...args)
 
-  const added = await call('ext:add-mcp', STDIO_INPUT)
-  assert.deepEqual([added.servers.map((s) => s.name), added.info.applied, added.skillDir], [['github'], 1, roots[0].dir])
-  assert.equal(JSON.stringify(added).includes('ghp_example'), false)
-  await assert.rejects(call('ext:add-mcp', STDIO_INPUT), /已经有名为「github」/)
-  assert.equal((await call('ext:remove-mcp', 'github')).info.applied, 2)
-  assert.equal((await call('ext:import-skill')).imported, null, 'cancelling the picker imports nothing')
-  await call('ext:open-skill-dir')
-  assert.ok(fs.existsSync(roots[0].dir), 'opening the skill folder creates it first')
+  const shown = await call('ext:get')
+  assert.deepEqual([shown.servers.map((s) => s.name), shown.skillDir], [['github'], roots[0].dir])
+  assert.equal(JSON.stringify(shown).includes('ghp_example'), false)
+  assert.equal((await call('ext:remove-mcp', 'github')).info.applied, 1)
+  assert.deepEqual([...handlers.keys()].sort(), ['ext:get', 'ext:remove-mcp', 'ext:remove-skill'], 'adding happens in the conversation')
 })

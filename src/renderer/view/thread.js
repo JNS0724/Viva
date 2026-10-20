@@ -138,6 +138,35 @@ function errorRow(message) {
     h('div', { class: 'muted', text: '检查模型的 key 和接口地址、网络，或查看终端日志。' }))
 }
 
+let secretForm = null
+
+/**
+ * Keys a server the model set up needs. The form is kept while the same request waits, since the thread is
+ * rebuilt on every frame and would otherwise lose what was typed.
+ */
+function secretCard(secret, handlers) {
+  if (secretForm?.requestId === secret.requestId) return secretForm.el
+  const inputs = secret.names.map((name) => h('input', {
+    class: 'field', type: 'password', name: `secret-${name}`, autocomplete: 'off', spellcheck: 'false', 'aria-label': name, placeholder: name,
+  }))
+  const el = h('form', {
+    class: 'confirm ask secret', 'aria-label': '需要你填写密钥',
+    onSubmit: (event) => {
+      event.preventDefault()
+      handlers.submitSecrets(Object.fromEntries(secret.names.map((name, i) => [name, inputs[i].value])))
+    },
+  },
+  h('div', { class: 'confirm-head' }, h('span', { text: '需要你填写' }), h('span', { class: 'pulse-dot' })),
+  h('div', { class: 'confirm-title', text: `接入「${secret.server}」需要这些密钥` }),
+  secret.names.map((name, i) => h('label', { class: 'secret-field' }, h('span', { class: 'secret-name', text: name }), inputs[i])),
+  h('div', { class: 'confirm-actions' },
+    h('button', { class: 'btn btn-ink', type: 'submit', text: '保存' }),
+    h('button', { class: 'btn btn-ghost-ink', type: 'button', text: '不接入', onClick: () => handlers.declineSecrets() }),
+    h('span', { class: 'confirm-hint', text: '加密保存在这台电脑上，不会发给模型' })))
+  secretForm = { requestId: secret.requestId, el }
+  return el
+}
+
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container, state, handlers, now) {
   const last = state.messages[state.messages.length - 1]
@@ -151,6 +180,7 @@ export function renderThread(container, state, handlers, now) {
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',
     state.question ? questionCard(state.question, handlers) : '',
+    state.secret ? secretCard(state.secret, handlers) : '',
     state.phase === 'working' && !last?.open ? workingRow(state) : '',
     state.phase === 'error' ? errorRow(state.error) : '',
   )

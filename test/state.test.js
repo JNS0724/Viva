@@ -107,6 +107,8 @@ test('dsh asks with the tool call id only: the card takes what to approve from t
   assert.equal(edit.permission.title, '修改 a.js')
   const other = run([prompt, call('c4', 'web_fetch', { url: 'https://example.com' }), ask('c4')])
   assert.equal(other.permission.title, 'web_fetch')
+  const config = run([prompt, call('c5', 'viva_mcp_add', { name: 'github', command: 'npx', secrets: ['GITHUB_TOKEN'] }), ask('c5')])
+  assert.equal(config.permission.title, '接入 MCP 服务器「github」')
   const unknown = run([prompt, ask('nope')])
   assert.equal(unknown.permission.title, '需要你确认')
 

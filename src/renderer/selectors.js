@@ -200,6 +200,10 @@ const TRACE_BUILDERS = {
   answer: (_state, entry) => (entry.answered
     ? { title: '你的回答', detail: entry.title, tone: 'done' }
     : { title: '问题未回答', detail: entry.title, tone: 'idle' }),
+  secret: (_state, entry) => ({ title: '请你填写密钥', detail: entry.title, tone: 'waiting' }),
+  secret_answer: (_state, entry) => (entry.provided
+    ? { title: '你填写了密钥', detail: entry.title, tone: 'done' }
+    : { title: '没有填写密钥', detail: entry.title, tone: 'idle' }),
   decision: (_state, entry) => ({
     title: entry.allowed ? `你选择了「${entry.choice}」` : `未授权 · ${entry.choice}`,
     detail: entry.title,

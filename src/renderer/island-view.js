@@ -76,6 +76,10 @@ export function islandView(state) {
   if (state.phase === 'waiting' && state.permission) {
     return { ...base, form: 'waiting', tone: 'waiting', label: '等待你确认', permission: permissionView(state.permission) }
   }
+  if (state.phase === 'asking' && state.secret) {
+    const { requestId, server } = state.secret
+    return { ...base, form: 'asking', tone: 'waiting', label: '等你填写', question: { questionId: requestId, id: 'secret', text: `接入「${server}」需要你填写密钥`, options: [] } }
+  }
   if (state.phase === 'asking' && state.question) {
     return { ...base, form: 'asking', tone: 'waiting', label: '等你回答', question: questionView(state.question) }
   }
