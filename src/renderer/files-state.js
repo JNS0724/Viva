@@ -12,8 +12,28 @@ export const initialFiles = Object.freeze({
   preview: null,
   /** The path whose preview is on its way. */
   loading: null,
+  /** The next page of the preview is on its way. */
+  loadingMore: false,
+  /** The apps that open each file (files:apps), by workspace path. */
+  apps: {},
+  /** The 打开 menu is open. */
+  menu: false,
+  /** A CSV or TSV file as a table, or as its text. */
+  view: 'table',
   error: null,
 })
+
+/** A page after the first joins the preview; the first page of the file (read again) replaces it. */
+function withPage(current, page) {
+  if (page.offset === 0 || !current) return page
+  if (page.offset !== current.nextOffset) return current
+  return {
+    ...current,
+    text: current.text + page.text,
+    ...(current.html !== undefined ? { html: current.html + (page.html ?? '') } : {}),
+    nextOffset: page.nextOffset,
+  }
+}
 
 const withFiles = (state, changes) => ({ ...state, files: { ...state.files, ...changes } })
 
@@ -22,9 +42,15 @@ export const FILES_ACTIONS = {
   files_toggled: (state, { path }) => withFiles(state, {
     expanded: state.files.expanded.includes(path) ? state.files.expanded.filter((item) => item !== path) : [...state.files.expanded, path],
   }),
-  files_selected: (state, { path }) => withFiles(state, { selected: path, preview: null, loading: path, error: null }),
-  files_previewed: (state, { preview }) => (preview.path === state.files.selected ? withFiles(state, { preview, loading: null }) : state),
-  files_failed: (state, { message }) => withFiles(state, { error: message, loading: null }),
+  files_selected: (state, { path }) => withFiles(state, { selected: path, preview: null, loading: path, error: null, menu: false, view: 'table' }),
+  files_previewed: (state, { preview }) => (preview.path === state.files.selected
+    ? withFiles(state, { preview: withPage(state.files.preview, preview), loading: null, loadingMore: false })
+    : state),
+  files_more: (state) => withFiles(state, { loadingMore: true }),
+  files_apps: (state, { path, apps }) => withFiles(state, { apps: { ...state.files.apps, [path]: apps } }),
+  files_menu: (state, { open }) => withFiles(state, { menu: open }),
+  files_view: (state, { mode }) => withFiles(state, { view: mode }),
+  files_failed: (state, { message }) => withFiles(state, { error: message, loading: null, loadingMore: false }),
   files_stale: (state) => withFiles(state, { folders: {} }),
 }
 

@@ -46,6 +46,10 @@ export function renderDrawer(container, state, handlers) {
     return
   }
   const before = scrollSnapshot(container.querySelector('.drawer-body'), container.dataset.tab)
+  // The 文件 tab scrolls inside: its tree, and its preview while the same file is shown.
+  const tree = container.querySelector('.file-tree')?.scrollTop ?? 0
+  const shown = container.querySelector('.file-preview[data-path]')
+  const preview = shown ? { path: shown.dataset.path, top: shown.scrollTop } : null
   container.replaceChildren(
     h('div', { class: 'drawer-head' },
       h('div', { class: 'tabs', role: 'tablist' }, TABS.map((tab) => h('button', {
@@ -61,4 +65,8 @@ export function renderDrawer(container, state, handlers) {
   const plan = drawerScrollPlan(before, state.drawer)
   body.scrollTop = plan.stickToBottom ? body.scrollHeight : plan.top
   container.dataset.tab = state.drawer
+  const treeNow = container.querySelector('.file-tree')
+  if (treeNow) treeNow.scrollTop = tree
+  const previewNow = container.querySelector('.file-preview[data-path]')
+  if (previewNow && previewNow.dataset.path === preview?.path) previewNow.scrollTop = preview.top
 }

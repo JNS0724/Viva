@@ -258,6 +258,8 @@ async function checkFiles(win, outDir, cwd) {
   await fs.mkdir(path.join(cwd, 'tools'), { recursive: true })
   await fs.writeFile(path.join(cwd, 'notes', '周报.md'), '# 周报\n\n- 完成对账\n')
   await fs.writeFile(path.join(cwd, 'tools', 'run.sh'), 'echo hi\n')
+  await fs.writeFile(path.join(cwd, 'notes', 'app.ts'), 'const answer: number = 42\n')
+  await fs.writeFile(path.join(cwd, 'notes', '账目.csv'), '日期,金额\n10-20,"1,200"\n')
   const failures = []
   const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   // The long task left the drawer open; open it only if it is not.
@@ -272,6 +274,20 @@ async function checkFiles(win, outDir, cwd) {
   expect(shown.heading === '周报' && shown.doc.includes('完成对账') && !shown.doc.includes('#'), 'Markdown should be laid out, not shown as source', shown)
   expect(shown.buttons.length === 2 && shown.buttons.includes('打开'), 'a document offers reveal and open', shown)
   await capture(win, outDir, 'files')
+  await run(win, clickRow('app.ts'))
+  const code = await until(win, `document.querySelectorAll('.file-code .hljs-keyword').length`, 'the highlighted code')
+  expect(code > 0, 'code should be highlighted', code)
+  await capture(win, outDir, 'files-code')
+  await run(win, clickRow('账目.csv'))
+  const cells = await until(win, `(() => { const cells = [...document.querySelectorAll('.file-table td')].map((el) => el.textContent); return cells.length && cells })()`, 'the CSV table')
+  expect(cells.join('|') === '日期|金额|10-20|1,200', 'a CSV file should show as a table, quoted commas kept', cells)
+  await capture(win, outDir, 'files-table')
+  await run(win, `document.querySelector('.open-more').click()`)
+  await until(win, `Boolean(document.querySelector('.open-menu .open-reveal'))`, 'the open menu')
+  // The system lists the apps that open the file; the first time it reads their icons too. A machine with none still shows the menu.
+  await until(win, `document.querySelectorAll('.open-menu .open-item:not(.open-pending)').length > 1`, 'the apps for the file', 5_000).catch(() => {})
+  await capture(win, outDir, 'files-open-menu')
+  await run(win, `document.body.click()`)
   await run(win, clickRow('tools'))
   await until(win, `[...document.querySelectorAll('.file-row .file-name')].some((el) => el.textContent === 'run.sh')`, 'the tools folder opening')
   await run(win, clickRow('run.sh'))

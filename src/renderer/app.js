@@ -377,6 +377,7 @@ function wireDismissal() {
   document.addEventListener('click', (event) => {
     if (state.island && !dom.island.contains(event.target)) dispatch({ type: 'close_island' })
     if (state.picker && !dom.modelArea.contains(event.target)) dispatch({ type: 'picker_close' })
+    if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
     closeHistoryOnOutsideClick(event)
   })
   document.addEventListener('keydown', (event) => {
@@ -413,6 +414,7 @@ async function boot() {
   api.onIslandAction?.((action) => handlers.islandAction(action))
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
+    if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
     const toAction = EVENT_ACTIONS[event?.type]
     if (toAction) dispatch(toAction(event))
     if (event?.type === 'ready') reportMcpProblems(event.info)

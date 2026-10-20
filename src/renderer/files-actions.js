@@ -15,13 +15,25 @@ export function createFilesActions({ api, getState, dispatch, errorMessage }) {
     }
   }
 
-  async function preview(path) {
+  async function preview(path, offset = 0) {
     try {
-      dispatch({ type: 'files_previewed', preview: await api.previewFile(path) })
+      dispatch({ type: 'files_previewed', preview: await api.previewFile(path, offset) })
     } catch (err) {
       fail(err)
     }
   }
+
+  async function loadApps(path) {
+    if (getState().files.apps[path]) return
+    try {
+      dispatch({ type: 'files_apps', path, apps: await api.fileApps(path) })
+    } catch (err) {
+      fail(err)
+    }
+  }
+
+  /** Images in a Markdown preview, read once each while the app runs. */
+  const images = new Map()
 
   /** The top folder and every open one that has not been read yet. */
   function loadFiles() {
@@ -39,9 +51,36 @@ export function createFilesActions({ api, getState, dispatch, errorMessage }) {
     selectFile(path) {
       dispatch({ type: 'files_selected', path })
       preview(path)
+      loadApps(path)
+      api.watchFile(path).catch(fail)
     },
-    revealFile: (path) => api.revealFile(path).catch(fail),
-    openFile: (path) => api.openFile(path).catch(fail),
+    /** The next page of a long text, when the preview is scrolled to its end. */
+    loadMorePreview() {
+      const { preview: shown, loadingMore } = getState().files
+      if (!shown || shown.nextOffset == null || loadingMore) return
+      dispatch({ type: 'files_more' })
+      preview(shown.path, shown.nextOffset)
+    },
+    /** The file on preview changed on disk: read it again from the start. */
+    onFilesChanged({ path }) {
+      if (getState().files.selected === path) preview(path)
+    },
+    revealFile(path) {
+      dispatch({ type: 'files_menu', open: false })
+      api.revealFile(path).catch(fail)
+    },
+    /** With `app` (one of the file's apps) or, without, the system's default. */
+    openFile(path, app = null) {
+      dispatch({ type: 'files_menu', open: false })
+      api.openFile(path, app).catch(fail)
+    },
+    toggleOpenMenu: () => dispatch({ type: 'files_menu', open: !getState().files.menu }),
+    setTableView: (mode) => dispatch({ type: 'files_view', mode }),
+    /** @returns {Promise<string>} a data URL for a picture inside the workspace */
+    fileImage(path) {
+      if (!images.has(path)) images.set(path, api.fileImage(path).catch((err) => { images.delete(path); throw err }))
+      return images.get(path)
+    },
     /** After a turn the agent may have written: read again what is on screen, the preview included. */
     filesAfterTurn() {
       dispatch({ type: 'files_stale' })

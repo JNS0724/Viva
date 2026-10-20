@@ -28,7 +28,9 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",
     "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-native-command": "0.2.0-rc.2",
     "@deepseek-ai/dsh-tool-ask-user": "0.2.0-rc.2",
+    "highlight.js": "11.11.1",
     "marked": "18.0.14",
     "zod": "4.6.7"
   },

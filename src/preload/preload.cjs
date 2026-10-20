@@ -43,9 +43,14 @@ contextBridge.exposeInMainWorld('agent', {
   setOnboarding: (status) => ipcRenderer.invoke('memory:onboarding', status),
   addDocs: () => ipcRenderer.invoke('memory:add-docs'),
   listFiles: (rel) => ipcRenderer.invoke('files:list', rel),
-  previewFile: (rel) => ipcRenderer.invoke('files:preview', rel),
+  previewFile: (rel, offset = 0) => ipcRenderer.invoke('files:preview', rel, offset),
   revealFile: (rel) => ipcRenderer.invoke('files:reveal', rel),
-  openFile: (rel) => ipcRenderer.invoke('files:open', rel),
+  /** The apps registered to open a file, the default marked; `app` picks one of them, none the default. */
+  fileApps: (rel) => ipcRenderer.invoke('files:apps', rel),
+  openFile: (rel, app = null) => ipcRenderer.invoke('files:open', rel, app),
+  fileImage: (rel) => ipcRenderer.invoke('files:image', rel),
+  /** Watches the file on preview; null stops. Changes arrive as files_changed events. */
+  watchFile: (rel) => ipcRenderer.invoke('files:watch', rel),
   getExtensions: () => ipcRenderer.invoke('ext:get'),
   removeMcpServer: (name) => ipcRenderer.invoke('ext:remove-mcp', name),
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),

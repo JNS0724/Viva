@@ -656,7 +656,7 @@ app.whenReady().then(async () => {
   registerSettingsIpc()
   registerIslandIpc()
   const config = currentConfig()
-  registerFilesIpc(ipcMain, { root: () => config.cwd, shell })
+  registerFilesIpc(ipcMain, { root: () => config.cwd, shell, notify: emitToRenderer })
   if (config.smokePhase === 'memory') await startSmokeModel()
   if (!config.smoke) {
     bringLegacyData()

@@ -1,28 +1,90 @@
+import fs from 'node:fs'
+import { nativeFileApplications, openNativeFileApplication } from '@deepseek-ai/dsh-native-command'
 import { canOpen, listFolder, previewFile, resolveInside } from './workspace-files.js'
 
 const MAX_PATH_CHARS = 1000
+const MAX_APP_ID_CHARS = 1000
+const APPS_TIMEOUT_MS = 5_000
+const OPEN_TIMEOUT_MS = 15_000
+/** Editors save in bursts; one announcement per burst. */
+const CHANGE_SETTLE_MS = 300
 
 function checkPath(value) {
   if (typeof value !== 'string' || value.length > MAX_PATH_CHARS) throw new Error('invalid path')
   return value
 }
 
+/** dsh's own cross-platform file associations (LaunchServices, Shell handlers, GIO). */
+const DSH_NATIVE = {
+  applications: (file) => nativeFileApplications(file, AbortSignal.timeout(APPS_TIMEOUT_MS)),
+  openWith: (file, app) => openNativeFileApplication(file, app, AbortSignal.timeout(OPEN_TIMEOUT_MS)),
+}
+
+const watchFile = (file, onChange) => fs.watch(file, { persistent: false }, onChange)
+
 /**
  * The 文件 tab's channels. Paths come from the page and are workspace paths; workspace-files.js keeps them
- * inside the workspace. A program or script is only shown in its folder, never opened.
+ * inside the workspace. A program or script is only shown in its folder, never opened, and lists no apps.
  * @param {import('electron').IpcMain} ipcMain
- * @param {{ root: () => string, shell: Pick<import('electron').Shell, 'openPath' | 'showItemInFolder'> }} deps
+ * @param {{
+ *   root: () => string,
+ *   shell: Pick<import('electron').Shell, 'openPath' | 'showItemInFolder'>,
+ *   notify: (event: { type: 'files_changed', path: string }) => void,
+ *   native?: { applications: (file: string) => Promise<readonly object[]>, openWith: (file: string, app: string) => Promise<void> },
+ *   watch?: (file: string, onChange: () => void) => { close: () => void },
+ * }} deps
  */
-export function registerFilesIpc(ipcMain, { root, shell }) {
+export function registerFilesIpc(ipcMain, { root, shell, notify, native = DSH_NATIVE, watch = watchFile }) {
+  let watched = null
+  let settle = null
+
   ipcMain.handle('files:list', (_event, rel) => listFolder(root(), checkPath(rel)))
-  ipcMain.handle('files:preview', (_event, rel) => previewFile(root(), checkPath(rel)))
+  ipcMain.handle('files:preview', (_event, rel, offset = 0) => previewFile(root(), checkPath(rel), { offset }))
   ipcMain.handle('files:reveal', (_event, rel) => {
     shell.showItemInFolder(resolveInside(root(), checkPath(rel)))
   })
-  ipcMain.handle('files:open', async (_event, rel) => {
+
+  /** The apps registered for the file, the system default marked; none for a program. */
+  ipcMain.handle('files:apps', async (_event, rel) => {
+    const file = resolveInside(root(), checkPath(rel))
+    if (!canOpen(file)) return []
+    try {
+      return (await native.applications(file)).map(({ id, name, default: isDefault, icon }) => ({ id, name, default: isDefault, icon }))
+    } catch (err) {
+      console.error('[files] could not list the apps for a file:', err.message)
+      return []
+    }
+  })
+
+  /** Opens with the given app (one of files:apps), or with the system default. */
+  ipcMain.handle('files:open', async (_event, rel, app = null) => {
     const file = resolveInside(root(), checkPath(rel))
     if (!canOpen(file)) throw new Error('这是程序或脚本，只能在文件夹中显示')
+    if (app !== null) {
+      if (typeof app !== 'string' || !app || app.length > MAX_APP_ID_CHARS) throw new Error('invalid app')
+      return native.openWith(file, app)
+    }
     const problem = await shell.openPath(file)
     if (problem) throw new Error(problem)
+  })
+
+  /** A picture a Markdown file in the workspace shows. */
+  ipcMain.handle('files:image', (_event, rel) => {
+    const preview = previewFile(root(), checkPath(rel))
+    if (preview.kind !== 'image') throw new Error('这不是图片，或者太大了')
+    return preview.dataUrl
+  })
+
+  /** Watches the file on preview, one at a time (null stops); a change is announced to the page. */
+  ipcMain.handle('files:watch', (_event, rel) => {
+    watched?.close()
+    watched = null
+    clearTimeout(settle)
+    if (rel === null) return
+    const path = checkPath(rel)
+    watched = watch(resolveInside(root(), path), () => {
+      clearTimeout(settle)
+      settle = setTimeout(() => notify({ type: 'files_changed', path }), CHANGE_SETTLE_MS)
+    })
   })
 }
