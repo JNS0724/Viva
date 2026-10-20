@@ -131,7 +131,6 @@ async function checkLayouts(win, outDir) {
 async function checkSetup(win, outDir) {
   const seen = await run(win, `(() => ({
     title: document.querySelector('.setup-title')?.textContent ?? '',
-    pill: document.querySelector('.tile-hero .pill')?.textContent ?? '',
     composerDisabled: document.getElementById('composer-input').disabled,
     sendDisabled: document.getElementById('send-btn').disabled,
     titlebarLeft: document.getElementById('titlebar-left').textContent,
@@ -139,7 +138,7 @@ async function checkSetup(win, outDir) {
   report(`setup: ${JSON.stringify(seen)}`)
   await capture(win, outDir, 'setup')
   const failures = []
-  if (seen.title !== '连接模型' || seen.pill !== '未连接') failures.push(`setup card missing: ${JSON.stringify(seen)}`)
+  if (seen.title !== '连接模型') failures.push(`setup card missing: ${JSON.stringify(seen)}`)
   if (!seen.composerDisabled || !seen.sendDisabled) failures.push('composer should be disabled without a key')
   if (seen.titlebarLeft !== '') failures.push(`title bar left should be empty, was "${seen.titlebarLeft}"`)
   await run(win, `document.querySelector('.setup-action').click()`)

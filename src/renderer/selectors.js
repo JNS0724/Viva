@@ -161,14 +161,12 @@ export function statusView(state, now = Date.now()) {
   return { tone: 'idle', label: '空闲', event: state.info.model || '' }
 }
 
-/** One-line receipt under an answer, e.g. "DONE IN 42S · 3 TOOLS · 1 THOUGHT". */
+/** One-line receipt under an answer, e.g. "用时 42 秒 · 3 次工具". */
 export function receiptLine(receipt) {
   const seconds = Math.max(1, Math.round(receipt.ms / 1000))
-  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 'S'}`
   return [
-    receipt.stopReason === 'cancelled' ? 'STOPPED' : `DONE IN ${seconds}S`,
-    receipt.tools ? plural(receipt.tools, 'TOOL') : '',
-    receipt.thoughts ? plural(receipt.thoughts, 'THOUGHT') : '',
+    receipt.stopReason === 'cancelled' ? '已停止' : `用时 ${seconds} 秒`,
+    receipt.tools ? `${receipt.tools} 次工具` : '',
   ].filter(Boolean).join(' · ')
 }
 
@@ -230,13 +228,6 @@ export function fileItems(state) {
   return Object.values(byPath).map((item) => ({ ...item, name: workspaceName(item.path) }))
 }
 
-/** Pages the agent fetched. */
-export function webItems(state) {
-  return toolsInOrder(state)
-    .filter((tool) => tool.kind === 'fetch')
-    .map((tool) => ({ id: tool.id, title: tool.title, url: urlOf(tool) || tool.title, tone: TOOL_TONE[tool.status] ?? 'pending' }))
-}
-
 /** What the confirmation card shows of the tool's arguments: a command as itself, anything else pretty-printed. */
 export function permissionDetail(permission) {
   if (!permission?.rawInput) return ''
@@ -275,5 +266,5 @@ export const setupView = (info) => (info.mode === 'setup' ? SETUP_COPY[info.prob
 
 export function usageLabel(usage) {
   if (!usage?.size) return ''
-  return `${Math.round((usage.used / usage.size) * 100)}% CONTEXT`
+  return `上下文已用 ${Math.round((usage.used / usage.size) * 100)}%`
 }

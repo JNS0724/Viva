@@ -113,8 +113,7 @@ export function renderStream(dom, state, handlers, now = Date.now()) {
   renderIsland(dom.island, state, handlers, now)
 }
 
-/** Once-a-second refresh of the time-dependent bits only (clock, elapsed timer). */
+/** Once-a-second refresh of the elapsed time in the island while the agent works. */
 export function renderTick(dom, state, handlers, now = Date.now()) {
-  if (state.messages.length === 0) renderHome(dom.home, state, handlers, now)
-  else if (isBusy(state)) renderIsland(dom.island, state, handlers, now)
+  if (state.messages.length > 0 && isBusy(state)) renderIsland(dom.island, state, handlers, now)
 }

@@ -89,9 +89,9 @@ const memoryLine = (status) => h('p', { class: 'ext-memory', 'data-on': String(s
 
 /** The 扩展 part of settings: MCP servers the agent can call, and skills it can load. */
 export function extensionsSection(extensions, handlers, { connected }) {
-  if (!extensions.loaded) return h('section', { class: 'ext' }, label('EXTENSIONS · 扩展'), h('p', { class: 'help', text: '读取中…' }))
+  if (!extensions.loaded) return h('section', { class: 'ext' }, label('扩展'), h('p', { class: 'help', text: '读取中…' }))
   return h('section', { class: 'ext', 'aria-label': '扩展' },
-    label('EXTENSIONS · 扩展'),
+    label('扩展'),
     h('div', { class: 'ext-group' },
       h('div', { class: 'row-between' },
         h('h3', { class: 'profile-heading', text: 'MCP 服务器' }),

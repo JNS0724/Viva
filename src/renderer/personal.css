@@ -69,9 +69,6 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .intro-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.6; color: var(--ink-2); cursor: pointer; }
 .intro-check input { margin-top: 4px; accent-color: var(--accent); }
 
-.tile-intro { justify-content: flex-start; border-color: var(--accent); }
-.tile-intro .label { color: var(--accent); }
-.intro-copy { display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .intro-title { margin: 0; font-size: 22px; line-height: 1.25; }
 .intro-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 

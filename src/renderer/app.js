@@ -235,10 +235,6 @@ const handlers = {
       dispatch({ type: 'error', message: errorMessage(err) })
     }
   },
-  suggest(text) {
-    dom.input.value = text
-    dom.input.focus()
-  },
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
@@ -250,6 +246,13 @@ const handlers = {
     }
   },
   closeSettings: () => dispatch({ type: 'settings_close' }),
+  async setDeskIsland(on) {
+    try {
+      dispatch({ type: 'settings_loaded', view: await api.setDeskIsland(on) })
+    } catch (err) {
+      dispatch({ type: 'settings_failed', message: errorMessage(err) })
+    }
+  },
   saveKey: (value) => applySettingsChange(() => api.saveApiKey(value), saveNotice),
   clearKey: () => applySettingsChange(() => api.clearApiKey(), () => '已清除保存的 key'),
   togglePicker: () => dispatch({ type: 'picker_toggle' }),

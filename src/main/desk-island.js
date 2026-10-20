@@ -61,7 +61,8 @@ function openWindow({ BrowserWindow, preload, page }) {
 /**
  * @param {{ BrowserWindow: Function, screen: object, preload: string, page: string, mainWindow: object, enabled: boolean }} deps
  */
-export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled }) {
+export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled }) {
+  let enabled = initiallyEnabled
   let win = null
   let view = null
   let doneAt = 0
@@ -120,6 +121,11 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     /** Clicks reach the island only while the pointer is over it; elsewhere they go to what is below. */
     setPointerInside(inside) {
       if (alive()) win.setIgnoreMouseEvents(!inside, { forward: true })
+    },
+    /** The user's switch in settings. */
+    setEnabled(value) {
+      enabled = value
+      refresh()
     },
     /** For the smoke run, whose window is never in front: show the island as if it were away. */
     force(on) {

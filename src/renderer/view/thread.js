@@ -17,7 +17,7 @@ const avatar = (message, look) => h('span', { class: 'cat-avatar', 'aria-hidden'
 function receiptButton(message, handlers, traceReady) {
   if (message.restored && !traceReady) return h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) })
   return h('button', { class: 'receipt', onClick: () => handlers.openDrawer('trace') },
-    `${receiptLine(message.receipt)} · VIEW TRACE →`)
+    `${receiptLine(message.receipt)} · 查看过程 →`)
 }
 
 function historyDivider(note) {
@@ -77,7 +77,7 @@ function permissionCard(permission, handlers) {
   const detail = permissionDetail(permission)
   return h('section', { class: 'confirm', 'aria-label': '需要你确认' },
     h('div', { class: 'confirm-head' },
-      h('span', { text: permission.kind === 'other' ? 'ACTION REQUIRED' : `ACTION REQUIRED · ${permission.kind.toUpperCase()}` }),
+      h('span', { text: '需要你确认' }),
       h('span', { class: 'pulse-dot' })),
     h('div', { class: 'confirm-title', text: permission.title }),
     detail ? h('pre', { class: 'confirm-detail', text: detail }) : null,
@@ -113,7 +113,7 @@ function questionCard(question, handlers) {
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
   return h('section', { class: 'confirm ask', 'aria-label': '助手在问你' },
     h('div', { class: 'confirm-head' },
-      h('span', { text: 'QUESTION · 需要你回答' }),
+      h('span', { text: '需要你回答' }),
       h('span', { class: 'pulse-dot' })),
     question.questions.map((item) => questionItem(item, question, handlers)),
     h('div', { class: 'confirm-actions' },
@@ -133,7 +133,7 @@ function workingRow(state) {
 
 function errorRow(message) {
   return h('div', { class: 'msg-error', role: 'alert' },
-    label('ERROR'),
+    label('出错了'),
     h('div', { text: message }),
     h('div', { class: 'muted', text: '检查模型的 key 和接口地址、网络，或查看终端日志。' }))
 }

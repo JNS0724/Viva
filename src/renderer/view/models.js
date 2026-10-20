@@ -39,7 +39,7 @@ function providerForm(models, handlers) {
   textField('model-url', '接口地址（baseURL）', 'https://api.example.com/v1'),
   textField('model-ids', '模型 ID（每行一个）', 'kimi-k2.6\nkimi-k2.7-code', { multiline: true }),
   textField('model-key', 'API key（本地模型可不填）', 'sk-…', { secret: true }),
-  h('p', { class: 'help', text: 'key 用系统钥匙串加密保存，之后只显示末 4 位。添加后会重新连接助手，当前对话保留。' }),
+  h('p', { class: 'help', text: 'key 加密保存，只显示末 4 位。添加后会重新连接，当前对话保留。' }),
   h('div', { class: 'settings-actions' },
     h('button', { class: 'btn btn-accent btn-small', type: 'submit', disabled: models.busy, text: models.busy ? '连接中…' : '添加并连接' }),
     h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '取消', onClick: () => handlers.toggleAddProvider(false) })))
@@ -48,9 +48,9 @@ function providerForm(models, handlers) {
 
 /** The 模型 part of settings: providers besides DeepSeek, each speaking one of the protocols dsh supports. */
 export function modelsSection(models, handlers) {
-  if (!models.loaded) return h('section', { class: 'ext' }, label('MODELS · 模型'), h('p', { class: 'help', text: '读取中…' }))
+  if (!models.loaded) return h('section', { class: 'ext' }, label('模型'), h('p', { class: 'help', text: '读取中…' }))
   return h('section', { class: 'ext', 'aria-label': '模型' },
-    label('MODELS · 模型'),
+    label('模型'),
     h('div', { class: 'ext-group' },
       h('div', { class: 'row-between' },
         h('h3', { class: 'profile-heading', text: '其他模型' }),
@@ -59,7 +59,7 @@ export function modelsSection(models, handlers) {
         })),
       models.providers.length
         ? h('ul', { class: 'ext-list' }, models.providers.map((provider) => providerItem(provider, models, handlers)))
-        : h('p', { class: 'help', text: '除了 DeepSeek，还可以接入 OpenAI 兼容、OpenAI Responses 或 Anthropic 兼容接口的模型，添加后在模型菜单里选择。' }),
+        : h('p', { class: 'help', text: '可以接入 OpenAI 兼容或 Anthropic 兼容接口的模型，添加后在输入框左下角选择。' }),
       models.adding ? providerForm(models, handlers) : null),
     models.error ? h('p', { class: 'form-error', role: 'alert', text: models.error }) : null,
     models.notice ? h('p', { class: 'form-notice', role: 'status', text: models.notice }) : null)

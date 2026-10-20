@@ -8,7 +8,7 @@ const SOURCE_COPY = { saved: '已保存在本机', env: '来自环境变量 DEEP
 function keyStatus(settings) {
   return h('div', { class: 'key-status', 'data-has-key': String(settings.hasKey) },
     h('div', { class: 'key-status-copy' },
-      label(settings.hasKey ? 'KEY · ACTIVE' : 'KEY · NOT SET'),
+      label('DeepSeek key'),
       h('span', { class: 'key-status-text', text: settings.hasKey ? SOURCE_COPY[settings.source] : '还没有填写 key' })),
     h('span', { class: 'key-hint', text: settings.hasKey ? settings.keyHint : '----' }))
 }
@@ -41,7 +41,7 @@ function keyForm(settings, handlers) {
       handlers.saveKey(input.value)
     },
   },
-  h('label', { class: 'label', for: 'settings-key', text: 'DEEPSEEK API KEY' }),
+  h('label', { class: 'label', for: 'settings-key', text: settings.hasKey ? '换一个 key' : 'DeepSeek API key' }),
   h('div', { class: 'field-row' }, input, toggle),
   h('div', { class: 'settings-actions' },
     h('button', {
@@ -63,9 +63,22 @@ function feedback(settings) {
   return null
 }
 
+/** The desktop island can be turned off; it is on by default. */
+function deskSection(settings, handlers) {
+  return h('section', { class: 'ext', 'aria-label': '桌面岛' },
+    h('label', { class: 'pref-row' },
+      h('span', { class: 'pref-copy' },
+        h('span', { class: 'profile-heading', text: '桌面岛' }),
+        h('span', { class: 'help', text: '窗口在后台时，在屏幕顶部显示助手在做什么；需要你确认时可以直接在上面处理。' })),
+      h('input', {
+        type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': '桌面岛',
+        onChange: (event) => handlers.setDeskIsland(event.target.checked),
+      })))
+}
+
 /**
- * Modal settings panel: the DeepSeek key, other models, then MCP servers and skills. Re-rendered only when
- * its slices change, and typed text survives a re-render.
+ * Modal settings panel: the DeepSeek key, other models, the desktop island, then MCP servers and skills.
+ * Re-rendered only when its slices change, and typed text survives a re-render.
  */
 export function renderSettings(container, settings, models, extensions, handlers, { connected }) {
   if (!settings.open) {
@@ -82,18 +95,18 @@ export function renderSettings(container, settings, models, extensions, handlers
   },
   h('section', { class: 'settings', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'settings-title' },
     h('div', { class: 'row-between' },
-      label('05 / SETTINGS'),
+      h('h2', { class: 'settings-title', id: 'settings-title', text: '设置' }),
       h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭设置', onClick: handlers.closeSettings }, icon('close', 16))),
-    h('h2', { class: 'settings-title', id: 'settings-title', text: '设置' }),
     keyStatus(settings),
     form,
     feedback(settings),
     h('p', {
       class: 'help',
       id: 'settings-help',
-      text: 'key 用系统钥匙串（Electron safeStorage）加密后保存在本机，界面只显示末 4 位。保存后会用新 key 重新连接 DeepSeek Harness，当前对话会清空。已添加其他模型时，DeepSeek key 可以不填。',
+      text: '加密保存在本机，只显示末 4 位。换 key 会重新连接，当前对话清空；用其他模型时可以不填。',
     }),
     modelsSection(models, handlers),
+    deskSection(settings, handlers),
     extensionsSection(extensions, handlers, { connected })))))
   if (isFirstShow && !input.disabled) input.focus()
 }

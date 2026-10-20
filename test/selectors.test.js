@@ -4,7 +4,7 @@ import { initialState, reduce } from '../src/renderer/state.js'
 import {
   catMood,
   fileItems, formatElapsed, greeting, historyMessages, modeLine, permissionDetail, receiptLine, restoredNote, setupView, statusView,
-  toolDetail, traceItems, truncate, usageLabel, webItems, workspaceName,
+  toolDetail, traceItems, truncate, usageLabel, workspaceName,
 } from '../src/renderer/selectors.js'
 
 const T0 = new Date(2026, 9, 18, 14, 20, 0).getTime()
@@ -44,9 +44,9 @@ test('status while waiting or failed', () => {
 })
 
 test('receipt line', () => {
-  assert.equal(receiptLine({ ms: 42_300, tools: 3, thoughts: 1, stopReason: 'end_turn' }), 'DONE IN 42S · 3 TOOLS · 1 THOUGHT')
-  assert.equal(receiptLine({ ms: 10, tools: 1, thoughts: 0, stopReason: 'end_turn' }), 'DONE IN 1S · 1 TOOL')
-  assert.equal(receiptLine({ ms: 0, tools: 0, thoughts: 0, stopReason: 'cancelled' }), 'STOPPED')
+  assert.equal(receiptLine({ ms: 42_300, tools: 3, thoughts: 1, stopReason: 'end_turn' }), '用时 42 秒 · 3 次工具')
+  assert.equal(receiptLine({ ms: 10, tools: 0, thoughts: 0, stopReason: 'end_turn' }), '用时 1 秒')
+  assert.equal(receiptLine({ ms: 0, tools: 0, thoughts: 0, stopReason: 'cancelled' }), '已停止')
 })
 
 test('trace items cover thoughts, tools, permission requests and decisions in order', () => {
@@ -80,7 +80,6 @@ test('file items dedupe by path with the last action winning; web items list fet
     { path: '/w/a.md', kind: 'edit', tone: 'working', name: 'a.md' },
     { path: 'C:\\w\\b.txt', kind: 'edit', tone: 'working', name: 'b.txt' },
   ])
-  assert.deepEqual(webItems(state).map((w) => [w.url, w.tone]), [['https://example.com', 'done'], ['打开页面', 'pending']])
 })
 
 test('tool detail falls back from path to url to compact JSON', () => {
@@ -105,7 +104,7 @@ test('formatting helpers', () => {
   assert.equal(truncate(null, 4), '')
   assert.equal(workspaceName('/Users/me/work/'), 'work')
   assert.equal(workspaceName(''), '—')
-  assert.equal(usageLabel({ used: 25, size: 100 }), '25% CONTEXT')
+  assert.equal(usageLabel({ used: 25, size: 100 }), '上下文已用 25%')
   assert.equal(usageLabel(null), '')
   assert.equal(modeLine({ mode: 'setup', problem: 'no-key' }), '未连接')
   assert.equal(modeLine({ mode: 'live' }), 'DeepSeek Harness · ACP')

@@ -91,7 +91,7 @@ async function steps(win, outDir, expect) {
   // The fake model says what background came with the question; 周报 is a keyword of the memory.
   const answers = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].map((el) => el.textContent)`)
   expect(answers.some((text) => text.startsWith('我已经了解你的背景（1 条相关记忆）')), 'naming 周报 should bring its memory along', answers.map((t) => t.slice(0, 24)))
-  await run(win, `document.querySelector('.rail-btn[aria-label="过程"]')?.click()`)
+  await run(win, `document.getElementById('toggle-drawer').click()`)
   await wait(UI_WAIT_MS)
   const trace = await run(win, `[...document.querySelectorAll('.trace-row')].map((row) => row.textContent)`)
   expect(trace.some((row) => row.includes('带上记忆') && row.includes(`因为提到「周报」：${FACT}`)), 'the trace should show which memory went along and why', trace)

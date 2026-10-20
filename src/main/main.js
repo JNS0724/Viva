@@ -24,6 +24,7 @@ import { registerMemoryIpc } from './memory-ipc.js'
 import { createModelStore, defaultModel, modelValue, parseModelValue, piAiProviders, providerEnv } from './model-providers.js'
 import { registerModelsIpc } from './models-ipc.js'
 import { createPersonal } from './personal.js'
+import { createPreferences } from './preferences.js'
 import { removeTree } from './remove-tree.js'
 import { CONFIG_IDS } from './session-info.js'
 import { createSettingsStore, keyHint } from './settings-store.js'
@@ -40,6 +41,10 @@ const LATE_MEMORY_POLL_MS = 2_000
 const LATE_MEMORY_WINDOW_MS = 30_000
 
 let settingsStore = null
+/** Switches from settings, such as the desktop island (preferences.js). */
+let preferences = null
+/** False in smoke runs, which turn the desktop island on only while they check it. */
+let deskAllowed = true
 /** Model providers the user added besides DeepSeek; see model-providers.js. */
 let modelStore = null
 let historyDb = null
@@ -269,6 +274,7 @@ function settingsView() {
     keyHint: keyHint(saved || envKey),
     source: saved ? 'saved' : envKey ? 'env' : null,
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    deskIsland: preferences.get().deskIsland,
   }
 }
 
@@ -350,13 +356,14 @@ function registerIslandIpc() {
 
 /** The desktop island follows whether the window is in front; a smoke run turns it on only when it checks it. */
 function attachDeskIsland(config) {
+  deskAllowed = !config.smoke
   desk = createDeskIsland({
     BrowserWindow,
     screen,
     preload: path.join(APP_ROOT, 'src', 'preload', 'desk-preload.cjs'),
     page: path.join(APP_ROOT, 'src', 'renderer', 'desk.html'),
     mainWindow: win,
-    enabled: !config.smoke,
+    enabled: deskAllowed && preferences.get().deskIsland,
   })
   const follow = () => desk?.setForeground(win.isFocused() && win.isVisible() && !win.isMinimized())
   for (const event of ['focus', 'blur', 'show', 'hide', 'minimize', 'restore']) win.on(event, follow)
@@ -372,6 +379,12 @@ function registerSettingsIpc() {
   ipcMain.handle('settings:save-key', async (_event, key) => {
     settingsStore.saveApiKey(assertText(key, 'API key', MAX_KEY_CHARS))
     return { settings: settingsView(), info: await restartWithNewConversation() }
+  })
+  ipcMain.handle('settings:set-desk-island', (_event, on) => {
+    if (typeof on !== 'boolean') throw new Error('invalid desk island switch')
+    preferences.set('deskIsland', on)
+    desk?.setEnabled(on && deskAllowed)
+    return settingsView()
   })
   ipcMain.handle('settings:clear-key', async () => {
     settingsStore.clearApiKey()
@@ -568,6 +581,10 @@ app.whenReady().then(async () => {
     file: path.join(app.getPath('userData'), 'settings.json'),
     crypto: safeStorage,
     onError: (err) => console.error('[settings] could not read saved settings:', err.message),
+  })
+  preferences = createPreferences({
+    file: path.join(app.getPath('userData'), 'preferences.json'),
+    onError: (err) => console.error('[preferences] could not read them, using the defaults:', err.message),
   })
   modelStore = createModelStore({
     file: path.join(app.getPath('userData'), 'models.json'),

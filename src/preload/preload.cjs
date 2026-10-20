@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('agent', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveApiKey: (key) => ipcRenderer.invoke('settings:save-key', key),
   clearApiKey: () => ipcRenderer.invoke('settings:clear-key'),
+  setDeskIsland: (on) => ipcRenderer.invoke('settings:set-desk-island', on),
   getModels: () => ipcRenderer.invoke('models:get'),
   addModelProvider: (input) => ipcRenderer.invoke('models:add', input),
   removeModelProvider: (id) => ipcRenderer.invoke('models:remove', id),
