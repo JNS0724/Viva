@@ -72,7 +72,7 @@ async function checkLongTask(win, outDir) {
 
 const TITLEBAR_METRICS = `(() => {
   const rect = (selector) => document.querySelector(selector).getBoundingClientRect()
-  const island = rect('.island')
+  const island = rect('#island .isl')
   const actions = rect('.titlebar-right')
   // On real Windows the system reports where its caption buttons start; elsewhere they are only simulated.
   const overlay = navigator.windowControlsOverlay
@@ -171,31 +171,70 @@ async function checkRelaunch(win, outDir) {
   return failures
 }
 
-/** The status island's popover must cover the conversation, not show it through. */
+/** Clicked, the title bar's island unfolds its steps over the conversation, not under it. */
 async function checkIslandOnTop(win, outDir) {
-  await run(win, `document.querySelector('#island .island').click()`)
+  await run(win, `document.querySelector('#island .isl-head').click()`)
   await wait(UI_WAIT_MS)
   const seen = await run(win, `(() => {
-    const pop = document.querySelector('.island-pop')
-    if (!pop) return { open: false }
-    const box = pop.getBoundingClientRect()
+    const island = document.querySelector('#island .isl')
+    const steps = island?.querySelector('.isl-steps')
+    if (!steps) return { open: false, form: island?.dataset.form ?? null }
+    const box = steps.getBoundingClientRect()
     const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
-    return { open: true, onTop: pop.contains(hit), hit: hit?.className ?? '' }
+    return { open: island.dataset.open === 'true', onTop: island.contains(hit), rows: steps.children.length, hit: hit?.className ?? '' }
   })()`)
-  await capture(win, outDir, 'island-popover')
+  await capture(win, outDir, 'island-panel')
   await run(win, 'document.body.click()')
   await wait(UI_WAIT_MS)
-  return seen.open && seen.onTop ? [] : [`the island popover should sit on top of the thread: ${JSON.stringify(seen)}`]
+  return seen.open && seen.onTop && seen.rows > 0 ? [] : [`the island's steps should unfold on top of the thread: ${JSON.stringify(seen)}`]
 }
 
-/** Tour from a clean profile on the fake dsh: an answer waiting on a permission card, the layouts around it, the long task. */
-async function walkthrough(win, outDir) {
+const DESK_ISLAND_STATE = `(() => {
+  const island = document.querySelector('.isl')
+  return island && { form: island.dataset.form, title: island.querySelector('.isl-title')?.textContent ?? '', allow: Boolean(island.querySelector('.isl-btn-hot')) }
+})()`
+
+/**
+ * With the window away, the desktop island shows what waits on the user, and allowing it there goes
+ * through to the window: the card in the thread goes and the turn carries on.
+ */
+async function checkDeskIsland(win, outDir, desk) {
+  if (!desk) return ['the desktop island was not created']
+  desk.force(true)
+  try {
+    // The smoke helpers drive a window through its webContents.
+    const contents = desk.webContents()
+    if (!contents) return ['the desktop island did not open']
+    const page = { webContents: contents }
+    const logged = []
+    contents.on('console-message', (event) => logged.push(`${event.level}: ${event.message}`))
+    const seen = await until(page, `(() => { const s = ${DESK_ISLAND_STATE}; return s?.form === 'waiting' && s.allow && s })()`, 'the desktop island asking to allow')
+      .catch(async (err) => {
+        throw new Error(`${err.message}; it showed ${JSON.stringify(await run(page, DESK_ISLAND_STATE))}, logged ${JSON.stringify(logged)}`)
+      })
+    report(`desktop island: ${JSON.stringify(seen)}`)
+    await wait(UI_WAIT_MS)
+    await capture(page, outDir, 'desk-island')
+    await run(page, `document.querySelector('.isl .isl-btn-hot').click()`)
+    await until(win, `!document.querySelector('.confirm:not(.ask)')`, 'the card going after allowing on the desktop island')
+    return seen.title === '写入 summary.md' ? [] : [`the desktop island should name what it asks to allow: ${JSON.stringify(seen)}`]
+  } finally {
+    desk.force(false)
+  }
+}
+
+/**
+ * Tour from a clean profile on the fake dsh: an answer waiting on a permission card, the layouts around it,
+ * allowing it from the desktop island, the island's steps, the long task.
+ */
+async function walkthrough(win, outDir, hooks) {
   await capture(win, outDir, 'home')
   await submit(win, SMOKE_PROMPT)
   await until(win, `Boolean(document.querySelector('.confirm .btn-ink'))`, 'the permission card')
   await capture(win, outDir, 'chat')
-  const failures = [...await checkIslandOnTop(win, outDir), ...await checkLayouts(win, outDir)]
+  const failures = [...await checkLayouts(win, outDir), ...await checkDeskIsland(win, outDir, hooks.desk?.())]
   await finishTurn(win)
+  failures.push(...await checkIslandOnTop(win, outDir))
   failures.push(...await checkLongTask(win, outDir))
   await finishTurn(win)
   return failures
@@ -362,7 +401,7 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hook
     if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
     else if (smokePhase === 'relaunch') problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
-    else problems.push(...await walkthrough(win, outDir))
+    else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)
   } finally {

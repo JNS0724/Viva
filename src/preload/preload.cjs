@@ -45,6 +45,14 @@ contextBridge.exposeInMainWorld('agent', {
   importSkill: () => ipcRenderer.invoke('ext:import-skill'),
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),
   openSkillDir: () => ipcRenderer.invoke('ext:open-skill-dir'),
+  /** What the island shows; the main process passes it to the desktop island while the window is away. */
+  islandView: (view) => ipcRenderer.send('island:view', view),
+  /** What was clicked on the desktop island: allow, answer, stop. */
+  onIslandAction: (callback) => {
+    const listener = (_event, action) => callback(action)
+    ipcRenderer.on('island:action', listener)
+    return () => ipcRenderer.removeListener('island:action', listener)
+  },
   onEvent: (callback) => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('agent:event', listener)

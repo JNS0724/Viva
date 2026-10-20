@@ -1,5 +1,5 @@
 import { optionName } from '../approval.js'
-import { catMood, permissionDetail, receiptLine, restoredNote, statusView } from '../selectors.js'
+import { catMood, currentAction, permissionDetail, receiptLine, restoredNote } from '../selectors.js'
 import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
@@ -77,7 +77,7 @@ function permissionCard(permission, handlers) {
   const detail = permissionDetail(permission)
   return h('section', { class: 'confirm', 'aria-label': '需要你确认' },
     h('div', { class: 'confirm-head' },
-      h('span', { text: `ACTION REQUIRED · ${permission.kind.toUpperCase()}` }),
+      h('span', { text: permission.kind === 'other' ? 'ACTION REQUIRED' : `ACTION REQUIRED · ${permission.kind.toUpperCase()}` }),
       h('span', { class: 'pulse-dot' })),
     h('div', { class: 'confirm-title', text: permission.title }),
     detail ? h('pre', { class: 'confirm-detail', text: detail }) : null,
@@ -122,10 +122,13 @@ function questionCard(question, handlers) {
       h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' })))
 }
 
-function workingRow(state, now) {
+const workingCats = new Map()
+
+/** Where the next answer will appear: the cat at work and what it is doing now (the island keeps the time). */
+function workingRow(state) {
   return h('div', { class: 'msg-working', role: 'status' },
-    h('span', { class: 'typing' }, h('i'), h('i'), h('i')),
-    h('span', { text: statusView(state, now).event }))
+    h('span', { class: 'cat-avatar', 'aria-hidden': 'true' }, catFor(workingCats, 'working', catMood(state), { size: AVATAR_CAT_PX, frame: true })),
+    h('span', { class: 'msg-working-text', text: `${currentAction(state)}…` }))
 }
 
 function errorRow(message) {
@@ -148,7 +151,7 @@ export function renderThread(container, state, handlers, now) {
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',
     state.question ? questionCard(state.question, handlers) : '',
-    state.phase === 'working' && !last?.open ? workingRow(state, now) : '',
+    state.phase === 'working' && !last?.open ? workingRow(state) : '',
     state.phase === 'error' ? errorRow(state.error) : '',
   )
 }

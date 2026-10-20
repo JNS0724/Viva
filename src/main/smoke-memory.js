@@ -23,8 +23,8 @@ async function questionSteps(win, outDir, expect) {
     return card && { question: card.querySelector('.ask-question')?.textContent, options: [...card.querySelectorAll('.ask-option')].map((el) => el.textContent) }
   })()`, 'the question card')
   expect(card.question === '你想看哪个城市的天气？' && card.options.join() === '上海,北京', 'the card should show the question and its options', card)
-  const island = await run(win, `document.querySelector('#island')?.textContent ?? ''`)
-  expect(island.includes('等你回答'), 'the status island should say it waits for an answer', island)
+  const island = await run(win, `(() => { const el = document.querySelector('#island .isl'); return { form: el?.dataset.form, text: el?.textContent ?? '' } })()`)
+  expect(island.form === 'asking' && island.text.includes('需要你处理'), 'the island should say the user is needed', island)
   await capture(win, outDir, 'question')
   await run(win, `[...document.querySelectorAll('.ask-option')].find((el) => el.textContent === '上海').click()`)
   await finishTurn(win)

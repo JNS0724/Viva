@@ -2,6 +2,7 @@ import { createExtensionActions } from './extension-actions.js'
 import { createHistoryActions } from './history-actions.js'
 import { createMemoryActions } from './memory-actions.js'
 import { createModelActions } from './model-actions.js'
+import { islandView } from './island-view.js'
 import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
@@ -58,7 +59,43 @@ function dispatch(action) {
   state = reduce(state, action)
   render(dom, state, handlers)
   startReveal()
+  publishIsland()
   if (SAVE_AFTER.has(action.type)) saveHistory()
+}
+
+let publishedIsland = ''
+
+/** The desktop island (desk.js) shows the same view while the window is in the background; send it when it changes. */
+function publishIsland() {
+  const view = JSON.stringify(islandView(state))
+  if (view === publishedIsland || !api?.islandView) return
+  publishedIsland = view
+  api.islandView(JSON.parse(view))
+}
+
+/** The card the agent waits on, brought into view with its first button focused. */
+function jumpToCard() {
+  const card = dom.thread.querySelector('.confirm')
+  if (!card) return
+  card.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  card.querySelector('button')?.focus({ preventScroll: true })
+}
+
+/**
+ * What the island asks for, from the title bar or the desktop. Answers name the request or question they
+ * were shown for, and one that has since closed is dropped.
+ */
+const ISLAND_ACTIONS = {
+  toggle: () => dispatch({ type: 'toggle_island' }),
+  jump: jumpToCard,
+  cancel: () => isBusy(state) && handlers.cancel(),
+  trace: () => handlers.openDrawer('trace'),
+  permission: ({ requestId, optionId }) => {
+    if (state.permission?.requestId === requestId) handlers.respond(requestId, optionId)
+  },
+  answer: ({ questionId, id, label }) => {
+    if (state.question?.questionId === questionId) handlers.pickOption(id, label)
+  },
 }
 
 function saveHistory() {
@@ -225,7 +262,7 @@ const handlers = {
   },
   openDrawer: (tab) => dispatch({ type: 'open_drawer', tab }),
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
-  toggleIsland: () => dispatch({ type: 'toggle_island' }),
+  islandAction: (action) => ISLAND_ACTIONS[action?.kind]?.(action),
   /** A link in an answer opens in the browser (or mail app), never inside the window. */
   openLink: (url) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
 }
@@ -347,6 +384,7 @@ async function boot() {
     dispatch({ type: 'error', message: '没有找到 preload 提供的 window.agent，请通过 Electron 启动。' })
     return
   }
+  api.onIslandAction?.((action) => handlers.islandAction(action))
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
     const toAction = EVENT_ACTIONS[event?.type]

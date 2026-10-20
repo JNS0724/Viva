@@ -1,0 +1,79 @@
+/* ---------- Viva island (view/island-dom.js): the title bar's and the desktop's ---------- */
+.isl {
+  --isl-head: 36px; --isl-pad: 40px; --isl-rim: var(--line);
+  position: relative; box-sizing: border-box; width: 120px; height: var(--isl-head); flex: none;
+  border: 1.5px solid var(--isl-rim); border-radius: calc(var(--isl-head) / 2);
+  background: #070C18; color: var(--ink); font-family: var(--font-sans);
+  transition: width .5s cubic-bezier(.3, 1.3, .5, 1), height .5s cubic-bezier(.3, 1.3, .5, 1),
+    border-radius .4s ease, border-color .3s ease, box-shadow .3s ease;
+}
+/* In the title bar it never grows past the room left between the window's buttons. */
+.isl[data-host="bar"] { max-width: 100%; }
+.isl[data-host="desk"] { --isl-head: 48px; --isl-pad: 56px; box-shadow: 0 12px 36px rgba(0, 0, 0, .45); }
+.isl[data-open="true"] { border-radius: 22px; box-shadow: 0 24px 60px rgba(0, 0, 0, .6); }
+.isl[data-host="desk"][data-open="true"] { border-radius: 28px; }
+.isl[data-tone="pending"] { --isl-rim: var(--line-2); }
+.isl[data-tone="waiting"] { --isl-rim: var(--orange); }
+.isl[data-tone="error"] { --isl-rim: var(--red); }
+.isl[data-tone="done"] { --isl-rim: var(--accent); }
+
+/* The content is clipped to the shape; the cat is not, so its ears may rise over the edge. */
+.isl-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
+.isl-cat { position: absolute; left: 3px; top: 1px; pointer-events: none; }
+.isl[data-host="desk"] .isl-cat { left: 5px; top: 0; }
+
+.isl-head {
+  display: flex; align-items: center; gap: 8px; box-sizing: border-box; height: calc(var(--isl-head) - 3px);
+  padding: 0 14px 0 var(--isl-pad); border: none; background: none; color: inherit; font: inherit; font-size: 13px;
+  white-space: nowrap; text-align: left; cursor: pointer;
+}
+.isl-head:disabled { cursor: default; }
+.isl-label { flex: none; font-size: 14px; font-weight: 700; }
+.isl[data-host="desk"] .isl-label { font-size: 15px; }
+.isl[data-tone="waiting"] .isl-label { color: var(--orange); }
+.isl[data-tone="error"] .isl-label { color: var(--red); }
+.isl-time { flex: none; font-family: var(--font-mono); color: var(--accent); }
+.isl-more { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
+.isl[data-host="desk"] .isl-more { flex: 1 1 auto; }
+.isl-ring { flex: none; width: 16px; height: 16px; fill: none; stroke-width: 2.4; stroke-linecap: round; animation: isl-spin 1s linear infinite; }
+.isl-ring circle { stroke: var(--line-2); }
+.isl-ring path { stroke: var(--accent); }
+
+.isl-panel { position: absolute; left: 0; top: calc(var(--isl-head) - 3px); box-sizing: border-box; padding: 2px 14px 14px; }
+.isl[data-host="desk"] .isl-panel { padding: 4px 16px 16px; }
+.isl-in { display: flex; flex-direction: column; gap: 12px; animation: isl-in .3s .15s ease-out both; }
+.isl-steps { margin: 0; padding: 4px 0 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
+.isl-steps li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.isl-steps li::before {
+  content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 10px; border-radius: 2px; vertical-align: 1px; background: var(--mute);
+}
+.isl-steps li[data-tone="done"]::before { background: var(--accent); }
+.isl-steps li[data-tone="working"] { color: var(--ink); }
+.isl-steps li[data-tone="working"]::before { background: var(--accent); animation: isl-pulse 1.2s ease-in-out infinite; }
+.isl-steps li[data-tone="waiting"]::before { background: var(--orange); }
+.isl-steps li[data-tone="error"]::before { background: var(--red); }
+.isl-title { font-size: 16px; font-weight: 700; line-height: 1.4; word-break: break-word; }
+.isl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.isl-btn {
+  height: 34px; padding: 0 14px; border-radius: 10px; border: 1.5px solid transparent; background: none; color: var(--ink);
+  font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.isl[data-host="desk"] .isl-btn { height: 40px; padding: 0 16px; border-radius: 12px; font-size: 14px; }
+.isl-btn-line { border-color: var(--line-2); }
+.isl-btn-line:hover { border-color: var(--ink-3); }
+.isl-btn-hot { background: var(--orange); color: var(--bg); }
+.isl-btn-ghost { padding: 0 6px; color: var(--ink-2); font-weight: 500; }
+.isl-btn-ghost:hover { color: var(--ink); }
+.isl-push { margin-left: auto; }
+.isl :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The desktop island's own page (desk.html): a transparent window, the island at its top centre. */
+html.desk, html.desk body { height: auto; background: transparent; overflow: hidden; }
+.desk-stage { display: flex; justify-content: center; padding: 10px 24px 0; }
+
+@keyframes isl-spin { to { transform: rotate(360deg); } }
+@keyframes isl-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+@keyframes isl-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .isl, .isl * { transition: none !important; animation: none !important; }
+}

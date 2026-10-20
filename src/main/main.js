@@ -8,6 +8,7 @@ import { openTraceDb } from '../../plugins/trace/lib/store.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
 import { APP_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
 import { createAcpBridge } from './acp-bridge.js'
+import { createDeskIsland } from './desk-island.js'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.js'
 import { ensureDshProfile } from './dsh-profile.js'
 import { dshEnv, restartDelay } from './dsh-runtime.js'
@@ -15,6 +16,7 @@ import { registerExtensionsIpc } from './extensions-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
+import { checkIslandAction, checkIslandView } from './island-ipc.js'
 import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
 import { externalUrl } from './links.js'
 import { createMcpConfigStore } from './mcp-config.js'
@@ -56,6 +58,8 @@ let lateMemoryTimer = null
 /** The conversation on screen: the latest one at launch, one picked from the history panel, or a fresh one. */
 let conversation = null
 let win = null
+/** The island on the desktop, shown while the window is in the background (desk-island.js). */
+let desk = null
 let bridge = null
 let bridgeGeneration = 0
 /** When dsh died on its own lately; see restartDelay. */
@@ -315,6 +319,53 @@ function registerAgentIpc() {
   ipcMain.handle('agent:answer', (_event, questionId, answers) => bridge?.answerQuestion(assertText(questionId, 'questionId', 200), answers) ?? false)
 }
 
+/** Brings the window to the front, from the desktop island. */
+function showWindow() {
+  if (!win || win.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  if (process.platform === 'darwin') app.focus({ steal: true })
+  win.focus()
+}
+
+/**
+ * The window tells what its island shows; the desktop island sends back what was clicked. Each side may
+ * only speak on its own channel, and every message is checked (island-ipc.js).
+ */
+function registerIslandIpc() {
+  ipcMain.on('island:view', (event, raw) => {
+    if (event.sender !== win?.webContents) return
+    const view = checkIslandView(raw)
+    if (view) desk?.setView(view)
+  })
+  ipcMain.on('island:act', (event, raw) => {
+    if (!desk?.owns(event.sender)) return
+    const action = checkIslandAction(raw)
+    if (!action) return
+    if (action.kind === 'pointer') desk.setPointerInside(action.inside)
+    else if (action.kind === 'open') showWindow()
+    else win?.webContents.send('island:action', action)
+  })
+}
+
+/** The desktop island follows whether the window is in front; a smoke run turns it on only when it checks it. */
+function attachDeskIsland(config) {
+  desk = createDeskIsland({
+    BrowserWindow,
+    screen,
+    preload: path.join(APP_ROOT, 'src', 'preload', 'desk-preload.cjs'),
+    page: path.join(APP_ROOT, 'src', 'renderer', 'desk.html'),
+    mainWindow: win,
+    enabled: !config.smoke,
+  })
+  const follow = () => desk?.setForeground(win.isFocused() && win.isVisible() && !win.isMinimized())
+  for (const event of ['focus', 'blur', 'show', 'hide', 'minimize', 'restore']) win.on(event, follow)
+  win.on('closed', () => {
+    desk?.destroy()
+    desk = null
+  })
+}
+
 function registerSettingsIpc() {
   ipcMain.handle('shell:open-link', (_event, url) => shell.openExternal(externalUrl(url)))
   ipcMain.handle('settings:get', () => settingsView())
@@ -448,6 +499,7 @@ function createWindow(config) {
       backgroundThrottling: !config.smoke,
     },
   })
+  attachDeskIsland(config)
   win.once('ready-to-show', () => win.show())
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   win.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -457,7 +509,7 @@ function createWindow(config) {
     if (config.smoke) {
       // Nor may macOS App Nap suspend the app (and the fake model it serves) while nobody looks.
       powerSaveBlocker.start('prevent-app-suspension')
-      runSmoke(win, config, (code) => app.exit(code), { agentPid: () => bridge?.pid() ?? null })
+      runSmoke(win, config, (code) => app.exit(code), { agentPid: () => bridge?.pid() ?? null, desk: () => desk })
     }
   })
   win.loadFile(path.join(APP_ROOT, 'src', 'renderer', 'index.html'))
@@ -524,6 +576,7 @@ app.whenReady().then(async () => {
   })
   registerAgentIpc()
   registerSettingsIpc()
+  registerIslandIpc()
   const config = currentConfig()
   if (config.smokePhase === 'memory') await startSmokeModel()
   if (!config.smoke) {
