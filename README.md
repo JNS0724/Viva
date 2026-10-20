@@ -1,228 +1,103 @@
-# Viva · 个人桌面助手
+<div align="center">
 
-Electron 外壳 + [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`），界面是深海蓝配色（蓝调深底 + 亮蓝 `#5AA9FF`）：首页只有猫和问候语，状态在标题栏的 Viva 岛上，思考和工具调用收在右侧抽屉的「过程」里。
+<img src="docs/images/icon.png" width="96" alt="Viva 的图标：一只黑猫">
 
-> Viva 是个人项目，不是 DeepSeek 的官方产品。它使用 DeepSeek 开源的 DeepSeek Harness（MIT 许可），可以连接 DeepSeek 或其他模型的 API。
+# Viva
 
-## 运行
+**住在桌面上的 AI 助手。** 它帮你读文件、整理资料、写东西、跑命令；每一步都看得见，动手之前先问你。
 
-开发需要 Node.js（npm）。dsh 内嵌在应用里，运行时用应用自己的 Electron，不需要用户另装 Node；用 `npx` 等启动的 MCP 服务器仍需要用户机器上的 Node。
+[![最新版本](https://img.shields.io/github/v/release/JNS0724/Viva?include_prereleases&label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/JNS0724/Viva/releases)
+[![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%7C%20Windows-5AA9FF)](#下载安装)
+[![许可证](https://img.shields.io/github/license/JNS0724/Viva?label=%E8%AE%B8%E5%8F%AF%E8%AF%81)](LICENSE)
+
+[下载](https://github.com/JNS0724/Viva/releases) · [功能说明](docs/features.md) · [开发](docs/development.md)
+
+<img src="docs/images/hero.png" alt="Viva 的对话窗口：回答按 Markdown 排版，标题栏正中是 Viva 岛">
+
+</div>
+
+> Viva 是个人项目，不是 DeepSeek 的官方产品。它基于 DeepSeek 开源的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh），可以连接 DeepSeek，也可以连接兼容 OpenAI 或 Anthropic 接口的其他模型。
+
+## 亮点
+
+### Viva 岛
+
+窗口在后台时，屏幕顶部会出现一座小岛：助手在做什么、要你确认什么，一眼就能看到，也可以直接在岛上点「允许」。在任何程序里按 `⌘⇧Space`（Windows 上是 `Ctrl+Shift+Space`）就能提问，也可以把文件拖给猫。岛可以拖到屏幕上任意位置。
+
+<img src="docs/images/desk-island.png" alt="桌面上的 Viva 岛：左边在等你确认写入文件，右边是带着一个文件的输入框">
+
+### 先问你，再动手
+
+写文件、运行命令之前，会弹出一张确认卡片，写明要做什么。思考过程和每一次工具调用都收在右侧的「过程」里，随时可以查看。
+
+<img src="docs/images/approval.png" alt="确认卡片：写入 summary.md，下面是允许和拒绝">
+
+### 预览工作区里的文件
+
+在「文件」页浏览工作区：Markdown、代码、CSV 表格、图片都能直接预览。文件被改动后预览自动刷新，也可以选用别的应用打开。
+
+<img src="docs/images/files-md.png" alt="文件页：左侧是目录，下面是周报的 Markdown 预览">
+
+### 还有
+
+- **记得你**：说一句「记住……」，或者让它在对话中自己学。它记下的内容都在「关于你」里，可以查看、修改和恢复。
+- **说一句就能接入工具**：比如「帮我接入 GitHub」「把刚才的做法存成 skill」。需要密钥时，在对话里的卡片中填写，密钥加密保存在本机，不会交给模型。
+- **不确定就先问**：回答取决于你没说的信息（地点、时间、对象……）时，它会先问你，不会乱猜。
+- **历史对话**：全文搜索、置顶、导出 Markdown；重新打开旧对话，可以接着聊。
+
+## 下载安装
+
+从 [Releases](https://github.com/JNS0724/Viva/releases) 下载：
+
+| 平台 | 文件 |
+|---|---|
+| macOS（Apple 芯片） | `Viva-x.y.z-mac-arm64.dmg` |
+| Windows（x64） | `Viva-x.y.z-win-x64-setup.exe` |
+
+安装包没有签名，第一次打开要多一步：
+
+- **macOS**：把 Viva 拖进「应用程序」，然后右键点 Viva →「打开」→「打开」。如果提示「已损坏」，在终端运行 `xattr -dr com.apple.quarantine /Applications/Viva.app`。
+- **Windows**：出现「Windows 已保护你的电脑」时，点「更多信息」→「仍要运行」。
+
+## 快速开始
+
+1. 打开 Viva，点首页的「连接模型」，填入 [DeepSeek API key](https://platform.deepseek.com/api_keys)，也可以在设置里添加其他模型。
+2. 在输入框里说你要做什么，比如「把工作区里的周报整理成一份摘要」。
+3. 需要写文件或运行命令时，看清确认卡片上写的内容，再点「允许」。
+
+## 隐私与安全
+
+- **key 加密保存**：key 用系统钥匙串加密（macOS 钥匙串 / Windows DPAPI），只保存在本机，界面上只显示最后 4 位。
+- **只起草，不发送**：发送邮件或消息的工具会被拦下，起草好的内容交给你自己发。
+- **数据在本机**：对话、记忆和历史记录都保存在本机，Viva 没有自己的服务器。只有在调用模型、使用联网工具或你接入的服务时才会联网。对话内容在本机以明文保存。
+
+## 从源码运行
+
+需要 Node.js：
 
 ```bash
 npm install
-npm start
+npm start      # 启动应用
+npm test       # 运行测试
 ```
 
-首次启动还没有可用的模型时，首页会显示「连接模型」卡片，输入框暂时禁用。点卡片上的按钮或标题栏的齿轮，在设置面板里填入 DeepSeek API key，或添加其他模型，就会自动连接。
+打包、测试和内嵌 dsh 的细节，见 [docs/development.md](docs/development.md)。
 
-- key 用系统钥匙串加密（Electron `safeStorage`：macOS 用钥匙串，Windows 用 DPAPI），保存在应用数据目录的 `settings.json` 里（权限 600）；钥匙串不可用时拒绝保存，不会退回明文。
-- key 只留在主进程，界面只显示末 4 位；保存或清除后会重启 dsh 连接，并开始一段新对话。
-- 设置面板里保存的 key 优先于环境变量。
-- 找不到 dsh（安装不完整）时，首页会提示重新运行 `npm install`。
+## 文档
 
-### 其他模型
-
-设置面板的「模型」部分可以添加 DeepSeek 以外的模型：填名称、接口协议、接口地址（baseURL）、模型 ID（每行一个）和 API key（本地模型可不填）。添加后在输入框左下的模型菜单里按提供方分组出现。
-
-- **协议**：OpenAI 兼容（Chat Completions）、OpenAI Responses、Anthropic 兼容（Messages），即 dsh 的 `llm-pi-ai` 插件支持的三种。Kimi、智谱、通义、OpenRouter、Ollama、LM Studio 等大多用 OpenAI 兼容。
-- **实现**：没有自己写模型适配器。dsh 的组合包里本来就挂着 `llm-pi-ai`，只是没有配置时不启用；Viva 把提供方写进自己 profile 的 `llm-pi-ai.providers`，每个提供方一条路由（id 为 `custom-xxxxxxxx`，不会和 pi-ai 自带目录里的 openai、anthropic 等重名）。
-- **key**：和 DeepSeek key 一样用系统钥匙串加密，存在应用数据目录的 `models.json`；启动 dsh 时以环境变量 `VIVA_MODEL_KEY_XXXXXXXX` 交给 dsh 进程，profile 里只写变量名。
-- **DeepSeek 变为可选**：有了其他模型，可以不填 DeepSeek key；没有 DeepSeek key 时，profile 里关掉 `llm-deepseek` 和 `llm-deepseek-account`，菜单里就不出现 DeepSeek。
-- **默认模型**：记住上次在菜单里选的模型（`models.json` 的 `lastModel`），写进 profile 里 `acp` 一项的 `provider` / `model`，新对话和重启后都从它开始；同一次运行里新建对话也会切到它。上次选的模型不在了，就回到 DeepSeek，没有 DeepSeek 就用第一个添加的模型。
-- **修改**：添加或删除后 dsh 会重启并接回当前对话，对话不会清空；任务进行中不能修改。目前只能添加和删除，不能编辑。
-
-### 内嵌的 dsh
-
-dsh 是应用的一部分，和你自己装的 dsh 完全隔离：
-
-- **运行时**：用应用自己的 Electron 运行，不依赖、也不读取系统里的 Node 和 `dsh` 命令。
-- **数据目录**：dsh 的 home 在应用数据目录下的 `dsh/`（macOS 上是 `~/Library/Application Support/Viva/dsh`），里面是 profile、会话、凭据和 skill。你的 `~/.dsh`、`~/.agents/skills` 都不会被读写。
-- **环境变量**：交给 dsh 的环境去掉了所有 `DSH_*`、`DEEPSEEK_*`、`ELECTRON_*` 和 `VIVA_*` 变量，再放入应用自己设定的（dsh 目录、key、提供方的 key）。所以你在终端里设的 `DSH_HOME`、`DEEPSEEK_BASE_URL` 等不会影响 Viva。`DEEPSEEK_API_KEY` 仍可作为 key 的来源，由应用读出后再交给 dsh。
-- **生命周期**：
-  - 只允许运行一个 Viva（dsh 目录是它独占的），再次打开会切回已有的窗口。
-  - dsh 意外退出时自动重启并接回当前对话，依次等 1、3、10 秒；两分钟内连续三次后停止重试，在对话里说明原因。
-  - 换 key、增删模型时，先等旧的 dsh 完全退出，再启动新的，两者不会同时写同一个会话。
-  - 退出应用时等 dsh 结束（最多 5 秒）：先关闭它的输入，1.5 秒后结束整个进程树（Windows 上用 `taskkill /T`，连同它启动的 MCP 服务器），再过 1.5 秒强制结束。
-- **从 `~/.dsh` 迁移**：首次启动时，把 Viva 工作区在 `~/.dsh/sessions` 里的会话复制过来（不移动、不覆盖；dsh 按工作目录分组会话，你自己项目的会话不会被带走），旧对话照常接着聊、能看「过程」；再删除 Viva 以前写在 `~/.dsh/profiles` 里的 `viva`、`my-agent` profile（只删清单名称确认是 Viva 写的）。`~/.dsh/skills` 里的 skill 也复制一次（同名的跳过；只在首次迁移时做，之后在 Viva 里删掉的 skill 不会再被复制回来；你自己的 dsh 的 skill 文件夹保持原样）。
-
-### 打包
-
-```bash
-npm run dist:mac    # macOS：dist/Viva-x.y.z-mac-arm64.dmg（未签名）
-npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-setup.exe（NSIS，可选安装目录）
-```
-
-- **只打包用得到的 dsh（`scripts/dsh-closure.cjs`）**：`@deepseek-ai/dsh` 依赖了所有 profile 可能用到的包（网页版界面、TUI、用 LibreOffice 转换 Office 文档、语音输入等），Viva 只启动 ACP 组合。打包时用 dsh 自己的 `--dump-config` 列出 ACP 组合启用的插件，从它们、dsh 入口导入的包、Viva 自己的依赖和插件的 peer 依赖出发，顺着依赖、peer 依赖和可选依赖算出闭包，其余不打包（macOS 上 542 个生产依赖里保留 373 个，去掉了 LibreOffice 和语音识别等约 266MB）。
-- **去掉运行时用不到的文件**：source map、类型声明、TypeScript 源码、README 和 CHANGELOG、测试和示例目录（约 7 千个文件）；许可证和 skill 文件保留。
-- **asar**：其余文件打成一个 `app.asar`。之前上万个小文件逐个写入、被杀毒软件逐个扫描，是 Windows 上安装慢的原因；现在整个应用约 300 个文件。含原生代码或可执行程序的包（原生模块、libvips、ripgrep、node-pty）自动识别后解包放在 `app.asar.unpacked`，供系统直接加载和运行。dsh 用应用自己的 Electron 以 Node 模式从 asar 里运行；dsh 的原生模块按平台预编译，不重新编译（`npmRebuild: false`）。
-- **插件入口**：dsh 的 profile 里每个插件是一个很小的转发包（`package.json` 加一行 `export * from '<插件的文件 URL>'`），插件本身留在 asar 里，它 import 的包在 asar 里解析；不需要符号链接或 junction。
-- **打包后的处理（`scripts/after-pack.cjs`）**：electron-builder 自己收集依赖时，漏掉了 dsh 各包之间的 peer 依赖，又带上了 dsh 为其他 profile 准备的包。打包后的钩子把 electron-builder 打出的 asar 解开，按闭包增删包，删掉无用文件，写入许可文件，再按自己的解包规则重新打成 asar；还缺包就让打包失败。
-- **工作区**：打包后的应用目录是只读的，工作区放在应用数据目录下的 `workspace/`；开发时（`npm start`）仍是仓库里的 `workspace/`。
-- **体积**：macOS 的 dmg 约 152MB（裁剪前 259MB），应用解开后约 388MB，大头是 Electron 本身。
-- **验证打包产物**：必须在仓库之外运行。在仓库里（`dist/` 下）运行时，Node 会顺着上级目录找到仓库自己的 `node_modules`，缺包也看不出来。对打包后的应用跑 memory 阶段的 smoke，用 `SMOKE_FIXTURES` 指向仓库的 `test/fixtures`（应用里没有测试目录）、`SMOKE_OUT` 指向输出目录：
-  - macOS：只读挂载 dmg，运行里面的应用：`hdiutil attach -nobrowse -readonly dist/Viva-*.dmg`，然后 `SMOKE_PHASE=memory SMOKE_OUT=/tmp/viva-smoke SMOKE_FIXTURES=$PWD/test/fixtures DEEPSEEK_API_KEY=smoke-fake-key "/Volumes/Viva x.y.z/Viva.app/Contents/MacOS/Viva"`。
-  - Windows：`scripts\verify-windows.ps1 -Package` 打安装包，静默安装到临时目录，对装好的 `Viva.exe` 跑 smoke，再卸载。
-- **还没做**：代码签名和公证、自动更新、Intel Mac 和 Windows ARM 的包。
-
-| 环境变量 | 作用 | 默认 |
-|---|---|---|
-| `DEEPSEEK_API_KEY` | 模型凭据（也可以在设置面板里填） | — |
-| `AGENT_CWD` | 助手的工作区（dsh 会话的 cwd） | `./workspace` |
-| `DSH_BIN` | 指定 dsh：`.js` 入口用 Node 运行，其他按可执行文件运行 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
-| `DSH_NODE` | 开发用：改用这个 Node 运行 dsh | 应用自己的 Electron |
-
-## 在对话里配置 MCP 和 skill
-
-设置里不再有添加 MCP 服务器和导入 skill 的表单，直接在对话里说就行，比如「帮我接入 GitHub」「把刚才写周报的做法存成 skill」。设置的「扩展」一节只列出已经接入的服务器和已有的 skill，可以删除。
-
-- **先确认**：模型用 `viva-config` 插件（`plugins/config`）的工具配置：`viva_mcp_add` / `viva_mcp_remove` / `viva_mcp_list`，`viva_skill_create` / `viva_skill_install` / `viva_skill_remove` / `viva_skill_list`。会改动配置的那几个，先弹出审批卡片（「接入 MCP 服务器「github」」，下面是要运行的命令和参数），你允许后才执行。
-- **密钥不进对话**：服务要令牌时，模型只写名字（比如 `GITHUB_TOKEN`），窗口里弹出一张输入卡片让你填写。填的值直接交给主进程，用系统钥匙串加密存进 `mcp-servers.json`，不经过 dsh，也不会出现在聊天记录或「过程」里；「过程」只记下「请你填写密钥」和「你填写了密钥」。
-- **谁来做**：插件只把请求交给应用（IPC，`config@1`，见 `plugins/config/lib/channel.js`）；应用在 `src/main/config-channel.js` 里逐项校验，再用和原来设置表单相同的代码写入。MCP 的改动在这一轮结束后重新接到会话上；skill 放进去就生效。新建的 skill 名字遵守 dsh 的规则（小写字母、数字和连字符），中文说明写在 description 里。
-- **人设**里写明：要接入服务或保存做法时用这些工具，绝不在对话里向用户要密钥的值。
-
-## 助手反问
-
-回答取决于用户没说的关键信息（地点、时间范围、对象、账号……）、而记忆里也查不到时，助手先问再做，不拿时区或 IP 这类弱线索去猜。规则写在人设里（`src/main/app-plugins.js` 的 `PERSONA`）。
-
-- **提问卡片**：模型调用 dsh 自带的 `ask_user_question` 工具，Viva 的 `viva-questions` 插件把问题经 IPC 交给窗口，显示成卡片。单个单选题点选项即回答；多个问题或多选题选好后点「提交」；也可以直接在输入框里打字回答，或「跳过」。停止本轮或切换对话时，问题自动关闭。
-- **记下来**：用户的回答和其他话一样交给后台记忆提取；常住城市这类稳定信息会记进记忆，下次不再问。
-
-## 猫
-
-应用图标里的黑猫也是应用里的角色（`src/renderer/view/cat.js`，按图标描绘）：首页坐在品牌蓝圆底上，对话里是每条回答旁的小头像，标题栏和桌面上的 Viva 岛里也有一只。它的表情和道具跟着助手在做的事变：思考时冒泡泡、调工具或写回答时敲键盘、等你确认或回答时举「!」「?」牌、完成时眯眼笑、出错时冒汗。系统开了「减少动态效果」时，猫不动。图标文件在 `build/icons/`。
-
-## Viva 岛
-
-状态显示在「Viva 岛」上：一个深色的胶囊，猫垫着品牌蓝圆底坐在左上角，岛围着它伸缩；描边颜色表示状态（平时暗、需要你时橙、出错红、完成蓝）。
-
-- **窗口里**：在标题栏正中，只说整体进度（用时、第几步）。鼠标移上去或点一下，原地展开成最近几步，可以「停止」或「查看完整过程」。助手等你确认或回答时只写「需要你处理」，点一下滚到对话里的卡片；要确认什么、问了什么，只在卡片里出现一次。正在做什么，由对话底部的猫头像那一行说。
-- **桌面上**：窗口不在前台时（切到别的应用或最小化），屏幕顶部正中出现同一个岛：工作中显示当前步骤和用时，悬停展开最近几步和「停止」；需要你确认时自动展开，可以直接「允许」「拒绝」；反问时单个单选题可以直接点选项，其余情况点「打开窗口回答」；出错时显示原因。一轮完成后显示 5 秒，猫再待 8 秒后离开。点岛回到窗口；窗口回到前台时它自动收起。
-- **在岛上提问**：在任何应用里按 `⌘⇧Space`（Windows 上是 `Ctrl+Shift+Space`），岛变成输入框，Enter 发到当前对话，Esc 收起。Viva 窗口在前台时，快捷键改为把光标放到窗口自己的输入框里。助手正在忙时，输入框只显示它在做什么；助手在等你确认或回答时，岛先显示那件事。桌面岛关掉时快捷键照样能用，岛临时出现，问完的事做完后收起。快捷键被别的程序占用时，设置里会提示。
-- **拖文件给猫**：把文件拖到岛上，岛张开成「松手，交给 Viva」。松手后输入框里带上文件标签，可以点「总结」，或输入要做什么。一次最多 10 个文件，文件夹先不支持。文件不复制，问题末尾附上它们的本机路径（`src/shared/attachments.js`）；对话里这些路径显示成文件标签，并注明「从 Viva 岛发送」。工作区外的文件，助手读取时照常请你确认。
-- **拖动岛**：按住岛拖到屏幕任意位置，拖动时岛缩成只有猫。放到顶部正中附近会吸回原位；放在屏幕下半部分时向上展开，靠近左右边缘时往屏幕里面展开。每块显示器分别记住位置，记在岛最后所在的显示器上；那块显示器拔掉后，岛回到主窗口所在屏幕的顶部正中。设置里有「放回顶部正中」（`src/main/desk-place.js`）。
-- **可以关掉**：设置里的「桌面岛」开关。开关和岛的位置都保存在应用数据目录的 `preferences.json`。
-- **不打扰**：桌面岛只在输入框打开时接收键盘，关上后键盘还给原来的应用（macOS 上它是不激活应用的面板窗口）。它不出现在录屏和屏幕共享里。主进程每 50 毫秒看一次指针是否在岛上，只在岛上才接收点击和拖入的文件，其余地方的点击直接落到下面的应用。macOS 上它不出现在全屏应用里。
-- **实现**：两处是同一个组件（`src/renderer/view/island-dom.js`），显示的内容由 `island-view.js` 从状态算出；桌面岛的输入框在 `view/island-input.js`。桌面岛是主进程里的一个透明小窗口（`src/main/desk-island.js`，页面 `desk.html`）。窗口把岛的内容交给主进程转发，桌面岛的点击和提问再经主进程回到窗口（`island-main.js`）。所有消息都由 `island-ipc.js` 校验：岛上的按钮只能回答它正显示的那个请求或问题；提问只能是一段有长度上限的文字，加上主进程确认过存在的文件路径。冒烟测试会在等待确认时打开桌面岛，在岛上点「允许」，确认对话里的卡片随之消失；还会打开岛的输入框，模拟拖入文件，并检查在岛上问的问题出现在对话里。
-
-## 文件
-
-抽屉的「文件」页是工作区的目录和文件预览，只读。
-
-- **目录**：点文件夹才读取它里面的内容；`node_modules`、`.git` 这类文件夹显示成灰色。这次对话里助手读过或写过的文件带一个小蓝点。每轮结束后会重新读取，助手刚写的文件马上能看到。
-- **预览**：Markdown 按排版显示，里面引用的工作区图片直接显示；代码按语言高亮（高亮在主进程里用 highlight.js 做）；CSV、TSV 显示成表格（最多 2000 行），可以切换回原文；图片直接显示；二进制文件只显示名称和大小。长文件按 200 KB 一页读取，滚到底自动读下一页。
-- **自动刷新**：正在预览的文件在磁盘上变了（不管是助手还是别的程序改的），预览会重新读取。
-- **打开**：「打开」用系统默认的应用打开；旁边的箭头列出能打开这个文件的所有应用（带图标，标出默认的那个），以及「显示文件位置」（Finder 或资源管理器）。应用列表由 dsh 的原生模块（`@deepseek-ai/dsh-native-command`）查询，Mac 和 Windows 都可用。程序和脚本（`.exe`、`.sh`、`.js`、`.ps1` 等）不提供「打开」，只能显示文件位置，避免点一下就运行。
-- **范围**：只能看工作区里的文件。路径由主进程（`src/main/workspace-files.js`）检查，`../`、绝对路径和指向工作区外的链接都会被拒绝。
-
-## 消息里的 Markdown
-
-助手的回答按 Markdown 显示：标题、粗体 / 斜体 / 删除线、行内代码和代码块（带语言标签）、有序 / 无序 / 任务列表（可嵌套）、表格（含对齐）、引用、分隔线、链接。用户自己发的消息保持原文。
-
-- **只解析、不注入**：用 `marked` 的词法分析把文本拆成结构，每个元素都用 `h()` 自己建，不经过 `innerHTML`。回答里的原始 HTML（例如 `<script>`）按原文显示，图片不加载（只显示成指向原地址的「[图片：…]」链接）。
-- **链接**：只有 http(s) 和 mailto 会成为链接，点击后由主进程再校验一次，用系统浏览器或邮件应用打开；页面本身不能跳转、不能开新窗口。
-- **逐字显示**：回答边生成边解析，没写完的代码块也按代码块显示；每条回答只在可见文字变化时重新解析。
-
-## macOS 与 Windows
-
-两端用同一套界面，只有标题栏两侧给系统窗口按钮的留白不同：
-
-- **macOS**：红绿灯在左上，标题栏左侧留出位置。
-- **Windows / Linux**：由系统在右上画「最小化 / 最大化 / 关闭」（`titleBarOverlay`），页面按 `env(titlebar-area-width)` 把我们的按钮让到它们左边；Windows 上不显示菜单栏。
-- **状态胶囊**：始终按整个窗口居中，窗口变窄时先收缩，不会压到两侧按钮。
-- **标题栏高度**：两端都是 48px。
-- **窗口大小**：按屏幕可用区域计算，开了 125% 到 150% 显示缩放的笔记本也放得下；最小 880×600。
-- **窄窗口**：宽度不到 1100px 时，展开的抽屉浮在对话上面，不再挤压对话。
-- **快捷键**：历史面板在 macOS 上是 ⌘K，在 Windows 上是 Ctrl+K，提示文字跟着平台变。
-- **启动 dsh**：用应用自己的 Electron（`ELECTRON_RUN_AS_NODE=1`）运行 dsh 的入口文件，不经过 `.bin/dsh(.cmd)` 包装脚本（Windows 不允许不经 shell 启动 `.cmd`）。dsh 的原生模块只认它列出的几个 Electron 版本（43.0.0、44.0.0、44.7.0、45.0.0-alpha.6），所以 `package.json` 把 Electron 固定在 44.7.0；升级 Electron 前要先确认 dsh 支持。
-- **npm 脚本**：用 `cross-env`，在 cmd、PowerShell 里也能跑。
-
-## 架构
-
-```
-渲染进程（界面）                主进程                        node dsh/lib/bin.js --profile viva
-app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio──▶ DeepSeek Harness
-   │        selectors.js           │        history-db.js            （ACP v1 JSON-RPC）
-   └─ view/*  ◀── preload.cjs ──IPC┘        dsh-profile.js                 └─ plugins/memory（记忆插件）
-                                            memory.db ◀──────── 同一个文件 ────────┘
-```
-
-- **插件化分层**：模型看到什么、能做什么（记忆、过程记录、工具策略、人设）放在应用自己 profile 里的 dsh 插件中；会话怎么跑留在 ACP；界面和本机数据留在应用。插件和应用只通过带版本号的数据约定协作。详见 [docs/architecture.md](docs/architecture.md)。
-- **主进程** 启动 `dsh --profile viva`（应用自己的 profile，见下文「记忆」），用官方 `@agentclientprotocol/sdk` 的 `ClientSideConnection` 说 ACP：`initialize → session/new → session/prompt`，`session/cancel` 停止，`session/close` 开新对话。
-- **事件分流**（对应设计稿的「对话不含思考和工具调用」）：
-  - `agent_message_chunk` → 对话区
-  - `agent_thought_chunk`、`tool_call`、`tool_call_update` → 抽屉「过程」、标题栏的 Viva 岛；读写过的文件进「文件」
-  - `session/request_permission` → 对话里的亮蓝确认卡片；你的选择经 `permission-broker` 回给 dsh
-- **模型切换**：输入框左下角的选择器，列出 dsh 返回的模型和推理强度（Off / Low / High / Max），通过 ACP 的 `session/set_config_option` 切换，从下一轮生效；回复进行中禁用。
-- **流式输出**：回复按打字机节奏逐字显示（基础约 90 字/秒，积压多时自动加速，最多落后约 1.2 秒）。注意：dsh 的 ACP 接口只推送「已完成的整段消息」，不推送模型的逐字增量，所以首字要等整段生成完才出现。dsh 将来若推送增量片段，无需改代码即可逐字显示。
-- **滚动**：对话区新内容到来时跟随到底部，但长回复只滚到「最新提问贴近顶部」就停，回答从提问下方往下长，底部出现「↓ 新内容」；你一往上翻就停止自动跟随，滚回底部再恢复。抽屉重绘时保留滚动位置，停在底部时像日志一样跟随最新一步，打开「过程」直接定位到最新。
-- **改名（原 my-agent）**：应用原名 my-agent，Electron 按应用名存放数据。改名后首次启动时，会把旧目录里的历史对话、记忆和过程记录**复制**过来，旧目录原样保留作为备份。加密保存的 API key 无法迁移（系统钥匙串的条目按应用名区分），需要在设置里重新填一次，或者用 `DEEPSEEK_API_KEY` 环境变量。
-- **历史对话（永久保存）**：全部存在 `~/Library/Application Support/Viva/history.db`，用 Electron 自带的 `node:sqlite`，不依赖原生模块。
-  - **存什么**：只存对话区看得到的内容，也就是提问、回复和回执，外加每条消息来自哪个 dsh 会话。思考和工具调用不存。
-  - **怎么存**：每轮开始、结束和出错时增量写入，只追加新消息、更新最后一条，不整份重写。
-  - **启动时**：自动打开最近一段对话，并用 ACP 的 `session/resume` 接回原来的 dsh 会话。接不回时开新会话，分隔线会写明「助手已不记得这些内容」。
-  - **历史面板**：点标题栏的时钟按钮或按 ⌘K，左侧会滑出面板，按「置顶 / 今天 / 昨天 / 7 天内 / 更早」分组。
-  - **搜索**：搜索框能搜全部对话的正文和标题，命中处高亮。3 个字以上走 FTS5 trigram 全文索引，更短的退回模糊匹配。
-  - **单段操作**：每段对话的 ⋯ 菜单里有重命名、置顶、导出 Markdown、删除。
-  - **删除**：删除后底部出现「撤销」，8 秒后彻底清除。数据库开了 `secure_delete`，删掉的文字不会残留在文件里。dsh 自己在应用 dsh 目录 `sessions/` 下的日志不会被删。
-  - **旧对话的「过程」**：打开旧对话时，从 dsh 自己的日志（应用 dsh 目录的 `sessions/…/session.v4.jsonl.zstd`）读回思考和工具调用，读到后回执重新出现「查看过程」。读不到时，抽屉里会说明原因。
-  - **任务进行中**：不能切换到别的对话；切换过程中（新对话、打开旧对话）发送按钮暂时禁用，避免消息落进正在被替换的对话。
-  - **旧版迁移**：旧版的 `history/*.json` 会在首次启动时自动导入，旧目录改名为 `history-imported` 留作备份。
-- **记忆（dsh 插件）**：记忆整体是 `plugins/memory` 这个 dsh 插件，应用只负责界面。换一种记忆方案，就是换掉这个插件。完整设计见 [docs/memory.md](docs/memory.md)。
-  - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好应用 dsh 目录里的 `profiles/viva`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖，`node_modules` 里放一个转发到插件入口的小包，见「打包」），并把 `memory.db` 的路径写进插件配置。你自己的 `~/.dsh` 不会被读写。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
-  - **约定**：插件和应用共用 `memory.db`（`plugins/memory/lib/store.js`）。应用在「关于你」里读写画像和记忆，把使用习惯写进去；插件写入它记下的内容、每个会话的检索状态，以及每轮带上了什么。
-  - **三层检索**：① 记忆规则、画像、偏好、使用习惯，在会话第一轮、内容变化后、以及 dsh 压缩对话之后各带一次，不检索；② 你自己的话里提到画像或记忆里的人名、项目名、系统名时，带上相关的记忆，最多 3 条，同一会话不重复；粘贴的长文本只看首尾你自己写的那几行，「那第二个呢」这类追问会结合上一个问题；③ 其余由模型自己用 `memory_recall` 带关键词查，查不到就返回空。
-  - **工具**：`memory_remember`（带关键词）、`memory_recall`、`memory_update_profile`、`memory_forget` 是 dsh 原生工具，不弹确认卡片。密码、密钥、验证码、证件号会被拒绝保存。
-  - **怎么更新**：你明确说「记住…」「以后…」时，模型当场调用工具保存。每轮结束后，插件还会在后台再调一次模型，补记漏掉的信息，或把被新信息推翻的旧记忆标为失效。后台的结果由代码把关：只能新增，或让它看过的记忆失效；你自己写的记忆它不能动；任何一处不合格，整批都不写入。闲聊会被简单规则过滤掉，不触发这次调用。
-  - **画像**：画像字段只由你填写，模型不能改；模型学到的身份、人、项目、偏好都记成记忆。插件每轮结束后检查一次：画像类记忆有变化，并且距上次整理超过 24 小时或已经积累了 5 处改动时，就用模型把有效记忆重新整理成「助手整理的画像」。整理只看当前有效的记忆，所以失效的旧事实会从画像里消失。两次整理之间新增的记忆，会作为「最近了解到的」直接附在画像后面。整理结果格式不对或含敏感信息时不保存，继续使用上一版。旧版本里模型写进画像字段的内容，首次启动时会迁移成记忆。
-  - **失效而不删除**：被取代或被要求忘掉的记忆只是标为失效，不再参与检索，「关于你」里的「已失效」可以看到原因并恢复。只有你在页面上点删除，才会真正删掉。
-  - **日期**：每次带上下文都附上今天的日期，同一会话跨天会再发一次，模型据此把「下周一」写成具体日期。
-  - **看得见**：每轮带上了哪些记忆、为什么，显示在「过程」里；助手记下的内容会弹出「已记住」。插件加载失败时 dsh 照常工作，设置页会显示「记忆插件没有加载」。
-- **状态** 全部在 `state.js` 的纯 reducer 里不可变更新；视图只读 `selectors.js`，所有文本都走 `textContent`。
-- **安全**：`contextIsolation` + `sandbox`，preload 只暴露 `window.agent` 上的方法和平台名（桌面岛的页面另有一个只能收内容、发点击的 `window.desk`），主进程校验 IPC 入参（包括渲染进程提交的历史消息），页面有 CSP。
-
-## 测试
-
-```bash
-npm test            # 293 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
-npm run coverage    # 覆盖率
-npm run smoke       # 真的启动 Electron，分四次：
-                    #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
-                    #   walkthrough：等待确认卡片时的状态胶囊浮层和标题栏布局（macOS 和模拟的 Windows，各在正常宽度和最窄
-                    #     880px 下检查胶囊居中、不和按钮重叠，窄窗口抽屉浮层），长任务时过程抽屉和对话的滚动；
-                    #   relaunch：同一份数据再启动，检查上次的对话完整回来、助手接回会话，再走一遍历史面板
-                    #     （⌘K、第二段对话、搜索高亮、打开旧对话、重命名、删除和撤销），最后检查 Markdown 渲染
-                    #     和其中不该生效的脚本、链接、图片，以及页面不能跳转；
-                    #   memory：真实的 dsh 加记忆插件，配假模型：引导、「记住」、关于你页面里的关键词、
-                    #     提到名称时带上记忆、「过程」里的「带上记忆」，助手反问城市（卡片、点选回答、回答记进记忆），
-                    #     设置页的插件状态，
-                    #     再在设置里添加一个模型提供方，从模型菜单选中它并对话（当前对话保留）；
-                    #     最后直接杀掉 dsh，检查提示重连、自动重启并接回同一段对话
-```
-
-- **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和四个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。
-- **数据隔离**：smoke 用 `smoke/userData` 作为独立的数据目录，不会碰你自己的历史记录和 key。
-- **假模型**：记忆相关的测试和 smoke 用真实的 dsh，把 `DEEPSEEK_BASE_URL` 指向 `test/fixtures/fake-llm.js`。它记录 dsh 发给模型的每个请求，并按固定规则回复（「记住：…」会调用 `memory_remember`），不需要 key。
-- **假 dsh**：其余 smoke 和集成测试里的 dsh 换成 `test/fixtures/fake-dsh.js`。它讲真实的 ACP 协议，按固定剧本回复：提问里带「长任务」会连续调用 16 次工具，再输出长回复。这样走的是和真实使用完全相同的代码路径，只是不调用模型。应用里没有演示模式。
-
-## 已知限制
-
-- `@deepseek-ai/dsh` 还是 0.2.0-rc，官方说明会有不兼容改动；ACP profile 是「自动化」定位，不提供 plan、todo 等 DSH 专有界面数据。
-- 聊天内容以明文保存在本机（key 是加密的）。
-- 旧对话的「过程」依赖 dsh 私有的 v4 日志格式，dsh 升级后可能读不出来；读不出时只是不显示过程，对话本身不受影响。
-- 测试必须用 Electron 自带的 Node：系统 Node 24.14 的 zstd 只能解开多帧文件的第一帧，而 dsh 的日志正是多帧的。
-- 记忆插件依赖 dsh 的插件接口，插件声明的 dsh 版本是精确的 `0.2.0-rc.2`，升级 dsh 时要同步更新 `plugins/memory/package.json`，否则 dsh 会拒绝加载插件（对话不受影响，只是没有记忆）。
-- 对话压缩后重新带上画像的逻辑有单元测试，但还没在真实 dsh 里触发过压缩来验证。
-- Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（profile 写入、插件加载）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
-- 字体从 Google Fonts 加载，离线时回退到系统字体。
+- [功能说明](docs/features.md)：Viva 岛、文件、模型、记忆、历史对话等功能的细节
+- [开发、打包与测试](docs/development.md)
+- [架构](docs/architecture.md)：Viva 如何在 dsh 的插件体系上分层
+- [记忆方案](docs/memory.md)
 
 ## 许可证
 
 Viva 以 [MIT 许可证](LICENSE) 发布。
 
-安装包里还带有第三方软件，各自遵循自己的许可证（大部分是 MIT、Apache-2.0、BSD、ISC；DeepSeek Harness 是 MIT）。完整清单、许可证原文和源码获取方式在应用里的 `THIRD_PARTY_NOTICES.txt`，打包时由 `scripts/third-party-notices.cjs` 按实际打进去的依赖生成（各平台的依赖不完全相同），同一份也会放在 Release 里：
+安装包里还带有第三方软件，各自遵循自己的许可证，大部分是 MIT、Apache-2.0、BSD 或 ISC，DeepSeek Harness 是 MIT。完整清单、许可证原文和源码获取方式见应用里的 `THIRD_PARTY_NOTICES.txt`，同一份也附在每个 Release 里。其中：
 
 - **Electron 和 Chromium**：许可文件随应用一起分发（`LICENSE.electron.txt`、`LICENSES.chromium.html`）。
-- **LibreOffice（MPL-2.0）**：dsh 用来转换 Office 文档的 `libreoffice-kit`。声明里写明 LibreOffice 源码的仓库和提交，对它的改动补丁随包附带。
-- **libvips（LGPL-3.0）**：图片处理库 `sharp` 用到的。它是独立的动态库，可以替换；声明里写明版本和源码地址。
-- 也可以在 [Issues](https://github.com/JNS0724/Viva/issues) 里索取以上源码。
+- **LibreOffice（MPL-2.0）**：声明里写明了源码仓库和提交，补丁随包附带。
+- **libvips（LGPL-3.0）**：独立的动态库，可以替换；声明里写明了版本和源码地址。
 
+也可以在 [Issues](https://github.com/JNS0724/Viva/issues) 里索取以上源码。
