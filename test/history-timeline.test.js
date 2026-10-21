@@ -82,10 +82,22 @@ test('going back folds the segment left behind: it leaves the timeline and is fo
 
   const reopened = openHistoryDb({ file })
   assert.deepEqual(reopened.segmentsBefore(now.id).segments.map((s) => s.id), [before.id], 'the folded path is not in the timeline')
-  assert.deepEqual(reopened.foldsOf(now.id), [{ id: old.id, at: 2, count: 2 }], 'it hangs where the new path went on: two messages folded')
+  assert.deepEqual(reopened.foldsOf(now.id), [{ id: old.id, at: 2, count: 2, kind: 'path' }], 'it hangs where the new path went on: two messages folded')
   assert.deepEqual(reopened.searchMessages('太正式').length, 0, 'its messages are not search hits for now')
   assert.equal(reopened.latest().conversation.id, now.id)
   assert.deepEqual(reopened.foldsOf(before.id), [])
+})
+
+test('a turn moved to the background folds as a task; switched back onto, it is in the timeline again', () => {
+  const { db } = freshDb()
+  const task = segment(db, [user('做周报'), answer('写好了'), user('整理发布说明')])
+  const now = segment(db, [user('做周报'), answer('写好了'), user('周会几点')])
+
+  db.fold(task.id, { into: now.id, at: 2, kind: 'task' })
+  assert.deepEqual(db.foldsOf(now.id), [{ id: task.id, at: 2, count: 1, kind: 'task' }])
+
+  db.unfold(task.id)
+  assert.deepEqual(db.foldsOf(now.id), [])
 })
 
 test('searching the timeline finds messages, newest first, with where each one is and its directory', () => {
