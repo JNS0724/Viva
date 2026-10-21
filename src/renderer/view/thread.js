@@ -5,6 +5,8 @@ import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.
 import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
+import { foldAfter, rewindTarget } from '../rewind-state.js'
+import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.js'
 
 const AVATAR_CAT_PX = 36
 /** While the agent waits on the user, the cat beside its answer holds up the same sign as the island's. */
@@ -94,11 +96,6 @@ const MESSAGE_VIEWS = {
 
 const STILL = Object.freeze({ latest: false, mood: 'idle' })
 
-/**
- * A message from an earlier part of the timeline (view/earlier.js): as it was shown, fully typed out, its
- * receipt as plain text (its trace belongs to a session no longer on screen).
- * @param {{ id: string, role: string, text: string, receipt: object | null }} message
- */
 /** A search hit is found by its message's row (timeline-search.js); a view may be several elements, or none. */
 export function markMessage(view, id) {
   const first = Array.isArray(view) ? view[0] : view
@@ -106,6 +103,11 @@ export function markMessage(view, id) {
   return view
 }
 
+/**
+ * A message from an earlier part of the timeline (view/earlier.js): as it was shown, fully typed out, its
+ * receipt as plain text (its trace belongs to a session no longer on screen).
+ * @param {{ id: string, role: string, text: string, receipt: object | null }} message
+ */
 export function pastMessageView(message, handlers) {
   if (message.role === 'user') return userView(message)
   if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
@@ -211,6 +213,34 @@ function secretCard(secret, handlers) {
   return el
 }
 
+const dimmed = (view) => [view].flat().filter(Boolean).map((el) => {
+  el.classList.add('rewind-dim')
+  return el
+})
+
+/**
+ * A message with what going back adds to it: over the user's words the bar to go back there (or the editor, in
+ * place, with what would fold after it dimmed), and after it the paths folded where it went another way.
+ */
+function messageEntries(state, views, handlers) {
+  const editing = state.messages.findIndex((message) => message.id === state.rewind.editing)
+  const later = editing < 0 ? 0 : state.messages.length - editing - 1
+  const folds = foldAfter(state)
+  return state.messages.map((message, i) => {
+    let view = views[i]
+    if (i === editing) view = markMessage(rewindEditor(message, handlers, later), message.id)
+    else if (editing >= 0 && i > editing) view = dimmed(view)
+    else if (message.role === 'user' && rewindTarget(state, message.id)) {
+      // The bar beside the bubble, not in it: the bubble's text and place stay what they were.
+      const [bubble, ...notes] = [view].flat().filter(Boolean)
+      view = markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
+    }
+    const strips = (folds[message.id] ?? []).map(foldStrip)
+    const before = i === 0 ? (folds[''] ?? []).map(foldStrip) : []
+    return [...before, ...[view].flat(), ...strips]
+  })
+}
+
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container, state, handlers, now) {
   const last = state.messages[state.messages.length - 1]
@@ -219,7 +249,9 @@ export function renderThread(container, state, handlers, now) {
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
-  const views = state.messages.map((message) => markMessage(MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null, message.id))
+  const plain = state.messages.map((message) => markMessage(MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null, message.id))
+  const views = messageEntries(state, plain, handlers)
+  const focus = editorFocus()
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',
@@ -228,4 +260,5 @@ export function renderThread(container, state, handlers, now) {
     state.phase === 'working' && !last?.open ? workingRow(state) : '',
     state.phase === 'error' ? errorRow(state.error) : '',
   )
+  restoreEditorFocus(focus, state.rewind.editing)
 }

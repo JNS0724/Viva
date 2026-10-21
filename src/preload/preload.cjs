@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('agent', {
   /** The one timeline: the segments before `id`, oldest first; messages across all of it that contain `query`. */
   earlierSegments: (id, limit) => ipcRenderer.invoke('history:segments-before', id, limit),
   searchTimeline: (query) => ipcRenderer.invoke('history:search-messages', query),
+  /**
+   * Back to something the user said ({ words, occurrence, keep }) and on with `text`:
+   * { ok, info, conversation: { id, messages }, folds } | { ok: false, problem }.
+   */
+  rewind: (request) => ipcRenderer.invoke('timeline:rewind', request),
   /** The working directory: { current, defaultDir, isDefault, recent }; a folder from the system dialog, or null. */
   getWorkDir: () => ipcRenderer.invoke('workdir:get'),
   chooseWorkDir: () => ipcRenderer.invoke('workdir:choose'),

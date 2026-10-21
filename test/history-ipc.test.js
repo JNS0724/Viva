@@ -44,6 +44,7 @@ test('saving the conversation on screen records the model and returns its title'
 
   assert.equal(summary.title, '第一个问题')
   assert.deepEqual(loaded.messages, [question('第一个问题')])
+  assert.deepEqual(loaded.folds, [], 'no path folded off it yet')
   assert.equal(db.get(summary.id).conversation.model, 'V4')
 })
 

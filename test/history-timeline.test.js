@@ -72,6 +72,22 @@ test('earlier segments come back oldest first, in pages, each message with its t
     'a segment not yet written (just switched to another directory) comes after all that are')
 })
 
+test('going back folds the segment left behind: it leaves the timeline and is found again at the fork', () => {
+  const { db, file } = freshDb()
+  const before = segment(db, [user('更早的')])
+  const old = segment(db, [user('做周报'), answer('写好了'), user('太正式了'), answer('改了')], { cwd: '/w', parentId: before.id })
+  const now = segment(db, [user('做周报'), answer('写好了'), user('口语一点')], { cwd: '/w', parentId: old.id })
+
+  db.fold(old.id, { into: now.id, at: 2 })
+
+  const reopened = openHistoryDb({ file })
+  assert.deepEqual(reopened.segmentsBefore(now.id).segments.map((s) => s.id), [before.id], 'the folded path is not in the timeline')
+  assert.deepEqual(reopened.foldsOf(now.id), [{ id: old.id, at: 2, count: 2 }], 'it hangs where the new path went on: two messages folded')
+  assert.deepEqual(reopened.searchMessages('太正式').length, 0, 'its messages are not search hits for now')
+  assert.equal(reopened.latest().conversation.id, now.id)
+  assert.deepEqual(reopened.foldsOf(before.id), [])
+})
+
 test('searching the timeline finds messages, newest first, with where each one is and its directory', () => {
   const { db } = freshDb()
   const a = segment(db, [user('帮我把周报整理一下'), answer('周报写好了')], { cwd: '/w/a' })

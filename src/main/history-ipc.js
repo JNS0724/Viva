@@ -35,7 +35,11 @@ export function registerHistoryIpc(ipcMain, deps) {
   const schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms).unref?.())
   const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
 
-  handle('history:load', () => viewOf(db.get(current().id)))
+  /** The conversation on screen, with the paths folded off it where the user went back (rewind-ipc.js). */
+  handle('history:load', () => {
+    const view = viewOf(db.get(current().id))
+    return view && { ...view, folds: db.foldsOf(view.id) }
+  })
 
   handle('history:save', (messages) => {
     const { mode, model } = agentInfo()

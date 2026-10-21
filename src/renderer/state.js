@@ -4,6 +4,7 @@ import { FILES_ACTIONS, initialFiles } from './files-state.js'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { QUESTION_ACTIONS } from './question-state.js'
+import { initialRewind, rewindActions } from './rewind-state.js'
 import { SECRET_ACTIONS } from './secret-state.js'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.js'
 import { closeLast, closeStreams } from './streams.js'
@@ -43,6 +44,10 @@ export const initialState = Object.freeze({
   earlier: initialEarlier,
   /** The working directory: the chip under the input, its menu, the confirmation (workdir-state.js). */
   workDir: initialWorkDir,
+  /** Going back to something the user said: the message being edited, and the agent going back (rewind-state.js). */
+  rewind: initialRewind,
+  /** Paths folded off the conversation on screen, each where it went another way: { id, at, count } (rewind-state.js). */
+  folds: [],
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
@@ -273,11 +278,12 @@ const ACTION_HANDLERS = {
   }),
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
-  history_loaded: (state, { conversationId = null, messages, savedAt }) => {
+  history_loaded: (state, { conversationId = null, messages, savedAt, folds = [] }) => {
     if (state.messages.length > 0 || !messages?.length) return state
     return {
       ...state,
       conversationId,
+      folds,
       restoredTrace: 'loading',
       messages: messages.map((m, i) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
@@ -361,6 +367,7 @@ const ACTION_HANDLERS = {
   close_island: (state) => (state.island ? { ...state, island: false } : state),
   ...HISTORY_ACTIONS,
   ...EARLIER_ACTIONS,
+  ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,

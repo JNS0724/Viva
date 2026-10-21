@@ -61,9 +61,14 @@ const SCHEMA = `
 /**
  * Columns added since the first schema, each with its declaration; a file from before gets them on opening.
  * cwd: the working directory the conversation's dsh session ran in; parent_id: the conversation it went on from
- * (a fork: another directory, or back to an earlier point), so the timeline reads as one.
+ * (a fork: another directory, or back to an earlier point), so the timeline reads as one; folded_into: the
+ * segment that went back to an earlier point of this one and on from there, which this one now hangs off,
+ * folded, after its first folded_at messages (the ones both have).
  */
-const ADDED_COLUMNS = Object.freeze([['conversations', 'cwd', 'TEXT'], ['conversations', 'parent_id', 'TEXT']])
+const ADDED_COLUMNS = Object.freeze([
+  ['conversations', 'cwd', 'TEXT'], ['conversations', 'parent_id', 'TEXT'],
+  ['conversations', 'folded_into', 'TEXT'], ['conversations', 'folded_at', 'INTEGER'],
+])
 
 function addMissingColumns(db) {
   for (const [table, column, type] of ADDED_COLUMNS) {
@@ -132,23 +137,26 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
       ON CONFLICT (id) DO UPDATE SET title = :title, updated_at = :updatedAt,
         session_id = :sessionId, mode = :mode, model = :model, cwd = :cwd`),
     position: db.prepare('SELECT created_at, rowid FROM conversations WHERE id = ?'),
-    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL
+    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
     timelineMessages: db.prepare('SELECT seq, role, text, receipt, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
     ftsMessageHits: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages_fts
       JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id
-      WHERE messages_fts MATCH ? AND c.deleted_at IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
+      WHERE messages_fts MATCH ? AND c.deleted_at IS NULL AND c.folded_into IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
     likeMessageHits: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages m
       JOIN conversations c ON c.id = m.conversation_id
-      WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
+      WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL AND c.folded_into IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
     messages: db.prepare('SELECT role, text, receipt FROM messages WHERE conversation_id = ? ORDER BY seq'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
     update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ? WHERE conversation_id = ? AND seq = ?'),
     insert: db.prepare(`INSERT INTO messages (conversation_id, seq, role, text, receipt, session_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`),
-    latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
+    latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
+    fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ? WHERE id = ? AND deleted_at IS NULL'),
+    foldsOf: db.prepare(`SELECT c.id, c.folded_at, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
+      FROM conversations c WHERE c.folded_into = ? AND c.deleted_at IS NULL ORDER BY c.created_at, c.rowid`),
     list: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL
       ORDER BY pinned DESC, updated_at DESC, rowid DESC LIMIT ? OFFSET ?`),
     sessions: db.prepare(`SELECT session_id FROM messages WHERE conversation_id = ? AND session_id IS NOT NULL
@@ -301,6 +309,15 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     if (statement.run(...params).changes === 0) throw new Error('找不到这段对话')
   }
 
+  /**
+   * The user went back to an earlier point of `id` and on from there in `into`: `id` leaves the timeline and
+   * hangs, folded, off `into` after its first `at` messages (the ones both have).
+   */
+  const fold = (id, { into, at }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), assertId(id))
+
+  /** The paths folded off `id`: where each hangs (after that many of `id`'s messages) and how many it folds. */
+  const foldsOf = (id) => sql.foldsOf.all(assertId(id)).map((row) => ({ id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at) }))
+
   const rename = (id, title) => changeOne(
     db.prepare('UPDATE conversations SET title = ?, title_custom = 1 WHERE id = ? AND deleted_at IS NULL'), normalizeTitle(title), assertId(id))
   const setPinned = (id, pinned) => changeOne(
@@ -324,6 +341,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds,
-    questionTimes, importConversation, segmentsBefore, searchMessages, close: () => db.close(),
+    questionTimes, importConversation, segmentsBefore, searchMessages, fold, foldsOf, close: () => db.close(),
   }
 }
