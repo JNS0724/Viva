@@ -23,10 +23,11 @@ export function createForkDesk({ send, sessionId, timeoutMs = FORK_TIMEOUT_MS })
   }
 
   /**
-   * @param {{ before?: number, cwd?: string }} [request] before: index of the user message to go back to
+   * @param {{ before?: number, words?: string, occurrence?: number, cwd?: string }} [request] before: index of
+   *   the user message to go back to; or words: what the user said there, the occurrence-th such turn from the end
    * @returns {Promise<{ ok: boolean, sessionId?: string, reason?: string }>}
    */
-  function fork({ before, cwd } = {}) {
+  function fork({ before, words, occurrence, cwd } = {}) {
     const session = sessionId()
     if (!session) return Promise.resolve({ ok: false, reason: NO_PLUGIN })
     const id = `f${++seq}-${Date.now().toString(36)}`
@@ -34,7 +35,10 @@ export function createForkDesk({ send, sessionId, timeoutMs = FORK_TIMEOUT_MS })
       const timer = setTimeout(() => settle(id, { ok: false, reason: NO_PLUGIN }), timeoutMs)
       timer.unref?.()
       waiting.set(id, { resolve, timer })
-      send({ type: 'fork', id, sessionId: session, ...(before === undefined ? {} : { before }), ...(cwd ? { cwd } : {}) })
+      const point = words === undefined
+        ? (before === undefined ? {} : { before })
+        : { words, ...(occurrence === undefined ? {} : { occurrence }) }
+      send({ type: 'fork', id, sessionId: session, ...point, ...(cwd ? { cwd } : {}) })
     })
   }
 
