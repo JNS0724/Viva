@@ -271,8 +271,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * @param {string} id @param {{ limit?: number }} [options]
    */
   function segmentsBefore(id, { limit = SEGMENT_PAGE } = {}) {
-    const position = sql.position.get(assertId(id))
-    if (!position) return { segments: [], hasMore: false }
+    // A segment not yet written (it reaches the database with its first message) comes after all that are.
+    const position = sql.position.get(assertId(id)) ?? { created_at: Number.MAX_SAFE_INTEGER, rowid: Number.MAX_SAFE_INTEGER }
     const size = Math.min(Math.max(1, Math.trunc(limit) || SEGMENT_PAGE), MAX_SEGMENT_PAGE)
     const rows = sql.segmentsBefore.all({ createdAt: position.created_at, rowid: position.rowid, limit: size + 1 })
     const segments = rows.slice(0, size).reverse().map((row) => ({

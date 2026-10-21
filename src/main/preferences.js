@@ -8,9 +8,15 @@ import path from 'node:path'
 const FILE_VERSION = 1
 /**
  * deskPlaces: where the desktop island was dragged to, per display (desk-place.js checks what is read);
- * deskCoached: the user has seen the island's first-time note on what it can do.
+ * deskCoached: the user has seen the island's first-time note on what it can do;
+ * workDirs: the working directories used lately, and the ones the user confirmed (work-dir-ipc.js checks what is read).
  */
-const DEFAULTS = Object.freeze({ deskIsland: true, deskPlaces: Object.freeze({ last: null, places: Object.freeze({}) }), deskCoached: false })
+const DEFAULTS = Object.freeze({
+  deskIsland: true,
+  deskPlaces: Object.freeze({ last: null, places: Object.freeze({}) }),
+  deskCoached: false,
+  workDirs: Object.freeze({ recent: Object.freeze([]), trusted: Object.freeze([]) }),
+})
 
 /** @param {{ file: string, onError?: (err: Error) => void }} options */
 export function createPreferences({ file, onError = () => {} }) {

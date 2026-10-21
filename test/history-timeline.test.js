@@ -66,6 +66,10 @@ test('earlier segments come back oldest first, in pages, each message with its t
   const rest = db.segmentsBefore(b.id, { limit: 2 })
   assert.deepEqual([rest.segments.map((s) => s.id), rest.hasMore], [[a.id], false])
   assert.deepEqual(rest.segments[0].messages.map((m) => m.text), ['一', '答一'])
+
+  const fresh = db.create({ cwd: '/w/c' })
+  assert.deepEqual(db.segmentsBefore(fresh.id, { limit: 2 }).segments.map((s) => s.id), [c.id, now.id],
+    'a segment not yet written (just switched to another directory) comes after all that are')
 })
 
 test('searching the timeline finds messages, newest first, with where each one is and its directory', () => {

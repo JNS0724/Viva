@@ -25,7 +25,7 @@ function assertQuery(value) {
  *   dshHome: string,
  *   traceDb?: () => ReturnType<import('../../plugins/trace/lib/store.js').openTraceDb> | null,
  *   current: () => object, setCurrent: (conversation: object) => void,
- *   agentInfo: () => object, switchAgent: (sessionId: string | null) => Promise<object>,
+ *   agentInfo: () => object, switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<object>,
  *   chooseExportPath: (defaultName: string) => Promise<string | null>,
  *   schedule?: (fn: () => void, ms: number) => void,
  * }} deps
@@ -46,14 +46,17 @@ export function registerHistoryIpc(ipcMain, deps) {
 
   handle('history:list', (offset = 0) => db.list({ offset: Number(offset) || 0 }))
   handle('history:search', (query) => db.search(assertQuery(query)))
+  /** The one timeline: the segments before `id` (the window scrolls up into them), and search across all of it. */
+  handle('history:segments-before', (id, limit) => db.segmentsBefore(assertId(id), { limit: Number(limit) || undefined }))
+  handle('history:search-messages', (query) => db.searchMessages(assertQuery(query)))
 
   /** Shows an older conversation and reattaches the agent to its dsh session when it still can. */
   handle('history:open', async (id) => {
     const found = db.get(assertId(id))
     if (!found) throw new Error('找不到这段对话，可能已被删除')
     if (found.conversation.id === current().id) return { conversation: viewOf(found), info: agentInfo() }
-    const started = await switchAgent(found.conversation.sessionId)
-    setCurrent({ ...found.conversation, sessionId: started.sessionId })
+    const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
+    setCurrent({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
     return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed } }
   })
 
