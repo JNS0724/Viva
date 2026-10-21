@@ -10,6 +10,8 @@ export const initialRewind = Object.freeze({
   busy: false,
   /** Folded paths opened in place to be read: their messages after the shared part, by path id. */
   open: {},
+  /** Going back over changes to the computer waits on the user: { id, text, effects } (main/side-effects.js). */
+  confirm: null,
 })
 
 /** Words that started a turn of their own: not said into a running one, not an answer, not left unsent. */
@@ -49,7 +51,9 @@ export function rewindActions(newSession) {
   return {
     rewind_edit: (state, { id }) => withRewind(state, { editing: id }),
     rewind_cancel: (state) => withRewind(state, { editing: null }),
-    rewind_busy: (state) => withRewind(state, { busy: true }),
+    rewind_busy: (state) => withRewind(state, { busy: true, confirm: null }),
+    rewind_confirm: (state, { id, text, effects }) => withRewind(state, { confirm: { id, text, effects } }),
+    rewind_confirm_cancel: (state) => withRewind(state, { confirm: null }),
     rewind_failed: (state) => withRewind(state, { busy: false }),
     fold_opened: (state, { id, messages }) => withRewind(state, { open: { ...state.rewind.open, [id]: messages } }),
     fold_closed: (state, { id }) => withRewind(state, {

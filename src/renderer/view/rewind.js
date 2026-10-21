@@ -64,6 +64,34 @@ export function restoreEditorFocus(focus, editingId) {
   editor.field.setSelectionRange(focus.start, focus.end)
 }
 
+const timesNote = (times) => (times > 1 ? `（改过 ${times} 次）` : '')
+
+let shownConfirm = null
+
+/**
+ * Before going back over a part that wrote files or ran commands: what will not be undone, and that the agent
+ * will not know about it. Shown only then; built once per question so its button keeps the keyboard.
+ */
+export function renderRewindConfirm(root, state, handlers) {
+  const asked = state.rewind.confirm
+  if (asked === shownConfirm) return
+  shownConfirm = asked
+  if (!asked) return root.replaceChildren()
+  const { files, commands } = asked.effects
+  root.replaceChildren(h('div', { class: 'workdir-scrim', onClick: () => handlers.cancelRewindConfirm() }),
+    h('div', { class: 'workdir-sheet rewind-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': '这些改动不会跟着撤回' },
+      h('div', { class: 'workdir-sheet-title', text: '这些改动不会跟着撤回' }),
+      h('p', { class: 'workdir-sheet-text', text: '回到这句话之前，对话会重来；但后面那段已经对电脑做过的事，Viva 改不回去：' }),
+      h('ul', { class: 'rewind-effects' },
+        ...files.map((file) => h('li', {}, h('span', { class: 'rewind-effect-kind', text: '写入' }), h('code', { text: file.path }), timesNote(file.times))),
+        ...commands.map((command) => h('li', {}, h('span', { class: 'rewind-effect-kind', text: '命令' }), h('code', { text: command })))),
+      h('p', { class: 'workdir-sheet-text', text: '助手重来时不知道这些改动；要紧的话，在新的话里提一句。' }),
+      h('div', { class: 'workdir-sheet-actions' },
+        h('button', { class: 'btn btn-secondary', type: 'button', text: '取消', onClick: () => handlers.cancelRewindConfirm() }),
+        h('button', { class: 'btn btn-primary rewind-confirm', type: 'button', text: '知道了，重来', onClick: () => handlers.confirmRewind() }))))
+  return root.querySelector('.rewind-confirm')?.focus()
+}
+
 /**
  * A path left behind, folded where the conversation went another way: opened, what it holds is shown under it,
  * read-only; switched to, it is the conversation again and this one folds in its place.

@@ -70,6 +70,16 @@ test('a folded path opens in place to be read, and closes; going another way clo
   assert.deepEqual(moved.rewind.open, {})
 })
 
+test('going back over changes to the computer waits for the user to say they know; cancelling forgets it', () => {
+  const state = withMessages([msg('m0', 'user', '做周报')])
+  const effects = { files: [{ path: '/w/a.md', times: 2 }], commands: [] }
+  const asking = reduce(state, { type: 'rewind_confirm', id: 'm0', text: '口语一点', effects })
+
+  assert.deepEqual(asking.rewind.confirm, { id: 'm0', text: '口语一点', effects })
+  assert.equal(reduce(asking, { type: 'rewind_confirm_cancel' }).rewind.confirm, null)
+  assert.equal(reduce(asking, { type: 'rewind_busy' }).rewind.confirm, null, 'once it goes, the question is answered')
+})
+
 test('the folds of the conversation come back with it at launch', () => {
   const state = reduce(initialState, {
     type: 'history_loaded', conversationId: 'c', messages: [{ role: 'user', text: '口语一点', receipt: null }], savedAt: 1, folds: [{ id: 'old', at: 0, count: 2 }],

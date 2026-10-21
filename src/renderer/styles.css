@@ -237,6 +237,15 @@ html:not([data-platform="darwin"]) {
 .fold b { color: var(--ink); font-weight: 600; }
 .fold-ico { color: var(--ink-3); font-family: var(--font-mono); }
 .fold-actions { margin-left: auto; display: flex; gap: 4px; }
+/* Before going back over files written or commands run (view/rewind.js renderRewindConfirm). */
+.rewind-sheet { border-color: rgba(255, 138, 61, .6); }
+.rewind-effects {
+  list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+  background: var(--raised); border-radius: 10px; font-size: 13px; color: var(--ink-3);
+}
+.rewind-effects li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.rewind-effects code { font-family: var(--font-mono); font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+.rewind-effect-kind { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--orange, #FF8A3D); }
 .fold-act {
   height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: none; color: var(--accent);
   font: inherit; font-size: 12px; cursor: pointer;

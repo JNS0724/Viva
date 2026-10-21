@@ -14,7 +14,7 @@ import { registerRewindIpc } from '../src/main/rewind-ipc.js'
 const user = (text) => ({ role: 'user', text, receipt: null })
 const answer = (text) => ({ role: 'assistant', text, receipt: null })
 
-function setup({ busy = false, forkResult } = {}) {
+function setup({ busy = false, forkResult, traceSteps } = {}) {
   let n = 0
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rewind-')), 'history.db'), newId: () => `c${++n}` })
   let current = db.save(db.create({ sessionId: 's1', cwd: '/w', parentId: null }), [user('做周报'), answer('写好了'), user('太正式了'), answer('改了')])
@@ -31,6 +31,7 @@ function setup({ busy = false, forkResult } = {}) {
       forks.push(request)
       return forkResult ?? { ok: true, info: { sessionId: 's2', mode: 'live', model: 'V4', cwd: '/w' } }
     },
+    traceDb: () => (traceSteps ? { stepsOf: traceSteps } : null),
     switchAgent: async (sessionId, cwd) => {
       switches.push([sessionId, cwd])
       return { sessionId, cwd, resumed: true, mode: 'live', model: 'V4' }
@@ -92,6 +93,24 @@ test('a folded path can be read, and switched back to: the one on screen folds i
   assert.equal(db.latest().conversation.id, first.id)
 
   assert.equal((await handlers['timeline:switch-path']({}, 'nope')).ok, false, 'only a path folded off this one')
+})
+
+test('before going back, what the part that would fold did to the computer: its session’s steps from that message on', async () => {
+  const steps = []
+  const { db, handlers, current } = setup({ traceSteps: (sessionId) => (sessionId === 's1' ? steps : []) })
+  const at = db.timelineOf(current().id)[2].at
+  steps.push(
+    { seq: 1, at: at - 1, kind: 'tool', name: 'write', args: { file_path: '/w/before.md' }, status: 'completed' },
+    { seq: 2, at: at + 1, kind: 'tool', name: 'write', args: { file_path: '/w/summary.md' }, status: 'completed' },
+    { seq: 3, at: at + 2, kind: 'tool', name: 'bash', args: { command: 'git add summary.md' }, status: 'completed' },
+  )
+
+  assert.deepEqual(await handlers['timeline:rewind-effects']({}, { keep: 2 }), {
+    files: [{ path: '/w/summary.md', times: 1 }], commands: ['git add summary.md'],
+  })
+  assert.deepEqual(await handlers['timeline:rewind-effects']({}, { keep: 9 }), { files: [], commands: [] }, 'nothing past the end')
+  const blind = setup()
+  assert.deepEqual(await blind.handlers['timeline:rewind-effects']({}, { keep: 0 }), { files: [], commands: [] }, 'no trace, nothing to say')
 })
 
 test('requests are checked before anything else', async () => {

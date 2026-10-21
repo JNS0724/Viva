@@ -3,6 +3,8 @@
  * 「改了重发」). The agent forks to before that turn (the viva-fork plugin finds it by the words); the timeline
  * goes on in a new segment holding what came before it and the new words; the segment left behind folds there.
  */
+import { sideEffectsOf } from './side-effects.js'
+
 const MAX_TEXT_CHARS = 20_000
 
 export const REWIND_PROBLEMS = Object.freeze({
@@ -31,9 +33,10 @@ function checked(request) {
  *   agentInfo: () => { mode?: string, model?: string },
  *   forkAgent: (request: { words: string, occurrence: number }) => Promise<{ ok: boolean, reason?: string, info?: object }>,
  *   switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<object>,
+ *   traceDb?: () => { stepsOf: (sessionId: string) => object[] } | null,
  * }} deps
  */
-export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, agentInfo, forkAgent, switchAgent }) {
+export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, agentInfo, forkAgent, switchAgent, traceDb }) {
   async function rewind(request) {
     const { words, occurrence, keep, text } = checked(request)
     if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
@@ -89,7 +92,22 @@ export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, ag
     }
   }
 
+  /**
+   * What the part that would fold did to the computer: the steps of the conversation's sessions from the
+   * message gone back to on (the trace plugin's record). Nothing when there is no record.
+   */
+  function effects(request) {
+    const keep = request?.keep
+    if (!isCount(keep)) throw new Error('invalid rewind request')
+    const trace = traceDb?.()
+    const since = db.timelineOf(current().id)[keep]?.at
+    if (!trace || since === undefined) return { files: [], commands: [] }
+    const steps = db.sessionIds(current().id).flatMap((sessionId) => trace.stepsOf(sessionId))
+    return sideEffectsOf(steps, since)
+  }
+
   ipcMain.handle('timeline:rewind', (_event, request) => rewind(request))
+  ipcMain.handle('timeline:rewind-effects', (_event, request) => effects(request))
   ipcMain.handle('timeline:folded', (_event, id) => folded(id))
   ipcMain.handle('timeline:switch-path', (_event, id) => switchPath(id))
 }

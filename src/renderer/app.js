@@ -39,6 +39,7 @@ const dom = {
   workdirArea: document.querySelector('.workdir-area'),
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
+  rewindConfirm: byId('rewind-confirm-root'),
   toggleDrawer: byId('toggle-drawer'),
   openSettings: byId('open-settings'),
   settings: byId('settings-root'),
@@ -447,7 +448,8 @@ const isHistoryShortcut = (event) => (event.metaKey || event.ctrlKey) && event.k
 
 /** Escape closes the innermost thing that is open. */
 function closeTopmost() {
-  if (state.rewind.editing) rewindActions.cancelEdit()
+  if (state.rewind.confirm) rewindActions.cancelRewindConfirm()
+  else if (state.rewind.editing) rewindActions.cancelEdit()
   else if (state.workDir.confirm) workDirActions.cancelConfirm()
   else if (state.workDir.menu) workDirActions.closeMenu()
   else if (state.settings.open) dispatch({ type: 'settings_close' })

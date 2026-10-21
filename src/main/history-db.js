@@ -314,6 +314,9 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * hangs, folded, off `into` after its first `at` messages (the ones both have).
    */
   const fold = (id, { into, at }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), assertId(id))
+  /** A segment's messages with where each is and when it was written (ms). */
+  const timelineOf = (id) => sql.timelineMessages.all(assertId(id)).map(toTimelineMessage)
+
   /** `id` is back in the timeline (the user switched back to it). */
   const unfold = (id) => changeOne(sql.fold, null, null, assertId(id))
 
@@ -343,6 +346,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds,
-    questionTimes, importConversation, segmentsBefore, searchMessages, fold, unfold, foldsOf, close: () => db.close(),
+    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, close: () => db.close(),
   }
 }

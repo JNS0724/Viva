@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('agent', {
    * { ok, info, conversation: { id, messages }, folds } | { ok: false, problem }.
    */
   rewind: (request) => ipcRenderer.invoke('timeline:rewind', request),
+  /** What the part that would fold did to the computer ({ keep }): { files: [{ path, times }], commands }. */
+  rewindEffects: (request) => ipcRenderer.invoke('timeline:rewind-effects', request),
   /** A path folded off the conversation on screen: what it holds after the shared part ({ messages }), or back onto it. */
   foldedPath: (id) => ipcRenderer.invoke('timeline:folded', id),
   switchPath: (id) => ipcRenderer.invoke('timeline:switch-path', id),

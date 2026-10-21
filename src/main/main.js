@@ -659,6 +659,7 @@ function openHistory(config) {
     agentInfo: () => lastInfo,
     forkAgent: forkBack,
     switchAgent,
+    traceDb: () => traceDb,
   })
 }
 

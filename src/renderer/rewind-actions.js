@@ -15,10 +15,25 @@ const FAILED = '没能回到那里'
  * }} deps
  */
 export function createRewindActions({ api, getState, dispatch, showToast, errorMessage, ask }) {
-  async function goBack(id, text) {
+  /** What the part that would fold changed on the computer; none known when it cannot be read. */
+  async function effectsOf(target) {
+    try {
+      return await api.rewindEffects({ keep: target.keep })
+    } catch (err) {
+      console.error('[rewind] could not read what that path changed:', errorMessage(err))
+      return { files: [], commands: [] }
+    }
+  }
+
+  /** Going back over files written or commands run asks first (view/rewind.js rewindConfirm); else it just goes. */
+  async function goBack(id, text, { confirmed = false } = {}) {
     const target = rewindTarget(getState(), id)
     const words = text?.trim()
     if (!target || !words) return showToast(NOT_NOW)
+    if (!confirmed) {
+      const effects = await effectsOf(target)
+      if (effects.files.length || effects.commands.length) return dispatch({ type: 'rewind_confirm', id, text: words, effects })
+    }
     dispatch({ type: 'rewind_busy' })
     let result
     try {
@@ -69,5 +84,11 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
     editFrom: (id) => (rewindTarget(getState(), id) ? dispatch({ type: 'rewind_edit', id }) : showToast(NOT_NOW)),
     cancelEdit: () => dispatch({ type: 'rewind_cancel' }),
     submitEdit: (id, text) => goBack(id, text),
+    /** 知道了，重来: the user knows what will not be undone. */
+    confirmRewind() {
+      const asked = getState().rewind.confirm
+      return asked ? goBack(asked.id, asked.text, { confirmed: true }) : undefined
+    },
+    cancelRewindConfirm: () => dispatch({ type: 'rewind_confirm_cancel' }),
   }
 }
