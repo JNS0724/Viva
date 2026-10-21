@@ -158,6 +158,17 @@ function headAction(view, host, unfolds) {
 }
 
 /**
+ * What an update has to redraw. The row (head and tools) follows the pointer as well; the panel does not, so
+ * the tools appearing under a resting pointer leave its buttons alone: one held down meanwhile is the one
+ * let go, and the click still happens.
+ * @param {object} view @param {boolean} open @param {boolean} showTools
+ */
+export function islandSignatures(view, open, showTools) {
+  const panel = JSON.stringify([view, open])
+  return { panel, row: JSON.stringify([panel, showTools]) }
+}
+
+/**
  * @param {'bar' | 'desk'} host
  * @param {(action: object) => void} act
  * @param {{ input?: ReturnType<import('./island-input.js').createIslandInput>, shortcut?: string }} [options]
@@ -174,7 +185,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
   const clip = h('div', { class: 'isl-clip' }, row, panel)
   const el = h('div', { class: 'isl', 'data-host': host }, clip, cat)
   let last = null
-  let signature = ''
+  let signature = { panel: '', row: '' }
   let hovered = false
   let onHead = null
 
@@ -211,12 +222,13 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     const unfolds = wide || hasPanel(view, host)
     const open = unfolds && (wide || pinned || host === 'desk')
     const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
-    const next = JSON.stringify([view, open, showTools])
-    if (next === signature) {
+    const next = islandSignatures(view, open, showTools)
+    if (next.row === signature.row) {
       const time = head.querySelector('.isl-time')
       if (time && view.form === 'working') time.textContent = elapsedSince(view, now)
       return
     }
+    const panelChanged = next.panel !== signature.panel
     signature = next
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
@@ -231,9 +243,11 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
-    const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut)
-    panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
-    panel.inert = !open
+    if (panelChanged) {
+      const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut)
+      panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
+      panel.inert = !open
+    }
     layout(open, wide)
   }
 
