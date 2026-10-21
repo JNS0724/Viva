@@ -19,7 +19,6 @@ const TITLEBAR_GUTTER_PX = 12
 const LAYOUT_SLACK_PX = 2
 const SMOKE_PROMPT = '帮我把工作区里的资料整理成一份摘要'
 const SECOND_PROMPT = '第二段对话：明天的天气'
-const RENAMED_TITLE = '周报摘要'
 const SEARCH_TEXT = '整理成'
 const LONG_PROMPT = '演示一个长任务'
 const MARKDOWN_PROMPT = '格式演示'
@@ -346,22 +345,9 @@ async function checkMarkdown(win, outDir) {
 const PANEL_STATE = `(() => ({
   open: document.getElementById('history-panel').dataset.open === 'true',
   titles: [...document.querySelectorAll('.history-title')].map((el) => el.textContent),
-  active: document.querySelector('.history-item[data-active="true"] .history-title')?.textContent ?? '',
   marks: [...document.querySelectorAll('.history-snippet mark')].map((el) => el.textContent),
-  toast: document.querySelector('.toast')?.textContent ?? '',
+  list: document.getElementById('history-list').textContent,
 }))()`
-
-/** Opens an item's ⋯ menu and picks an entry; the list re-renders in between, so each step queries afresh. */
-const itemAction = (title, action) => `(() => {
-  const item = () => {
-    const found = [...document.querySelectorAll('.history-item')]
-      .find((el) => el.querySelector('.history-title')?.textContent === ${JSON.stringify(title)})
-    if (!found) throw new Error('no history item titled ' + ${JSON.stringify(title)} + '; list: ' + document.getElementById('history-list').textContent)
-    return found
-  }
-  item().querySelector('.history-more').click()
-  ;[...item().querySelectorAll('.history-menu-item')].find((el) => el.textContent === ${JSON.stringify(action)}).click()
-})()`
 
 const typeSearch = (text) => `(() => {
   const input = document.getElementById('history-search')
@@ -369,7 +355,7 @@ const typeSearch = (text) => `(() => {
   input.dispatchEvent(new Event('input'))
 })()`
 
-/** ⌘K, a second conversation, search, reopening the first one, rename, delete and undo. */
+/** ⌘K, a new topic with the first kept above it, ⌘F and a jump to a hit. */
 async function checkHistoryPanel(win, outDir) {
   const failures = []
   try {
@@ -383,12 +369,12 @@ async function checkHistoryPanel(win, outDir) {
 async function historyPanelSteps(win, outDir, failures) {
   const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   const panel = () => run(win, PANEL_STATE)
-  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
+  // There is no list of conversations: an empty search only says what to do.
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))`)
   await wait(UI_WAIT_MS)
   let seen = await panel()
-  expect(seen.open && same(seen.titles, [SMOKE_PROMPT]) && seen.active === SMOKE_PROMPT, '⌘K should open the panel on the restored conversation', seen)
+  expect(seen.open && seen.titles.length === 0 && seen.list.includes('找回之前说过的话'), '⌘K should open the search with nothing listed', seen)
 
   await run(win, 'document.body.click()')
   expect(!await run(win, `Boolean(document.getElementById('new-session'))`), 'there should be no 新对话 button; ⌘N starts a new topic', null)
@@ -404,14 +390,8 @@ async function historyPanelSteps(win, outDir, failures) {
   })`)
   expect(timeline.shown && timeline.earlier.includes(SMOKE_PROMPT) && timeline.days.includes('今天'),
     'the conversation before the new session should stay above it in the timeline', timeline)
-  await click(win, 'toggle-history')
-  await wait(UI_WAIT_MS)
-  seen = await panel()
-  expect(same(seen.titles, [SECOND_PROMPT, SMOKE_PROMPT]) && seen.active === SECOND_PROMPT, 'both conversations should be listed, newest first', seen)
-  await capture(win, outDir, 'history-panel')
 
   // ⌘F searches what was said; a hit scrolls the timeline to that message and marks it.
-  await run(win, 'document.body.click()')
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }))`)
   const focused = await run(win, 'document.activeElement?.id ?? ""')
   expect(focused === 'history-search', '⌘F should put the cursor in the search field', focused)
@@ -436,44 +416,8 @@ async function historyPanelSteps(win, outDir, failures) {
   expect(found.text.includes(SMOKE_PROMPT) && found.inEarlier && found.inView && found.panelOpen === 'false',
     'a hit should scroll the earlier message into view, mark it and close the panel', found)
   await capture(win, outDir, 'search-jump')
-
+  expect(!seen.list.includes('null'), 'the list should not print "null"', seen.list)
   await run(win, typeSearch(''))
-  await click(win, 'toggle-history')
-  await wait(UI_WAIT_MS)
-  await run(win, `[...document.querySelectorAll('.history-item')].find((el) => el.querySelector('.history-title')?.textContent === ${JSON.stringify(SMOKE_PROMPT)}).querySelector('.history-open').click()`)
-  await wait(UI_WAIT_MS)
-  const thread = await run(win, `({
-    questions: [...document.querySelectorAll('.msg-user')].map((el) => el.textContent),
-    panelOpen: document.getElementById('history-panel').dataset.open,
-    toast: document.querySelector('.toast')?.textContent ?? '',
-  })`)
-  expect(thread.questions[0] === SMOKE_PROMPT && thread.questions.length === 2 && thread.panelOpen === 'false', 'opening a result should show that conversation and close the panel', thread)
-  await capture(win, outDir, 'history-opened')
-
-  await run(win, typeSearch(''))
-  await click(win, 'toggle-history')
-  await wait(UI_WAIT_MS)
-  await run(win, itemAction(SMOKE_PROMPT, '重命名'))
-  await run(win, `(() => {
-    const input = document.querySelector('.history-rename')
-    input.value = ${JSON.stringify(RENAMED_TITLE)}
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
-  })()`)
-  await wait(UI_WAIT_MS)
-  seen = await panel()
-  expect(seen.open && seen.titles.includes(RENAMED_TITLE), 'rename should update the list and keep the panel open', seen)
-
-  await run(win, itemAction(SECOND_PROMPT, '删除'))
-  await wait(UI_WAIT_MS)
-  seen = await panel()
-  const listText = await run(win, `document.getElementById('history-list').textContent`)
-  expect(same(seen.titles, [RENAMED_TITLE]) && seen.toast.includes('撤销'), 'delete should hide the item and offer undo', seen)
-  expect(!listText.includes('null'), 'the list should not print "null"', listText)
-  await capture(win, outDir, 'history-undo')
-  await run(win, `document.querySelector('.toast-action').click()`)
-  await wait(UI_WAIT_MS)
-  seen = await panel()
-  expect(seen.titles.length === 2 && !seen.toast, 'undo should bring the conversation back', seen)
 }
 
 /**

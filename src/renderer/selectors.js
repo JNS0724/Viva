@@ -53,7 +53,6 @@ export const historyMessages = (state) => state.messages
   .map(({ role, text, receipt }) => ({ role, text, receipt: receipt ?? null }))
 
 const DAY_MS = 86_400_000
-const WEEK_DAYS = 7
 const startOfDay = (ts) => new Date(ts).setHours(0, 0, 0, 0)
 /** Whole calendar days between `ts` and `now` (0 = today). */
 const daysAgo = (ts, now) => Math.round((startOfDay(now) - startOfDay(ts)) / DAY_MS)
@@ -66,25 +65,6 @@ export function formatListTime(ts, now = Date.now()) {
   if (days === 1) return '昨天'
   if (date.getFullYear() === new Date(now).getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日`
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
-}
-
-function groupLabel(item, now) {
-  if (item.pinned) return '置顶'
-  const days = daysAgo(item.updatedAt, now)
-  if (days <= 0) return '今天'
-  if (days === 1) return '昨天'
-  return days < WEEK_DAYS ? '7 天内' : '更早'
-}
-
-/** History rows grouped for the panel; empty groups are left out, order is kept. */
-export function historyGroups(items, now = Date.now()) {
-  return items.reduce((groups, item) => {
-    const label = groupLabel(item, now)
-    const last = groups[groups.length - 1]
-    return last?.label === label
-      ? [...groups.slice(0, -1), { ...last, items: [...last.items, item] }]
-      : [...groups, { label, items: [item] }]
-  }, [])
 }
 
 function formatSavedAt(ts, now) {

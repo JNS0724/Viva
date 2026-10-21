@@ -162,11 +162,6 @@ const historyActions = createHistoryActions({
   dispatch,
   searchField: dom.historySearch,
   errorMessage,
-  newSession: () => handlers.newSession(),
-  onOpened: () => {
-    dom.follower.jumpToLatest()
-    dom.input.focus()
-  },
   jumpTo: (hit) => timelineActions.jumpTo(hit),
 })
 
@@ -262,7 +257,7 @@ const extensionActions = createExtensionActions({ api, getState: () => state, di
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
-/** What a toast's button does; history's undo keeps its own handler. */
+/** What a toast's button does. */
 const TOAST_ACTIONS = {
   'open-profile': () => memoryActions.openProfile(),
   'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
@@ -452,20 +447,18 @@ function closeTopmost() {
   else if (state.workDir.menu) workDirActions.closeMenu()
   else if (state.settings.open) dispatch({ type: 'settings_close' })
   else if (state.memory.open) dispatch({ type: 'memory_close' })
-  else if (state.history.menuFor) dispatch({ type: 'history_menu', id: null })
   else if (state.history.open) dispatch({ type: 'history_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
   else dispatch({ type: 'close_island' })
 }
 
 /**
- * Uses the event path captured at dispatch: a menu item re-renders the list when clicked,
+ * Uses the event path captured at dispatch: a hit re-renders the list when clicked,
  * so by the time the click reaches the document its target is no longer in the page.
  */
 function closeHistoryOnOutsideClick(event) {
   const path = event.composedPath()
   const within = (el) => path.includes(el)
-  if (state.history.menuFor && !path.some((el) => el.classList?.contains('history-menu'))) dispatch({ type: 'history_menu', id: null })
   if (state.history.open && ![dom.historyPanel, dom.toggleHistory, dom.toast].some(within)) dispatch({ type: 'history_close' })
 }
 
@@ -531,8 +524,8 @@ function wireFolderDrop() {
 
 function labelShortcuts() {
   const shortcut = platform === 'darwin' ? '⌘F' : 'Ctrl+F'
-  dom.toggleHistory.title = `搜索与话题 ${shortcut}`
-  dom.toggleHistory.setAttribute('aria-label', `搜索与话题（${shortcut}）`)
+  dom.toggleHistory.title = `搜索 ${shortcut}`
+  dom.toggleHistory.setAttribute('aria-label', `搜索（${shortcut}）`)
 }
 
 /** An MCP server that would not start is left out; say so once per connection instead of failing. */

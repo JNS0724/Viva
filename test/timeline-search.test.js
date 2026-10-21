@@ -57,11 +57,3 @@ test('jumpTo gives up when the hit is nowhere in the timeline', async () => {
   assert.equal(await actions.jumpTo(hit('gone', 0)), false)
   assert.deepEqual(revealed, [])
 })
-
-test('search results are message hits; removing a conversation drops its hits', () => {
-  const typed = reduce(initialState, { type: 'history_query', query: '联调' })
-  const answered = reduce(typed, { type: 'history_results', query: '联调', results: [hit('a', 0), hit('b', 2)] })
-  const removed = reduce(answered, { type: 'history_item_removed', id: 'a' })
-
-  assert.deepEqual(removed.history.results.map((r) => r.segmentId), ['b'])
-})

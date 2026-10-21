@@ -61,9 +61,9 @@ function renderDrawerIfChanged(container, state, handlers) {
   renderDrawer(container, state, handlers)
 }
 
-/** The panel only depends on its own slice; skipping identical renders keeps an inline rename field alive. */
+/** The panel only depends on its own slice; skipping identical renders keeps hover and focus in the list. */
 function renderHistoryIfChanged(dom, state, handlers) {
-  const inputs = [state.history, state.conversationId]
+  const inputs = [state.history]
   if (inputs.every((value, i) => value === renderedHistoryInputs[i])) return
   renderedHistoryInputs = inputs
   renderHistoryPanel(dom, state, handlers)
