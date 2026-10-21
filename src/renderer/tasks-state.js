@@ -147,11 +147,18 @@ export function taskActions(handlers) {
   }
 }
 
+/** Picking for a task's question, and answering it: the window names the task (app.js). */
+const ASKED_OF_TASK = new Set(['question_pick', 'question_answered'])
+
 /**
- * A permission request or answer that belongs to a task: into its view instead of the conversation's.
+ * A permission request or answer, or a pick or answer for a question, that belongs to a task: into its view
+ * instead of the conversation's.
  * @returns {object | null} the state, or null when the action is the conversation's own
  */
 export function routeToTask(state, action, handlers) {
+  if (ASKED_OF_TASK.has(action.type) && action.taskId) {
+    return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers[action.type](task.view, action) }))
+  }
   if (action.type === 'permission_request' && action.taskId) {
     return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers.permission_request(task.view, action) }))
   }

@@ -128,6 +128,29 @@ test('the island says a task ended a moment, longer while the user is typing', a
   assert.equal(win.state().tasks.finished, null)
 })
 
+test('a task\'s question is answered there: one choice by picking it, more with 提交, or skipped', async () => {
+  const answered = []
+  const win = windowWith({ spinOffTask: async () => spunReply, answerQuestion: async (...args) => { answered.push(args); return true } })
+  await win.actions.moveAndAsk('明天周会几点？')
+  const city = { id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }, { label: '北京' }] }
+  win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q1', questions: [city], at: 70 })
+  win.actions.pickTaskOption('s1', 'city', '上海')
+
+  win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q2', questions: [city, { ...city, id: 'day', question: '哪天？' }], at: 71 })
+  win.actions.pickTaskOption('s1', 'day', '北京')
+  win.actions.submitTaskAnswer('s1')
+  win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q3', questions: [city], at: 72 })
+  win.actions.skipTaskQuestion('s1')
+
+  assert.deepEqual(answered, [
+    ['q1', [{ id: 'city', selected: ['上海'] }]],
+    ['q2', [{ id: 'city', selected: [] }, { id: 'day', selected: ['北京'] }]],
+    ['q3', [{ id: 'city', selected: [] }]],
+  ])
+  assert.equal(liveTasks(win.state())[0].question, null)
+  assert.equal(win.state().question, null, 'the conversation on screen was never asked')
+})
+
 test('an ended task keeps what it said', async () => {
   const saved = []
   const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async (...args) => { saved.push(args) } })

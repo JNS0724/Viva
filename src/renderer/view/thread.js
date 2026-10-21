@@ -159,15 +159,26 @@ function questionItem(item, question, handlers) {
  * The agent's question, mid-turn. A single question with single choice is answered by its option; otherwise
  * picks are gathered and sent with 提交. Words typed in the composer (Enter) answer it too.
  */
-function questionCard(question, handlers) {
+/** @param {{ head?: string, typed?: boolean }} [options] for a task's question: whose it is, and no typing below */
+function questionCard(question, handlers, { head = PROMPT_HEADS.question, typed = true } = {}) {
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
-  return h('section', { class: 'confirm ask', 'aria-label': '助手在问你' },
-    cardHead(PROMPT_HEADS.question),
+  return h('section', { class: 'confirm ask', 'aria-label': head },
+    cardHead(head),
     question.questions.map((item) => questionItem(item, question, handlers)),
     h('div', { class: 'confirm-actions' },
       single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: '提交', onClick: () => handlers.submitAnswer() }),
       h('button', { class: `${BUTTON.text} ask-skip`, text: '跳过', onClick: () => handlers.skipQuestion() }),
-      h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' })))
+      typed ? h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' }) : null))
+}
+
+/** A task's question: the card's buttons answer it, not the conversation's (task-actions.js). */
+function taskQuestionCard(task, handlers) {
+  const scoped = {
+    pickOption: (id, label) => handlers.pickTaskOption(task.id, id, label),
+    submitAnswer: () => handlers.submitTaskAnswer(task.id),
+    skipQuestion: () => handlers.skipTaskQuestion(task.id),
+  }
+  return questionCard(task.question, scoped, { head: `#${task.title} · ${PROMPT_HEADS.question}`, typed: false })
 }
 
 const workingCats = new Map()
@@ -260,6 +271,7 @@ export function renderThread(container, state, handlers, now) {
     state.permission ? permissionCard(state.permission, handlers) : '',
     ...liveTasks(state).filter((task) => task.permission).map((task) => permissionCard(task.permission, handlers, `#${task.title} · ${PROMPT_HEADS.permission}`)),
     state.question ? questionCard(state.question, handlers) : '',
+    ...liveTasks(state).filter((task) => task.question).map((task) => taskQuestionCard(task, handlers)),
     state.secret ? secretCard(state.secret, handlers) : '',
     state.phase === 'working' && !last?.open ? workingRow(state) : '',
     state.phase === 'error' ? errorRow(state.error) : '',

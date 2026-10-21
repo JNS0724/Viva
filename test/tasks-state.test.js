@@ -75,6 +75,20 @@ test('what the task says and asks goes to the task; its end leaves the conversat
   assert.equal(ended.phase, 'idle')
 })
 
+test('a task\'s question is answered in the task, not in the conversation on screen', () => {
+  const cities = [{ id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }, { label: '北京' }] }]
+  const asked = run([{ type: 'task_question', taskId: 's1', questionId: 'q1', questions: cities, at: 30 }], spun(working()))
+  assert.deepEqual([liveTasks(asked)[0].status, liveTasks(asked)[0].question.questionId, asked.question], ['waiting', 'q1', null])
+
+  const picked = reduce(asked, { type: 'question_pick', taskId: 's1', id: 'city', label: '上海' })
+  assert.deepEqual(liveTasks(picked)[0].question.picks, { city: ['上海'] })
+  const answered = reduce(picked, { type: 'question_answered', taskId: 's1', questionId: 'q1', answers: [{ id: 'city', selected: ['上海'] }], at: 31 })
+  const [task] = liveTasks(answered)
+  assert.deepEqual([task.status, task.question], ['running', null])
+  assert.equal(taskMessages(task).at(-1).text, '上海')
+  assert.deepEqual(answered.messages.map((m) => m.text), ['做周报', '写好了'], 'the conversation on screen is left alone')
+})
+
 test('undone, the turn is on screen again with what it said since, still running', () => {
   const before = working()
   const moved = reduce(spun(before), { type: 'task_update', taskId: 's1', update: chunk('三组改动。'), at: 30 })

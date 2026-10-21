@@ -1,3 +1,4 @@
+import { answersFrom } from './question-state.js'
 import { spinOffTarget, taskMessages } from './tasks-state.js'
 
 /**
@@ -102,6 +103,27 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       .catch((err) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
   }
 
+  const questionOf = (taskId) => getState().tasks.list.find((task) => task.id === taskId)?.view.question ?? null
+
+  /** Answers what a task asks; the reply joins the task at once, as in the conversation (app.js answer). */
+  function answerTask(taskId, answers) {
+    const question = questionOf(taskId)
+    if (!question) return
+    dispatch({ type: 'question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
+    api.answerQuestion(question.questionId, answers)
+      .then((accepted) => accepted || showToast('这个问题已经结束，回答没有送出'))
+      .catch((err) => showToast(errorMessage(err)))
+  }
+
+  /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
+  function pickTaskOption(taskId, id, label) {
+    const question = questionOf(taskId)
+    if (!question) return
+    const only = question.questions.length === 1 && !question.questions[0].multiSelect
+    if (only) answerTask(taskId, [{ id, selected: [label] }])
+    else dispatch({ type: 'question_pick', taskId, id, label })
+  }
+
   async function stopTask(taskId) {
     const result = await call(() => api.stopTask(taskId))
     if (result?.ok === false) showToast(result.problem)
@@ -120,6 +142,15 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     undoMove,
     stopTask,
     closeTask,
+    pickTaskOption,
+    submitTaskAnswer: (taskId) => {
+      const question = questionOf(taskId)
+      if (question) answerTask(taskId, answersFrom(question))
+    },
+    skipTaskQuestion: (taskId) => {
+      const question = questionOf(taskId)
+      if (question) answerTask(taskId, question.questions.map((item) => ({ id: item.id, selected: [] })))
+    },
     toggleRoute: () => dispatch({ type: 'route_toggle' }),
   }
 }

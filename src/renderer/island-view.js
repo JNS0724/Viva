@@ -88,6 +88,7 @@ function backgroundOf(state) {
     .map((task) => ({
       id: task.id, title: task.title, status: task.status, now: task.now, startedAt: task.startedAt,
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),
+      ...(task.question ? { question: questionView(task.question) } : {}),
     }))
   return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, items }
 }
@@ -113,9 +114,12 @@ function mainView(state, background) {
   if (state.phase === 'waiting' && state.permission) {
     return { ...base, form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, permission: permissionView(state.permission) }
   }
-  const asking = background?.items.find((item) => item.permission)
-  if (asking && state.phase !== 'asking') {
-    return { ...base, mood: 'confirm', form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, task: asking.title, permission: asking.permission }
+  if (state.phase !== 'asking') {
+    const asking = background?.items.find((item) => item.permission || item.question)
+    if (asking?.permission) {
+      return { ...base, mood: 'confirm', form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, task: asking.title, permission: asking.permission }
+    }
+    if (asking?.question) return { ...base, mood: 'ask', form: 'asking', tone: 'waiting', label: PROMPT_HEADS.question, task: asking.title, question: asking.question }
   }
   if (state.phase === 'asking' && state.secret) {
     const { requestId, server } = state.secret

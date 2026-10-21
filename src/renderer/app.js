@@ -94,6 +94,9 @@ function jumpToCard() {
   card.querySelector('button')?.focus({ preventScroll: true })
 }
 
+/** The task in the background that asks `questionId`, if one does. */
+const askingTask = (questionId) => liveTasks(state).find((task) => task.question?.questionId === questionId)
+
 /**
  * What the island asks for, from the title bar or the desktop. Answers name the request or question they
  * were shown for, and one that has since closed is dropped.
@@ -109,10 +112,14 @@ const ISLAND_ACTIONS = {
     if (asked) handlers.respond(requestId, optionId)
   },
   answer: ({ questionId, id, label }) => {
-    if (state.question?.questionId === questionId) handlers.pickOption(id, label)
+    if (state.question?.questionId === questionId) return handlers.pickOption(id, label)
+    const task = askingTask(questionId)
+    return task ? handlers.pickTaskOption(task.id, id, label) : undefined
   },
   skip: ({ questionId }) => {
-    if (state.question?.questionId === questionId) handlers.skipQuestion()
+    if (state.question?.questionId === questionId) return handlers.skipQuestion()
+    const task = askingTask(questionId)
+    return task ? handlers.skipTaskQuestion(task.id) : undefined
   },
   /** Asked on the desktop island, with the files dropped there: into this conversation, as if typed here. */
   ask: ({ text, files }) => {
@@ -293,6 +300,9 @@ const handlers = {
   undoMove: () => taskActions.undoMove(),
   stopTask: (taskId) => taskActions.stopTask(taskId),
   closeTask: (taskId) => taskActions.closeTask(taskId),
+  pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),
+  submitTaskAnswer: (taskId) => taskActions.submitTaskAnswer(taskId),
+  skipTaskQuestion: (taskId) => taskActions.skipTaskQuestion(taskId),
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     const text = dom.input.value.trim()
