@@ -13,6 +13,8 @@ export const initialTasks = Object.freeze({
   undo: null,
   /** Tab: the words typed now go the other way than routeOf would send them. */
   flip: false,
+  /** The task that just ended, for the island to say so a moment: { taskId, title, status }. */
+  finished: null,
 })
 
 /** The parts of the state a task's view keeps (the conversation, as it was when the turn left). */
@@ -101,19 +103,24 @@ export function taskActions(handlers) {
       const from = target ? state.messages.findIndex((m) => m.text === target.words && startsTurn(m)) : state.messages.length
       const entry = settled({ ...task, startedAt: state.turn?.startedAt ?? at, endedAt: null, status: 'running', now: null, view: { ...viewOf(state), messages: state.messages.slice(from) } })
       const going = handlers.rewound(state, { conversation, info, folds })
-      return { ...going, tasks: { list: [...state.tasks.list, entry], undo: { taskId: task.id, prefix: going.messages, text }, flip: false } }
+      return { ...going, tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo: { taskId: task.id, prefix: going.messages, text }, flip: false } }
     },
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
 
     task_end: (state, { taskId, stopReason, at }) => {
-      const ended = withTasks(state, {
-        list: state.tasks.list.map((task) => (task.id === taskId
-          ? { ...task, view: handlers.turn_end(task.view, { stopReason, at }), status: ENDED[stopReason] ?? 'done', now: null, endedAt: at }
-          : task)),
-      })
-      return state.tasks.undo?.taskId === taskId ? withTasks(ended, { undo: null }) : ended
+      const task = state.tasks.list.find((entry) => entry.id === taskId)
+      if (!task) return state
+      const status = ENDED[stopReason] ?? 'done'
+      const list = state.tasks.list.map((entry) => (entry.id === taskId
+        ? { ...entry, view: handlers.turn_end(entry.view, { stopReason, at }), status, now: null, endedAt: at }
+        : entry))
+      const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
+      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status } })
     },
+
+    /** The island has said the task ended. */
+    task_finish_seen: (state, { taskId }) => (state.tasks.finished?.taskId === taskId ? withTasks(state, { finished: null }) : state),
 
     task_question: (state, { taskId, questionId, questions, at }) => inView(state, taskId, 'question_request', { questionId, questions, at }),
     task_question_closed: (state, { taskId, questionId, at }) => inView(state, taskId, 'question_closed', { questionId, at }),
@@ -129,11 +136,14 @@ export function taskActions(handlers) {
         conversationId,
         info: { ...state.info, ...info },
         folds: [],
-        tasks: { list: state.tasks.list.filter((entry) => entry.id !== taskId), undo: null, flip: false },
+        tasks: { ...state.tasks, list: state.tasks.list.filter((entry) => entry.id !== taskId), undo: null, flip: false },
       }
     },
 
-    task_closed: (state, { taskId }) => withTasks(state, { list: state.tasks.list.filter((task) => task.id !== taskId) }),
+    task_closed: (state, { taskId }) => withTasks(state, {
+      list: state.tasks.list.filter((task) => task.id !== taskId),
+      finished: state.tasks.finished?.taskId === taskId ? null : state.tasks.finished,
+    }),
   }
 }
 

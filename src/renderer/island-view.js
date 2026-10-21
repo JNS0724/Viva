@@ -1,6 +1,7 @@
 import { optionName } from './approval.js'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.js'
 import { catMood, currentAction, traceItems, truncate } from './selectors.js'
+import { liveTasks } from './tasks-state.js'
 
 /**
  * What the Viva island shows, for both of its hosts: the capsule in the window's title bar (view/island.js)
@@ -76,13 +77,45 @@ function afterTurn(state, base) {
 }
 
 /**
+ * Tasks in the background (tasks-state.js), those that wait on the user first: how many, and a line each
+ * for when the island opens. null with none, so the island is as it always was.
+ */
+function backgroundOf(state) {
+  const live = liveTasks(state)
+  if (!live.length && !state.tasks.finished) return null
+  const items = live
+    .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
+    .map((task) => ({
+      id: task.id, title: task.title, status: task.status, now: task.now, startedAt: task.startedAt,
+      ...(task.permission ? { permission: permissionView(task.permission) } : {}),
+    }))
+  return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, items }
+}
+
+const TASK_ENDED = { done: ['做完了', 'done'], stopped: ['停下了', 'idle'], error: ['出错了', 'error'] }
+
+/**
  * @param {object} state the renderer state (state.js)
  * @returns {IslandView}
  */
 export function islandView(state) {
+  const background = backgroundOf(state)
+  const view = mainView(state, background)
+  return background ? { ...view, background } : view
+}
+
+/**
+ * What the island's head says: the conversation on screen, unless a task waits on the user and it does not
+ * (then the task takes the whole island, named), or a task has just ended while it is quiet.
+ */
+function mainView(state, background) {
   const base = { mood: catMood(state), recent: recentSteps(state) }
   if (state.phase === 'waiting' && state.permission) {
     return { ...base, form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, permission: permissionView(state.permission) }
+  }
+  const asking = background?.items.find((item) => item.permission)
+  if (asking && state.phase !== 'asking') {
+    return { ...base, mood: 'confirm', form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, task: asking.title, permission: asking.permission }
   }
   if (state.phase === 'asking' && state.secret) {
     const { requestId, server } = state.secret
@@ -98,6 +131,12 @@ export function islandView(state) {
     }
   }
   if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: '出错', detail: truncate(state.error, DETAIL_LIMIT) }
+  const finished = state.tasks.finished
+  if (finished) {
+    const [said, tone] = TASK_ENDED[finished.status] ?? TASK_ENDED.done
+    const form = tone === 'error' ? 'error' : 'done'
+    return { ...base, mood: tone === 'idle' ? 'idle' : form, form, tone, label: `#${finished.title} ${said}`, task: finished.title }
+  }
   if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: '连接中' }
   if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: '未连接' }
   if (state.lastReceipt) return afterTurn(state, base)

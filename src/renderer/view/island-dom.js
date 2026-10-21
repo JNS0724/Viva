@@ -2,6 +2,7 @@ import { formatElapsed } from '../selectors.js'
 import { catFor } from './cat.js'
 import { h } from './dom.js'
 import { INPUT_FORMS } from './island-input.js'
+import { backgroundSection, tailCell, taskTag } from './island-tasks.js'
 
 /**
  * The Viva island as an element, for its two hosts: the capsule in the window's title bar ('bar') and the
@@ -72,8 +73,9 @@ function headParts(view, { host, now, tools, shortcut }) {
       ? [label(view.label), more(view.action), time(elapsedSince(view, now)), ring()]
       : [label(view.label), time(elapsedSince(view, now)), view.steps ? more(`· ${view.steps} 步`) : null, ring()]
     case 'waiting':
-    case 'asking': return desk ? [label(view.label)] : [label('需要你处理'), more('↓')]
-    case 'done': return [label(view.label), time(formatElapsed(view.elapsedMs ?? 0)), desk ? more(view.detail) : null]
+    case 'asking': return desk ? [label(view.label), taskTag(view)] : [label('需要你处理'), taskTag(view), more('↓')]
+    // A task in the background that has just ended says only that (island-view.js).
+    case 'done': return view.task ? [label(view.label)] : [label(view.label), time(formatElapsed(view.elapsedMs ?? 0)), desk ? more(view.detail) : null]
     default: return [label(view.label), more(view.detail)]
   }
 }
@@ -90,6 +92,7 @@ const ROLE = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-sec
 function permissionPanel(view, act) {
   const { permission } = view
   return [
+    taskTag(view),
     h('div', { class: 'isl-title', text: permission.title }),
     permission.command ? h('pre', { class: 'isl-detail', text: permission.command, title: permission.command }) : null,
     h('div', { class: 'isl-actions' },
@@ -120,24 +123,28 @@ function coachPanel(act, shortcut) {
   ]
 }
 
-/** Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the steps. */
+/**
+ * Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the
+ * steps and the tasks in the background.
+ */
 function hasPanel(view, host) {
   if (host === 'desk') return OPENS_ITSELF.has(view.form)
-  return !NEEDS_USER.has(view.form) && view.recent.length > 0
+  return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || Boolean(view.background?.items.length))
 }
 
-/** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far. */
+/** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far, then the tasks. */
 function panelParts(view, host, act, shortcut) {
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
   if (host === 'desk') return coachPanel(act, shortcut)
   const working = view.form === 'working'
-  return [
+  const steps = view.recent.length ? [
     stepList(view),
     h('div', { class: 'isl-actions' },
       working ? button('停止', 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
       button('查看完整过程 →', ROLE.text, () => act({ kind: 'trace' }))),
-  ]
+  ] : []
+  return [...steps, backgroundSection(view, act)]
 }
 
 const tool = (label, cls, onClick, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
@@ -238,7 +245,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     signature = next
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
-    head.replaceChildren(...(view.form === 'input' ? [] : headParts(view, { host, now, tools: showTools, shortcut }).filter(Boolean)))
+    head.replaceChildren(...(view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tailCell(view)].filter(Boolean)))
     tools.replaceChildren(...(showTools ? deskTools(view, act) : []))
     if (view.form === 'input') {
       input.sync(view)

@@ -52,6 +52,12 @@ async function moveSteps(win, outDir, expect, hooks) {
   const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(OTHER_ASK)) ?? ''
   const at = answering.indexOf(BUSY_ASK)
   expect(answering && at < 0, 'the agent answering the new words should not see the turn moved', { found: Boolean(answering), around: answering.slice(Math.max(0, at - 300), at + 60) })
+  const island = await run(win, `(() => {
+    const el = document.querySelector('#island .isl')
+    return { tone: el?.dataset.tone, text: el?.textContent ?? '', count: el?.querySelector('.isl-bg b')?.textContent ?? null }
+  })()`)
+  expect(island.tone === 'waiting' && island.text.includes(`#${BUSY_ASK}`) && island.count === '1',
+    'the island should turn to the task that waits, named, with one in the background at its tail', island)
   await run(win, `document.querySelector('#thread .fold-task').scrollIntoView({ block: 'start' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-moved')

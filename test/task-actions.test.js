@@ -1,14 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { createTaskActions } from '../src/renderer/task-actions.js'
+import { createTaskActions, FINISHED_MS } from '../src/renderer/task-actions.js'
 import { liveTasks, taskMessages } from '../src/renderer/tasks-state.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 const WORDS = '整理这周的提交，写成发布说明'
 
 /** A window over the real reducer, with an api whose answers the test hands over when it likes. */
-function windowWith(api) {
+function windowWith(api, deps = {}) {
   let state = [
     { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '做周报', receipt: null }, { role: 'assistant', text: '写好了', receipt: null }], savedAt: 1 },
     { type: 'user_prompt', text: WORDS, at: 10 },
@@ -30,10 +30,12 @@ function windowWith(api) {
     ask: (text) => { said.asked.push(text); dispatch({ type: 'user_prompt', text, at: 60 }); return true },
     steer: (text) => { said.steered.push(text); dispatch({ type: 'user_steer', text }); return true },
     deliver,
+    later: () => {},
+    ...deps,
   })
   /** An event from the main process, as app.js takes it: it waits while a move is on its way. */
   const arrive = (event) => actions.hold(event) || deliver(event)
-  return { actions, said, arrive, state: () => state }
+  return { actions, said, arrive, dispatch, state: () => state }
 }
 
 function deferred() {
@@ -103,6 +105,27 @@ test('an undo that fails passes on what came meanwhile and says so', async () =>
   assert.deepEqual(win.said.toasts, ['dsh 没有回应'])
   assert.equal(liveTasks(win.state()).length, 1)
   assert.deepEqual(win.said.steered, [])
+})
+
+test('the island says a task ended a moment, longer while the user is typing', async () => {
+  const timers = []
+  let typing = true
+  const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async () => {} }, {
+    later: (run, ms) => timers.push({ run, ms }),
+    isTyping: () => typing,
+  })
+  await win.actions.moveAndAsk('明天周会几点？')
+  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
+  win.actions.ended('s1')
+
+  const first = timers.shift()
+  assert.equal(first.ms, FINISHED_MS)
+  first.run()
+  assert.equal(win.state().tasks.finished.taskId, 's1', 'still said while the user types')
+  assert.equal(timers.length, 1, 'it waits another while')
+  typing = false
+  timers.shift().run()
+  assert.equal(win.state().tasks.finished, null)
 })
 
 test('an ended task keeps what it said', async () => {

@@ -10,7 +10,7 @@ import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createRewindActions } from './rewind-actions.js'
 import { createTaskActions } from './task-actions.js'
-import { routeOf } from './tasks-state.js'
+import { liveTasks, routeOf } from './tasks-state.js'
 import { createTimelineActions } from './timeline-actions.js'
 import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.js'
@@ -103,8 +103,10 @@ const ISLAND_ACTIONS = {
   jump: jumpToCard,
   cancel: () => isBusy(state) && handlers.cancel(),
   trace: () => handlers.openDrawer('trace'),
+  /** The conversation's, or one a task in the background waits on (island-view.js background). */
   permission: ({ requestId, optionId }) => {
-    if (state.permission?.requestId === requestId) handlers.respond(requestId, optionId)
+    const asked = [state.permission, ...liveTasks(state).map((task) => task.permission)].some((item) => item?.requestId === requestId)
+    if (asked) handlers.respond(requestId, optionId)
   },
   answer: ({ questionId, id, label }) => {
     if (state.question?.questionId === questionId) handlers.pickOption(id, label)
@@ -264,6 +266,7 @@ const memoryActions = createMemoryActions({ api, getState: () => state, dispatch
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
 const taskActions = createTaskActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask, steer: (text) => steer(text, null), deliver: handleEvent,
+  isTyping: () => Boolean(dom.input.value.trim()),
 })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })

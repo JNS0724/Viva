@@ -6,6 +6,8 @@ import { spinOffTarget, taskMessages } from './tasks-state.js'
  * into it instead. While the main process moves a turn, what the agent says arrives under the turn's new place
  * before the window has moved it too, so it waits and is passed on (`deliver`) once the window has caught up.
  */
+/** How long the island says a task ended (island-view.js), counted while the user is not typing. */
+export const FINISHED_MS = 5000
 const MOVE_FAILED = '没能挪到后台，这句插进了正在做的事'
 const UNDO_FAILED = '没能撤销'
 const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_question_closed'])
@@ -15,10 +17,10 @@ const ofTask = (event) => TASK_EVENTS.has(event?.type) || Boolean(event?.taskId)
  * @param {{
  *   api: object, getState: () => object, dispatch: (action: object) => void, showToast: (text: string) => void,
  *   errorMessage: (err: unknown) => string, ask: (text: string) => boolean, steer: (text: string) => boolean,
- *   deliver: (event: object) => void,
- * }} deps
+ *   deliver: (event: object) => void, isTyping?: () => boolean, later?: (run: () => void, ms: number) => void,
+ * }} deps isTyping: words are in the input; later: setTimeout, for tests
  */
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, ask, steer, deliver }) {
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, ask, steer, deliver, isTyping = () => false, later = setTimeout }) {
   /** While a move is on its way: which events wait ({ keeps }), and those that came. */
   let holding = null
 
@@ -82,10 +84,20 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     if (move.text) steer(move.text)
   }
 
-  /** A task that ended keeps what it said, in its own part of the timeline. */
+  /** The island has said it long enough; not while the user types, who may not have looked up yet. */
+  function settleFinished(taskId) {
+    later(() => {
+      if (getState().tasks.finished?.taskId !== taskId) return
+      if (isTyping()) settleFinished(taskId)
+      else dispatch({ type: 'task_finish_seen', taskId })
+    }, FINISHED_MS)
+  }
+
+  /** A task that ended keeps what it said, in its own part of the timeline; the island says it ended a moment. */
   function ended(taskId) {
     const task = getState().tasks.list.find((entry) => entry.id === taskId)
     if (!task) return
+    settleFinished(taskId)
     api.saveTask(taskId, taskMessages(task))
       .catch((err) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
   }
