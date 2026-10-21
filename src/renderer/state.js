@@ -172,6 +172,31 @@ const ACTION_HANDLERS = {
     }
   },
 
+  /**
+   * Said while the agent works (viva-steer): into the thread at once, the turn going on. What the agent was
+   * writing closes, so its reply to these words starts below them.
+   */
+  user_steer: (state, { text, via = null }) => {
+    const closed = closeStreams(state)
+    const message = { id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
+    return { ...closed, messages: [...closed.messages, message] }
+  },
+
+  /** The words could not reach the agent: they stay in the thread, marked as not sent. */
+  steer_failed: (state, { id }) => ({
+    ...state,
+    messages: state.messages.map((message) => (message.id === id ? { ...message, failed: true } : message)),
+  }),
+
+  /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
+  steer_resent: (state, { at }) => ({
+    ...state,
+    phase: 'working',
+    error: null,
+    island: false,
+    turn: { startedAt: at, tools: 0, thoughts: 0 },
+  }),
+
   acp_update: (state, { update, at }) => {
     const handler = UPDATE_HANDLERS[update?.sessionUpdate]
     return handler ? handler(state, update, at) : state

@@ -8,13 +8,14 @@ import { islandView } from './island-view.js'
 import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
-import { render, renderStream, renderTick } from './view/render.js'
+import { render, renderSendButton, renderStream, renderTick } from './view/render.js'
 import { createScrollFollower } from './view/scroll-follow.js'
 
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'turn_end', 'error'])
+const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'turn_end', 'error'])
+const STEER_LOST = '插话没有送到助手，等这一轮结束后再说一次'
 const api = window.agent
 const byId = (id) => document.getElementById(id)
 /** The title bar makes room for the system window buttons: traffic lights on macOS, caption buttons elsewhere. */
@@ -161,15 +162,54 @@ const historyActions = createHistoryActions({
 })
 
 /**
- * Sends `text` as the user's next question; `via: 'island'` when it was asked on the desktop island.
+ * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
+ * `via: 'island'` when it was asked on the desktop island.
  * @returns {boolean} false when the agent can't take it now
  */
 function ask(text, { via = null } = {}) {
-  if (!text || setupView(state.info) || isBusy(state) || state.switching) return false
+  if (!text || setupView(state.info) || state.switching) return false
+  if (isBusy(state)) return steer(text, via)
   dom.follower.resetForPrompt()
   dispatch({ type: 'user_prompt', text, at: Date.now(), via })
   api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   return true
+}
+
+/** Words said as a turn was ending: sent as the next question once it has ended. */
+let afterTurn = []
+
+/**
+ * Said while the agent works: into the running turn, which reads it at its next step (the viva-steer plugin).
+ * Should that turn have just ended, the words go as the next question; should they not get through at all,
+ * they stay in the thread marked as not sent.
+ */
+function steer(text, via) {
+  dispatch({ type: 'user_steer', text, via })
+  const { id } = state.messages.at(-1)
+  api.steer(text)
+    .then((result) => {
+      if (result.ok) return
+      if (result.reason !== 'idle') throw new Error(STEER_LOST)
+      if (isBusy(state)) afterTurn = [...afterTurn, text]
+      else resend(text)
+    })
+    .catch((err) => {
+      dispatch({ type: 'steer_failed', id })
+      historyActions.showToast(errorMessage(err) || STEER_LOST)
+    })
+  return true
+}
+
+function resend(text) {
+  dispatch({ type: 'steer_resent', at: Date.now() })
+  api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+}
+
+function sendAfterTurn() {
+  if (!afterTurn.length) return
+  const text = afterTurn.join('\n\n')
+  afterTurn = []
+  resend(text)
 }
 
 /** Answers the agent's open question; the reply shows at once, like an approval. */
@@ -220,6 +260,8 @@ const handlers = {
       answer(answersFrom(state.question, text))
       dom.input.value = ''
     } else if (ask(text)) dom.input.value = ''
+    // Emptied while the agent works, the button goes back to stopping it.
+    renderSendButton(dom, state)
   },
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
   pickOption(id, label) {
@@ -345,11 +387,11 @@ const EVENT_ACTIONS = {
 function wireComposer() {
   dom.composer.addEventListener('submit', (event) => {
     event.preventDefault()
-    // While the agent asks, words in the composer answer it; with none, the button stops the turn.
-    if (state.question && dom.input.value.trim()) handlers.send()
-    else if (isBusy(state)) handlers.cancel()
+    // Words in the composer go in (an answer while the agent asks, else into the turn); with none, it stops.
+    if (isBusy(state) && !dom.input.value.trim()) handlers.cancel()
     else handlers.send()
   })
+  dom.input.addEventListener('input', () => renderSendButton(dom, state))
   dom.input.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
     event.preventDefault()
@@ -435,7 +477,11 @@ async function boot() {
     const toAction = EVENT_ACTIONS[event?.type]
     if (toAction) dispatch(toAction(event))
     if (event?.type === 'ready') reportMcpProblems(event.info)
-    if (event?.type === 'turn_end') filesActions.filesAfterTurn()
+    if (event?.type === 'turn_end') {
+      filesActions.filesAfterTurn()
+      sendAfterTurn()
+    }
+    if (event?.type === 'error') afterTurn = []
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory()])
   wireComposer()

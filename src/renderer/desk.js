@@ -4,8 +4,9 @@ import { createIslandInput } from './view/island-input.js'
 /**
  * The page of the desktop island's window (src/main/desk-island.js): the same island as in the title bar,
  * fed by the main process with what the window's island shows. Clicks go back as actions; the main process
- * checks them and passes them on to the window. Here too: the input (the shortcut, or files dropped on the
- * island), and moving the island, which the main process does while the user holds it.
+ * checks them and passes them on to the window. Here too: the input (the shortcut, a click on the resting
+ * cat, or files dropped on the island), moving the island, which the main process does while the user holds
+ * it, its right-click menu, which the main process shows, and the first-time note on what it can do.
  */
 const TICK_MS = 1000
 /** Moved this far with the button down, a press on the island is a drag, not a click. */
@@ -14,7 +15,10 @@ const MAX_FILES = 10
 const IDLE_VIEW = Object.freeze({ form: 'idle', tone: 'idle', mood: 'idle', label: '', recent: [] })
 const api = window.desk
 
-/** From the main process: the window's view, the form to show, where the island sits, whether it is dragged. */
+/**
+ * From the main process: the window's view, the form to show, where the island sits, whether it is dragged,
+ * whether the user has yet to see what it can do (coach).
+ */
 let payload = null
 /** The input's own state: files dropped so far, the last refusal, files being dragged over (their count). */
 let files = []
@@ -29,27 +33,26 @@ const input = createIslandInput({
     show()
   },
 })
-const island = createIsland('desk', (action) => api.act(action), { input })
+const island = createIsland('desk', (action) => api.act(action), { input, shortcut: api.shortcut })
 const stage = document.getElementById('desk')
 stage.append(island.el)
 
 /** Why the input cannot take a question now, if it cannot. */
 function busyOf(view) {
-  if (view.form === 'working') return { action: view.action }
-  if (view.form === 'pending') return { text: '还没连上，先打开窗口看看' }
-  return null
+  return view.form === 'pending' ? { text: '还没连上，先打开窗口看看' } : null
 }
 
 /** What the island shows now, from what the main process said and what happens on this page. */
 function shownView() {
   const view = payload?.view ?? IDLE_VIEW
   if (dropping) return { form: 'drop', tone: 'done', mood: 'idle', label: '交给 Viva', recent: [], count: dropping }
-  if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle' }
+  if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle', dragging: true }
   // While the agent waits on the user the input steps aside: what it waits on comes first.
   if (payload?.form === 'input' && view.form !== 'waiting' && view.form !== 'asking') {
-    return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), files, error }
+    // While the agent works, what is asked goes into the turn it is on.
+    return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), steering: view.form === 'working', files, error }
   }
-  // After a turn the island rests as just the cat before it goes.
+  if (payload?.form === 'mini' && payload.coach) return { form: 'coach', tone: 'done', mood: 'idle', label: 'Viva 在这儿', recent: [] }
   return payload?.form === 'mini' ? { ...view, form: 'mini', tone: 'idle', mood: 'idle' } : view
 }
 
@@ -76,8 +79,9 @@ api.onView((next) => {
     error = null
   }
   payload = next
-  Object.assign(stage.dataset, { align: next.align, dir: next.dir })
+  Object.assign(stage.dataset, { align: next.align, dir: next.dir, dragging: String(Boolean(next.dragging)) })
   island.el.dataset.dir = next.dir
+  island.setPointer(Boolean(next.hover))
   show()
 })
 setInterval(show, TICK_MS)
@@ -89,14 +93,20 @@ function reportRect() {
   api.act({ kind: 'rect', x, y, width, height })
 }
 new ResizeObserver(reportRect).observe(island.el)
-new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFilter: ['data-align', 'data-dir'] })
+new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFilter: ['data-align', 'data-dir', 'data-dragging'] })
 
 // Holding the island and moving it drags it; the main process moves the window with the pointer, and the
-// island shrinks to its cat meanwhile. The click that ends a drag is not a click on the island.
+// island shrinks to its cat meanwhile. It moves at this page's frames, so in step with the screen at any
+// refresh rate, and not at all while the pointer rests. The click that ends a drag is not a click on the island.
 let press = null
 let dragged = false
+let frame = 0
+function dragFrame() {
+  api.act({ kind: 'drag', phase: 'move' })
+  frame = requestAnimationFrame(dragFrame)
+}
 island.el.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0 || event.target.closest('textarea, .isl-panel button')) return
+  if (event.button !== 0 || event.target.closest('textarea, button:not(.isl-head)')) return
   press = { x: event.screenX, y: event.screenY, id: event.pointerId }
   dragged = false
 })
@@ -106,8 +116,10 @@ island.el.addEventListener('pointermove', (event) => {
   dragged = true
   island.el.setPointerCapture(press.id)
   api.act({ kind: 'drag', phase: 'start' })
+  frame = requestAnimationFrame(dragFrame)
 })
 const endPress = () => {
+  cancelAnimationFrame(frame)
   if (dragged) api.act({ kind: 'drag', phase: 'end' })
   press = null
 }
@@ -119,6 +131,12 @@ island.el.addEventListener('click', (event) => {
   event.stopPropagation()
   event.preventDefault()
 }, true)
+
+// The right-click menu is the main process's: a menu of the system's, not of the page.
+island.el.addEventListener('contextmenu', (event) => {
+  event.preventDefault()
+  api.act({ kind: 'menu' })
+})
 
 // Files dragged from any app onto the island: it opens to take them, and dropping opens the input with them.
 // While files are over it the page hears dragover again and again; when that stops, they have gone.

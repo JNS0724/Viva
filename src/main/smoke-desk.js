@@ -4,9 +4,11 @@ import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smo
 /**
  * The desktop island's input in the walkthrough smoke run (smoke.js): opened as by the shortcut, it takes the
  * keyboard; files dragged over it open it up; a file the system gives no path for is refused; a question
- * typed there lands in the window's conversation, marked as asked on the island.
+ * typed there lands in the window's conversation, marked as asked on the island; asked again while the agent
+ * works, it goes into that turn, marked as said while it worked.
  */
 const QUESTION = '在岛上问一句'
+const STEER = '顺便用英文回答'
 
 const INPUT_STATE = `(() => {
   const island = document.querySelector('.isl')
@@ -43,11 +45,16 @@ const ASKED_IN_THREAD = `(() => {
   return Boolean(last?.textContent.includes(${JSON.stringify(QUESTION)}) && document.querySelector('.msg-via'))
 })()`
 
-/** While the agent is on the turn the input cannot be typed in, or steps aside for what the agent waits on. */
-const NOT_TAKING = `(() => {
-  const form = document.querySelector('.isl')?.dataset.form
-  const field = document.querySelector('.isl-field')
-  return (form === 'waiting' || (form === 'input' && field?.disabled)) && form
+/** While the agent is on the turn the input takes words for that turn. */
+const STEERING = `(() => {
+  const field = document.querySelector('.isl')?.dataset.form === 'input' && document.querySelector('.isl-field')
+  return field && !field.disabled && field.placeholder.includes('插话') && field.placeholder
+})()`
+
+const STEERED_IN_THREAD = `(() => {
+  const last = [...document.querySelectorAll('.msg-user')].at(-1)
+  const note = last?.nextElementSibling
+  return Boolean(last?.textContent.includes(${JSON.stringify(STEER)}) && note?.textContent.includes('工作中插话') && !note.textContent.includes('没有送到'))
 })()`
 
 /** @returns {Promise<string[]>} failures */
@@ -55,8 +62,6 @@ export async function checkDeskAsk(win, outDir, desk) {
   if (!desk) return ['the desktop island was not created']
   desk.force(true)
   try {
-    // The shortcut opens the island's input only with the window away; hidden, nothing can bring it back in front.
-    win.hide()
     if (!desk.openInput()) return ['the desktop island would not open its input']
     const page = { webContents: desk.webContents() }
     const logged = []
@@ -79,14 +84,15 @@ export async function checkDeskAsk(win, outDir, desk) {
     await until(win, ASKED_IN_THREAD, 'the question asked on the island in the thread')
     await until(page, `document.querySelector('.isl')?.dataset.form !== 'input'`, 'the island input closing once it was sent')
     desk.openInput()
-    const busy = await until(page, NOT_TAKING, 'the island input not taking a question while the agent works')
+    const steering = await until(page, STEERING, 'the island input taking words for the turn while the agent works')
     await wait(UI_WAIT_MS)
-    await capture(page, outDir, 'desk-busy')
+    await capture(page, outDir, 'desk-steer')
+    await run(page, typeAndSend(STEER))
+    await until(win, STEERED_IN_THREAD, 'the words said on the island in the thread, into the running turn')
     desk.closeInput()
-    win.showInactive()
     await finishTurn(win)
     await capture(win, outDir, 'desk-asked')
-    report(`desk input: ${JSON.stringify({ opened, drop, refused, busy })}`)
+    report(`desk input: ${JSON.stringify({ opened, drop, refused, steering })}`)
 
     const failures = []
     if (!opened.focused) failures.push('the island input should take the keyboard')
@@ -96,6 +102,5 @@ export async function checkDeskAsk(win, outDir, desk) {
   } finally {
     desk.closeInput()
     desk.force(false)
-    if (!win.isVisible()) win.showInactive()
   }
 }

@@ -269,3 +269,23 @@ test('while a conversation switch is in flight nothing can be sent, and any outc
   assert.equal(reduce(switching, { type: 'error', message: 'x' }).switching, false)
   assert.equal(initialState.switching, false)
 })
+
+test('words said while the agent works join the thread mid-turn; its reply to them starts below them', () => {
+  const state = run([prompt, chunk('agent_message_chunk', '正在写'), { type: 'user_steer', text: '改成英文', via: 'island' }, chunk('agent_message_chunk', 'OK')])
+
+  assert.deepEqual(state.messages.map((m) => [m.role, m.text, Boolean(m.steered)]), [
+    ['user', '整理文件', false], ['assistant', '正在写', false], ['user', '改成英文', true], ['assistant', 'OK', false],
+  ])
+  assert.equal(state.messages[2].via, 'island')
+  assert.deepEqual([state.phase, state.turn.startedAt], ['working', T0], 'the same turn goes on')
+})
+
+test('words that did not get through stay marked; words said as the turn ended start the next one', () => {
+  const said = run([prompt, { type: 'user_steer', text: '还有一件事' }])
+  const failed = reduce(said, { type: 'steer_failed', id: said.messages[1].id })
+  assert.equal(failed.messages[1].failed, true)
+
+  const ended = reduce(said, { type: 'turn_end', stopReason: 'end_turn', at: T0 + 50 })
+  const resent = reduce(ended, { type: 'steer_resent', at: T0 + 60 })
+  assert.deepEqual([resent.phase, resent.turn.startedAt, resent.messages.length], ['working', T0 + 60, ended.messages.length], 'no second copy of the words')
+})

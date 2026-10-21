@@ -5,15 +5,17 @@ import { h } from './dom.js'
  * The desktop island's input (desk.js): what the user asks from any app, with the shortcut or by dropping
  * files on the island. The text field is made once and kept, so what is typed survives the island's
  * changes of shape; the rest is drawn from the view:
- *   { form: 'input', busy?: { action?: string, text?: string }, files: { path, name, size }[], error?: string }
+ *   { form: 'input', busy?: { text: string }, steering?: boolean, files: { path, name, size }[], error?: string }
+ * steering: the agent is working, so what is asked goes into its turn (app.js steer).
  * and, while files are dragged over the island, { form: 'drop', count }.
  */
 export const INPUT_FORMS = new Set(['input', 'drop'])
 const PLACEHOLDER = '问 Viva…'
 const PLACEHOLDER_FILES = '要它做什么？直接按「总结」也行'
-export const BUSY_TEXT = '正在忙，完成后再问'
+const PLACEHOLDER_STEER = '插话：补充或修改要求…'
 const SUMMARIZE = '总结'
 const TARGET = '发到当前对话'
+const TARGET_STEER = '助手正在工作，下一步就会读到'
 
 /**
  * @param {{ send: (text: string) => void, dismiss: () => void, removeFile: (path: string) => void }} handlers
@@ -41,7 +43,7 @@ export function createIslandInput({ send, dismiss, removeFile }) {
   /** The field as the view wants it: open for typing, or showing why it is not. */
   function sync(view) {
     field.disabled = Boolean(view.busy)
-    field.placeholder = view.busy ? BUSY_TEXT : view.files.length ? PLACEHOLDER_FILES : PLACEHOLDER
+    field.placeholder = view.busy?.text ?? (view.steering ? PLACEHOLDER_STEER : view.files.length ? PLACEHOLDER_FILES : PLACEHOLDER)
     enter.hidden = Boolean(view.busy)
     ready()
   }
@@ -61,19 +63,18 @@ export function createIslandInput({ send, dismiss, removeFile }) {
         h('span', { text: `${view.count > 1 ? `${view.count} 个文件` : '文件'} · 只交给助手文件路径，不复制` }))]
     }
     const error = view.error ? h('div', { class: 'isl-error', role: 'alert', text: view.error }) : null
-    if (view.busy) {
-      return [hint(view.busy.text ?? (view.busy.action || '正在工作'), h('span', { class: 'isl-push', text: 'Esc 收起' })), error]
-    }
+    if (view.busy) return [hint(h('span', { class: 'isl-push', text: 'Esc 收起' })), error]
+    const target = view.steering ? TARGET_STEER : TARGET
     if (view.files.length) {
       return [
         h('div', { class: 'isl-files' }, view.files.map(fileChip)),
         h('div', { class: 'isl-actions' },
           h('button', { type: 'button', class: 'isl-btn isl-btn-blue', text: SUMMARIZE, onClick: () => send(SUMMARIZE) }),
-          hint(TARGET)),
+          hint(target)),
         error,
       ]
     }
-    return [hint(TARGET, h('span', { class: 'isl-push', text: 'Shift+Enter 换行 · Esc 收起' })), error]
+    return [hint(target, h('span', { class: 'isl-push', text: 'Shift+Enter 换行 · Esc 收起' })), error]
   }
 
   return {

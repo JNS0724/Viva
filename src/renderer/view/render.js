@@ -65,24 +65,32 @@ function renderToastIfChanged(container, toast, handlers) {
 }
 
 const ANSWER_PLACEHOLDER = '输入你的回答 · Enter 发送'
+const STEER_PLACEHOLDER = '补充或修改要求，助手下一步就会读到 · Enter 发送'
 
 /**
  * While the agent cannot start, the composer is disabled and says why; while switching, only sending waits;
- * while the agent asks, it takes the answer.
+ * while the agent asks, it takes the answer; while it works, what is typed goes into the turn.
  */
-function renderComposerAvailability(dom, setup, switching, asking) {
+function renderComposerAvailability(dom, setup, switching, { asking, busy }) {
   dom.input.dataset.placeholder ??= dom.input.placeholder
   dom.input.disabled = Boolean(setup)
-  dom.input.placeholder = setup?.placeholder ?? (asking ? ANSWER_PLACEHOLDER : dom.input.dataset.placeholder)
+  const placeholder = asking ? ANSWER_PLACEHOLDER : busy ? STEER_PLACEHOLDER : dom.input.dataset.placeholder
+  dom.input.placeholder = setup?.placeholder ?? placeholder
   dom.sendBtn.disabled = Boolean(setup) || switching
 }
 
+/** While the agent works the button stops it, unless there are words to send into the turn. */
+export function renderSendButton(dom, state) {
+  const stops = isBusy(state) && !dom.input.value.trim()
+  if (dom.sendBtn.dataset.busy === String(stops)) return
+  dom.sendBtn.dataset.busy = String(stops)
+  dom.sendBtn.setAttribute('aria-label', stops ? '停止' : '发送')
+  dom.sendBtn.replaceChildren(icon(stops ? 'stop' : 'send', 22))
+}
+
 function renderComposer(dom, state, handlers) {
-  renderComposerAvailability(dom, setupView(state.info), state.switching, Boolean(state.question))
-  const busy = isBusy(state)
-  dom.sendBtn.dataset.busy = String(busy)
-  dom.sendBtn.setAttribute('aria-label', busy ? '停止' : '发送')
-  dom.sendBtn.replaceChildren(icon(busy ? 'stop' : 'send', 22))
+  renderComposerAvailability(dom, setupView(state.info), state.switching, { asking: Boolean(state.question), busy: isBusy(state) })
+  renderSendButton(dom, state)
   dom.context.textContent = `@ ${workspaceName(state.info.cwd)}`
   dom.toggleDrawer.setAttribute('aria-pressed', String(Boolean(state.drawer)))
   renderModelPicker(dom, state, handlers)

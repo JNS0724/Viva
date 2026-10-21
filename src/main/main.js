@@ -2,13 +2,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, powerSaveBlocker, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
 import { APP_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
 import { createAcpBridge } from './acp-bridge.js'
 import { createDeskIsland } from './desk-island.js'
+import { leaveFullScreen } from './full-screen.js'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.js'
 import { ensureDshProfile } from './dsh-profile.js'
 import { dshEnv, restartDelay } from './dsh-runtime.js'
@@ -18,6 +19,7 @@ import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.js'
+import { createTray } from './tray.js'
 import { adoptLegacyData, LEGACY_NAME } from './legacy-data.js'
 import { externalUrl } from './links.js'
 import { createMcpConfigStore, parseServerInput } from './mcp-config.js'
@@ -70,6 +72,8 @@ let conversation = null
 let win = null
 /** The island on the desktop, shown while the window is in the background (desk-island.js). */
 let desk = null
+/** The tray icon, made the first time the window is closed to it (tray.js). */
+let tray = null
 /** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
 let shortcutHeld = null
 let bridge = null
@@ -356,6 +360,12 @@ function registerAgentIpc() {
     turn = { active: true, startedAt: Date.now() }
     return agent.prompt(question)
   })
+  /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
+  ipcMain.handle('agent:steer', (_event, text) => {
+    const words = assertText(text, 'steer', MAX_PROMPT_CHARS)
+    if (!turn.active) return { ok: false, reason: 'idle' }
+    return requireBridge().steer(words)
+  })
   ipcMain.handle('agent:cancel', () => bridge?.cancel())
   ipcMain.handle('agent:new-session', async () => {
     if (!bridge) {
@@ -389,7 +399,7 @@ function registerAgentIpc() {
   })
 }
 
-/** Brings the window to the front, from the desktop island. */
+/** Brings the window to the front: from the desktop island, the tray, the Dock or a second launch. */
 function showWindow() {
   if (!win || win.isDestroyed()) return
   if (win.isMinimized()) win.restore()
@@ -411,7 +421,29 @@ function registerShortcut(config) {
   })
 }
 
-/** The desktop island follows whether the window is in front; a smoke run turns it on only when it checks it. */
+/** Closing the window keeps Viva running in the tray, with the island on the desktop. */
+function closeToTray() {
+  // A full-screen window hidden as it is would leave its Space behind, black (full-screen.js).
+  if (win.isFullScreen()) leaveFullScreen(win, hideToTray)
+  else hideToTray()
+}
+
+function hideToTray() {
+  win.hide()
+  tray ??= createTray({
+    Tray, Menu, nativeImage,
+    iconDir: path.join(APP_ROOT, 'src', 'assets', 'tray'),
+    platform: process.platform,
+    onOpen: showWindow,
+    onQuit: () => app.quit(),
+  })
+  desk?.setAway(true)
+}
+
+/**
+ * The desktop island comes out when the window is closed to the tray and goes when it is shown again; a smoke
+ * run turns it on only when it checks it, and closes the window for real.
+ */
 function attachDeskIsland(config) {
   deskAllowed = !config.smoke
   desk = createDeskIsland({
@@ -422,14 +454,31 @@ function attachDeskIsland(config) {
     mainWindow: win,
     enabled: deskAllowed && preferences.get().deskIsland,
     places: { get: () => preferences.get().deskPlaces, set: (places) => preferences.set('deskPlaces', places) },
+    coach: { get: () => preferences.get().deskCoached, set: () => preferences.set('deskCoached', true) },
   })
-  const follow = () => desk?.setForeground(windowInFront())
-  for (const event of ['focus', 'blur', 'show', 'hide', 'minimize', 'restore']) win.on(event, follow)
+  win.on('close', (event) => {
+    if (quitting || config.smoke) return
+    event.preventDefault()
+    closeToTray()
+  })
+  win.on('show', () => desk?.setAway(false))
+  // Windows logging off or shutting down closes the window for real, or it would hold the session up.
+  win.on('session-end', () => {
+    quitting = true
+  })
   win.on('closed', () => {
     desk?.destroy()
     desk = null
   })
 }
+
+/** The desktop island's switch, from settings or from 关闭桌面岛 in the island's menu. */
+function setDeskIsland(on) {
+  preferences.set('deskIsland', on)
+  desk?.setEnabled(on && deskAllowed)
+}
+
+const switchOffDesk = () => setDeskIsland(false)
 
 function registerSettingsIpc() {
   ipcMain.handle('shell:open-link', (_event, url) => shell.openExternal(externalUrl(url)))
@@ -440,8 +489,7 @@ function registerSettingsIpc() {
   })
   ipcMain.handle('settings:set-desk-island', (_event, on) => {
     if (typeof on !== 'boolean') throw new Error('invalid desk island switch')
-    preferences.set('deskIsland', on)
-    desk?.setEnabled(on && deskAllowed)
+    setDeskIsland(on)
     return settingsView()
   })
   ipcMain.handle('settings:reset-desk-place', () => {
@@ -590,11 +638,9 @@ function createWindow(config) {
 isolateSmokeUserData()
 // dsh's home is the app's own now, so a second copy of the app would share it: hand over to the first.
 if (!app.requestSingleInstanceLock()) app.exit(0)
-app.on('second-instance', () => {
-  if (!win || win.isDestroyed()) return
-  if (win.isMinimized()) win.restore()
-  win.focus()
-})
+app.on('second-instance', () => showWindow())
+// macOS: clicking the Dock icon brings back a window closed to the tray.
+app.on('activate', () => showWindow())
 
 /** The memory smoke run's stand-in model, kept so the run can check what the model was sent. */
 let smokeModel = null
@@ -656,7 +702,7 @@ app.whenReady().then(async () => {
   })
   registerAgentIpc()
   registerSettingsIpc()
-  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, busy: () => turn.active, showWindow })
+  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: switchOffDesk })
   const config = currentConfig()
   registerFilesIpc(ipcMain, { root: () => config.cwd, shell, notify: emitToRenderer })
   if (config.smokePhase === 'memory') await startSmokeModel()
@@ -689,6 +735,7 @@ app.on('before-quit', (event) => {
 })
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  tray?.destroy()
   clearInterval(lateMemoryTimer)
   historyDb?.close()
   memoryDb?.close()

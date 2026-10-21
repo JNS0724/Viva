@@ -13,6 +13,8 @@ export const ASK_LIMITS = Object.freeze({ chars: 4000, files: 10, pathChars: 102
 /** The island's place in its window, in pixels (desk-place.js DESK_SIZE, with room to spare). */
 const MAX_RECT_PX = 2000
 
+const DRAG_PHASES = new Set(['start', 'move', 'end'])
+
 const isText = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max
 const isPx = (value) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_RECT_PX
 
@@ -33,10 +35,14 @@ const ACTIONS = {
   /** Files dropped on the island, or the input closed with Esc. */
   input: () => ({ kind: 'input' }),
   dismiss: () => ({ kind: 'dismiss' }),
+  /** The right-click menu, and the first-time note seen. */
+  menu: () => ({ kind: 'menu' }),
+  coached: () => ({ kind: 'coached' }),
   rect: ({ x, y, width, height }) => ([x, y, width, height].every(isPx) && width >= 0 && height >= 0
     ? { kind: 'rect', x, y, width, height }
     : null),
-  drag: ({ phase }) => (phase === 'start' || phase === 'end' ? { kind: 'drag', phase } : null),
+  /** Held and moved: start, a move at each frame the page draws meanwhile, end. */
+  drag: ({ phase }) => (DRAG_PHASES.has(phase) ? { kind: 'drag', phase } : null),
   permission: ({ requestId, optionId }) => (isText(requestId, MAX_ID_CHARS) && isText(optionId, MAX_ID_CHARS)
     ? { kind: 'permission', requestId, optionId }
     : null),

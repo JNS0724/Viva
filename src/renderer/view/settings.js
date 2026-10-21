@@ -80,7 +80,7 @@ function deskSection(settings, handlers) {
     h('label', { class: 'pref-row' },
       h('span', { class: 'pref-copy' },
         h('span', { class: 'profile-heading', text: '桌面岛' }),
-        h('span', { class: 'help', text: '窗口在后台时显示助手在做什么，需要你确认时可以直接在上面处理。可以拖到屏幕任意位置。' }),
+        h('span', { class: 'help', text: '关闭窗口后 Viva 留在托盘里，桌面岛显示助手在做什么，需要你确认时可以直接在上面处理。可以拖到屏幕任意位置。' }),
         shortcutLine(settings)),
       h('input', {
         type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': '桌面岛',

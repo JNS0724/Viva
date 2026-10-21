@@ -14,4 +14,6 @@ contextBridge.exposeInMainWorld('desk', {
   /** @param {File[]} files from a drop @returns {Promise<{ files?: object[], error?: string }>} */
   describeFiles: (files) => ipcRenderer.invoke('island:files', Array.from(files, (file) => webUtils.getPathForFile(file))),
   ask: (text, files) => ipcRenderer.invoke('island:ask', { text, files }),
+  /** The ask shortcut as the user presses it (island-main.js ASK_SHORTCUT). */
+  shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl+Shift+Space',
 })

@@ -15,6 +15,11 @@ export const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
 const TOP_GAP = 6
 /** Dropped this close to home, the island goes home. */
 const SNAP_PX = 48
+/**
+ * While dragged the window shrinks to the cat and a little room for its shadow (island.css data-dragging):
+ * a transparent window costs in proportion to its area every time it moves, so the smaller the better.
+ */
+export const DRAG_SIZE = Object.freeze({ width: 72, height: 72 })
 
 /** @typedef {{ x: number, y: number, width: number, height: number }} Area */
 /** @typedef {{ x: number, y: number }} Point the centre of the island's head, on the screen */
@@ -39,19 +44,23 @@ export function keepInside(point, area) {
 /**
  * @param {Point} point
  * @param {Area} area
- * @param {{ dragging?: boolean }} [options] while dragging the island stays under the pointer, near a side too
  * @returns {{ bounds: Area, align: 'start' | 'center' | 'end', dir: 'down' | 'up' }}
  */
-export function deskLayout(point, area, { dragging = false } = {}) {
+export function deskLayout(point, area) {
   const { width, height } = DESK_SIZE
   const dir = point.y > area.y + area.height / 2 ? 'up' : 'down'
   let align = 'center'
-  if (!dragging && point.x - area.x < width / 2) align = 'start'
-  else if (!dragging && area.x + area.width - point.x < width / 2) align = 'end'
+  if (point.x - area.x < width / 2) align = 'start'
+  else if (area.x + area.width - point.x < width / 2) align = 'end'
   const x = { start: area.x, end: area.x + area.width - width, center: Math.round(point.x - width / 2) }[align]
   const y = dir === 'down' ? point.y - HEAD / 2 - STAGE_PAD.end : point.y + HEAD / 2 + STAGE_PAD.end - height
-  const top = dragging ? Math.round(y) : Math.round(clamp(y, area.y, area.y + area.height - height))
+  const top = Math.round(clamp(y, area.y, area.y + area.height - height))
   return { bounds: { x, y: top, width, height }, align, dir }
+}
+
+/** @param {Point} point @returns {Area} the dragged window, its cat centred on `point` */
+export function dragBounds(point) {
+  return { x: Math.round(point.x - DRAG_SIZE.width / 2), y: Math.round(point.y - DRAG_SIZE.height / 2), ...DRAG_SIZE }
 }
 
 /** @returns {Place | null} where a dropped island stays; null when it went home */

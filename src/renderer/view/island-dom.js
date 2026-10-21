@@ -10,7 +10,12 @@ import { INPUT_FORMS } from './island-input.js'
  * left in every form. What it shows comes from islandView (island-view.js).
  *
  * Actions go to `act`: toggle, jump (to the card in the thread), cancel, trace, open (the window),
- * permission { requestId, optionId }, answer { questionId, id, label }.
+ * input (the desktop's), coached, permission { requestId, optionId }, answer { questionId, id, label }.
+ *
+ * In the title bar a click unfolds the steps. On the desktop the island is glanced at from another app, so
+ * it never unfolds the steps: it opens by itself only for what needs the user (and, once, to say what it
+ * can do), and a pointer resting on it shows what it can do instead: stop, open the window, the grip to
+ * drag it by, and, when idle, that it takes questions and files.
  *
  * On the desktop the island may also be an input (island-input.js), given as `input`: its forms are as wide
  * as the input, always open, and their field lies over the head.
@@ -24,8 +29,15 @@ const SIZES = {
   desk: { head: 48, panel: 392, maxHead: 420, cat: 36, input: 560 },
 }
 
-/** Forms whose panel opens by itself on the desktop: they need the user. */
+/** Forms that need the user; on the desktop their panel opens by itself, as does the first-time note. */
 const NEEDS_USER = new Set(['waiting', 'asking'])
+const OPENS_ITSELF = new Set([...NEEDS_USER, 'coach'])
+/**
+ * On the desktop, a pointer resting this long on the island shows what it can do; one passing by does not.
+ * Once it leaves, the island waits a little before it shrinks, so a pointer slipping off the edge does not jolt it.
+ */
+const HOVER_MS = 200
+const LEAVE_MS = 400
 
 function ring() {
   const svg = document.createElementNS(NS, 'svg')
@@ -42,14 +54,20 @@ function ring() {
 
 const elapsedSince = (view, now) => formatElapsed(now - (view.startedAt ?? now))
 
-/** What sits beside the cat: the label and, depending on the host, a few words more. */
-function headParts(view, host, now) {
+/**
+ * What sits beside the cat: the label and, depending on the host, a few words more.
+ * @param {{ host: string, now: number, tools: boolean, shortcut: string }} context tools: the pointer rests on it
+ */
+function headParts(view, { host, now, tools, shortcut }) {
   const label = (text) => h('b', { class: 'isl-label', text })
   const time = (text) => h('span', { class: 'isl-time', text })
   const more = (text) => (text ? h('span', { class: 'isl-more', text }) : null)
   const desk = host === 'desk'
   switch (view.form) {
-    case 'mini': return []
+    case 'mini': return tools
+      ? [h('span', { class: 'isl-ask', text: '问 Viva，或把文件拖过来' }), h('span', { class: 'isl-kbd', text: shortcut })]
+      : []
+    case 'coach': return [label(view.label)]
     case 'working': return desk
       ? [label(view.label), more(view.action), time(elapsedSince(view, now)), ring()]
       : [label(view.label), time(elapsedSince(view, now)), view.steps ? more(`· ${view.steps} 步`) : null, ring()]
@@ -87,29 +105,54 @@ function questionPanel(view, act) {
   ]
 }
 
-/** Whether the form has something to unfold: the desktop's questions, else the steps so far. */
-function hasPanel(view, host) {
-  if (host === 'desk' && NEEDS_USER.has(view.form)) return true
-  if (NEEDS_USER.has(view.form) || view.form === 'mini' || !view.recent.length) return false
-  return host === 'bar' || view.form === 'working'
+/** The first time the cat rests on the desktop: what it can do, which nothing on it shows otherwise. */
+function coachPanel(act, shortcut) {
+  const tips = [`点我，或在任何应用里按 ${shortcut}，随时提问`, '把文件拖到我身上，交给我处理', '按住可以拖到别处；右键看更多']
+  return [
+    h('ul', { class: 'isl-tips' }, tips.map((text) => h('li', { text }))),
+    h('div', { class: 'isl-actions' }, button('知道了', 'isl-btn-blue', () => act({ kind: 'coached' }))),
+  ]
 }
 
-/** The unfolded part: what the agent waits on (desktop), or the steps so far with stop while it works. */
-function panelParts(view, host, act) {
+/** Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the steps. */
+function hasPanel(view, host) {
+  if (host === 'desk') return OPENS_ITSELF.has(view.form)
+  return !NEEDS_USER.has(view.form) && view.recent.length > 0
+}
+
+/** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far. */
+function panelParts(view, host, act, shortcut) {
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
+  if (host === 'desk') return coachPanel(act, shortcut)
   const working = view.form === 'working'
   return [
     stepList(view),
     h('div', { class: 'isl-actions' },
       working ? button('停止', 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
-      host === 'desk' ? button('打开窗口', 'isl-btn-ghost', () => act({ kind: 'open' })) : button('查看完整过程 →', 'isl-btn-ghost', () => act({ kind: 'trace' }))),
+      button('查看完整过程 →', 'isl-btn-ghost', () => act({ kind: 'trace' }))),
   ]
 }
 
-/** In the title bar a click unfolds the steps, or, when the agent waits on the user, goes to the card. */
+const tool = (label, cls, onClick, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
+
+/**
+ * On the desktop, with the pointer resting on the island: stop while it works, the window when a click
+ * would not open it, and the grip it is dragged by.
+ */
+function deskTools(view, act) {
+  const grip = h('span', { class: 'isl-grip', title: '按住拖动', 'aria-hidden': 'true' })
+  if (view.form === 'working') return [tool('停止', 'isl-tool-stop', () => act({ kind: 'cancel' })), grip]
+  if (view.form === 'mini') return [tool('打开窗口', 'isl-tool-open', () => act({ kind: 'open' }), '↗'), grip]
+  return [grip]
+}
+
+/**
+ * A click on the head. On the desktop: the resting cat takes a question, anything else opens the window.
+ * In the title bar it unfolds the steps, or, when the agent waits on the user, goes to the card.
+ */
 function headAction(view, host, unfolds) {
-  if (host === 'desk') return { kind: 'open' }
+  if (host === 'desk') return view.form === 'mini' || view.form === 'coach' ? { kind: 'input' } : { kind: 'open' }
   if (NEEDS_USER.has(view.form)) return { kind: 'jump' }
   return unfolds ? { kind: 'toggle' } : null
 }
@@ -117,15 +160,18 @@ function headAction(view, host, unfolds) {
 /**
  * @param {'bar' | 'desk'} host
  * @param {(action: object) => void} act
- * @param {{ input?: ReturnType<import('./island-input.js').createIslandInput> }} [options] the desktop's input
+ * @param {{ input?: ReturnType<import('./island-input.js').createIslandInput>, shortcut?: string }} [options]
+ *   the desktop's input, and the ask shortcut as the user presses it
  */
-export function createIsland(host, act, { input = null } = {}) {
+export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
   const size = SIZES[host]
   const cats = new Map()
   const cat = h('span', { class: 'isl-cat', 'aria-hidden': 'true' })
   const head = h('button', { type: 'button', class: 'isl-head' })
+  const tools = h('span', { class: 'isl-tools' })
+  const row = h('div', { class: 'isl-row' }, head, tools)
   const panel = h('div', { class: 'isl-panel' })
-  const clip = h('div', { class: 'isl-clip' }, head, panel)
+  const clip = h('div', { class: 'isl-clip' }, row, panel)
   const el = h('div', { class: 'isl', 'data-host': host }, clip, cat)
   let last = null
   let signature = ''
@@ -142,10 +188,14 @@ export function createIsland(host, act, { input = null } = {}) {
     if (!el.isConnected) return
     const room = (parseFloat(getComputedStyle(el.parentElement).maxWidth) || Infinity) - BORDER
     head.style.width = 'max-content'
-    const headWidth = Math.min(Math.ceil(head.getBoundingClientRect().width), size.maxHead, room)
+    const toolsWidth = Math.ceil(tools.getBoundingClientRect().width)
+    // With nothing beside the cat the island is a circle around it, not a capsule with an empty end.
+    const bare = !head.childElementCount && !toolsWidth
+    const contentWidth = bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth
+    const headWidth = Math.min(contentWidth, size.maxHead, room)
     const opened = open ? Math.min(size.panel - BORDER, room) : headWidth
     const inner = wide ? Math.min(size.input - BORDER, room) : opened
-    head.style.width = `${inner}px`
+    head.style.width = `${Math.max(inner - toolsWidth, 0)}px`
     panel.style.width = `${inner}px`
     el.style.width = `${inner + BORDER}px`
     el.style.height = `${open ? size.head + panel.scrollHeight : size.head}px`
@@ -159,8 +209,9 @@ export function createIsland(host, act, { input = null } = {}) {
     last = { view, now, pinned }
     const wide = Boolean(input) && INPUT_FORMS.has(view.form)
     const unfolds = wide || hasPanel(view, host)
-    const open = unfolds && (wide || pinned || hovered || (host === 'desk' && NEEDS_USER.has(view.form)))
-    const next = JSON.stringify([view, open])
+    const open = unfolds && (wide || pinned || host === 'desk')
+    const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
+    const next = JSON.stringify([view, open, showTools])
     if (next === signature) {
       const time = head.querySelector('.isl-time')
       if (time && view.form === 'working') time.textContent = elapsedSince(view, now)
@@ -169,7 +220,8 @@ export function createIsland(host, act, { input = null } = {}) {
     signature = next
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
-    head.replaceChildren(...(view.form === 'input' ? [] : headParts(view, host, now).filter(Boolean)))
+    head.replaceChildren(...(view.form === 'input' ? [] : headParts(view, { host, now, tools: showTools, shortcut }).filter(Boolean)))
+    tools.replaceChildren(...(showTools ? deskTools(view, act) : []))
     if (view.form === 'input') {
       input.sync(view)
       if (input.entry.parentNode !== clip) clip.append(input.entry)
@@ -179,22 +231,25 @@ export function createIsland(host, act, { input = null } = {}) {
     head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
-    const parts = wide ? input.panel(view) : panelParts(view, host, act)
+    const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut)
     panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
     panel.inert = !open
     layout(open, wide)
   }
 
-  // Hovering (or tabbing into) the island unfolds its steps; leaving folds them unless a click pinned them.
-  const setHover = (on) => {
-    if (hovered === on) return
-    hovered = on
-    if (last) update(last.view, last)
+  /**
+   * On the desktop, whether the pointer is over the island, as the main process sees it (desk.js): a pointer
+   * resting on it shows its tools, one passing by on its way elsewhere does not.
+   */
+  let hoverTimer = null
+  function setPointer(on) {
+    clearTimeout(hoverTimer)
+    hoverTimer = setTimeout(() => {
+      if (hovered === on) return
+      hovered = on
+      if (last) update(last.view, last)
+    }, on ? HOVER_MS : LEAVE_MS)
   }
-  el.addEventListener('mouseenter', () => setHover(true))
-  el.addEventListener('mouseleave', () => setHover(false))
-  el.addEventListener('focusin', () => setHover(true))
-  el.addEventListener('focusout', (event) => { if (!el.contains(event.relatedTarget)) setHover(false) })
 
-  return { el, update }
+  return { el, update, setPointer }
 }

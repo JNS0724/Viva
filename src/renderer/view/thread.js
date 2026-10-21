@@ -63,13 +63,19 @@ function assistantView(message, handlers, traceReady, look) {
 
 const fileChip = (filePath) => h('span', { class: 'msg-file', title: filePath }, h('span', { class: 'doc-ico', 'aria-hidden': 'true' }), fileName(filePath))
 
-/** A question with the files handed over with it (attachments.js): the files as chips above the text. */
+/**
+ * A question with the files handed over with it (attachments.js): the files as chips above the text, and
+ * below it where it came from (the desktop island), whether it was said while the agent worked, and
+ * whether it failed to get through.
+ */
 function askedView(message) {
   const { text, files } = splitFiles(message.text)
   const bubble = h('div', { class: 'msg-user' },
     files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
     text)
-  return message.via === 'island' ? [bubble, h('div', { class: 'msg-via', text: '从 Viva 岛发送' })] : bubble
+  const notes = [message.steered && '工作中插话', message.via === 'island' && '从 Viva 岛发送', message.failed && '没有送到'].filter(Boolean)
+  if (!notes.length) return bubble
+  return [bubble, h('div', { class: `msg-via${message.failed ? ' msg-via-failed' : ''}`, text: notes.join(' · ') })]
 }
 
 /** A reply to the agent's question shows what it answers. */

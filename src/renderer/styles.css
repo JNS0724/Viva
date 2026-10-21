@@ -187,6 +187,7 @@ html:not([data-platform="darwin"]) {
   background: var(--panel); border: 1px solid var(--line-2); font-size: 13px; line-height: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .msg-via { align-self: flex-end; margin-top: -20px; font-size: 12px; color: var(--ink-3); }
+.msg-via-failed { color: #FF9AA4; }
 /* A file: a white page with two blue lines. */
 .doc-ico { position: relative; flex: none; width: 14px; height: 17px; border-radius: 3px; background: var(--ink); }
 .doc-ico::after { content: ''; position: absolute; left: 3px; right: 3px; top: 5px; height: 6px; border-top: 2px solid var(--accent); border-bottom: 2px solid var(--accent); box-sizing: border-box; }

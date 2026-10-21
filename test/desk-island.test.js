@@ -4,30 +4,34 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createDeskIsland, DESK_TIMES, deskForm } from '../src/main/desk-island.js'
+import { deskMenuTemplate } from '../src/main/desk-menu.js'
 import { describeDropped, MISSING, NOT_A_FILE } from '../src/main/island-files.js'
 import { ASK_LIMITS, checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from '../src/main/island-ipc.js'
 
 const view = (form, extra = {}) => ({ form, tone: 'idle', mood: 'idle', label: 'x', recent: [], ...extra })
-const away = { enabled: true, foreground: false, sinceDone: 0 }
+const away = { enabled: true, away: true, sinceDone: 0 }
 
-test('the desktop island shows only while the window is away and there is something to tell', () => {
+test('the desktop island shows once the window is closed to the tray: what goes on, else just the cat', () => {
   for (const form of ['working', 'waiting', 'asking', 'error']) assert.equal(deskForm({ ...away, view: view(form) }), form)
-  for (const form of ['idle', 'pending']) assert.equal(deskForm({ ...away, view: view(form) }), null)
-  assert.equal(deskForm({ ...away, foreground: true, view: view('working') }), null, 'the window in front has its own island')
+  for (const form of ['idle', 'pending']) assert.equal(deskForm({ ...away, view: view(form) }), 'mini')
+  assert.equal(deskForm({ ...away, view: null }), 'mini')
+  assert.equal(deskForm({ ...away, away: false, view: view('working') }), null, 'the open window has its own island, covered or not')
   assert.equal(deskForm({ ...away, enabled: false, view: view('waiting') }), null)
-  assert.equal(deskForm({ ...away, view: null }), null)
 })
 
-test('after a turn the island says done, rests as a cat, then goes', () => {
+test('after a turn the island says done, then rests as the cat; called up while switched off, it then goes', () => {
   const done = view('done')
   assert.equal(deskForm({ ...away, view: done, sinceDone: 0 }), 'done')
   assert.equal(deskForm({ ...away, view: done, sinceDone: DESK_TIMES.done }), 'mini')
-  assert.equal(deskForm({ ...away, view: done, sinceDone: DESK_TIMES.done + DESK_TIMES.mini }), null)
+  assert.equal(deskForm({ ...away, view: done, sinceDone: DESK_TIMES.done + DESK_TIMES.mini }), 'mini')
+  const summoned = { ...away, enabled: false, summoned: true, view: done }
+  assert.equal(deskForm({ ...summoned, sinceDone: DESK_TIMES.done }), 'mini')
+  assert.equal(deskForm({ ...summoned, sinceDone: DESK_TIMES.done + DESK_TIMES.mini }), null)
 })
 
 test('the input shows whenever it is open, unless the window is in front with its own', () => {
   assert.equal(deskForm({ ...away, enabled: false, view: view('idle'), input: true }), 'input', 'the island switched off, too')
-  assert.equal(deskForm({ ...away, foreground: true, view: view('idle'), input: true }), null)
+  assert.equal(deskForm({ ...away, away: false, view: view('idle'), input: true }), null)
 })
 
 test('only the actions the island offers get through, with their ids', () => {
@@ -120,7 +124,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     getAllDisplays: () => [display],
     getDisplayMatching: () => display,
     getDisplayNearestPoint: () => display,
-    getCursorScreenPoint: () => cursor,
+    getCursorScreenPoint: () => ({ ...cursor }),
   }
   let saved = { last: null, places: {} }
   const places = { get: () => saved, set: (value) => { saved = value } }
@@ -132,7 +136,7 @@ function deskIsland(env, extra = {}) {
     BrowserWindow: env.BrowserWindow, screen: env.screen, preload: 'p', page: 'q', mainWindow: { getBounds: () => ({}) },
     enabled: true, places: env.places, ...extra,
   })
-  desk.setForeground(false)
+  desk.setAway(true)
   return desk
 }
 
@@ -152,7 +156,7 @@ test('the shortcut opens the input, which takes the keyboard until it is closed'
   desk.destroy()
 })
 
-test('closed without asking, an island that is switched off goes at once; with the window in front there is no input', (t) => {
+test('closed without asking, an island that is switched off goes at once; with the window open there is no input', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
   const desk = deskIsland(env, { enabled: false })
@@ -160,7 +164,7 @@ test('closed without asking, an island that is switched off goes at once; with t
   desk.openInput()
   desk.closeInput()
   assert.equal(env.windows[0].visible, false)
-  desk.setForeground(true)
+  desk.setAway(false)
   assert.equal(desk.openInput(), false)
   desk.destroy()
 })
@@ -179,7 +183,7 @@ test('clicks reach the island only while the pointer is over it', (t) => {
   desk.destroy()
 })
 
-test('dragged, the island follows the pointer and is remembered where it is let go', (t) => {
+test('dragged, the island shrinks to the cat, follows the pointer at each frame, and is remembered where it is let go', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
   const desk = deskIsland(env)
@@ -187,14 +191,110 @@ test('dragged, the island follows the pointer and is remembered where it is let 
   const [win] = env.windows
   win.handlers['did-finish-load']()
   desk.startDrag()
-  assert.equal(win.lastView().dragging, true)
+  assert.deepEqual([win.lastView().dragging, win.bounds], [true, { x: -12, y: 13, width: 72, height: 72 }], 'just the cat, under the pointer, kept on the screen')
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
-  t.mock.timers.tick(20)
-  assert.deepEqual([win.bounds.x, win.lastView().dir], [780, 'up'])
+  t.mock.timers.tick(200)
+  assert.equal(win.bounds.x, -12, 'no timer moves it: the page\'s frames do')
+  desk.dragMove()
+  assert.deepEqual(win.bounds, { x: 1044, y: 645, width: 72, height: 72 })
   desk.endDrag()
+  assert.deepEqual([win.bounds.width, win.bounds.height, win.lastView().dir], [600, 320, 'up'], 'its full size again, opening upwards')
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 0.75, fy: 0.75 } } })
   assert.equal(win.lastView().dragging, false)
   desk.resetPlace()
   assert.deepEqual([env.saved(), win.bounds.x, win.bounds.y], [{ last: null, places: {} }, 420, 31], 'back at the top centre')
+  desk.destroy()
+})
+
+test('closed to the tray the cat stays on the desktop; the window shown again takes it away', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  desk.setView(view('idle'))
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  assert.deepEqual([win.visible, win.lastView().form], [true, 'mini'])
+  desk.setAway(false)
+  assert.equal(win.visible, false)
+  desk.destroy()
+})
+
+test('done stays up while the pointer rests on it, and a moment after it leaves', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'] })
+  const env = fakes({ cursor: { x: 700, y: 50 } })
+  const desk = deskIsland(env)
+  const [win] = (desk.setView(view('done')), env.windows)
+  win.handlers['did-finish-load']()
+  desk.setIslandRect({ x: 150, y: 10, width: 300, height: 48 })
+  t.mock.timers.tick(DESK_TIMES.done + 1000)
+  assert.equal(win.lastView().form, 'done', 'held while the pointer is over it')
+  env.cursor.x = 100
+  t.mock.timers.tick(60)
+  t.mock.timers.tick(DESK_TIMES.linger - 100)
+  assert.equal(win.lastView().form, 'done')
+  t.mock.timers.tick(200)
+  assert.equal(win.lastView().form, 'mini')
+  desk.destroy()
+})
+
+test('the first time the cat rests on the desktop it says what it can do, until the user has seen it', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  let coached = false
+  const coach = { get: () => coached, set: () => { coached = true } }
+  const desk = deskIsland(env, { coach })
+  desk.setView(view('idle'))
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  assert.equal(win.lastView().coach, true)
+  desk.markCoached()
+  assert.deepEqual([coached, win.lastView().coach], [true, false])
+  desk.destroy()
+
+  coached = false
+  const dragged = deskIsland(fakes(), { coach })
+  dragged.setView(view('idle'))
+  dragged.startDrag()
+  assert.equal(coached, true, 'dragging the island, or opening its input, shows the user found it')
+  dragged.destroy()
+})
+
+test('the right-click menu: ask, open, stop only while working, put back, hide for now or for good', () => {
+  const calls = []
+  const make = (working) => deskMenuTemplate({
+    working, shortcut: 'CommandOrControl+Shift+Space',
+    ask: () => calls.push('ask'), open: () => calls.push('open'), stop: () => calls.push('stop'),
+    resetPlace: () => calls.push('reset'), hide: () => calls.push('hide'), switchOff: () => calls.push('off'),
+  })
+  const items = make(true).filter((item) => item.type !== 'separator')
+  assert.deepEqual(items.map((item) => item.label), [
+    '提问…', '打开 Viva 窗口', '停止', '放回顶部正中', '先隐藏（下次关闭窗口时再出现）', '不再显示桌面岛（可在设置里打开）',
+  ])
+  assert.equal(items[0].registerAccelerator, false, 'the shortcut is shown, not registered twice')
+  for (const item of items) item.click()
+  assert.deepEqual(calls, ['ask', 'open', 'stop', 'reset', 'hide', 'off'])
+  assert.equal(make(false).find((item) => item.label === '停止').enabled, false)
+})
+
+test('the island may open its menu, open its input and say the user has seen what it can do', () => {
+  assert.deepEqual([checkIslandAction({ kind: 'menu', x: 1 }), checkIslandAction({ kind: 'coached' })], [{ kind: 'menu' }, { kind: 'coached' }])
+})
+
+test('hidden from its menu, the island stays away until the window is next closed to the tray', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  desk.setView(view('working'))
+  const [win] = env.windows
+  desk.hideUntilAway()
+  assert.equal(win.visible, false)
+  desk.setView(view('waiting'))
+  assert.equal(win.visible, false, 'not even for what needs the user: the window still has it')
+  assert.equal(desk.openInput(), true, 'the shortcut still calls it up')
+  desk.closeInput()
+  assert.equal(win.visible, false)
+  desk.setAway(false)
+  desk.setAway(true)
+  assert.equal(win.visible, true, 'back once the window is closed again')
   desk.destroy()
 })
