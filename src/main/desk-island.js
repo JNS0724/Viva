@@ -192,6 +192,10 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     }
     if (win.isVisible()) return
     place()
+    // Shown again, the window starts out letting the pointer through, as when it was made: the pointer check
+    // takes it from there, rather than trusting what was set before it was hidden.
+    ignoring = true
+    win.setIgnoreMouseEvents(true)
     win.showInactive()
     clearInterval(pointerTimer)
     pointerTimer = setInterval(checkPointer, POINTER_MS)
@@ -199,6 +203,14 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
 
   function hide() {
     clearInterval(pointerTimer)
+    // EXPERIMENT (Windows clicks lost after the island is shown again): VIVA_DESK_RECREATE=1 closes the window
+    // instead of hiding it, so it is made anew next time. To be removed or kept once tested on Windows.
+    if (process.env.VIVA_DESK_RECREATE === '1' && alive()) {
+      win.destroy()
+      win = null
+      islandRect = null
+      return
+    }
     if (alive() && win.isVisible()) win.hide()
   }
 
