@@ -132,5 +132,15 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
     }
   }
 
-  return { receive, answer, declineAll, declineTask, moveToTask }
+  /** The task became the conversation on screen again (moving it to the background was undone). */
+  function moveToMain(taskId) {
+    for (const entry of pending.values()) {
+      if (entry.taskId !== taskId) continue
+      closed(entry.question.id, taskId)
+      entry.taskId = null
+      shown(entry)
+    }
+  }
+
+  return { receive, answer, declineAll, declineTask, moveToTask, moveToMain }
 }

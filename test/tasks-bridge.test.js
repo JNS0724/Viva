@@ -42,6 +42,27 @@ test('the running turn goes on as a task while the main conversation answers som
   assert.equal(events.filter((e) => e.type === 'turn_end').length, 2, 'the main conversation saw only its own two turns end')
 })
 
+test('undone, the task is the main conversation again and its turn ends there', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const { events, bridge } = await setup(t)
+  const agent = bridge()
+  await agent.start()
+  const running = agent.prompt('明天天气怎么样')
+  const asked = await eventually(() => events.find((e) => e.type === 'question'))
+  const spun = await agent.spinOff({ words: '明天天气怎么样' })
+  assert.equal(spun.ok, true, JSON.stringify(spun))
+
+  const back = await agent.mergeBack(spun.taskId)
+  assert.equal(back.ok, true, JSON.stringify(back))
+  assert.equal(back.info.sessionId, spun.taskId, 'the main conversation is the task’s session again')
+  const shown = await eventually(() => events.filter((e) => e.type === 'question' && e.questionId === asked.questionId).length === 2)
+  assert.ok(shown, 'its waiting question is the main conversation’s again')
+
+  assert.equal(agent.answerQuestion(asked.questionId, [{ id: 'city', selected: ['上海'] }]), true)
+  await running
+  assert.equal(events.some((e) => e.type === 'task_end'), false, 'it ends as the main turn, not as a task')
+  assert.equal(events.filter((e) => e.type === 'turn_end').length, 1)
+})
+
 test('only a running turn can be spun off', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { bridge } = await setup(t)
   const agent = bridge()

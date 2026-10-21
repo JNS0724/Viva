@@ -84,7 +84,12 @@ export function createAcpBridge({
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
 
-  const infoFrom = (configOptions) => ({ mode: 'live', cwd: sessionCwd, reason: '', sessionId, mcp, ...describeConfig(configOptions) })
+  /** The model options of the session in use, kept so a task taken back to the main conversation keeps its own. */
+  let configNow = null
+  const infoFrom = (configOptions) => {
+    configNow = configOptions ?? configNow
+    return { mode: 'live', cwd: sessionCwd, reason: '', sessionId, mcp, ...describeConfig(configNow) }
+  }
 
   const client = {
     async sessionUpdate(params) {
@@ -269,13 +274,37 @@ export function createAcpBridge({
     if (!taskId || !running.has(taskId)) return { ok: false, reason: 'idle' }
     const forked = await forking.fork({ words, occurrence: 0 })
     if (!forked.ok) return forked
-    tasks.set(taskId, { cwd: sessionCwd })
+    tasks.set(taskId, { cwd: sessionCwd, config: configNow })
     questions.moveToTask(taskId, taskId)
     try {
       return { ok: true, taskId, info: await resumeOrOpen(forked.sessionId, sessionCwd) }
     } catch (err) {
       throw new Error(describeError(err, stderrTail))
     }
+  }
+
+  /**
+   * Undoes spinOff: the session the main conversation went on in is left (closed, what it asked declined) and
+   * the task is the main conversation again, its turn still running; its questions come back to the window.
+   * @returns {Promise<{ ok: boolean, reason?: string, info?: object }>}
+   */
+  async function mergeBack(taskId) {
+    const task = tasks.get(taskId)
+    if (!task) return { ok: false, reason: 'missing' }
+    const leaving = sessionId
+    questions.declineAll()
+    broker.cancelAll(leaving)
+    try {
+      if (running.has(leaving)) await connection.cancel({ sessionId: leaving })
+      await connection.closeSession({ sessionId: leaving })
+    } catch (err) {
+      console.error('[acp-bridge] leaving the forked session failed, going back anyway:', describeError(err))
+    }
+    tasks.delete(taskId)
+    sessionId = taskId
+    sessionCwd = task.cwd
+    questions.moveToMain(taskId)
+    return { ok: true, info: { ...infoFrom(task.config), resumed: true } }
   }
 
   /** Stops what a task is doing; it stays, answered as cancelled (task_end). */
@@ -353,5 +382,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, fork, spinOff, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, fork, spinOff, mergeBack, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }
