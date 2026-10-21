@@ -49,6 +49,8 @@ const ACTIONS = {
   answer: ({ questionId, id, label }) => (isText(questionId, MAX_ID_CHARS) && isText(id, MAX_ID_CHARS) && isText(label, MAX_LABEL_CHARS)
     ? { kind: 'answer', questionId, id, label }
     : null),
+  /** 跳过: the question goes unanswered, as from the thread's card. */
+  skip: ({ questionId }) => (isText(questionId, MAX_ID_CHARS) ? { kind: 'skip', questionId } : null),
 }
 
 /** @returns {object | null} only the fields the action's kind uses, or null for anything else */

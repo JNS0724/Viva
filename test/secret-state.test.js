@@ -17,7 +17,7 @@ test('a key request waits on the user, and the island says so', () => {
   assert.equal(waiting.phase, 'asking')
   assert.deepEqual(waiting.secret, { requestId: 'c1', server: 'github', names: ['GITHUB_TOKEN'] })
   const view = islandView(waiting)
-  assert.deepEqual([view.form, view.label, view.question.text, view.question.options], ['asking', '等你填写', '接入「github」需要你填写密钥', []])
+  assert.deepEqual([view.form, view.label, view.question.text, view.question.options], ['asking', '需要你填写', '接入「github」需要你填写密钥', []])
 })
 
 test('filling in or declining goes back to work; the trace keeps that it happened, never the key', () => {

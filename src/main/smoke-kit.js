@@ -41,7 +41,7 @@ export async function finishTurn(win) {
   let allowed = 0
   while (Date.now() < deadline) {
     const seen = await run(win, `(() => {
-      const card = document.querySelector('.confirm:not(.ask) .btn-ink')
+      const card = document.querySelector('.confirm:not(.ask) .btn-primary')
       if (card) card.click()
       const send = document.getElementById('send-btn')
       return { card: Boolean(card), idle: send.dataset.busy === 'false' && !send.disabled && !document.querySelector('.caret') }

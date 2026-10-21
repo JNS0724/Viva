@@ -83,25 +83,31 @@ function stepList(view) {
 }
 
 const button = (text, cls, onClick) => h('button', { type: 'button', class: `isl-btn ${cls}`, text, onClick })
+/** Buttons by role (prompt-card.js), as on the thread's card: the main one filled, the others outlined, the least a link. */
+const ROLE = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
 
+/** What it is to allow: its title and, for a command, the command itself on one line. */
 function permissionPanel(view, act) {
   const { permission } = view
   return [
     h('div', { class: 'isl-title', text: permission.title }),
+    permission.command ? h('pre', { class: 'isl-detail', text: permission.command, title: permission.command }) : null,
     h('div', { class: 'isl-actions' },
-      permission.options.map((option) => button(option.name, option.allow ? 'isl-btn-hot' : 'isl-btn-line',
+      permission.options.map((option) => button(option.name, ROLE[option.role],
         () => act({ kind: 'permission', requestId: permission.requestId, optionId: option.optionId }))),
-      button('查看详情', 'isl-btn-ghost isl-push', () => act({ kind: 'open' }))),
+      button('查看详情', `${ROLE.text} isl-push`, () => act({ kind: 'open' }))),
   ]
 }
 
 function questionPanel(view, act) {
   const { question } = view
   return [
+    question.header ? h('span', { class: 'isl-tag', text: question.header }) : null,
     h('div', { class: 'isl-title', text: question.text }),
     h('div', { class: 'isl-actions' },
-      question.options.map((label) => button(label, 'isl-btn-line', () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }))),
-      button(question.options.length ? '其他…' : '打开窗口回答', 'isl-btn-ghost', () => act({ kind: 'open' }))),
+      question.options.map((label) => button(label, ROLE.secondary, () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }))),
+      button(question.options.length ? '其他…' : '打开窗口回答', question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
+      question.skippable ? button('跳过', `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null),
   ]
 }
 
@@ -130,7 +136,7 @@ function panelParts(view, host, act, shortcut) {
     stepList(view),
     h('div', { class: 'isl-actions' },
       working ? button('停止', 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
-      button('查看完整过程 →', 'isl-btn-ghost', () => act({ kind: 'trace' }))),
+      button('查看完整过程 →', ROLE.text, () => act({ kind: 'trace' }))),
   ]
 }
 

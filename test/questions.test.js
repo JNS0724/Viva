@@ -64,7 +64,7 @@ test('a question pauses the turn; the answer joins the thread under what was ask
   const state = asking()
   assert.equal(state.phase, 'asking')
   assert.equal(isBusy(state), true)
-  assert.deepEqual(statusView(state), { tone: 'waiting', label: '等你回答', event: '你想看哪个城市的天气？' })
+  assert.deepEqual(statusView(state), { tone: 'waiting', label: '需要你回答', event: '你想看哪个城市的天气？' })
 
   const answered = reduce(state, { type: 'question_answered', questionId: 'q1', answers: [{ id: 'city', selected: ['上海'] }], at: 3 })
   assert.equal(answered.phase, 'working')

@@ -1,4 +1,5 @@
 import { optionName } from './approval.js'
+import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.js'
 import { catMood, currentAction, traceItems, truncate } from './selectors.js'
 
 /**
@@ -18,8 +19,8 @@ const PREVIEW_LIMIT = 40
  * @typedef {{
  *   form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
  *   detail?: string, action?: string, startedAt?: number, steps?: number, elapsedMs?: number,
- *   permission?: { requestId: string, title: string, kind: string, options: { optionId: string, name: string, allow: boolean }[] },
- *   question?: { questionId: string, id: string, text: string, options: string[] },
+ *   permission?: { requestId: string, title: string, command: string, options: { optionId: string, name: string, role: string }[] },
+ *   question?: { questionId: string, id: string, header?: string, text: string, options: string[], skippable?: boolean },
  * }} IslandView
  */
 
@@ -35,24 +36,31 @@ export function answerPreview(text) {
   return truncate(plain, PREVIEW_LIMIT)
 }
 
+/** The approval as the thread's card has it (prompt-card.js), with its command on one line instead of all its arguments. */
 function permissionView(permission) {
+  const { title, command } = permissionCard(permission)
   return {
     requestId: permission.requestId,
-    title: permission.title,
-    kind: permission.kind,
-    options: permission.options.map((option) => ({ optionId: option.optionId, name: optionName(option), allow: Boolean(option.kind?.startsWith('allow')) })),
+    title,
+    command,
+    options: promptButtons(permission.options).map((option) => ({ optionId: option.optionId, name: optionName(option), role: option.role })),
   }
 }
 
-/** Only one question with one choice can be answered from the island; for anything else it opens the window. */
+/**
+ * Only one question with one choice can be answered from the island; for anything else it opens the window.
+ * Any question may be skipped from there, as from the thread.
+ */
 function questionView(question) {
   const [first] = question.questions
   const single = question.questions.length === 1 && !first.multiSelect
   return {
     questionId: question.questionId,
     id: first.id,
+    ...(first.header ? { header: first.header } : {}),
     text: first.question,
     options: single ? first.options.map((option) => option.label) : [],
+    skippable: true,
   }
 }
 
@@ -74,14 +82,14 @@ function afterTurn(state, base) {
 export function islandView(state) {
   const base = { mood: catMood(state), recent: recentSteps(state) }
   if (state.phase === 'waiting' && state.permission) {
-    return { ...base, form: 'waiting', tone: 'waiting', label: '等待你确认', permission: permissionView(state.permission) }
+    return { ...base, form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, permission: permissionView(state.permission) }
   }
   if (state.phase === 'asking' && state.secret) {
     const { requestId, server } = state.secret
-    return { ...base, form: 'asking', tone: 'waiting', label: '等你填写', question: { questionId: requestId, id: 'secret', text: `接入「${server}」需要你填写密钥`, options: [] } }
+    return { ...base, form: 'asking', tone: 'waiting', label: PROMPT_HEADS.secret, question: { questionId: requestId, id: 'secret', text: `接入「${server}」需要你填写密钥`, options: [] } }
   }
   if (state.phase === 'asking' && state.question) {
-    return { ...base, form: 'asking', tone: 'waiting', label: '等你回答', question: questionView(state.question) }
+    return { ...base, form: 'asking', tone: 'waiting', label: PROMPT_HEADS.question, question: questionView(state.question) }
   }
   if (state.phase === 'working') {
     return {
