@@ -9,6 +9,8 @@ const POLL_MS = 200
 export const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 export const run = (win, code) => win.webContents.executeJavaScript(code)
 export const click = (win, id) => run(win, `document.getElementById(${JSON.stringify(id)}).click()`)
+/** ⌘N / Ctrl+N: a new topic, the timeline kept above it (there is no button for it). */
+export const newTopic = (win) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, bubbles: true }))`)
 export const submit = (win, text) => run(win, `(() => {
   document.getElementById('composer-input').value = ${JSON.stringify(text)}
   document.getElementById('composer').requestSubmit()

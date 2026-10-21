@@ -17,6 +17,7 @@ import { registerExtensionsIpc } from './extensions-ipc.js'
 import { registerFilesIpc } from './files-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
+import { registerWorkDirIpc } from './work-dir-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.js'
 import { createTray } from './tray.js'
@@ -69,6 +70,12 @@ let turn = { active: false, startedAt: 0 }
 let lateMemoryTimer = null
 /** The conversation on screen: the latest one at launch, one picked from the history panel, or a fresh one. */
 let conversation = null
+/**
+ * The working directory the agent works in now: the current conversation's own, or the app's (config.cwd,
+ * defaultWorkDir) when it has none or it is gone. The user switches it from the window (work-dir-ipc.js).
+ */
+let workDir = null
+let defaultWorkDir = null
 let win = null
 /** The island on the desktop, shown while the window is in the background (desk-island.js). */
 let desk = null
@@ -110,6 +117,17 @@ function emitToRenderer(event) {
 const currentConfig = () => resolveConfig(process.env, fs.existsSync, settingsStore.getApiKey(), modelStore.list().length > 0, {
   userData: app.getPath('userData'), execPath: process.execPath, packaged: app.isPackaged,
 })
+
+const isFolder = (dir) => {
+  try {
+    return fs.statSync(dir).isDirectory()
+  } catch {
+    return false
+  }
+}
+const workDirNow = () => workDir ?? defaultWorkDir
+/** Where a conversation goes on: in its own directory while that is still there, else in the app's. */
+const workDirFor = (segment, config) => (segment?.cwd && isFolder(segment.cwd) ? segment.cwd : config.cwd)
 
 /** Tells the window what the agent remembered or replaced, and what background the plugin sent. */
 function reportMemoryChanges() {
@@ -178,7 +196,7 @@ const takenServerNames = () => mcpStore.list().map((server) => server.name)
  * user approved it on the card: MCP servers through the encrypted store, skills in the app's own folder.
  */
 function configActions(config) {
-  const roots = () => skillRoots({ dshHome: config.dshHome, cwd: config.cwd })
+  const roots = () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() })
   const userRoot = () => roots().find((root) => root.managed).dir
   return {
     listServers: () => mcpStore.list().map((server) => `${server.name}（${server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')}）`),
@@ -210,13 +228,13 @@ function reloadMcpAfterTurn() {
     .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
 }
 
-function createBridge(config) {
+function createBridge(config, cwd) {
   const generation = ++bridgeGeneration
   return createAcpBridge({
     dshBin: config.dshBin,
     nodeBin: config.nodeBin,
     profile: prepareProfile(config),
-    cwd: config.cwd,
+    cwd,
     env: dshEnv({ base: process.env, dshHome: config.dshHome, runtime: config.runtime, settings: dshSettings(config) }),
     mcpServers: () => personal.mcpServers(),
     configActions: configActions(config),
@@ -287,12 +305,13 @@ async function startBridge() {
   }
   fs.mkdirSync(config.cwd, { recursive: true })
   launchedAt = Date.now()
-  bridge = createBridge(config)
+  workDir = workDirFor(conversation, config)
+  bridge = createBridge(config, workDir)
   try {
     const started = await bridge.start({ resumeSessionId: conversation.sessionId })
     // The agent knows the conversation on screen if it resumed it, or if there was nothing to know yet.
     const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
-    conversation = { ...conversation, sessionId: info.sessionId }
+    conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
     emitToRenderer({ type: 'ready', info })
     return info
   } catch (err) {
@@ -322,7 +341,7 @@ async function withLastModel(info) {
 
 /** A new key (or none) means a different agent, so the conversation starts over. */
 async function restartWithNewConversation() {
-  conversation = historyDb.create()
+  conversation = historyDb.create({ cwd: workDirNow() })
   await stopBridge()
   return startBridge()
 }
@@ -369,11 +388,11 @@ function registerAgentIpc() {
   ipcMain.handle('agent:cancel', () => bridge?.cancel())
   ipcMain.handle('agent:new-session', async () => {
     if (!bridge) {
-      conversation = historyDb.create()
+      conversation = historyDb.create({ cwd: workDirNow() })
       return lastInfo
     }
     const info = { ...await withLastModel(await bridge.newSession()), remembersHistory: true }
-    conversation = historyDb.create({ sessionId: info.sessionId })
+    conversation = historyDb.create({ sessionId: info.sessionId, cwd: workDirNow() })
     lastInfo = info
     return info
   })
@@ -503,12 +522,53 @@ function registerSettingsIpc() {
   })
 }
 
-/** Without an agent (setup state) an old conversation can still be read; it keeps its session for later. */
-async function switchAgent(sessionId) {
-  if (!bridge) return { ...lastInfo, sessionId, resumed: false }
-  const info = await bridge.switchSession(sessionId)
+/**
+ * Without an agent (setup state) an old conversation can still be read; it keeps its session for later.
+ * A conversation goes on in its own directory while that is still there.
+ */
+async function switchAgent(sessionId, cwd) {
+  const target = cwd && isFolder(cwd) ? cwd : workDirNow()
+  if (!bridge) {
+    workDir = target
+    return { ...lastInfo, sessionId, cwd: target, resumed: false }
+  }
+  const info = await bridge.switchSession(sessionId, target)
+  workDir = target
   lastInfo = { ...info, remembersHistory: info.resumed }
   return info
+}
+
+const FORK_PROBLEMS = Object.freeze({
+  unavailable: '这个版本的助手不支持切换工作目录，请更新 Viva',
+  missing: '当前对话已经结束，请稍后再试',
+})
+
+/**
+ * The user picked another working directory: the conversation goes on there, everything said so far with it
+ * (a fork of the session into that directory), as a new segment of the timeline after the current one.
+ */
+async function switchWorkDir(dir) {
+  const previous = conversation
+  const stored = Boolean(historyDb.get(previous.id))
+  if (!bridge) {
+    workDir = dir
+    conversation = historyDb.create({ cwd: dir, parentId: stored ? previous.id : null })
+    return { ...lastInfo, cwd: dir }
+  }
+  const forked = await bridge.fork({ cwd: dir })
+  if (!forked.ok) throw new Error(FORK_PROBLEMS[forked.reason] ?? `没能切换工作目录（${forked.reason}）`)
+  workDir = dir
+  lastInfo = { ...forked.info, remembersHistory: true }
+  conversation = historyDb.create({
+    sessionId: forked.info.sessionId, mode: lastInfo.mode, model: lastInfo.model, cwd: dir, parentId: stored ? previous.id : null,
+  })
+  emitToRenderer({ type: 'workdir', cwd: dir, info: lastInfo })
+  return lastInfo
+}
+
+async function chooseWorkFolder() {
+  const result = await dialog.showOpenDialog(win, { title: '选择工作目录', properties: ['openDirectory', 'createDirectory'] })
+  return result.canceled ? null : result.filePaths[0] ?? null
 }
 
 async function chooseExportPath(defaultName) {
@@ -543,7 +603,7 @@ function registerPersonalIpc(config, mcpStore) {
   registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
   registerExtensionsIpc(ipcMain, {
     store: mcpStore,
-    roots: () => skillRoots({ dshHome: config.dshHome, cwd: config.cwd }),
+    roots: () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() }),
     mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
     applyMcp: applyMcpChange,
     trash: (file) => shell.trashItem(file),
@@ -579,7 +639,7 @@ function openHistory(config) {
   })
   if (imported) process.stdout.write(`[history] imported ${imported} conversation(s) from the old JSON files\n`)
   historyDb.purgeDeleted({ olderThanMs: 0 })
-  conversation = historyDb.latest()?.conversation ?? historyDb.create()
+  conversation = historyDb.latest()?.conversation ?? historyDb.create({ cwd: config.cwd })
   registerHistoryIpc(ipcMain, {
     db: historyDb,
     dshHome: config.dshHome,
@@ -704,7 +764,17 @@ app.whenReady().then(async () => {
   registerSettingsIpc()
   registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: switchOffDesk })
   const config = currentConfig()
-  registerFilesIpc(ipcMain, { root: () => config.cwd, shell, notify: emitToRenderer })
+  defaultWorkDir = config.cwd
+  registerFilesIpc(ipcMain, { root: workDirNow, shell, notify: emitToRenderer })
+  registerWorkDirIpc(ipcMain, {
+    current: workDirNow,
+    defaultDir: config.cwd,
+    preferences,
+    chooseFolder: chooseWorkFolder,
+    isBusy: () => turn.active,
+    switchTo: switchWorkDir,
+    reveal: (dir) => shell.openPath(dir),
+  })
   if (config.smokePhase === 'memory') await startSmokeModel()
   if (!config.smoke) {
     bringLegacyData()

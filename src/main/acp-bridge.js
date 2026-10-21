@@ -6,6 +6,7 @@ import { dshLaunch } from './config.js'
 import { createPermissionBroker } from './permission-broker.js'
 import { createConfigDesk } from './config-channel.js'
 import { createSteerDesk } from './steer-channel.js'
+import { createForkDesk } from './fork-channel.js'
 import { createQuestionDesk } from './question-channel.js'
 import { describeConfig, describeError } from './session-info.js'
 
@@ -57,6 +58,8 @@ export function createAcpBridge({
   let child = null
   let connection = null
   let sessionId = null
+  /** The working directory of the session in use: dsh's own at first, another one once a fork moved it. */
+  let sessionCwd = cwd
   let canResume = false
   let stderrTail = ''
   let disposed = false
@@ -68,8 +71,10 @@ export function createAcpBridge({
   const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions }) : null
   // What the user says while a turn runs goes to that turn (the viva-steer plugin), not to a new prompt.
   const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId })
+  // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
+  const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
 
-  const infoFrom = (configOptions) => ({ mode: 'live', cwd, reason: '', sessionId, mcp, ...describeConfig(configOptions) })
+  const infoFrom = (configOptions) => ({ mode: 'live', cwd: sessionCwd, reason: '', sessionId, mcp, ...describeConfig(configOptions) })
 
   const client = {
     async sessionUpdate(params) {
@@ -94,6 +99,7 @@ export function createAcpBridge({
       questions.receive(message)
       config?.receive(message)
       steering.receive(message)
+      forking.receive(message)
     })
     child.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
@@ -128,16 +134,20 @@ export function createAcpBridge({
   }
 
   async function openSession() {
-    const response = await withMcpServers((servers) => connection.newSession({ cwd, mcpServers: servers }))
+    const response = await withMcpServers((servers) => connection.newSession({ cwd: sessionCwd, mcpServers: servers }))
     sessionId = response.sessionId
     return { ...infoFrom(response.configOptions), resumed: false }
   }
 
-  /** Reattaches to a session from an earlier launch (`session/resume`); dsh keeps its context, nothing is replayed. */
-  async function resumeOrOpen(resumeSessionId) {
+  /**
+   * Reattaches to a session from an earlier launch (`session/resume`); dsh keeps its context, nothing is replayed.
+   * @param {string | null} resumeSessionId @param {string} [targetCwd] the session's directory, when not the current one
+   */
+  async function resumeOrOpen(resumeSessionId, targetCwd = sessionCwd) {
+    sessionCwd = targetCwd
     if (!resumeSessionId || !canResume) return openSession()
     try {
-      const response = await withMcpServers((servers) => connection.resumeSession({ sessionId: resumeSessionId, cwd, mcpServers: servers }))
+      const response = await withMcpServers((servers) => connection.resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: servers }))
       sessionId = resumeSessionId
       return { ...infoFrom(response.configOptions), resumed: true }
     } catch (err) {
@@ -191,22 +201,39 @@ export function createAcpBridge({
     }
   }
 
-  /** Leaves the current session for `targetSessionId` (a reopened conversation), or for a fresh one when null. */
-  async function switchSession(targetSessionId) {
+  /**
+   * Leaves the current session for `targetSessionId` (a reopened conversation), or for a fresh one when null.
+   * @param {string | null} targetSessionId @param {string} [targetCwd] its directory, when not the current one
+   */
+  async function switchSession(targetSessionId, targetCwd = sessionCwd) {
     await cancel()
     questions.declineAll()
     config?.closeAll()
     steering.closeAll()
+    forking.closeAll()
     try {
       await connection.closeSession({ sessionId })
     } catch (err) {
       console.error('[acp-bridge] closeSession failed, switching anyway:', describeError(err))
     }
     try {
-      return await resumeOrOpen(targetSessionId)
+      return await resumeOrOpen(targetSessionId, targetCwd)
     } catch (err) {
       throw new Error(describeError(err, stderrTail))
     }
+  }
+
+  /**
+   * Goes back to before the `before`-th user message (everything so far when omitted), optionally in another
+   * directory, and goes on there: the plugin writes the new session, this side resumes it. The session left
+   * behind stays as it was.
+   * @param {{ before?: number, cwd?: string }} [request]
+   * @returns {Promise<{ ok: boolean, reason?: string, info?: object }>}
+   */
+  async function fork({ before, cwd: targetCwd } = {}) {
+    const result = await forking.fork({ before, cwd: targetCwd })
+    if (!result.ok) return result
+    return { ok: true, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
   }
 
   const newSession = () => switchSession(null)
@@ -257,5 +284,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, fork, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }

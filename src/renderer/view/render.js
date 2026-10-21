@@ -1,7 +1,8 @@
 import { isBusy } from '../state.js'
-import { setupView, workspaceName } from '../selectors.js'
+import { setupView } from '../selectors.js'
 import { h } from './dom.js'
 import { renderDrawer } from './drawer.js'
+import { renderEarlier } from './earlier.js'
 import { renderHistoryPanel, renderToast } from './history-panel.js'
 import { renderHome } from './home.js'
 import { icon } from './icons.js'
@@ -10,12 +11,22 @@ import { renderModelPicker } from './model-picker.js'
 import { renderProfilePanel } from './profile-panel.js'
 import { renderSettings } from './settings.js'
 import { renderThread } from './thread.js'
+import { renderWorkDir } from './workdir.js'
 
 let renderedSettings = []
 let renderedProfile = null
 let renderedDrawerInputs = []
 let renderedHistoryInputs = []
+let renderedEarlierInputs = []
 let renderedToast = null
+
+/** The earlier part of the timeline changes only when a page comes in or the conversation moves on. */
+function renderEarlierIfChanged(container, state, handlers) {
+  const inputs = [state.earlier, state.info.cwd]
+  if (inputs.every((value, i) => value === renderedEarlierInputs[i])) return
+  renderedEarlierInputs = inputs
+  renderEarlier(container, state, handlers)
+}
 
 function renderSettingsIfChanged(container, state, handlers) {
   const connected = state.info.mode === 'live'
@@ -50,9 +61,9 @@ function renderDrawerIfChanged(container, state, handlers) {
   renderDrawer(container, state, handlers)
 }
 
-/** The panel only depends on its own slice; skipping identical renders keeps an inline rename field alive. */
+/** The panel only depends on its own slice; skipping identical renders keeps hover and focus in the list. */
 function renderHistoryIfChanged(dom, state, handlers) {
-  const inputs = [state.history, state.conversationId]
+  const inputs = [state.history]
   if (inputs.every((value, i) => value === renderedHistoryInputs[i])) return
   renderedHistoryInputs = inputs
   renderHistoryPanel(dom, state, handlers)
@@ -91,20 +102,22 @@ export function renderSendButton(dom, state) {
 function renderComposer(dom, state, handlers) {
   renderComposerAvailability(dom, setupView(state.info), state.switching, { asking: Boolean(state.question), busy: isBusy(state) })
   renderSendButton(dom, state)
-  dom.context.textContent = `@ ${workspaceName(state.info.cwd)}`
+  renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   dom.toggleDrawer.setAttribute('aria-pressed', String(Boolean(state.drawer)))
   renderModelPicker(dom, state, handlers)
 }
 
 /** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */
 export function render(dom, state, handlers, now = Date.now()) {
-  const isHome = state.messages.length === 0
+  // One timeline: the welcome is only for someone with nothing said yet, anywhere in it.
+  const isHome = state.messages.length === 0 && state.earlier.segments.length === 0
   if (isHome) dom.island.replaceChildren()
   else renderIsland(dom.island, state, handlers, now)
   dom.home.hidden = !isHome
   dom.thread.hidden = isHome
   if (isHome) renderHome(dom.home, state, handlers, now)
   else renderThreadFollowing(dom, state, handlers, now)
+  renderEarlierIfChanged(dom.earlier, state, handlers)
   renderDrawerIfChanged(dom.drawer, state, handlers)
   renderComposer(dom, state, handlers)
   renderSettingsIfChanged(dom.settings, state, handlers)

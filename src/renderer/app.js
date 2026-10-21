@@ -8,6 +8,8 @@ import { islandView } from './island-view.js'
 import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
+import { createTimelineActions } from './timeline-actions.js'
+import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.js'
 import { createScrollFollower } from './view/scroll-follow.js'
 
@@ -26,13 +28,16 @@ const dom = {
   island: byId('island'),
   scroll: byId('scroll'),
   home: byId('home'),
+  earlier: byId('earlier'),
   thread: byId('thread'),
   drawer: byId('drawer'),
   composer: byId('composer'),
   input: byId('composer-input'),
   sendBtn: byId('send-btn'),
   context: byId('composer-context'),
-  newSession: byId('new-session'),
+  workdirArea: document.querySelector('.workdir-area'),
+  workdirMenu: byId('workdir-menu'),
+  workdirConfirm: byId('workdir-confirm-root'),
   toggleDrawer: byId('toggle-drawer'),
   openSettings: byId('open-settings'),
   settings: byId('settings-root'),
@@ -157,12 +162,20 @@ const historyActions = createHistoryActions({
   dispatch,
   searchField: dom.historySearch,
   errorMessage,
-  newSession: () => handlers.newSession(),
-  onOpened: () => {
-    dom.follower.jumpToLatest()
-    dom.input.focus()
-  },
+  jumpTo: (hit) => timelineActions.jumpTo(hit),
 })
+
+/** How long a message found by search stays marked after the timeline scrolls to it. */
+const FOUND_MS = 2400
+
+/** Scrolls a message of the timeline (its `data-msg`, view/thread.js markMessage) to the middle and marks it a moment. */
+function revealMessage(msgId) {
+  const row = dom.scroll.querySelector(`[data-msg="${CSS.escape(msgId)}"]`)
+  if (!row) return
+  row.scrollIntoView({ block: 'center' })
+  row.classList.add('msg-found')
+  setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
+}
 
 /**
  * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
@@ -238,11 +251,13 @@ async function provideSecrets(values) {
 }
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
+const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
+const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
-/** What a toast's button does; history's undo keeps its own handler. */
+/** What a toast's button does. */
 const TOAST_ACTIONS = {
   'open-profile': () => memoryActions.openProfile(),
   'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
@@ -348,6 +363,15 @@ const handlers = {
   },
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
   islandAction: (action) => ISLAND_ACTIONS[action?.kind]?.(action),
+  /** The earlier part of the timeline, a page more (the button at its top). */
+  loadEarlier: () => timelineActions.loadEarlier(),
+  /** The working directory: the chip under the input, its menu, and the question the first time (view/workdir.js). */
+  pickWorkDir: (dir) => workDirActions.switchTo(dir),
+  chooseWorkDir: () => workDirActions.choose(),
+  confirmWorkDir: () => workDirActions.confirm(),
+  cancelWorkDir: () => workDirActions.cancelConfirm(),
+  closeWorkDirMenu: () => workDirActions.closeMenu(),
+  revealWorkDir: () => workDirActions.reveal(),
   /** A link in an answer opens in the browser (or mail app), never inside the window. */
   openLink: (url) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
 }
@@ -385,6 +409,8 @@ const EVENT_ACTIONS = {
   turn_end: (event) => ({ type: 'turn_end', stopReason: event.stopReason, at: Date.now() }),
   memory_context: (event) => ({ type: 'memory_context', injected: event.injected }),
   error: (event) => ({ type: 'error', message: event.message }),
+  /** The conversation goes on in another working directory (work-dir-ipc.js): a new part of the timeline. */
+  workdir: (event) => ({ type: 'workdir_switched', info: event.info }),
 }
 
 function wireComposer() {
@@ -400,7 +426,7 @@ function wireComposer() {
     event.preventDefault()
     handlers.send()
   })
-  dom.newSession.addEventListener('click', () => handlers.newSession())
+  dom.context.addEventListener('click', () => workDirActions.toggleMenu())
   dom.openSettings.addEventListener('click', () => handlers.openSettings())
   dom.openProfile.addEventListener('click', () => (state.memory.open ? handlers.closeProfile() : handlers.openProfile()))
   dom.modelBtn.addEventListener('click', () => handlers.togglePicker())
@@ -411,26 +437,28 @@ function wireComposer() {
   dom.historySearch.addEventListener('input', () => handlers.searchHistory(dom.historySearch.value))
 }
 
+/** ⌘ on the Mac, Ctrl elsewhere (either works on both), with `key` and no Shift. */
+const isShortcut = (event, key) => (event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === key
 const isHistoryShortcut = (event) => (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'
 
 /** Escape closes the innermost thing that is open. */
 function closeTopmost() {
-  if (state.settings.open) dispatch({ type: 'settings_close' })
+  if (state.workDir.confirm) workDirActions.cancelConfirm()
+  else if (state.workDir.menu) workDirActions.closeMenu()
+  else if (state.settings.open) dispatch({ type: 'settings_close' })
   else if (state.memory.open) dispatch({ type: 'memory_close' })
-  else if (state.history.menuFor) dispatch({ type: 'history_menu', id: null })
   else if (state.history.open) dispatch({ type: 'history_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
   else dispatch({ type: 'close_island' })
 }
 
 /**
- * Uses the event path captured at dispatch: a menu item re-renders the list when clicked,
+ * Uses the event path captured at dispatch: a hit re-renders the list when clicked,
  * so by the time the click reaches the document its target is no longer in the page.
  */
 function closeHistoryOnOutsideClick(event) {
   const path = event.composedPath()
   const within = (el) => path.includes(el)
-  if (state.history.menuFor && !path.some((el) => el.classList?.contains('history-menu'))) dispatch({ type: 'history_menu', id: null })
   if (state.history.open && ![dom.historyPanel, dom.toggleHistory, dom.toast].some(within)) dispatch({ type: 'history_close' })
 }
 
@@ -438,6 +466,7 @@ function wireDismissal() {
   document.addEventListener('click', (event) => {
     if (state.island && !dom.island.contains(event.target)) dispatch({ type: 'close_island' })
     if (state.picker && !dom.modelArea.contains(event.target)) dispatch({ type: 'picker_close' })
+    if (state.workDir.menu && !dom.workdirArea.contains(event.target)) workDirActions.closeMenu()
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
     closeHistoryOnOutsideClick(event)
   })
@@ -445,16 +474,58 @@ function wireDismissal() {
     if (isHistoryShortcut(event)) {
       event.preventDefault()
       handlers.toggleHistory()
+    } else if (isShortcut(event, 'f')) {
+      // ⌘F / Ctrl+F: find anything said in the timeline.
+      event.preventDefault()
+      handlers.openSearch()
+    } else if (isShortcut(event, 'n')) {
+      // ⌘N / Ctrl+N: a new topic; what was said before stays above it in the timeline.
+      event.preventDefault()
+      if (isBusy(state)) historyActions.showToast('先停止当前任务，再开新话题')
+      else handlers.newSession()
+    } else if (isShortcut(event, 'o')) {
+      // ⌘O / Ctrl+O: the system's folder dialog, as in any desktop app.
+      event.preventDefault()
+      if (!isBusy(state) && !state.workDir.switching) workDirActions.choose()
     } else if (event.key === 'Escape') {
       closeTopmost()
     }
   })
 }
 
+const carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+
+/**
+ * A folder dragged onto the window: work there, as if picked in the chip's menu (the main process says
+ * what is wrong with anything else). The window says what letting go will do while it is over it.
+ */
+function wireFolderDrop() {
+  const showing = (on) => document.body.classList.toggle('drop-folder', on)
+  document.addEventListener('dragover', (event) => {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'link'
+    showing(true)
+  })
+  document.addEventListener('dragleave', (event) => {
+    if (!event.relatedTarget) showing(false)
+  })
+  document.addEventListener('drop', (event) => {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+    showing(false)
+    const files = Array.from(event.dataTransfer.files)
+    if (files.length !== 1) return historyActions.showToast('一次拖一个文件夹进来')
+    if (isBusy(state) || state.workDir.switching) return historyActions.showToast('助手正在工作，等这一轮结束再换工作目录')
+    const dir = api.pathForFile(files[0])
+    return dir ? workDirActions.switchTo(dir) : historyActions.showToast('这不是电脑上的文件夹')
+  })
+}
+
 function labelShortcuts() {
-  const shortcut = platform === 'darwin' ? '⌘K' : 'Ctrl+K'
-  dom.toggleHistory.title = `历史对话 ${shortcut}`
-  dom.toggleHistory.setAttribute('aria-label', `历史对话（${shortcut}）`)
+  const shortcut = platform === 'darwin' ? '⌘F' : 'Ctrl+F'
+  dom.toggleHistory.title = `搜索 ${shortcut}`
+  dom.toggleHistory.setAttribute('aria-label', `搜索（${shortcut}）`)
 }
 
 /** An MCP server that would not start is left out; say so once per connection instead of failing. */
@@ -480,15 +551,20 @@ async function boot() {
     const toAction = EVENT_ACTIONS[event?.type]
     if (toAction) dispatch(toAction(event))
     if (event?.type === 'ready') reportMcpProblems(event.info)
+    if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
     if (event?.type === 'turn_end') {
       filesActions.filesAfterTurn()
       sendAfterTurn()
     }
     if (event?.type === 'error') afterTurn = []
   })
-  await Promise.all([loadHistory(), memoryActions.loadMemory()])
+  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh()])
+  await timelineActions.loadEarlier()
+  dom.follower.jumpToLatest()
+  dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })
   wireComposer()
   wireDismissal()
+  wireFolderDrop()
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })

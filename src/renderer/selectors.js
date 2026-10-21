@@ -53,7 +53,6 @@ export const historyMessages = (state) => state.messages
   .map(({ role, text, receipt }) => ({ role, text, receipt: receipt ?? null }))
 
 const DAY_MS = 86_400_000
-const WEEK_DAYS = 7
 const startOfDay = (ts) => new Date(ts).setHours(0, 0, 0, 0)
 /** Whole calendar days between `ts` and `now` (0 = today). */
 const daysAgo = (ts, now) => Math.round((startOfDay(now) - startOfDay(ts)) / DAY_MS)
@@ -66,25 +65,6 @@ export function formatListTime(ts, now = Date.now()) {
   if (days === 1) return '昨天'
   if (date.getFullYear() === new Date(now).getFullYear()) return `${date.getMonth() + 1}月${date.getDate()}日`
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
-}
-
-function groupLabel(item, now) {
-  if (item.pinned) return '置顶'
-  const days = daysAgo(item.updatedAt, now)
-  if (days <= 0) return '今天'
-  if (days === 1) return '昨天'
-  return days < WEEK_DAYS ? '7 天内' : '更早'
-}
-
-/** History rows grouped for the panel; empty groups are left out, order is kept. */
-export function historyGroups(items, now = Date.now()) {
-  return items.reduce((groups, item) => {
-    const label = groupLabel(item, now)
-    const last = groups[groups.length - 1]
-    return last?.label === label
-      ? [...groups.slice(0, -1), { ...last, items: [...last.items, item] }]
-      : [...groups, { label, items: [item] }]
-  }, [])
 }
 
 function formatSavedAt(ts, now) {
@@ -101,6 +81,58 @@ export function restoredNote(state, now = Date.now()) {
     ? ''
     : remembersHistory ? '助手记得这些内容，可以接着聊' : '上次的会话没能恢复，助手已不记得这些内容'
   return { when: formatSavedAt(state.restored.savedAt, now), memory }
+}
+
+/** What the window calls the app's own working directory. */
+export const DEFAULT_DIR_NAME = 'Viva 的文件'
+
+/**
+ * The working-directory menu (the chip under the input): the folder in use first, then the others used lately,
+ * then the app's own folder when it is in neither. Each with the name shown and its full path.
+ * @param {{ current: string, defaultDir: string, recent: string[] }} workDir workdir-state.js
+ * @returns {Array<{ dir: string, name: string, current: boolean, isDefault: boolean }>}
+ */
+export function workDirMenu({ current, defaultDir, recent }) {
+  const dirs = [current, ...recent.filter((dir) => dir !== current)]
+  if (defaultDir && !dirs.includes(defaultDir)) dirs.push(defaultDir)
+  return dirs.filter(Boolean).map((dir) => ({
+    dir, name: dir === defaultDir ? DEFAULT_DIR_NAME : workspaceName(dir), current: dir === current, isDefault: dir === defaultDir,
+  }))
+}
+
+/** The day a part of the timeline is from: 今天, 昨天, 9 月 21 日, or with the year before this one. */
+function timelineDay(ts, now) {
+  const days = daysAgo(ts, now)
+  if (days === 0) return '今天'
+  if (days === 1) return '昨天'
+  const date = new Date(ts)
+  const day = `${date.getMonth() + 1} 月 ${date.getDate()} 日`
+  return date.getFullYear() === new Date(now).getFullYear() ? day : `${date.getFullYear()} 年 ${day}`
+}
+
+/**
+ * The earlier part of the one timeline as the window shows it, top to bottom: a line for each new day, a line
+ * where the working directory changed (also before the current part, when it is in another one), and the messages.
+ * @param {{ segments: object[] }} earlier earlier-state.js
+ * @param {{ currentCwd?: string | null, now?: number }} [options]
+ * @returns {Array<{ kind: 'day', label: string } | { kind: 'workdir', cwd: string } | { kind: 'message', id: string, role: string, text: string, receipt: object | null }>}
+ */
+export function earlierRows(earlier, { currentCwd = null, now = Date.now() } = {}) {
+  const rows = []
+  let lastDay = null
+  let lastCwd = null
+  for (const segment of earlier.segments) {
+    if (segment.cwd && lastCwd && segment.cwd !== lastCwd) rows.push({ kind: 'workdir', cwd: segment.cwd })
+    lastCwd = segment.cwd ?? lastCwd
+    for (const message of segment.messages) {
+      const day = timelineDay(message.at, now)
+      if (day !== lastDay) rows.push({ kind: 'day', label: day })
+      lastDay = day
+      rows.push({ kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt })
+    }
+  }
+  if (currentCwd && lastCwd && currentCwd !== lastCwd) rows.push({ kind: 'workdir', cwd: currentCwd })
+  return rows
 }
 
 function compactJson(value) {

@@ -92,6 +92,30 @@ const MESSAGE_VIEWS = {
     message.receipt ? receiptButton(message, handlers, traceReady) : null),
 }
 
+const STILL = Object.freeze({ latest: false, mood: 'idle' })
+
+/**
+ * A message from an earlier part of the timeline (view/earlier.js): as it was shown, fully typed out, its
+ * receipt as plain text (its trace belongs to a session no longer on screen).
+ * @param {{ id: string, role: string, text: string, receipt: object | null }} message
+ */
+/** A search hit is found by its message's row (timeline-search.js); a view may be several elements, or none. */
+export function markMessage(view, id) {
+  const first = Array.isArray(view) ? view[0] : view
+  first?.setAttribute('data-msg', id)
+  return view
+}
+
+export function pastMessageView(message, handlers) {
+  if (message.role === 'user') return userView(message)
+  if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
+  return h('div', { class: 'msg-agent' },
+    avatar(message, STILL),
+    h('div', { class: 'msg-body' },
+      answerText(message, handlers),
+      message.receipt ? h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) }) : null))
+}
+
 /** A card's buttons by role (prompt-card.js); the island draws the same roles at its own size. */
 const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
 
@@ -195,7 +219,7 @@ export function renderThread(container, state, handlers, now) {
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
-  const views = state.messages.map((message) => MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null)
+  const views = state.messages.map((message) => markMessage(MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null, message.id))
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',

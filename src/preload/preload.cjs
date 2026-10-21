@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('agent', {
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
@@ -34,6 +34,19 @@ contextBridge.exposeInMainWorld('agent', {
   deleteConversation: (id) => ipcRenderer.invoke('history:delete', id),
   restoreConversation: (id) => ipcRenderer.invoke('history:restore', id),
   exportConversation: (id) => ipcRenderer.invoke('history:export', id),
+  /** The one timeline: the segments before `id`, oldest first; messages across all of it that contain `query`. */
+  earlierSegments: (id, limit) => ipcRenderer.invoke('history:segments-before', id, limit),
+  searchTimeline: (query) => ipcRenderer.invoke('history:search-messages', query),
+  /** The working directory: { current, defaultDir, isDefault, recent }; a folder from the system dialog, or null. */
+  getWorkDir: () => ipcRenderer.invoke('workdir:get'),
+  chooseWorkDir: () => ipcRenderer.invoke('workdir:choose'),
+  /** { ok, info, state } | { ok: false, needsConfirm, dir } | { ok: false, problem } | { ok: false, reason: 'busy' } */
+  switchWorkDir: (dir, options) => ipcRenderer.invoke('workdir:switch', dir, options),
+  forgetWorkDir: (dir) => ipcRenderer.invoke('workdir:forget', dir),
+  /** Where a file or folder dragged onto the window is on disk ('' for one that is not on disk). */
+  pathForFile: (file) => webUtils.getPathForFile(file),
+  /** The folder in use, in Finder or Explorer. */
+  revealWorkDir: () => ipcRenderer.invoke('workdir:reveal'),
   getMemory: () => ipcRenderer.invoke('memory:get'),
   listMemories: (query) => ipcRenderer.invoke('memory:list', query),
   saveProfile: (changes) => ipcRenderer.invoke('memory:set-profile', changes),

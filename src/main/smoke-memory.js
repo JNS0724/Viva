@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, finishTurn, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 
 /**
  * Smoke steps on the real dsh with the app's plugins and the fake model (test/fixtures/fake-llm.js): the
@@ -71,7 +71,7 @@ async function questionSteps(win, outDir, expect) {
 }
 
 async function steps(win, outDir, expect, hooks) {
-  await run(win, `document.getElementById('new-session').click()`)
+  await newTopic(win)
   await finishTurn(win)
   await wait(UI_WAIT_MS)
   expect(await run(win, `Boolean(document.getElementById('start-intro'))`), 'a fresh profile should offer the intro on the home page')
@@ -213,6 +213,72 @@ async function crashSteps(win, outDir, expect, hooks) {
   await capture(win, outDir, 'dsh-recovered')
 }
 
+/**
+ * The conversation goes on in another folder (single-conversation design): the first time it is asked, then
+ * the chip names it, the timeline says where the folder changed with what was said before still above, and the
+ * agent answers there. A name with a space and Chinese in it, as people's folders have.
+ */
+async function workDirSteps(win, outDir, expect, hooks) {
+  const dir = path.join(path.dirname(hooks.cwd), '其他 项目')
+  fs.mkdirSync(dir, { recursive: true })
+  const asked = await run(win, `document.querySelectorAll('#earlier .msg-user, #thread .msg-user').length`)
+  const first = await run(win, `window.agent.switchWorkDir(${JSON.stringify(dir)})`)
+  expect(first.needsConfirm === true, 'a folder used for the first time should be confirmed first', first)
+  const done = await run(win, `window.agent.switchWorkDir(${JSON.stringify(dir)}, { confirmed: true })`)
+  expect(done.ok && done.state?.current === dir, 'the confirmed folder should become the working directory', done)
+  const shown = await until(win, `(() => {
+    const chip = document.getElementById('composer-context').textContent
+    const line = document.querySelector('#earlier .timeline-workdir')?.textContent ?? ''
+    return chip.includes('其他 项目') && line.includes('其他 项目') ? { chip, line } : null
+  })()`, 'the chip and the timeline naming the new folder')
+  expect(Boolean(shown), 'the window should show the new folder', shown)
+  const kept = await run(win, `document.querySelectorAll('#earlier .msg-user').length`)
+  expect(kept === asked, 'what was said before should stay above in the timeline', { asked, kept })
+
+  await submit(win, '换了个项目，继续')
+  await finishTurn(win)
+  await wait(UI_WAIT_MS)
+  const last = await run(win, `[...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  expect(last.length > 0 && !(await run(win, `Boolean(document.querySelector('.msg-error'))`)), 'the agent should answer in the new folder', last.slice(0, 40))
+  await capture(win, outDir, 'workdir-switched')
+
+  await run(win, `document.getElementById('composer-context').click()`)
+  const menu = await until(win, `(() => {
+    const names = [...document.querySelectorAll('.workdir-item-name')].map((el) => el.textContent)
+    return names.length ? names : null
+  })()`, 'the working-directory menu')
+  expect(menu.includes('其他 项目') && menu.includes('Viva 的文件') && menu.includes('选择文件夹…'), 'the menu should list both folders and the folder dialog', menu)
+  await wait(UI_WAIT_MS)
+  const box = await run(win, `(() => {
+    const rect = document.querySelector('.workdir-menu')?.getBoundingClientRect()
+    const top = rect && document.elementFromPoint(rect.left + rect.width / 2, rect.top + 12)
+    return rect ? { top: Math.round(rect.top), height: Math.round(rect.height), onTop: Boolean(top?.closest('.workdir-menu')) } : null
+  })()`)
+  expect(Boolean(box?.onTop) && box.top >= 0, 'the menu should be open on top of the window, all of it on screen', box)
+  await capture(win, outDir, 'workdir-menu')
+  await run(win, `document.getElementById('composer-context').click()`)
+  await dropSteps(win, outDir, expect)
+}
+
+/** Something held over the window says letting go works there; what is not a folder on disk is turned down. */
+async function dropSteps(win, outDir, expect) {
+  const held = await run(win, `(() => {
+    window.smokeDrop = new DataTransfer()
+    window.smokeDrop.items.add(new File(['x'], '不在磁盘上.txt'))
+    document.body.dispatchEvent(new DragEvent('dragover', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))
+    return document.body.classList.contains('drop-folder')
+  })()`)
+  expect(held, 'a folder held over the window should be told what letting go does')
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'workdir-drop')
+  await run(win, `document.body.dispatchEvent(new DragEvent('drop', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))`)
+  const after = await until(win, `(() => {
+    const toast = document.querySelector('.toast')?.textContent ?? ''
+    return toast && { toast, held: document.body.classList.contains('drop-folder') }
+  })()`, 'the toast for a drop that is not a folder')
+  expect(after.toast.includes('这不是电脑上的文件夹') && !after.held, 'a drop that is not a folder on disk should be turned down', after)
+}
+
 /** @returns {Promise<string[]>} failed expectations */
 export async function checkMemory(win, outDir, hooks = {}) {
   const failures = []
@@ -220,6 +286,7 @@ export async function checkMemory(win, outDir, hooks = {}) {
   try {
     await steps(win, outDir, expect, hooks)
     await crashSteps(win, outDir, expect, hooks)
+    await workDirSteps(win, outDir, expect, hooks)
   } catch (err) {
     failures.push(`memory: ${err instanceof Error ? err.message : String(err)}`)
   }

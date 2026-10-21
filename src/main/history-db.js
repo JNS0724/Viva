@@ -14,6 +14,9 @@ const TRIGRAM_MIN_CHARS = 3
 const SNIPPET_BEFORE = 20
 const SNIPPET_AFTER = 40
 const QUESTION_TIMES_LIMIT = 1000
+/** Earlier segments of the timeline read back at a time, and the most at once. */
+const SEGMENT_PAGE = 5
+const MAX_SEGMENT_PAGE = 50
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS conversations (
@@ -55,6 +58,20 @@ const SCHEMA = `
   END;
 `
 
+/**
+ * Columns added since the first schema, each with its declaration; a file from before gets them on opening.
+ * cwd: the working directory the conversation's dsh session ran in; parent_id: the conversation it went on from
+ * (a fork: another directory, or back to an earlier point), so the timeline reads as one.
+ */
+const ADDED_COLUMNS = Object.freeze([['conversations', 'cwd', 'TEXT'], ['conversations', 'parent_id', 'TEXT']])
+
+function addMissingColumns(db) {
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    const present = db.prepare(`PRAGMA table_info(${table})`).all().some((info) => info.name === column)
+    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  }
+}
+
 const toConversation = (row) => ({
   id: row.id,
   title: row.title,
@@ -64,6 +81,8 @@ const toConversation = (row) => ({
   sessionId: row.session_id,
   mode: row.mode,
   model: row.model,
+  cwd: row.cwd ?? null,
+  parentId: row.parent_id ?? null,
 })
 
 const toSummary = (row) => ({
@@ -71,6 +90,8 @@ const toSummary = (row) => ({
 })
 
 const toMessage = (row) => ({ role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null })
+/** A message of an earlier segment of the timeline: where it is, and when it was written (ms). */
+const toTimelineMessage = (row) => ({ seq: row.seq, ...toMessage(row), at: row.created_at })
 
 const escapeLike = (text) => text.replace(/[\\%_]/g, (c) => `\\${c}`)
 const ftsPhrase = (text) => `"${text.replaceAll('"', '""')}"`
@@ -100,15 +121,27 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
   db.exec(SCHEMA)
+  addMissingColumns(db)
 
   const sql = {
     conversation: db.prepare('SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL'),
     anyConversation: db.prepare('SELECT title, title_custom FROM conversations WHERE id = ?'),
     upsert: db.prepare(`
-      INSERT INTO conversations (id, title, created_at, updated_at, session_id, mode, model)
-      VALUES (:id, :title, :createdAt, :updatedAt, :sessionId, :mode, :model)
+      INSERT INTO conversations (id, title, created_at, updated_at, session_id, mode, model, cwd, parent_id)
+      VALUES (:id, :title, :createdAt, :updatedAt, :sessionId, :mode, :model, :cwd, :parentId)
       ON CONFLICT (id) DO UPDATE SET title = :title, updated_at = :updatedAt,
-        session_id = :sessionId, mode = :mode, model = :model`),
+        session_id = :sessionId, mode = :mode, model = :model, cwd = :cwd`),
+    position: db.prepare('SELECT created_at, rowid FROM conversations WHERE id = ?'),
+    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL
+      AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
+      ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
+    timelineMessages: db.prepare('SELECT seq, role, text, receipt, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    ftsMessageHits: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages_fts
+      JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id
+      WHERE messages_fts MATCH ? AND c.deleted_at IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
+    likeMessageHits: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
     messages: db.prepare('SELECT role, text, receipt FROM messages WHERE conversation_id = ? ORDER BY seq'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
@@ -160,9 +193,9 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   }
 
   /** An unsaved conversation; it reaches the database with its first message. */
-  function create({ sessionId = null, mode = null, model = null } = {}) {
+  function create({ sessionId = null, mode = null, model = null, cwd = null, parentId = null } = {}) {
     const at = now()
-    return { id: newId(), title: '', titleCustom: false, createdAt: at, updatedAt: at, sessionId, mode, model }
+    return { id: newId(), title: '', titleCustom: false, createdAt: at, updatedAt: at, sessionId, mode, model, cwd, parentId }
   }
 
   /** @returns the conversation as stored (or as given, while it is still empty) */
@@ -181,6 +214,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
         sessionId: conversation.sessionId ?? null,
         mode: conversation.mode ?? null,
         model: conversation.model ?? null,
+        cwd: conversation.cwd ?? null,
+        parentId: conversation.parentId ?? null,
       })
       syncMessages(id, messages, conversation.sessionId, at)
       return toConversation(sql.conversation.get(id) ?? { ...existing, ...conversation })
@@ -193,7 +228,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     const list = normalizeMessages(messages)
     if (list.length === 0) return false
     transaction(() => {
-      sql.upsert.run({ id, title: autoTitle(list), createdAt, updatedAt, sessionId, mode: null, model: null })
+      sql.upsert.run({ id, title: autoTitle(list), createdAt, updatedAt, sessionId, mode: null, model: null, cwd: null, parentId: null })
       syncMessages(id, list, sessionId, updatedAt)
     })
     return true
@@ -230,6 +265,38 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
       .slice(0, SEARCH_LIMIT)
   }
 
+  /**
+   * The segments of the timeline right before `id`, oldest first, each with its messages and when they were
+   * written; `hasMore` when there are earlier ones still. Deleted segments are left out.
+   * @param {string} id @param {{ limit?: number }} [options]
+   */
+  function segmentsBefore(id, { limit = SEGMENT_PAGE } = {}) {
+    // A segment not yet written (it reaches the database with its first message) comes after all that are.
+    const position = sql.position.get(assertId(id)) ?? { created_at: Number.MAX_SAFE_INTEGER, rowid: Number.MAX_SAFE_INTEGER }
+    const size = Math.min(Math.max(1, Math.trunc(limit) || SEGMENT_PAGE), MAX_SEGMENT_PAGE)
+    const rows = sql.segmentsBefore.all({ createdAt: position.created_at, rowid: position.rowid, limit: size + 1 })
+    const segments = rows.slice(0, size).reverse().map((row) => ({
+      id: row.id,
+      cwd: row.cwd ?? null,
+      parentId: row.parent_id ?? null,
+      createdAt: row.created_at,
+      messages: sql.timelineMessages.all(row.id).map(toTimelineMessage),
+    }))
+    return { segments, hasMore: rows.length > size }
+  }
+
+  /** Messages of the whole timeline that contain `input`, newest first, with where each is and its directory. */
+  function searchMessages(input) {
+    const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
+    if (!query) return []
+    const rows = [...query].length >= TRIGRAM_MIN_CHARS
+      ? sql.ftsMessageHits.all(ftsPhrase(query))
+      : sql.likeMessageHits.all(`%${escapeLike(query)}%`)
+    return rows.map((row) => ({
+      segmentId: row.segment_id, seq: row.seq, role: row.role, at: row.created_at, cwd: row.cwd ?? null, snippet: snippetOf(row.text, query),
+    }))
+  }
+
   function changeOne(statement, ...params) {
     if (statement.run(...params).changes === 0) throw new Error('找不到这段对话')
   }
@@ -257,6 +324,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds,
-    questionTimes, importConversation, close: () => db.close(),
+    questionTimes, importConversation, segmentsBefore, searchMessages, close: () => db.close(),
   }
 }
