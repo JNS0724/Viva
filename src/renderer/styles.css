@@ -90,6 +90,25 @@ html:not([data-platform="darwin"]) {
 }
 .home { width: 100%; max-width: 1240px; min-height: 100%; padding: 24px 0; box-sizing: border-box; }
 .thread { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
+/* The earlier part of the one timeline, above the conversation on screen (view/earlier.js). */
+.earlier { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 0; }
+.earlier + .thread { padding-top: 28px; }
+.timeline-more {
+  align-self: center; height: 34px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line-2); background: none;
+  color: var(--ink-2); font-size: 13px; cursor: pointer;
+}
+.timeline-more:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
+.timeline-more:disabled { cursor: default; opacity: .7; }
+.timeline-day {
+  display: flex; align-items: center; gap: 12px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; color: var(--ink-3);
+}
+.timeline-day::before, .timeline-day::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.timeline-workdir {
+  align-self: center; display: flex; align-items: center; gap: 8px; max-width: 100%; padding: 6px 14px; box-sizing: border-box;
+  border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); font-size: 12px; color: var(--ink-2);
+}
+.timeline-workdir b { color: var(--ink); }
+.timeline-workdir-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 11px; }
 
 /* ---------- composer ---------- */
 .composer {

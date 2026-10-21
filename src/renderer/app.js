@@ -8,6 +8,7 @@ import { islandView } from './island-view.js'
 import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
+import { createTimelineActions } from './timeline-actions.js'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.js'
 import { createScrollFollower } from './view/scroll-follow.js'
 
@@ -26,6 +27,7 @@ const dom = {
   island: byId('island'),
   scroll: byId('scroll'),
   home: byId('home'),
+  earlier: byId('earlier'),
   thread: byId('thread'),
   drawer: byId('drawer'),
   composer: byId('composer'),
@@ -238,6 +240,7 @@ async function provideSecrets(values) {
 }
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
+const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
@@ -348,6 +351,8 @@ const handlers = {
   },
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
   islandAction: (action) => ISLAND_ACTIONS[action?.kind]?.(action),
+  /** The earlier part of the timeline, a page more (the button at its top). */
+  loadEarlier: () => timelineActions.loadEarlier(),
   /** A link in an answer opens in the browser (or mail app), never inside the window. */
   openLink: (url) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
 }
@@ -385,6 +390,8 @@ const EVENT_ACTIONS = {
   turn_end: (event) => ({ type: 'turn_end', stopReason: event.stopReason, at: Date.now() }),
   memory_context: (event) => ({ type: 'memory_context', injected: event.injected }),
   error: (event) => ({ type: 'error', message: event.message }),
+  /** The conversation goes on in another working directory (work-dir-ipc.js): a new part of the timeline. */
+  workdir: (event) => ({ type: 'workdir_switched', info: event.info }),
 }
 
 function wireComposer() {
@@ -487,6 +494,9 @@ async function boot() {
     if (event?.type === 'error') afterTurn = []
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory()])
+  await timelineActions.loadEarlier()
+  dom.follower.jumpToLatest()
+  dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })
   wireComposer()
   wireDismissal()
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)

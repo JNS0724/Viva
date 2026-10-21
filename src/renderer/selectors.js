@@ -103,6 +103,41 @@ export function restoredNote(state, now = Date.now()) {
   return { when: formatSavedAt(state.restored.savedAt, now), memory }
 }
 
+/** The day a part of the timeline is from: 今天, 昨天, 9 月 21 日, or with the year before this one. */
+function timelineDay(ts, now) {
+  const days = daysAgo(ts, now)
+  if (days === 0) return '今天'
+  if (days === 1) return '昨天'
+  const date = new Date(ts)
+  const day = `${date.getMonth() + 1} 月 ${date.getDate()} 日`
+  return date.getFullYear() === new Date(now).getFullYear() ? day : `${date.getFullYear()} 年 ${day}`
+}
+
+/**
+ * The earlier part of the one timeline as the window shows it, top to bottom: a line for each new day, a line
+ * where the working directory changed (also before the current part, when it is in another one), and the messages.
+ * @param {{ segments: object[] }} earlier earlier-state.js
+ * @param {{ currentCwd?: string | null, now?: number }} [options]
+ * @returns {Array<{ kind: 'day', label: string } | { kind: 'workdir', cwd: string } | { kind: 'message', id: string, role: string, text: string, receipt: object | null }>}
+ */
+export function earlierRows(earlier, { currentCwd = null, now = Date.now() } = {}) {
+  const rows = []
+  let lastDay = null
+  let lastCwd = null
+  for (const segment of earlier.segments) {
+    if (segment.cwd && lastCwd && segment.cwd !== lastCwd) rows.push({ kind: 'workdir', cwd: segment.cwd })
+    lastCwd = segment.cwd ?? lastCwd
+    for (const message of segment.messages) {
+      const day = timelineDay(message.at, now)
+      if (day !== lastDay) rows.push({ kind: 'day', label: day })
+      lastDay = day
+      rows.push({ kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt })
+    }
+  }
+  if (currentCwd && lastCwd && currentCwd !== lastCwd) rows.push({ kind: 'workdir', cwd: currentCwd })
+  return rows
+}
+
 function compactJson(value) {
   if (value === null || value === undefined) return ''
   try {

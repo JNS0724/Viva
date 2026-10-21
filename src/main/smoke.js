@@ -395,6 +395,14 @@ async function historyPanelSteps(win, outDir, failures) {
   await finishTurn(win)
   await submit(win, SECOND_PROMPT)
   await finishTurn(win)
+  // One timeline: what was said before the new session stays above it, under its day.
+  const timeline = await run(win, `({
+    earlier: [...document.querySelectorAll('#earlier .msg-user')].map((el) => el.textContent),
+    days: [...document.querySelectorAll('#earlier .timeline-day')].map((el) => el.textContent),
+    shown: !document.getElementById('earlier').hidden,
+  })`)
+  expect(timeline.shown && timeline.earlier.includes(SMOKE_PROMPT) && timeline.days.includes('今天'),
+    'the conversation before the new session should stay above it in the timeline', timeline)
   await click(win, 'toggle-history')
   await wait(UI_WAIT_MS)
   seen = await panel()

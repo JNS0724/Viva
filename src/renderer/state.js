@@ -1,4 +1,5 @@
 import { approvalTitle, optionName } from './approval.js'
+import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.js'
 import { FILES_ACTIONS, initialFiles } from './files-state.js'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
@@ -37,6 +38,8 @@ export const initialState = Object.freeze({
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null,
   history: initialHistory,
+  /** The one timeline: the segments before the one on screen (earlier-state.js). */
+  earlier: initialEarlier,
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
@@ -296,20 +299,25 @@ const ACTION_HANDLERS = {
 
   conversation_saved: (state, { id }) => (state.conversationId === id ? state : { ...state, conversationId: id }),
 
+  /** A new session goes on below what was said so far, which stays in the timeline above. */
   new_session: (state, { info }) => ({
     ...initialState,
     info: info ?? state.info,
     drawer: state.drawer,
     settings: state.settings,
     history: state.history,
+    earlier: withCurrentKept(state),
     memory: state.memory,
     extensions: state.extensions,
     toast: state.toast,
   }),
 
+  /** The conversation goes on in another working directory, with everything said so far (a fork). */
+  workdir_switched: (state, { info }) => ACTION_HANDLERS.new_session(state, { info }),
+
   /** Picked from the history panel: start over with that conversation's messages and close the panel. */
   conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded(
-    { ...ACTION_HANDLERS.new_session(state, { info }), history: { ...state.history, open: false, menuFor: null, renaming: null } },
+    { ...ACTION_HANDLERS.new_session(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false, menuFor: null, renaming: null } },
     { conversationId: conversation.id, messages: conversation.messages, savedAt: conversation.updatedAt },
   ),
 
@@ -348,6 +356,7 @@ const ACTION_HANDLERS = {
   toggle_island: (state) => ({ ...state, island: !state.island }),
   close_island: (state) => (state.island ? { ...state, island: false } : state),
   ...HISTORY_ACTIONS,
+  ...EARLIER_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,
   ...QUESTION_ACTIONS,

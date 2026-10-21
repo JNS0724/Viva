@@ -92,6 +92,23 @@ const MESSAGE_VIEWS = {
     message.receipt ? receiptButton(message, handlers, traceReady) : null),
 }
 
+const STILL = Object.freeze({ latest: false, mood: 'idle' })
+
+/**
+ * A message from an earlier part of the timeline (view/earlier.js): as it was shown, fully typed out, its
+ * receipt as plain text (its trace belongs to a session no longer on screen).
+ * @param {{ id: string, role: string, text: string, receipt: object | null }} message
+ */
+export function pastMessageView(message, handlers) {
+  if (message.role === 'user') return userView(message)
+  if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
+  return h('div', { class: 'msg-agent' },
+    avatar(message, STILL),
+    h('div', { class: 'msg-body' },
+      answerText(message, handlers),
+      message.receipt ? h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) }) : null))
+}
+
 /** A card's buttons by role (prompt-card.js); the island draws the same roles at its own size. */
 const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
 
