@@ -18,6 +18,7 @@ import { registerFilesIpc } from './files-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { registerRewindIpc } from './rewind-ipc.js'
+import { registerTaskIpc } from './task-ipc.js'
 import { registerWorkDirIpc } from './work-dir-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.js'
@@ -661,6 +662,28 @@ function openHistory(config) {
     switchAgent,
     traceDb: () => traceDb,
   })
+  registerTaskIpc(ipcMain, {
+    db: historyDb,
+    current: () => conversation,
+    setCurrent: (next) => { conversation = next },
+    isBusy: () => turn.active,
+    setBusy: (active) => { turn = { ...turn, active } },
+    agentInfo: () => lastInfo,
+    agent: taskAgent,
+  })
+}
+
+/** The agent's side of background tasks; a change of the main session is the one shown from then on. */
+const withInfo = (result) => {
+  if (result.ok) lastInfo = { ...result.info, remembersHistory: true }
+  return result
+}
+const taskAgent = {
+  spinOff: async (request) => withInfo(await requireBridge().spinOff(request)),
+  mergeBack: async (taskId) => withInfo(await requireBridge().mergeBack(taskId)),
+  closeTask: (taskId) => bridge?.closeTask(taskId),
+  cancelTask: (taskId) => bridge?.cancelTask(taskId),
+  steerTask: (taskId, text) => requireBridge().steerTask(taskId, text),
 }
 
 /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */

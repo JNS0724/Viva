@@ -42,6 +42,16 @@ contextBridge.exposeInMainWorld('agent', {
    * { ok, info, conversation: { id, messages }, folds } | { ok: false, problem }.
    */
   rewind: (request) => ipcRenderer.invoke('timeline:rewind', request),
+  /**
+   * Background tasks: the running turn goes on in the background ({ words, keep, text }), and the
+   * conversation goes on with `text`: { ok, task, info, conversation, folds } | { ok: false, reason | problem }.
+   */
+  spinOffTask: (request) => ipcRenderer.invoke('task:spin-off', request),
+  saveTask: (taskId, messages) => ipcRenderer.invoke('task:save', taskId, messages),
+  undoTask: (taskId) => ipcRenderer.invoke('task:undo', taskId),
+  closeTask: (taskId) => ipcRenderer.invoke('task:close', taskId),
+  stopTask: (taskId) => ipcRenderer.invoke('task:stop', taskId),
+  steerTask: (taskId, text) => ipcRenderer.invoke('task:steer', taskId, text),
   /** What the part that would fold did to the computer ({ keep }): { files: [{ path, times }], commands }. */
   rewindEffects: (request) => ipcRenderer.invoke('timeline:rewind-effects', request),
   /** A path folded off the conversation on screen: what it holds after the shared part ({ messages }), or back onto it. */
