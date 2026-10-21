@@ -413,6 +413,8 @@ async function historyPanelSteps(win, outDir, failures) {
   // ⌘F searches what was said; a hit scrolls the timeline to that message and marks it.
   await run(win, 'document.body.click()')
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }))`)
+  const focused = await run(win, 'document.activeElement?.id ?? ""')
+  expect(focused === 'history-search', '⌘F should put the cursor in the search field', focused)
   await run(win, typeSearch(SEARCH_TEXT))
   await wait(UI_WAIT_MS)
   seen = await panel()

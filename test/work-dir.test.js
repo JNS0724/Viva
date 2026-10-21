@@ -27,7 +27,7 @@ test('a disk, the home folder itself, and the system\'s folders are refused, eac
 test('a network path, a relative path, and a folder that is not there are refused', () => {
   assert.match(workDirProblem('\\\\server\\share\\docs', win(['\\\\server\\share\\docs'])), /网络/)
   assert.match(workDirProblem('Projects/site', mac(['Projects/site'])), /完整路径/)
-  assert.match(workDirProblem('/Users/me/gone', mac([])), /不存在/)
+  assert.match(workDirProblem('/Users/me/gone', mac([])), /不是一个文件夹/)
   assert.match(workDirProblem('', mac([])), /完整路径/)
 })
 

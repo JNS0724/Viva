@@ -525,6 +525,8 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   transition: transform .22s ease, visibility .22s;
 }
 .history-panel[data-open="false"] { transform: translateX(-100%); visibility: hidden; }
+/* Visible at once when it opens, so ⌘F / ⌘K can put the cursor in its field; it hides only once slid away. */
+.history-panel[data-open="true"] { transition: transform .22s ease; }
 .history-head { display: flex; align-items: center; justify-content: space-between; color: var(--ink-3); padding-left: 4px; }
 .history-search {
   display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 42px; flex: none;
