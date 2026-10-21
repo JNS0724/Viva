@@ -9,11 +9,13 @@ import { createSteerDesk } from './steer-channel.js'
 import { createForkDesk } from './fork-channel.js'
 import { createQuestionDesk } from './question-channel.js'
 import { describeConfig, describeError } from './session-info.js'
+import pkg from '../../package.json' with { type: 'json' }
 
 const STDERR_TAIL_LIMIT = 4000
 /** dsh gets this long to finish after its input closes, then its process tree is ended; then killed outright. */
 const SHUTDOWN_GRACE_MS = 1500
-const CLIENT_INFO = { name: 'viva', version: '0.3.0-beta.5' }
+// The version the app was built as, so it cannot fall behind a release (package.json ships in the app).
+const CLIENT_INFO = { name: 'viva', version: pkg.version }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
 const NO_MCP = () => []
 

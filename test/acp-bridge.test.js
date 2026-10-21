@@ -4,6 +4,11 @@ import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
 import { createAcpBridge } from '../src/main/acp-bridge.js'
+import pkg from '../package.json' with { type: 'json' }
+
+const APP_VERSION = pkg.version
+/** What the app told the fake dsh it is, at the last initialize. */
+let lastClientInfo = null
 
 const SESSION = 'session-1'
 const OLDER_SESSION = 'session-0'
@@ -35,6 +40,7 @@ function scriptedAgent(log, { resumable = true } = {}) {
   return (conn) => ({
     async initialize(params) {
       log.push(['initialize', params.protocolVersion, params.clientInfo?.name])
+      lastClientInfo = params.clientInfo
       const agentCapabilities = resumable ? { sessionCapabilities: { resume: {} } } : {}
       return { protocolVersion: params.protocolVersion, agentCapabilities, authMethods: [] }
     },
@@ -116,6 +122,7 @@ test('acp bridge initializes, opens a session, relays updates and answers permis
     ['decision', { outcome: 'selected', optionId: 'yes' }],
     ['cancel', SESSION],
   ])
+  assert.equal(lastClientInfo?.version, APP_VERSION, 'dsh is told the version the app was built as')
   assert.deepEqual(events.map((e) => e.update?.sessionUpdate ?? e.type), ['agent_thought_chunk', 'permission', 'agent_message_chunk', 'turn_end'])
   assert.equal(events[1].toolCall.title, '写入 notes.md')
   assert.equal(events.at(-1).stopReason, 'end_turn')
