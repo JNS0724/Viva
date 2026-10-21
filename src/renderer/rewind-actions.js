@@ -34,7 +34,37 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
     return ask(words)
   }
 
+  /** Opens a folded path in place to read it, or closes it again. */
+  async function toggleFold(id) {
+    if (getState().rewind.open[id]) return dispatch({ type: 'fold_closed', id })
+    try {
+      return dispatch({ type: 'fold_opened', id, ...await api.foldedPath(id) })
+    } catch (err) {
+      return showToast(`打不开那条路：${errorMessage(err)}`)
+    }
+  }
+
+  /** Back onto a folded path; the one on screen folds where the two part. */
+  async function switchPath(id) {
+    const state = getState()
+    if (state.phase !== 'idle' || state.rewind.busy) return showToast('先停止当前任务，再切到另一条路')
+    dispatch({ type: 'rewind_busy' })
+    let result
+    try {
+      result = await api.switchPath(id)
+    } catch (err) {
+      result = { ok: false, problem: errorMessage(err) || FAILED }
+    }
+    if (!result.ok) {
+      dispatch({ type: 'rewind_failed' })
+      return showToast(result.problem ?? FAILED)
+    }
+    return dispatch({ type: 'rewound', conversation: result.conversation, info: result.info, folds: result.folds })
+  }
+
   return {
+    toggleFold,
+    switchPath,
     redoFrom: (id) => goBack(id, getState().messages.find((message) => message.id === id)?.text),
     editFrom: (id) => (rewindTarget(getState(), id) ? dispatch({ type: 'rewind_edit', id }) : showToast(NOT_NOW)),
     cancelEdit: () => dispatch({ type: 'rewind_cancel' }),

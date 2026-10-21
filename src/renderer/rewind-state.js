@@ -8,6 +8,8 @@ export const initialRewind = Object.freeze({
   editing: null,
   /** The agent is going back; nothing else may be sent until it has. */
   busy: false,
+  /** Folded paths opened in place to be read: their messages after the shared part, by path id. */
+  open: {},
 })
 
 /** Words that started a turn of their own: not said into a running one, not an answer, not left unsent. */
@@ -49,6 +51,10 @@ export function rewindActions(newSession) {
     rewind_cancel: (state) => withRewind(state, { editing: null }),
     rewind_busy: (state) => withRewind(state, { busy: true }),
     rewind_failed: (state) => withRewind(state, { busy: false }),
+    fold_opened: (state, { id, messages }) => withRewind(state, { open: { ...state.rewind.open, [id]: messages } }),
+    fold_closed: (state, { id }) => withRewind(state, {
+      open: Object.fromEntries(Object.entries(state.rewind.open).filter(([key]) => key !== id)),
+    }),
     /**
      * The agent went back: on screen are what came before that point, as it was, and the path left behind,
      * folded after it. The earlier timeline stays; the new words follow as the next question.

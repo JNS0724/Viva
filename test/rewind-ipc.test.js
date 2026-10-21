@@ -19,6 +19,7 @@ function setup({ busy = false, forkResult } = {}) {
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rewind-')), 'history.db'), newId: () => `c${++n}` })
   let current = db.save(db.create({ sessionId: 's1', cwd: '/w', parentId: null }), [user('做周报'), answer('写好了'), user('太正式了'), answer('改了')])
   const forks = []
+  const switches = []
   const handlers = {}
   registerRewindIpc({ handle: (channel, fn) => { handlers[channel] = fn } }, {
     db,
@@ -30,9 +31,13 @@ function setup({ busy = false, forkResult } = {}) {
       forks.push(request)
       return forkResult ?? { ok: true, info: { sessionId: 's2', mode: 'live', model: 'V4', cwd: '/w' } }
     },
+    switchAgent: async (sessionId, cwd) => {
+      switches.push([sessionId, cwd])
+      return { sessionId, cwd, resumed: true, mode: 'live', model: 'V4' }
+    },
   })
   const rewind = (request) => handlers['timeline:rewind']({}, request)
-  return { db, rewind, forks, current: () => current }
+  return { db, rewind, forks, switches, handlers, current: () => current }
 }
 
 test('going back to a question forks before it and goes on in a new segment; the old path folds there', async () => {
@@ -67,6 +72,26 @@ test('nothing moves while the agent works, for words not stored there, or when t
   assert.match(result.problem, /找不到/)
   assert.equal(refused.current(), kept, 'the conversation on screen stays')
   assert.deepEqual(refused.db.foldsOf(kept.id), [])
+})
+
+test('a folded path can be read, and switched back to: the one on screen folds in its place', async () => {
+  const { db, rewind, current, handlers, switches } = setup()
+  const first = current()
+  await rewind({ words: '太正式了', keep: 2, text: '口语一点' })
+  const second = current()
+
+  assert.deepEqual(await handlers['timeline:folded']({}, first.id), { messages: [user('太正式了'), answer('改了')] }, 'what folded, after the shared part')
+
+  const back = await handlers['timeline:switch-path']({}, first.id)
+  assert.equal(back.ok, true, JSON.stringify(back))
+  assert.deepEqual(switches, [['s1', '/w']], 'the agent goes back to that path’s own session')
+  assert.equal(current().id, first.id)
+  assert.deepEqual(back.conversation.messages.map((m) => m.text), ['做周报', '写好了', '太正式了', '改了'])
+  assert.deepEqual(back.folds, [{ id: second.id, at: 2, count: 1 }], 'the path just left hangs where they part')
+  assert.deepEqual(db.foldsOf(second.id), [])
+  assert.equal(db.latest().conversation.id, first.id)
+
+  assert.equal((await handlers['timeline:switch-path']({}, 'nope')).ok, false, 'only a path folded off this one')
 })
 
 test('requests are checked before anything else', async () => {

@@ -235,8 +235,9 @@ function messageEntries(state, views, handlers) {
       const [bubble, ...notes] = [view].flat().filter(Boolean)
       view = markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
     }
-    const strips = (folds[message.id] ?? []).map(foldStrip)
-    const before = i === 0 ? (folds[''] ?? []).map(foldStrip) : []
+    const strip = (fold) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past) => pastMessageView(past, handlers) })
+    const strips = (folds[message.id] ?? []).flatMap(strip)
+    const before = i === 0 ? (folds[''] ?? []).flatMap(strip) : []
     return [...before, ...[view].flat(), ...strips]
   })
 }

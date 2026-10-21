@@ -30,9 +30,10 @@ function checked(request) {
  *   current: () => object, setCurrent: (conversation: object) => void, isBusy: () => boolean,
  *   agentInfo: () => { mode?: string, model?: string },
  *   forkAgent: (request: { words: string, occurrence: number }) => Promise<{ ok: boolean, reason?: string, info?: object }>,
+ *   switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<object>,
  * }} deps
  */
-export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, agentInfo, forkAgent }) {
+export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, agentInfo, forkAgent, switchAgent }) {
   async function rewind(request) {
     const { words, occurrence, keep, text } = checked(request)
     if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
@@ -52,5 +53,43 @@ export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, ag
     return { ok: true, info: forked.info, conversation: { id: next.id, messages: kept }, folds: db.foldsOf(next.id) }
   }
 
+  /** A path folded off the conversation on screen, or null. */
+  function foldedOff(id) {
+    if (typeof id !== 'string' || !id) throw new Error('invalid path id')
+    const fold = db.foldsOf(current().id).find((entry) => entry.id === id)
+    const found = fold && db.get(id)
+    return found ? { fold, found } : null
+  }
+
+  /** What a folded path holds after the part it shares with the conversation on screen, to read in place. */
+  function folded(id) {
+    const path = foldedOff(id)
+    return { messages: path ? path.found.messages.slice(path.fold.at) : [] }
+  }
+
+  /**
+   * Back onto a folded path: its own dsh session again, it back in the timeline, and the conversation that was
+   * on screen folded off it where the two part.
+   */
+  async function switchPath(id) {
+    if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
+    const path = foldedOff(id)
+    if (!path) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
+    const previous = current()
+    const { conversation, messages } = path.found
+    const started = await switchAgent(conversation.sessionId, conversation.cwd)
+    db.unfold(id)
+    db.fold(previous.id, { into: id, at: path.fold.at })
+    setCurrent({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
+    return {
+      ok: true,
+      info: { ...started, remembersHistory: started.resumed },
+      conversation: { id, messages },
+      folds: db.foldsOf(id),
+    }
+  }
+
   ipcMain.handle('timeline:rewind', (_event, request) => rewind(request))
+  ipcMain.handle('timeline:folded', (_event, id) => folded(id))
+  ipcMain.handle('timeline:switch-path', (_event, id) => switchPath(id))
 }

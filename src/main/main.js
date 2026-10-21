@@ -658,6 +658,7 @@ function openHistory(config) {
     isBusy: () => turn.active,
     agentInfo: () => lastInfo,
     forkAgent: forkBack,
+    switchAgent,
   })
 }
 

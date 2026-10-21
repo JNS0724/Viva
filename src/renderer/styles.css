@@ -236,7 +236,17 @@ html:not([data-platform="darwin"]) {
 }
 .fold b { color: var(--ink); font-weight: 600; }
 .fold-ico { color: var(--ink-3); font-family: var(--font-mono); }
-.fold-note { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+.fold-actions { margin-left: auto; display: flex; gap: 4px; }
+.fold-act {
+  height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: none; color: var(--accent);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.fold-act:hover, .fold-act:focus-visible { background: rgba(90, 169, 255, .12); }
+/* A folded path opened in place: read-only, set off from the conversation it hangs in. */
+.fold-body {
+  display: flex; flex-direction: column; gap: 22px; margin-top: -14px; padding: 18px 16px 18px 20px;
+  border: 1px dashed var(--line-2); border-top: none; border-radius: 0 0 12px 12px; opacity: .7;
+}
 .msg-via-failed { color: #FF9AA4; }
 /* A file: a white page with two blue lines. */
 .doc-ico { position: relative; flex: none; width: 14px; height: 17px; border-radius: 3px; background: var(--ink); }

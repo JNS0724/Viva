@@ -60,6 +60,16 @@ test('a fold hangs after the message just before it; one at the very start hangs
   assert.deepEqual(foldAfter(state), { m1: [{ id: 'a', at: 2, count: 2 }], '': [{ id: 'b', at: 0, count: 4 }] })
 })
 
+test('a folded path opens in place to be read, and closes; going another way closes them all', () => {
+  const state = withMessages([msg('m0', 'user', '做周报')], { folds: [{ id: 'a', at: 1, count: 2 }] })
+  const opened = reduce(state, { type: 'fold_opened', id: 'a', messages: [{ role: 'user', text: '太正式了', receipt: null }] })
+
+  assert.deepEqual(opened.rewind.open.a.map((m) => m.text), ['太正式了'])
+  assert.deepEqual(reduce(opened, { type: 'fold_closed', id: 'a' }).rewind.open, {})
+  const moved = reduce(opened, { type: 'rewound', conversation: { id: 'a', messages: [] }, info: {}, folds: [] })
+  assert.deepEqual(moved.rewind.open, {})
+})
+
 test('the folds of the conversation come back with it at launch', () => {
   const state = reduce(initialState, {
     type: 'history_loaded', conversationId: 'c', messages: [{ role: 'user', text: '口语一点', receipt: null }], savedAt: 1, folds: [{ id: 'old', at: 0, count: 2 }],

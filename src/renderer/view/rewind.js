@@ -64,11 +64,20 @@ export function restoreEditorFocus(focus, editingId) {
   editor.field.setSelectionRange(focus.start, focus.end)
 }
 
-/** A path left behind, folded where the conversation went another way. */
-export function foldStrip(fold) {
-  return h('div', { class: 'fold', role: 'note' },
+/**
+ * A path left behind, folded where the conversation went another way: opened, what it holds is shown under it,
+ * read-only; switched to, it is the conversation again and this one folds in its place.
+ * @param {{ id: string, count: number }} fold
+ * @param {{ opened: object[] | undefined, handlers: object, messageView: (message: object) => Node | Node[] }} options
+ */
+export function foldStrip(fold, { opened, handlers, messageView }) {
+  const strip = h('div', { class: 'fold', role: 'group', 'aria-label': '另一条路', 'data-fold': fold.id },
     h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '⑂' }),
     h('span', { text: '另一条路 · ' }),
     h('b', { text: `${fold.count} 条消息` }),
-    h('span', { class: 'fold-note', text: '已折起' }))
+    h('span', { class: 'fold-actions' },
+      h('button', { class: 'fold-act', type: 'button', 'aria-expanded': String(Boolean(opened)), text: opened ? '收起' : '展开看看', onClick: () => handlers.toggleFold(fold.id) }),
+      h('button', { class: 'fold-act', type: 'button', text: '切到这条路', onClick: () => handlers.switchPath(fold.id) })))
+  if (!opened) return [strip]
+  return [strip, h('div', { class: 'fold-body' }, ...opened.flatMap((message, i) => [messageView({ ...message, id: `${fold.id}-${i}` })].flat()))]
 }

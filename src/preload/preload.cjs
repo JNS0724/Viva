@@ -42,6 +42,9 @@ contextBridge.exposeInMainWorld('agent', {
    * { ok, info, conversation: { id, messages }, folds } | { ok: false, problem }.
    */
   rewind: (request) => ipcRenderer.invoke('timeline:rewind', request),
+  /** A path folded off the conversation on screen: what it holds after the shared part ({ messages }), or back onto it. */
+  foldedPath: (id) => ipcRenderer.invoke('timeline:folded', id),
+  switchPath: (id) => ipcRenderer.invoke('timeline:switch-path', id),
   /** The working directory: { current, defaultDir, isDefault, recent }; a folder from the system dialog, or null. */
   getWorkDir: () => ipcRenderer.invoke('workdir:get'),
   chooseWorkDir: () => ipcRenderer.invoke('workdir:choose'),

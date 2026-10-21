@@ -307,7 +307,39 @@ async function rewindSteps(win, outDir, expect, hooks) {
   const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(EDITED_ASK)) ?? ''
   expect(answering.includes(FIRST_ASK) && !answering.includes(SECOND_ASK), 'the agent should no longer see the old words',
     { found: Boolean(answering), first: answering.includes(FIRST_ASK), old: answering.includes(SECOND_ASK) })
+  await run(win, `document.querySelector('#thread .fold')?.scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
   await capture(win, outDir, 'rewind-folded')
+  await switchBackSteps(win, outDir, expect, hooks)
+}
+
+const BACK_ASK = '回到红色那条接着说'
+
+/** The folded path opens in place to be read; switched to, it is the conversation again, the agent with it. */
+async function switchBackSteps(win, outDir, expect, hooks) {
+  const foldAct = (label) => `[...document.querySelectorAll('#thread .fold .fold-act')].find((el) => el.textContent === ${JSON.stringify(label)}).click()`
+  await run(win, foldAct('展开看看'))
+  const body = await until(win, `document.querySelector('#thread .fold-body')?.textContent ?? null`, 'the folded path opened')
+  expect(body.includes(SECOND_ASK), 'opened, the folded path should show what it holds', body.slice(0, 80))
+  await run(win, `document.querySelector('#thread .fold').scrollIntoView({ block: 'start' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'rewind-fold-open')
+
+  await run(win, foldAct('切到这条路'))
+  await until(win, `[...document.querySelectorAll('#thread > .msg-user-row .msg-user, #thread > .msg-user')].some((el) => el.textContent === ${JSON.stringify(SECOND_ASK)})`, 'the old path on screen again')
+  const back = await run(win, `({
+    asked: [...document.querySelectorAll('#thread .msg-user')].filter((el) => !el.closest('.fold-body')).map((el) => el.textContent),
+    fold: document.querySelector('#thread .fold')?.textContent ?? '',
+  })`)
+  expect(back.asked.includes(SECOND_ASK) && !back.asked.includes(EDITED_ASK) && back.fold.includes('2 条消息'),
+    'switched back, the old words should be on screen and the edited path folded in their place', back)
+
+  await submit(win, BACK_ASK)
+  await finishTurn(win)
+  const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(BACK_ASK)) ?? ''
+  expect(answering.includes(SECOND_ASK) && !answering.includes(EDITED_ASK), 'the agent should go on from the old path',
+    { found: Boolean(answering), old: answering.includes(SECOND_ASK), edited: answering.includes(EDITED_ASK) })
+  await capture(win, outDir, 'rewind-switched')
 }
 
 /** Something held over the window says letting go works there; what is not a folder on disk is turned down. */
