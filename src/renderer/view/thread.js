@@ -6,6 +6,7 @@ import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
 import { foldAfter, rewindTarget } from '../rewind-state.js'
+import { liveTasks } from '../tasks-state.js'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.js'
 
 const AVATAR_CAT_PX = 36
@@ -123,10 +124,11 @@ const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-s
 
 const cardHead = (text) => h('div', { class: 'confirm-head' }, h('span', { text }), h('span', { class: 'pulse-dot' }))
 
-function permissionCard(permission, handlers) {
+/** @param {string} [head] whose request it is, for one from a task in the background */
+function permissionCard(permission, handlers, head = PROMPT_HEADS.permission) {
   const { title, detail } = cardOf(permission)
-  return h('section', { class: 'confirm', 'aria-label': PROMPT_HEADS.permission },
-    cardHead(PROMPT_HEADS.permission),
+  return h('section', { class: 'confirm', 'aria-label': head },
+    cardHead(head),
     h('div', { class: 'confirm-title', text: title }),
     detail ? h('pre', { class: 'confirm-detail', text: detail }) : null,
     h('div', { class: 'confirm-actions' },
@@ -235,7 +237,7 @@ function messageEntries(state, views, handlers) {
       const [bubble, ...notes] = [view].flat().filter(Boolean)
       view = markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
     }
-    const strip = (fold) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past) => pastMessageView(past, handlers) })
+    const strip = (fold) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past) => pastMessageView(past, handlers), tasks: state.tasks })
     const strips = (folds[message.id] ?? []).flatMap(strip)
     const before = i === 0 ? (folds[''] ?? []).flatMap(strip) : []
     return [...before, ...[view].flat(), ...strips]
@@ -256,6 +258,7 @@ export function renderThread(container, state, handlers, now) {
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',
+    ...liveTasks(state).filter((task) => task.permission).map((task) => permissionCard(task.permission, handlers, `#${task.title} · ${PROMPT_HEADS.permission}`)),
     state.question ? questionCard(state.question, handlers) : '',
     state.secret ? secretCard(state.secret, handlers) : '',
     state.phase === 'working' && !last?.open ? workingRow(state) : '',

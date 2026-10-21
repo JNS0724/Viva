@@ -121,6 +121,12 @@ html:not([data-platform="darwin"]) {
   font: inherit; font-size: 16px; line-height: 1.6; max-height: 220px;
 }
 .composer textarea::placeholder { color: var(--ink-3); }
+/* While the agent works: where the words typed would go (view/render.js renderRouteHint). */
+.route { display: flex; align-items: center; gap: 6px; margin: -4px 0 8px; font-size: 12px; color: var(--ink-2); }
+.route[hidden] { display: none; }
+.route b { color: var(--ink); font-weight: 600; }
+.route[data-route="into"] b { color: var(--accent); }
+.route kbd { margin-left: 4px; font: 11px var(--font-mono); color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; }
 .composer-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .send-btn { margin-left: auto; width: 48px; height: 48px; border: none; border-radius: 14px; background: var(--accent); color: var(--bg); display: grid; place-items: center; cursor: pointer; }
 .send-btn[data-busy="true"] { background: var(--white); }
@@ -237,6 +243,10 @@ html:not([data-platform="darwin"]) {
 .fold b { color: var(--ink); font-weight: 600; }
 .fold-ico { color: var(--ink-3); font-family: var(--font-mono); }
 .fold-actions { margin-left: auto; display: flex; gap: 4px; }
+/* Where a turn moved to the background (view/rewind.js taskStrip). */
+.fold-task { border-style: solid; }
+.fold-tag { max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
+.fold-status { color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* Before going back over files written or commands run (view/rewind.js renderRewindConfirm). */
 .rewind-sheet { border-color: rgba(255, 138, 61, .6); }
 .rewind-effects {

@@ -99,12 +99,13 @@ export function createAcpBridge({
         emit({ type: 'config', info: infoFrom(params.update.configOptions) })
         return
       }
-      emit({ type: 'update', update: params.update })
+      // The session goes with it: the window tells the turn it undid a move for from the one it left (task-actions.js).
+      emit({ type: 'update', sessionId: params.sessionId, update: params.update })
     },
     async requestPermission(params) {
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
-      emit({ type: 'permission', requestId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
+      emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
       return promise
     },
   }

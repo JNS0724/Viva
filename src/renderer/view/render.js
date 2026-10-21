@@ -1,5 +1,6 @@
 import { isBusy } from '../state.js'
 import { setupView } from '../selectors.js'
+import { routeOf } from '../tasks-state.js'
 import { h } from './dom.js'
 import { renderDrawer } from './drawer.js'
 import { renderEarlier } from './earlier.js'
@@ -100,9 +101,27 @@ export function renderSendButton(dom, state) {
   dom.sendBtn.replaceChildren(icon(stops ? 'stop' : 'send', 22))
 }
 
+const ROUTES = {
+  other: { mark: '↗', name: '另一件事', then: '· 刚才那件会挪到后台接着做', tab: '改成插话' },
+  into: { mark: '↳', name: '插进正在做的事', then: '· 它下一步就会读到', tab: '当成另一件事' },
+}
+
+/** While the agent works and words are typed: whether they go into the turn or move it to the background; Tab turns it. */
+export function renderRouteHint(dom, state) {
+  const route = state.question ? null : routeOf(state, dom.input.value)
+  if (dom.routeHint.dataset.route === (route ?? '')) return
+  dom.routeHint.dataset.route = route ?? ''
+  dom.routeHint.hidden = !route
+  if (!route) return dom.routeHint.replaceChildren()
+  const { mark, name, then, tab } = ROUTES[route]
+  return dom.routeHint.replaceChildren(h('span', { 'aria-hidden': 'true', text: mark }), h('b', { text: name }), h('span', { text: then }),
+    h('kbd', { text: 'Tab' }), h('span', { text: tab }))
+}
+
 function renderComposer(dom, state, handlers) {
   renderComposerAvailability(dom, setupView(state.info), state.switching, { asking: Boolean(state.question), busy: isBusy(state) })
   renderSendButton(dom, state)
+  renderRouteHint(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   dom.toggleDrawer.setAttribute('aria-pressed', String(Boolean(state.drawer)))
   renderModelPicker(dom, state, handlers)

@@ -9,9 +9,11 @@ import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createRewindActions } from './rewind-actions.js'
+import { createTaskActions } from './task-actions.js'
+import { routeOf } from './tasks-state.js'
 import { createTimelineActions } from './timeline-actions.js'
 import { createWorkDirActions } from './workdir-actions.js'
-import { render, renderSendButton, renderStream, renderTick } from './view/render.js'
+import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.js'
 import { createScrollFollower } from './view/scroll-follow.js'
 
 const TICK_MS = 1000
@@ -34,6 +36,7 @@ const dom = {
   drawer: byId('drawer'),
   composer: byId('composer'),
   input: byId('composer-input'),
+  routeHint: byId('route-hint'),
   sendBtn: byId('send-btn'),
   context: byId('composer-context'),
   workdirArea: document.querySelector('.workdir-area'),
@@ -180,12 +183,17 @@ function revealMessage(msgId) {
 }
 
 /**
- * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
+ * Sends `text` as the user's next question, or, while the agent works, into the turn it is on — unless it is
+ * about something else, when that turn moves to the background first (tasks-state.js routeOf);
  * `via: 'island'` when it was asked on the desktop island.
  * @returns {boolean} false when the agent can't take it now
  */
 function ask(text, { via = null } = {}) {
   if (!text || setupView(state.info) || state.switching) return false
+  if (isBusy(state) && routeOf(state, text) === 'other') {
+    taskActions.moveAndAsk(text)
+    return true
+  }
   if (isBusy(state)) return steer(text, via)
   dom.follower.resetForPrompt()
   dispatch({ type: 'user_prompt', text, at: Date.now(), via })
@@ -254,6 +262,9 @@ async function provideSecrets(values) {
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
+const taskActions = createTaskActions({
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask, steer: (text) => steer(text, null), deliver: handleEvent,
+})
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
@@ -275,6 +286,10 @@ const handlers = {
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
+  /** Background tasks: 撤销 on the line a move leaves, and stopping or closing one. */
+  undoMove: () => taskActions.undoMove(),
+  stopTask: (taskId) => taskActions.stopTask(taskId),
+  closeTask: (taskId) => taskActions.closeTask(taskId),
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     const text = dom.input.value.trim()
@@ -405,8 +420,13 @@ const EVENT_ACTIONS = {
   config: (event) => ({ type: 'config_applied', info: event.info }),
   update: (event) => ({ type: 'acp_update', update: event.update, at: Date.now() }),
   permission: (event) => ({
-    type: 'permission_request', requestId: event.requestId, toolCall: event.toolCall, options: event.options, at: Date.now(),
+    type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at: Date.now(),
   }),
+  /** What a turn moved to the background says, asks and how it ends (tasks-state.js). */
+  task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now() }),
+  task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, at: Date.now() }),
+  task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now() }),
+  task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now() }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
   secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
@@ -425,8 +445,17 @@ function wireComposer() {
     if (isBusy(state) && !dom.input.value.trim()) handlers.cancel()
     else handlers.send()
   })
-  dom.input.addEventListener('input', () => renderSendButton(dom, state))
+  dom.input.addEventListener('input', () => {
+    renderSendButton(dom, state)
+    renderRouteHint(dom, state)
+  })
   dom.input.addEventListener('keydown', (event) => {
+    // Tab, while the line over the input says where the words would go: the other way.
+    if (event.key === 'Tab' && !event.shiftKey && !event.isComposing && routeOf(state, dom.input.value)) {
+      event.preventDefault()
+      taskActions.toggleRoute()
+      return
+    }
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
     event.preventDefault()
     handlers.send()
@@ -543,6 +572,23 @@ function reportMcpProblems(info) {
   historyActions.showToast(`${names} 没能连上，已暂时跳过`, { action: { label: '查看', kind: 'open-settings' }, ms: 8000 })
 }
 
+/** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
+function handleEvent(event) {
+  const toAction = EVENT_ACTIONS[event?.type]
+  if (toAction) dispatch(toAction(event))
+  if (event?.type === 'ready') reportMcpProblems(event.info)
+  if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
+  if (event?.type === 'turn_end') {
+    filesActions.filesAfterTurn()
+    sendAfterTurn()
+  }
+  if (event?.type === 'task_end') {
+    taskActions.ended(event.taskId)
+    filesActions.filesAfterTurn()
+  }
+  if (event?.type === 'error') afterTurn = []
+}
+
 async function boot() {
   labelShortcuts()
   render(dom, state, handlers)
@@ -555,15 +601,9 @@ async function boot() {
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
-    const toAction = EVENT_ACTIONS[event?.type]
-    if (toAction) dispatch(toAction(event))
-    if (event?.type === 'ready') reportMcpProblems(event.info)
-    if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
-    if (event?.type === 'turn_end') {
-      filesActions.filesAfterTurn()
-      sendAfterTurn()
-    }
-    if (event?.type === 'error') afterTurn = []
+    // While a turn moves to or from the background, what it says waits for the window to move it too.
+    if (taskActions.hold(event)) return undefined
+    return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh()])
   await timelineActions.loadEarlier()

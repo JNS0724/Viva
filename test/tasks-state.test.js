@@ -30,6 +30,11 @@ test('words typed while a turn runs: about the same thing go into it, about some
   assert.equal(routeOf(state, '明天周会几点？'), 'other')
   assert.equal(routeOf(state, '顺便把已知问题也列上'), 'into', 'said to go on with it')
   assert.equal(routeOf(state, '发布说明里加上版本号'), 'into', 'sharing words with what runs')
+  assert.equal(routeOf(state, '帮我订一张周五的机票'), 'other', 'a new request')
+  assert.equal(routeOf(state, '嗯，慢一点'), 'into', 'unsure: into it, which adds nothing')
+  const helping = run([{ type: 'user_prompt', text: '帮我接入演示服务', at: 70 }], reduce(state, { type: 'turn_end', stopReason: 'end_turn', at: 60 }))
+  assert.equal(routeOf(helping, '帮我订一张周五的机票'), 'other', 'how a request starts is not what it is about')
+  assert.equal(routeOf(helping, '帮我把演示服务的端口改成 8080'), 'into')
   assert.equal(routeOf(reduce(state, { type: 'route_toggle', text: '明天周会几点？' }), '明天周会几点？'), 'into', 'Tab turns it round')
 })
 

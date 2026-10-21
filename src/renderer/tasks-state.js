@@ -55,22 +55,27 @@ export function spinOffTarget(state) {
 
 /** Said to go on with what runs: 「顺便」「再」「改成」… */
 const GOES_ON = /^(顺便|再|还要|还有|另外|也|并且|然后|接着|改成|换成|别|不要|加上|补充|记得|继续|等等)/
+/** Something of its own: a question, or a request of its own (「帮我…」「查一下…」). */
+const ASKING = /^(帮我|帮忙|麻烦|给我|请|查一?下|看一?下|问一?下|搜一?下|写一?个|做一?个|翻译|算一?下)/
+const NEW_THING = new RegExp(`[？?]$|${ASKING.source}`)
+/** What the words are about: two letters at a time, leaving out how a request starts (「帮我」). */
 const pairsOf = (text) => {
-  const letters = [...text.replace(/[\s\p{P}\p{S}]+/gu, '')]
+  const letters = [...text.replace(ASKING, '').replace(/[\s\p{P}\p{S}]+/gu, '')]
   return new Set(letters.slice(1).map((letter, i) => `${letters[i]}${letter}`))
 }
 
 /**
- * Where words typed while a turn runs would go: 'into' the turn (the viva-steer plugin) when they are about
- * the same thing — they say so, or share words with what started it — else on their own ('other'), the turn
- * moving to the background. Tab turns it round. null when nothing runs.
+ * Where words typed while a turn runs would go: on their own ('other'), the turn moving to the background,
+ * when they ask something of their own and share nothing with what started it; else 'into' the turn (the
+ * viva-steer plugin), which, when unsure, adds nothing to undo. Tab turns it round. null when nothing runs.
  */
 export function routeOf(state, text) {
   const target = spinOffTarget(state)
-  if (!target || !text.trim()) return null
+  const words = text.trim()
+  if (!target || !words) return null
   const asked = pairsOf(target.words)
-  const shares = [...pairsOf(text)].some((pair) => asked.has(pair))
-  const auto = GOES_ON.test(text.trim()) || shares ? 'into' : 'other'
+  const shares = [...pairsOf(words)].some((pair) => asked.has(pair))
+  const auto = NEW_THING.test(words) && !GOES_ON.test(words) && !shares ? 'other' : 'into'
   if (!state.tasks.flip) return auto
   return auto === 'into' ? 'other' : 'into'
 }
