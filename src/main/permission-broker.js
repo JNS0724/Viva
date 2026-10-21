@@ -25,8 +25,11 @@ export function createPermissionBroker() {
     return true
   }
 
-  function cancelAll() {
-    for (const requestId of [...pending.keys()]) resolve(requestId, null)
+  /** @param {string} [sessionId] only that session's requests (a background task's stay when the main turn stops) */
+  function cancelAll(sessionId) {
+    for (const [requestId, entry] of [...pending]) {
+      if (sessionId === undefined || entry.params.sessionId === sessionId) resolve(requestId, null)
+    }
   }
 
   return {

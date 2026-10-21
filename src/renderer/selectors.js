@@ -229,6 +229,12 @@ export function memoryTrace(injection) {
   return { title: '带上记忆', detail: truncate(lines.join('\n'), DETAIL_LIMIT), tone: 'done' }
 }
 
+/** The app's own tools that say something to the user, said plainly in the trace. */
+const NAMED_TOOLS = {
+  // The agent saying a job will take long (plugins/steer/lib/offer.js), with its reason.
+  viva_offer_background: (tool) => ({ title: '提议放到后台', detail: truncate(String(tool.rawInput?.why ?? ''), DETAIL_LIMIT) }),
+}
+
 const TRACE_BUILDERS = {
   memory: (_state, entry) => memoryTrace(entry.injection),
   thought: (state, entry) => {
@@ -237,7 +243,9 @@ const TRACE_BUILDERS = {
   },
   tool: (state, entry) => {
     const tool = state.tools[entry.ref]
-    return tool && { title: tool.title, detail: toolDetail(tool), tone: TOOL_TONE[tool.status] ?? 'pending' }
+    if (!tool) return null
+    const named = NAMED_TOOLS[tool.title]?.(tool)
+    return { title: named?.title ?? tool.title, detail: named ? named.detail : toolDetail(tool), tone: TOOL_TONE[tool.status] ?? 'pending' }
   },
   permission: (_state, entry) => ({ title: '请求你确认', detail: entry.title, tone: 'waiting' }),
   question: (_state, entry) => ({ title: '向你提问', detail: entry.title, tone: 'waiting' }),

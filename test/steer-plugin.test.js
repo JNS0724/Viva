@@ -24,6 +24,21 @@ test('words sent while a turn runs reach the model in that turn, which ends once
   assert.equal(events.some((event) => event.type === 'error'), false)
 })
 
+test('a job that will take long: the model can offer the background first, and goes on at once', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const { events, llm, bridge } = await setup(t)
+  const agent = bridge()
+  await agent.start()
+  await agent.prompt('把全部文档整理一遍')
+
+  const offered = llm.requests[0].tools.find((tool) => tool.name === 'viva_offer_background')
+  assert.ok(offered?.description.includes('放到后台'), 'the model is told when to offer it')
+  const call = events.find((event) => event.type === 'update' && event.update.sessionUpdate === 'tool_call')
+  assert.ok(call, 'the window sees the offer as a tool call')
+  assert.equal(events.some((event) => event.type === 'permission'), false, 'offering asks nothing of the user')
+  const answer = events.filter((event) => event.type === 'update' && event.update.sessionUpdate === 'agent_message_chunk').map((event) => event.update.content.text).join('')
+  assert.match(answer, /开始整理/, 'the model went on with the job')
+})
+
 test('with no turn running the plugin says idle, so the app asks it as a new question', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { bridge } = await setup(t)
   const agent = bridge()

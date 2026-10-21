@@ -5,6 +5,7 @@ import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { QUESTION_ACTIONS } from './question-state.js'
 import { initialRewind, rewindActions } from './rewind-state.js'
+import { initialTasks, routeToTask, taskActions } from './tasks-state.js'
 import { SECRET_ACTIONS } from './secret-state.js'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.js'
 import { closeLast, closeStreams } from './streams.js'
@@ -48,6 +49,8 @@ export const initialState = Object.freeze({
   rewind: initialRewind,
   /** Paths folded off the conversation on screen, each where it went another way: { id, at, count } (rewind-state.js). */
   folds: [],
+  /** Turns that went on in the background, and the move that can still be undone (tasks-state.js). */
+  tasks: initialTasks,
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
@@ -161,6 +164,9 @@ function attachReceipt(messages, receipt) {
   const text = receipt.stopReason === 'cancelled' ? '已停止本轮任务。' : '本轮没有文字回复。'
   return [...messages, { id: `m${messages.length}`, role: 'note', text, open: false, receipt }]
 }
+
+/** The handlers, looked up when used: a task's view is updated by the same ones (tasks-state.js). */
+const HANDLERS = new Proxy({}, { get: (_target, type) => ACTION_HANDLERS[type] })
 
 const ACTION_HANDLERS = {
   ready: (state, { info }) => ({
@@ -317,6 +323,8 @@ const ACTION_HANDLERS = {
     history: state.history,
     earlier: withCurrentKept(state),
     workDir: state.workDir,
+    // Background tasks go on whatever the conversation on screen does.
+    tasks: state.tasks,
     memory: state.memory,
     extensions: state.extensions,
     toast: state.toast,
@@ -368,6 +376,7 @@ const ACTION_HANDLERS = {
   ...HISTORY_ACTIONS,
   ...EARLIER_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
+  ...taskActions(HANDLERS),
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,
@@ -381,9 +390,15 @@ const ACTION_HANDLERS = {
  * @param {{ type: string, [key: string]: unknown }} action
  * @returns {typeof initialState}
  */
+/** Sending the words ends Tab's say over where they go. */
+const SENT = new Set(['user_prompt', 'user_steer'])
+
 export function reduce(state, action) {
+  const routed = routeToTask(state, action, HANDLERS)
+  if (routed) return routed
   const handler = ACTION_HANDLERS[action?.type]
-  return handler ? handler(state, action) : state
+  const next = handler ? handler(state, action) : state
+  return SENT.has(action?.type) && next.tasks.flip ? { ...next, tasks: { ...next.tasks, flip: false } } : next
 }
 
 /** @param {typeof initialState} state */

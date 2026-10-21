@@ -68,7 +68,15 @@ export function createAcpBridge({
   const toPlugins = (message) => {
     if (child?.connected) child.send(message)
   }
-  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId })
+  /**
+   * Background tasks (phase 3): sessions that went on in the background, by id (the task's id is its
+   * session's). They stay open beside the main conversation; what they report reaches the window as task_*.
+   */
+  const tasks = new Map()
+  /** Sessions with a turn running (a prompt not yet answered). */
+  const running = new Set()
+  const taskOf = (id) => (tasks.has(id) ? id : null)
+  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf })
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
   const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions }) : null
   // What the user says while a turn runs goes to that turn (the viva-steer plugin), not to a new prompt.
@@ -76,20 +84,28 @@ export function createAcpBridge({
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
 
-  const infoFrom = (configOptions) => ({ mode: 'live', cwd: sessionCwd, reason: '', sessionId, mcp, ...describeConfig(configOptions) })
+  /** The model options of the session in use, kept so a task taken back to the main conversation keeps its own. */
+  let configNow = null
+  const infoFrom = (configOptions) => {
+    configNow = configOptions ?? configNow
+    return { mode: 'live', cwd: sessionCwd, reason: '', sessionId, mcp, ...describeConfig(configNow) }
+  }
 
   const client = {
     async sessionUpdate(params) {
+      if (tasks.has(params.sessionId)) return emit({ type: 'task_update', taskId: params.sessionId, update: params.update })
       if (params.sessionId !== sessionId) return
       if (params.update?.sessionUpdate === 'config_option_update') {
         emit({ type: 'config', info: infoFrom(params.update.configOptions) })
         return
       }
-      emit({ type: 'update', update: params.update })
+      // The session goes with it: the window tells the turn it undid a move for from the one it left (task-actions.js).
+      emit({ type: 'update', sessionId: params.sessionId, update: params.update })
     },
     async requestPermission(params) {
       const { requestId, promise } = broker.create(params)
-      emit({ type: 'permission', requestId, toolCall: params.toolCall, options: params.options })
+      const taskId = taskOf(params.sessionId)
+      emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
       return promise
     },
   }
@@ -184,17 +200,25 @@ export function createAcpBridge({
     }
   }
 
+  /** Its end is the main conversation's, or (once the turn went to the background) its task's. */
   async function prompt(text) {
+    const asked = sessionId
+    running.add(asked)
     try {
-      const response = await connection.prompt({ sessionId, prompt: [{ type: 'text', text }] })
-      emit({ type: 'turn_end', stopReason: response.stopReason })
+      const response = await connection.prompt({ sessionId: asked, prompt: [{ type: 'text', text }] })
+      if (tasks.has(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
+      else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason })
     } catch (err) {
-      emit({ type: 'error', message: describeError(err, stderrTail) })
+      const message = describeError(err, stderrTail)
+      if (tasks.has(asked)) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message })
+      else emit({ type: 'error', message })
+    } finally {
+      running.delete(asked)
     }
   }
 
   async function cancel() {
-    broker.cancelAll()
+    broker.cancelAll(sessionId)
     if (!connection || !sessionId) return
     try {
       await connection.cancel({ sessionId })
@@ -238,6 +262,78 @@ export function createAcpBridge({
     if (!result.ok) return result
     return { ok: true, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
   }
+
+  /**
+   * The turn running in the main conversation goes on in the background as a task (its session stays open,
+   * nothing stops); the main conversation goes on from before that turn, in a session forked there, found by
+   * the words that started it (the viva-fork plugin).
+   * @param {{ words: string }} request
+   * @returns {Promise<{ ok: boolean, reason?: string, taskId?: string, info?: object }>}
+   */
+  async function spinOff({ words }) {
+    const taskId = sessionId
+    if (!taskId || !running.has(taskId)) return { ok: false, reason: 'idle' }
+    const forked = await forking.fork({ words, occurrence: 0 })
+    if (!forked.ok) return forked
+    tasks.set(taskId, { cwd: sessionCwd, config: configNow })
+    questions.moveToTask(taskId, taskId)
+    try {
+      return { ok: true, taskId, info: await resumeOrOpen(forked.sessionId, sessionCwd) }
+    } catch (err) {
+      throw new Error(describeError(err, stderrTail))
+    }
+  }
+
+  /**
+   * Undoes spinOff: the session the main conversation went on in is left (closed, what it asked declined) and
+   * the task is the main conversation again, its turn still running; its questions come back to the window.
+   * @returns {Promise<{ ok: boolean, reason?: string, info?: object }>}
+   */
+  async function mergeBack(taskId) {
+    const task = tasks.get(taskId)
+    if (!task) return { ok: false, reason: 'missing' }
+    const leaving = sessionId
+    questions.declineAll()
+    broker.cancelAll(leaving)
+    try {
+      if (running.has(leaving)) await connection.cancel({ sessionId: leaving })
+      await connection.closeSession({ sessionId: leaving })
+    } catch (err) {
+      console.error('[acp-bridge] leaving the forked session failed, going back anyway:', describeError(err))
+    }
+    tasks.delete(taskId)
+    sessionId = taskId
+    sessionCwd = task.cwd
+    questions.moveToMain(taskId)
+    return { ok: true, info: { ...infoFrom(task.config), resumed: true } }
+  }
+
+  /** Stops what a task is doing; it stays, answered as cancelled (task_end). */
+  async function cancelTask(taskId) {
+    if (!tasks.has(taskId)) return
+    broker.cancelAll(taskId)
+    try {
+      await connection.cancel({ sessionId: taskId })
+    } catch (err) {
+      console.error('[acp-bridge] cancelling a task failed:', describeError(err))
+    }
+  }
+
+  /** The task is done with: its session closes, whatever it still asked goes unanswered. */
+  async function closeTask(taskId) {
+    if (!tasks.has(taskId)) return
+    await cancelTask(taskId)
+    questions.declineTask(taskId)
+    tasks.delete(taskId)
+    try {
+      await connection.closeSession({ sessionId: taskId })
+    } catch (err) {
+      console.error('[acp-bridge] closing a task failed:', describeError(err))
+    }
+  }
+
+  /** Words for the turn a task is on (the viva-steer plugin), as steer() is for the main conversation's. */
+  const steerTask = (taskId, text) => (tasks.has(taskId) ? steering.steer(text, taskId) : Promise.resolve({ ok: false, reason: 'missing' }))
 
   const newSession = () => switchSession(null)
   /** Reattaches the current session, so a changed list of MCP servers takes effect without losing context. */
@@ -287,5 +383,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, fork, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, fork, spinOff, mergeBack, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }

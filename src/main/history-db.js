@@ -68,6 +68,8 @@ const SCHEMA = `
 const ADDED_COLUMNS = Object.freeze([
   ['conversations', 'cwd', 'TEXT'], ['conversations', 'parent_id', 'TEXT'],
   ['conversations', 'folded_into', 'TEXT'], ['conversations', 'folded_at', 'INTEGER'],
+  // fold_kind: 'task' for a turn moved to the background (phase 3); null, a path left behind by going back.
+  ['conversations', 'fold_kind', 'TEXT'],
 ])
 
 function addMissingColumns(db) {
@@ -154,8 +156,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     insert: db.prepare(`INSERT INTO messages (conversation_id, seq, role, text, receipt, session_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`),
     latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
-    fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ? WHERE id = ? AND deleted_at IS NULL'),
-    foldsOf: db.prepare(`SELECT c.id, c.folded_at, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
+    fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
+    foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
       FROM conversations c WHERE c.folded_into = ? AND c.deleted_at IS NULL ORDER BY c.created_at, c.rowid`),
     list: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL
       ORDER BY pinned DESC, updated_at DESC, rowid DESC LIMIT ? OFFSET ?`),
@@ -313,15 +315,20 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * The user went back to an earlier point of `id` and on from there in `into`: `id` leaves the timeline and
    * hangs, folded, off `into` after its first `at` messages (the ones both have).
    */
-  const fold = (id, { into, at }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), assertId(id))
+  const fold = (id, { into, at, kind = null }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), kind === 'task' ? 'task' : null, assertId(id))
   /** A segment's messages with where each is and when it was written (ms). */
   const timelineOf = (id) => sql.timelineMessages.all(assertId(id)).map(toTimelineMessage)
 
   /** `id` is back in the timeline (the user switched back to it). */
-  const unfold = (id) => changeOne(sql.fold, null, null, assertId(id))
+  const unfold = (id) => changeOne(sql.fold, null, null, null, assertId(id))
 
-  /** The paths folded off `id`: where each hangs (after that many of `id`'s messages) and how many it folds. */
-  const foldsOf = (id) => sql.foldsOf.all(assertId(id)).map((row) => ({ id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at) }))
+  /**
+   * The paths folded off `id`: where each hangs (after that many of `id`'s messages), how many it folds, and
+   * whether it is a path left behind ('path') or a turn moved to the background ('task').
+   */
+  const foldsOf = (id) => sql.foldsOf.all(assertId(id)).map((row) => ({
+    id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at), kind: row.fold_kind ?? 'path',
+  }))
 
   const rename = (id, title) => changeOne(
     db.prepare('UPDATE conversations SET title = ?, title_custom = 1 WHERE id = ? AND deleted_at IS NULL'), normalizeTitle(title), assertId(id))

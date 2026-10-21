@@ -6,6 +6,7 @@ import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
 import { foldAfter, rewindTarget } from '../rewind-state.js'
+import { liveTasks, offeredBackground } from '../tasks-state.js'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.js'
 
 const AVATAR_CAT_PX = 36
@@ -123,10 +124,11 @@ const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-s
 
 const cardHead = (text) => h('div', { class: 'confirm-head' }, h('span', { text }), h('span', { class: 'pulse-dot' }))
 
-function permissionCard(permission, handlers) {
+/** @param {string} [head] whose request it is, for one from a task in the background */
+function permissionCard(permission, handlers, head = PROMPT_HEADS.permission) {
   const { title, detail } = cardOf(permission)
-  return h('section', { class: 'confirm', 'aria-label': PROMPT_HEADS.permission },
-    cardHead(PROMPT_HEADS.permission),
+  return h('section', { class: 'confirm', 'aria-label': head },
+    cardHead(head),
     h('div', { class: 'confirm-title', text: title }),
     detail ? h('pre', { class: 'confirm-detail', text: detail }) : null,
     h('div', { class: 'confirm-actions' },
@@ -157,15 +159,35 @@ function questionItem(item, question, handlers) {
  * The agent's question, mid-turn. A single question with single choice is answered by its option; otherwise
  * picks are gathered and sent with 提交. Words typed in the composer (Enter) answer it too.
  */
-function questionCard(question, handlers) {
+/** @param {{ head?: string, typed?: boolean }} [options] for a task's question: whose it is, and no typing below */
+function questionCard(question, handlers, { head = PROMPT_HEADS.question, typed = true } = {}) {
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
-  return h('section', { class: 'confirm ask', 'aria-label': '助手在问你' },
-    cardHead(PROMPT_HEADS.question),
+  return h('section', { class: 'confirm ask', 'aria-label': head },
+    cardHead(head),
     question.questions.map((item) => questionItem(item, question, handlers)),
     h('div', { class: 'confirm-actions' },
       single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: '提交', onClick: () => handlers.submitAnswer() }),
       h('button', { class: `${BUTTON.text} ask-skip`, text: '跳过', onClick: () => handlers.skipQuestion() }),
-      h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' })))
+      typed ? h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' }) : null))
+}
+
+/** The agent said the turn will take long (E): 放到后台 beside it, while it runs. Not a card: it asks nothing. */
+function offerRow(state, handlers) {
+  const offered = offeredBackground(state)
+  if (!offered) return ''
+  return h('div', { class: 'offer', role: 'note' },
+    h('span', { class: 'offer-text', text: offered.why ? `这件要一会儿：${offered.why}。放到后台，你先忙别的？` : '这件要一会儿。放到后台，你先忙别的？' }),
+    h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: '放到后台', onClick: () => handlers.moveToBackground() }))
+}
+
+/** A task's question: the card's buttons answer it, not the conversation's (task-actions.js). */
+function taskQuestionCard(task, handlers) {
+  const scoped = {
+    pickOption: (id, label) => handlers.pickTaskOption(task.id, id, label),
+    submitAnswer: () => handlers.submitTaskAnswer(task.id),
+    skipQuestion: () => handlers.skipTaskQuestion(task.id),
+  }
+  return questionCard(task.question, scoped, { head: `#${task.title} · ${PROMPT_HEADS.question}`, typed: false })
 }
 
 const workingCats = new Map()
@@ -235,7 +257,7 @@ function messageEntries(state, views, handlers) {
       const [bubble, ...notes] = [view].flat().filter(Boolean)
       view = markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
     }
-    const strip = (fold) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past) => pastMessageView(past, handlers) })
+    const strip = (fold) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past) => pastMessageView(past, handlers), tasks: state.tasks })
     const strips = (folds[message.id] ?? []).flatMap(strip)
     const before = i === 0 ? (folds[''] ?? []).flatMap(strip) : []
     return [...before, ...[view].flat(), ...strips]
@@ -255,8 +277,11 @@ export function renderThread(container, state, handlers, now) {
   const focus = editorFocus()
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
+    offerRow(state, handlers),
     state.permission ? permissionCard(state.permission, handlers) : '',
+    ...liveTasks(state).filter((task) => task.permission).map((task) => permissionCard(task.permission, handlers, `#${task.title} · ${PROMPT_HEADS.permission}`)),
     state.question ? questionCard(state.question, handlers) : '',
+    ...liveTasks(state).filter((task) => task.question).map((task) => taskQuestionCard(task, handlers)),
     state.secret ? secretCard(state.secret, handlers) : '',
     state.phase === 'working' && !last?.open ? workingRow(state) : '',
     state.phase === 'error' ? errorRow(state.error) : '',

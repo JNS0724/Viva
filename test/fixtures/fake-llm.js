@@ -7,6 +7,8 @@
  * - 「查一下 X」 → calls memory_recall with X;
  * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
  * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result;
+ * - 「把全部…」 → offers the background with viva_offer_background, then goes on (「开始整理」, or, asked to
+ *   接入演示服务 too, to that);
  * - after a tool result → says what the tool did;
  * - anything else → 「收到：…」, prefixed with what background it was given;
  * - the memory plugin's background extractor gets the answers of `extract` below.
@@ -19,6 +21,8 @@ const REMEMBER = /记住[:：]\s*(.+)$/s
 const RECALL = /查一下\s*(.+)$/s
 const WEATHER = /明天.*天气/
 const CONNECT = /接入演示服务/
+/** 「把全部…」: a job that will take long, which the fake offers the background first (viva_offer_background). */
+const BIG_JOB = /^把全部/
 /** What the fake asks to set up: a local server whose key the user types in the window. */
 export const DEMO_SERVER = Object.freeze({ name: 'demo', command: 'node', args: ['demo-mcp.js'], secrets: ['DEMO_TOKEN'] })
 export const CITY_QUESTION = Object.freeze({
@@ -54,6 +58,13 @@ function trailingUserTexts(messages) {
  */
 const questionOf = (messages) => trailingUserTexts(messages).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? ''
 
+/** After a tool result the turn's last user message is that result: the words the user said come before it. */
+const lastWords = (messages) => messages
+  .filter((message) => message.role === 'user')
+  .flatMap(textParts)
+  .filter((text) => !text.startsWith(CONTEXT_OPEN))
+  .at(-1) ?? ''
+
 function lastToolUse(messages) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const use = partsOf(messages[i]).find((part) => part.type === 'tool_use')
@@ -81,6 +92,11 @@ function afterTool(messages, result) {
     return { text: city ? `好的，按${city}来看：明天多云转晴。` : `没问到城市：${resultText(result)}` }
   }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
+  if (use?.name === 'viva_offer_background') {
+    // Asked to set up the demo service too, it goes on to that, whose approval holds the turn open.
+    if (CONNECT.test(lastWords(messages))) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
+    return { text: `开始整理。（${resultText(result)}）` }
+  }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
   const saved = output.includes('已记住') || output.includes('之前已经记过')
@@ -141,6 +157,7 @@ export function decide(request) {
     return { tool: { name: 'memory_remember', input: { text, keywords } } }
   }
   if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
+  if (BIG_JOB.test(question)) return { tool: { name: 'viva_offer_background', input: { why: '要逐个读完所有文档' } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }

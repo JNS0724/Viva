@@ -50,7 +50,7 @@ test('going back to a question forks before it and goes on in a new segment; the
   assert.deepEqual(forks, [{ words: '太正式了', occurrence: 0 }])
   assert.equal(result.ok, true, JSON.stringify(result))
   assert.deepEqual(result.conversation.messages.map((m) => m.text), ['做周报', '写好了'], 'what came before it, for the window')
-  assert.deepEqual(result.folds, [{ id: before.id, at: 2, count: 2 }])
+  assert.deepEqual(result.folds, [{ id: before.id, at: 2, count: 2, kind: 'path' }])
   assert.equal(current().id, result.conversation.id)
   assert.equal(current().sessionId, 's2')
   assert.deepEqual(db.get(current().id).messages.map((m) => m.text), ['做周报', '写好了', '口语一点'], 'stored at once, the new words with it')
@@ -88,7 +88,7 @@ test('a folded path can be read, and switched back to: the one on screen folds i
   assert.deepEqual(switches, [['s1', '/w']], 'the agent goes back to that path’s own session')
   assert.equal(current().id, first.id)
   assert.deepEqual(back.conversation.messages.map((m) => m.text), ['做周报', '写好了', '太正式了', '改了'])
-  assert.deepEqual(back.folds, [{ id: second.id, at: 2, count: 1 }], 'the path just left hangs where they part')
+  assert.deepEqual(back.folds, [{ id: second.id, at: 2, count: 1, kind: 'path' }], 'the path just left hangs where they part')
   assert.deepEqual(db.foldsOf(second.id), [])
   assert.equal(db.latest().conversation.id, first.id)
 

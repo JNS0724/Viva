@@ -98,7 +98,8 @@ export function renderRewindConfirm(root, state, handlers) {
  * @param {{ id: string, count: number }} fold
  * @param {{ opened: object[] | undefined, handlers: object, messageView: (message: object) => Node | Node[] }} options
  */
-export function foldStrip(fold, { opened, handlers, messageView }) {
+export function foldStrip(fold, { opened, handlers, messageView, tasks }) {
+  if (fold.kind === 'task') return taskStrip(fold, { opened, handlers, messageView, tasks })
   const strip = h('div', { class: 'fold', role: 'group', 'aria-label': '另一条路', 'data-fold': fold.id },
     h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '⑂' }),
     h('span', { text: '另一条路 · ' }),
@@ -106,6 +107,32 @@ export function foldStrip(fold, { opened, handlers, messageView }) {
     h('span', { class: 'fold-actions' },
       h('button', { class: 'fold-act', type: 'button', 'aria-expanded': String(Boolean(opened)), text: opened ? '收起' : '展开看看', onClick: () => handlers.toggleFold(fold.id) }),
       h('button', { class: 'fold-act', type: 'button', text: '切到这条路', onClick: () => handlers.switchPath(fold.id) })))
+  return withBody(strip, fold, { opened, messageView })
+}
+
+function withBody(strip, fold, { opened, messageView }) {
   if (!opened) return [strip]
   return [strip, h('div', { class: 'fold-body' }, ...opened.flatMap((message, i) => [messageView({ ...message, id: `${fold.id}-${i}` })].flat()))]
+}
+
+const TASK_STATUS = { running: '在后台做', waiting: '在后台等你', done: '做完了', stopped: '停下了', error: '出错了' }
+
+/**
+ * Where a turn moved to the background (tasks-state.js): what it is doing now, and 撤销 while the move can
+ * still be undone. Once it is no longer running here, what it said can be opened like a path.
+ */
+function taskStrip(fold, { opened, handlers, messageView, tasks }) {
+  const task = tasks?.list.find((entry) => entry.segmentId === fold.id)
+  const undoable = task && tasks.undo?.taskId === task.id
+  const status = task?.status === 'running' && task.now ? `在${task.now}` : TASK_STATUS[task?.status] ?? `${fold.count} 条消息`
+  const live = task?.status === 'running' || task?.status === 'waiting'
+  const strip = h('div', { class: 'fold fold-task', role: 'group', 'aria-label': '挪到后台的事', 'data-fold': fold.id },
+    h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '↗' }),
+    h('span', { text: task ? '挪到后台接着做了' : '在后台做过' }),
+    task ? h('span', { class: 'fold-tag', title: task.words, text: `#${task.title}` }) : null,
+    h('span', { class: 'fold-status', text: `· ${status}` }),
+    h('span', { class: 'fold-actions' },
+      undoable ? h('button', { class: 'fold-act', type: 'button', title: '变回插话，像什么都没发生', text: '撤销', onClick: () => handlers.undoMove() }) : null,
+      live ? null : h('button', { class: 'fold-act', type: 'button', 'aria-expanded': String(Boolean(opened)), text: opened ? '收起' : '展开看看', onClick: () => handlers.toggleFold(fold.id) })))
+  return withBody(strip, fold, { opened: live ? undefined : opened, messageView })
 }

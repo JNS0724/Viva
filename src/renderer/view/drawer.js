@@ -1,4 +1,5 @@
 import { traceItems, usageLabel } from '../selectors.js'
+import { taskOfTab, taskTab } from '../tasks-state.js'
 import { filesView } from './files-panel.js'
 import { h, label } from './dom.js'
 import { icon } from './icons.js'
@@ -37,6 +38,15 @@ function traceView(state) {
 
 const TAB_VIEWS = { trace: traceView, files: filesView }
 
+/** 过程 and 文件, then a tab a task in the background (tasks-state.js taskTab), its trace like the conversation's. */
+const tabsOf = (state) => [...TABS, ...state.tasks.list.map((task) => ({ id: taskTab(task.id), name: `#${task.title}`, task: true }))]
+
+function bodyOf(state, handlers) {
+  const task = taskOfTab(state, state.drawer)
+  if (task) return traceView({ ...state, ...task.view, restoredTrace: null })
+  return (TAB_VIEWS[state.drawer] ?? traceView)(state, handlers)
+}
+
 /** Right-hand drawer, opened from the title bar: the trace and the files the agent touched. */
 export function renderDrawer(container, state, handlers) {
   container.dataset.open = String(Boolean(state.drawer))
@@ -52,15 +62,16 @@ export function renderDrawer(container, state, handlers) {
   const preview = shown ? { path: shown.dataset.path, top: shown.scrollTop } : null
   container.replaceChildren(
     h('div', { class: 'drawer-head' },
-      h('div', { class: 'tabs', role: 'tablist' }, TABS.map((tab) => h('button', {
-        class: 'tab',
+      h('div', { class: 'tabs', role: 'tablist' }, tabsOf(state).map((tab) => h('button', {
+        class: tab.task ? 'tab tab-task' : 'tab',
         role: 'tab',
+        title: tab.task ? tab.name : null,
         'aria-selected': String(tab.id === state.drawer),
         text: tab.name,
         onClick: () => handlers.openDrawer(tab.id),
       }))),
       h('button', { class: 'icon-btn', 'aria-label': '收起抽屉', onClick: handlers.closeDrawer }, icon('close', 16))),
-    h('div', { class: 'drawer-body', role: 'tabpanel' }, (TAB_VIEWS[state.drawer] ?? traceView)(state, handlers)))
+    h('div', { class: 'drawer-body', role: 'tabpanel' }, bodyOf(state, handlers)))
   const body = container.querySelector('.drawer-body')
   const plan = drawerScrollPlan(before, state.drawer)
   body.scrollTop = plan.stickToBottom ? body.scrollHeight : plan.top
