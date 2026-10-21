@@ -404,6 +404,44 @@ html:not([data-platform="darwin"]) {
 .caret { display: inline-block; width: .55em; height: 1.05em; margin-left: 2px; vertical-align: -0.15em; border-radius: 2px; background: var(--accent); animation: caret 1s steps(1) infinite; }
 
 /* ---------- model picker ---------- */
+/* ---------- working directory: the chip under the input, its menu, the first-time question (view/workdir.js) ---------- */
+.workdir-area { position: relative; min-width: 0; }
+.workdir-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; max-width: 280px; font-family: var(--font-sans); color: var(--ink); }
+.workdir-chip:hover:not(:disabled), .workdir-chip[aria-expanded="true"] { border-color: var(--line-2); }
+.workdir-chip[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 169, 255, .15); }
+.workdir-chip:disabled { cursor: default; opacity: .6; }
+.workdir-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.workdir-caret { color: var(--ink-3); font-size: 10px; }
+.workdir-menu {
+  position: absolute; left: 0; bottom: calc(100% + 10px); width: 340px; z-index: 30; padding: 6px;
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 20px 50px rgba(0, 0, 0, .6);
+  display: flex; flex-direction: column;
+}
+.workdir-head { padding: 8px 10px 4px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-3); }
+.workdir-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: none; border-radius: 8px;
+  background: none; color: var(--ink); font-size: 13px; text-align: left; cursor: pointer;
+}
+.workdir-item:hover, .workdir-item.is-current { background: rgba(90, 169, 255, .12); }
+.workdir-check { width: 14px; flex: none; color: var(--accent); }
+.workdir-item-name { flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workdir-item-path { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ink-3); }
+.workdir-item kbd { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+.workdir-sep { height: 1px; margin: 5px 4px; background: var(--line); }
+/* A toast over the open menu would cover what the user is picking from; it waits until the menu closes. */
+body:has(.workdir-menu) .toast-root { visibility: hidden; }
+.workdir-scrim { position: fixed; inset: 0; z-index: 60; background: rgba(3, 7, 15, .55); }
+.workdir-sheet {
+  position: fixed; left: 50%; top: 50%; z-index: 61; transform: translate(-50%, -50%); width: min(440px, calc(100vw - 48px));
+  padding: 22px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: 0 30px 80px rgba(0, 0, 0, .7);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.workdir-sheet-title { font-size: 17px; font-weight: 700; }
+.workdir-sheet-path { padding: 8px 10px; border-radius: 8px; background: var(--raised); color: var(--ink-2); font-size: 12px; word-break: break-all; }
+.workdir-sheet-text { margin: 0; font-size: 13px; line-height: 1.7; color: var(--ink-2); }
+.workdir-sheet-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.workdir-sheet-actions .btn { height: 38px; padding: 0 18px; font-size: 14px; }
+
 .model-area { position: relative; }
 .model-btn {
   display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 12px; border-radius: 9px;

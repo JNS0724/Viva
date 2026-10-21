@@ -213,6 +213,52 @@ async function crashSteps(win, outDir, expect, hooks) {
   await capture(win, outDir, 'dsh-recovered')
 }
 
+/**
+ * The conversation goes on in another folder (single-conversation design): the first time it is asked, then
+ * the chip names it, the timeline says where the folder changed with what was said before still above, and the
+ * agent answers there. A name with a space and Chinese in it, as people's folders have.
+ */
+async function workDirSteps(win, outDir, expect, hooks) {
+  const dir = path.join(path.dirname(hooks.cwd), '其他 项目')
+  fs.mkdirSync(dir, { recursive: true })
+  const asked = await run(win, `document.querySelectorAll('#earlier .msg-user, #thread .msg-user').length`)
+  const first = await run(win, `window.agent.switchWorkDir(${JSON.stringify(dir)})`)
+  expect(first.needsConfirm === true, 'a folder used for the first time should be confirmed first', first)
+  const done = await run(win, `window.agent.switchWorkDir(${JSON.stringify(dir)}, { confirmed: true })`)
+  expect(done.ok && done.state?.current === dir, 'the confirmed folder should become the working directory', done)
+  const shown = await until(win, `(() => {
+    const chip = document.getElementById('composer-context').textContent
+    const line = document.querySelector('#earlier .timeline-workdir')?.textContent ?? ''
+    return chip.includes('其他 项目') && line.includes('其他 项目') ? { chip, line } : null
+  })()`, 'the chip and the timeline naming the new folder')
+  expect(Boolean(shown), 'the window should show the new folder', shown)
+  const kept = await run(win, `document.querySelectorAll('#earlier .msg-user').length`)
+  expect(kept === asked, 'what was said before should stay above in the timeline', { asked, kept })
+
+  await submit(win, '换了个项目，继续')
+  await finishTurn(win)
+  await wait(UI_WAIT_MS)
+  const last = await run(win, `[...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  expect(last.length > 0 && !(await run(win, `Boolean(document.querySelector('.msg-error'))`)), 'the agent should answer in the new folder', last.slice(0, 40))
+  await capture(win, outDir, 'workdir-switched')
+
+  await run(win, `document.getElementById('composer-context').click()`)
+  const menu = await until(win, `(() => {
+    const names = [...document.querySelectorAll('.workdir-item-name')].map((el) => el.textContent)
+    return names.length ? names : null
+  })()`, 'the working-directory menu')
+  expect(menu.includes('其他 项目') && menu.includes('Viva 的文件') && menu.includes('选择文件夹…'), 'the menu should list both folders and the folder dialog', menu)
+  await wait(UI_WAIT_MS)
+  const box = await run(win, `(() => {
+    const rect = document.querySelector('.workdir-menu')?.getBoundingClientRect()
+    const top = rect && document.elementFromPoint(rect.left + rect.width / 2, rect.top + 12)
+    return rect ? { top: Math.round(rect.top), height: Math.round(rect.height), onTop: Boolean(top?.closest('.workdir-menu')) } : null
+  })()`)
+  expect(Boolean(box?.onTop) && box.top >= 0, 'the menu should be open on top of the window, all of it on screen', box)
+  await capture(win, outDir, 'workdir-menu')
+  await run(win, `document.getElementById('composer-context').click()`)
+}
+
 /** @returns {Promise<string[]>} failed expectations */
 export async function checkMemory(win, outDir, hooks = {}) {
   const failures = []
@@ -220,6 +266,7 @@ export async function checkMemory(win, outDir, hooks = {}) {
   try {
     await steps(win, outDir, expect, hooks)
     await crashSteps(win, outDir, expect, hooks)
+    await workDirSteps(win, outDir, expect, hooks)
   } catch (err) {
     failures.push(`memory: ${err instanceof Error ? err.message : String(err)}`)
   }

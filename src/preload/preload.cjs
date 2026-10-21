@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('agent', {
   /** { ok, info, state } | { ok: false, needsConfirm, dir } | { ok: false, problem } | { ok: false, reason: 'busy' } */
   switchWorkDir: (dir, options) => ipcRenderer.invoke('workdir:switch', dir, options),
   forgetWorkDir: (dir) => ipcRenderer.invoke('workdir:forget', dir),
+  /** The folder in use, in Finder or Explorer. */
+  revealWorkDir: () => ipcRenderer.invoke('workdir:reveal'),
   getMemory: () => ipcRenderer.invoke('memory:get'),
   listMemories: (query) => ipcRenderer.invoke('memory:list', query),
   saveProfile: (changes) => ipcRenderer.invoke('memory:set-profile', changes),

@@ -5,6 +5,7 @@ import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { QUESTION_ACTIONS } from './question-state.js'
 import { SECRET_ACTIONS } from './secret-state.js'
+import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.js'
 import { closeLast, closeStreams } from './streams.js'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.js'
 
@@ -40,6 +41,8 @@ export const initialState = Object.freeze({
   history: initialHistory,
   /** The one timeline: the segments before the one on screen (earlier-state.js). */
   earlier: initialEarlier,
+  /** The working directory: the chip under the input, its menu, the confirmation (workdir-state.js). */
+  workDir: initialWorkDir,
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
@@ -307,6 +310,7 @@ const ACTION_HANDLERS = {
     settings: state.settings,
     history: state.history,
     earlier: withCurrentKept(state),
+    workDir: state.workDir,
     memory: state.memory,
     extensions: state.extensions,
     toast: state.toast,
@@ -357,6 +361,7 @@ const ACTION_HANDLERS = {
   close_island: (state) => (state.island ? { ...state, island: false } : state),
   ...HISTORY_ACTIONS,
   ...EARLIER_ACTIONS,
+  ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,
   ...QUESTION_ACTIONS,

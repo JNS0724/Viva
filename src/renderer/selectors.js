@@ -103,6 +103,23 @@ export function restoredNote(state, now = Date.now()) {
   return { when: formatSavedAt(state.restored.savedAt, now), memory }
 }
 
+/** What the window calls the app's own working directory. */
+export const DEFAULT_DIR_NAME = 'Viva 的文件'
+
+/**
+ * The working-directory menu (the chip under the input): the folder in use first, then the others used lately,
+ * then the app's own folder when it is in neither. Each with the name shown and its full path.
+ * @param {{ current: string, defaultDir: string, recent: string[] }} workDir workdir-state.js
+ * @returns {Array<{ dir: string, name: string, current: boolean, isDefault: boolean }>}
+ */
+export function workDirMenu({ current, defaultDir, recent }) {
+  const dirs = [current, ...recent.filter((dir) => dir !== current)]
+  if (defaultDir && !dirs.includes(defaultDir)) dirs.push(defaultDir)
+  return dirs.filter(Boolean).map((dir) => ({
+    dir, name: dir === defaultDir ? DEFAULT_DIR_NAME : workspaceName(dir), current: dir === current, isDefault: dir === defaultDir,
+  }))
+}
+
 /** The day a part of the timeline is from: 今天, 昨天, 9 月 21 日, or with the year before this one. */
 function timelineDay(ts, now) {
   const days = daysAgo(ts, now)

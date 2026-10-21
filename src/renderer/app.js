@@ -9,6 +9,7 @@ import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createTimelineActions } from './timeline-actions.js'
+import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.js'
 import { createScrollFollower } from './view/scroll-follow.js'
 
@@ -34,6 +35,9 @@ const dom = {
   input: byId('composer-input'),
   sendBtn: byId('send-btn'),
   context: byId('composer-context'),
+  workdirArea: document.querySelector('.workdir-area'),
+  workdirMenu: byId('workdir-menu'),
+  workdirConfirm: byId('workdir-confirm-root'),
   newSession: byId('new-session'),
   toggleDrawer: byId('toggle-drawer'),
   openSettings: byId('open-settings'),
@@ -241,6 +245,7 @@ async function provideSecrets(values) {
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
+const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
@@ -353,6 +358,13 @@ const handlers = {
   islandAction: (action) => ISLAND_ACTIONS[action?.kind]?.(action),
   /** The earlier part of the timeline, a page more (the button at its top). */
   loadEarlier: () => timelineActions.loadEarlier(),
+  /** The working directory: the chip under the input, its menu, and the question the first time (view/workdir.js). */
+  pickWorkDir: (dir) => workDirActions.switchTo(dir),
+  chooseWorkDir: () => workDirActions.choose(),
+  confirmWorkDir: () => workDirActions.confirm(),
+  cancelWorkDir: () => workDirActions.cancelConfirm(),
+  closeWorkDirMenu: () => workDirActions.closeMenu(),
+  revealWorkDir: () => workDirActions.reveal(),
   /** A link in an answer opens in the browser (or mail app), never inside the window. */
   openLink: (url) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
 }
@@ -408,6 +420,7 @@ function wireComposer() {
     handlers.send()
   })
   dom.newSession.addEventListener('click', () => handlers.newSession())
+  dom.context.addEventListener('click', () => workDirActions.toggleMenu())
   dom.openSettings.addEventListener('click', () => handlers.openSettings())
   dom.openProfile.addEventListener('click', () => (state.memory.open ? handlers.closeProfile() : handlers.openProfile()))
   dom.modelBtn.addEventListener('click', () => handlers.togglePicker())
@@ -419,10 +432,13 @@ function wireComposer() {
 }
 
 const isHistoryShortcut = (event) => (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'
+const isOpenFolderShortcut = (event) => (event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === 'o'
 
 /** Escape closes the innermost thing that is open. */
 function closeTopmost() {
-  if (state.settings.open) dispatch({ type: 'settings_close' })
+  if (state.workDir.confirm) workDirActions.cancelConfirm()
+  else if (state.workDir.menu) workDirActions.closeMenu()
+  else if (state.settings.open) dispatch({ type: 'settings_close' })
   else if (state.memory.open) dispatch({ type: 'memory_close' })
   else if (state.history.menuFor) dispatch({ type: 'history_menu', id: null })
   else if (state.history.open) dispatch({ type: 'history_close' })
@@ -445,6 +461,7 @@ function wireDismissal() {
   document.addEventListener('click', (event) => {
     if (state.island && !dom.island.contains(event.target)) dispatch({ type: 'close_island' })
     if (state.picker && !dom.modelArea.contains(event.target)) dispatch({ type: 'picker_close' })
+    if (state.workDir.menu && !dom.workdirArea.contains(event.target)) workDirActions.closeMenu()
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
     closeHistoryOnOutsideClick(event)
   })
@@ -452,6 +469,10 @@ function wireDismissal() {
     if (isHistoryShortcut(event)) {
       event.preventDefault()
       handlers.toggleHistory()
+    } else if (isOpenFolderShortcut(event)) {
+      // ⌘O / Ctrl+O: the system's folder dialog, as in any desktop app.
+      event.preventDefault()
+      if (!isBusy(state) && !state.workDir.switching) workDirActions.choose()
     } else if (event.key === 'Escape') {
       closeTopmost()
     }
@@ -487,13 +508,14 @@ async function boot() {
     const toAction = EVENT_ACTIONS[event?.type]
     if (toAction) dispatch(toAction(event))
     if (event?.type === 'ready') reportMcpProblems(event.info)
+    if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
     if (event?.type === 'turn_end') {
       filesActions.filesAfterTurn()
       sendAfterTurn()
     }
     if (event?.type === 'error') afterTurn = []
   })
-  await Promise.all([loadHistory(), memoryActions.loadMemory()])
+  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh()])
   await timelineActions.loadEarlier()
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })

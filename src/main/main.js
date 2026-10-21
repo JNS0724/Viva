@@ -773,6 +773,7 @@ app.whenReady().then(async () => {
     chooseFolder: chooseWorkFolder,
     isBusy: () => turn.active,
     switchTo: switchWorkDir,
+    reveal: (dir) => shell.openPath(dir),
   })
   if (config.smokePhase === 'memory') await startSmokeModel()
   if (!config.smoke) {

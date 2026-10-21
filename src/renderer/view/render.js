@@ -1,5 +1,5 @@
 import { isBusy } from '../state.js'
-import { setupView, workspaceName } from '../selectors.js'
+import { setupView } from '../selectors.js'
 import { h } from './dom.js'
 import { renderDrawer } from './drawer.js'
 import { renderEarlier } from './earlier.js'
@@ -11,6 +11,7 @@ import { renderModelPicker } from './model-picker.js'
 import { renderProfilePanel } from './profile-panel.js'
 import { renderSettings } from './settings.js'
 import { renderThread } from './thread.js'
+import { renderWorkDir } from './workdir.js'
 
 let renderedSettings = []
 let renderedProfile = null
@@ -101,7 +102,7 @@ export function renderSendButton(dom, state) {
 function renderComposer(dom, state, handlers) {
   renderComposerAvailability(dom, setupView(state.info), state.switching, { asking: Boolean(state.question), busy: isBusy(state) })
   renderSendButton(dom, state)
-  dom.context.textContent = `@ ${workspaceName(state.info.cwd)}`
+  renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   dom.toggleDrawer.setAttribute('aria-pressed', String(Boolean(state.drawer)))
   renderModelPicker(dom, state, handlers)
 }

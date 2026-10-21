@@ -10,11 +10,11 @@ import { forgetDir, sameDir, withRecent, workDirProblem } from './work-dir.js'
  *   current: () => string, defaultDir: string,
  *   preferences: { get: () => { workDirs: { recent: string[], trusted: string[] } }, set: (key: string, value: object) => void },
  *   chooseFolder: () => Promise<string | null>, isBusy: () => boolean, switchTo: (dir: string) => Promise<object>,
- *   platform?: string, problemOf?: (dir: string) => string | null,
- * }} deps
+ *   reveal?: (dir: string) => Promise<unknown>, platform?: string, problemOf?: (dir: string) => string | null,
+ * }} deps reveal: opens the folder in Finder or Explorer
  */
 export function registerWorkDirIpc(ipcMain, deps) {
-  const { current, defaultDir, preferences, chooseFolder, isBusy, switchTo, platform = process.platform, problemOf = workDirProblem } = deps
+  const { current, defaultDir, preferences, chooseFolder, isBusy, switchTo, reveal = async () => {}, platform = process.platform, problemOf = workDirProblem } = deps
   const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
   // preferences.json is read as written by an earlier run, or by hand: only lists of paths pass.
   const paths = (list) => (Array.isArray(list) ? list.filter((item) => typeof item === 'string' && item.length > 0) : [])
@@ -27,6 +27,10 @@ export function registerWorkDirIpc(ipcMain, deps) {
 
   handle('workdir:get', state)
   handle('workdir:choose', () => chooseFolder())
+  /** The folder in use, in Finder or Explorer; only ever the one in use, never a path the window names. */
+  handle('workdir:reveal', async () => {
+    await reveal(current())
+  })
 
   handle('workdir:switch', async (dir, options = {}) => {
     if (typeof dir !== 'string' || dir.length > 4096) throw new Error('invalid working directory')
