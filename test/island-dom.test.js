@@ -20,6 +20,7 @@ test('a turn that has run a while is offered the background, and the panel redra
   assert.equal(offersBackground(working, 1000 + OFFER_MS), true)
   assert.equal(offersBackground({ ...working, movable: undefined }, 1000 + OFFER_MS), false, 'not when there is nothing to move')
   assert.equal(offersBackground({ ...working, form: 'waiting' }, 1000 + OFFER_MS), false)
+  assert.equal(offersBackground({ ...working, offered: true }, 1001), true, 'at once, when the agent said it will take long')
   assert.notEqual(islandSignatures(working, true, false, true).panel, islandSignatures(working, true, false, false).panel)
 })
 

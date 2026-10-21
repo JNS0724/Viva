@@ -6,7 +6,7 @@ import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
 import { foldAfter, rewindTarget } from '../rewind-state.js'
-import { liveTasks } from '../tasks-state.js'
+import { liveTasks, offeredBackground } from '../tasks-state.js'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.js'
 
 const AVATAR_CAT_PX = 36
@@ -171,6 +171,15 @@ function questionCard(question, handlers, { head = PROMPT_HEADS.question, typed 
       typed ? h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' }) : null))
 }
 
+/** The agent said the turn will take long (E): 放到后台 beside it, while it runs. Not a card: it asks nothing. */
+function offerRow(state, handlers) {
+  const offered = offeredBackground(state)
+  if (!offered) return ''
+  return h('div', { class: 'offer', role: 'note' },
+    h('span', { class: 'offer-text', text: offered.why ? `这件要一会儿：${offered.why}。放到后台，你先忙别的？` : '这件要一会儿。放到后台，你先忙别的？' }),
+    h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: '放到后台', onClick: () => handlers.moveToBackground() }))
+}
+
 /** A task's question: the card's buttons answer it, not the conversation's (task-actions.js). */
 function taskQuestionCard(task, handlers) {
   const scoped = {
@@ -268,6 +277,7 @@ export function renderThread(container, state, handlers, now) {
   const focus = editorFocus()
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
+    offerRow(state, handlers),
     state.permission ? permissionCard(state.permission, handlers) : '',
     ...liveTasks(state).filter((task) => task.permission).map((task) => permissionCard(task.permission, handlers, `#${task.title} · ${PROMPT_HEADS.permission}`)),
     state.question ? questionCard(state.question, handlers) : '',

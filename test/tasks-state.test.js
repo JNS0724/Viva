@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { liveTasks, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
+import { liveTasks, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
+import { traceItems } from '../src/renderer/selectors.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 const run = (actions, start = initialState) => actions.reduce((state, action) => reduce(state, action), start)
@@ -87,6 +88,17 @@ test('a task\'s question is answered in the task, not in the conversation on scr
   assert.deepEqual([task.status, task.question], ['running', null])
   assert.equal(taskMessages(task).at(-1).text, '上海')
   assert.deepEqual(answered.messages.map((m) => m.text), ['做周报', '写好了'], 'the conversation on screen is left alone')
+})
+
+test('the agent saying a job will take long offers the background while that turn runs', () => {
+  const offer = { type: 'acp_update', at: 13, update: { sessionUpdate: 'tool_call', toolCallId: 't9', title: 'viva_offer_background', status: 'completed', rawInput: { why: '要逐个读完所有提交' } } }
+  const state = reduce(working(), offer)
+  assert.deepEqual(offeredBackground(state), { why: '要逐个读完所有提交' })
+  assert.equal(offeredBackground(working()), null, 'not unless the agent said so')
+  assert.equal(offeredBackground(reduce(state, { type: 'turn_end', stopReason: 'end_turn', at: 20 })), null, 'not once the turn is over')
+  const next = run([{ type: 'turn_end', stopReason: 'end_turn', at: 20 }, { type: 'user_prompt', text: '再来一份', at: 30 }], state)
+  assert.equal(offeredBackground(next), null, 'a later turn is offered only if the agent says so again')
+  assert.deepEqual(traceItems(state).at(-1), { key: traceItems(state).at(-1).key, time: traceItems(state).at(-1).time, title: '提议放到后台', detail: '要逐个读完所有提交', tone: 'done' })
 })
 
 test('a task has its own tab in the drawer, showing what it did', () => {

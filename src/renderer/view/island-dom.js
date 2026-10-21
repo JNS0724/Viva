@@ -135,9 +135,13 @@ function hasPanel(view, host) {
 /** How long a turn runs before the opened island offers it the background (D). */
 export const OFFER_MS = 30_000
 
-/** Whether the opened island offers the turn the background: one that has run a while, with words to move by. */
+/**
+ * Whether the opened island offers the turn the background: one with words to move by that has run a while,
+ * or that the agent said would take long.
+ */
 export function offersBackground(view, now) {
-  return view.form === 'working' && Boolean(view.movable) && now - (view.startedAt ?? now) >= OFFER_MS
+  if (view.form !== 'working' || !view.movable) return false
+  return Boolean(view.offered) || now - (view.startedAt ?? now) >= OFFER_MS
 }
 
 /** 这件要一会儿: not asked, only there for whoever opens the island while waiting (D). */

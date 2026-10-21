@@ -305,6 +305,8 @@ const handlers = {
   ...rewindActions,
   /** Background tasks: 撤销 on the line a move leaves, and stopping or closing one. */
   undoMove: () => taskActions.undoMove(),
+  /** 放到后台, beside a turn the agent said will take long (view/thread.js offerRow). */
+  moveToBackground: () => taskActions.moveToBackground(),
   stopTask: (taskId) => taskActions.stopTask(taskId),
   closeTask: (taskId) => taskActions.closeTask(taskId),
   pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),

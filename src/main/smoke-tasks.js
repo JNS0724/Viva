@@ -98,8 +98,44 @@ async function undoSteps(win, outDir, expect) {
   await until(win, mainIdle, 'the turn ending')
 }
 
+const BIG_ASK = '把全部文档整理好，顺手接入演示服务'
+
+/**
+ * The agent says first that the job will take long: 放到后台 shows beside the turn; taken, the turn goes on in
+ * the background with no new words, and the conversation is free.
+ */
+async function offerSteps(win, outDir, expect) {
+  await submit(win, BIG_ASK)
+  const offer = await until(win, `document.querySelector('#thread .offer')?.textContent ?? null`, 'the offer beside the turn', UI_WAIT_MS * 20)
+    .catch(async (err) => {
+      await capture(win, outDir, 'tasks-offer-failed')
+      const seen = await run(win, `JSON.stringify({
+        users: [...document.querySelectorAll('#thread .msg-user')].map((el) => el.textContent).slice(-3),
+        trace: [...document.querySelectorAll('#drawer .trace-title')].map((el) => el.textContent).slice(-4),
+        busy: document.getElementById('send-btn').dataset.busy,
+      })`)
+      throw new Error(`${err.message}: ${seen}`)
+    })
+  expect(offer.includes('要逐个读完所有文档') && offer.includes('放到后台'), 'the offer should say why, with 放到后台', offer)
+  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the turn holding on its approval')
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-offer')
+  await run(win, `document.querySelector('#thread .offer .offer-act').click()`)
+  await until(win, `document.querySelector('#thread .fold-task') && !document.querySelector('#thread .offer')`, 'the turn in the background')
+  const after = await run(win, `({
+    busy: document.getElementById('send-btn').dataset.busy,
+    asked: [...document.querySelectorAll('#thread > .msg-user, #thread > .msg-user-row .msg-user')].map((el) => el.textContent),
+    count: document.querySelector('#island .isl-bg b')?.textContent ?? null,
+  })`)
+  expect(after.busy === 'false' && !after.asked.includes(BIG_ASK) && after.count === '1', 'taken, the turn should go on in the background and the conversation be free', after)
+  // Done with: its approval declined from the island-marked card, the task ends.
+  await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
+  await until(win, `!document.querySelector('#island .isl-bg')`, 'the task ending')
+}
+
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win, outDir, expect, hooks) {
   await moveSteps(win, outDir, expect, hooks)
   await undoSteps(win, outDir, expect)
+  await offerSteps(win, outDir, expect)
 }

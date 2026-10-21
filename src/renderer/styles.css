@@ -243,6 +243,10 @@ html:not([data-platform="darwin"]) {
 .fold b { color: var(--ink); font-weight: 600; }
 .fold-ico { color: var(--ink-3); font-family: var(--font-mono); }
 .fold-actions { margin-left: auto; display: flex; gap: 4px; }
+/* The agent said the turn will take long (view/thread.js offerRow): a quiet line with 放到后台. */
+.offer { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border: 1px solid var(--line-2); border-radius: 12px; font-size: 13px; color: var(--ink-2); }
+.offer-text { flex: 1; min-width: 0; }
+.offer-act { flex: none; height: 32px; padding: 0 14px; font-size: 13px; }
 /* Where a turn moved to the background (view/rewind.js taskStrip). */
 .fold-task { border-style: solid; }
 .fold-tag { max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }

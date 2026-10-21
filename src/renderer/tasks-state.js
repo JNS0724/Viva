@@ -63,6 +63,21 @@ export function spinOffTarget(state) {
   return null
 }
 
+/** The tool the agent calls to say, before it starts, that a job will take long (plugins/steer/lib/offer.js). */
+export const OFFER_TOOL = 'viva_offer_background'
+
+/**
+ * Whether the agent said the turn running will take long (E): the window then offers 放到后台 beside it.
+ * Only for the turn it said so in, and only while there is a turn to move.
+ * @returns {{ why: string } | null}
+ */
+export function offeredBackground(state) {
+  if (!spinOffTarget(state)) return null
+  const since = state.turn?.startedAt ?? Infinity
+  const entry = state.timeline.findLast((item) => item.kind === 'tool' && item.at >= since && state.tools[item.ref]?.title === OFFER_TOOL)
+  return entry ? { why: String(state.tools[entry.ref].rawInput?.why ?? '') } : null
+}
+
 /** Said to go on with what runs: 「顺便」「再」「改成」… */
 const GOES_ON = /^(顺便|再|还要|还有|另外|也|并且|然后|接着|改成|换成|别|不要|加上|补充|记得|继续|等等)/
 /** Something of its own: a question, or a request of its own (「帮我…」「查一下…」). */

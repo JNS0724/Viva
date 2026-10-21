@@ -2,7 +2,7 @@
   "name": "viva-steer",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的插话通道：助手工作中用户再发的话，交给 dsh 在下一步之前读到，而不是等这一轮结束",
+  "description": "Viva 的插话通道：助手工作中用户再发的话，交给 dsh 在下一步之前读到，而不是等这一轮结束；助手也能事先说一件事要很久，窗口就提议放到后台",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -13,6 +13,7 @@
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4"
   },
   "viva": {

@@ -1,7 +1,7 @@
 import { optionName } from './approval.js'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.js'
 import { catMood, currentAction, traceItems, truncate } from './selectors.js'
-import { liveTasks, spinOffTarget } from './tasks-state.js'
+import { liveTasks, offeredBackground, spinOffTarget } from './tasks-state.js'
 
 /**
  * What the Viva island shows, for both of its hosts: the capsule in the window's title bar (view/island.js)
@@ -132,8 +132,9 @@ function mainView(state, background) {
     return {
       ...base, form: 'working', tone: 'working', label: '工作中',
       action: currentAction(state), startedAt: state.turn?.startedAt ?? null, steps: state.turn?.tools ?? 0,
-      // A turn that runs a while is offered the background (D, view/island-dom.js).
+      // A turn that runs a while is offered the background (D, view/island-dom.js); at once when the agent said it would (E).
       ...(spinOffTarget(state) ? { movable: true } : {}),
+      ...(offeredBackground(state) ? { offered: true } : {}),
     }
   }
   if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: '出错', detail: truncate(state.error, DETAIL_LIMIT) }
