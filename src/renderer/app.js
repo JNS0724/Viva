@@ -99,6 +99,9 @@ const ISLAND_ACTIONS = {
   answer: ({ questionId, id, label }) => {
     if (state.question?.questionId === questionId) handlers.pickOption(id, label)
   },
+  skip: ({ questionId }) => {
+    if (state.question?.questionId === questionId) handlers.skipQuestion()
+  },
   /** Asked on the desktop island, with the files dropped there: into this conversation, as if typed here. */
   ask: ({ text, files }) => {
     if (!ask(withFiles(text, files), { via: 'island' })) historyActions.showToast('Viva 岛上的问题没有送出：助手现在还不能接收')

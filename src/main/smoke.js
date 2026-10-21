@@ -192,7 +192,7 @@ async function checkIslandOnTop(win, outDir) {
 
 const DESK_ISLAND_STATE = `(() => {
   const island = document.querySelector('.isl')
-  return island && { form: island.dataset.form, title: island.querySelector('.isl-title')?.textContent ?? '', allow: Boolean(island.querySelector('.isl-btn-hot')) }
+  return island && { form: island.dataset.form, title: island.querySelector('.isl-title')?.textContent ?? '', allow: Boolean(island.querySelector('.isl-btn-primary')), command: island.querySelector('.isl-detail')?.textContent ?? '' }
 })()`
 
 /**
@@ -216,7 +216,7 @@ async function checkDeskIsland(win, outDir, desk) {
     report(`desktop island: ${JSON.stringify(seen)}`)
     await wait(UI_WAIT_MS)
     await capture(page, outDir, 'desk-island')
-    await run(page, `document.querySelector('.isl .isl-btn-hot').click()`)
+    await run(page, `document.querySelector('.isl .isl-btn-primary').click()`)
     await until(win, `!document.querySelector('.confirm:not(.ask)')`, 'the card going after allowing on the desktop island')
     return seen.title === '写入 summary.md' ? [] : [`the desktop island should name what it asks to allow: ${JSON.stringify(seen)}`]
   } finally {
@@ -231,7 +231,7 @@ async function checkDeskIsland(win, outDir, desk) {
 async function walkthrough(win, outDir, hooks) {
   await capture(win, outDir, 'home')
   await submit(win, SMOKE_PROMPT)
-  await until(win, `Boolean(document.querySelector('.confirm .btn-ink'))`, 'the permission card')
+  await until(win, `Boolean(document.querySelector('.confirm .btn-primary'))`, 'the permission card')
   await capture(win, outDir, 'chat')
   const failures = [...await checkLayouts(win, outDir), ...await checkDeskIsland(win, outDir, hooks.desk?.())]
   await finishTurn(win)

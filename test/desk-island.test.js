@@ -37,6 +37,8 @@ test('the input shows whenever it is open, unless the window is in front with it
 test('only the actions the island offers get through, with their ids', () => {
   assert.deepEqual(checkIslandAction({ kind: 'permission', requestId: 'r1', optionId: 'allow-once', extra: 'x' }), { kind: 'permission', requestId: 'r1', optionId: 'allow-once' })
   assert.deepEqual(checkIslandAction({ kind: 'answer', questionId: 'q', id: 'city', label: '上海' }), { kind: 'answer', questionId: 'q', id: 'city', label: '上海' })
+  assert.deepEqual(checkIslandAction({ kind: 'skip', questionId: 'q', id: 'x' }), { kind: 'skip', questionId: 'q' })
+  assert.equal(checkIslandAction({ kind: 'skip' }), null)
   assert.deepEqual(checkIslandAction({ kind: 'cancel' }), { kind: 'cancel' })
   assert.deepEqual(checkIslandAction({ kind: 'open' }), { kind: 'open' })
   assert.deepEqual(checkIslandAction({ kind: 'rect', x: 20, y: 10, width: 300, height: 48, z: 1 }), { kind: 'rect', x: 20, y: 10, width: 300, height: 48 })

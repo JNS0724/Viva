@@ -1,6 +1,7 @@
 import { fileName, splitFiles } from '../../shared/attachments.js'
 import { optionName } from '../approval.js'
-import { catMood, currentAction, permissionDetail, receiptLine, restoredNote } from '../selectors.js'
+import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.js'
+import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.js'
 import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
@@ -91,17 +92,20 @@ const MESSAGE_VIEWS = {
     message.receipt ? receiptButton(message, handlers, traceReady) : null),
 }
 
+/** A card's buttons by role (prompt-card.js); the island draws the same roles at its own size. */
+const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
+
+const cardHead = (text) => h('div', { class: 'confirm-head' }, h('span', { text }), h('span', { class: 'pulse-dot' }))
+
 function permissionCard(permission, handlers) {
-  const detail = permissionDetail(permission)
-  return h('section', { class: 'confirm', 'aria-label': '需要你确认' },
-    h('div', { class: 'confirm-head' },
-      h('span', { text: '需要你确认' }),
-      h('span', { class: 'pulse-dot' })),
-    h('div', { class: 'confirm-title', text: permission.title }),
+  const { title, detail } = cardOf(permission)
+  return h('section', { class: 'confirm', 'aria-label': PROMPT_HEADS.permission },
+    cardHead(PROMPT_HEADS.permission),
+    h('div', { class: 'confirm-title', text: title }),
     detail ? h('pre', { class: 'confirm-detail', text: detail }) : null,
     h('div', { class: 'confirm-actions' },
-      permission.options.map((option) => h('button', {
-        class: option.kind.startsWith('allow') ? 'btn btn-ink' : 'btn btn-ghost-ink',
+      promptButtons(permission.options).map((option) => h('button', {
+        class: BUTTON[option.role],
         text: optionName(option),
         onClick: () => handlers.respond(permission.requestId, option.optionId),
       })),
@@ -115,7 +119,7 @@ function questionItem(item, question, handlers) {
     h('div', { class: 'ask-question', text: item.question }),
     item.options.length ? h('div', { class: 'ask-options', role: item.multiSelect ? 'group' : 'radiogroup', 'aria-label': item.question },
       item.options.map((option) => h('button', {
-        class: picked.includes(option.label) ? 'btn btn-ink ask-option' : 'btn btn-ghost-ink ask-option',
+        class: `${picked.includes(option.label) ? BUTTON.primary : BUTTON.secondary} ask-option`,
         'aria-pressed': String(picked.includes(option.label)),
         title: option.description ?? null,
         text: option.label,
@@ -130,13 +134,11 @@ function questionItem(item, question, handlers) {
 function questionCard(question, handlers) {
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
   return h('section', { class: 'confirm ask', 'aria-label': '助手在问你' },
-    h('div', { class: 'confirm-head' },
-      h('span', { text: '需要你回答' }),
-      h('span', { class: 'pulse-dot' })),
+    cardHead(PROMPT_HEADS.question),
     question.questions.map((item) => questionItem(item, question, handlers)),
     h('div', { class: 'confirm-actions' },
-      single ? null : h('button', { class: 'btn btn-ink ask-submit', text: '提交', onClick: () => handlers.submitAnswer() }),
-      h('button', { class: 'btn btn-ghost-ink ask-skip', text: '跳过', onClick: () => handlers.skipQuestion() }),
+      single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: '提交', onClick: () => handlers.submitAnswer() }),
+      h('button', { class: `${BUTTON.text} ask-skip`, text: '跳过', onClick: () => handlers.skipQuestion() }),
       h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' })))
 }
 
@@ -174,12 +176,12 @@ function secretCard(secret, handlers) {
       handlers.submitSecrets(Object.fromEntries(secret.names.map((name, i) => [name, inputs[i].value])))
     },
   },
-  h('div', { class: 'confirm-head' }, h('span', { text: '需要你填写' }), h('span', { class: 'pulse-dot' })),
+  cardHead(PROMPT_HEADS.secret),
   h('div', { class: 'confirm-title', text: `接入「${secret.server}」需要这些密钥` }),
   secret.names.map((name, i) => h('label', { class: 'secret-field' }, h('span', { class: 'secret-name', text: name }), inputs[i])),
   h('div', { class: 'confirm-actions' },
-    h('button', { class: 'btn btn-ink', type: 'submit', text: '保存' }),
-    h('button', { class: 'btn btn-ghost-ink', type: 'button', text: '不接入', onClick: () => handlers.declineSecrets() }),
+    h('button', { class: BUTTON.primary, type: 'submit', text: '保存' }),
+    h('button', { class: BUTTON.secondary, type: 'button', text: '不接入', onClick: () => handlers.declineSecrets() }),
     h('span', { class: 'confirm-hint', text: '加密保存在这台电脑上，不会发给模型' })))
   secretForm = { requestId: secret.requestId, el }
   return el

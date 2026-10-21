@@ -40,21 +40,32 @@ test('only the last few steps come along', () => {
   assert.deepEqual(view.recent.map((row) => row.title), ['第 3 步', '第 4 步', '第 5 步', '第 6 步'])
 })
 
-test('a permission carries its options, the allowing ones marked', () => {
+test('a permission carries its options with their roles, under the same head as in the window', () => {
   const view = islandView(run([...asked, permission]))
   assert.equal(view.form, 'waiting')
   assert.equal(view.tone, 'waiting')
-  assert.equal(view.label, '等待你确认')
+  assert.equal(view.label, '需要你确认')
   assert.deepEqual(view.permission, {
-    requestId: 'p1', title: '写入 summary.md', kind: 'edit',
-    options: [{ optionId: 'ok', name: '允许', allow: true }, { optionId: 'no', name: '拒绝', allow: false }],
+    requestId: 'p1', title: '写入 summary.md', command: '',
+    options: [{ optionId: 'ok', name: '允许', role: 'primary' }, { optionId: 'no', name: '拒绝', role: 'secondary' }],
   })
+})
+
+test('a command to approve shows on the island too, not just its title', () => {
+  const bash = [...asked,
+    { type: 'acp_update', at: T0 + 1000, update: { sessionUpdate: 'tool_call', toolCallId: 'b1', title: 'bash', status: 'pending', rawInput: { command: 'rm -rf build' } } },
+    { ...permission, toolCall: { toolCallId: 'b1' } }]
+  const view = islandView(run(bash))
+  assert.deepEqual([view.permission.title, view.permission.command], ['运行命令', 'rm -rf build'])
 })
 
 test('a single single-choice question can be answered by its options; anything else needs the window', () => {
   const single = islandView(run([...asked, question([city])]))
   assert.equal(single.form, 'asking')
-  assert.deepEqual(single.question, { questionId: 'q1', id: 'city', text: '你想看哪个城市的天气？', options: ['上海', '北京'] })
+  assert.equal(single.label, '需要你回答')
+  assert.deepEqual(single.question, {
+    questionId: 'q1', id: 'city', header: '城市', text: '你想看哪个城市的天气？', options: ['上海', '北京'], skippable: true,
+  })
 
   const two = islandView(run([...asked, question([city, { ...city, id: 'day', question: '哪天？' }])]))
   assert.deepEqual(two.question.options, [], 'two questions are answered in the window')

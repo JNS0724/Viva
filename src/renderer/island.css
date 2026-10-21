@@ -85,11 +85,20 @@
   font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
 }
 .isl[data-host="desk"] .isl-btn { height: 40px; padding: 0 16px; border-radius: 12px; font-size: 14px; }
-.isl-btn-line { border-color: var(--line-2); }
-.isl-btn-line:hover { border-color: var(--ink-3); }
-.isl-btn-hot { background: var(--orange); color: var(--bg); }
-.isl-btn-ghost { padding: 0; color: var(--ink-2); font-weight: 500; }
-.isl-btn-ghost:hover { color: var(--ink); }
+.isl-btn-line, .isl-btn-secondary { border-color: var(--line-2); }
+.isl-btn-line:hover, .isl-btn-secondary:hover { border-color: var(--ink-3); }
+/* What waits on the user, by role (prompt-card.js), as on the thread's card. */
+.isl-btn-primary { background: var(--orange); color: var(--bg); }
+.isl-btn-text { padding: 0 4px; color: var(--ink-2); font-weight: 500; }
+.isl-btn-text:hover { color: var(--ink); }
+.isl-detail {
+  margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--raised); color: var(--ink-2);
+  font: 12px/1.5 var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.isl-tag {
+  align-self: flex-start; padding: 3px 8px; border-radius: 6px; background: var(--raised); color: var(--ink-2);
+  font: 500 11px var(--font-mono); letter-spacing: .1em;
+}
 .isl-push { margin-left: auto; }
 .isl :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 

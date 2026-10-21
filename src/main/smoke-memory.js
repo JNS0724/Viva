@@ -23,7 +23,7 @@ async function configSteps(win, outDir, expect, hooks) {
   await submit(win, '帮我接入演示服务')
   const card = await until(win, `(() => { const c = document.querySelector('.confirm:not(.ask)'); return c && { title: c.querySelector('.confirm-title')?.textContent ?? '' } })()`, 'the approval card')
   expect(card.title === '接入 MCP 服务器「demo」', 'the card should say which server is set up', card)
-  await run(win, `document.querySelector('.confirm:not(.ask) .btn-ink').click()`)
+  await run(win, `document.querySelector('.confirm:not(.ask) .btn-primary').click()`)
   const names = await until(win, `(() => { const inputs = [...document.querySelectorAll('.secret input')]; return inputs.length && inputs.map((el) => el.getAttribute('aria-label')) })()`, 'the key card')
   expect(names.join() === 'DEMO_TOKEN', 'the key card should ask for the key by name', names)
   await capture(win, outDir, 'config-secret')

@@ -39,7 +39,7 @@ test('status while waiting or failed', () => {
     { type: 'permission_request', requestId: 'p', toolCall: { title: '发送邮件' }, options: [], at: T0 }])
   const failed = run([live, { type: 'error', message: 'dsh 已退出（1）' }])
 
-  assert.deepEqual(statusView(waiting, T0), { tone: 'waiting', label: '等待你确认', event: '发送邮件' })
+  assert.deepEqual(statusView(waiting, T0), { tone: 'waiting', label: '需要你确认', event: '发送邮件' })
   assert.deepEqual(statusView(failed, T0), { tone: 'error', label: '出错', event: 'dsh 已退出（1）' })
 })
 

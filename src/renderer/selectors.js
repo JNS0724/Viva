@@ -155,10 +155,13 @@ export function catMood(state) {
   return 'idle'
 }
 
+/** What waits on the user is headed alike wherever it shows: the thread's card, the island, the status (prompt-card.js). */
+export const PROMPT_HEADS = Object.freeze({ permission: '需要你确认', question: '需要你回答', secret: '需要你填写' })
+
 /** Copy and tone for the avatar/status island. */
 export function statusView(state, now = Date.now()) {
-  if (state.phase === 'waiting') return { tone: 'waiting', label: '等待你确认', event: truncate(state.permission?.title, EVENT_LIMIT) }
-  if (state.phase === 'asking') return { tone: 'waiting', label: '等你回答', event: truncate(state.question?.questions[0]?.question, EVENT_LIMIT) }
+  if (state.phase === 'waiting') return { tone: 'waiting', label: PROMPT_HEADS.permission, event: truncate(state.permission?.title, EVENT_LIMIT) }
+  if (state.phase === 'asking') return { tone: 'waiting', label: PROMPT_HEADS.question, event: truncate(state.question?.questions[0]?.question, EVENT_LIMIT) }
   if (state.phase === 'working') return { tone: 'working', label: '工作中', event: workingEvent(state, now) }
   if (state.phase === 'error') return { tone: 'error', label: '出错', event: truncate(state.error, EVENT_LIMIT) }
   if (state.info.mode === 'connecting') return { tone: 'pending', label: '连接中', event: 'DEEPSEEK HARNESS' }
