@@ -46,21 +46,34 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     return true
   }
 
-  /** The running turn goes on in the background; `text` goes as the next question. Failing that, into the turn. */
-  async function moveAndAsk(text) {
+  /** The running turn goes on in the background; with `text`, those words are what moved it. */
+  async function move(text) {
     const target = spinOffTarget(getState())
-    if (!target || holding) return steer(text)
+    if (!target || holding) return { ok: false, reason: 'idle' }
     holding = { keeps: ofTask, events: [] }
-    const result = await call(() => api.spinOffTask({ ...target, text }))
+    const result = await call(() => api.spinOffTask(text === null ? target : { ...target, text }))
     if (result.ok) {
       dispatch({ type: 'task_spun', task: result.task, conversation: result.conversation, info: result.info, folds: result.folds, at: Date.now(), text })
+    } else {
+      console.warn('[tasks] could not move the turn to the background:', result.problem ?? result.reason)
     }
     release().forEach(deliver)
+    return result
+  }
+
+  /** The running turn goes on in the background; `text` goes as the next question. Failing that, into the turn. */
+  async function moveAndAsk(text) {
+    const result = await move(text)
     if (result.ok) return ask(text)
     // Idle: the turn ended meanwhile, and steering sends the words as the next question.
-    console.warn('[tasks] could not move the turn to the background:', result.problem ?? result.reason)
     if (result.problem) showToast(`${MOVE_FAILED}：${result.problem}`)
     return steer(text)
+  }
+
+  /** 放到后台 on the island (D): the turn goes on in the background, and the conversation is free. */
+  async function moveToBackground() {
+    const result = await move(null)
+    if (!result.ok && result.problem) showToast(`没能放到后台：${result.problem}`)
   }
 
   /**
@@ -138,6 +151,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   return {
     hold,
     moveAndAsk,
+    moveToBackground,
     ended,
     undoMove,
     stopTask,

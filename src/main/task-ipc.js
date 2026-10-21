@@ -21,10 +21,13 @@ const titleOf = (words) => {
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
 }
 
-/** words: what started the running turn; keep: saved messages before it; text: the words about something else. */
+/**
+ * words: what started the running turn; keep: saved messages before it; text: the words about something
+ * else, or none when the turn is just put in the background (the island's 放到后台).
+ */
 function checked(request) {
-  const { words, keep, text } = request ?? {}
-  if (!isText(words) || !isCount(keep) || !isText(text)) throw new Error('invalid task request')
+  const { words, keep, text = null } = request ?? {}
+  if (!isText(words) || !isCount(keep) || (text !== null && !isText(text))) throw new Error('invalid task request')
   return { words, keep, text }
 }
 
@@ -60,7 +63,7 @@ export function registerTaskIpc(ipcMain, { db, current, setCurrent, isBusy, setB
     const { mode, model } = { ...agentInfo(), ...spun.info }
     const next = db.save(
       db.create({ sessionId: spun.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId }),
-      [...kept, { role: 'user', text, receipt: null }],
+      text === null ? kept : [...kept, { role: 'user', text, receipt: null }],
     )
     db.fold(previous.id, { into: next.id, at: keep, kind: 'task' })
     setCurrent(next)

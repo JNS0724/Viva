@@ -132,8 +132,21 @@ function hasPanel(view, host) {
   return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || Boolean(view.background?.items.length))
 }
 
+/** How long a turn runs before the opened island offers it the background (D). */
+export const OFFER_MS = 30_000
+
+/** Whether the opened island offers the turn the background: one that has run a while, with words to move by. */
+export function offersBackground(view, now) {
+  return view.form === 'working' && Boolean(view.movable) && now - (view.startedAt ?? now) >= OFFER_MS
+}
+
+/** 这件要一会儿: not asked, only there for whoever opens the island while waiting (D). */
+const offerRow = (act) => h('div', { class: 'isl-offer' },
+  h('span', { text: '这件要一会儿。放到后台，你先忙别的？' }),
+  button('放到后台', 'isl-btn-blue isl-push', () => act({ kind: 'background' })))
+
 /** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far, then the tasks. */
-function panelParts(view, host, act, shortcut) {
+function panelParts(view, host, act, shortcut, offer) {
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
   if (host === 'desk') return coachPanel(act, shortcut)
@@ -144,7 +157,7 @@ function panelParts(view, host, act, shortcut) {
       working ? button('停止', 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
       button('查看完整过程 →', ROLE.text, () => act({ kind: 'trace' }))),
   ] : []
-  return [...steps, backgroundSection(view, act)]
+  return [...steps, offer ? offerRow(act) : null, backgroundSection(view, act)]
 }
 
 const tool = (label, cls, onClick, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
@@ -174,10 +187,10 @@ function headAction(view, host, unfolds) {
  * What an update has to redraw. The row (head and tools) follows the pointer as well; the panel does not, so
  * the tools appearing under a resting pointer leave its buttons alone: one held down meanwhile is the one
  * let go, and the click still happens.
- * @param {object} view @param {boolean} open @param {boolean} showTools
+ * @param {object} view @param {boolean} open @param {boolean} showTools @param {boolean} [offer] offersBackground
  */
-export function islandSignatures(view, open, showTools) {
-  const panel = JSON.stringify([view, open])
+export function islandSignatures(view, open, showTools, offer = false) {
+  const panel = JSON.stringify([view, open, offer])
   return { panel, row: JSON.stringify([panel, showTools]) }
 }
 
@@ -235,7 +248,8 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     const unfolds = wide || hasPanel(view, host)
     const open = unfolds && (wide || pinned || host === 'desk')
     const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
-    const next = islandSignatures(view, open, showTools)
+    const offer = host === 'bar' && open && offersBackground(view, now)
+    const next = islandSignatures(view, open, showTools, offer)
     if (next.row === signature.row) {
       const time = head.querySelector('.isl-time')
       if (time && view.form === 'working') time.textContent = elapsedSince(view, now)
@@ -257,7 +271,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
     if (panelChanged) {
-      const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut)
+      const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut, offer)
       panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
       panel.inert = !open
     }

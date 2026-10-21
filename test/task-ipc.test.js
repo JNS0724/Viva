@@ -55,6 +55,16 @@ test('words about something else move the running turn to the background; the co
   assert.equal(busy(), false, 'the conversation on screen has no turn running now')
 })
 
+test('放到后台 with no new words: the conversation goes on from before the turn, with nothing said yet', async () => {
+  const { db, call, current, busy } = setup()
+  const result = await call('task:spin-off', { words: '整理发布说明', keep: 2 })
+
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.deepEqual(db.get(current().id).messages.map((m) => m.text), ['做周报', '写好了'])
+  assert.equal(busy(), false)
+  await assert.rejects(call('task:spin-off', { words: '整理发布说明', keep: 2, text: '' }), /invalid task request/, 'words, when given, are words')
+})
+
 test('what the task says is kept in its segment; closing it ends its session', async () => {
   const { db, call, calls } = setup()
   const { task } = await call('task:spin-off', { words: '整理发布说明', keep: 2, text: '周会几点' })

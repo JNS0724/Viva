@@ -70,6 +70,21 @@ test('moved to the background: what the turn says on the way reaches the task, a
   assert.equal(win.state().tasks.undo.text, '明天周会几点？')
 })
 
+test('放到后台 with no words: the turn goes on in the background, the conversation is free, and undoing it adds nothing', async () => {
+  const requests = []
+  const win = windowWith({
+    spinOffTask: async (request) => { requests.push(request); return { ...spunReply, conversation: { ...spunReply.conversation } } },
+    undoTask: async () => ({ ok: true, info: { sessionId: 's1' }, conversation: { id: 'c1', messages: [] } }),
+  })
+  await win.actions.moveToBackground()
+
+  assert.deepEqual(requests, [{ words: WORDS, keep: 2 }])
+  assert.deepEqual([win.said.asked, win.said.steered, win.state().phase], [[], [], 'idle'])
+  assert.equal(liveTasks(win.state()).length, 1)
+  await win.actions.undoMove()
+  assert.deepEqual([win.said.steered, win.state().phase], [[], 'working'])
+})
+
 test('a move that fails leaves the turn where it was, and the words go into it', async () => {
   const win = windowWith({ spinOffTask: async () => ({ ok: false, problem: '这句话还没有保存好' }) })
   await win.actions.moveAndAsk('明天周会几点？')

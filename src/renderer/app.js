@@ -106,6 +106,11 @@ const ISLAND_ACTIONS = {
   jump: jumpToCard,
   cancel: () => isBusy(state) && handlers.cancel(),
   trace: () => handlers.openDrawer('trace'),
+  /** 放到后台, offered on the opened island once a turn runs a while (view/island-dom.js offersBackground). */
+  background: () => {
+    dispatch({ type: 'close_island' })
+    taskActions.moveToBackground()
+  },
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
   permission: ({ requestId, optionId }) => {
     const asked = [state.permission, ...liveTasks(state).map((task) => task.permission)].some((item) => item?.requestId === requestId)

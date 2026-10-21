@@ -34,6 +34,12 @@ test('idle shows the model; working shows what runs now, since when, how many st
   assert.deepEqual(working.recent.map((row) => [row.title, row.tone]), [['搜索「上海 天气」', 'done'], ['读取网页 weather.com.cn', 'working']])
 })
 
+test('a turn that runs can be put in the background once its words are saved', () => {
+  const saved = { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '早', receipt: null }, { role: 'assistant', text: '早上好', receipt: null }], savedAt: 1 }
+  assert.equal(islandView(run([live, saved, asked[1]])).movable, true)
+  assert.equal(islandView(run(asked)).movable, undefined, 'not before the conversation is saved')
+})
+
 test('only the last few steps come along', () => {
   const many = Array.from({ length: 7 }, (_, i) => tool(`t${i}`, `第 ${i} 步`, 'completed'))
   const view = islandView(run([...asked, ...many]))
