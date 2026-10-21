@@ -197,9 +197,19 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     pointerTimer = setInterval(checkPointer, POINTER_MS)
   }
 
+  /**
+   * Gone, the island's window is closed rather than hidden, and made anew when it comes back. On Windows a
+   * transparent window hidden and shown again lost its left button presses (found by DeepSeek at 175%); a new
+   * one takes them, as the first one did.
+   */
   function hide() {
     clearInterval(pointerTimer)
-    if (alive() && win.isVisible()) win.hide()
+    if (!alive()) return
+    win.destroy()
+    win = null
+    islandRect = null
+    drag = null
+    hovering = false
   }
 
   function refresh() {

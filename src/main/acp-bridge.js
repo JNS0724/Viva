@@ -12,7 +12,7 @@ import { describeConfig, describeError } from './session-info.js'
 const STDERR_TAIL_LIMIT = 4000
 /** dsh gets this long to finish after its input closes, then its process tree is ended; then killed outright. */
 const SHUTDOWN_GRACE_MS = 1500
-const CLIENT_INFO = { name: 'viva', version: '0.3.0-beta.3' }
+const CLIENT_INFO = { name: 'viva', version: '0.3.0-beta.4' }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
 const NO_MCP = () => []
 

@@ -107,8 +107,11 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     setIgnoreMouseEvents(value) { this.ignoring.push(value) }
     loadFile() {}
     on(event, callback) { this.handlers[event] = callback }
-    isDestroyed() { return false }
-    destroy() {}
+    isDestroyed() { return Boolean(this.destroyed) }
+    destroy() {
+      this.destroyed = true
+      this.visible = false
+    }
     isVisible() { return this.visible }
     showInactive() { this.visible = true }
     hide() { this.visible = false }
@@ -295,6 +298,21 @@ test('hidden from its menu, the island stays away until the window is next close
   assert.equal(win.visible, false)
   desk.setAway(false)
   desk.setAway(true)
-  assert.equal(win.visible, true, 'back once the window is closed again')
+  assert.equal(env.windows.at(-1).visible, true, 'back once the window is closed again')
+  desk.destroy()
+})
+
+test('gone and back, the island is a new window, letting the pointer through until it is over the island', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  desk.setView(view('waiting'))
+  const [first] = env.windows
+  desk.setAway(false)
+  assert.equal(first.isDestroyed(), true, 'closed, not hidden: on Windows a hidden one shown again lost its left button presses')
+  desk.setAway(true)
+  const second = env.windows.at(-1)
+  assert.notEqual(second, first)
+  assert.deepEqual([second.visible, second.ignoring], [true, [true]])
   desk.destroy()
 })
