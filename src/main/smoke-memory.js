@@ -260,6 +260,88 @@ async function workDirSteps(win, outDir, expect, hooks) {
   await dropSteps(win, outDir, expect)
 }
 
+const FIRST_ASK = '第一问：蓝色的伞'
+const SECOND_ASK = '第二问：红色的伞'
+const EDITED_ASK = '第二问：绿色的伞'
+
+/**
+ * 改了重发 on what the user said: the bubble turns into an editor in place with what follows dimmed; sent, the
+ * agent goes back to before it (the model no longer sees the old words), and what followed folds there.
+ */
+async function rewindSteps(win, outDir, expect, hooks) {
+  for (const text of [FIRST_ASK, SECOND_ASK]) {
+    await submit(win, text)
+    await finishTurn(win)
+  }
+  await wait(UI_WAIT_MS)
+  const opened = await run(win, `(() => {
+    const row = [...document.querySelectorAll('#thread .msg-user-row')].find((el) => el.querySelector('.msg-user')?.textContent === ${JSON.stringify(SECOND_ASK)})
+    if (!row) return { bars: document.querySelectorAll('#thread .rewind-bar').length }
+    ;[...row.querySelectorAll('.rewind-act')].find((el) => el.textContent.includes('改了重发')).click()
+    return { bars: document.querySelectorAll('#thread .rewind-bar').length }
+  })()`)
+  const editing = await until(win, `(() => {
+    const field = document.querySelector('#thread .rewind-field')
+    return field && { value: field.value, focused: document.activeElement === field, dimmed: document.querySelectorAll('#thread .rewind-dim').length }
+  })()`, 'the editor in place')
+  expect(editing.value === SECOND_ASK && editing.focused && editing.dimmed > 0, 'the message should turn into an editor with the keyboard, what follows dimmed', { opened, editing })
+  await capture(win, outDir, 'rewind-edit')
+
+  await run(win, `(() => {
+    const field = document.querySelector('#thread .rewind-field')
+    field.value = ${JSON.stringify(EDITED_ASK)}
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  })()`)
+  await until(win, `[...document.querySelectorAll('#thread .msg-user')].some((el) => el.textContent === ${JSON.stringify(EDITED_ASK)})`, 'the edited words sent')
+  await finishTurn(win)
+  await wait(UI_WAIT_MS)
+  const after = await run(win, `({
+    asked: [...document.querySelectorAll('#thread .msg-user')].map((el) => el.textContent),
+    fold: document.querySelector('#thread .fold')?.textContent ?? '',
+    editor: Boolean(document.querySelector('#thread .rewind-editor')),
+  })`)
+  expect(after.asked.includes(FIRST_ASK) && after.asked.includes(EDITED_ASK) && !after.asked.includes(SECOND_ASK) && !after.editor,
+    'the edited words should replace the old ones, what came before kept', after)
+  expect(after.fold.includes('另一条路') && after.fold.includes('2 条消息'), 'the old path should fold where it went another way', after.fold)
+  // The first request with the new words is the agent answering them (the memory pass after a turn comes later).
+  const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(EDITED_ASK)) ?? ''
+  expect(answering.includes(FIRST_ASK) && !answering.includes(SECOND_ASK), 'the agent should no longer see the old words',
+    { found: Boolean(answering), first: answering.includes(FIRST_ASK), old: answering.includes(SECOND_ASK) })
+  await run(win, `document.querySelector('#thread .fold')?.scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'rewind-folded')
+  await switchBackSteps(win, outDir, expect, hooks)
+}
+
+const BACK_ASK = '回到红色那条接着说'
+
+/** The folded path opens in place to be read; switched to, it is the conversation again, the agent with it. */
+async function switchBackSteps(win, outDir, expect, hooks) {
+  const foldAct = (label) => `[...document.querySelectorAll('#thread .fold .fold-act')].find((el) => el.textContent === ${JSON.stringify(label)}).click()`
+  await run(win, foldAct('展开看看'))
+  const body = await until(win, `document.querySelector('#thread .fold-body')?.textContent ?? null`, 'the folded path opened')
+  expect(body.includes(SECOND_ASK), 'opened, the folded path should show what it holds', body.slice(0, 80))
+  await run(win, `document.querySelector('#thread .fold').scrollIntoView({ block: 'start' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'rewind-fold-open')
+
+  await run(win, foldAct('切到这条路'))
+  await until(win, `[...document.querySelectorAll('#thread > .msg-user-row .msg-user, #thread > .msg-user')].some((el) => el.textContent === ${JSON.stringify(SECOND_ASK)})`, 'the old path on screen again')
+  const back = await run(win, `({
+    asked: [...document.querySelectorAll('#thread .msg-user')].filter((el) => !el.closest('.fold-body')).map((el) => el.textContent),
+    fold: document.querySelector('#thread .fold')?.textContent ?? '',
+  })`)
+  expect(back.asked.includes(SECOND_ASK) && !back.asked.includes(EDITED_ASK) && back.fold.includes('2 条消息'),
+    'switched back, the old words should be on screen and the edited path folded in their place', back)
+
+  await submit(win, BACK_ASK)
+  await finishTurn(win)
+  const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(BACK_ASK)) ?? ''
+  expect(answering.includes(SECOND_ASK) && !answering.includes(EDITED_ASK), 'the agent should go on from the old path',
+    { found: Boolean(answering), old: answering.includes(SECOND_ASK), edited: answering.includes(EDITED_ASK) })
+  await capture(win, outDir, 'rewind-switched')
+}
+
 /** Something held over the window says letting go works there; what is not a folder on disk is turned down. */
 async function dropSteps(win, outDir, expect) {
   const held = await run(win, `(() => {
@@ -287,6 +369,7 @@ export async function checkMemory(win, outDir, hooks = {}) {
     await steps(win, outDir, expect, hooks)
     await crashSteps(win, outDir, expect, hooks)
     await workDirSteps(win, outDir, expect, hooks)
+    await rewindSteps(win, outDir, expect, hooks)
   } catch (err) {
     failures.push(`memory: ${err instanceof Error ? err.message : String(err)}`)
   }

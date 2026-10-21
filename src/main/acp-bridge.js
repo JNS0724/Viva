@@ -229,11 +229,12 @@ export function createAcpBridge({
    * Goes back to before the `before`-th user message (everything so far when omitted), optionally in another
    * directory, and goes on there: the plugin writes the new session, this side resumes it. The session left
    * behind stays as it was.
-   * @param {{ before?: number, cwd?: string }} [request]
+   * Or to before the turn where the user said `words` (the `occurrence`-th such turn from the end, 0 the last).
+   * @param {{ before?: number, words?: string, occurrence?: number, cwd?: string }} [request]
    * @returns {Promise<{ ok: boolean, reason?: string, info?: object }>}
    */
-  async function fork({ before, cwd: targetCwd } = {}) {
-    const result = await forking.fork({ before, cwd: targetCwd })
+  async function fork({ before, words, occurrence, cwd: targetCwd } = {}) {
+    const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
     if (!result.ok) return result
     return { ok: true, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
   }

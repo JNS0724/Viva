@@ -41,6 +41,19 @@ function backgroundOf(texts) {
   return `我已经了解你的背景（${parts.join('、')}）。`
 }
 
+/** The text of the user's messages at the end of the request (this turn's), oldest first. */
+function trailingUserTexts(messages) {
+  let start = messages.length
+  while (start > 0 && messages[start - 1].role === 'user') start -= 1
+  return messages.slice(start).flatMap(textParts)
+}
+
+/**
+ * The user's words: the first text of the turn's user messages that is not the memory block. What dsh and the
+ * plugins add (the block, notices) comes after them, in the same message or, in a forked session, in others.
+ */
+const questionOf = (messages) => trailingUserTexts(messages).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? ''
+
 function lastToolUse(messages) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const use = partsOf(messages[i]).find((part) => part.type === 'tool_use')
@@ -119,8 +132,8 @@ export function decide(request) {
   const last = messages[messages.length - 1]
   const result = partsOf(last).find((part) => part.type === 'tool_result')
   if (result) return afterTool(messages, result)
-  const texts = textParts(last)
-  const question = texts[0] ?? ''
+  const texts = trailingUserTexts(messages)
+  const question = questionOf(messages)
   const remember = REMEMBER.exec(question)
   if (remember) {
     const text = remember[1].trim()

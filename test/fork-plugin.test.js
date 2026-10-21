@@ -41,6 +41,28 @@ test('going back before a message leaves it and what followed out of what the mo
   assert.ok(seen.includes('第三句：回到报表'))
 })
 
+test('going back to the words the user said finds that turn from the end, past repeats', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const { llm, bridge } = await setup(t)
+  const agent = bridge()
+  await agent.start()
+  await agent.prompt('再说一遍')
+  await agent.prompt('中间这句：蓝色雨伞')
+
+  const forked = await agent.fork({ words: '中间这句：蓝色雨伞' })
+  assert.equal(forked.ok, true, JSON.stringify(forked))
+  await agent.prompt('换个说法：红色雨伞')
+  const seen = requestFor(llm, '换个说法：红色雨伞')
+  assert.ok(seen.includes('再说一遍') && !seen.includes('蓝色雨伞'), 'cut before the turn with those words, the one before it kept')
+
+  await agent.prompt('再说一遍')
+  const earliest = await agent.fork({ words: '再说一遍', occurrence: 1 })
+  assert.equal(earliest.ok, true, JSON.stringify(earliest))
+  await agent.prompt('从头来：绿色雨伞')
+  assert.ok(!requestFor(llm, '从头来：绿色雨伞').includes('再说一遍'), 'the second match from the end is the first turn')
+
+  assert.deepEqual(await agent.fork({ words: '没人说过这句' }), { ok: false, reason: 'invalid' })
+})
+
 test('forked into another directory, the session works there and keeps the conversation', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { dir, llm, bridge } = await setup(t)
   const other = path.join(dir, 'other-project')

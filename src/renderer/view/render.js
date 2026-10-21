@@ -9,6 +9,7 @@ import { icon } from './icons.js'
 import { renderIsland } from './island.js'
 import { renderModelPicker } from './model-picker.js'
 import { renderProfilePanel } from './profile-panel.js'
+import { renderRewindConfirm } from './rewind.js'
 import { renderSettings } from './settings.js'
 import { renderThread } from './thread.js'
 import { renderWorkDir } from './workdir.js'
@@ -125,6 +126,7 @@ export function render(dom, state, handlers, now = Date.now()) {
   dom.openProfile.setAttribute('aria-pressed', String(state.memory.open))
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
+  renderRewindConfirm(dom.rewindConfirm, state, handlers)
 }
 
 /** Per-frame update while text is being typed out: only the thread and the status island. */

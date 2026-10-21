@@ -8,6 +8,7 @@ import { islandView } from './island-view.js'
 import { answersFrom } from './question-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
+import { createRewindActions } from './rewind-actions.js'
 import { createTimelineActions } from './timeline-actions.js'
 import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.js'
@@ -38,6 +39,7 @@ const dom = {
   workdirArea: document.querySelector('.workdir-area'),
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
+  rewindConfirm: byId('rewind-confirm-root'),
   toggleDrawer: byId('toggle-drawer'),
   openSettings: byId('open-settings'),
   settings: byId('settings-root'),
@@ -127,7 +129,7 @@ async function loadHistory() {
   try {
     const saved = await api.loadHistory()
     if (!saved) return
-    dispatch({ type: 'history_loaded', conversationId: saved.id, messages: saved.messages, savedAt: saved.updatedAt })
+    dispatch({ type: 'history_loaded', conversationId: saved.id, messages: saved.messages, savedAt: saved.updatedAt, folds: saved.folds ?? [] })
     dom.follower.jumpToLatest()
     historyActions.loadTrace(saved.id)
   } catch (err) {
@@ -251,6 +253,7 @@ async function provideSecrets(values) {
 }
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
+const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
@@ -270,6 +273,8 @@ const handlers = {
   ...extensionActions,
   ...modelActions,
   ...filesActions,
+  /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
+  ...rewindActions,
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     const text = dom.input.value.trim()
@@ -443,7 +448,9 @@ const isHistoryShortcut = (event) => (event.metaKey || event.ctrlKey) && event.k
 
 /** Escape closes the innermost thing that is open. */
 function closeTopmost() {
-  if (state.workDir.confirm) workDirActions.cancelConfirm()
+  if (state.rewind.confirm) rewindActions.cancelRewindConfirm()
+  else if (state.rewind.editing) rewindActions.cancelEdit()
+  else if (state.workDir.confirm) workDirActions.cancelConfirm()
   else if (state.workDir.menu) workDirActions.closeMenu()
   else if (state.settings.open) dispatch({ type: 'settings_close' })
   else if (state.memory.open) dispatch({ type: 'memory_close' })

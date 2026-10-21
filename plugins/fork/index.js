@@ -42,6 +42,36 @@ function boundaryOf(events, before) {
   return start === 0 ? undefined : start - 1
 }
 
+const WORD_EVENTS = new Set(['agent/inbox/spliced', 'user/message'])
+
+/**
+ * The turn each of the user's words belongs to: what reaches the inbox just before a turn starts is that turn's,
+ * anything else the turn under way's (words said while it works, the context dsh adds).
+ * @returns {string[]} per turn, its words' events as JSON
+ */
+function wordsByTurn(events) {
+  const turns = []
+  let current = -1
+  events.forEach((event, i) => {
+    if (event.type === 'turn/start') current += 1
+    if (!WORD_EVENTS.has(event.type)) return
+    let next = i + 1
+    while (events[next]?.type === 'agent/inbox/spliced') next += 1
+    const turn = event.type === 'agent/inbox/spliced' && events[next]?.type === 'turn/start' ? current + 1 : current
+    if (turn >= 0) turns[turn] = `${turns[turn] ?? ''}${JSON.stringify(event.data)}`
+  })
+  return turns
+}
+
+/** The index of the `occurrence`-th turn from the end in which the user said `words`. */
+function turnWithWords(events, words, occurrence) {
+  const needle = JSON.stringify(words).slice(1, -1)
+  const matches = wordsByTurn(events).flatMap((json, turn) => (json?.includes(needle) ? [turn] : []))
+  const turn = matches.at(-1 - occurrence)
+  if (turn === undefined) throw refuse(REASONS.invalid, 'no turn with those words')
+  return turn
+}
+
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {object} _config
@@ -52,11 +82,11 @@ export function apply(ctx, _config, port = process) {
     log('dsh was not started by the app: nothing to fork for')
     return
   }
-  async function fork({ sessionId, before, cwd }) {
+  async function fork({ sessionId, before, words, occurrence = 0, cwd }) {
     const source = ctx.sessions.get(sessionId)
     if (!source) throw refuse(REASONS.missing, `no live session ${sessionId}`)
     const events = source.snapshotEvents()
-    const boundary = boundaryOf(events, before)
+    const boundary = boundaryOf(events, words === undefined ? before : turnWithWords(events, words, occurrence))
     const childId = `fork-${randomUUID()}`
     const seed = boundary === undefined ? [] : ownMarkers(buildForkSeed(events, boundary), source.id, childId)
     // Made by dsh's agent factory, which stores a seeded session as its own fork children are stored, then let go

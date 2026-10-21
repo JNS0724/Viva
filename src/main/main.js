@@ -17,6 +17,7 @@ import { registerExtensionsIpc } from './extensions-ipc.js'
 import { registerFilesIpc } from './files-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
+import { registerRewindIpc } from './rewind-ipc.js'
 import { registerWorkDirIpc } from './work-dir-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.js'
@@ -650,6 +651,24 @@ function openHistory(config) {
     switchAgent,
     chooseExportPath,
   })
+  registerRewindIpc(ipcMain, {
+    db: historyDb,
+    current: () => conversation,
+    setCurrent: (next) => { conversation = next },
+    isBusy: () => turn.active,
+    agentInfo: () => lastInfo,
+    forkAgent: forkBack,
+    switchAgent,
+    traceDb: () => traceDb,
+  })
+}
+
+/** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
+async function forkBack(request) {
+  if (!bridge) return { ok: false, reason: 'unavailable' }
+  const forked = await bridge.fork(request)
+  if (forked.ok) lastInfo = { ...forked.info, remembersHistory: true }
+  return forked
 }
 
 /** Run from the repository, the app shows its own icon instead of Electron's. */
