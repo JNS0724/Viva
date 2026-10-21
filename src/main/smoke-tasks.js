@@ -61,6 +61,25 @@ async function moveSteps(win, outDir, expect, hooks) {
   await run(win, `document.querySelector('#thread .fold-task').scrollIntoView({ block: 'start' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-moved')
+  await drawerSteps(win, outDir, expect)
+}
+
+/** The task's own tab in the drawer shows what it did, apart from the conversation's 过程. */
+async function drawerSteps(win, outDir, expect) {
+  await run(win, `(() => {
+    if (document.getElementById('drawer').dataset.open !== 'true') document.getElementById('toggle-drawer').click()
+  })()`)
+  await until(win, `document.querySelector('#drawer .tab-task')`, 'the task\'s tab in the drawer')
+  await run(win, `document.querySelector('#drawer .tab-task').click()`)
+  await wait(UI_WAIT_MS)
+  const shown = await run(win, `({
+    tab: document.querySelector('#drawer .tab[aria-selected="true"]')?.textContent ?? '',
+    trace: [...document.querySelectorAll('#drawer .trace-title')].map((el) => el.textContent),
+  })`)
+  expect(shown.tab === `#${BUSY_ASK}` && shown.trace.some((title) => title.includes('viva_mcp_add') || title.includes('请求你确认')),
+    'the task\'s tab should show what the task did', shown)
+  await capture(win, outDir, 'tasks-drawer')
+  await run(win, `[...document.querySelectorAll('#drawer .tab')].find((el) => el.textContent === '过程').click()`)
 }
 
 async function undoSteps(win, outDir, expect) {

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { liveTasks, routeOf, spinOffTarget, taskMessages } from '../src/renderer/tasks-state.js'
+import { liveTasks, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 const run = (actions, start = initialState) => actions.reduce((state, action) => reduce(state, action), start)
@@ -87,6 +87,17 @@ test('a task\'s question is answered in the task, not in the conversation on scr
   assert.deepEqual([task.status, task.question], ['running', null])
   assert.equal(taskMessages(task).at(-1).text, '上海')
   assert.deepEqual(answered.messages.map((m) => m.text), ['做周报', '写好了'], 'the conversation on screen is left alone')
+})
+
+test('a task has its own tab in the drawer, showing what it did', () => {
+  const state = spun(working())
+  const tab = taskTab('s1')
+  assert.equal(taskOfTab(state, tab).id, 's1')
+  assert.equal(taskOfTab(state, 'trace'), null)
+  assert.equal(taskOfTab(state, taskTab('gone')), null)
+  assert.equal(reduce(state, { type: 'open_drawer', tab }).drawer, tab)
+  const closed = reduce(reduce(state, { type: 'open_drawer', tab }), { type: 'task_closed', taskId: 's1' })
+  assert.equal(closed.drawer, 'trace', 'its tab gone, the drawer shows the conversation\'s')
 })
 
 test('undone, the turn is on screen again with what it said since, still running', () => {

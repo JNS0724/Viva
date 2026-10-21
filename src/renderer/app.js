@@ -10,7 +10,7 @@ import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createRewindActions } from './rewind-actions.js'
 import { createTaskActions } from './task-actions.js'
-import { liveTasks, routeOf } from './tasks-state.js'
+import { liveTasks, routeOf, taskTab } from './tasks-state.js'
 import { createTimelineActions } from './timeline-actions.js'
 import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.js'
@@ -106,6 +106,8 @@ const ISLAND_ACTIONS = {
   jump: jumpToCard,
   cancel: () => isBusy(state) && handlers.cancel(),
   trace: () => handlers.openDrawer('trace'),
+  /** A task's line in the island's 后台 list: what it did, in its tab of the drawer. */
+  task: ({ taskId }) => handlers.openDrawer(taskTab(taskId)),
   /** 放到后台, offered on the opened island once a turn runs a while (view/island-dom.js offersBackground). */
   background: () => {
     dispatch({ type: 'close_island' })

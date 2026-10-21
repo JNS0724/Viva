@@ -27,7 +27,8 @@ function itemLine(item, act) {
   const asks = item.permission
   const now = asks ? `想${asks.title}` : item.status === 'waiting' ? '在等你回答，打开窗口看看' : item.now ? `在${item.now}` : '在做'
   return h('li', { class: 'isl-bg-item', 'data-status': item.status },
-    h('span', { class: 'isl-bg-mid' },
+    // The line opens what the task did, in the drawer.
+    h('button', { type: 'button', class: 'isl-bg-mid', title: '查看过程', onClick: () => act({ kind: 'task', taskId: item.id }) },
       h('b', { text: `#${item.title}` }),
       h('span', { text: now })),
     ...(asks ? asks.options.map((option) => h('button', {

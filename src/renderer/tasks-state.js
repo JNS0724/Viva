@@ -36,6 +36,14 @@ function settled(task) {
 }
 
 export const liveTasks = (state) => state.tasks.list.filter((task) => LIVE.has(task.status))
+
+/** A task's tab in the drawer (view/drawer.js): what it did, as the 过程 tab shows the conversation's. */
+const TAB_PREFIX = 'task:'
+export const taskTab = (taskId) => `${TAB_PREFIX}${taskId}`
+export function taskOfTab(state, tab) {
+  if (!tab?.startsWith(TAB_PREFIX)) return null
+  return state.tasks.list.find((task) => task.id === tab.slice(TAB_PREFIX.length)) ?? null
+}
 export const taskMessages = (task) => task.view.messages.map(({ role, text }) => ({ role, text }))
 
 const startsTurn = (message) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
@@ -140,9 +148,12 @@ export function taskActions(handlers) {
       }
     },
 
-    task_closed: (state, { taskId }) => withTasks(state, {
-      list: state.tasks.list.filter((task) => task.id !== taskId),
-      finished: state.tasks.finished?.taskId === taskId ? null : state.tasks.finished,
+    task_closed: (state, { taskId }) => ({
+      ...withTasks(state, {
+        list: state.tasks.list.filter((task) => task.id !== taskId),
+        finished: state.tasks.finished?.taskId === taskId ? null : state.tasks.finished,
+      }),
+      drawer: state.drawer === taskTab(taskId) ? 'trace' : state.drawer,
     }),
   }
 }

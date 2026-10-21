@@ -375,6 +375,9 @@ html:not([data-platform="darwin"]) {
 .tabs { flex: 1; display: flex; gap: 4px; padding: 4px; background: var(--panel-2); border-radius: 12px; }
 .tab { flex: 1; height: 34px; border: none; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; background: transparent; color: var(--ink-2); }
 .tab[aria-selected="true"] { background: var(--accent); color: var(--bg); }
+/* A task's tab (view/drawer.js): as narrow as its name allows; with many, the row scrolls. */
+.tabs:has(.tab-task) { overflow-x: auto; scrollbar-width: none; }
+.tab-task { flex: 0 1 auto; min-width: 4em; max-width: 9em; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .drawer-body > .row-between .label { color: var(--ink-3); }
 
