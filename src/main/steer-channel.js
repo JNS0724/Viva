@@ -26,8 +26,8 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS 
     entry.resolve(result)
   }
 
-  function steer(text) {
-    const session = sessionId()
+  /** @param {string} text @param {string | null} [session] the turn to steer: the main conversation's, or a background task's */
+  function steer(text, session = sessionId()) {
     if (!session) return Promise.resolve({ ok: false, reason: NO_PLUGIN })
     const id = `s${++seq}-${Date.now().toString(36)}`
     return new Promise((resolve) => {

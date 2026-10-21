@@ -63,16 +63,24 @@ export function checkAnswers(questions, answers) {
 }
 
 /**
- * @param {{ send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null }} io
- *   send: to the plugin; emit: to the window; sessionId: the conversation on screen
+ * @param {{ send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null }} io
+ *   send: to the plugin; emit: to the window; sessionId: the conversation on screen; taskOf: the background
+ *   task a session is, if any (its questions go to the window as task_question)
  */
-export function createQuestionDesk({ send, emit, sessionId }) {
+export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null }) {
+  /** questionId → { question, sessionId, taskId } (taskId null for the main conversation's) */
   const pending = new Map()
+
+  const closed = (questionId, taskId) => emit(taskId ? { type: 'task_question_closed', taskId, questionId } : { type: 'question_closed', questionId })
+  const shown = (entry) => emit(entry.taskId
+    ? { type: 'task_question', taskId: entry.taskId, questionId: entry.question.id, questions: entry.question.questions }
+    : { type: 'question', questionId: entry.question.id, questions: entry.question.questions })
 
   /** A message from the plugin. */
   function receive(message) {
     if (message?.type === 'question_closed') {
-      if (pending.delete(message.id)) emit({ type: 'question_closed', questionId: message.id })
+      const entry = pending.get(message.id)
+      if (entry && pending.delete(message.id)) closed(message.id, entry.taskId)
       return
     }
     if (message?.type !== 'question') return
@@ -82,30 +90,47 @@ export function createQuestionDesk({ send, emit, sessionId }) {
       if (isText(message.id, MAX_ID_CHARS)) send({ type: 'decline', id: message.id })
       return
     }
-    // A question from a conversation that is no longer on screen cannot be answered there.
-    if (message.sessionId !== sessionId()) return send({ type: 'decline', id: question.id })
-    pending.set(question.id, question)
-    emit({ type: 'question', questionId: question.id, questions: question.questions })
+    // A question from a conversation that is neither on screen nor a background task cannot be answered.
+    const taskId = message.sessionId === sessionId() ? null : taskOf(message.sessionId)
+    if (message.sessionId !== sessionId() && !taskId) return send({ type: 'decline', id: question.id })
+    const entry = { question, sessionId: message.sessionId, taskId }
+    pending.set(question.id, entry)
+    shown(entry)
   }
 
   /** @returns {boolean} false when the question is no longer waiting */
   function answer(questionId, answers) {
-    const question = pending.get(questionId)
-    if (!question) return false
-    const checked = checkAnswers(question.questions, answers)
+    const entry = pending.get(questionId)
+    if (!entry) return false
+    const checked = checkAnswers(entry.question.questions, answers)
     pending.delete(questionId)
     send({ type: 'answer', id: questionId, answers: checked })
     return true
   }
 
-  /** The conversation is left (or dsh is going away): whatever was still asked goes unanswered. */
-  function declineAll() {
-    for (const questionId of [...pending.keys()]) {
+  function decline(keep) {
+    for (const [questionId, entry] of [...pending]) {
+      if (keep(entry)) continue
       pending.delete(questionId)
       send({ type: 'decline', id: questionId })
-      emit({ type: 'question_closed', questionId })
+      closed(questionId, entry.taskId)
     }
   }
 
-  return { receive, answer, declineAll }
+  /** The conversation on screen is left (or dsh is going away): what it still asked goes unanswered; tasks' stay. */
+  const declineAll = () => decline((entry) => entry.taskId !== null)
+  /** A background task is closed: what it still asked goes unanswered. */
+  const declineTask = (taskId) => decline((entry) => entry.taskId !== taskId)
+
+  /** The turn asking became a background task: its questions are the task's now. */
+  function moveToTask(fromSessionId, taskId) {
+    for (const entry of pending.values()) {
+      if (entry.sessionId !== fromSessionId || entry.taskId) continue
+      closed(entry.question.id, null)
+      entry.taskId = taskId
+      shown(entry)
+    }
+  }
+
+  return { receive, answer, declineAll, declineTask, moveToTask }
 }
