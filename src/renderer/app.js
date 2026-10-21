@@ -38,7 +38,6 @@ const dom = {
   workdirArea: document.querySelector('.workdir-area'),
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
-  newSession: byId('new-session'),
   toggleDrawer: byId('toggle-drawer'),
   openSettings: byId('open-settings'),
   settings: byId('settings-root'),
@@ -168,7 +167,20 @@ const historyActions = createHistoryActions({
     dom.follower.jumpToLatest()
     dom.input.focus()
   },
+  jumpTo: (hit) => timelineActions.jumpTo(hit),
 })
+
+/** How long a message found by search stays marked after the timeline scrolls to it. */
+const FOUND_MS = 2400
+
+/** Scrolls a message of the timeline (its `data-msg`, view/thread.js markMessage) to the middle and marks it a moment. */
+function revealMessage(msgId) {
+  const row = dom.scroll.querySelector(`[data-msg="${CSS.escape(msgId)}"]`)
+  if (!row) return
+  row.scrollIntoView({ block: 'center' })
+  row.classList.add('msg-found')
+  setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
+}
 
 /**
  * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
@@ -244,7 +256,7 @@ async function provideSecrets(values) {
 }
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
-const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
+const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
@@ -419,7 +431,6 @@ function wireComposer() {
     event.preventDefault()
     handlers.send()
   })
-  dom.newSession.addEventListener('click', () => handlers.newSession())
   dom.context.addEventListener('click', () => workDirActions.toggleMenu())
   dom.openSettings.addEventListener('click', () => handlers.openSettings())
   dom.openProfile.addEventListener('click', () => (state.memory.open ? handlers.closeProfile() : handlers.openProfile()))
@@ -431,8 +442,9 @@ function wireComposer() {
   dom.historySearch.addEventListener('input', () => handlers.searchHistory(dom.historySearch.value))
 }
 
+/** ⌘ on the Mac, Ctrl elsewhere (either works on both), with `key` and no Shift. */
+const isShortcut = (event, key) => (event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === key
 const isHistoryShortcut = (event) => (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'
-const isOpenFolderShortcut = (event) => (event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === 'o'
 
 /** Escape closes the innermost thing that is open. */
 function closeTopmost() {
@@ -469,7 +481,16 @@ function wireDismissal() {
     if (isHistoryShortcut(event)) {
       event.preventDefault()
       handlers.toggleHistory()
-    } else if (isOpenFolderShortcut(event)) {
+    } else if (isShortcut(event, 'f')) {
+      // ⌘F / Ctrl+F: find anything said in the timeline.
+      event.preventDefault()
+      handlers.openSearch()
+    } else if (isShortcut(event, 'n')) {
+      // ⌘N / Ctrl+N: a new topic; what was said before stays above it in the timeline.
+      event.preventDefault()
+      if (isBusy(state)) historyActions.showToast('先停止当前任务，再开新话题')
+      else handlers.newSession()
+    } else if (isShortcut(event, 'o')) {
       // ⌘O / Ctrl+O: the system's folder dialog, as in any desktop app.
       event.preventDefault()
       if (!isBusy(state) && !state.workDir.switching) workDirActions.choose()
@@ -479,10 +500,39 @@ function wireDismissal() {
   })
 }
 
+const carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+
+/**
+ * A folder dragged onto the window: work there, as if picked in the chip's menu (the main process says
+ * what is wrong with anything else). The window says what letting go will do while it is over it.
+ */
+function wireFolderDrop() {
+  const showing = (on) => document.body.classList.toggle('drop-folder', on)
+  document.addEventListener('dragover', (event) => {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'link'
+    showing(true)
+  })
+  document.addEventListener('dragleave', (event) => {
+    if (!event.relatedTarget) showing(false)
+  })
+  document.addEventListener('drop', (event) => {
+    if (!carriesFiles(event)) return
+    event.preventDefault()
+    showing(false)
+    const files = Array.from(event.dataTransfer.files)
+    if (files.length !== 1) return historyActions.showToast('一次拖一个文件夹进来')
+    if (isBusy(state) || state.workDir.switching) return historyActions.showToast('助手正在工作，等这一轮结束再换工作目录')
+    const dir = api.pathForFile(files[0])
+    return dir ? workDirActions.switchTo(dir) : historyActions.showToast('这不是电脑上的文件夹')
+  })
+}
+
 function labelShortcuts() {
-  const shortcut = platform === 'darwin' ? '⌘K' : 'Ctrl+K'
-  dom.toggleHistory.title = `历史对话 ${shortcut}`
-  dom.toggleHistory.setAttribute('aria-label', `历史对话（${shortcut}）`)
+  const shortcut = platform === 'darwin' ? '⌘F' : 'Ctrl+F'
+  dom.toggleHistory.title = `搜索与话题 ${shortcut}`
+  dom.toggleHistory.setAttribute('aria-label', `搜索与话题（${shortcut}）`)
 }
 
 /** An MCP server that would not start is left out; say so once per connection instead of failing. */
@@ -521,6 +571,7 @@ async function boot() {
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })
   wireComposer()
   wireDismissal()
+  wireFolderDrop()
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })

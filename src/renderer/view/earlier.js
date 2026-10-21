@@ -1,6 +1,6 @@
 import { earlierRows, workspaceName } from '../selectors.js'
 import { h } from './dom.js'
-import { pastMessageView } from './thread.js'
+import { markMessage, pastMessageView } from './thread.js'
 
 /**
  * The earlier part of the one timeline, above the conversation on screen: a line for each day, a line where
@@ -18,7 +18,7 @@ function workdirLine(cwd) {
 const ROW_VIEWS = {
   day: (row) => h('div', { class: 'timeline-day', role: 'separator', text: row.label }),
   workdir: (row) => workdirLine(row.cwd),
-  message: (row, handlers) => pastMessageView(row, handlers),
+  message: (row, handlers) => markMessage(pastMessageView(row, handlers), row.id),
 }
 
 /**

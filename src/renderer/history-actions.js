@@ -8,14 +8,14 @@ const UNDO_TOAST_MS = 8000
 const fileName = (file) => String(file).split(/[\\/]/).pop()
 
 /**
- * Everything the history panel does: list, search, open, rename, pin, export, delete with undo.
+ * Everything the history panel does: list, search the timeline, open, rename, pin, export, delete with undo.
  * @param {{
  *   api: typeof window.agent, getState: () => object, dispatch: (action: object) => void,
  *   searchField: HTMLInputElement, errorMessage: (err: unknown) => string,
- *   newSession: () => Promise<void>, onOpened: () => void,
+ *   newSession: () => Promise<void>, onOpened: () => void, jumpTo: (hit: object) => Promise<boolean>,
  * }} deps
  */
-export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, newSession, onOpened }) {
+export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, newSession, onOpened, jumpTo }) {
   let toastKey = 0
   let searchTimer = 0
 
@@ -26,12 +26,13 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
     setTimeout(() => dispatch({ type: 'toast_hide', key }), ms)
   }
   const report = (what) => (err) => showToast(`${what}：${errorMessage(err)}`)
-  const findItem = (id) => [...getState().history.items, ...(getState().history.results ?? [])].find((item) => item.id === id)
+  const findItem = (id) => getState().history.items.find((item) => item.id === id)
   const closeMenu = () => dispatch({ type: 'history_menu', id: null })
 
+  /** Searching finds messages anywhere in the one timeline, not conversations (history-db.js searchMessages). */
   async function runSearch(query) {
     try {
-      dispatch({ type: 'history_results', query, results: await api.searchHistory(query.trim()) })
+      dispatch({ type: 'history_results', query, results: await api.searchTimeline(query.trim()) })
     } catch (err) {
       report('搜索失败')(err)
     }
@@ -72,6 +73,23 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
       searchField.select()
     },
     closeHistory: () => dispatch({ type: 'history_close' }),
+    /** ⌘F / Ctrl+F: the panel stays open, its field takes the words. */
+    openSearch() {
+      if (!getState().history.open) {
+        dispatch({ type: 'history_open' })
+        refresh()
+      }
+      searchField.focus()
+      searchField.select()
+    },
+    async jumpToHit(hit) {
+      dispatch({ type: 'history_close' })
+      try {
+        if (!await jumpTo(hit)) showToast('这条消息已经不在时间线上了')
+      } catch (err) {
+        report('跳转失败')(err)
+      }
+    },
 
     searchHistory(query) {
       dispatch({ type: 'history_query', query })

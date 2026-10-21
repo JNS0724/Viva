@@ -14,8 +14,6 @@ export const initialHistory = Object.freeze({
 })
 
 const withHistory = (state, changes) => ({ ...state, history: { ...state.history, ...changes } })
-const mapList = (list, fn) => (list ? list.map(fn) : list)
-const dropFrom = (list, id) => (list ? list.filter((entry) => entry.id !== id) : list)
 
 export const HISTORY_ACTIONS = {
   history_open: (state) => withHistory({ ...state, island: false, picker: false }, { open: true }),
@@ -43,18 +41,15 @@ export const HISTORY_ACTIONS = {
   history_rename_start: (state, { id }) => withHistory(state, { renaming: id, menuFor: null }),
   history_rename_end: (state) => withHistory(state, { renaming: null }),
 
-  history_item_changed: (state, { id, changes }) => {
-    const update = (entry) => (entry.id === id ? { ...entry, ...changes } : entry)
-    return withHistory(state, {
-      items: mapList(state.history.items, update),
-      results: mapList(state.history.results, update),
-      renaming: null,
-      menuFor: null,
-    })
-  },
+  history_item_changed: (state, { id, changes }) => withHistory(state, {
+    items: state.history.items.map((entry) => (entry.id === id ? { ...entry, ...changes } : entry)),
+    renaming: null,
+    menuFor: null,
+  }),
+  /** Search results are messages (timeline-search.js); a conversation gone takes its messages with it. */
   history_item_removed: (state, { id }) => withHistory(state, {
-    items: dropFrom(state.history.items, id),
-    results: dropFrom(state.history.results, id),
+    items: state.history.items.filter((entry) => entry.id !== id),
+    results: state.history.results?.filter((hit) => hit.segmentId !== id) ?? null,
     menuFor: null,
   }),
 

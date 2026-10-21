@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, finishTurn, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 
 /**
  * Smoke steps on the real dsh with the app's plugins and the fake model (test/fixtures/fake-llm.js): the
@@ -71,7 +71,7 @@ async function questionSteps(win, outDir, expect) {
 }
 
 async function steps(win, outDir, expect, hooks) {
-  await run(win, `document.getElementById('new-session').click()`)
+  await newTopic(win)
   await finishTurn(win)
   await wait(UI_WAIT_MS)
   expect(await run(win, `Boolean(document.getElementById('start-intro'))`), 'a fresh profile should offer the intro on the home page')
@@ -257,6 +257,26 @@ async function workDirSteps(win, outDir, expect, hooks) {
   expect(Boolean(box?.onTop) && box.top >= 0, 'the menu should be open on top of the window, all of it on screen', box)
   await capture(win, outDir, 'workdir-menu')
   await run(win, `document.getElementById('composer-context').click()`)
+  await dropSteps(win, outDir, expect)
+}
+
+/** Something held over the window says letting go works there; what is not a folder on disk is turned down. */
+async function dropSteps(win, outDir, expect) {
+  const held = await run(win, `(() => {
+    window.smokeDrop = new DataTransfer()
+    window.smokeDrop.items.add(new File(['x'], '不在磁盘上.txt'))
+    document.body.dispatchEvent(new DragEvent('dragover', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))
+    return document.body.classList.contains('drop-folder')
+  })()`)
+  expect(held, 'a folder held over the window should be told what letting go does')
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'workdir-drop')
+  await run(win, `document.body.dispatchEvent(new DragEvent('drop', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))`)
+  const after = await until(win, `(() => {
+    const toast = document.querySelector('.toast')?.textContent ?? ''
+    return toast && { toast, held: document.body.classList.contains('drop-folder') }
+  })()`, 'the toast for a drop that is not a folder')
+  expect(after.toast.includes('这不是电脑上的文件夹') && !after.held, 'a drop that is not a folder on disk should be turned down', after)
 }
 
 /** @returns {Promise<string[]>} failed expectations */

@@ -1,4 +1,4 @@
-import { formatListTime, historyGroups } from '../selectors.js'
+import { formatListTime, historyGroups, workspaceName } from '../selectors.js'
 import { h, label } from './dom.js'
 import { icon } from './icons.js'
 
@@ -73,13 +73,24 @@ function browseView(state, handlers, now) {
   ]
 }
 
+const SPEAKERS = { user: '你', assistant: 'Viva' }
+
+/** One message that has the words; picking it scrolls the timeline to it (timeline-search.js). */
+function hitView(hit, handlers, now) {
+  return h('li', { class: 'history-item search-hit' },
+    h('button', { class: 'history-open', type: 'button', onClick: () => handlers.jumpToHit(hit) },
+      h('span', { class: 'history-title', text: SPEAKERS[hit.role] ?? '记录' }),
+      snippetView(hit.snippet),
+      h('span', { class: 'history-meta mono', text: [formatListTime(hit.at, now), hit.cwd ? workspaceName(hit.cwd) : null].filter(Boolean).join(' · ') })))
+}
+
 function searchView(state, handlers, now) {
   const { query, results } = state.history
   if (results === null) return [h('div', { class: 'history-hint', text: '搜索中…' })]
   if (results.length === 0) return [empty(`没有找到「${query.trim()}」`)]
   return [
-    label(`${results.length} 段对话`),
-    h('ul', { class: 'history-items' }, results.map((item) => itemView(item, state, handlers, now))),
+    label(`${results.length} 条消息`),
+    h('ul', { class: 'history-items' }, results.map((hit) => hitView(hit, handlers, now))),
   ]
 }
 

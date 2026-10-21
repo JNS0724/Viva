@@ -99,6 +99,13 @@ const STILL = Object.freeze({ latest: false, mood: 'idle' })
  * receipt as plain text (its trace belongs to a session no longer on screen).
  * @param {{ id: string, role: string, text: string, receipt: object | null }} message
  */
+/** A search hit is found by its message's row (timeline-search.js); a view may be several elements, or none. */
+export function markMessage(view, id) {
+  const first = Array.isArray(view) ? view[0] : view
+  first?.setAttribute('data-msg', id)
+  return view
+}
+
 export function pastMessageView(message, handlers) {
   if (message.role === 'user') return userView(message)
   if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
@@ -212,7 +219,7 @@ export function renderThread(container, state, handlers, now) {
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
-  const views = state.messages.map((message) => MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null)
+  const views = state.messages.map((message) => markMessage(MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null, message.id))
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
     state.permission ? permissionCard(state.permission, handlers) : '',

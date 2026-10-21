@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { checkDeskAsk } from './smoke-desk.js'
-import { capture, click, finishTurn, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 import { checkMemory } from './smoke-memory.js'
 
 const BOOT_WAIT_MS = 1500
@@ -317,7 +317,7 @@ const MARKDOWN_STATE = `(() => {
 /** Markdown in an answer becomes real headings, lists, tables and code; nothing in it runs, loads or navigates. */
 async function checkMarkdown(win, outDir) {
   const failures = []
-  await click(win, 'new-session')
+  await newTopic(win)
   await wait(UI_WAIT_MS)
   await submit(win, MARKDOWN_PROMPT)
   await finishTurn(win)
@@ -391,7 +391,8 @@ async function historyPanelSteps(win, outDir, failures) {
   expect(seen.open && same(seen.titles, [SMOKE_PROMPT]) && seen.active === SMOKE_PROMPT, '⌘K should open the panel on the restored conversation', seen)
 
   await run(win, 'document.body.click()')
-  await click(win, 'new-session')
+  expect(!await run(win, `Boolean(document.getElementById('new-session'))`), 'there should be no 新对话 button; ⌘N starts a new topic', null)
+  await newTopic(win)
   await finishTurn(win)
   await submit(win, SECOND_PROMPT)
   await finishTurn(win)
@@ -409,13 +410,35 @@ async function historyPanelSteps(win, outDir, failures) {
   expect(same(seen.titles, [SECOND_PROMPT, SMOKE_PROMPT]) && seen.active === SECOND_PROMPT, 'both conversations should be listed, newest first', seen)
   await capture(win, outDir, 'history-panel')
 
+  // ⌘F searches what was said; a hit scrolls the timeline to that message and marks it.
+  await run(win, 'document.body.click()')
+  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }))`)
   await run(win, typeSearch(SEARCH_TEXT))
   await wait(UI_WAIT_MS)
   seen = await panel()
-  expect(same(seen.titles, [SMOKE_PROMPT]) && seen.marks.includes(SEARCH_TEXT), 'search should find the first conversation and highlight the hit', seen)
+  expect(seen.open && seen.titles.includes('你') && seen.marks.includes(SEARCH_TEXT), '⌘F should find the message and highlight the words', seen)
   await capture(win, outDir, 'history-search')
 
-  await run(win, `document.querySelector('.history-open').click()`)
+  await run(win, `[...document.querySelectorAll('.search-hit .history-open')].find((el) => el.querySelector('.history-title').textContent === '你').click()`)
+  await wait(UI_WAIT_MS)
+  const found = await run(win, `(() => {
+    const el = document.querySelector('.msg-found')
+    const box = el?.getBoundingClientRect()
+    const view = document.getElementById('scroll').getBoundingClientRect()
+    return {
+      text: el?.textContent ?? '', inEarlier: Boolean(el?.closest('#earlier')),
+      inView: Boolean(box && box.top >= view.top && box.bottom <= view.bottom),
+      panelOpen: document.getElementById('history-panel').dataset.open,
+    }
+  })()`)
+  expect(found.text.includes(SMOKE_PROMPT) && found.inEarlier && found.inView && found.panelOpen === 'false',
+    'a hit should scroll the earlier message into view, mark it and close the panel', found)
+  await capture(win, outDir, 'search-jump')
+
+  await run(win, typeSearch(''))
+  await click(win, 'toggle-history')
+  await wait(UI_WAIT_MS)
+  await run(win, `[...document.querySelectorAll('.history-item')].find((el) => el.querySelector('.history-title')?.textContent === ${JSON.stringify(SMOKE_PROMPT)}).querySelector('.history-open').click()`)
   await wait(UI_WAIT_MS)
   const thread = await run(win, `({
     questions: [...document.querySelectorAll('.msg-user')].map((el) => el.textContent),

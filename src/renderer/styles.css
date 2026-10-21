@@ -552,6 +552,17 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .history-snippet mark { background: rgba(90, 169, 255, .22); color: var(--ink); border-radius: 3px; padding: 0 2px; }
+/* A search hit names who said it; the words carry the line. */
+.search-hit .history-title { font-size: 12px; color: var(--ink-3); }
+.search-hit .history-snippet { font-size: 13px; color: var(--ink); }
+/* A folder held over the window (app.js wireFolderDrop): letting go works there. */
+body.drop-folder::after {
+  content: '松开，在这个文件夹里工作'; position: fixed; inset: 12px; z-index: 90; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 500; color: var(--ink);
+  border: 2px dashed rgba(90, 169, 255, .8); border-radius: 18px; background: color-mix(in srgb, var(--raised) 90%, transparent);
+}
+/* The message search jumped to, marked for a moment (app.js revealMessage). */
+.msg-found { outline: 2px solid rgba(90, 169, 255, .7); outline-offset: 4px; border-radius: 12px; transition: outline-color .6s; }
 .history-more { flex: none; width: 30px; height: 30px; margin-right: 6px; border-color: transparent; opacity: 0; }
 .history-item:hover .history-more, .history-more:focus-visible, .history-more[aria-expanded="true"] { opacity: 1; }
 .history-menu {

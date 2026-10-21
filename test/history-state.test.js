@@ -47,11 +47,9 @@ test('search results only apply to the query that is still typed', () => {
   assert.deepEqual([cleared.history.query, cleared.history.results], ['  ', null])
 })
 
-test('renaming, pinning and removing update both the list and the search results', () => {
+test('renaming and removing update the list', () => {
   const base = run([
     { type: 'history_listed', items: ITEMS, hasMore: false, append: false },
-    { type: 'history_query', query: '对话' },
-    { type: 'history_results', query: '对话', results: [ITEMS[2]] },
     { type: 'history_rename_start', id: 'c' },
   ])
 
@@ -59,8 +57,8 @@ test('renaming, pinning and removing update both the list and the search results
   const removed = reduce(renamed, { type: 'history_item_removed', id: 'c' })
 
   assert.equal(base.history.renaming, 'c')
-  assert.deepEqual([renamed.history.items[2].title, renamed.history.results[0].title, renamed.history.renaming], ['新标题', '新标题', null])
-  assert.deepEqual([removed.history.items.some((i) => i.id === 'c'), removed.history.results], [false, []])
+  assert.deepEqual([renamed.history.items[2].title, renamed.history.renaming], ['新标题', null])
+  assert.deepEqual([removed.history.items.some((i) => i.id === 'c'), removed.history.results], [false, null])
 })
 
 test('opening a conversation replaces the thread, keeps panel data, and waits for its trace', () => {

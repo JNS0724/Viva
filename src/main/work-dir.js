@@ -61,7 +61,8 @@ export function workDirProblem(dir, { platform = process.platform, home = os.hom
   const p = pathFor(platform)
   if (platform === 'win32' && /^(\\\\|\/\/)/.test(dir ?? '')) return '不支持网络路径（\\\\服务器\\共享），可以先映射成本地盘符，或者复制到本机'
   if (typeof dir !== 'string' || !dir || !p.isAbsolute(dir)) return '需要选一个文件夹的完整路径'
-  if (!isDirectory(dir)) return '这个文件夹不存在'
+  // A file dragged onto the window lands here too.
+  if (!isDirectory(dir)) return '这不是一个文件夹，或者它已经不在了'
   if (keyOf(dir, platform) === keyOf(p.parse(p.normalize(dir)).root, platform)) return '不能把整个磁盘作为工作目录，请选其中的某个文件夹'
   if (sameDir(dir, home, platform)) return '不能直接用用户主目录，请选它里面的某个文件夹'
   if (systemDirs(platform, env).some((system) => within(dir, system, platform))) return '这是系统的文件夹，不能作为工作目录'
