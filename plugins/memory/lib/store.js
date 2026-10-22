@@ -194,6 +194,10 @@ export function openMemoryDb({ file, now = Date.now }) {
   db.exec(SCHEMA)
   addLaterColumns(db)
 
+  /**
+   * A row is a record of what its query selects; each function below says what it returns.
+   * @type {Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint, lastInsertRowid: number | bigint } }>}
+   */
   const sql = {
     profile: db.prepare('SELECT field, value, source, updated_at FROM profile'),
     field: db.prepare('SELECT value, source FROM profile WHERE field = ?'),
@@ -441,6 +445,7 @@ export function openMemoryDb({ file, now = Date.now }) {
   /**
    * Marks a memory as no longer true without deleting it. Only `by: 'user'` may invalidate what the
    * user wrote; the agent never overrides the user.
+   * @param {number} id
    * @param {{ by: 'user' | 'agent', supersededBy?: number | null }} options
    * @returns the memory as it now is, or null when there is no such memory
    */

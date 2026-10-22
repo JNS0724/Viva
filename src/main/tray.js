@@ -11,7 +11,7 @@ const TOOLTIP = 'Viva'
 const iconFile = (platform) => (platform === 'darwin' ? 'trayTemplate.png' : 'tray.png')
 
 /**
- * @param {{ Tray: Function, Menu: object, nativeImage: object, iconDir: string, platform: string, onOpen: () => void, onQuit: () => void }} deps
+ * @param {{ Tray: new (image: any) => any, Menu: any, nativeImage: any, iconDir: string, platform: string, onOpen: () => void, onQuit: () => void }} deps
  * @returns {{ destroy: () => void }}
  */
 export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit }) {

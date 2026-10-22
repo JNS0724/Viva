@@ -29,6 +29,9 @@ const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'turn_e
 const STEER_LOST = '插话没有送到助手，等这一轮结束后再说一次'
 const api = window.agent
 const byId = (id) => document.getElementById(id)
+/** The fields and buttons the page reads or switches, as what they are. */
+const fieldById = (id) => /** @type {HTMLTextAreaElement & HTMLInputElement} */ (byId(id))
+const buttonById = (id) => /** @type {HTMLButtonElement} */ (byId(id))
 /** The title bar makes room for the system window buttons: traffic lights on macOS, caption buttons elsewhere. */
 const platform = api?.platform ?? 'darwin'
 document.documentElement.dataset.platform = platform
@@ -41,14 +44,14 @@ const dom = {
   thread: byId('thread'),
   drawer: byId('drawer'),
   composer: byId('composer'),
-  input: byId('composer-input'),
+  input: fieldById('composer-input'),
   routeHint: byId('route-hint'),
   /** Pictures pasted or dropped into the input, above the words (draft-images.js). */
   draftPics: byId('draft-pics'),
-  sendBtn: byId('send-btn'),
-  bgSend: byId('bg-send'),
-  context: byId('composer-context'),
-  workdirArea: document.querySelector('.workdir-area'),
+  sendBtn: buttonById('send-btn'),
+  bgSend: buttonById('bg-send'),
+  context: buttonById('composer-context'),
+  workdirArea: /** @type {HTMLElement} */ (document.querySelector('.workdir-area')),
   /** 本话题 · N 条 · 已用 X% by the input, and its menu (view/topic-label.js). */
   ctxArea: byId('ctx-area'),
   /** What the assistant may do without asking, by the input (view/permission-picker.js). */
@@ -59,10 +62,10 @@ const dom = {
   toggleDrawer: byId('toggle-drawer'),
   settings: byId('settings-root'),
   modelArea: byId('model-area'),
-  modelBtn: byId('model-btn'),
+  modelBtn: buttonById('model-btn'),
   modelMenu: byId('model-menu'),
   jumpLatest: byId('jump-latest'),
-  historySearch: byId('history-search'),
+  historySearch: fieldById('history-search'),
   historyList: byId('history-list'),
   toast: byId('toast-root'),
   openProfile: byId('open-profile'),
@@ -70,8 +73,8 @@ const dom = {
   /** 搜索 · 关于你 · 设置, one page under the title bar (view/hub.js). */
   hub: byId('hub'),
   hubBack: byId('hub-back'),
-  hubNavs: [...document.querySelectorAll('.hub-nav')],
-  hubPages: [...document.querySelectorAll('.hub-page')],
+  hubNavs: /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.hub-nav')]),
+  hubPages: /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.hub-page')]),
   hubSearchKey: byId('hub-search-key'),
   /** 后台: every background task and the one picked (view/tasks-page.js). */
   tasksPage: byId('tasks-page'),
@@ -413,7 +416,7 @@ const handlers = {
   /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. 「#name …」 still works too. */
   followUpTask(taskId) {
     handlers.openTasks(taskId)
-    dom.tasksPage.querySelector('.tp-input')?.focus()
+    dom.tasksPage.querySelector(/** @type {'textarea'} */ ('.tp-input'))?.focus()
   },
   /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
   resumeUnfinished: (taskId) => taskActions.resumeUnfinished(taskId),
@@ -728,7 +731,7 @@ function wireDismissal() {
     if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
     if (state.topic.menu && !within(dom.ctxArea)) dispatch({ type: 'topic_menu', open: false })
     if (state.settings.permissionMenu && !within(dom.permArea)) dispatch({ type: 'permission_menu', open: false })
-    if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
+    if (state.files.menu && !event.composedPath().some((el) => el instanceof Element && el.classList.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
   })
   document.addEventListener('keydown', (event) => {
     if (isHistoryShortcut(event)) {

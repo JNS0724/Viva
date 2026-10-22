@@ -26,7 +26,7 @@ function providerForm(models, handlers) {
     class: 'ext-form',
     onSubmit: (event) => {
       event.preventDefault()
-      const value = (name) => form.elements.namedItem(name)?.value ?? ''
+      const value = (name) => /** @type {HTMLInputElement | null} */ (form.elements.namedItem(name))?.value ?? ''
       handlers.addProvider({
         name: value('model-name'), api: value('model-api'), baseURL: value('model-url'), models: value('model-ids'), key: value('model-key'),
       })

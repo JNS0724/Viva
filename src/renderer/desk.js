@@ -145,12 +145,15 @@ new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFil
 let press = null
 let dragged = false
 let frame = 0
+/** What a pointer or click on the island landed on: always an element of the island's page. */
+const targetOf = (event) => /** @type {Element} */ (event.target)
+
 function dragFrame() {
   api.act({ kind: 'drag', phase: 'move' })
   frame = requestAnimationFrame(dragFrame)
 }
 island.el.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0 || event.target.closest('textarea, button:not(.isl-head)')) return
+  if (event.button !== 0 || targetOf(event).closest('textarea, button:not(.isl-head)')) return
   press = { x: event.screenX, y: event.screenY, id: event.pointerId }
   dragged = false
 })
@@ -183,7 +186,7 @@ const SHOWS_WAITING = new Set(['waiting', 'asking'])
 // the user) it goes on to the island's own handler, which opens the window on its 后台 page.
 island.el.addEventListener('click', (event) => {
   const view = shownView()
-  if (!event.target.closest('.isl-bg') || SHOWS_WAITING.has(view.form) || !view.background?.items.length) return
+  if (!targetOf(event).closest('.isl-bg') || SHOWS_WAITING.has(view.form) || !view.background?.items.length) return
   event.stopPropagation()
   event.preventDefault()
   listOpen = !listOpen
@@ -221,7 +224,7 @@ island.el.addEventListener('dragover', (event) => {
   show()
 })
 island.el.addEventListener('dragleave', (event) => {
-  if (!island.el.contains(event.relatedTarget)) stopDropping()
+  if (!island.el.contains(/** @type {Node | null} */ (event.relatedTarget))) stopDropping()
 })
 island.el.addEventListener('drop', async (event) => {
   if (!hasFiles(event)) return

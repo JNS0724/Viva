@@ -90,7 +90,7 @@ export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, swi
     const ask = island && checkAsk(raw)
     if (!ask) return { ok: false, error: NOT_SENT }
     const checked = ask.files.length ? describeDropped(ask.files) : { files: [] }
-    if (checked.error) return { ok: false, error: checked.error }
+    if ('error' in checked) return { ok: false, error: checked.error }
     toWindow({ kind: 'ask', text: ask.text, files: ask.files, images: ask.images })
     island.closeInput({ sent: true })
     return { ok: true }

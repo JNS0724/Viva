@@ -146,6 +146,10 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   db.exec(SCHEMA)
   addMissingColumns(db)
 
+  /**
+   * A row is a record of what its query selects; each function below says what it returns.
+   * @type {Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint } }>}
+   */
   const sql = {
     conversation: db.prepare('SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL'),
     anyConversation: db.prepare('SELECT title, title_custom FROM conversations WHERE id = ?'),
@@ -370,10 +374,10 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
 
   const sessionIds = (id) => sql.sessions.all(assertId(id)).map((row) => row.session_id)
 
-  /** When the user asked their latest questions (ms), newest first; feeds the habit analysis. */
+  /** When the user asked their latest questions (ms), newest first; feeds the habit analysis. @returns {number[]} */
   const questionTimes = (limit = QUESTION_TIMES_LIMIT) => db.prepare(`SELECT m.created_at FROM messages m
     JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
-    ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => row.created_at)
+    ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds,

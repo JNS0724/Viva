@@ -22,22 +22,25 @@ const DEFAULTS = Object.freeze({
   permission: 'workspace-write',
 })
 
+/** @typedef {{ deskIsland: boolean, deskPlaces: any, deskCoached: boolean, workDirs: any, imagesDir: string, permission: string }} Preferences */
+
 /** @param {{ file: string, onError?: (err: Error) => void }} options */
 export function createPreferences({ file, onError = () => {} }) {
+  /** @returns {Preferences} */
   function read() {
     try {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
-      return Object.fromEntries(Object.entries(DEFAULTS).map(([key, value]) => [key, typeof saved[key] === typeof value ? saved[key] : value]))
+      return /** @type {Preferences} */ (Object.fromEntries(Object.entries(DEFAULTS).map(([key, value]) => [key, typeof saved[key] === typeof value ? saved[key] : value])))
     } catch (err) {
       if (err.code !== 'ENOENT') onError(err)
       return { ...DEFAULTS }
     }
   }
 
-  /** @returns {{ deskIsland: boolean, deskPlaces: object, deskCoached: boolean }} */
+  /** @returns {Preferences} */
   const get = () => read()
 
-  /** @returns {{ deskIsland: boolean, deskPlaces: object, deskCoached: boolean }} the preferences after the change */
+  /** @returns {Preferences} the preferences after the change */
   function set(key, value) {
     if (!Object.hasOwn(DEFAULTS, key)) throw new Error(`unknown preference: ${key}`)
     if (typeof value !== typeof DEFAULTS[key]) throw new Error(`${key} must be a ${typeof DEFAULTS[key]}`)

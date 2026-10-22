@@ -31,7 +31,7 @@ export function icon(name, size = 18) {
     'stroke-width': 1.9, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
   }
   for (const [key, value] of Object.entries(attrs)) svg.setAttribute(key, String(value))
-  for (const [tag, shapeAttrs] of ICONS[name] ?? []) {
+  for (const [tag, shapeAttrs] of /** @type {Array<[string, Record<string, unknown>]>} */ (ICONS[name] ?? [])) {
     const shape = document.createElementNS(NS, tag)
     for (const [key, value] of Object.entries(shapeAttrs)) shape.setAttribute(key, String(value))
     svg.append(shape)

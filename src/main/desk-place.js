@@ -49,6 +49,7 @@ export function keepInside(point, area) {
 export function deskLayout(point, area) {
   const { width, height } = DESK_SIZE
   const dir = point.y > area.y + area.height / 2 ? 'up' : 'down'
+  /** @type {'start' | 'center' | 'end'} */
   let align = 'center'
   if (point.x - area.x < width / 2) align = 'start'
   else if (area.x + area.width - point.x < width / 2) align = 'end'
@@ -80,6 +81,7 @@ const isFraction = (value) => typeof value === 'number' && Number.isFinite(value
 
 /** What preferences.json holds, with anything that is not a place left out. @returns {Places} */
 export function readPlaces(raw) {
+  /** @type {Record<string, Place>} */
   const places = {}
   for (const [id, place] of Object.entries(raw?.places ?? {})) {
     if (isFraction(place?.fx) && isFraction(place?.fy)) places[id] = { fx: place.fx, fy: place.fy }

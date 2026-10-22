@@ -1,0 +1,6 @@
+// The preload scripts: CommonJS, Electron's renderer side.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "lib": ["ES2023", "DOM"], "types": ["node"] },
+  "include": ["src/preload/**/*.cjs"]
+}

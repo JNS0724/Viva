@@ -440,5 +440,5 @@ export function reduce(state, action) {
   return SENT.has(action?.type) && next.tasks.flip ? { ...next, tasks: { ...next.tasks, flip: false } } : next
 }
 
-/** @param {typeof initialState} state */
+/** @param {{ phase: string }} state */
 export const isBusy = (state) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'

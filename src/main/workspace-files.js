@@ -61,7 +61,7 @@ export function listFolder(root, rel) {
     } catch {
       return []
     }
-    const kind = stat.isDirectory() ? 'folder' : 'file'
+    const kind = /** @type {'folder' | 'file'} */ (stat.isDirectory() ? 'folder' : 'file')
     return [{ name: dirent.name, path: toRel(root, abs), kind, size: kind === 'file' ? stat.size : 0, heavy: kind === 'folder' && HEAVY.has(dirent.name) }]
   })
   const folders = entries.filter((entry) => entry.kind === 'folder').sort(byName)
@@ -103,6 +103,7 @@ function readPage(file, size, offset) {
 const highlighted = (text, language) => hljs.highlight(text, { language, ignoreIllegals: true }).value
 
 /**
+ * @param {string} root @param {string} rel
  * @param {{ offset?: number }} [page] where to read from, for the pages after the first
  * @returns {{ path: string, name: string, size: number, kind: 'markdown' | 'code' | 'csv' | 'text' | 'image' | 'binary',
  *   text?: string, html?: string, language?: string, dataUrl?: string, offset?: number, nextOffset?: number | null, openable: boolean }}

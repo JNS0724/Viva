@@ -17,6 +17,7 @@ const SCREEN_SHARE = 0.9
  * macOS keeps its traffic lights on the left; Windows and Linux get system-drawn buttons on the right
  * (`titleBarOverlay`), which the page makes room for via `env(titlebar-area-width)`.
  */
+/** @param {string} platform @returns {Partial<import('electron').BrowserWindowConstructorOptions>} */
 export function windowChrome(platform) {
   if (platform === 'darwin') {
     return {

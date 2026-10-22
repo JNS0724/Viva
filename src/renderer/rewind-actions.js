@@ -10,7 +10,8 @@ const FAILED = '没能回到那里'
 
 /**
  * @param {{
- *   api: { rewind: (request: object) => Promise<object> }, getState: () => object, dispatch: (action: object) => void,
+ *   api: Record<'rewind' | 'rewindEffects' | 'foldedPath' | 'switchPath', (...args: any[]) => Promise<any>>,
+ *   getState: () => any, dispatch: (action: object) => void,
  *   showToast: (text: string) => void, errorMessage: (err: unknown) => string, ask: (text: string) => boolean,
  * }} deps
  */

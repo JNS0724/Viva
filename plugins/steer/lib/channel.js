@@ -20,7 +20,7 @@ const MAX_TEXT_CHARS = 20_000
 const isText = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max
 
 /**
- * @param {{ send: (message: object) => void, on: Function, off: Function }} port the IPC channel to the app
+ * @param {{ send?: (message: object) => unknown, on: Function, off: Function }} port the IPC channel to the app
  * @param {(sessionId: string, text: string) => keyof REASONS | null} steer null once dsh has the words
  * @param {(message: string) => void} log
  * @returns {{ close: () => void }}

@@ -33,6 +33,7 @@ function text(value, what, max, { optional = false } = {}) {
   return value.trim()
 }
 
+/** @param {any} value untrusted, checked below @param {string} what @param {{ max: number, itemMax: number, pattern?: RegExp }} limits */
 function list(value, what, { max, itemMax, pattern }) {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value) || value.length > max) refuse(`${what}最多 ${max} 项`)
@@ -153,7 +154,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }) {
     }
     const request = parseConfigRequest(message)
     if (!request) return
-    if (request.problem) return reply(request.id, false, request.problem)
+    if ('problem' in request) return reply(request.id, false, request.problem)
     if (request.sessionId !== sessionId()) return reply(request.id, false, '用户已经离开了这段对话，配置没有进行。')
     const { id, op, args } = request
     if (op !== 'mcp_add' || args.secrets.length === 0) return perform(id, op, args)

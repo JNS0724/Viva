@@ -25,7 +25,7 @@ export function followTarget({ scrollHeight, clientHeight, anchorTop }) {
  * - stops once a long answer would push the latest question off screen, and shows the jump button;
  * - hands control to the reader the moment they scroll up, and resumes when they come back down.
  * @param {HTMLElement} scrollEl
- * @param {{ hidden: boolean }} jumpButton
+ * @param {HTMLElement} jumpButton
  */
 export function createScrollFollower(scrollEl, jumpButton) {
   let following = true

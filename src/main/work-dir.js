@@ -29,7 +29,10 @@ function keyOf(dir, platform) {
   return foldsCase(platform) ? trimmed.toLowerCase() : trimmed
 }
 
-/** @returns {boolean} whether `a` and `b` name the same folder, whatever the trailing separator (and case, where the system ignores it) */
+/**
+ * @param {string} a @param {string} b @param {string} [platform] process.platform's values
+ * @returns {boolean} whether `a` and `b` name the same folder, whatever the trailing separator (and case, where the system ignores it)
+ */
 export const sameDir = (a, b, platform = process.platform) => keyOf(a, platform) === keyOf(b, platform)
 
 /** `dir` is `parent` or inside it. */
@@ -69,10 +72,13 @@ export function workDirProblem(dir, { platform = process.platform, home = os.hom
   return null
 }
 
-/** @returns {string[]} the folders used lately with `dir` first, each once, at most MAX_RECENT; `list` is left as it was */
+/**
+ * @param {string[]} list @param {string} dir @param {string} [platform]
+ * @returns {string[]} the folders used lately with `dir` first, each once, at most MAX_RECENT; `list` is left as it was
+ */
 export function withRecent(list, dir, platform = process.platform) {
   return [dir, ...list.filter((item) => !sameDir(item, dir, platform))].slice(0, MAX_RECENT)
 }
 
-/** @returns {string[]} `list` without `dir` */
+/** @param {string[]} list @param {string} dir @param {string} [platform] @returns {string[]} `list` without `dir` */
 export const forgetDir = (list, dir, platform = process.platform) => list.filter((item) => !sameDir(item, dir, platform))
