@@ -77,12 +77,13 @@ function afterTurn(state, base) {
 }
 
 /**
- * Tasks in the background (tasks-state.js), those that wait on the user first: how many, and a line each
- * for when the island opens. null with none, so the island is as it always was.
+ * Tasks in the background (tasks-state.js), those that wait on the user first: how many go on, how many ended
+ * (still there until closed, so the 后台 page stays a click away), and a line each for when the island opens.
+ * null with none, so the island is as it always was.
  */
 function backgroundOf(state) {
   const live = liveTasks(state)
-  if (!live.length && !state.tasks.finished) return null
+  if (!state.tasks.list.length && !state.tasks.finished) return null
   const items = live
     .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
     .map((task) => ({
@@ -103,7 +104,11 @@ const TASK_ENDED = { done: ['做完了', 'done'], stopped: ['停下了', 'idle']
 export function islandView(state) {
   const background = backgroundOf(state)
   const view = mainView(state, background)
-  return background ? { ...view, background } : view
+  if (!background) return view
+  // Tasks that wait on the user beyond the one the island shows: said at its tail, so none is missed.
+  const asks = view.form === 'waiting' || view.form === 'asking'
+  const alsoWaiting = asks ? background.waiting - (view.task ? 1 : 0) : 0
+  return { ...view, background: alsoWaiting > 0 ? { ...background, alsoWaiting } : background }
 }
 
 /**

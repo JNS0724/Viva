@@ -328,6 +328,45 @@ export function createAcpBridge({
     }
   }
 
+  /** The task's session takes the choices the main conversation has now (its model, its effort) where they differ. */
+  async function matchMainConfig(taskId, taskOptions) {
+    for (const option of configNow ?? []) {
+      const theirs = taskOptions.find((item) => item.id === option.id)
+      if (option.currentValue === undefined || theirs?.currentValue === option.currentValue) continue
+      const response = await connection.setSessionConfigOption({ sessionId: taskId, configId: option.id, value: option.currentValue })
+      tasks.set(taskId, { ...tasks.get(taskId), config: response.configOptions ?? tasks.get(taskId).config })
+    }
+  }
+
+  /**
+   * 后台做 (task-ipc.js task:start): a task of its own, beside the main conversation, in a session forked from it
+   * as it is, or from before the turn running in it (named by its `words`), so it knows what was said; with
+   * nothing said yet, in a fresh session. promptTask then asks it.
+   * @param {{ words?: string }} [request]
+   * @returns {Promise<{ ok: boolean, reason?: string, taskId?: string }>}
+   */
+  async function startTask({ words } = {}) {
+    if (!sessionId) return { ok: false, reason: 'missing' }
+    const forked = await forking.fork(words ? { words, occurrence: 0 } : {})
+    if (forked.ok) {
+      const taken = await resumeTask({ taskId: forked.sessionId, cwd: sessionCwd })
+      if (!taken.ok) return taken
+      // A fork of a conversation with nothing said yet starts on the profile's defaults too.
+      await matchMainConfig(forked.sessionId, tasks.get(forked.sessionId).config ?? [])
+      return { ok: true, taskId: forked.sessionId }
+    }
+    try {
+      const response = await withMcpServers((servers) => connection.newSession({ cwd: sessionCwd, mcpServers: servers }))
+      tasks.set(response.sessionId, { cwd: sessionCwd, config: response.configOptions ?? configNow })
+      // A fresh session starts on the profile's defaults: the model picked here may be another (or the only one with a key).
+      await matchMainConfig(response.sessionId, response.configOptions ?? [])
+      return { ok: true, taskId: response.sessionId }
+    } catch (err) {
+      console.error('[acp-bridge] could not start a task:', describeError(err))
+      return { ok: false, reason: 'missing' }
+    }
+  }
+
   /** A turn in a task's session: what it says arrives as task_update, its end as task_end (as for a spun-off turn). */
   async function promptTask(taskId, text) {
     if (!tasks.has(taskId)) return
@@ -418,5 +457,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }

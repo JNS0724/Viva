@@ -22,6 +22,8 @@ export const initialTasks = Object.freeze({
   reports: [],
   /** Tasks the last launch left going (task-store.js), offered to take up or let go: { id, title, segmentId, startedAt }. */
   unfinished: [],
+  /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
+  page: Object.freeze({ open: false, selected: null, steps: false }),
 })
 
 /**
@@ -55,6 +57,21 @@ function settled(task) {
 }
 
 export const liveTasks = (state) => state.tasks.list.filter((task) => LIVE.has(task.status))
+export const endedTasks = (state) => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => b.endedAt - a.endedAt)
+
+/** The 后台 page's list: those waiting on the user, then those at work, then those that ended, latest first. */
+export function pageGroups(state) {
+  const groups = [
+    { key: 'waiting', tasks: state.tasks.list.filter((task) => task.status === 'waiting') },
+    { key: 'running', tasks: state.tasks.list.filter((task) => task.status === 'running') },
+    { key: 'ended', tasks: endedTasks(state) },
+  ]
+  return groups.filter((group) => group.tasks.length)
+}
+
+/** The task the 后台 page shows whole, or null. */
+export const pageTask = (state) => state.tasks.list.find((task) => task.id === state.tasks.page.selected) ?? null
+const firstOnPage = (state) => pageGroups(state)[0]?.tasks[0]?.id ?? null
 
 /** A task's tab in the drawer (view/drawer.js): what it did, as the 过程 tab shows the conversation's. */
 const TAB_PREFIX = 'task:'
@@ -85,7 +102,8 @@ export function spinOffTarget(state) {
 const PREVIEW_CHARS = 80
 /** The first line of what a task said last, for its report (the drawer tab has all of it). */
 function previewOf(view) {
-  const answer = view.messages.findLast((message) => message.role === 'assistant')?.text ?? ''
+  // Failed, why it did; else the first line of what it said last.
+  const answer = view.error || (view.messages.findLast((message) => message.role === 'assistant')?.text ?? '')
   const line = answer.split('\n').map((item) => item.trim()).find(Boolean) ?? ''
   return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS - 1)}…` : line
 }
@@ -95,11 +113,6 @@ export const taskAnswer = (task) => task.view.messages.findLast((message) => mes
 
 /** 「#name 」 and what follows: found as soon as the name is written, so the line over the input says where words will go. */
 const MENTION = /^#(\S+)\s+([\s\S]*)$/
-/** How much of a task's title 接着问 writes after the #: enough to find it, short enough to read. */
-const MENTION_NAME_CHARS = 12
-/** The name 接着问 puts after the # for `task`: the start of its title, which `mentionedTask` finds it by. */
-export const mentionNameOf = (task) => task.title.trim().split(/\s+/)[0].slice(0, MENTION_NAME_CHARS)
-
 /**
  * 「#name words」: the words go to the background task whose title has `name` in it, not to the
  * conversation on screen. A task still going reads them in its turn; one that ended (`ended`) is asked
@@ -141,9 +154,10 @@ const pairsOf = (text) => {
 }
 
 /**
- * Where words typed while a turn runs would go: on their own ('other'), the turn moving to the background,
- * when they ask something of their own and share nothing with what started it; else 'into' the turn (the
- * viva-steer plugin), which, when unsure, adds nothing to undo. Tab turns it round. null when nothing runs.
+ * Where words typed while a turn runs would go: on their own ('other'), to a task of their own in the
+ * background while the turn stays in front, when they ask something of their own and share nothing with what
+ * started it; else 'into' the turn (the viva-steer plugin), which, when unsure, adds nothing to undo. Tab turns
+ * it round. null when nothing runs.
  */
 export function routeOf(state, text) {
   const target = spinOffTarget(state)
@@ -188,11 +202,13 @@ export function taskActions(handlers) {
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
 
-    task_end: (state, { taskId, stopReason, at }) => {
+    task_end: (state, { taskId, stopReason, message = null, at }) => {
       const task = state.tasks.list.find((entry) => entry.id === taskId)
       if (!task) return state
       const status = ENDED[stopReason] ?? 'done'
-      const view = handlers.turn_end(task.view, { stopReason, at })
+      const ended = handlers.turn_end(task.view, { stopReason, at })
+      // Failed: why, as the conversation shows it (its error row), and on the card when it said nothing.
+      const view = message ? { ...ended, phase: 'error', error: message } : ended
       const list = state.tasks.list.map((entry) => (entry.id === taskId ? { ...entry, view, status, now: null, endedAt: at } : entry))
       const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
       const report = { taskId, title: task.title, status, preview: previewOf(view), shown: false }
@@ -224,6 +240,27 @@ export function taskActions(handlers) {
         finished: asked.tasks.finished?.taskId === taskId ? null : asked.tasks.finished,
       })
     },
+    /**
+     * 后台做: the words went to a task of their own, started from the conversation so far. They stay in the
+     * conversation, the task's card under them, unless a turn is running there (its answer is still coming).
+     */
+    task_started: (state, { task, text, at }) => {
+      const entry = settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView([{ role: 'user', text }], at) })
+      const words = { id: `m${state.messages.length}`, role: 'user', text, open: false, receipt: null, taskId: task.id }
+      const messages = isBusy(state) ? state.messages : [...state.messages, words]
+      return { ...withTasks(state, { list: [...state.tasks.list, entry] }), messages }
+    },
+
+    /** The 后台 page, on the task asked for, else the one it was on, else the first in its list. */
+    tasks_page_open: (state, { taskId = null }) => {
+      const known = (id) => state.tasks.list.some((task) => task.id === id)
+      const selected = [taskId, state.tasks.page.selected].find((id) => id && known(id)) ?? firstOnPage(state)
+      return withTasks({ ...state, island: false }, { page: { open: true, selected } })
+    },
+    tasks_page_close: (state) => withTasks(state, { page: { ...state.tasks.page, open: false } }),
+    tasks_page_select: (state, { taskId }) => withTasks(state, { page: { ...state.tasks.page, selected: taskId } }),
+    tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps } }),
+
     /** The task could not be asked (its session is gone): it is as it was before. */
     task_ask_failed: (state, { task }) => withTasks(state, { list: state.tasks.list.map((entry) => (entry.id === task.id ? task : entry)) }),
 
@@ -257,14 +294,18 @@ export function taskActions(handlers) {
       }
     },
 
-    task_closed: (state, { taskId }) => ({
-      ...withTasks(state, {
-        list: state.tasks.list.filter((task) => task.id !== taskId),
-        finished: state.tasks.finished?.taskId === taskId ? null : state.tasks.finished,
-        reports: state.tasks.reports.filter((entry) => entry.taskId !== taskId),
-      }),
-      drawer: state.drawer === taskTab(taskId) ? 'trace' : state.drawer,
-    }),
+    task_closed: (state, { taskId }) => {
+      const closed = {
+        ...withTasks(state, {
+          list: state.tasks.list.filter((task) => task.id !== taskId),
+          finished: state.tasks.finished?.taskId === taskId ? null : state.tasks.finished,
+          reports: state.tasks.reports.filter((entry) => entry.taskId !== taskId),
+        }),
+        drawer: state.drawer === taskTab(taskId) ? 'trace' : state.drawer,
+      }
+      // The page goes on to the next task when the one it showed is closed.
+      return state.tasks.page.selected === taskId ? withTasks(closed, { page: { ...closed.tasks.page, selected: firstOnPage(closed) } }) : closed
+    },
   }
 }
 

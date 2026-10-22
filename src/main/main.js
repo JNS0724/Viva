@@ -688,6 +688,7 @@ const taskAgent = {
   cancelTask: (taskId) => bridge?.cancelTask(taskId),
   steerTask: (taskId, text) => requireBridge().steerTask(taskId, text),
   resumeTask: (request) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
+  startTask: (request) => (bridge ? bridge.startTask(request) : { ok: false, reason: 'unavailable' }),
   promptTask: (taskId, text) => bridge?.promptTask(taskId, text),
 }
 

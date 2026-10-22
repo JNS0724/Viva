@@ -1,6 +1,4 @@
 import { traceItems, usageLabel } from '../selectors.js'
-import { taskAnswer, taskOfTab, taskTab } from '../tasks-state.js'
-import { renderMarkdown } from './markdown.js'
 import { filesView } from './files-panel.js'
 import { h, label } from './dom.js'
 import { icon } from './icons.js'
@@ -39,37 +37,8 @@ function traceView(state) {
 
 const TAB_VIEWS = { trace: traceView, files: filesView }
 
-/** 过程 and 文件, then a tab a task in the background (tasks-state.js taskTab), its trace like the conversation's. */
-const tabsOf = (state) => [...TABS, ...state.tasks.list.map((task) => ({ id: taskTab(task.id), name: `#${task.title}`, task: true }))]
-
-const TASK_STATUS = { running: '在后台做', waiting: '在后台等你', done: '做完了', stopped: '停下了', error: '出错了' }
-const LIVE = new Set(['running', 'waiting'])
-
-const tabAct = (text, onClick) => h('button', { class: 'btn btn-secondary task-tab-act', type: 'button', text, onClick })
-
-/**
- * A task's tab: where it stands, with 停下 while it goes on, or 接着问 and 关掉这件 once it ended (closed, its
- * session ends and the tab goes), what it said last, then what it did.
- */
-function taskView(state, task, handlers) {
-  const live = LIVE.has(task.status)
-  const answer = taskAnswer(task)
-  return [
-    h('div', { class: 'task-tab-head' },
-      h('span', { class: 'task-tab-status', 'data-status': task.status, text: TASK_STATUS[task.status] ?? '' }),
-      ...(live
-        ? [tabAct('停下', () => handlers.stopTask(task.id))]
-        : [tabAct('接着问', () => handlers.followUpTask(task.id)), tabAct('关掉这件', () => handlers.closeTask(task.id))])),
-    answer ? h('section', { class: 'task-tab-answer', 'aria-label': '它的回答' }, renderMarkdown(answer, handlers)) : null,
-    ...traceView({ ...state, ...task.view, restoredTrace: null }),
-  ]
-}
-
-function bodyOf(state, handlers) {
-  const task = taskOfTab(state, state.drawer)
-  if (task) return taskView(state, task, handlers)
-  return (TAB_VIEWS[state.drawer] ?? traceView)(state, handlers)
-}
+/** Background tasks have a page of their own (view/tasks-page.js); the drawer is the conversation's. */
+const bodyOf = (state, handlers) => (TAB_VIEWS[state.drawer] ?? traceView)(state, handlers)
 
 /** Right-hand drawer, opened from the title bar: the trace and the files the agent touched. */
 export function renderDrawer(container, state, handlers) {
@@ -86,10 +55,9 @@ export function renderDrawer(container, state, handlers) {
   const preview = shown ? { path: shown.dataset.path, top: shown.scrollTop } : null
   container.replaceChildren(
     h('div', { class: 'drawer-head' },
-      h('div', { class: 'tabs', role: 'tablist' }, tabsOf(state).map((tab) => h('button', {
-        class: tab.task ? 'tab tab-task' : 'tab',
+      h('div', { class: 'tabs', role: 'tablist' }, TABS.map((tab) => h('button', {
+        class: 'tab',
         role: 'tab',
-        title: tab.task ? tab.name : null,
         'aria-selected': String(tab.id === state.drawer),
         text: tab.name,
         onClick: () => handlers.openDrawer(tab.id),

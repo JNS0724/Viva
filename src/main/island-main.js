@@ -54,8 +54,12 @@ export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, swi
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
     open: openWindow,
-    // What a task did is in the window's drawer: the window comes forward with that tab open.
+    // Background tasks are on the window's 后台 page: the window comes forward on it (on the task, for a line).
     task: (island, action) => {
+      toWindow(action)
+      openWindow(island)
+    },
+    tasks: (island, action) => {
       toWindow(action)
       openWindow(island)
     },

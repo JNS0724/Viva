@@ -7,6 +7,7 @@ const ICONS = {
   stop: [['rect', { x: 7, y: 7, width: 10, height: 10, rx: 2, fill: 'currentColor' }]],
   close: [['path', { d: 'M6 6l12 12M18 6L6 18' }]],
   chevron: [['path', { d: 'M6 9l6 6 6-6' }]],
+  back: [['path', { d: 'M15 6l-6 6 6 6' }]],
   trace: [['path', { d: 'M3 12h4l3-8 4 16 3-8h4' }]],
   globe: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18' }]],
   file: [['path', { d: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z' }], ['path', { d: 'M14 3v5h5' }]],

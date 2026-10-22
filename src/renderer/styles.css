@@ -128,6 +128,9 @@ html:not([data-platform="darwin"]) {
 .route[data-route="into"] b { color: var(--accent); }
 .route kbd { margin-left: 4px; font: 11px var(--font-mono); color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; }
 .composer-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+/* 后台做: the typed words to a task of their own (task-actions.js startTask); quiet beside 发送. */
+.bg-send { margin-left: auto; height: 40px; padding: 0 14px; border-radius: 12px; font-size: 13px; white-space: nowrap; }
+.bg-send + .send-btn { margin-left: 0; }
 .send-btn { margin-left: auto; width: 48px; height: 48px; border: none; border-radius: 14px; background: var(--accent); color: var(--bg); display: grid; place-items: center; cursor: pointer; }
 .send-btn[data-busy="true"] { background: var(--white); }
 .disclaimer { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); }
@@ -252,6 +255,12 @@ html:not([data-platform="darwin"]) {
 .task-report-text { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-report-open { flex: none; height: 32px; padding: 0 14px; font-size: 13px; white-space: nowrap; }
 .task-report-x { flex: none; font-size: 18px; line-height: 1; }
+/* A background task's card (view/task-card.js): one quiet look whatever it is doing; the words say where it stands. */
+.task-card, .task-card[data-status] { border: 1px solid var(--line-2); }
+.task-card .task-report-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-state { flex: none; font-size: 13px; font-weight: 400; color: var(--ink-3); }
+.task-card .task-report-text { color: var(--ink-3); }
 /* A task's drawer tab (view/drawer.js taskView): where it stands, then what it said, then what it did. */
 .task-tab-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 /* Where it stands on the left; its buttons (停下, or 接着问 and 关掉这件) together on the right. */
@@ -637,6 +646,53 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   .hub-side { width: 160px; }
   .hub-foot { display: none; }
   .hub-page { padding: 20px 16px 40px; }
+}
+
+/* ---------- 后台 page (view/tasks-page.js) ---------- */
+.tasks-page .tp-side { width: 300px; gap: 2px; overflow-y: auto; }
+.tp-group { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; color: var(--ink-3); padding: 12px 12px 4px; }
+.tp-row {
+  position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: none; border-radius: 10px;
+  background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+}
+.tp-row:hover { background: var(--panel-2); }
+.tp-row[aria-current="page"] { background: var(--raised); }
+.tp-row[aria-current="page"]::before {
+  content: ''; position: absolute; left: -12px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--accent);
+}
+.tp-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-meta { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tp-empty { align-items: center; justify-content: center; padding: 40px; }
+.tp-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 14px 28px; border-bottom: 1px solid var(--line); }
+.tp-title { flex: 1; min-width: 0; margin: 0; font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); white-space: nowrap; }
+.tp-act { flex: none; height: 34px; padding: 0 14px; font-size: 13px; }
+.tp-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 28px; display: flex; flex-direction: column; gap: 16px; }
+.tp-scroll .tp-thread { width: 100%; max-width: none; }
+.tp-steps { margin-left: 50px; padding: 12px 16px; border: 1px dashed var(--line-2); border-radius: 12px; }
+.tp-steps .trace { margin-top: 10px; }
+.tp-toggle { padding: 0; border: none; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+.tp-composer {
+  flex: none; display: flex; align-items: flex-end; gap: 10px; margin: 0 28px 20px; padding: 12px 12px 12px 18px;
+  border: 1px solid var(--line-2); border-radius: 18px; background: var(--panel);
+}
+.tp-composer:focus-within { border-color: var(--accent); }
+.tp-input { flex: 1; min-width: 0; border: none; outline: none; resize: none; background: none; color: var(--ink); font: inherit; font-size: 15px; line-height: 1.6; }
+.tp-composer .send-btn { width: 40px; height: 40px; border-radius: 12px; }
+/* Where a task stands, in grey: a ring turning while it works, an open ring while it waits, ✓ once done. */
+.task-mark { flex: none; display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--ink-3); border-top-color: transparent; animation: spin 1.2s linear infinite; }
+.task-mark[data-status="waiting"] { border-color: var(--ink-2); animation: none; }
+.task-mark[data-status="done"], .task-mark[data-status="stopped"], .task-mark[data-status="error"] {
+  width: auto; height: auto; border: none; border-radius: 0; animation: none; font-size: 12px; line-height: 1; color: var(--ink-3);
+}
+.task-mark[data-status="done"]::before { content: '✓'; }
+.task-mark[data-status="stopped"]::before { content: '■'; font-size: 9px; }
+.task-mark[data-status="error"]::before { content: '!'; font-weight: 700; }
+@media (max-width: 720px) {
+  .tasks-page .tp-side { width: 200px; }
+  .tp-head, .tp-scroll { padding-left: 16px; padding-right: 16px; }
+  .tp-composer { margin: 0 16px 16px; }
 }
 
 /* ---------- 搜索 page ---------- */

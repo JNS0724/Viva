@@ -9,9 +9,21 @@ const MAX_DOTS = 3
 /** Forms in which the conversation on screen is quiet, so the cell has room to say what the number is. */
 const QUIET = new Set(['idle', 'done'])
 
-/** @returns {Node | null} the cell at the island's tail, or nothing with no task going on */
+/**
+ * The cell at the island's tail, the way to the 后台 page: how many go on; or, when the island shows what
+ * the conversation waits on and tasks wait too, that they do (+N 等你); or, all ended, how many (✓ N).
+ * @returns {Node | null} nothing with no task at all
+ */
 export function tailCell(view) {
-  const count = view.background?.count ?? 0
+  const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
+  if (alsoWaiting) {
+    return h('span', { class: 'isl-bg isl-bg-waits', title: `还有 ${alsoWaiting} 件在等你` },
+      h('b', { text: `+${alsoWaiting}` }), h('span', { text: '等你' }))
+  }
+  if (!count && done) {
+    return h('span', { class: 'isl-bg isl-bg-done', title: `${done} 件做完了` },
+      h('b', { text: `✓ ${done}` }), QUIET.has(view.form) ? h('span', { text: '做完' }) : null)
+  }
   if (!count) return null
   const dots = view.form === 'waiting' ? [] : Array.from({ length: Math.min(count, MAX_DOTS) }, () => h('i'))
   return h('span', { class: 'isl-bg', title: `${count} 件在后台` },

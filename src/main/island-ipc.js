@@ -51,8 +51,10 @@ const ACTIONS = {
     : null),
   /** 跳过: the question goes unanswered, as from the thread's card. */
   skip: ({ questionId }) => (isText(questionId, MAX_ID_CHARS) ? { kind: 'skip', questionId } : null),
-  /** A task in the island's 后台 list: what it did, in the window's drawer; or 停下. */
+  /** A task in the island's 后台 list: that task on the window's 后台 page; or 停下. */
   task: ({ taskId }) => (isText(taskId, MAX_ID_CHARS) ? { kind: 'task', taskId } : null),
+  /** The count at the island's tail, with nothing to list there: the window's 后台 page. */
+  tasks: () => ({ kind: 'tasks' }),
   'stop-task': ({ taskId }) => (isText(taskId, MAX_ID_CHARS) ? { kind: 'stop-task', taskId } : null),
 }
 

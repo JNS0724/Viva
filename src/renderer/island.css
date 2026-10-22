@@ -109,6 +109,11 @@
   border-left: 1px solid var(--line-2); font-size: 12px; color: var(--ink-2);
 }
 .isl-bg b { font: 700 13px var(--font-mono); color: var(--ink); }
+.isl-bg { cursor: pointer; }
+.isl-bg:hover b { text-decoration: underline; }
+/* All ended: quieter; tasks waiting beside what the island shows: the one colour that asks for the user. */
+.isl-bg-done b { color: var(--ink-2); }
+.isl-bg-waits b, .isl-bg-waits span { color: var(--orange); }
 .isl-dots { display: inline-flex; gap: 3px; }
 .isl-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
 .isl-task { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--orange); font-size: 12px; font-weight: 600; }

@@ -3,7 +3,9 @@
  * Each keeps its own slice (history, memory, settings) and its own open and close actions; this keeps
  * only one of them open and remembers which to open on next. Pure, like the rest of `state.js`.
  */
-export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings'])
+export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks'])
+/** The 后台 page shares the space but not the sidebar: the 关于你 icon never opens on it. */
+const REMEMBERED = new Set(['search', 'profile', 'settings'])
 
 export const initialHub = Object.freeze({
   /** The page it opens on when opened without naming one: the one last shown. */
@@ -14,8 +16,9 @@ const IS_OPEN = {
   search: (state) => state.history.open,
   profile: (state) => state.memory.open,
   settings: (state) => state.settings.open,
+  tasks: (state) => state.tasks.page.open,
 }
-const CLOSE_ACTION = { search: 'history_close', profile: 'memory_close', settings: 'settings_close' }
+const CLOSE_ACTION = { search: 'history_close', profile: 'memory_close', settings: 'settings_close', tasks: 'tasks_page_close' }
 
 /** The page that is open, or null. */
 export const hubPage = (state) => HUB_PAGES.find((page) => IS_OPEN[page](state)) ?? null
@@ -27,7 +30,7 @@ export const hubPage = (state) => HUB_PAGES.find((page) => IS_OPEN[page](state))
 export function oneHubPage(before, after, reduce) {
   const opened = HUB_PAGES.find((page) => IS_OPEN[page](after) && !IS_OPEN[page](before))
   if (!opened) return after
-  const remembered = after.hub.last === opened ? after : { ...after, hub: { ...after.hub, last: opened } }
+  const remembered = after.hub.last === opened || !REMEMBERED.has(opened) ? after : { ...after, hub: { ...after.hub, last: opened } }
   return HUB_PAGES
     .filter((page) => page !== opened && IS_OPEN[page](after))
     .reduce((state, page) => reduce(state, { type: CLOSE_ACTION[page] }), remembered)

@@ -15,6 +15,8 @@ const SNIPPET_BEFORE = 20
 const SNIPPET_AFTER = 40
 /** How much of the message before and after a search hit is shown with it. */
 const CONTEXT_CHARS = 60
+/** Why a segment hangs off another instead of being in the timeline: a turn moved to the background, or a task started on its own (后台做); none, a path left behind by going back. */
+const FOLD_KINDS = new Set(['task', 'side'])
 const QUESTION_TIMES_LIMIT = 1000
 /** Earlier segments of the timeline read back at a time, and the most at once. */
 const SEGMENT_PAGE = 5
@@ -70,7 +72,8 @@ const SCHEMA = `
 const ADDED_COLUMNS = Object.freeze([
   ['conversations', 'cwd', 'TEXT'], ['conversations', 'parent_id', 'TEXT'],
   ['conversations', 'folded_into', 'TEXT'], ['conversations', 'folded_at', 'INTEGER'],
-  // fold_kind: 'task' for a turn moved to the background (phase 3); null, a path left behind by going back.
+  // fold_kind: 'task' for a turn moved to the background (phase 3), 'side' for a task started on its own (后台做);
+  // null, a path left behind by going back.
   ['conversations', 'fold_kind', 'TEXT'],
 ])
 
@@ -330,7 +333,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * The user went back to an earlier point of `id` and on from there in `into`: `id` leaves the timeline and
    * hangs, folded, off `into` after its first `at` messages (the ones both have).
    */
-  const fold = (id, { into, at, kind = null }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), kind === 'task' ? 'task' : null, assertId(id))
+  const fold = (id, { into, at, kind = null }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), FOLD_KINDS.has(kind) ? kind : null, assertId(id))
   /** A segment's messages with where each is and when it was written (ms). */
   const timelineOf = (id) => sql.timelineMessages.all(assertId(id)).map(toTimelineMessage)
 
@@ -341,9 +344,10 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * The paths folded off `id`: where each hangs (after that many of `id`'s messages), how many it folds, and
    * whether it is a path left behind ('path') or a turn moved to the background ('task').
    */
-  const foldsOf = (id) => sql.foldsOf.all(assertId(id)).map((row) => ({
-    id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at), kind: row.fold_kind ?? 'path',
-  }))
+  const foldsOf = (id) => sql.foldsOf.all(assertId(id))
+    // A task started on its own (后台做) has its card in the conversation, not a line where it folds.
+    .filter((row) => row.fold_kind !== 'side')
+    .map((row) => ({ id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at), kind: row.fold_kind ?? 'path' }))
 
   const rename = (id, title) => changeOne(
     db.prepare('UPDATE conversations SET title = ?, title_custom = 1 WHERE id = ? AND deleted_at IS NULL'), normalizeTitle(title), assertId(id))

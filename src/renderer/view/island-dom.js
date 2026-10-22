@@ -11,7 +11,8 @@ import { backgroundSection, tailCell, taskTag } from './island-tasks.js'
  * left in every form. What it shows comes from islandView (island-view.js).
  *
  * Actions go to `act`: toggle, jump (to the card in the thread), cancel, trace, open (the window),
- * input (the desktop's), coached, permission { requestId, optionId }, answer { questionId, id, label }.
+ * input (the desktop's), coached, permission { requestId, optionId }, answer { questionId, id, label },
+ * tasks (the count at the tail: the 后台 page).
  *
  * In the title bar a click unfolds the steps. On the desktop the island is glanced at from another app, so
  * it never unfolds the steps: it opens by itself only for what needs the user (and, once, to say what it
@@ -222,7 +223,11 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
   let hovered = false
   let onHead = null
 
-  head.addEventListener('click', () => onHead && act(onHead))
+  // The count at the tail is the way to the 后台 page; the rest of the head does what its form says.
+  head.addEventListener('click', (event) => {
+    if (event.target.closest?.('.isl-bg')) act({ kind: 'tasks' })
+    else if (onHead) act(onHead)
+  })
 
   /**
    * Sizes are set in pixels, so the shape can animate between them; never wider than its place allows.
@@ -268,14 +273,15 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     const wasOpen = el.dataset.open === 'true'
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
-    head.replaceChildren(...(view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tailCell(view)].filter(Boolean)))
+    const tail = tailCell(view)
+    head.replaceChildren(...(view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tail].filter(Boolean)))
     tools.replaceChildren(...(showTools ? deskTools(view, act) : []))
     if (view.form === 'input') {
       input.sync(view)
       if (input.entry.parentNode !== clip) clip.append(input.entry)
     } else input?.entry.remove()
     onHead = wide ? null : headAction(view, host, unfolds)
-    head.disabled = !onHead
+    head.disabled = !onHead && !tail
     head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
