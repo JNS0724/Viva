@@ -54,6 +54,11 @@ export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, swi
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
     open: openWindow,
+    // What a task did is in the window's drawer: the window comes forward with that tab open.
+    task: (island, action) => {
+      toWindow(action)
+      openWindow(island)
+    },
     menu: (island) => island.popup(menu(island)),
     coached: (island) => island.markCoached(),
   }
