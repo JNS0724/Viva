@@ -12,9 +12,9 @@ const QUIET = new Set(['idle', 'done'])
 /**
  * The cell at the island's tail, the way to the 后台 page: how many go on; or, when the island shows what
  * the conversation waits on and tasks wait too, that they do (+N 等你); or, all ended, how many (✓ N).
- * @returns {Node | null} nothing with no task at all
+ * @returns nothing with no task at all
  */
-export function tailCell(view) {
+export function tailCell(view: IslandShown): HTMLElement | null {
   const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
   if (alsoWaiting) {
     return h('span', { class: 'isl-bg isl-bg-waits', title: `还有 ${alsoWaiting} 件在等你` },
@@ -33,20 +33,20 @@ export function tailCell(view) {
 }
 
 /** Whose request it is, when a task in the background asks. */
-export const taskTag = (view) => (view.task ? h('span', { class: 'isl-task', text: `#${view.task}` }) : null)
+export const taskTag = (view: IslandShown) => (view.task ? h('span', { class: 'isl-task', text: `#${view.task}` }) : null)
 
 const MINUTE_MS = 60_000
 /** How long it has gone on, in minutes: the panel is not redrawn every second, so no seconds to go stale. */
-const runningFor = (startedAt, now) => {
+const runningFor = (startedAt: number | undefined, now: number) => {
   const minutes = Math.floor((now - (startedAt ?? now)) / MINUTE_MS)
   return minutes < 1 ? '刚开始' : `${minutes} 分钟`
 }
 
-function itemLine(item, act, now) {
+function itemLine(item: Untyped, act: IslandAct, now: number) {
   const asks = item.permission
   const doing = asks ? `想${asks.title}` : item.status === 'waiting' ? '在等你回答' : item.now ? `在${item.now}` : '在做'
   const actions = asks
-    ? asks.options.map((option) => h('button', {
+    ? asks.options.map((option: { optionId: string, name: string, role: string }) => h('button', {
       type: 'button',
       class: `isl-mini ${option.role === 'primary' ? 'isl-mini-primary' : ''}`,
       text: option.name,
@@ -63,8 +63,8 @@ function itemLine(item, act, now) {
 }
 
 /** Opened: a section under the conversation's steps, one line a task, and how many are done. */
-export function backgroundSection(view, act, now = Date.now()) {
-  const items = view.background?.items ?? []
+export function backgroundSection(view: IslandShown, act: IslandAct, now = Date.now()) {
+  const items: Untyped[] = view.background?.items ?? []
   if (!items.length) return null
   const done = view.background.done ?? 0
   return h('section', { class: 'isl-bg-list', 'aria-label': '后台' },

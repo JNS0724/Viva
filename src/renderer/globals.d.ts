@@ -115,6 +115,13 @@ interface BackgroundTask {
 }
 /** What an ended task came back with, for the conversation: shown in the thread until put away. */
 interface TaskReport { taskId: string, title: string, status: string, preview: string, shown: boolean }
+/**
+ * What the island is given to show: islandView's (island-view.ts IslandView), or a form only the desktop's page
+ * makes (desk.ts: mini, coach, input, drop), with the fields that form reads.
+ */
+type IslandShown = { form: string, tone: string, mood: string, label: string, recent: ReadonlyArray<{ title: string, tone: string }>, [field: string]: any }
+/** What a click on the island asks for (island-dom.ts): its kind, and what that needs. */
+type IslandAct = (action: { kind: string, [field: string]: unknown }) => void
 /** What a view draws: an element, several, text, or nothing. */
 type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
