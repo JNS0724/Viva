@@ -10,7 +10,7 @@ import path from 'node:path'
 export const MAX_RECENT = 8
 
 /** Folders of the system, by platform; anything inside them is refused too. */
-const SYSTEM_DIRS = Object.freeze({
+const SYSTEM_DIRS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   darwin: ['/System', '/Library', '/usr', '/bin', '/sbin', '/etc', '/private/etc', '/cores', '/dev', '/Applications'],
   linux: ['/usr', '/etc', '/bin', '/sbin', '/boot', '/proc', '/sys', '/dev', '/lib', '/lib64'],
 })
@@ -18,11 +18,11 @@ const WINDOWS_SYSTEM_VARS = Object.freeze([
   ['SystemRoot', 'C:\\Windows'], ['ProgramFiles', 'C:\\Program Files'], ['ProgramFiles(x86)', 'C:\\Program Files (x86)'], ['ProgramData', 'C:\\ProgramData'],
 ])
 
-const pathFor = (platform) => (platform === 'win32' ? path.win32 : path.posix)
+const pathFor = (platform: string) => (platform === 'win32' ? path.win32 : path.posix)
 /** Windows and (by default) macOS ignore case in file names. */
-const foldsCase = (platform) => platform === 'win32' || platform === 'darwin'
+const foldsCase = (platform: string) => platform === 'win32' || platform === 'darwin'
 
-function keyOf(dir, platform) {
+function keyOf(dir: string, platform: string): string {
   const p = pathFor(platform)
   const normal = p.normalize(dir)
   const trimmed = normal.length > p.parse(normal).root.length ? normal.replace(/[\\/]+$/, '') : normal
@@ -30,24 +30,24 @@ function keyOf(dir, platform) {
 }
 
 /**
- * @param {string} a @param {string} b @param {string} [platform] process.platform's values
- * @returns {boolean} whether `a` and `b` name the same folder, whatever the trailing separator (and case, where the system ignores it)
+ * Whether `a` and `b` name the same folder, whatever the trailing separator (and case, where the system ignores it).
+ * @param platform process.platform's values
  */
-export const sameDir = (a, b, platform = process.platform) => keyOf(a, platform) === keyOf(b, platform)
+export const sameDir = (a: string, b: string, platform: string = process.platform): boolean => keyOf(a, platform) === keyOf(b, platform)
 
 /** `dir` is `parent` or inside it. */
-function within(dir, parent, platform) {
+function within(dir: string, parent: string, platform: string): boolean {
   const child = keyOf(dir, platform)
   const base = keyOf(parent, platform)
   return child === base || child.startsWith(`${base}${pathFor(platform).sep}`)
 }
 
-function systemDirs(platform, env) {
+function systemDirs(platform: string, env: Record<string, string | undefined>): readonly string[] {
   if (platform === 'win32') return WINDOWS_SYSTEM_VARS.map(([name, fallback]) => env[name] || fallback)
   return SYSTEM_DIRS[platform] ?? SYSTEM_DIRS.linux
 }
 
-const isFolder = (dir) => {
+const isFolder = (dir: string) => {
   try {
     return fs.statSync(dir).isDirectory()
   } catch {
@@ -56,13 +56,14 @@ const isFolder = (dir) => {
 }
 
 /**
- * @param {string} dir the folder picked
- * @param {{ platform?: string, home?: string, env?: Record<string, string>, isDirectory?: (dir: string) => boolean }} [deps]
- * @returns {string | null} why it cannot be the working directory, or null when it can
+ * @param dir the folder picked
+ * @returns why it cannot be the working directory, or null when it can
  */
-export function workDirProblem(dir, { platform = process.platform, home = os.homedir(), env = process.env, isDirectory = isFolder } = {}) {
+export function workDirProblem(dir: unknown, { platform = process.platform, home = os.homedir(), env = process.env, isDirectory = isFolder }: {
+  platform?: string, home?: string, env?: Record<string, string | undefined>, isDirectory?: (dir: string) => boolean,
+} = {}): string | null {
   const p = pathFor(platform)
-  if (platform === 'win32' && /^(\\\\|\/\/)/.test(dir ?? '')) return '不支持网络路径（\\\\服务器\\共享），可以先映射成本地盘符，或者复制到本机'
+  if (platform === 'win32' && /^(\\\\|\/\/)/.test(typeof dir === 'string' ? dir : '')) return '不支持网络路径（\\\\服务器\\共享），可以先映射成本地盘符，或者复制到本机'
   if (typeof dir !== 'string' || !dir || !p.isAbsolute(dir)) return '需要选一个文件夹的完整路径'
   // A file dragged onto the window lands here too.
   if (!isDirectory(dir)) return '这不是一个文件夹，或者它已经不在了'
@@ -72,13 +73,10 @@ export function workDirProblem(dir, { platform = process.platform, home = os.hom
   return null
 }
 
-/**
- * @param {string[]} list @param {string} dir @param {string} [platform]
- * @returns {string[]} the folders used lately with `dir` first, each once, at most MAX_RECENT; `list` is left as it was
- */
-export function withRecent(list, dir, platform = process.platform) {
+/** The folders used lately with `dir` first, each once, at most MAX_RECENT; `list` is left as it was. */
+export function withRecent(list: readonly string[], dir: string, platform: string = process.platform): string[] {
   return [dir, ...list.filter((item) => !sameDir(item, dir, platform))].slice(0, MAX_RECENT)
 }
 
-/** @param {string[]} list @param {string} dir @param {string} [platform] @returns {string[]} `list` without `dir` */
-export const forgetDir = (list, dir, platform = process.platform) => list.filter((item) => !sameDir(item, dir, platform))
+/** `list` without `dir`. */
+export const forgetDir = (list: readonly string[], dir: string, platform: string = process.platform): string[] => list.filter((item) => !sameDir(item, dir, platform))

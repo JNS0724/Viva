@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createPreferences } from '../src/main/preferences.js'
+import { createPreferences } from '../src/main/preferences.ts'
 
 const tempFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'viva-prefs-')), 'preferences.json')
 const noDirs = { recent: [], trusted: [] }

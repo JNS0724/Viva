@@ -18,12 +18,12 @@ const CHECKSUM_BYTES = 4
 
 const zstdDecompress = promisify(zlib.zstdDecompress)
 
-function need(buffer, end) {
+function need(buffer: Buffer, end: number): void {
   if (end > buffer.length) throw new Error('zstd: the data ends inside a frame')
 }
 
 /** Where the frame starting at `start` ends. */
-function frameEnd(buffer, start) {
+function frameEnd(buffer: Buffer, start: number): number {
   const descriptor = buffer[start + 4]
   const singleSegment = (descriptor >> 5) & 1
   const contentSizeFlag = descriptor >> 6
@@ -44,8 +44,8 @@ function frameEnd(buffer, start) {
 }
 
 /** The zstd frames in `buffer`, in order; skippable frames are left out. */
-export function splitZstdFrames(buffer) {
-  const frames = []
+export function splitZstdFrames(buffer: Buffer): Buffer[] {
+  const frames: Buffer[] = []
   let at = 0
   while (at < buffer.length) {
     need(buffer, at + 4)
@@ -65,8 +65,8 @@ export function splitZstdFrames(buffer) {
 }
 
 /** Every frame decompressed and joined, whatever the runtime's zstd does with several frames. */
-export async function decompressZstdFrames(buffer) {
-  const parts = []
+export async function decompressZstdFrames(buffer: Buffer): Promise<Buffer> {
+  const parts: Buffer[] = []
   for (const frame of splitZstdFrames(buffer)) parts.push(await zstdDecompress(frame))
   return Buffer.concat(parts)
 }

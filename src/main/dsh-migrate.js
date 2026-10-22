@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { removeTree } from './remove-tree.js'
+import { removeTree } from './remove-tree.ts'
 
 /**
  * The app's dsh used to share the user's `~/.dsh`. Moving to its own home (dsh-runtime.js) brings along

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_RECENT, forgetDir, sameDir, withRecent, workDirProblem } from '../src/main/work-dir.js'
+import { MAX_RECENT, forgetDir, sameDir, withRecent, workDirProblem } from '../src/main/work-dir.ts'
 
 /** Which folders may be the working directory, and the list of folders used lately. */
 

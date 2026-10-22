@@ -5,12 +5,17 @@
 /** Should the system never say it has left full screen, the window goes anyway after this long. */
 const LEAVE_TIMEOUT_MS = 1_500
 
-/**
- * @param {{ setFullScreen: (on: boolean) => void, once: Function, removeListener: Function, isDestroyed: () => boolean }} win
- * @param {() => void} then what to do once the window has left full screen
- */
-export function leaveFullScreen(win, then) {
-  let timer = null
+/** What of a BrowserWindow this needs. */
+interface FullScreenWindow {
+  setFullScreen: (on: boolean) => void
+  once: (event: 'leave-full-screen', listener: () => void) => unknown
+  removeListener: (event: 'leave-full-screen', listener: () => void) => unknown
+  isDestroyed: () => boolean
+}
+
+/** @param then what to do once the window has left full screen */
+export function leaveFullScreen(win: FullScreenWindow, then: () => void): void {
+  let timer: ReturnType<typeof setTimeout> | null = null
   const done = () => {
     clearTimeout(timer)
     win.removeListener('leave-full-screen', done)

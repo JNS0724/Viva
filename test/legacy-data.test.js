@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { adoptLegacyData } from '../src/main/legacy-data.js'
+import { adoptLegacyData } from '../src/main/legacy-data.ts'
 
 /** The first launch as Viva brings along what my-agent kept, without touching the old folder. */
 function setup(t) {

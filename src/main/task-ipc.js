@@ -28,6 +28,7 @@ const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 const isText = (value) => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
 const isCount = (value) => Number.isSafeInteger(value) && value >= 0
 const isEnded = (entry) => Number.isFinite(entry?.endedAt)
+/** @param {import('./task-store.ts').StoredTask} task */
 const summaryOf = ({ id, segmentId, title, words }) => ({ id, segmentId, title, words })
 const titleOf = (words) => {
   const line = words.trim().split('\n')[0]
@@ -48,7 +49,7 @@ function checked(request) {
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
  *   db: ReturnType<import('./history-db.js').openHistoryDb>,
- *   store?: ReturnType<import('./task-store.js').createTaskStore>,
+ *   store?: ReturnType<import('./task-store.ts').createTaskStore>,
  *   current: () => any, setCurrent: (conversation: object) => void,
  *   isBusy: () => boolean, setBusy: (busy: boolean) => void, agentInfo: () => { mode?: string, model?: string },
  *   agent: Record<'spinOff' | 'mergeBack' | 'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>,

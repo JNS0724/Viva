@@ -21,36 +21,32 @@ const SNAP_PX = 48
  */
 export const DRAG_SIZE = Object.freeze({ width: 72, height: 72 })
 
-/** @typedef {{ x: number, y: number, width: number, height: number }} Area */
-/** @typedef {{ x: number, y: number }} Point the centre of the island's head, on the screen */
-/** @typedef {{ fx: number, fy: number }} Place a point as fractions of a work area */
-/** @typedef {{ last: string | null, places: Record<string, Place> }} Places what preferences.json keeps */
+export interface Area { x: number, y: number, width: number, height: number }
+/** The centre of the island's head, on the screen. */
+export interface Point { x: number, y: number }
+/** A point as fractions of a work area. */
+export interface Place { fx: number, fy: number }
+/** What preferences.json keeps. */
+export interface Places { last: string | null, places: Record<string, Place> }
 
-/** @param {Area} area @returns {Point} */
-export function homePoint(area) {
+export function homePoint(area: Area): Point {
   return { x: area.x + area.width / 2, y: area.y + TOP_GAP + STAGE_PAD.end + HEAD / 2 }
 }
 
-const clamp = (value, min, max) => Math.min(Math.max(value, min), max)
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
 /** A point kept inside the work area, so the head is never off the screen. */
-export function keepInside(point, area) {
+export function keepInside(point: Point, area: Area): Point {
   return {
     x: clamp(point.x, area.x + HEAD / 2, area.x + area.width - HEAD / 2),
     y: clamp(point.y, area.y + HEAD / 2, area.y + area.height - HEAD / 2),
   }
 }
 
-/**
- * @param {Point} point
- * @param {Area} area
- * @returns {{ bounds: Area, align: 'start' | 'center' | 'end', dir: 'down' | 'up' }}
- */
-export function deskLayout(point, area) {
+export function deskLayout(point: Point, area: Area): { bounds: Area, align: 'start' | 'center' | 'end', dir: 'down' | 'up' } {
   const { width, height } = DESK_SIZE
   const dir = point.y > area.y + area.height / 2 ? 'up' : 'down'
-  /** @type {'start' | 'center' | 'end'} */
-  let align = 'center'
+  let align: 'start' | 'center' | 'end' = 'center'
   if (point.x - area.x < width / 2) align = 'start'
   else if (area.x + area.width - point.x < width / 2) align = 'end'
   const x = { start: area.x, end: area.x + area.width - width, center: Math.round(point.x - width / 2) }[align]
@@ -59,38 +55,36 @@ export function deskLayout(point, area) {
   return { bounds: { x, y: top, width, height }, align, dir }
 }
 
-/** @param {Point} point @returns {Area} the dragged window, its cat centred on `point` */
-export function dragBounds(point) {
+/** The dragged window, its cat centred on `point`. */
+export function dragBounds(point: Point): Area {
   return { x: Math.round(point.x - DRAG_SIZE.width / 2), y: Math.round(point.y - DRAG_SIZE.height / 2), ...DRAG_SIZE }
 }
 
-/** @returns {Place | null} where a dropped island stays; null when it went home */
-export function settle(point, area) {
+/** Where a dropped island stays; null when it went home. */
+export function settle(point: Point, area: Area): Place | null {
   const home = homePoint(area)
   if (Math.hypot(point.x - home.x, point.y - home.y) <= SNAP_PX) return null
   return { fx: (point.x - area.x) / area.width, fy: (point.y - area.y) / area.height }
 }
 
-/** @param {Place | null | undefined} place @param {Area} area @returns {Point} */
-export function pointOf(place, area) {
+export function pointOf(place: Place | null | undefined, area: Area): Point {
   if (!place) return homePoint(area)
   return keepInside({ x: area.x + place.fx * area.width, y: area.y + place.fy * area.height }, area)
 }
 
-const isFraction = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+const isFraction = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
 
-/** What preferences.json holds, with anything that is not a place left out. @returns {Places} */
-export function readPlaces(raw) {
-  /** @type {Record<string, Place>} */
-  const places = {}
-  for (const [id, place] of Object.entries(raw?.places ?? {})) {
+/** What preferences.json holds, with anything that is not a place left out. */
+export function readPlaces(raw: any): Places {
+  const places: Record<string, Place> = {}
+  for (const [id, place] of Object.entries<any>(raw?.places ?? {})) {
     if (isFraction(place?.fx) && isFraction(place?.fy)) places[id] = { fx: place.fx, fy: place.fy }
   }
   return { last: typeof raw?.last === 'string' ? raw.last : null, places }
 }
 
-/** @returns {Places} with the display's place set, or removed when it is home */
-export function withPlace(places, displayId, place) {
+/** With the display's place set, or removed when it is home. */
+export function withPlace(places: Places, displayId: string | number, place: Place | null): Places {
   const id = String(displayId)
   const { [id]: _old, ...others } = places.places
   return { last: id, places: place ? { ...others, [id]: place } : others }

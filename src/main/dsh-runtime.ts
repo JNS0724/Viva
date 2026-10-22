@@ -9,24 +9,28 @@ import path from 'node:path'
  */
 
 /** Where the app's dsh keeps its profile, sessions, credentials and skills. */
-export const dshHomeFor = (userData) => path.join(userData, 'dsh')
+export const dshHomeFor = (userData: string): string => path.join(userData, 'dsh')
 /** dsh-skill-filesystem also scans `~/.agents/skills`; the app's dsh scans this instead. */
-export const agentsHomeFor = (dshHome) => path.join(dshHome, 'agents')
+export const agentsHomeFor = (dshHome: string): string => path.join(dshHome, 'agents')
 
 /**
  * Variables that steer dsh (its home, endpoint, keys, runtime). The user's values are never passed on;
  * the app sets the ones it means. Matched without regard to case, as Windows treats names.
  */
 const OWNED_PREFIXES = Object.freeze(['DSH_', 'DEEPSEEK_', 'ELECTRON_', 'VIVA_'])
-const isOwned = (name) => OWNED_PREFIXES.some((prefix) => name.toUpperCase().startsWith(prefix))
+const isOwned = (name: string) => OWNED_PREFIXES.some((prefix) => name.toUpperCase().startsWith(prefix))
+
+/** What runs dsh: the app's own executable as Node, or (for development) the Node named by DSH_NODE. */
+export interface DshRuntime { nodeBin: string, electron: boolean }
 
 /**
  * The environment dsh runs with: the user's environment (PATH and the like, which MCP servers need too)
  * without anything that steers dsh, then exactly what the app sets.
- * @param {{ base: NodeJS.ProcessEnv, dshHome: string, runtime: { electron: boolean }, settings: Record<string, string> }} options
- *   settings: keys and endpoints the app hands over (DEEPSEEK_API_KEY, each provider's key, a test endpoint)
+ * settings: keys and endpoints the app hands over (DEEPSEEK_API_KEY, each provider's key, a test endpoint).
  */
-export function dshEnv({ base, dshHome, runtime, settings }) {
+export function dshEnv({ base, dshHome, runtime, settings }: {
+  base: NodeJS.ProcessEnv, dshHome: string, runtime: { electron: boolean }, settings: Record<string, string>,
+}): NodeJS.ProcessEnv {
   const inherited = Object.fromEntries(Object.entries(base).filter(([name]) => !isOwned(name)))
   return {
     ...inherited,
@@ -37,26 +41,20 @@ export function dshEnv({ base, dshHome, runtime, settings }) {
   }
 }
 
-/**
- * What runs dsh: the app's own executable as Node, or (for development) the Node named by DSH_NODE.
- * @param {{ env: NodeJS.ProcessEnv, execPath: string }} options
- * @returns {{ nodeBin: string, electron: boolean }}
- */
-export function dshRuntime({ env, execPath }) {
+export function dshRuntime({ env, execPath }: { env: NodeJS.ProcessEnv, execPath: string }): DshRuntime {
   return env.DSH_NODE ? { nodeBin: env.DSH_NODE, electron: false } : { nodeBin: execPath, electron: true }
 }
 
 /** After dsh dies on its own it is started again, waiting longer each time; this many in a row is enough. */
-export const RESTART_DELAYS_MS = Object.freeze([1_000, 3_000, 10_000])
+export const RESTART_DELAYS_MS: readonly number[] = Object.freeze([1_000, 3_000, 10_000])
 /** Crashes further apart than this are not "in a row". */
 export const CRASH_WINDOW_MS = 120_000
 
 /**
  * How long to wait before starting dsh again, or null to stop trying.
- * @param {number[]} crashes when dsh died, including this time
- * @param {number} now
+ * @param crashes when dsh died, including this time
  */
-export function restartDelay(crashes, now) {
+export function restartDelay(crashes: readonly number[], now: number): number | null {
   const recent = crashes.filter((at) => now - at < CRASH_WINDOW_MS).length
   return recent >= 1 && recent <= RESTART_DELAYS_MS.length ? RESTART_DELAYS_MS[recent - 1] : null
 }

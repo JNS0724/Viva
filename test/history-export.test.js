@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { exportFileName, toMarkdown } from '../src/main/history-export.js'
+import { exportFileName, toMarkdown } from '../src/main/history-export.ts'
 
 test('toMarkdown writes the title, when and with which model, then the questions and answers', () => {
   // Arrange

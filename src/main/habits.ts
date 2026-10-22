@@ -11,9 +11,12 @@ const ACTIVE_SHARE = 0.25
 const MIN_HOUR_COUNT = 2
 const HOURS = 24
 
+/** From an hour to the hour after the last one. */
+type HourRange = [number, number]
+
 /** Consecutive active hours as [start, endExclusive] pairs. */
-function hourRanges(active) {
-  return active.reduce((ranges, isActive, hour) => {
+function hourRanges(active: boolean[]): HourRange[] {
+  return active.reduce<HourRange[]>((ranges, isActive, hour) => {
     if (!isActive) return ranges
     const last = ranges[ranges.length - 1]
     return last && last[1] === hour ? [...ranges.slice(0, -1), [last[0], hour + 1]] : [...ranges, [hour, hour + 1]]
@@ -21,13 +24,13 @@ function hourRanges(active) {
 }
 
 /**
- * @param {number[]} timestamps when the user sent a message (ms)
- * @returns {{ samples: number, ranges: Array<[number, number]>, text: string }} text is '' when there is too little to go on
+ * @param timestamps when the user sent a message (ms)
+ * @returns text is '' when there is too little to go on
  */
-export function activeHours(timestamps) {
+export function activeHours(timestamps: readonly number[]): { samples: number, ranges: HourRange[], text: string } {
   const samples = timestamps.length
   if (samples < MIN_SAMPLES) return { samples, ranges: [], text: '' }
-  const counts = new Array(HOURS).fill(0)
+  const counts = new Array<number>(HOURS).fill(0)
   for (const ts of timestamps) counts[new Date(ts).getHours()] += 1
   const busiest = Math.max(...counts)
   const ranges = hourRanges(counts.map((n) => n >= Math.max(MIN_HOUR_COUNT, busiest * ACTIVE_SHARE)))

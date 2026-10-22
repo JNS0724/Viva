@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { removeTree } from '../src/main/remove-tree.js'
+import { removeTree } from '../src/main/remove-tree.ts'
 
 /** dsh keeps the pictures it stored read-only (chmod 0400); Windows refuses to remove such a file as it is. */
 test('read-only files are removed too', () => {

@@ -10,18 +10,16 @@ const RETRIES = Object.freeze({ maxRetries: 10, retryDelay: 100 })
  * junction and deletes what it points at: the app's own plugin sources. So every link is unlinked first,
  * then what is left holds only the tree's own files. Files made read-only (dsh keeps the pictures it stored
  * so, image-store.js) are made writable on the way: Windows will not remove a read-only file.
- *
- * @param {string} dir
  */
-export function removeTree(dir) {
+export function removeTree(dir: string): void {
   unlinkLinks(dir)
   fs.rmSync(dir, { recursive: true, force: true, ...RETRIES })
 }
 
 const OWNER_WRITE = 0o200
 
-function unlinkLinks(dir) {
-  let names
+function unlinkLinks(dir: string): void {
+  let names: string[]
   try {
     names = fs.readdirSync(dir)
   } catch (err) {

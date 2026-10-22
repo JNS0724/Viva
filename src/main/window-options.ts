@@ -1,4 +1,5 @@
 import path from 'node:path'
+import type { BrowserWindowConstructorOptions } from 'electron'
 
 /** Window chrome, size and icon per platform. Pure, so the choices can be tested on any OS. */
 
@@ -17,8 +18,7 @@ const SCREEN_SHARE = 0.9
  * macOS keeps its traffic lights on the left; Windows and Linux get system-drawn buttons on the right
  * (`titleBarOverlay`), which the page makes room for via `env(titlebar-area-width)`.
  */
-/** @param {string} platform @returns {Partial<import('electron').BrowserWindowConstructorOptions>} */
-export function windowChrome(platform) {
+export function windowChrome(platform: string): Partial<BrowserWindowConstructorOptions> {
   if (platform === 'darwin') {
     return {
       titleBarStyle: 'hiddenInset',
@@ -35,18 +35,15 @@ export function windowChrome(platform) {
  * The app's icon while it runs from the repository (`npm start`): a built app shows the icon packaged into
  * it (build/icons, see package.json), but Electron itself would show its own. macOS takes it for the Dock,
  * Windows and Linux for the window and taskbar.
- * @returns {string | null} the icon file, or null for a built app
+ * @returns the icon file, or null for a built app
  */
-export function devIcon({ platform, packaged, appRoot }) {
+export function devIcon({ platform, packaged, appRoot }: { platform: string, packaged: boolean, appRoot: string }): string | null {
   if (packaged) return null
   return path.join(appRoot, 'build', 'icons', platform === 'win32' ? 'viva.ico' : 'viva.png')
 }
 
-/**
- * The preferred size, shrunk to fit the work area (a 1080p laptop at 150% scaling has ~690px of height).
- * @param {{ width: number, height: number }} workArea
- */
-export function windowSize(workArea) {
+/** The preferred size, shrunk to fit the work area (a 1080p laptop at 150% scaling has ~690px of height). */
+export function windowSize(workArea: { width: number, height: number }) {
   const width = Math.min(PREFERRED.width, Math.floor(workArea.width * SCREEN_SHARE))
   const height = Math.min(PREFERRED.height, Math.floor(workArea.height * SCREEN_SHARE))
   return { width, height, minWidth: Math.min(MINIMUM.width, width), minHeight: Math.min(MINIMUM.height, height) }

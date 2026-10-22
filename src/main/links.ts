@@ -5,13 +5,10 @@
 const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 const MAX_URL_CHARS = 4000
 
-/**
- * @param {unknown} value
- * @returns {string} the address to hand to the OS
- */
-export function externalUrl(value) {
+/** The address to hand to the OS. */
+export function externalUrl(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > MAX_URL_CHARS) throw new Error('链接无效')
-  let url
+  let url: URL
   try {
     url = new URL(value)
   } catch {

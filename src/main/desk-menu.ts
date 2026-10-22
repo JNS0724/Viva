@@ -1,15 +1,16 @@
+import type { MenuItemConstructorOptions } from 'electron'
+
 /**
  * The desktop island's right-click menu: on a computer the place to look for what else something can do.
  * Built as a template so it can be checked without Electron; island-main.js turns it into a menu.
  *
- * @param {{
- *   working: boolean, shortcut: string,
- *   ask: () => void, open: () => void, stop: () => void, resetPlace: () => void, hide: () => void, switchOff: () => void,
- * }} deps shortcut: the ask shortcut, shown beside 提问… (it is registered elsewhere, as a global shortcut);
- *   hide: until the window is next closed to the tray; switchOff: for good, as the switch in settings
- * @returns {object[]} a template for Menu.buildFromTemplate
+ * shortcut: the ask shortcut, shown beside 提问… (it is registered elsewhere, as a global shortcut);
+ * hide: until the window is next closed to the tray; switchOff: for good, as the switch in settings.
  */
-export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlace, hide, switchOff }) {
+export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlace, hide, switchOff }: {
+  working: boolean, shortcut: string,
+  ask: () => void, open: () => void, stop: () => void, resetPlace: () => void, hide: () => void, switchOff: () => void,
+}): MenuItemConstructorOptions[] {
   return [
     { label: '提问…', accelerator: shortcut, registerAccelerator: false, click: ask },
     { label: '打开 Viva 窗口', click: open },

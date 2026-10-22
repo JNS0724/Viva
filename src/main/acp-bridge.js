@@ -3,12 +3,12 @@ import fs from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { dshLaunch } from './config.js'
-import { createPermissionBroker } from './permission-broker.js'
+import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.js'
 import { createSteerDesk } from './steer-channel.js'
 import { createForkDesk } from './fork-channel.js'
 import { createQuestionDesk } from './question-channel.js'
-import { describeConfig, describeError } from './session-info.js'
+import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
 const STDERR_TAIL_LIMIT = 4000

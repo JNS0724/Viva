@@ -1,4 +1,4 @@
-import { DESK_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.js'
+import { DESK_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.ts'
 
 /**
  * The Viva island on the desktop: a small transparent window, at the top centre of the screen unless the
