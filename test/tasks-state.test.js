@@ -39,6 +39,25 @@ test('words typed while a turn runs: about the same thing go into it, about some
   assert.equal(routeOf(reduce(state, { type: 'route_toggle', text: '明天周会几点？' }), '明天周会几点？'), 'into', 'Tab turns it round')
 })
 
+test('a task\'s steps are its own turn\'s, not those of the turns before it', () => {
+  const earlier = run([
+    { type: 'user_prompt', text: '先看看日志', at: 1 },
+    { type: 'acp_update', at: 2, update: { sessionUpdate: 'tool_call', toolCallId: 't0', title: '读取 app.log', kind: 'read', status: 'completed' } },
+    { type: 'turn_end', stopReason: 'end_turn', at: 3 },
+  ], working())
+  const state = run([
+    { type: 'user_prompt', text: WORDS_LATER, at: 10 },
+    { type: 'acp_update', at: 11, update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '运行 git log', kind: 'execute', status: 'in_progress' } },
+    { type: 'task_spun', task: { id: 's1', segmentId: 'c1', title: WORDS_LATER, words: WORDS_LATER }, conversation: { id: 'c2', messages: [] }, info: { sessionId: 's2' }, folds: [], at: 20 },
+  ], reduce(earlier, { type: 'conversation_saved', id: 'c1' }))
+  const [task] = liveTasks(state)
+  assert.deepEqual(task.view.timeline.map((entry) => entry.ref), ['t1'])
+  const back = reduce(state, { type: 'task_undone', taskId: 's1', conversationId: 'c1', info: { sessionId: 's1' } })
+  assert.deepEqual(back.timeline.map((entry) => entry.ref).sort(), ['t0', 't1'], 'undone, the earlier steps are back too')
+})
+
+const WORDS_LATER = '整理发布说明'
+
 test('what moves to the background: the words that started the turn and where they are among what is saved', () => {
   assert.deepEqual(spinOffTarget(working()), { words: '整理这周的提交，写成发布说明', keep: 2 })
   assert.equal(spinOffTarget(initialState), null)

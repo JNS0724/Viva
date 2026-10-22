@@ -62,6 +62,26 @@ async function moveSteps(win, outDir, expect, hooks) {
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-moved')
   await drawerSteps(win, outDir, expect)
+  await mentionSteps(win, outDir, expect)
+}
+
+const MENTION_WORDS = '顺便说一声'
+
+/** 「#name words」 go to the background task named: the hint says so, and the conversation on screen is left alone. */
+async function mentionSteps(win, outDir, expect) {
+  const hint = await run(win, `(() => {
+    const input = document.getElementById('composer-input')
+    input.value = '#再帮我 ${MENTION_WORDS}'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return document.getElementById('route-hint').textContent
+  })()`)
+  expect(hint.includes(`交给 #${BUSY_ASK}`), '「#name」 should say the words go to that task', hint)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-mention')
+  await run(win, `document.getElementById('composer').requestSubmit()`)
+  await wait(UI_WAIT_MS)
+  const asked = await run(win, `[...document.querySelectorAll('#thread > .msg-user, #thread > .msg-user-row .msg-user')].map((el) => el.textContent)`)
+  expect(!asked.some((text) => text.includes(MENTION_WORDS)), 'the words should not land in the conversation on screen', asked)
 }
 
 /** The task's own tab in the drawer shows what it did, apart from the conversation's 过程. */
@@ -131,6 +151,27 @@ async function offerSteps(win, outDir, expect) {
   // Done with: its approval declined from the island-marked card, the task ends.
   await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
   await until(win, `!document.querySelector('#island .isl-bg')`, 'the task ending')
+  await reportSteps(win, outDir, expect)
+}
+
+/** An ended task reports back in the conversation; 看全部 opens its tab, and 关掉这件 puts it away. */
+async function reportSteps(win, outDir, expect) {
+  const report = await until(win, `document.querySelector('#thread .task-report')?.textContent ?? null`, 'the task\'s report')
+  expect(report.includes(`#${BIG_ASK}`), 'the report should name the task', report)
+  await run(win, `document.querySelector('#thread .task-report').scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-report')
+  await run(win, `document.querySelector('#thread .task-report-open').click()`)
+  const tab = await until(win, `document.querySelector('#drawer .task-tab-act')?.textContent ?? null`, 'the task\'s tab')
+  expect(tab === '关掉这件', 'an ended task\'s tab should offer to close it', tab)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-closing')
+  await run(win, `document.querySelector('#drawer .task-tab-act').click()`)
+  const after = await until(win, `(() => {
+    const tabs = [...document.querySelectorAll('#drawer .tab-task')].map((el) => el.textContent)
+    return !tabs.includes('#${BIG_ASK}') && { tabs, report: Boolean(document.querySelector('#thread .task-report')) }
+  })()`, 'the task put away')
+  expect(!after.report, 'closed, the task\'s report should go too', after)
 }
 
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */

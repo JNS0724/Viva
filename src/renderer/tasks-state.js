@@ -153,9 +153,15 @@ export function taskActions(handlers) {
     task_spun: (state, { task, conversation, info, folds, at, text = null }) => {
       const target = spinOffTarget(state)
       const from = target ? state.messages.findIndex((m) => m.text === target.words && startsTurn(m)) : state.messages.length
-      const entry = settled({ ...task, startedAt: state.turn?.startedAt ?? at, endedAt: null, status: 'running', now: null, view: { ...viewOf(state), messages: state.messages.slice(from) } })
+      const startedAt = state.turn?.startedAt ?? at
+      // Its own turn's steps only: the turns before it stay with the conversation.
+      const timeline = state.timeline.filter((item) => item.at >= startedAt)
+      const entry = settled({ ...task, startedAt, endedAt: null, status: 'running', now: null, view: { ...viewOf(state), messages: state.messages.slice(from), timeline } })
       const going = handlers.rewound(state, { conversation, info, folds })
-      return { ...going, tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo: { taskId: task.id, prefix: going.messages, text }, flip: false } }
+      // Undone, the earlier turns' steps come back in front of the task's (task_undone).
+      const earlier = state.timeline.filter((item) => item.at < startedAt)
+      const undo = { taskId: task.id, prefix: going.messages, text, timeline: earlier }
+      return { ...going, tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo, flip: false } }
     },
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
@@ -194,6 +200,7 @@ export function taskActions(handlers) {
         ...state,
         ...task.view,
         messages: [...state.tasks.undo?.prefix ?? [], ...task.view.messages].map((m, i) => ({ ...m, id: `m${i}` })),
+        timeline: [...state.tasks.undo?.timeline ?? [], ...task.view.timeline],
         conversationId,
         info: { ...state.info, ...info },
         folds: [],
