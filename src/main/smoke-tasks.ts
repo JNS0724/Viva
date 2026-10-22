@@ -311,6 +311,11 @@ export async function checkResume(win, outDir): Promise<string[]> {
   await capture(win, outDir, 'tasks-unfinished')
   await run(win, `[...document.querySelectorAll('#thread .task-unfinished button')].find((el) => el.textContent === '接着做').click()`)
   const report = await until(win, `(() => { const card = ${cardState(LEFT_ASK)}; return card?.status === 'done' && card.text })()`, 'the task taken up reporting back')
+    .catch(async (err) => {
+      // What the card shows instead, and a picture of it, so a run that times out says where the task stood.
+      await capture(win, outDir, 'tasks-resume-stuck')
+      throw new Error(`${err.message}: ${JSON.stringify(await run(win, cardState(LEFT_ASK)))}`)
+    })
   expect(report.includes('做完了'), 'taken up, the task should carry on to its end', report)
   expect(!(await run(win, `Boolean(document.querySelector('#thread .task-unfinished'))`)), 'taken up, it is no longer offered')
   await wait(UI_WAIT_MS)
