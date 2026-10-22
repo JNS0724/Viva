@@ -4,6 +4,8 @@
  * Loaded by the app's dsh profile (src/main/dsh-profile.js) with `config.file` = trace.db.
  */
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { stepsFrom } from './lib/steps.ts'
 import { openTraceDb } from './lib/store.ts'
@@ -12,11 +14,11 @@ export const name = 'viva-trace'
 export const inject = ['agents']
 export const Config = z.object({ file: z.string() })
 
-const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
+const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
 
 /** The session's events of `turn`, oldest first (the turn is the latest one). */
-function turnEvents(agent, turn) {
-  const events: any[] = []
+function turnEvents(agent: Agent, turn: number) {
+  const events: Array<NonNullable<ReturnType<Agent['session']['eventAt']>>> = []
   for (let seq = agent.session.seq - 1; seq >= 0; seq -= 1) {
     const event = agent.session.eventAt(SessionSeq(seq))
     if (event?.type === 'turn/start' && event.data.turn === turn) break
@@ -25,11 +27,7 @@ function turnEvents(agent, turn) {
   return events.reverse()
 }
 
-/**
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ file: string }} config
- */
-export function apply(ctx, config) {
+export function apply(ctx: Context, config: { file: string }) {
   if (!config?.file) throw new Error(`${name}: config.file (the trace.db path) is required`)
   const db = openTraceDb({ file: config.file })
   ctx.effect(() => () => db.close(), 'trace.db')
