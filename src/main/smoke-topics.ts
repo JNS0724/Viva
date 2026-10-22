@@ -1,4 +1,4 @@
-import { capture, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { capture, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeWindow } from './smoke-kit.ts'
 // newTopic: ⌘N, the first time; ＋ 新话题 above the input, the second.
 
 /**
@@ -17,12 +17,12 @@ const TIMELINE = `(() => ({
 }))()`
 
 /** Waits until the timeline shows what `test` (page code over `seen`) asks, and returns what it showed. */
-const timelineWhen = (win, test, what) => until(win, `(() => { const seen = ${TIMELINE}; return (${test}) && seen })()`, what)
+const timelineWhen = (win: SmokeWindow, test: string, what: string) => until(win, `(() => { const seen = ${TIMELINE}; return (${test}) && seen })()`, what)
 
 /** @returns {Promise<string[]>} failures */
-export async function checkTopics(win, outDir) {
+export async function checkTopics(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
-  const expect = (ok, message, seen) => { if (!ok) failures.push(`topics: ${message}: ${JSON.stringify(seen)}`) }
+  const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`topics: ${message}: ${JSON.stringify(seen)}`) }
 
   await newTopic(win)
   const fresh = await timelineWhen(win, 'seen.undo && !seen.switching', 'a new topic shown where it starts')

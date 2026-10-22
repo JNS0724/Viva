@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import type { BrowserWindow } from 'electron'
 import { checkDeskAsk } from './smoke-desk.ts'
 import { checkPictures } from './smoke-images.ts'
 import { checkTopics } from './smoke-topics.ts'
 import { checkPermission } from './smoke-permission.ts'
-import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { checkMemory } from './smoke-memory.ts'
 import { checkResume } from './smoke-tasks.ts'
 
@@ -16,7 +17,7 @@ const DRAWER_PARK_TOP = 120
 /** The latest question may sit a little below the top (gap + padding), but must stay on screen. */
 const QUESTION_TOP_RANGE = [0, 80]
 /** Narrowest window the app allows; the title bar must still hold together there. */
-const NARROW_SIZE = [880, 640]
+const NARROW_SIZE: readonly [number, number] = [880, 640]
 /** What the page assumes the Windows caption buttons take when env(titlebar-area-width) is unavailable. */
 const SIMULATED_CONTROLS_PX = 140
 const TITLEBAR_GUTTER_PX = 12
@@ -49,7 +50,7 @@ const OFFER_WAIT_MS = 5000
  * rather than waiting half a minute; the fake dsh here cannot fork, so the move itself is left to the memory
  * phase (smoke-tasks.js), which takes the background on the real dsh.
  */
-async function checkOffer(win, outDir) {
+async function checkOffer(win: SmokeWindow, outDir: string) {
   await run(win, `(() => {
     window.smokeNow = Date.now
     Date.now = () => window.smokeNow() + ${OFFER_SHIFT_MS}
@@ -72,7 +73,7 @@ async function checkOffer(win, outDir) {
 }
 
 /** Long run: the reader parks the trace mid-way, then a long answer streams in. Returns failed expectations. */
-async function checkLongTask(win, outDir) {
+async function checkLongTask(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   await click(win, 'toggle-drawer')
   await submit(win, LONG_PROMPT)
@@ -126,7 +127,7 @@ const TITLEBAR_METRICS = `(() => {
 })()`
 
 /** Title bar on one platform at the current window size: island centred, clear of the buttons, buttons clear of the system's. */
-async function checkTitlebarOn(win, platform) {
+async function checkTitlebarOn(win: SmokeWindow, platform: string) {
   await run(win, `document.documentElement.dataset.platform = ${JSON.stringify(platform)}`)
   await wait(UI_WAIT_MS)
   const m = await run(win, TITLEBAR_METRICS)
@@ -141,11 +142,11 @@ async function checkTitlebarOn(win, platform) {
 }
 
 /** Both platforms (Windows simulated) at full and narrowest width, plus the floating drawer when narrow. */
-async function checkLayouts(win, outDir) {
+async function checkLayouts(win: BrowserWindow, outDir: string) {
   const realPlatform = await run(win, 'document.documentElement.dataset.platform')
   const [width, height] = win.getSize()
   const failures: string[] = []
-  for (const size of [[width, height], NARROW_SIZE]) {
+  for (const size of [[width, height] as const, NARROW_SIZE]) {
     win.setSize(...size)
     for (const platform of ['darwin', 'win32']) {
       failures.push(...await checkTitlebarOn(win, platform))
@@ -165,7 +166,7 @@ async function checkLayouts(win, outDir) {
 }
 
 /** No key yet: the home page guides to the settings panel and the composer is disabled. */
-async function checkSetup(win, outDir) {
+async function checkSetup(win: SmokeWindow, outDir: string) {
   const seen = await run(win, `(() => ({
     title: document.querySelector('.setup-title')?.textContent ?? '',
     composerDisabled: document.getElementById('composer-input').disabled,
@@ -187,7 +188,7 @@ async function checkSetup(win, outDir) {
 }
 
 /** Second launch on the same profile: last launch's conversation is back, at the bottom, and the agent resumed it. */
-async function checkRelaunch(win, outDir) {
+async function checkRelaunch(win: SmokeWindow, outDir: string) {
   const restored = await run(win, `(() => {
     const scroll = document.getElementById('scroll')
     return {
@@ -208,7 +209,7 @@ async function checkRelaunch(win, outDir) {
 }
 
 /** Clicked, the title bar's island unfolds its steps over the conversation, not under it. */
-async function checkIslandOnTop(win, outDir) {
+async function checkIslandOnTop(win: SmokeWindow, outDir: string) {
   await run(win, `document.querySelector('#island .isl-head').click()`)
   await wait(UI_WAIT_MS)
   const seen = await run(win, `(() => {
@@ -234,7 +235,7 @@ const DESK_ISLAND_STATE = `(() => {
  * With the window away, the desktop island shows what waits on the user, and allowing it there goes
  * through to the window: the card in the thread goes and the turn carries on.
  */
-async function checkDeskIsland(win, outDir, desk) {
+async function checkDeskIsland(win: SmokeWindow, outDir: string, desk: any) {
   if (!desk) return ['the desktop island was not created']
   desk.force(true)
   try {
@@ -243,7 +244,7 @@ async function checkDeskIsland(win, outDir, desk) {
     if (!contents) return ['the desktop island did not open']
     const page = { webContents: contents }
     const logged: string[] = []
-    contents.on('console-message', (event) => logged.push(`${event.level}: ${event.message}`))
+    contents.on('console-message', (event: { level: string, message: string }) => logged.push(`${event.level}: ${event.message}`))
     const seen = await until(page, `(() => { const s = ${DESK_ISLAND_STATE}; return s?.form === 'waiting' && s.allow && s })()`, 'the desktop island asking to allow')
       .catch(async (err) => {
         throw new Error(`${err.message}; it showed ${JSON.stringify(await run(page, DESK_ISLAND_STATE))}, logged ${JSON.stringify(logged)}`)
@@ -263,7 +264,7 @@ async function checkDeskIsland(win, outDir, desk) {
  * Tour from a clean profile on the fake dsh: an answer waiting on a permission card, the layouts around it,
  * allowing it from the desktop island, the island's steps, the long task.
  */
-async function walkthrough(win, outDir, hooks) {
+async function walkthrough(win: BrowserWindow, outDir: string, hooks: SmokeHooks) {
   await capture(win, outDir, 'home')
   await submit(win, SMOKE_PROMPT)
   await until(win, `Boolean(document.querySelector('.confirm .btn-primary'))`, 'the permission card')
@@ -282,7 +283,7 @@ async function walkthrough(win, outDir, hooks) {
  * The model's button and the folder's chip open their menus from anywhere on them, not only the chevron:
  * the name is clicked here, which the re-render takes out of the page as the menu opens.
  */
-async function checkPickers(win, outDir) {
+async function checkPickers(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   await run(win, `document.querySelector('#model-btn .model-btn-name').click()`)
   await wait(UI_WAIT_MS)
@@ -307,10 +308,10 @@ const FILES_STATE = `(() => ({
   error: document.querySelector('.files .form-error')?.textContent ?? '',
 }))()`
 
-const clickRow = (name) => `[...document.querySelectorAll('.file-row')].find((el) => el.querySelector('.file-name')?.textContent === ${JSON.stringify(name)})?.click()`
+const clickRow = (name: string) => `[...document.querySelectorAll('.file-row')].find((el) => el.querySelector('.file-name')?.textContent === ${JSON.stringify(name)})?.click()`
 
 /** The 文件 tab lists the workspace, opens a folder, shows a Markdown file laid out, and never offers to run a script. */
-async function checkFiles(win, outDir, cwd) {
+async function checkFiles(win: SmokeWindow, outDir: string, cwd: string) {
   if (!cwd) return ['the smoke run did not get the workspace path']
   await fs.mkdir(path.join(cwd, 'notes'), { recursive: true })
   await fs.mkdir(path.join(cwd, 'tools'), { recursive: true })
@@ -319,7 +320,7 @@ async function checkFiles(win, outDir, cwd) {
   await fs.writeFile(path.join(cwd, 'notes', 'app.ts'), 'const answer: number = 42\n')
   await fs.writeFile(path.join(cwd, 'notes', '账目.csv'), '日期,金额\n10-20,"1,200"\n')
   const failures: string[] = []
-  const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
+  const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   // The long task left the drawer open; open it only if it is not.
   await run(win, `document.getElementById('drawer').dataset.open === 'true' || document.getElementById('toggle-drawer').click()`)
   await run(win, `[...document.querySelectorAll('.drawer .tab')].find((el) => el.textContent === '文件').click()`)
@@ -372,7 +373,7 @@ const MARKDOWN_STATE = `(() => {
 })()`
 
 /** Markdown in an answer becomes real headings, lists, tables and code; nothing in it runs, loads or navigates. */
-async function checkMarkdown(win, outDir) {
+async function checkMarkdown(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   await newTopic(win)
   await wait(UI_WAIT_MS)
@@ -415,14 +416,14 @@ const ISLAND_REACHABLE = `(() => {
   return Boolean(box.width && hit?.closest('#island'))
 })()`
 
-const typeSearch = (text) => `(() => {
+const typeSearch = (text: string) => `(() => {
   const input = document.getElementById('history-search')
   input.value = ${JSON.stringify(text)}
   input.dispatchEvent(new Event('input'))
 })()`
 
 /** ⌘K, a new topic with the first kept above it, ⌘F and a jump to a hit. */
-async function checkHistoryPanel(win, outDir) {
+async function checkHistoryPanel(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   try {
     await historyPanelSteps(win, outDir, failures)
@@ -432,8 +433,8 @@ async function checkHistoryPanel(win, outDir) {
   return failures
 }
 
-async function historyPanelSteps(win, outDir, failures) {
-  const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
+async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: string[]) {
+  const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   const panel = () => run(win, PANEL_STATE)
 
   // There is no list of conversations: an empty search only says what to do.
@@ -495,9 +496,9 @@ async function historyPanelSteps(win, outDir, failures) {
  * `memory`) and screenshots each step into `smokeOut`.
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
-export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hooks: { desk?: () => any, [hook: string]: any } = {}) {
+export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhase }: { smokeOut: string, smokePhase: string }, quit: (code: number) => void, hooks: SmokeHooks = {}) {
   const problems: string[] = []
-  win.webContents.on('console-message', (event) => {
+  win.webContents.on('console-message', (event: { level: string, message: string }) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)
   })
   try {
