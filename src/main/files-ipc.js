@@ -25,7 +25,7 @@ const watchFile = (file, onChange) => fs.watch(file, { persistent: false }, onCh
 /**
  * The 文件 tab's channels. Paths come from the page and are workspace paths; workspace-files.js keeps them
  * inside the workspace. A program or script is only shown in its folder, never opened, and lists no apps.
- * @param {import('electron').IpcMain} ipcMain
+ * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
  *   root: () => string,
  *   shell: Pick<import('electron').Shell, 'openPath' | 'showItemInFolder'>,

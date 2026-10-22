@@ -8,7 +8,7 @@ const BUSY = '助手正在工作，等这一轮结束再改'
  * The window's and the desktop island's side of pictures: keeping one pasted, and in settings the folder's size,
  * opening it, emptying it and moving it (image-store.js). Moving changes where dsh keeps its copies too, so dsh
  * starts again on the new folder (`restart`).
- * @param {Electron.IpcMain} ipcMain
+ * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
  *   store: ReturnType<import('./image-store.js').createImageStore>,
  *   setDir: (dir: string) => void,
