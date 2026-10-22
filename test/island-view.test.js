@@ -142,6 +142,18 @@ test('a task that ends says so for a moment, while the conversation is quiet', (
   assert.deepEqual([failed.label, failed.tone], ['#明天上海天气 出错了', 'error'])
 })
 
+test('tasks that ended stay counted at the tail, so the 后台 page can still be reached from it', () => {
+  const seen = run([...spun, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: T0 + 9000 }, { type: 'task_finish_seen', taskId: 's1' }])
+  assert.deepEqual([islandView(seen).background.count, islandView(seen).background.done], [0, 1])
+  assert.equal(islandView(reduce(seen, { type: 'task_closed', taskId: 's1' })).background, undefined, 'closed, nothing is left')
+})
+
+test('when the conversation on screen and a task both wait, the tail says the task waits too', () => {
+  const both = islandView(run([...spun, taskAsks, { type: 'user_prompt', text: '周会几点', at: T0 + 5000 }, permission]))
+  assert.equal(both.background.alsoWaiting, 1, 'the conversation\'s request is on the island; the task\'s waits at the tail')
+  assert.equal(islandView(run([...spun, taskAsks])).background.alsoWaiting ?? 0, 0, 'the task waiting alone is on the island itself')
+})
+
 test('the view is plain data, so it can travel to the desktop island', () => {
   const view = islandView(run([...asked, permission]))
   assert.deepEqual(JSON.parse(JSON.stringify(view)), view)

@@ -63,6 +63,8 @@
           <div class="hub-page" id="settings-root" data-page="settings" hidden></div>
         </div>
       </section>
+      <!-- 后台: every background task and the one picked, in the same place (view/tasks-page.js). -->
+      <section class="hub tasks-page" id="tasks-page" data-open="false" aria-label="后台任务"></section>
 
       <main class="main">
         <section class="scroll" id="scroll" aria-live="polite">
@@ -85,6 +87,7 @@
               <button class="chip workdir-chip" id="composer-context" type="button" aria-haspopup="menu" aria-expanded="false"></button>
               <div id="workdir-menu"></div>
             </div>
+            <button class="btn btn-secondary bg-send" id="bg-send" type="button" title="交给后台做，这里照常用">↗ 后台做</button>
             <button class="send-btn" id="send-btn" type="submit" aria-label="发送"></button>
           </div>
         </form>

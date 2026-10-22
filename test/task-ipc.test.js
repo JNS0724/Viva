@@ -49,6 +49,7 @@ function setup({ busy = true, spun, resumable, stored = [] } = {}) {
         steerTask: async (taskId, text) => { calls.push(['steerTask', taskId, text]); return { ok: true } },
         resumeTask: async (request) => { calls.push(['resumeTask', request]); return resumable ?? { ok: true } },
         promptTask: async (taskId, text) => { calls.push(['promptTask', taskId, text]) },
+        startTask: async (request) => { calls.push(['startTask', request]); return { ok: true, taskId: 's9' } },
       },
     })
     return { call: (channel, ...args) => handlers[channel]({}, ...args), calls }
@@ -199,6 +200,31 @@ test('a task let go is not offered again; one dsh cannot take up is said so', as
   assert.match(refused.problem, /接不上/)
   await later.call('task:forget', task.id)
   assert.deepEqual(await later.call('task:unfinished'), [])
+})
+
+test('后台做: the words start a task of their own, from the conversation so far, kept out of the timeline', async () => {
+  const { db, call, calls, current, kept } = setup({ busy: false })
+  const main = current()
+
+  const started = await call('task:start', { text: '把这周的提交整理成发布说明' })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.deepEqual(started.task.id, 's9')
+  assert.deepEqual(calls, [['startTask', {}], ['promptTask', 's9', '把这周的提交整理成发布说明']])
+  assert.deepEqual(db.get(started.task.segmentId).messages.map((m) => m.text), ['把这周的提交整理成发布说明'], 'what it says is kept in its own segment')
+  assert.equal(current().id, main.id, 'the conversation on screen stays where it is')
+  assert.deepEqual(db.foldsOf(main.id), [], 'no line in the conversation for it: its card is there')
+  assert.equal(db.latest().conversation.id, main.id, 'and it is not a part of the timeline')
+  assert.deepEqual(kept().map((entry) => [entry.id, entry.keep]), [['s9', 0]], 'kept like any task going on')
+
+  await call('task:save', 's9', [{ role: 'user', text: '把这周的提交整理成发布说明', receipt: null }, answer('写好了')], { ended: true, status: 'done' })
+  assert.deepEqual(db.get(started.task.segmentId).messages.map((m) => m.text), ['把这周的提交整理成发布说明', '写好了'])
+})
+
+test('后台做 while a turn runs starts from before that turn, named by its words', async () => {
+  const { call, calls } = setup()
+  await call('task:start', { text: '查一下明天上海的天气', words: '整理发布说明' })
+  assert.deepEqual(calls[0], ['startTask', { words: '整理发布说明' }])
+  await assert.rejects(call('task:start', { text: '' }), /invalid task request/)
 })
 
 test('nothing moves when no turn runs, when the words are not where the window says, or when the agent cannot', async () => {

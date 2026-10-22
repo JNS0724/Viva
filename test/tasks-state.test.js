@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { liveTasks, mentionedTask, mentionNameOf, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
+import { liveTasks, mentionedTask, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
 import { traceItems } from '../src/renderer/selectors.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -147,8 +147,7 @@ test('a task that ended can be asked again: 「#name」 reaches it, and it goes 
   ], spun(working()))
   const [task] = ended.tasks.list
   assert.deepEqual(mentionedTask(ended, '#发布说明 再加上已知问题'), { taskId: 's1', title: task.title, text: '再加上已知问题', ended: true })
-  assert.equal(mentionedTask(ended, `#${mentionNameOf(task)} 再加上已知问题`)?.taskId, 's1', '接着问 writes a name that finds it')
-  assert.deepEqual(mentionedTask(ended, `#${mentionNameOf(task)} `)?.text, '', 'found as soon as the name is written, before the words')
+  assert.deepEqual(mentionedTask(ended, '#发布说明 ')?.text, '', 'found as soon as the name is written, before the words')
   assert.equal(mentionedTask(ended, '#发布说明'), null, 'not before the space after the name')
 
   const asked = reduce(ended, { type: 'task_asked', taskId: 's1', text: '再加上已知问题', at: 60 })

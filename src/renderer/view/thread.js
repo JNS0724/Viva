@@ -6,7 +6,8 @@ import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
 import { foldAfter, rewindTarget } from '../rewind-state.js'
-import { liveTasks, offeredBackground, taskTab } from '../tasks-state.js'
+import { offeredBackground } from '../tasks-state.js'
+import { cardedTasks, taskCard } from './task-card.js'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.js'
 
 const AVATAR_CAT_PX = 36
@@ -124,8 +125,9 @@ const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-s
 
 const cardHead = (text) => h('div', { class: 'confirm-head' }, h('span', { text }), h('span', { class: 'pulse-dot' }))
 
-/** @param {string} [head] whose request it is, for one from a task in the background */
-function permissionCard(permission, handlers, head = PROMPT_HEADS.permission) {
+/** The conversation's request; a background task's is asked on its card (view/task-card.js). */
+function permissionCard(permission, handlers) {
+  const head = PROMPT_HEADS.permission
   const { title, detail } = cardOf(permission)
   return h('section', { class: 'confirm', 'aria-label': head },
     cardHead(head),
@@ -159,8 +161,8 @@ function questionItem(item, question, handlers) {
  * The agent's question, mid-turn. A single question with single choice is answered by its option; otherwise
  * picks are gathered and sent with 提交. Words typed in the composer (Enter) answer it too.
  */
-/** @param {{ head?: string, typed?: boolean }} [options] for a task's question: whose it is, and no typing below */
-function questionCard(question, handlers, { head = PROMPT_HEADS.question, typed = true } = {}) {
+function questionCard(question, handlers) {
+  const head = PROMPT_HEADS.question
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
   return h('section', { class: 'confirm ask', 'aria-label': head },
     cardHead(head),
@@ -168,20 +170,7 @@ function questionCard(question, handlers, { head = PROMPT_HEADS.question, typed 
     h('div', { class: 'confirm-actions' },
       single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: '提交', onClick: () => handlers.submitAnswer() }),
       h('button', { class: `${BUTTON.text} ask-skip`, text: '跳过', onClick: () => handlers.skipQuestion() }),
-      typed ? h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' }) : null))
-}
-
-const REPORT_SAID = { done: '做完了', stopped: '停下了', error: '出错了' }
-
-/** A task that ended, back in the conversation (F): what it came back with, all of it in its drawer tab. */
-function reportCard(report, handlers) {
-  return h('div', { class: 'task-report', role: 'status', 'data-status': report.status },
-    h('div', { class: 'task-report-main' },
-      h('b', { class: 'task-report-head', text: `#${report.title} ${REPORT_SAID[report.status] ?? REPORT_SAID.done}` }),
-      report.preview ? h('span', { class: 'task-report-text', text: report.preview }) : null),
-    h('button', { class: `${BUTTON.secondary} task-report-open`, type: 'button', text: '看全部', onClick: () => handlers.openDrawer(taskTab(report.taskId)) }),
-    h('button', { class: `${BUTTON.secondary} task-report-open task-follow-up`, type: 'button', text: '接着问', onClick: () => handlers.followUpTask(report.taskId) }),
-    h('button', { class: 'icon-btn task-report-x', type: 'button', 'aria-label': '收起', text: '×', onClick: () => handlers.dismissReport(report.taskId) }))
+      h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' })))
 }
 
 /** A task Viva was closed on: offered once more, to go on in the background or be let go. */
@@ -201,16 +190,6 @@ function offerRow(state, handlers) {
   return h('div', { class: 'offer', role: 'note' },
     h('span', { class: 'offer-text', text: offered.why ? `这件要一会儿：${offered.why}。放到后台，你先忙别的？` : '这件要一会儿。放到后台，你先忙别的？' }),
     h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: '放到后台', onClick: () => handlers.moveToBackground() }))
-}
-
-/** A task's question: the card's buttons answer it, not the conversation's (task-actions.js). */
-function taskQuestionCard(task, handlers) {
-  const scoped = {
-    pickOption: (id, label) => handlers.pickTaskOption(task.id, id, label),
-    submitAnswer: () => handlers.submitTaskAnswer(task.id),
-    skipQuestion: () => handlers.skipTaskQuestion(task.id),
-  }
-  return questionCard(task.question, scoped, { head: `#${task.title} · ${PROMPT_HEADS.question}`, typed: false })
 }
 
 const workingCats = new Map()
@@ -296,17 +275,22 @@ export function renderThread(container, state, handlers, now) {
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
   const plain = state.messages.map((message) => markMessage(MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null, message.id))
-  const views = messageEntries(state, plain, handlers)
+  // A background task's card goes under the words that started it (后台做); one moved there mid-turn, at the end.
+  const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id, taskCard(task, report, handlers, now)]))
+  const views = messageEntries(state, plain, handlers).map((entries, i) => {
+    const card = cards.get(state.messages[i].taskId)
+    if (!card) return entries
+    cards.delete(state.messages[i].taskId)
+    return [...entries, card]
+  })
   const focus = editorFocus()
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
     ...state.tasks.unfinished.map((task) => unfinishedCard(task, handlers)),
-    ...state.tasks.reports.filter((report) => report.shown).map((report) => reportCard(report, handlers)),
+    ...cards.values(),
     offerRow(state, handlers),
     state.permission ? permissionCard(state.permission, handlers) : '',
-    ...liveTasks(state).filter((task) => task.permission).map((task) => permissionCard(task.permission, handlers, `#${task.title} · ${PROMPT_HEADS.permission}`)),
     state.question ? questionCard(state.question, handlers) : '',
-    ...liveTasks(state).filter((task) => task.question).map((task) => taskQuestionCard(task, handlers)),
     state.secret ? secretCard(state.secret, handlers) : '',
     state.phase === 'working' && !last?.open ? workingRow(state) : '',
     state.phase === 'error' ? errorRow(state.error) : '',

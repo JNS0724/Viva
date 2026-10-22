@@ -74,6 +74,22 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     return steer(text)
   }
 
+  /**
+   * 后台做: the words go to a task of their own, from the conversation so far (before the turn running, if one
+   * is); the conversation on screen goes on as it was.
+   * @returns {Promise<boolean>} whether the task started
+   */
+  async function startTask(text) {
+    const words = spinOffTarget(getState())?.words
+    const result = await call(() => api.startTask(words ? { text, words } : { text }))
+    if (!result.ok) {
+      showToast(result.problem ?? '没能交给后台')
+      return false
+    }
+    dispatch({ type: 'task_started', task: result.task, text, at: Date.now() })
+    return true
+  }
+
   /** 放到后台 on the island (D): the turn goes on in the background, and the conversation is free. */
   async function moveToBackground() {
     const result = await move(null)
@@ -232,6 +248,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     hold,
     moveAndAsk,
     moveToBackground,
+    startTask,
     ended,
     undoMove,
     stopTask,
@@ -247,6 +264,11 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     submitTaskAnswer: (taskId) => {
       const question = questionOf(taskId)
       if (question) answerTask(taskId, answersFrom(question))
+    },
+    /** Typed on the 后台 page while the task asks: the answer, as typing in the composer is for the conversation's. */
+    typeTaskAnswer: (taskId, text) => {
+      const question = questionOf(taskId)
+      if (question) answerTask(taskId, answersFrom(question, text))
     },
     skipTaskQuestion: (taskId) => {
       const question = questionOf(taskId)

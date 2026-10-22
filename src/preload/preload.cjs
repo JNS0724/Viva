@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('agent', {
    * conversation goes on with `text`: { ok, task, info, conversation, folds } | { ok: false, reason | problem }.
    */
   spinOffTask: (request) => ipcRenderer.invoke('task:spin-off', request),
+  /** 后台做: { text, words? } (words: the running turn's, to start from before it): { ok, task } | { ok: false, problem }. */
+  startTask: (request) => ipcRenderer.invoke('task:start', request),
   /** Saved along the way and at its end ({ ended: true, status }: kept to be asked again, not offered as unfinished). */
   saveTask: (taskId, messages, options) => ipcRenderer.invoke('task:save', taskId, messages, options),
   /** Tasks an earlier launch left going: [{ id, title, segmentId, startedAt }]; taken up again, or let go. */

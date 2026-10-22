@@ -265,6 +265,21 @@ test('a task that ended is asked again: it goes back to work, or says why it cou
   assert.deepEqual([still.status, liveTasks(refused.state()).length], ['done', 0], 'as it was before')
 })
 
+test('后台做 while a turn runs: a task of its own, started from before that turn; the turn goes on in front', async () => {
+  const requests = []
+  const win = windowWith({ startTask: async (request) => { requests.push(request); return { ok: true, task: { id: 's9', segmentId: 'c9', title: '查天气', words: '查天气' } } } })
+  await win.actions.startTask('查天气')
+
+  assert.deepEqual(requests, [{ text: '查天气', words: WORDS }])
+  assert.deepEqual(liveTasks(win.state()).map((task) => [task.id, task.status]), [['s9', 'running']])
+  assert.equal(win.state().phase, 'working', 'the turn on screen goes on')
+  assert.ok(!win.state().messages.some((message) => message.taskId), 'its answer is still coming: the words are on the card, not in between')
+
+  const refused = windowWith({ startTask: async () => ({ ok: false, problem: '没能交给后台（invalid）' }) })
+  await refused.actions.startTask('查天气')
+  assert.deepEqual([refused.said.toasts, liveTasks(refused.state())], [['没能交给后台（invalid）'], []])
+})
+
 test('tasks that had ended by the last launch come back at the start, beside those left going', async () => {
   const win = windowWith({
     unfinishedTasks: async () => [],

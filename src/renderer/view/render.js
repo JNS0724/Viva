@@ -7,6 +7,7 @@ import { renderEarlier } from './earlier.js'
 import { renderHistoryPanel, renderToast } from './history-panel.js'
 import { renderHome } from './home.js'
 import { renderHub } from './hub.js'
+import { renderTasksPage } from './tasks-page.js'
 import { icon } from './icons.js'
 import { renderIsland } from './island.js'
 import { renderModelPicker } from './model-picker.js'
@@ -72,6 +73,16 @@ function renderHistoryIfChanged(dom, state, handlers) {
   renderHistoryPanel(dom, state, handlers)
 }
 
+let renderedTasksPage = []
+
+/** The 后台 page depends on the tasks and on itself; a task at work changes it as it goes. */
+function renderTasksPageIfChanged(container, state, handlers, now) {
+  const inputs = [state.tasks.list, state.tasks.page]
+  if (inputs.every((value, i) => value === renderedTasksPage[i])) return
+  renderedTasksPage = inputs
+  renderTasksPage(container, state, handlers, now)
+}
+
 function renderToastIfChanged(container, toast, handlers) {
   if (toast === renderedToast) return
   renderedToast = toast
@@ -91,6 +102,8 @@ function renderComposerAvailability(dom, setup, switching, { asking, busy }) {
   const placeholder = asking ? ANSWER_PLACEHOLDER : busy ? STEER_PLACEHOLDER : dom.input.dataset.placeholder
   dom.input.placeholder = setup?.placeholder ?? placeholder
   dom.sendBtn.disabled = Boolean(setup) || switching
+  // A question the agent asks is answered here, not handed to the background.
+  dom.bgSend.disabled = Boolean(setup) || switching || asking
 }
 
 /** While the agent works the button stops it, unless there are words to send into the turn. */
@@ -159,6 +172,7 @@ export function render(dom, state, handlers, now = Date.now()) {
   renderSettingsIfChanged(dom.settings, state, handlers)
   renderProfileIfChanged(dom.profile, state.memory, handlers)
   renderHub(dom, state)
+  renderTasksPageIfChanged(dom.tasksPage, state, handlers, now)
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)

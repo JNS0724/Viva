@@ -93,6 +93,28 @@ export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCur
   const detach = (taskId) => { attached = new Set([...attached].filter((id) => id !== taskId)) }
 
   /**
+   * 后台做: `text` goes to a task of its own, in a session forked from the conversation as it is (before the
+   * turn running there, named by its `words`, if one is). The conversation on screen stays where it is; the
+   * task's segment hangs off it, out of the timeline, and is kept like any task going on.
+   */
+  async function start(request) {
+    const { text, words = null } = request ?? {}
+    if (!isText(text) || (words !== null && !isText(words))) throw new Error('invalid task request')
+    const started = await agent.startTask(words === null ? {} : { words })
+    if (!started.ok) return { ok: false, problem: TASK_PROBLEMS[started.reason] ?? `没能交给后台（${started.reason}）` }
+    const main = current()
+    const { mode, model } = agentInfo()
+    const segment = db.save(db.create({ sessionId: started.taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
+    db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
+    const task = { id: started.taskId, segmentId: segment.id, title: titleOf(text), words: text }
+    tasks.set(task.id, { ...task, keep: 0, next: main.id })
+    attached = new Set([...attached, task.id])
+    store.add({ ...task, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: Date.now() })
+    agent.promptTask(task.id, text)
+    return { ok: true, task }
+  }
+
+  /**
    * What the task has said, from the words that started it on: kept after what came before them. Saved along
    * the way and at its end; ended, it stays in the store marked so, to be asked again (`ask`).
    */
@@ -193,6 +215,7 @@ export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCur
   }
 
   ipcMain.handle('task:spin-off', (_event, request) => spinOff(request))
+  ipcMain.handle('task:start', (_event, request) => start(request))
   ipcMain.handle('task:save', async (_event, taskId, messages, options) => save(taskId, messages, options))
   ipcMain.handle('task:unfinished', () => unfinished())
   ipcMain.handle('task:finished', () => finished())

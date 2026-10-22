@@ -11,7 +11,7 @@ import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createRewindActions } from './rewind-actions.js'
 import { createTaskActions } from './task-actions.js'
-import { liveTasks, mentionedTask, mentionNameOf, routeOf, taskTab } from './tasks-state.js'
+import { liveTasks, mentionedTask, routeOf } from './tasks-state.js'
 import { createTimelineActions } from './timeline-actions.js'
 import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.js'
@@ -20,7 +20,7 @@ import { createScrollFollower } from './view/scroll-follow.js'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'turn_end', 'error'])
+const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'turn_end', 'error', 'task_started'])
 const STEER_LOST = '插话没有送到助手，等这一轮结束后再说一次'
 const api = window.agent
 const byId = (id) => document.getElementById(id)
@@ -39,6 +39,7 @@ const dom = {
   input: byId('composer-input'),
   routeHint: byId('route-hint'),
   sendBtn: byId('send-btn'),
+  bgSend: byId('bg-send'),
   context: byId('composer-context'),
   workdirArea: document.querySelector('.workdir-area'),
   workdirMenu: byId('workdir-menu'),
@@ -61,6 +62,8 @@ const dom = {
   hubNavs: [...document.querySelectorAll('.hub-nav')],
   hubPages: [...document.querySelectorAll('.hub-page')],
   hubSearchKey: byId('hub-search-key'),
+  /** 后台: every background task and the one picked (view/tasks-page.js). */
+  tasksPage: byId('tasks-page'),
 }
 dom.follower = createScrollFollower(dom.scroll, dom.jumpLatest)
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
@@ -109,8 +112,10 @@ const ISLAND_ACTIONS = {
   jump: jumpToCard,
   cancel: () => isBusy(state) && handlers.cancel(),
   trace: () => handlers.openDrawer('trace'),
-  /** A task's line in the island's 后台 list: what it did, in its tab of the drawer. */
-  task: ({ taskId }) => handlers.openDrawer(taskTab(taskId)),
+  /** A task's line in the island's 后台 list: that task on the 后台 page. */
+  task: ({ taskId }) => handlers.openTasks(taskId),
+  /** The count at the island's tail: the 后台 page. */
+  tasks: () => handlers.openTasks(),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
   /** 放到后台, offered on the opened island once a turn runs a while (view/island-dom.js offersBackground). */
@@ -327,14 +332,21 @@ const handlers = {
   pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),
   /** A task's report in the thread, put away (view/thread.js reportCard). */
   dismissReport: (taskId) => taskActions.dismissReport(taskId),
-  /** 接着问 on a task that ended (its card, its drawer tab): 「#name 」 in the input, for the words to go to it. */
-  followUpTask(taskId) {
-    const task = state.tasks.list.find((entry) => entry.id === taskId)
-    if (!task) return
-    dom.input.value = `#${mentionNameOf(task)} `
-    dom.input.focus()
+  /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
+  async startInBackground() {
+    const text = dom.input.value.trim()
+    if (!text || setupView(state.info) || state.switching) return dom.input.focus()
+    dom.input.value = ''
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
+    // Not started: the words come back, so nothing typed is lost.
+    if (!await taskActions.startTask(text)) dom.input.value = text
+    return undefined
+  },
+  /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. 「#name …」 still works too. */
+  followUpTask(taskId) {
+    handlers.openTasks(taskId)
+    dom.tasksPage.querySelector('.tp-input')?.focus()
   },
   /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
   resumeUnfinished: (taskId) => taskActions.resumeUnfinished(taskId),
@@ -410,6 +422,21 @@ const handlers = {
   openHub: () => handlers.openHubPage(state.hub.last),
   /** ← 返回, Esc, or the 关于你 icon again: back to the conversation. */
   closeHub: () => dispatch({ type: 'hub_close' }),
+  /** The 后台 page, on `taskId` or the one it was on (view/tasks-page.js). */
+  openTasks: (taskId = null) => dispatch({ type: 'tasks_page_open', taskId }),
+  selectTask: (taskId) => dispatch({ type: 'tasks_page_select', taskId }),
+  toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
+  /**
+   * Typed on the 后台 page: the answer while the task asks, into its turn while it works, its next question
+   * once it has ended.
+   */
+  sendToTask(taskId, text) {
+    const task = state.tasks.list.find((entry) => entry.id === taskId)
+    if (!task) return
+    if (task.question) taskActions.typeTaskAnswer(taskId, text)
+    else if (task.endedAt === null) taskActions.steerTask(taskId, text)
+    else taskActions.askTask(taskId, text)
+  },
   toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
   async setDeskIsland(on) {
     try {
@@ -527,6 +554,7 @@ function wireComposer() {
     handlers.send()
   })
   dom.context.addEventListener('click', () => workDirActions.toggleMenu())
+  dom.bgSend.addEventListener('click', () => handlers.startInBackground())
   dom.modelBtn.addEventListener('click', () => handlers.togglePicker())
   dom.jumpLatest.addEventListener('click', () => dom.follower.jumpToLatest())
   dom.toggleDrawer.addEventListener('click', () => dispatch({ type: 'toggle_drawer' }))

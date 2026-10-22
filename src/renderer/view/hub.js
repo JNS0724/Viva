@@ -5,7 +5,9 @@ import { hubPage } from '../hub-state.js'
  * static markup (index.html); this shows the open one and marks it in the sidebar. Each page renders itself.
  */
 export function renderHub(dom, state) {
-  const page = hubPage(state)
+  const opened = hubPage(state)
+  // The 后台 page shares the place but is a page of its own (view/tasks-page.js).
+  const page = opened === 'tasks' ? null : opened
   dom.hub.dataset.open = String(Boolean(page))
   dom.openProfile.setAttribute('aria-pressed', String(Boolean(page)))
   for (const nav of dom.hubNavs) {
