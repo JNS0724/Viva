@@ -226,8 +226,10 @@ function ask(text, { via = null } = {}) {
     else taskActions.steerTask(mentioned.taskId, mentioned.text)
     return true
   }
+  // About something else while a turn runs: the words go to a task of their own, the turn stays in front;
+  // should the task not start, they go into the turn instead, so nothing typed is lost.
   if (isBusy(state) && routeOf(state, text) === 'other') {
-    taskActions.moveAndAsk(text)
+    taskActions.startTask(text).then((started) => started || steer(text, via))
     return true
   }
   if (isBusy(state)) return steer(text, via)
@@ -299,7 +301,7 @@ async function provideSecrets(values) {
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
 const taskActions = createTaskActions({
-  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask, steer: (text) => steer(text, null), deliver: handleEvent,
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
   isTyping: () => Boolean(dom.input.value.trim()),
 })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
@@ -517,7 +519,7 @@ const EVENT_ACTIONS = {
   }),
   /** What a turn moved to the background says, asks and how it ends (tasks-state.js). */
   task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now() }),
-  task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, at: Date.now() }),
+  task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now() }),
   task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now() }),
   task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now() }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),

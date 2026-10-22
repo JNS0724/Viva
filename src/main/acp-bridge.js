@@ -328,6 +328,16 @@ export function createAcpBridge({
     }
   }
 
+  /** The task's session takes the choices the main conversation has now (its model, its effort) where they differ. */
+  async function matchMainConfig(taskId, taskOptions) {
+    for (const option of configNow ?? []) {
+      const theirs = taskOptions.find((item) => item.id === option.id)
+      if (option.currentValue === undefined || theirs?.currentValue === option.currentValue) continue
+      const response = await connection.setSessionConfigOption({ sessionId: taskId, configId: option.id, value: option.currentValue })
+      tasks.set(taskId, { ...tasks.get(taskId), config: response.configOptions ?? tasks.get(taskId).config })
+    }
+  }
+
   /**
    * 后台做 (task-ipc.js task:start): a task of its own, beside the main conversation, in a session forked from it
    * as it is, or from before the turn running in it (named by its `words`), so it knows what was said; with
@@ -340,11 +350,16 @@ export function createAcpBridge({
     const forked = await forking.fork(words ? { words, occurrence: 0 } : {})
     if (forked.ok) {
       const taken = await resumeTask({ taskId: forked.sessionId, cwd: sessionCwd })
-      return taken.ok ? { ok: true, taskId: forked.sessionId } : taken
+      if (!taken.ok) return taken
+      // A fork of a conversation with nothing said yet starts on the profile's defaults too.
+      await matchMainConfig(forked.sessionId, tasks.get(forked.sessionId).config ?? [])
+      return { ok: true, taskId: forked.sessionId }
     }
     try {
       const response = await withMcpServers((servers) => connection.newSession({ cwd: sessionCwd, mcpServers: servers }))
       tasks.set(response.sessionId, { cwd: sessionCwd, config: response.configOptions ?? configNow })
+      // A fresh session starts on the profile's defaults: the model picked here may be another (or the only one with a key).
+      await matchMainConfig(response.sessionId, response.configOptions ?? [])
       return { ok: true, taskId: response.sessionId }
     } catch (err) {
       console.error('[acp-bridge] could not start a task:', describeError(err))

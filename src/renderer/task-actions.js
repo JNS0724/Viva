@@ -2,10 +2,10 @@ import { answersFrom } from './question-state.js'
 import { spinOffTarget, taskMessages } from './tasks-state.js'
 
 /**
- * Background tasks from the window (phase 3): words about something else, said while a turn runs, move that
- * turn to the background and go as the next question (main/task-ipc.js); 撤销 moves it back and the words go
- * into it instead. While the main process moves a turn, what the agent says arrives under the turn's new place
- * before the window has moved it too, so it waits and is passed on (`deliver`) once the window has caught up.
+ * Background tasks from the window (phase 3): 后台做, or words about something else said while a turn runs,
+ * start a task of their own (main/task-ipc.js task:start); 放到后台 moves the running turn there instead, and
+ * 撤销 moves it back. While the main process moves a turn, what the agent says arrives under the turn's new
+ * place before the window has moved it too, so it waits and is passed on (`deliver`) once the window caught up.
  */
 /** How long the island says a task ended (island-view.js), counted while the user is not typing. */
 export const FINISHED_MS = 5000
@@ -13,7 +13,6 @@ export const FINISHED_MS = 5000
 export const REPORT_RETRY_MS = 1000
 /** While a task talks, what it said is saved at most this often, so quitting Viva loses little. */
 export const SAVE_EVERY_MS = 10_000
-const MOVE_FAILED = '没能挪到后台，这句插进了正在做的事'
 const UNDO_FAILED = '没能撤销'
 const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_question_closed'])
 const ofTask = (event) => TASK_EVENTS.has(event?.type) || Boolean(event?.taskId)
@@ -21,11 +20,11 @@ const ofTask = (event) => TASK_EVENTS.has(event?.type) || Boolean(event?.taskId)
 /**
  * @param {{
  *   api: object, getState: () => object, dispatch: (action: object) => void, showToast: (text: string) => void,
- *   errorMessage: (err: unknown) => string, ask: (text: string) => boolean, steer: (text: string) => boolean,
+ *   errorMessage: (err: unknown) => string,
  *   deliver: (event: object) => void, isTyping?: () => boolean, later?: (run: () => void, ms: number) => void,
  * }} deps isTyping: words are in the input; later: setTimeout, for tests
  */
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, ask, steer, deliver, isTyping = () => false, later = setTimeout }) {
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, isTyping = () => false, later = setTimeout }) {
   /** While a move is on its way: which events wait ({ keeps }), and those that came. */
   let holding = null
 
@@ -50,28 +49,19 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     return true
   }
 
-  /** The running turn goes on in the background; with `text`, those words are what moved it. */
-  async function move(text) {
+  /** The running turn goes on in the background. */
+  async function move() {
     const target = spinOffTarget(getState())
     if (!target || holding) return { ok: false, reason: 'idle' }
     holding = { keeps: ofTask, events: [] }
-    const result = await call(() => api.spinOffTask(text === null ? target : { ...target, text }))
+    const result = await call(() => api.spinOffTask(target))
     if (result.ok) {
-      dispatch({ type: 'task_spun', task: result.task, conversation: result.conversation, info: result.info, folds: result.folds, at: Date.now(), text })
+      dispatch({ type: 'task_spun', task: result.task, conversation: result.conversation, info: result.info, folds: result.folds, at: Date.now() })
     } else {
       console.warn('[tasks] could not move the turn to the background:', result.problem ?? result.reason)
     }
     release().forEach(deliver)
     return result
-  }
-
-  /** The running turn goes on in the background; `text` goes as the next question. Failing that, into the turn. */
-  async function moveAndAsk(text) {
-    const result = await move(text)
-    if (result.ok) return ask(text)
-    // Idle: the turn ended meanwhile, and steering sends the words as the next question.
-    if (result.problem) showToast(`${MOVE_FAILED}：${result.problem}`)
-    return steer(text)
   }
 
   /**
@@ -90,15 +80,15 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     return true
   }
 
-  /** 放到后台 on the island (D): the turn goes on in the background, and the conversation is free. */
+  /** 放到后台 (the island's, D; beside a long turn, E): the turn goes on in the background, and the conversation is free. */
   async function moveToBackground() {
-    const result = await move(null)
+    const result = await move()
     if (!result.ok && result.problem) showToast(`没能放到后台：${result.problem}`)
   }
 
   /**
-   * 撤销: the task is the conversation on screen again, and the words that moved it go into it. What it said
-   * meanwhile goes to it first; then what came for the conversation, but not from the one it leaves.
+   * 撤销: the task is the conversation on screen again. What it said meanwhile goes to it first; then what came
+   * for the conversation, but not from the one it leaves.
    */
   async function undoMove() {
     const move = getState().tasks.undo
@@ -115,7 +105,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     events.filter(its).forEach(deliver)
     dispatch({ type: 'task_undone', taskId: move.taskId, conversationId: result.conversation.id, info: result.info })
     events.filter((event) => !its(event) && (ofTask(event) || !event.sessionId || event.sessionId === move.taskId)).forEach(deliver)
-    if (move.text) steer(move.text)
   }
 
   /** The island has said it long enough; not while the user types, who may not have looked up yet. */
@@ -246,7 +235,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   return {
     hold,
-    moveAndAsk,
     moveToBackground,
     startTask,
     ended,

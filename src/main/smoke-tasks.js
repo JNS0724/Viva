@@ -2,15 +2,14 @@ import { capture, run, submit, until, UI_WAIT_MS, wait } from './smoke-kit.js'
 
 /**
  * Background tasks on the real dsh (phase 3): while a turn waits on an approval, words about something else
- * say over the input that the turn will move to the background; sent, it does, the conversation answers them
- * without it, and the task's approval is asked on its card. 撤销 brings the turn back with its approval, the
- * words going into it. Each task has one card in the conversation and a place on the 后台 page.
+ * say over the input that they go to the background; sent, they start a task of their own and the turn stays
+ * in front. 后台做 does the same at any time; 放到后台 moves a long turn there. Each task has one card in the
+ * conversation, answered in place, and a place on the 后台 page.
  */
 /** Unlike configSteps's words, which stay earlier in the same session. */
 const BUSY_ASK = '再帮我接入演示服务一次'
 const OTHER_ASK = '帮我订一张周五的机票'
 
-const lastAgentText = `[...document.querySelectorAll('#thread > .msg-agent .msg-text')].at(-1)?.textContent ?? ''`
 /** Idle without approving anything (smoke-kit finishTurn would allow the task's card too). */
 const mainIdle = `(() => {
   const send = document.getElementById('send-btn')
@@ -39,7 +38,19 @@ const pageState = `(() => {
 })()`
 const escape = `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`
 
-async function moveSteps(win, outDir, expect, hooks) {
+/** 后台做: the words typed go to a task of their own (the button beside 发送). */
+const startInBackground = (win, text) => run(win, `(() => {
+  const input = document.getElementById('composer-input')
+  input.value = ${JSON.stringify(text)}
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  document.getElementById('bg-send').click()
+})()`)
+
+/**
+ * While a turn waits on an approval, words about something else go to a task of their own: the turn and its
+ * approval stay in front, the task starts from before that turn and answers on its card.
+ */
+async function routeSteps(win, outDir, expect, hooks) {
   await submit(win, BUSY_ASK)
   await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
   const hint = await run(win, `(() => {
@@ -49,101 +60,68 @@ async function moveSteps(win, outDir, expect, hooks) {
     const route = document.getElementById('route-hint')
     return { hidden: route.hidden, route: route.dataset.route, text: route.textContent }
   })()`)
-  expect(!hint.hidden && hint.route === 'other' && hint.text.includes('挪到后台'), 'words about something else should say the turn moves to the background', hint)
+  expect(!hint.hidden && hint.route === 'other' && hint.text.includes('交给后台做'), 'words about something else should say they go to the background', hint)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-route')
 
-  const logged = []
-  win.webContents.on('console-message', (event) => logged.push(`${event.level}: ${event.message}`))
   await run(win, `document.getElementById('composer').requestSubmit()`)
-  const left = await until(win, `document.querySelector('#thread .fold-task') ? 'moved' : document.querySelector('.toast')?.textContent`, 'the line the move leaves')
-    .catch(async () => {
-      await capture(win, outDir, 'tasks-failed')
-      return run(win, `JSON.stringify({ logged: ${JSON.stringify(logged)}, users: [...document.querySelectorAll('#thread .msg-user')].map((el) => el.textContent), cards: document.querySelectorAll('.confirm').length, busy: document.getElementById('send-btn').dataset.busy })`)
-    })
-  if (left !== 'moved') throw new Error(`the turn did not move to the background: ${left}`)
-  await until(win, `(() => ${mainIdle} && (${lastAgentText}).length > 0)()`, 'the conversation answering the new words')
-  const moved = await run(win, `({
-    fold: document.querySelector('#thread .fold-task')?.textContent ?? '',
+  const done = await until(win, doneCard(OTHER_ASK), 'the task the words started answering')
+  expect(done.text.includes(`收到：「${OTHER_ASK}」`), 'the task should answer the words', done)
+  const front = await run(win, `({
     asked: ${userTexts},
-    confirms: document.querySelectorAll('.confirm:not(.ask)').length,
-    card: ${cardState(BUSY_ASK)},
+    confirms: [...document.querySelectorAll('.confirm:not(.ask) .confirm-head')].map((el) => el.textContent),
+    folds: document.querySelectorAll('#thread .fold-task').length,
+    busy: document.getElementById('send-btn').dataset.busy,
   })`)
-  expect(moved.fold.includes('挪到后台接着做了') && moved.fold.includes(`#${BUSY_ASK}`) && moved.fold.includes('撤销'), 'the move should leave a line to undo it', moved.fold)
-  expect(moved.asked.includes(OTHER_ASK) && !moved.asked.includes(BUSY_ASK), 'the conversation should go on with the new words, without the turn moved', moved.asked)
-  expect(moved.confirms === 0 && moved.card?.status === 'waiting' && moved.card.buttons.includes('详情 →') && moved.card.text.includes('等你确认'),
-    'the moved turn\'s approval should be asked on its card, not as the conversation\'s', moved)
+  expect(front.asked.includes(BUSY_ASK) && !front.asked.includes(OTHER_ASK) && front.folds === 0,
+    'the turn should stay in front, the words not landing in it', front)
+  expect(front.confirms.length === 1 && !front.confirms[0].startsWith('#'), 'the turn\'s approval should still be the conversation\'s', front)
   const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(OTHER_ASK)) ?? ''
   const at = answering.indexOf(BUSY_ASK)
-  expect(answering && at < 0, 'the agent answering the new words should not see the turn moved', { found: Boolean(answering), around: answering.slice(Math.max(0, at - 300), at + 60) })
-  const island = await run(win, `(() => {
-    const el = document.querySelector('#island .isl')
-    return { tone: el?.dataset.tone, text: el?.textContent ?? '', count: el?.querySelector('.isl-bg b')?.textContent ?? null }
-  })()`)
-  expect(island.tone === 'waiting' && island.text.includes(`#${BUSY_ASK}`) && island.count === '1',
-    'the island should turn to the task that waits, named, with one in the background at its tail', island)
-  await run(win, `document.querySelector('#thread .fold-task').scrollIntoView({ block: 'start' })`)
+  expect(answering && at < 0, 'the task answering the new words should start from before the turn running', { found: Boolean(answering), around: answering.slice(Math.max(0, at - 300), at + 60) })
+  await run(win, `(${cardOf(OTHER_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-moved')
   await pageSteps(win, outDir, expect)
   await mentionSteps(win, outDir, expect)
+  // Declined, the turn in front ends without setting the server up again.
+  await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
+  await until(win, mainIdle, 'the turn ending')
 }
 
 const MENTION_WORDS = '顺便说一声'
 
-/** 「#name words」 go to the background task named: the hint says so, and the conversation on screen is left alone. */
+/** 「#name words」 go to the background task named, here one that ended: asked again, it answers on its card. */
 async function mentionSteps(win, outDir, expect) {
   const hint = await run(win, `(() => {
     const input = document.getElementById('composer-input')
-    input.value = '#再帮我 ${MENTION_WORDS}'
+    input.value = '#帮我订一张周五 ${MENTION_WORDS}'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     return document.getElementById('route-hint').textContent
   })()`)
-  expect(hint.includes(`交给 #${BUSY_ASK}`), '「#name」 should say the words go to that task', hint)
+  expect(hint.includes(`交给 #${OTHER_ASK}`) && hint.includes('接着做'), '「#name」 should say the words go to that task', hint)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-mention')
   await run(win, `document.getElementById('composer').requestSubmit()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `(() => { const card = ${cardState(OTHER_ASK)}; return card?.status === 'done' && card.text.includes('收到：「${MENTION_WORDS}」') })()`, 'the task answering 「#name」')
   const asked = await run(win, userTexts)
   expect(!asked.some((text) => text.includes(MENTION_WORDS)), 'the words should not land in the conversation on screen', asked)
 }
 
 /**
- * The count at the island's tail opens the 后台 page, on the task that waits: its whole conversation, its steps,
- * its approval there too; ← 返回 / Esc closes it. The drawer has no tabs of tasks any more.
+ * The count at the island's tail opens the 后台 page: the task's whole conversation and what to do with it;
+ * ← 返回 / Esc closes it. The drawer has no tabs of tasks any more.
  */
 async function pageSteps(win, outDir, expect) {
   await run(win, `document.querySelector('#island .isl-bg').click()`)
   const page = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title && seen })()`, 'the 后台 page')
-  expect(page.title === `#${BUSY_ASK}` && page.rows.includes(BUSY_ASK) && page.act === '停下', 'the tail should open the 后台 page on the task', page)
-  const asks = await run(win, `Boolean(document.querySelector('#tasks-page .confirm:not(.ask)'))`)
-  expect(asks, 'the task\'s approval should be on its page too', asks)
-  await run(win, `document.querySelector('#tasks-page .tp-toggle')?.click()`)
-  await wait(UI_WAIT_MS)
-  const steps = await run(win, `[...document.querySelectorAll('#tasks-page .trace-title')].map((el) => el.textContent)`)
-  expect(steps.some((title) => title.includes('viva_mcp_add') || title.includes('请求你确认')), 'its steps should unfold on its page', steps)
+  expect(page.title === `#${OTHER_ASK}` && page.rows.includes(OTHER_ASK) && page.act === '关掉这件' && page.said.some((text) => text.includes(`收到：「${OTHER_ASK}」`)),
+    'the tail should open the 后台 page, the task shown whole', page)
   await capture(win, outDir, 'tasks-page')
   await run(win, escape)
   await wait(UI_WAIT_MS)
   const closed = await run(win, `({ open: document.getElementById('tasks-page').dataset.open, tabs: document.querySelectorAll('#drawer .tab-task').length })`)
   expect(closed.open === 'false' && closed.tabs === 0, 'Esc should close the page; the drawer has no task tabs', closed)
-}
-
-async function undoSteps(win, outDir, expect) {
-  await run(win, `[...document.querySelectorAll('#thread .fold-task .fold-act')].find((el) => el.textContent === '撤销').click()`)
-  await until(win, `!document.querySelector('#thread .fold-task') && document.querySelector('.confirm:not(.ask)')`, 'the turn back on screen')
-  await wait(UI_WAIT_MS)
-  const back = await run(win, `({
-    asked: ${userTexts},
-    cards: [...document.querySelectorAll('.confirm:not(.ask) .confirm-head')].map((el) => el.textContent),
-    taskCards: document.querySelectorAll('#thread .task-card').length,
-  })`)
-  expect(back.asked.includes(BUSY_ASK) && back.asked.at(-1) === OTHER_ASK, 'undone, the turn should be back and the words go into it', back.asked)
-  expect(back.cards.length === 1 && !back.cards[0].startsWith('#') && back.taskCards === 0, 'undone, its approval should be the conversation\'s again', back)
-  await capture(win, outDir, 'tasks-undone')
-  // Declined, the turn ends without setting the server up again.
-  await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
-  await until(win, mainIdle, 'the turn ending')
 }
 
 const BIG_ASK = '把全部文档整理好，顺手接入演示服务'
@@ -238,19 +216,30 @@ async function reportSteps(win, outDir, expect) {
 }
 
 const ASKS_LATER = '接入演示服务，再问我城市'
-const TRAIN_ASK = '帮我订一张下周的火车票'
 
 /**
  * A task asks something after it went to the background: its card asks it, named, and is answered there;
  * the task carries on to its end and reports back.
  */
 async function laterQuestionSteps(win, outDir, expect) {
-  await submit(win, ASKS_LATER)
-  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
-  await submit(win, TRAIN_ASK)
-  await until(win, `document.querySelector('#thread .fold-task') && ${JSON.stringify(TRAIN_ASK)}`, 'the turn in the background')
+  await startInBackground(win, ASKS_LATER)
+  const asking = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card })()`, 'the task\'s approval on its card')
+  expect(asking.buttons.includes('允许') && asking.buttons.includes('拒绝') && asking.text.includes('等你确认'), 'the task\'s approval should be asked on its card', asking)
+  // Its page has the approval too, and its steps unfold there.
+  await run(win, clickOnCard(ASKS_LATER, '详情 →'))
+  await until(win, `(${pageState}).title === ${JSON.stringify(`#${ASKS_LATER}`)}`, 'the waiting task\'s page')
+  await run(win, `document.querySelector('#tasks-page .tp-toggle')?.click()`)
+  await wait(UI_WAIT_MS)
+  const onPage = await run(win, `({
+    asks: Boolean(document.querySelector('#tasks-page .confirm:not(.ask)')),
+    steps: [...document.querySelectorAll('#tasks-page .trace-title')].map((el) => el.textContent),
+    act: document.querySelector('#tasks-page .tp-act')?.textContent ?? '',
+  })`)
+  expect(onPage.asks && onPage.act === '停下' && onPage.steps.some((title) => title.includes('viva_mcp_add') || title.includes('请求你确认')),
+    'a waiting task\'s page should show its approval and unfold its steps', onPage)
+  await capture(win, outDir, 'tasks-page-waiting')
+  await run(win, escape)
   // Declined on its card, the task goes on to ask which city.
-  await until(win, `(${cardOf(ASKS_LATER)})?.dataset.status === 'waiting'`, 'the task\'s approval on its card')
   await run(win, clickOnCard(ASKS_LATER, '拒绝'))
   // Its name says 城市 too: wait for the question itself, with its choices on the card.
   const card = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card.text.includes('哪个城市') && card })()`, "the task's question")
@@ -272,12 +261,7 @@ const ON_ITS_OWN = '帮我列一下这周要交的东西'
  * conversation with the task's card under them, and the conversation on screen is not busy for it.
  */
 async function startSteps(win, outDir, expect) {
-  await run(win, `(() => {
-    const input = document.getElementById('composer-input')
-    input.value = ${JSON.stringify(ON_ITS_OWN)}
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    document.getElementById('bg-send').click()
-  })()`)
+  await startInBackground(win, ON_ITS_OWN)
   const started = await until(win, `(() => {
     const card = ${cardState(ON_ITS_OWN)}
     // The words sit in a row of their own (with the bar to go back there); the card comes right after it.
@@ -300,16 +284,13 @@ const LEFT_ASK = '帮我接入演示服务，留到下次'
 
 /** Last in the memory phase: a task left going in the background, waiting on its approval, as Viva quits. */
 async function leaveRunning(win) {
-  await submit(win, LEFT_ASK)
-  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
-  await submit(win, '帮我订一张下周的船票')
-  await until(win, `[...document.querySelectorAll('#thread .fold-task')].some((el) => el.textContent.includes(${JSON.stringify(LEFT_ASK)}))`, 'the task left going')
+  await startInBackground(win, LEFT_ASK)
+  await until(win, `(${cardOf(LEFT_ASK)})?.dataset.status === 'waiting'`, 'the task left going')
 }
 
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win, outDir, expect, hooks) {
-  await moveSteps(win, outDir, expect, hooks)
-  await undoSteps(win, outDir, expect)
+  await routeSteps(win, outDir, expect, hooks)
   await offerSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)
   await startSteps(win, outDir, expect)

@@ -126,7 +126,7 @@ function renderMentionHint(dom, mentioned) {
 }
 
 const ROUTES = {
-  other: { mark: '↗', name: '另一件事', then: '· 刚才那件会挪到后台接着做', tab: '改成插话' },
+  other: { mark: '↗', name: '另一件事', then: '· 交给后台做，这里接着做手上的', tab: '改成插话' },
   into: { mark: '↳', name: '插进正在做的事', then: '· 它下一步就会读到', tab: '当成另一件事' },
 }
 

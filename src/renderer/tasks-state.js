@@ -102,7 +102,8 @@ export function spinOffTarget(state) {
 const PREVIEW_CHARS = 80
 /** The first line of what a task said last, for its report (the drawer tab has all of it). */
 function previewOf(view) {
-  const answer = view.messages.findLast((message) => message.role === 'assistant')?.text ?? ''
+  // Failed, why it did; else the first line of what it said last.
+  const answer = view.error || (view.messages.findLast((message) => message.role === 'assistant')?.text ?? '')
   const line = answer.split('\n').map((item) => item.trim()).find(Boolean) ?? ''
   return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS - 1)}…` : line
 }
@@ -153,9 +154,10 @@ const pairsOf = (text) => {
 }
 
 /**
- * Where words typed while a turn runs would go: on their own ('other'), the turn moving to the background,
- * when they ask something of their own and share nothing with what started it; else 'into' the turn (the
- * viva-steer plugin), which, when unsure, adds nothing to undo. Tab turns it round. null when nothing runs.
+ * Where words typed while a turn runs would go: on their own ('other'), to a task of their own in the
+ * background while the turn stays in front, when they ask something of their own and share nothing with what
+ * started it; else 'into' the turn (the viva-steer plugin), which, when unsure, adds nothing to undo. Tab turns
+ * it round. null when nothing runs.
  */
 export function routeOf(state, text) {
   const target = spinOffTarget(state)
@@ -200,11 +202,13 @@ export function taskActions(handlers) {
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
 
-    task_end: (state, { taskId, stopReason, at }) => {
+    task_end: (state, { taskId, stopReason, message = null, at }) => {
       const task = state.tasks.list.find((entry) => entry.id === taskId)
       if (!task) return state
       const status = ENDED[stopReason] ?? 'done'
-      const view = handlers.turn_end(task.view, { stopReason, at })
+      const ended = handlers.turn_end(task.view, { stopReason, at })
+      // Failed: why, as the conversation shows it (its error row), and on the card when it said nothing.
+      const view = message ? { ...ended, phase: 'error', error: message } : ended
       const list = state.tasks.list.map((entry) => (entry.id === taskId ? { ...entry, view, status, now: null, endedAt: at } : entry))
       const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
       const report = { taskId, title: task.title, status, preview: previewOf(view), shown: false }
