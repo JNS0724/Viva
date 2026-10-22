@@ -19,12 +19,12 @@ import { renderTopicLabel } from './topic-label.ts'
 import { renderPermissionPicker } from './permission-picker.ts'
 import { renderWorkDir } from './workdir.ts'
 
-let renderedSettings = []
-let renderedProfile = null
-let renderedDrawerInputs = []
-let renderedHistoryInputs = []
-let renderedEarlierInputs = []
-let renderedToast = null
+let renderedSettings: unknown[] = []
+let renderedProfile: unknown = null
+let renderedDrawerInputs: unknown[] = []
+let renderedHistoryInputs: unknown[] = []
+let renderedEarlierInputs: unknown[] = []
+let renderedToast: unknown = null
 
 /**
  * The earlier part of the timeline changes only when a page comes in, the conversation moves on, or the topic
@@ -37,7 +37,7 @@ function renderEarlierIfChanged(container, state, handlers) {
   renderEarlier(container, state, handlers)
 }
 
-let renderedTopicInputs = []
+let renderedTopicInputs: unknown[] = []
 
 /** The label by the input: redrawn when what the assistant has in mind, or how full it is, changes. */
 function renderTopicLabelIfChanged(area, state, handlers) {
@@ -49,7 +49,7 @@ function renderTopicLabelIfChanged(area, state, handlers) {
   renderTopicLabel(area, state, handlers, { ready, busy: isBusy(state) })
 }
 
-let renderedPermissionInputs = []
+let renderedPermissionInputs: unknown[] = []
 
 /** The permission picker by the input: redrawn when the level, its menu or whether a turn runs changes. */
 function renderPermissionIfChanged(area, state, handlers) {
@@ -103,7 +103,7 @@ function renderHistoryIfChanged(dom, state, handlers) {
   renderHistoryPanel(dom, state, handlers)
 }
 
-let renderedTasksPage = []
+let renderedTasksPage: unknown[] = []
 
 /** The 后台 page depends on the tasks and on itself; a task at work changes it as it goes. */
 function renderTasksPageIfChanged(container, state, handlers, now) {

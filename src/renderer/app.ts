@@ -28,7 +28,12 @@ const MAX_FRAME_MS = 100
 const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'turn_end', 'error', 'task_started'])
 const STEER_LOST = '插话没有送到助手，等这一轮结束后再说一次'
 const api = window.agent
-const byId = (id) => document.getElementById(id)
+/** A part of the page (index.html): one missing is a broken page, said at once rather than at its first use. */
+function byId(id: string): HTMLElement {
+  const el = document.getElementById(id)
+  if (!el) throw new Error(`index.html has no #${id}`)
+  return el
+}
 /** The fields and buttons the page reads or switches, as what they are. */
 const fieldById = (id: string) => byId(id) as HTMLTextAreaElement & HTMLInputElement
 const buttonById = (id: string) => byId(id) as HTMLButtonElement
@@ -248,7 +253,7 @@ function revealMessage(msgId) {
  * as a new question (not into a running turn, nor to a background task).
  * @returns {boolean} false when the agent can't take it now
  */
-function ask(text, { via = null, images = [] } = {}) {
+function ask(text, { via = null as string | null, images = [] as Array<{ id: string }> } = {}) {
   if ((!text && !images.length) || setupView(state.info) || state.switching) return false
   if (images.length) return askWithImages(text, images, via)
   // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
@@ -296,7 +301,7 @@ function askWithImages(text, images, via) {
 }
 
 /** Words said as a turn was ending: sent as the next question once it has ended. */
-let afterTurn = []
+let afterTurn: string[] = []
 
 /**
  * Said while the agent works: into the running turn, which reads it at its next step (the viva-steer plugin).
@@ -774,7 +779,7 @@ function wireFolderDrop() {
     document.body.classList.toggle('drop-images', kind === 'images')
   }
   document.addEventListener('dragover', (event) => {
-    if (!carriesFiles(event)) return
+    if (!event.dataTransfer || !carriesFiles(event)) return
     event.preventDefault()
     const images = carriesImages(event)
     event.dataTransfer.dropEffect = images ? 'copy' : 'link'
@@ -784,7 +789,7 @@ function wireFolderDrop() {
     if (!event.relatedTarget) showing(null)
   })
   document.addEventListener('drop', (event) => {
-    if (!carriesFiles(event)) return
+    if (!event.dataTransfer || !carriesFiles(event)) return
     event.preventDefault()
     showing(null)
     if (carriesImages(event)) {

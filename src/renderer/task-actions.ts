@@ -24,7 +24,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   deliver: (event: object) => void, isTyping?: () => boolean, later?: (run: () => void, ms: number) => unknown,
 }) {
   /** While a move is on its way: which events wait ({ keeps }), and those that came. */
-  let holding = null
+  let holding: { keeps: (event: any) => boolean, events: any[] } | null = null
 
   async function call(request) {
     try {
@@ -35,7 +35,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   function release() {
-    const { events } = holding
+    const events = holding?.events ?? []
     holding = null
     return events
   }

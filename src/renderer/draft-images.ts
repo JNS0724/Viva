@@ -17,7 +17,7 @@ const messageOf = (err) => String(err?.message ?? err).replace(/^Error invoking 
  * }} options
  */
 export function createDraftImages({ keep, container, onChange = () => {}, showError }) {
-  let images = []
+  let images: Array<{ id: string }> = []
 
   function render() {
     container.hidden = images.length === 0

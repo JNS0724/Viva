@@ -14,7 +14,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   /** `action` ({ label, kind, payload }) adds a button; the app decides what each kind does. */
-  function showToast(text, { action = null, ms = TOAST_MS } = {}) {
+  function showToast(text, { action = null as { label: string, kind: string } | null, ms = TOAST_MS } = {}) {
     const key = ++toastKey
     dispatch({ type: 'toast_show', toast: { key, text, action } })
     setTimeout(() => dispatch({ type: 'toast_hide', key }), ms)

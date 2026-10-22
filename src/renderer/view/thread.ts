@@ -216,14 +216,14 @@ function errorRow(message) {
     h('div', { class: 'muted', text: '检查模型的 key 和接口地址、网络，或查看终端日志。' }))
 }
 
-let secretForm = null
+let secretForm: { requestId: string, el: HTMLFormElement } | null = null
 
 /**
  * Keys a server the model set up needs. The form is kept while the same request waits, since the thread is
  * rebuilt on every frame and would otherwise lose what was typed.
  */
 function secretCard(secret, handlers) {
-  if (secretForm?.requestId === secret.requestId) return secretForm.el
+  if (secretForm && secretForm.requestId === secret.requestId) return secretForm.el
   const inputs = secret.names.map((name) => h('input', {
     class: 'field', type: 'password', name: `secret-${name}`, autocomplete: 'off', spellcheck: 'false', 'aria-label': name, placeholder: name,
   }))

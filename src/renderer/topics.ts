@@ -12,7 +12,7 @@ export const NEAR_FULL = 0.8
 export function rememberedIds(segments: ReadonlyArray<{ id: string, parentId?: string | null }>, parentId: string | null): Set<string> {
   const byId = new Map(segments.map((segment) => [segment.id, segment]))
   const ids = new Set<string>()
-  for (let id = parentId; id && byId.has(id) && !ids.has(id); id = byId.get(id).parentId) ids.add(id)
+  for (let id = parentId; id && byId.has(id) && !ids.has(id); id = byId.get(id)?.parentId ?? null) ids.add(id)
   return ids
 }
 

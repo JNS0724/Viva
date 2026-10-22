@@ -14,7 +14,7 @@ export interface ImageRef { id: string }
 
 /** A picture's name in the folder: its SHA-256 and the extension of its kind. */
 export const isImageId = (id: unknown): id is string => typeof id === 'string' && ID.test(id)
-export const mimeOfId = (id: unknown): ImageMime | null => MIME_OF_EXT[String(id).split('.').pop()] ?? null
+export const mimeOfId = (id: unknown): ImageMime | null => MIME_OF_EXT[String(id).split('.').pop() ?? ''] ?? null
 export const imageUrl = (id: string): string => `viva-image://img/${id}`
 
 type Bytes = ArrayLike<number>

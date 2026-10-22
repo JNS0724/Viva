@@ -2,6 +2,7 @@ import { formatElapsed } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h } from './dom.ts'
 import { INPUT_FORMS } from './island-input.ts'
+import type { createIslandInput } from './island-input.ts'
 import { backgroundSection, tailCell, taskTag } from './island-tasks.ts'
 
 /**
@@ -209,7 +210,7 @@ export function islandSignatures(view, open, showTools, offer = false) {
  * @param {{ input?: ReturnType<import('./island-input.ts').createIslandInput>, shortcut?: string }} [options]
  *   the desktop's input, and the ask shortcut as the user presses it
  */
-export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
+export function createIsland(host, act, { input = null as ReturnType<typeof createIslandInput> | null, shortcut = '' } = {}) {
   const size = SIZES[host]
   const cats = new Map()
   const cat = h('span', { class: 'isl-cat', 'aria-hidden': 'true' })
@@ -219,10 +220,10 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
   const panel = h('div', { class: 'isl-panel' })
   const clip = h('div', { class: 'isl-clip' }, row, panel)
   const el = h('div', { class: 'isl', 'data-host': host }, clip, cat)
-  let last = null
+  let last: { view: any, now: number, pinned: boolean } | null = null
   let signature = { panel: '', row: '' }
   let hovered = false
-  let onHead = null
+  let onHead: { kind: string } | null = null
 
   // The count at the tail is the way to the 后台 page; the rest of the head does what its form says.
   head.addEventListener('click', (event) => {
@@ -236,7 +237,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
    */
   function layout(open, wide) {
     if (!el.isConnected) return
-    const room = (parseFloat(getComputedStyle(el.parentElement).maxWidth) || Infinity) - BORDER
+    const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
     head.style.width = 'max-content'
     const toolsWidth = Math.ceil(tools.getBoundingClientRect().width)
     // With nothing beside the cat the island is a circle around it, not a capsule with an empty end.
@@ -275,9 +276,10 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
     const tail = tailCell(view)
-    head.replaceChildren(...(view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tail].filter(Boolean)))
+    const parts = view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tail]
+    head.replaceChildren(...parts.filter((part): part is NonNullable<typeof part> => Boolean(part)))
     tools.replaceChildren(...(showTools ? deskTools(view, act) : []))
-    if (view.form === 'input') {
+    if (input && view.form === 'input') {
       input.sync(view)
       if (input.entry.parentNode !== clip) clip.append(input.entry)
     } else input?.entry.remove()
@@ -287,7 +289,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
     if (panelChanged) {
-      const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut, offer, now)
+      const parts = wide && input ? input.panel(view) : panelParts(view, host, act, shortcut, offer, now)
       panel.replaceChildren(...(open ? [h('div', { class: wasOpen ? 'isl-in isl-in-still' : 'isl-in' }, parts)] : []))
       panel.inert = !open
     }
@@ -298,7 +300,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
    * On the desktop, whether the pointer is over the island, as the main process sees it (desk.js): a pointer
    * resting on it shows its tools, one passing by on its way elsewhere does not.
    */
-  let hoverTimer = null
+  let hoverTimer: ReturnType<typeof setTimeout> | undefined
   function setPointer(on) {
     clearTimeout(hoverTimer)
     hoverTimer = setTimeout(() => {

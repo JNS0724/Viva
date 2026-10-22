@@ -8,22 +8,22 @@ import { currentAction } from './selectors.ts'
  */
 export const initialTasks = Object.freeze({
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
-  list: [],
+  list: [] as Untyped[],
   /** The move just made, while it can still be undone: { taskId, prefix, text }. */
-  undo: null,
+  undo: null as Untyped,
   /** Tab: the words typed now go the other way than routeOf would send them. */
   flip: false,
   /** The task that just ended, for the island to say so a moment: { taskId, title, status }. */
-  finished: null,
+  finished: null as Untyped,
   /**
    * What ended tasks came back with, for the conversation (F): { taskId, title, status, preview, shown }.
    * shown: put in the thread once the user is not typing (task-actions.js); gone once put away.
    */
-  reports: [],
+  reports: [] as Untyped[],
   /** Tasks the last launch left going (task-store.js), offered to take up or let go: { id, title, segmentId, startedAt }. */
-  unfinished: [],
+  unfinished: [] as Untyped[],
   /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
-  page: Object.freeze({ open: false, selected: null, steps: false }),
+  page: Object.freeze({ open: false, selected: null as string | null, steps: false }),
 })
 
 /**
