@@ -136,9 +136,12 @@ island.el.addEventListener('click', (event) => {
   event.preventDefault()
 }, true)
 
+/** Forms in which the island shows what waits on the user: that comes first, and the count opens the window. */
+const SHOWS_WAITING = new Set(['waiting', 'asking'])
+
 // The count at the tail opens the 后台 list here instead of the window (the rest of the head opens the window).
 island.el.addEventListener('click', (event) => {
-  if (!event.target.closest('.isl-bg')) return
+  if (!event.target.closest('.isl-bg') || SHOWS_WAITING.has(shownView().form)) return
   event.stopPropagation()
   event.preventDefault()
   listOpen = !listOpen

@@ -21,7 +21,8 @@ test('a task kept stays across launches until it is let go', () => {
   assert.deepEqual(later.list().map((entry) => [entry.id, entry.title]), [['s1', '整理发布说明'], ['s2', '查天气']])
   later.remove('s1')
   assert.deepEqual(createTaskStore({ file }).list().map((entry) => entry.id), ['s2'])
-  assert.equal((fs.statSync(file).mode & 0o777).toString(8), '600', 'only the user reads it')
+  // Windows has no POSIX mode bits (it reports 666 whatever was asked); its user profile keeps others out.
+  if (process.platform !== 'win32') assert.equal((fs.statSync(file).mode & 0o777).toString(8), '600', 'only the user reads it')
 })
 
 test('the same task is kept once; what is not a task is left out when read', () => {
