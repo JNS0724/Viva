@@ -17,9 +17,12 @@ export function withCurrentKept(state, at = Date.now()) {
   const kept = {
     id: state.conversationId ?? `unsaved-${at}`,
     cwd: state.info.cwd || null,
-    parentId: null,
+    // What it went on from, so the topic it belongs to still reads as one (topics.js).
+    parentId: state.topic?.parentId ?? null,
     createdAt: at,
-    messages: state.messages.map((message, seq) => ({ seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at })),
+    messages: state.messages.map((message, seq) => ({
+      seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at, ...(message.images ? { images: message.images } : {}),
+    })),
   }
   return { ...state.earlier, segments: [...state.earlier.segments.filter((segment) => segment.id !== kept.id), kept] }
 }

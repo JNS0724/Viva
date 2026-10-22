@@ -1,3 +1,5 @@
+import { IMAGE_LIMITS } from '../shared/images.js'
+import { insertText, pastedParts } from './paste.js'
 import { createIsland } from './view/island-dom.js'
 import { createIslandInput } from './view/island-input.js'
 
@@ -20,10 +22,34 @@ const api = window.desk
  * whether the user has yet to see what it can do (coach).
  */
 let payload = null
-/** The input's own state: files dropped so far, the last refusal, files being dragged over (their count). */
+/**
+ * The input's own state: files dropped so far, pictures pasted (kept in the pictures folder), the last refusal,
+ * files being dragged over (their count).
+ */
 let files = []
+let images = []
 let error = null
 let dropping = 0
+
+const messageOf = (err) => String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+
+/** Pictures pasted into the island's input: kept at once, shown as chips, sent with the words. */
+async function addImages(pasted) {
+  for (const file of pasted) {
+    if (images.length >= IMAGE_LIMITS.perMessage) {
+      error = `一次最多 ${IMAGE_LIMITS.perMessage} 张图`
+      break
+    }
+    try {
+      const kept = await api.keepImage(new Uint8Array(await file.arrayBuffer()))
+      if (!images.some((image) => image.id === kept.id)) images = [...images, { id: kept.id, size: kept.size }]
+      error = null
+    } catch (err) {
+      error = messageOf(err)
+    }
+  }
+  show()
+}
 
 const input = createIslandInput({
   send: (text) => ask(text),
@@ -31,6 +57,18 @@ const input = createIslandInput({
   removeFile: (path) => {
     files = files.filter((file) => file.path !== path)
     show()
+  },
+  removeImage: (id) => {
+    images = images.filter((image) => image.id !== id)
+    show()
+  },
+  // As in the window's input (paste.js): pictures become chips; words that came only as formatted text go in by hand.
+  paste: (event) => {
+    const parts = pastedParts(event.clipboardData)
+    if (parts.text === null) return
+    event.preventDefault()
+    insertText(input.field, parts.text)
+    if (parts.images.length) addImages(parts.images)
   },
 })
 const island = createIsland('desk', (action) => api.act(action), { input, shortcut: api.shortcut })
@@ -50,7 +88,7 @@ function shownView() {
   // While the agent waits on the user the input steps aside: what it waits on comes first.
   if (payload?.form === 'input' && view.form !== 'waiting' && view.form !== 'asking') {
     // While the agent works, what is asked goes into the turn it is on.
-    return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), steering: view.form === 'working', files, error }
+    return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), steering: view.form === 'working', files, images, error }
   }
   if (payload?.form === 'mini' && payload.coach) return { form: 'coach', tone: 'done', mood: 'idle', label: 'Viva 在这儿', recent: [] }
   return payload?.form === 'mini' ? { ...view, form: 'mini', tone: 'idle', mood: 'idle' } : view
@@ -69,10 +107,11 @@ function show() {
 
 async function ask(text) {
   error = null
-  const result = await api.ask(text, files.map((file) => file.path))
+  const result = await api.ask(text, files.map((file) => file.path), images.map(({ id }) => ({ id })))
   if (result.ok) {
     input.clear()
     files = []
+    images = []
   } else error = result.error
   show()
 }
@@ -80,6 +119,7 @@ async function ask(text) {
 api.onView((next) => {
   if (payload?.form === 'input' && next.form !== 'input') {
     files = []
+    images = []
     error = null
   }
   payload = next

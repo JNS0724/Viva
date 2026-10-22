@@ -1,3 +1,4 @@
+import { formatSize } from '../selectors.js'
 import { h, keepingInput, label } from './dom.js'
 import { extensionsSection } from './extensions.js'
 import { modelsSection } from './models.js'
@@ -88,6 +89,31 @@ function deskSection(settings, handlers) {
     h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: '放回顶部正中', onClick: () => handlers.resetDeskPlace() }))
 }
 
+const CLEAR_WARNING = '清空后，以前对话里的图片会显示成「图已清理」，回到那些话题时助手也看不到那些图了。'
+
+/** 贴过的图片: where they are and how much they take; open the folder, move it, or empty it (after a yes). */
+function imagesSection(settings, handlers) {
+  const usage = settings.images
+  if (!usage) return null
+  const busy = settings.imagesBusy
+  const actions = settings.imagesConfirm
+    ? h('div', { class: 'images-confirm', role: 'alert' },
+      h('span', { class: 'help', text: CLEAR_WARNING }),
+      h('div', { class: 'settings-actions' },
+        h('button', { type: 'button', class: 'btn btn-outline images-clear', text: '清空', onClick: () => handlers.clearImages() }),
+        h('button', { type: 'button', class: 'btn btn-outline', text: '取消', onClick: () => handlers.cancelClearImages() })))
+    : h('div', { class: 'settings-actions' },
+      h('button', { type: 'button', class: 'btn btn-outline', text: '打开文件夹', disabled: busy, onClick: () => handlers.openImagesFolder() }),
+      h('button', { type: 'button', class: 'btn btn-outline', text: busy ? '处理中…' : '改位置…', disabled: busy, onClick: () => handlers.moveImages() }),
+      h('button', { type: 'button', class: 'btn btn-outline', text: '清空', disabled: busy || usage.bytes === 0, onClick: () => handlers.askClearImages() }))
+  return h('section', { class: 'ext', 'aria-label': '贴过的图片' },
+    h('span', { class: 'pref-copy' },
+      h('span', { class: 'profile-heading', text: '贴过的图片' }),
+      h('span', { class: 'help', text: `${usage.count} 张 · 占用 ${formatSize(usage.bytes)}` }),
+      h('span', { class: 'help mono images-dir', title: usage.dir, text: usage.dir })),
+    actions)
+}
+
 /**
  * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, then MCP servers and skills.
  * Re-rendered only when its slices change, and typed text survives a re-render.
@@ -112,6 +138,7 @@ export function renderSettings(container, settings, models, extensions, handlers
       }),
       modelsSection(models, handlers),
       deskSection(settings, handlers),
+      imagesSection(settings, handlers),
       extensionsSection(extensions, handlers, { connected }))))
   if (isFirstShow && !input.disabled) input.focus()
 }

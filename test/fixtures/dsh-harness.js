@@ -27,10 +27,11 @@ export const DSH_TIMEOUT_MS = 60_000
  * @param {{ memoryFile?: string, mcpServers?: object[], allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object }} [options]
  *   memoryFile: where the memory plugin's store goes; mcpServers: declared on every session;
  *   allow: answer every approval request with "allow once" (otherwise they stay pending);
+ *   imagesDir: Viva's pictures folder (dsh-profile.js), given the temporary directory;
  *   models: the profile's model section (see dsh-profile.js), given the fake Messages endpoint; env: added to dsh's
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  */
-export async function startHarness(t, { memoryFile, mcpServers = [], allow = false, models, env: extraEnv = {}, configActions = null } = {}) {
+export async function startHarness(t, { memoryFile, mcpServers = [], allow = false, models, env: extraEnv = {}, configActions = null, imagesDir } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
@@ -41,7 +42,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
   const file = memoryFile ?? path.join(userData, 'memory.db')
   const withFile = plugins.map((plugin) => (plugin.name === 'viva-memory' ? { ...plugin, config: { file } } : plugin))
   const llm = await startFakeLlm()
-  ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA, models: models?.(llm) })
+  ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA, models: models?.(llm), imagesDir: imagesDir?.(dir) })
   const bridges = []
   const closers = []
   t.after(async () => {
@@ -51,7 +52,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
       for (const close of [...closers].reverse()) close()
       await llm.close()
     } finally {
-      removeTree(dir)
+      await removeEventually(dir)
     }
   })
   const defer = (close) => { closers.push(close) }
@@ -73,6 +74,23 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
     return created
   }
   return { dir, dshHome, userData, workspace, file, llm, events, bridge, defer }
+}
+
+/** On Windows what dsh started (an image worker, or a virus scanner looking at what it wrote) may hold the folder a while after it exits. */
+const REMOVE_PATIENCE_MS = 15_000
+const REMOVE_PAUSE_MS = 500
+
+async function removeEventually(dir) {
+  const deadline = Date.now() + REMOVE_PATIENCE_MS
+  for (;;) {
+    try {
+      removeTree(dir)
+      return
+    } catch (err) {
+      if ((err.code !== 'EPERM' && err.code !== 'EBUSY') || Date.now() > deadline) throw err
+      await new Promise((resolve) => setTimeout(resolve, REMOVE_PAUSE_MS))
+    }
+  }
 }
 
 /** The assistant's visible text, in order. */

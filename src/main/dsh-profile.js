@@ -34,6 +34,9 @@ function configLines(config, indent) {
 /** Stock entries the DeepSeek route needs; without a DeepSeek key they are switched off so it is not offered. */
 const DEEPSEEK_ENTRIES = Object.freeze(['llm-deepseek', 'llm-deepseek-account'])
 
+/** dsh-base's attachment store (its cordis.patch.yml). */
+const ATTACHMENT_ENTRY = Object.freeze({ id: 'attachment-local', name: '@deepseek-ai/dsh-attachment-local' })
+
 /** JSON is YAML too: nested config goes in as one flow value. */
 const jsonEntry = (id, config) => [`- id: ${id}`, `  config: ${JSON.stringify(config)}`]
 
@@ -54,12 +57,15 @@ function modelLines({ providers, deepseek, defaultModel }) {
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
  * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
-export function patchFor({ plugins, persona, models }) {
+export function patchFor({ plugins, persona, models, imagesDir = null }) {
   const lines = ['# Written by Viva on every launch; edits here are replaced.']
   if (persona) {
     lines.push('- id: system-prompt', '  config:', `    personaPrefix: ${yamlString(persona.prefix)}`, `    personaSuffix: ${yamlString(persona.suffix)}`)
   }
   if (models) lines.push(...modelLines(models))
+  // dsh keeps the pictures it sends the model under <dshHome>/attachments and cache/: in Viva's pictures folder,
+  // so settings can count, move and empty them with the ones pasted (image-store.js).
+  if (imagesDir) lines.push(`- id: ${ATTACHMENT_ENTRY.id}`, `  name: ${yamlString(ATTACHMENT_ENTRY.name)}`, '  config:', `    dshHome: ${yamlString(imagesDir)}`)
   if (plugins.length) {
     lines.push('- insert:')
     for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${plugin.name}`, ...configLines(plugin.config, '      '))
@@ -155,10 +161,11 @@ function removeDropped(modules, plugins) {
  *   plugins: Array<{ name: string, dir: string, config?: Record<string, string | boolean | number> }>,
  *   persona?: { prefix: string, suffix: string },
  *   models?: { providers: Record<string, object>, deepseek: boolean, defaultModel: { provider: string, model: string } | null },
+ *   imagesDir?: string,
  * }} options
  * @returns {string} the profile directory
  */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models }) {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir }) {
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
   if (bad) throw new Error(`插件名必须以 ${APP_PLUGIN_PREFIX} 开头：${bad.name}`)
   const dir = path.join(dshHome, 'profiles', profile)
@@ -168,7 +175,7 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models })
   writeIfChanged(manifestFile, `${JSON.stringify(manifestFor(readManifest(manifestFile), plugins), null, 2)}\n`)
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
-  writeIfChanged(path.join(dir, 'cordis.patch.yml'), patchFor({ plugins, persona, models }))
+  writeIfChanged(path.join(dir, 'cordis.patch.yml'), patchFor({ plugins, persona, models, imagesDir }))
   removeDropped(modules, plugins)
   for (const plugin of plugins) writeShim(modules, plugin)
   return dir

@@ -1,4 +1,8 @@
 import { withFiles } from '../shared/attachments.js'
+import { IMAGE_TYPES } from '../shared/images.js'
+import { createDraftImages } from './draft-images.js'
+import { insertText, pastedParts } from './paste.js'
+import { markAllGone, pictureKept } from './view/pictures.js'
 import { createExtensionActions } from './extension-actions.js'
 import { createFilesActions } from './files-actions.js'
 import { createHistoryActions } from './history-actions.js'
@@ -38,10 +42,14 @@ const dom = {
   composer: byId('composer'),
   input: byId('composer-input'),
   routeHint: byId('route-hint'),
+  /** Pictures pasted or dropped into the input, above the words (draft-images.js). */
+  draftPics: byId('draft-pics'),
   sendBtn: byId('send-btn'),
   bgSend: byId('bg-send'),
   context: byId('composer-context'),
   workdirArea: document.querySelector('.workdir-area'),
+  /** 本话题 · N 条 · 已用 X% by the input, and its menu (view/topic-label.js). */
+  ctxArea: byId('ctx-area'),
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
   rewindConfirm: byId('rewind-confirm-root'),
@@ -138,9 +146,9 @@ const ISLAND_ACTIONS = {
     const task = askingTask(questionId)
     return task ? handlers.skipTaskQuestion(task.id) : undefined
   },
-  /** Asked on the desktop island, with the files dropped there: into this conversation, as if typed here. */
-  ask: ({ text, files }) => {
-    if (!ask(withFiles(text, files), { via: 'island' })) historyActions.showToast('Viva 岛上的问题没有送出：助手现在还不能接收')
+  /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
+  ask: ({ text, files, images = [] }) => {
+    if (!ask(withFiles(text, files), { via: 'island', images })) historyActions.showToast('Viva 岛上的问题没有送出：助手现在还不能接收')
   },
 }
 
@@ -158,7 +166,10 @@ async function loadHistory() {
   try {
     const saved = await api.loadHistory()
     if (!saved) return
-    dispatch({ type: 'history_loaded', conversationId: saved.id, messages: saved.messages, savedAt: saved.updatedAt, folds: saved.folds ?? [] })
+    dispatch({
+      type: 'history_loaded', conversationId: saved.id, messages: saved.messages, savedAt: saved.updatedAt, folds: saved.folds ?? [],
+      parentId: saved.parentId ?? null, createdAt: saved.createdAt ?? null,
+    })
     dom.follower.jumpToLatest()
     historyActions.loadTrace(saved.id)
   } catch (err) {
@@ -196,6 +207,12 @@ const historyActions = createHistoryActions({
   jumpTo: (hit) => timelineActions.jumpTo(hit),
 })
 
+const draftImages = createDraftImages({
+  keep: (bytes) => api.keepImage(bytes),
+  container: dom.draftPics,
+  showError: (message) => historyActions.showToast(message),
+})
+
 /** How long a message found by search stays marked after the timeline scrolls to it. */
 const FOUND_MS = 2400
 
@@ -211,11 +228,13 @@ function revealMessage(msgId) {
 /**
  * Sends `text` as the user's next question, or, while the agent works, into the turn it is on — unless it is
  * about something else, when that turn moves to the background first (tasks-state.js routeOf);
- * `via: 'island'` when it was asked on the desktop island.
+ * `via: 'island'` when it was asked on the desktop island; `images`: pictures pasted with it, which go only
+ * as a new question (not into a running turn, nor to a background task).
  * @returns {boolean} false when the agent can't take it now
  */
-function ask(text, { via = null } = {}) {
-  if (!text || setupView(state.info) || state.switching) return false
+function ask(text, { via = null, images = [] } = {}) {
+  if ((!text && !images.length) || setupView(state.info) || state.switching) return false
+  if (images.length) return askWithImages(text, images, via)
   // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
   // into its turn while it goes on, as its next question once it has ended.
   const mentioned = mentionedTask(state, text)
@@ -236,6 +255,27 @@ function ask(text, { via = null } = {}) {
   dom.follower.resetForPrompt()
   dispatch({ type: 'user_prompt', text, at: Date.now(), via })
   api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+  return true
+}
+
+const IMAGES_WAIT = '助手正在工作，图片等这一轮结束再发'
+const IMAGES_NOT_TO_TASKS = '图片只能发在这里的对话里，不能交给后台任务'
+
+/** A question with pictures: only as the next question of the conversation on screen. */
+function askWithImages(text, images, via) {
+  if (mentionedTask(state, text)) {
+    historyActions.showToast(IMAGES_NOT_TO_TASKS)
+    return false
+  }
+  if (isBusy(state)) {
+    historyActions.showToast(IMAGES_WAIT)
+    return false
+  }
+  dom.follower.resetForPrompt()
+  // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
+  for (const { id } of images) pictureKept(id)
+  dispatch({ type: 'user_prompt', text, at: Date.now(), via, images })
+  api.prompt(text, images).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   return true
 }
 
@@ -310,6 +350,19 @@ const extensionActions = createExtensionActions({ api, getState: () => state, di
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
+/** Emptying or moving the pictures folder; null back means the user picked no folder. */
+async function imagesChange(run, done) {
+  dispatch({ type: 'images_busy' })
+  try {
+    const usage = await run()
+    dispatch({ type: 'images_done', usage })
+    if (usage) historyActions.showToast(done)
+  } catch (err) {
+    dispatch({ type: 'images_done', usage: null })
+    historyActions.showToast(errorMessage(err))
+  }
+}
+
 /** What a toast's button does. */
 const TOAST_ACTIONS = {
   'open-profile': () => memoryActions.openProfile(),
@@ -364,10 +417,25 @@ const handlers = {
       if (!text) return
       answer(answersFrom(state.question, text))
       dom.input.value = ''
-    } else if (ask(text)) dom.input.value = ''
+    } else if (ask(text, { images: draftImages.list() })) {
+      dom.input.value = ''
+      draftImages.clear()
+    }
     // Emptied while the agent works, the button goes back to stopping it.
     renderSendButton(dom, state)
   },
+  /** 设置 › 贴过的图片 (main/image-ipc.js): open the folder; empty it after a yes; move it, dsh starting again there. */
+  openImagesFolder: () => api.openImagesFolder().catch((err) => historyActions.showToast(errorMessage(err))),
+  askClearImages: () => dispatch({ type: 'images_confirm', open: true }),
+  cancelClearImages: () => dispatch({ type: 'images_confirm', open: false }),
+  clearImages: () => imagesChange(async () => {
+    const usage = await api.clearImages()
+    // Gone from the folder: so from the input waiting to send them, and from what is on screen.
+    draftImages.clear()
+    markAllGone(document)
+    return usage
+  }, '图片已清空'),
+  moveImages: () => imagesChange(() => api.moveImages(), '图片已经搬过去了'),
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
   pickOption(id, label) {
     const question = state.question
@@ -398,16 +466,40 @@ const handlers = {
     dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
     api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   },
+  /** ⌘N, or 开新话题 in the label's menu: the assistant starts afresh; what was said stays above, dimmed. */
   async newSession() {
     if (state.switching) return
+    dispatch({ type: 'topic_menu', open: false })
+    if (isBusy(state)) return historyActions.showToast('先停止当前任务，再开新话题')
     dispatch({ type: 'session_switching' })
     try {
-      dispatch({ type: 'new_session', info: await api.newSession() })
+      dispatch({ type: 'new_session', info: await api.newSession(), at: Date.now() })
+      // Where the new topic starts is at the bottom: shown at once, before anything is said.
+      dom.follower.jumpToLatest()
       dom.input.focus()
     } catch (err) {
+      dispatch({ type: 'session_switch_failed' })
       dispatch({ type: 'error', message: errorMessage(err) })
     }
+    return undefined
   },
+  /** 回到这个话题 on an earlier topic, and 撤销 on a new one: the agent goes on from that segment. */
+  async resumeTopic(segmentId) {
+    if (state.switching) return undefined
+    if (isBusy(state)) return historyActions.showToast('助手正在工作，等这一轮结束再回到那个话题')
+    dispatch({ type: 'session_switching' })
+    try {
+      const { info, parentId } = await api.resumeTopic(segmentId)
+      dispatch({ type: 'topic_resumed', info, parentId, at: Date.now() })
+      dom.follower.jumpToLatest()
+      dom.input.focus()
+    } catch (err) {
+      dispatch({ type: 'session_switch_failed' })
+      historyActions.showToast(errorMessage(err))
+    }
+    return undefined
+  },
+  toggleTopicMenu: () => dispatch({ type: 'topic_menu', open: !state.topic.menu }),
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
@@ -544,6 +636,14 @@ function wireComposer() {
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
   })
+  // Pictures go above the words; words that came only as formatted text are put in by hand (paste.js).
+  dom.input.addEventListener('paste', (event) => {
+    const { images, text } = pastedParts(event.clipboardData)
+    if (text === null) return
+    event.preventDefault()
+    insertText(dom.input, text)
+    if (images.length) draftImages.add(images)
+  })
   dom.input.addEventListener('keydown', (event) => {
     // Tab, while the line over the input says where the words would go: the other way.
     if (event.key === 'Tab' && !event.shiftKey && !event.isComposing && routeOf(state, dom.input.value)) {
@@ -583,6 +683,7 @@ function closeTopmost() {
   else if (state.rewind.editing) rewindActions.cancelEdit()
   else if (state.workDir.confirm) workDirActions.cancelConfirm()
   else if (state.workDir.menu) workDirActions.closeMenu()
+  else if (state.topic.menu) dispatch({ type: 'topic_menu', open: false })
   else if (state.island) dispatch({ type: 'close_island' })
   else if (hubPage(state)) dispatch({ type: 'hub_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
@@ -597,6 +698,7 @@ function wireDismissal() {
     if (state.island && !within(dom.island)) dispatch({ type: 'close_island' })
     if (state.picker && !within(dom.modelArea)) dispatch({ type: 'picker_close' })
     if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
+    if (state.topic.menu && !within(dom.ctxArea)) dispatch({ type: 'topic_menu', open: false })
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
   })
   document.addEventListener('keydown', (event) => {
@@ -610,8 +712,7 @@ function wireDismissal() {
     } else if (isShortcut(event, 'n')) {
       // ⌘N / Ctrl+N: a new topic; what was said before stays above it in the timeline.
       event.preventDefault()
-      if (isBusy(state)) historyActions.showToast('先停止当前任务，再开新话题')
-      else handlers.newSession()
+      handlers.newSession()
     } else if (isShortcut(event, 'o')) {
       // ⌘O / Ctrl+O: the system's folder dialog, as in any desktop app.
       event.preventDefault()
@@ -623,26 +724,40 @@ function wireDismissal() {
 }
 
 const carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+/** Only pictures the model reads are dragged: they go into the input, not to the working directory. */
+const carriesImages = (event) => {
+  const items = Array.from(event.dataTransfer?.items ?? [])
+  return items.length > 0 && items.every((item) => item.kind === 'file' && Object.hasOwn(IMAGE_TYPES, item.type))
+}
 
 /**
  * A folder dragged onto the window: work there, as if picked in the chip's menu (the main process says
- * what is wrong with anything else). The window says what letting go will do while it is over it.
+ * what is wrong with anything else). Pictures dragged onto it go into the input instead. The window says
+ * what letting go will do while it is over it.
  */
 function wireFolderDrop() {
-  const showing = (on) => document.body.classList.toggle('drop-folder', on)
+  const showing = (kind) => {
+    document.body.classList.toggle('drop-folder', kind === 'folder')
+    document.body.classList.toggle('drop-images', kind === 'images')
+  }
   document.addEventListener('dragover', (event) => {
     if (!carriesFiles(event)) return
     event.preventDefault()
-    event.dataTransfer.dropEffect = 'link'
-    showing(true)
+    const images = carriesImages(event)
+    event.dataTransfer.dropEffect = images ? 'copy' : 'link'
+    showing(images ? 'images' : 'folder')
   })
   document.addEventListener('dragleave', (event) => {
-    if (!event.relatedTarget) showing(false)
+    if (!event.relatedTarget) showing(null)
   })
   document.addEventListener('drop', (event) => {
     if (!carriesFiles(event)) return
     event.preventDefault()
-    showing(false)
+    showing(null)
+    if (carriesImages(event)) {
+      draftImages.add(Array.from(event.dataTransfer.files))
+      return dom.input.focus()
+    }
     const files = Array.from(event.dataTransfer.files)
     if (files.length !== 1) return historyActions.showToast('一次拖一个文件夹进来')
     if (isBusy(state) || state.workDir.switching) return historyActions.showToast('助手正在工作，等这一轮结束再换工作目录')

@@ -15,6 +15,7 @@ import { renderProfilePanel } from './profile-panel.js'
 import { renderRewindConfirm } from './rewind.js'
 import { renderSettings } from './settings.js'
 import { renderThread } from './thread.js'
+import { renderTopicLabel } from './topic-label.js'
 import { renderWorkDir } from './workdir.js'
 
 let renderedSettings = []
@@ -24,12 +25,27 @@ let renderedHistoryInputs = []
 let renderedEarlierInputs = []
 let renderedToast = null
 
-/** The earlier part of the timeline changes only when a page comes in or the conversation moves on. */
+/**
+ * The earlier part of the timeline changes only when a page comes in, the conversation moves on, or the topic
+ * on screen changes (and with its first words, a new topic can no longer be undone).
+ */
 function renderEarlierIfChanged(container, state, handlers) {
-  const inputs = [state.earlier, state.info.cwd]
+  const inputs = [state.earlier, state.info.cwd, state.topic.parentId, state.topic.startedAt, state.messages.length === 0, isBusy(state)]
   if (inputs.every((value, i) => value === renderedEarlierInputs[i])) return
   renderedEarlierInputs = inputs
   renderEarlier(container, state, handlers)
+}
+
+let renderedTopicInputs = []
+
+/** The label by the input: redrawn when what the assistant has in mind, or how full it is, changes. */
+function renderTopicLabelIfChanged(area, state, handlers) {
+  if (!area) return
+  const ready = !setupView(state.info) && state.info.mode !== 'connecting'
+  const inputs = [state.topic, state.usage, state.messages.length, state.earlier.segments, ready, isBusy(state)]
+  if (inputs.every((value, i) => value === renderedTopicInputs[i])) return
+  renderedTopicInputs = inputs
+  renderTopicLabel(area, state, handlers, { ready, busy: isBusy(state) })
 }
 
 function renderSettingsIfChanged(container, state, handlers) {
@@ -152,6 +168,7 @@ function renderComposer(dom, state, handlers) {
   renderSendButton(dom, state)
   renderRouteHint(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
+  renderTopicLabelIfChanged(dom.ctxArea, state, handlers)
   dom.toggleDrawer.setAttribute('aria-pressed', String(Boolean(state.drawer)))
   renderModelPicker(dom, state, handlers)
 }

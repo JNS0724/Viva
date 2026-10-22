@@ -168,6 +168,9 @@
   border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); font-size: 13px;
 }
 .isl-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A pasted picture's chip has the picture for its icon (view/island-input.js imageChip). */
+.isl-file-thumb { flex: none; width: 22px; height: 22px; border-radius: 5px; object-fit: cover; }
+.isl-file-thumb.pic-gone { display: inline-block; background: var(--line); font-size: 0; }
 .isl-file small { flex: none; font: 11px var(--font-mono); color: var(--ink-3); }
 .isl-file-x { flex: none; width: 24px; height: 24px; border: none; border-radius: 6px; background: none; color: var(--ink-3); font-size: 15px; cursor: pointer; }
 .isl-file-x:hover { color: var(--ink); background: var(--line); }

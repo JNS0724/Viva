@@ -108,8 +108,14 @@ export function piAiProviders(providers) {
 export const providerEnv = (providers) => Object.fromEntries(providers.filter((provider) => provider.key).map((provider) => [keyEnvName(provider.id), provider.key]))
 
 /**
- * The model new conversations start with: the one last picked while it is still offered, else dsh's own
- * DeepSeek default (null) when there is a DeepSeek key, else the first model the user added.
+ * DeepSeek's model that reads pictures, and the first in dsh's DeepSeek catalog. Named in the profile rather
+ * than left to dsh: dsh takes pictures in prompts only when the profile names the model it starts on.
+ */
+export const DEEPSEEK_DEFAULT = Object.freeze({ provider: DEEPSEEK_PROVIDER, model: 'deepseek-flash' })
+
+/**
+ * The model new conversations start with: the one last picked while it is still offered, else DeepSeek's
+ * default when there is a DeepSeek key, else the first model the user added.
  * @param {{ lastModel: { provider: string, model: string } | null, providers: Array<{ id: string, models: string[] }>, hasDeepSeek: boolean }} options
  * @returns {{ provider: string, model: string } | null}
  */
@@ -118,7 +124,8 @@ export function defaultModel({ lastModel, providers, hasDeepSeek }) {
     ? hasDeepSeek
     : providers.some((provider) => provider.id === choice.provider && provider.models.includes(choice.model)))
   if (lastModel && offered(lastModel)) return lastModel
-  if (hasDeepSeek || providers.length === 0) return null
+  if (hasDeepSeek) return DEEPSEEK_DEFAULT
+  if (providers.length === 0) return null
   return { provider: providers[0].id, model: providers[0].models[0] }
 }
 

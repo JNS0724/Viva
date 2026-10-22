@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: viva-image:">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Viva</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -77,6 +77,7 @@
         <form class="composer" id="composer">
           <label class="sr-only" for="composer-input">给助手发消息</label>
           <div class="route" id="route-hint" aria-live="polite" hidden></div>
+          <div class="draft-pics-row" id="draft-pics" hidden></div>
           <textarea id="composer-input" rows="2" placeholder="让助手帮你做点什么…　Enter 发送 · Shift+Enter 换行"></textarea>
           <div class="composer-row">
             <div class="model-area" id="model-area">
@@ -87,6 +88,8 @@
               <button class="chip workdir-chip" id="composer-context" type="button" aria-haspopup="menu" aria-expanded="false"></button>
               <div id="workdir-menu"></div>
             </div>
+            <!-- 本话题 · N 条 · 已用 X%: what the assistant has in mind now, and 开新话题 (view/topic-label.js). -->
+            <div class="ctx-area" id="ctx-area" hidden></div>
             <button class="btn btn-secondary bg-send" id="bg-send" type="button" title="交给后台做，这里照常用">↗ 后台做</button>
             <button class="send-btn" id="send-btn" type="submit" aria-label="发送"></button>
           </div>

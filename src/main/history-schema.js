@@ -1,4 +1,5 @@
 /** Validation shared by the history database, the legacy JSON import and the IPC boundary. */
+import { checkImages } from '../shared/images.js'
 
 const MAX_MESSAGES = 5000
 const MAX_TEXT_CHARS = 200_000
@@ -23,13 +24,15 @@ function normalizeReceipt(receipt) {
 function normalizeMessage(message) {
   if (!ROLES.has(message?.role)) throw new Error(`无效的消息 role：${message?.role}`)
   if (typeof message.text !== 'string' || message.text.length > MAX_TEXT_CHARS) throw new Error('无效的消息 text')
-  return { role: message.role, text: message.text, receipt: normalizeReceipt(message.receipt) }
+  const images = checkImages(message.images)
+  if (!images) throw new Error('无效的消息 images')
+  return { role: message.role, text: message.text, receipt: normalizeReceipt(message.receipt), ...(images.length ? { images } : {}) }
 }
 
 /**
  * Keeps only what is persisted from a list of messages (renderer state or a file), or throws.
  * @param {unknown} input
- * @returns {{ role: 'user' | 'assistant' | 'note', text: string, receipt: object | null }[]}
+ * @returns {{ role: 'user' | 'assistant' | 'note', text: string, receipt: object | null, images?: { id: string }[] }[]}
  */
 export function normalizeMessages(input) {
   if (!Array.isArray(input)) throw new Error('历史记录必须是消息列表')

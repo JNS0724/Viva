@@ -75,6 +75,8 @@ const ADDED_COLUMNS = Object.freeze([
   // fold_kind: 'task' for a turn moved to the background (phase 3), 'side' for a task started on its own (后台做);
   // null, a path left behind by going back.
   ['conversations', 'fold_kind', 'TEXT'],
+  // images: the pictures pasted with a question, as JSON [{ id }] (shared/images.js); the files are in the pictures folder.
+  ['messages', 'images', 'TEXT'],
 ])
 
 function addMissingColumns(db) {
@@ -101,7 +103,9 @@ const toSummary = (row) => ({
   id: row.id, title: row.title, updatedAt: row.updated_at, model: row.model, mode: row.mode, pinned: Boolean(row.pinned),
 })
 
-const toMessage = (row) => ({ role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null })
+const toMessage = (row) => ({
+  role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}),
+})
 /** A message of an earlier segment of the timeline: where it is, and when it was written (ms). */
 const toTimelineMessage = (row) => ({ seq: row.seq, ...toMessage(row), at: row.created_at })
 
@@ -154,20 +158,20 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
-    timelineMessages: db.prepare('SELECT seq, role, text, receipt, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    timelineMessages: db.prepare('SELECT seq, role, text, receipt, images, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
     ftsMessageHits: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages_fts
       JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id
       WHERE messages_fts MATCH ? AND c.deleted_at IS NULL AND c.folded_into IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
     likeMessageHits: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages m
       JOIN conversations c ON c.id = m.conversation_id
       WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL AND c.folded_into IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
-    messages: db.prepare('SELECT role, text, receipt FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    messages: db.prepare('SELECT role, text, receipt, images FROM messages WHERE conversation_id = ? ORDER BY seq'),
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
-    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ? WHERE conversation_id = ? AND seq = ?'),
-    insert: db.prepare(`INSERT INTO messages (conversation_id, seq, role, text, receipt, session_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`),
+    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ? WHERE conversation_id = ? AND seq = ?'),
+    insert: db.prepare(`INSERT INTO messages (conversation_id, seq, role, text, receipt, images, session_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
     latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
@@ -203,10 +207,11 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     const start = Math.max(0, Math.min(stored, messages.length) - 1)
     sql.trim.run(id, messages.length)
     for (let seq = start; seq < messages.length; seq += 1) {
-      const { role, text, receipt } = messages[seq]
+      const { role, text, receipt, images } = messages[seq]
       const json = receipt ? JSON.stringify(receipt) : null
-      if (seq < stored) sql.update.run(role, text, json, id, seq)
-      else sql.insert.run(id, seq, role, text, json, sessionId ?? null, at)
+      const pictures = images?.length ? JSON.stringify(images) : null
+      if (seq < stored) sql.update.run(role, text, json, pictures, id, seq)
+      else sql.insert.run(id, seq, role, text, json, pictures, sessionId ?? null, at)
     }
   }
 

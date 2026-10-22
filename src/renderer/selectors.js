@@ -50,7 +50,7 @@ export function workspaceName(cwd) {
 /** What gets saved: finished messages only, in the shape the main process stores. */
 export const historyMessages = (state) => state.messages
   .filter((m) => !m.open)
-  .map(({ role, text, receipt }) => ({ role, text, receipt: receipt ?? null }))
+  .map(({ role, text, receipt, images }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}) }))
 
 const DAY_MS = 86_400_000
 const startOfDay = (ts) => new Date(ts).setHours(0, 0, 0, 0)
@@ -113,25 +113,31 @@ function timelineDay(ts, now) {
 /**
  * The earlier part of the one timeline as the window shows it, top to bottom: a line for each new day, a line
  * where the working directory changed (also before the current part, when it is in another one), and the messages.
+ * Each row names the segment it belongs to (null: the line before the current part), so the view can group them
+ * by topic (topics.js); a directory line says whether the conversation went on there (`continues`).
  * @param {{ segments: object[] }} earlier earlier-state.js
- * @param {{ currentCwd?: string | null, now?: number }} [options]
- * @returns {Array<{ kind: 'day', label: string } | { kind: 'workdir', cwd: string } | { kind: 'message', id: string, role: string, text: string, receipt: object | null }>}
+ * @param {{ currentCwd?: string | null, now?: number, currentContinues?: boolean }} [options]
+ * @returns {Array<{ segment: string | null } & ({ kind: 'day', label: string } | { kind: 'workdir', cwd: string, continues: boolean } | { kind: 'message', id: string, role: string, text: string, receipt: object | null })>}
  */
-export function earlierRows(earlier, { currentCwd = null, now = Date.now() } = {}) {
+export function earlierRows(earlier, { currentCwd = null, now = Date.now(), currentContinues = false } = {}) {
   const rows = []
   let lastDay = null
   let lastCwd = null
-  for (const segment of earlier.segments) {
-    if (segment.cwd && lastCwd && segment.cwd !== lastCwd) rows.push({ kind: 'workdir', cwd: segment.cwd })
+  earlier.segments.forEach((segment, i) => {
+    const continues = i > 0 && segment.parentId === earlier.segments[i - 1].id
+    if (segment.cwd && lastCwd && segment.cwd !== lastCwd) rows.push({ kind: 'workdir', cwd: segment.cwd, continues, segment: segment.id })
     lastCwd = segment.cwd ?? lastCwd
     for (const message of segment.messages) {
       const day = timelineDay(message.at, now)
-      if (day !== lastDay) rows.push({ kind: 'day', label: day })
+      if (day !== lastDay) rows.push({ kind: 'day', label: day, segment: segment.id })
       lastDay = day
-      rows.push({ kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt })
+      rows.push({
+        kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt,
+        segment: segment.id, ...(message.images ? { images: message.images } : {}),
+      })
     }
-  }
-  if (currentCwd && lastCwd && currentCwd !== lastCwd) rows.push({ kind: 'workdir', cwd: currentCwd })
+  })
+  if (currentCwd && lastCwd && currentCwd !== lastCwd) rows.push({ kind: 'workdir', cwd: currentCwd, continues: currentContinues, segment: null })
   return rows
 }
 

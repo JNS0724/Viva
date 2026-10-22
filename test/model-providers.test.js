@@ -91,7 +91,8 @@ test('new conversations start on the last pick while it is offered, else DeepSee
   const providers = [{ id: 'custom-a', models: ['m1', 'm2'] }]
   const pick = { provider: 'custom-a', model: 'm2' }
   assert.deepEqual(defaultModel({ lastModel: pick, providers, hasDeepSeek: true }), pick)
-  assert.equal(defaultModel({ lastModel: { provider: 'custom-a', model: 'gone' }, providers, hasDeepSeek: true }), null)
+  // Named, not left to dsh: only then does dsh take pictures in prompts.
+  assert.deepEqual(defaultModel({ lastModel: { provider: 'custom-a', model: 'gone' }, providers, hasDeepSeek: true }), { provider: 'deepseek-official', model: 'deepseek-flash' })
   assert.deepEqual(defaultModel({ lastModel: { provider: 'deepseek-official', model: 'deepseek-v4-pro' }, providers, hasDeepSeek: false }), { provider: 'custom-a', model: 'm1' })
   assert.deepEqual(defaultModel({ lastModel: { provider: 'deepseek-official', model: 'deepseek-v4-pro' }, providers, hasDeepSeek: true }), { provider: 'deepseek-official', model: 'deepseek-v4-pro' })
   assert.equal(defaultModel({ lastModel: null, providers: [], hasDeepSeek: false }), null)

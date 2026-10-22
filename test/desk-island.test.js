@@ -68,9 +68,14 @@ test('a view from the window must look like one and stay small', () => {
 })
 
 test('a question from the island: text within bounds, and only paths for files', () => {
-  assert.deepEqual(checkAsk({ text: '  总结 ', files: ['/a/b.docx'], extra: 1 }), { text: '总结', files: ['/a/b.docx'] })
-  assert.deepEqual(checkAsk({ text: '在吗' }), { text: '在吗', files: [] })
+  assert.deepEqual(checkAsk({ text: '  总结 ', files: ['/a/b.docx'], extra: 1 }), { text: '总结', files: ['/a/b.docx'], images: [] })
+  assert.deepEqual(checkAsk({ text: '在吗' }), { text: '在吗', files: [], images: [] })
   assert.equal(checkAsk({ text: '   ' }), null)
+  // A pasted picture: only its name in the pictures folder; with one, the words may be left out.
+  const pic = { id: `${'f'.repeat(64)}.png` }
+  assert.deepEqual(checkAsk({ text: '', images: [{ ...pic, path: '/etc' }] }), { text: '', files: [], images: [pic] })
+  assert.equal(checkAsk({ text: '看看', images: [{ id: '/etc/passwd' }] }), null)
+  assert.equal(checkAsk({ images: [pic] }), null)
   assert.equal(checkAsk({ text: 'x'.repeat(ASK_LIMITS.chars + 1) }), null)
   assert.equal(checkAsk({ text: '总结', files: '/a/b.docx' }), null)
   assert.equal(checkAsk({ text: '总结', files: [42] }), null)

@@ -108,6 +108,47 @@ html:not([data-platform="darwin"]) {
   border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); font-size: 12px; color: var(--ink-2);
 }
 .timeline-workdir b { color: var(--ink); }
+/* Topics (view/earlier.js): one the assistant no longer has is a step quieter, its head says so. */
+.topic-old { display: flex; flex-direction: column; gap: 28px; opacity: .5; transition: opacity .2s; }
+.topic-old:hover, .topic-old:focus-within { opacity: .8; }
+.topic-head { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-3); }
+.topic-head b { color: var(--ink-2); font-weight: 600; }
+.topic-head::after { content: ''; flex: 1; height: 1px; background: var(--line); order: 2; }
+.topic-head .topic-back { order: 3; }
+.topic-back {
+  height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel);
+  color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.topic-back:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
+.topic-back:disabled { cursor: default; opacity: .6; }
+/* Where the topic on screen starts. */
+.topic-start { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.topic-start::before, .topic-start::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
+.topic-start time { font: 12px var(--font-mono); font-weight: 400; color: var(--ink-3); }
+.topic-note { align-self: center; margin-top: -16px; font-size: 12px; color: var(--ink-3); text-align: center; }
+
+/* By the input: what the assistant has in mind now (view/topic-label.js). */
+.ctx-area { position: relative; }
+.ctx-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; }
+.ctx-chip:hover, .ctx-chip[aria-expanded="true"] { border-color: var(--line-2); }
+.ctx-bar { width: 28px; height: 4px; border-radius: 2px; background: var(--line-2); overflow: hidden; }
+.ctx-bar i { display: block; height: 100%; background: var(--ink-3); }
+.ctx-chip[data-tone="full"] { color: var(--orange); }
+.ctx-chip[data-tone="full"] .ctx-bar i { background: var(--orange); }
+.ctx-menu {
+  position: absolute; left: 0; bottom: 38px; z-index: 30; width: 290px; padding: 6px; border: 1px solid var(--line-2);
+  border-radius: 14px; background: var(--panel-2); box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+}
+.ctx-menu-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.6; color: var(--ink-3); }
+.ctx-menu-info b { color: var(--ink); font-weight: 600; }
+.ctx-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 10px; border: none;
+  border-radius: 9px; background: none; color: var(--ink); font-size: 13px; text-align: left; cursor: pointer;
+}
+.ctx-item:hover:not(:disabled) { background: var(--raised); }
+.ctx-item:disabled { color: var(--ink-3); cursor: default; }
+.ctx-item kbd { font: 11px var(--font-mono); color: var(--ink-3); }
+.ctx-item small { font-size: 11px; color: var(--ink-3); }
 .timeline-workdir-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 11px; }
 
 /* ---------- composer ---------- */
@@ -210,6 +251,19 @@ html:not([data-platform="darwin"]) {
 }
 /* Files handed over with a question (from the desktop island): chips above its text. */
 .msg-files { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; white-space: normal; }
+/* Pictures sent with a question, above its words (view/pictures.js); one gone from the folder says so. */
+.msg-pics { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 8px; }
+.msg-pic { display: block; max-width: 240px; max-height: 180px; border-radius: 10px; border: 1px solid var(--line-2); object-fit: cover; background: var(--raised); }
+.pic-gone { display: grid; place-items: center; width: 120px; height: 72px; font-size: 12px; color: var(--ink-3); border-style: dashed; }
+/* Pictures waiting in the input, above the words (draft-images.js). */
+.draft-pics { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 10px; }
+.draft-pic { position: relative; width: 72px; height: 72px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line-2); background: var(--raised); }
+.draft-pic-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.draft-pic-img.pic-gone { width: 100%; height: 100%; border: none; }
+.draft-pic-x {
+  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; padding: 0; border: none; border-radius: 50%;
+  background: rgba(6, 11, 22, .8); color: var(--ink); font-size: 12px; line-height: 20px; cursor: pointer;
+}
 .msg-file {
   display: inline-flex; align-items: center; gap: 8px; max-width: 100%; height: 32px; padding: 0 10px; border-radius: 9px;
   background: var(--panel); border: 1px solid var(--line-2); font-size: 13px; line-height: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -302,6 +356,11 @@ html:not([data-platform="darwin"]) {
 .doc-ico { position: relative; flex: none; width: 14px; height: 17px; border-radius: 3px; background: var(--ink); }
 .doc-ico::after { content: ''; position: absolute; left: 3px; right: 3px; top: 5px; height: 6px; border-top: 2px solid var(--accent); border-bottom: 2px solid var(--accent); box-sizing: border-box; }
 .desk-reset { align-self: flex-start; margin-top: 12px; }
+/* 贴过的图片 (view/settings.js imagesSection): its folder on one line; emptying asks first. */
+.images-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.images-confirm { display: flex; flex-direction: column; gap: 10px; }
+.images-confirm .help { color: var(--orange); }
+.images-clear { color: var(--red); border-color: color-mix(in srgb, var(--red) 50%, transparent); }
 .msg-agent { display: flex; gap: 14px; }
 .msg-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .msg-text { margin: 0; font-size: 16px; line-height: 1.8; white-space: pre-wrap; word-break: break-word; }
@@ -724,11 +783,13 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .history-snippet mark { background: rgba(90, 169, 255, .22); color: var(--ink); border-radius: 3px; padding: 0 2px; }
 .hit-open { flex: none; white-space: nowrap; }
 /* A folder held over the window (app.js wireFolderDrop): letting go works there. */
-body.drop-folder::after {
+body.drop-folder::after, body.drop-images::after {
   content: '松开，在这个文件夹里工作'; position: fixed; inset: 12px; z-index: 90; pointer-events: none;
   display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 500; color: var(--ink);
   border: 2px dashed rgba(90, 169, 255, .8); border-radius: 18px; background: color-mix(in srgb, var(--raised) 90%, transparent);
 }
+/* Pictures held over the window: they go into the input. */
+body.drop-images::after { content: '松开，把图片放进输入框'; }
 /* The message search jumped to, marked for a moment (app.js revealMessage). */
 .msg-found { outline: 2px solid rgba(90, 169, 255, .7); outline-offset: 4px; border-radius: 12px; transition: outline-color .6s; }
 .history-hint { padding: 12px; color: var(--ink-3); font-size: 13px; }

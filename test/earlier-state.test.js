@@ -53,7 +53,9 @@ test('the timeline reads by day, says where the folder changed, and the current 
   assert.ok(rows.filter((row) => row.kind === 'message').every((row) => typeof row.id === 'string'), 'each message keyed for the view')
 
   const switchedSince = earlierRows(earlier, { currentCwd: '/w/other', now: NOW })
-  assert.deepEqual(switchedSince.at(-1), { kind: 'workdir', cwd: '/w/other' }, 'the folder the current part is in, when it changed')
+  assert.deepEqual(switchedSince.at(-1), { kind: 'workdir', cwd: '/w/other', continues: false, segment: null }, 'the folder the current part is in, when it changed')
+  const wentOn = earlierRows(earlier, { currentCwd: '/w/other', now: NOW, currentContinues: true })
+  assert.equal(wentOn.at(-1).continues, true, 'the conversation went on in that folder: the line says so')
   const older = earlierRows({ segments: [segment('x', null, [msg(0, 'user', '很久以前', NOW - 30 * DAY)])] }, { currentCwd: '/w', now: NOW })
   assert.equal(older[0].label, '9 月 21 日')
 })

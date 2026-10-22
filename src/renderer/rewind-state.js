@@ -66,9 +66,11 @@ export function rewindActions(newSession) {
     rewound: (state, { conversation, info, folds }) => ({
       ...newSession(state, { info: { ...state.info, ...info, remembersHistory: true } }),
       earlier: state.earlier,
+      // Going back is within the topic.
+      topic: state.topic,
       conversationId: conversation.id,
       messages: conversation.messages.map((m, i) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null,
+        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, ...(m.images ? { images: m.images } : {}),
       })),
       folds,
     }),
