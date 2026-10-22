@@ -303,6 +303,9 @@ async function stopBridge() {
   await running?.dispose()
 }
 
+/** dsh stopped (it may still be writing the session), but no longer than QUIT_WAIT_MS. */
+const stopBridgeInTime = () => Promise.race([stopBridge(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT_MS))])
+
 /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
 const setupInfo = (config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '' })
 const SETUP_MESSAGES = { 'no-key': '请先在设置里填写 DeepSeek API key，或添加其他模型', 'no-dsh': '没有找到 DeepSeek Harness，请在项目目录运行 npm install' }
@@ -768,7 +771,13 @@ function createWindow(config) {
     if (config.smoke) {
       // Nor may macOS App Nap suspend the app (and the fake model it serves) while nobody looks.
       powerSaveBlocker.start('prevent-app-suspension')
-      runSmoke(win, config, (code) => app.exit(code), {
+      // A smoke run ends as quitting does: dsh stopped first. Left to app.exit, dsh could outlive the app
+      // (Windows keeps a child running) and hold the session the next phase takes over.
+      const quitSmoke = (code: number) => {
+        quitting = true
+        stopBridgeInTime().finally(() => app.exit(code))
+      }
+      runSmoke(win, config, quitSmoke, {
         agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
       })
     }
@@ -897,8 +906,7 @@ app.on('before-quit', (event) => {
   }
   event.preventDefault()
   quitting = true
-  const timeout = new Promise((resolve) => setTimeout(resolve, QUIT_WAIT_MS))
-  Promise.race([stopBridge(), timeout]).finally(() => app.quit())
+  stopBridgeInTime().finally(() => app.quit())
 })
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
