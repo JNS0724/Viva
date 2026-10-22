@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openHistoryDb } from '../src/main/history-db.js'
+import { openHistoryDb } from '../src/main/history-db.ts'
 
 /**
  * One timeline (single-conversation design): every stored conversation is a segment of it, with the dsh

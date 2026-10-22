@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.js'
+import { openHistoryDb } from '../src/main/history-db.ts'
 
 const receipt = { ms: 4200, tools: 2, thoughts: 1, stopReason: 'end_turn' }
 const user = (text) => ({ role: 'user', text, receipt: null })

@@ -26,7 +26,7 @@ function assertQuery(value) {
  * they are reached through the callbacks so this module stays testable without Electron.
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
- *   db: ReturnType<import('./history-db.js').openHistoryDb>,
+ *   db: ReturnType<import('./history-db.ts').openHistoryDb>,
  *   dshHome: string,
  *   traceDb?: () => ReturnType<import('../../plugins/trace/lib/store.js').openTraceDb> | null,
  *   current: () => object, setCurrent: (conversation: object) => void,

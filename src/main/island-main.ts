@@ -1,6 +1,6 @@
 import { deskMenuTemplate } from './desk-menu.ts'
 import { describeDropped, MISSING } from './island-files.ts'
-import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from './island-ipc.js'
+import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from './island-ipc.ts'
 
 /**
  * The main process's side of the Viva island: the messages between the window, the desktop island

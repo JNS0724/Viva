@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { registerExtensionsIpc } from '../src/main/extensions-ipc.js'
+import { registerExtensionsIpc } from '../src/main/extensions-ipc.ts'
 import { createMcpConfigStore, parseServerInput, resolveCommand, serverView, toAcpServers } from '../src/main/mcp-config.ts'
-import { createSkill, importSkill, listSkills, parseFrontmatter, removeSkill, skillRoots } from '../src/main/skills.js'
+import { createSkill, importSkill, listSkills, parseFrontmatter, removeSkill, skillRoots } from '../src/main/skills.ts'
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'extensions-test-'))

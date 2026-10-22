@@ -1,4 +1,4 @@
-import { capture, run, submit, until, UI_WAIT_MS, wait } from './smoke-kit.js'
+import { capture, run, submit, until, UI_WAIT_MS, wait } from './smoke-kit.ts'
 
 /**
  * Background tasks on the real dsh (phase 3): while a turn waits on an approval, words about something else
@@ -301,9 +301,9 @@ export async function taskSteps(win, outDir, expect, hooks) {
  * The `resume` phase, on the profile `memory` left: the task Viva quit on is offered; taken up, it goes on
  * in the background and reports back once done. @returns {Promise<string[]>} failed expectations
  */
-export async function checkResume(win, outDir) {
-  const failures = []
-  const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
+export async function checkResume(win, outDir): Promise<string[]> {
+  const failures: string[] = []
+  const expect = (ok, message: string, seen?: unknown) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
   const card = await until(win, `document.querySelector('#thread .task-unfinished')?.textContent ?? null`, 'the task Viva quit on')
   expect(card.includes(`#${LEFT_ASK}`) && card.includes('接着做') && card.includes('不做了'), 'the task Viva quit on should be offered', card)
   await run(win, `document.querySelector('#thread .task-unfinished').scrollIntoView({ block: 'center' })`)

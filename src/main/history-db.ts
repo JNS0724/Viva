@@ -146,11 +146,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   db.exec(SCHEMA)
   addMissingColumns(db)
 
-  /**
-   * A row is a record of what its query selects; each function below says what it returns.
-   * @type {Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint } }>}
-   */
-  const sql = {
+  /** A row is a record of what its query selects; each function below says what it returns. */
+  const sql: Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint } }> = {
     conversation: db.prepare('SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL'),
     anyConversation: db.prepare('SELECT title, title_custom FROM conversations WHERE id = ?'),
     upsert: db.prepare(`

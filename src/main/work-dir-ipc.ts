@@ -32,7 +32,7 @@ export function registerWorkDirIpc(ipcMain, deps) {
     await reveal(current())
   })
 
-  handle('workdir:switch', async (dir, options = {}) => {
+  handle('workdir:switch', async (dir, options: { confirmed?: boolean } = {}) => {
     if (typeof dir !== 'string' || dir.length > 4096) throw new Error('invalid working directory')
     // The app's own folder is always fine; any other is checked as the user picked it.
     const problem = isDefault(dir) ? null : problemOf(dir)

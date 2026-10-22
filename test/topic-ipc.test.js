@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.js'
-import { registerHistoryIpc } from '../src/main/history-ipc.js'
+import { openHistoryDb } from '../src/main/history-db.ts'
+import { registerHistoryIpc } from '../src/main/history-ipc.ts'
 
 /** 回到这个话题 and 撤销 a new topic, in the main process: the agent takes that session up again; the timeline stays in order. */
 

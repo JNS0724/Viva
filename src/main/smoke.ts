@@ -1,12 +1,12 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { checkDeskAsk } from './smoke-desk.js'
-import { checkPictures } from './smoke-images.js'
-import { checkTopics } from './smoke-topics.js'
-import { checkPermission } from './smoke-permission.js'
-import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
-import { checkMemory } from './smoke-memory.js'
-import { checkResume } from './smoke-tasks.js'
+import { checkDeskAsk } from './smoke-desk.ts'
+import { checkPictures } from './smoke-images.ts'
+import { checkTopics } from './smoke-topics.ts'
+import { checkPermission } from './smoke-permission.ts'
+import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { checkMemory } from './smoke-memory.ts'
+import { checkResume } from './smoke-tasks.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -495,7 +495,7 @@ async function historyPanelSteps(win, outDir, failures) {
  * `memory`) and screenshots each step into `smokeOut`.
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
-export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hooks = {}) {
+export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hooks: { desk?: () => any, [hook: string]: any } = {}) {
   const problems = []
   win.webContents.on('console-message', (event) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)

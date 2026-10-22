@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createAcpBridge } from '../src/main/acp-bridge.js'
+import { createAcpBridge } from '../src/main/acp-bridge.ts'
 
 /**
  * End-to-end through the real ACP bridge and a real child process: the fake dsh fixture.
