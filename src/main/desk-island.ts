@@ -1,7 +1,10 @@
-import type { BrowserWindow as Win, Display } from 'electron'
+import type { BrowserWindow as Win, Display, Menu, Screen, WebContents } from 'electron'
 import { DESK_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.ts'
 
 type Point = { x: number, y: number }
+type Rect = { x: number, y: number, width: number, height: number }
+/** What the window's island shows (renderer/island-view.ts), as checked (island-ipc.ts checkIslandView). */
+type DeskView = { form: string, [field: string]: any }
 
 /**
  * The Viva island on the desktop: a small transparent window, at the top centre of the screen unless the
@@ -27,12 +30,12 @@ const POINTER_MS = 50
 const POINTER_SLOP = 4
 
 /**
- * @param {{
- *   enabled: boolean, away: boolean, view: object | null, sinceDone: number, input?: boolean, summoned?: boolean,
- * }} input away: the window was closed to the tray; summoned: called up with the shortcut while switched off
- * @returns {string | null} the form to show, or null to hide
+ * @param input away: the window was closed to the tray; summoned: called up with the shortcut while switched off
+ * @returns the form to show, or null to hide
  */
-export function deskForm({ enabled, away, view, sinceDone, input = false, summoned = false }) {
+export function deskForm({ enabled, away, view, sinceDone, input = false, summoned = false }: {
+  enabled: boolean, away: boolean, view: DeskView | null, sinceDone: number, input?: boolean, summoned?: boolean,
+}): string | null {
   if (!away) return null
   if (input) return 'input'
   if (!enabled && !summoned) return null
@@ -43,16 +46,15 @@ export function deskForm({ enabled, away, view, sinceDone, input = false, summon
   return view?.form === 'done' && sinceDone < DESK_TIMES.done + DESK_TIMES.mini ? 'mini' : null
 }
 
-const untilNextForm = (sinceDone) => (sinceDone < DESK_TIMES.done ? DESK_TIMES.done : DESK_TIMES.done + DESK_TIMES.mini) - sinceDone
+const untilNextForm = (sinceDone: number) => (sinceDone < DESK_TIMES.done ? DESK_TIMES.done : DESK_TIMES.done + DESK_TIMES.mini) - sinceDone
 
 /** Without a store of its own, the first-time note counts as seen. */
 const SEEN = Object.freeze({ get: () => true, set: () => {} })
 
-/** @param {{ x: number, y: number }} point @param {{ x: number, y: number, width: number, height: number }} rect */
-const within = (point, rect) => point.x >= rect.x - POINTER_SLOP && point.x <= rect.x + rect.width + POINTER_SLOP
+const within = (point: Point, rect: Rect) => point.x >= rect.x - POINTER_SLOP && point.x <= rect.x + rect.width + POINTER_SLOP
   && point.y >= rect.y - POINTER_SLOP && point.y <= rect.y + rect.height + POINTER_SLOP
 
-function openWindow({ BrowserWindow, preload, page }) {
+function openWindow({ BrowserWindow, preload, page }: { BrowserWindow: typeof Win, preload: string, page: string }) {
   const win = new BrowserWindow({
     ...DESK_SIZE,
     show: false,
@@ -86,13 +88,14 @@ function openWindow({ BrowserWindow, preload, page }) {
 }
 
 /**
- * @param {{
- *   BrowserWindow: Function, screen: object, preload: string, page: string, mainWindow: object, enabled: boolean,
- *   places: { get: () => object, set: (places: object) => void }, coach?: { get: () => boolean, set: () => void },
- * }} deps places: where the island was dragged to (preferences.json deskPlaces); coach: whether the user has
- *   seen what the island can do (preferences.json deskCoached)
+ * deps.places: where the island was dragged to (preferences.json deskPlaces); coach: whether the user has
+ * seen what the island can do (preferences.json deskCoached)
  */
-export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN as { get: () => boolean, set: () => void } }) {
+export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN as { get: () => boolean, set: () => void } }: {
+  BrowserWindow: typeof Win, screen: Pick<Screen, 'getAllDisplays' | 'getDisplayMatching' | 'getCursorScreenPoint' | 'getDisplayNearestPoint'>,
+  preload: string, page: string, mainWindow: Pick<Win, 'getBounds'>, enabled: boolean,
+  places: { get: () => unknown, set: (places: ReturnType<typeof readPlaces>) => void }, coach?: { get: () => boolean, set: () => void },
+}) {
   let enabled = initiallyEnabled
   let coached = coach.get()
   /** The pointer is over the island. */
@@ -100,7 +103,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   /** Hidden from its menu: switched off until the window is next closed to the tray. */
   let hidden = false
   let win: Win | null = null
-  let view: { form: string, [field: string]: any } | null = null
+  let view: DeskView | null = null
   let doneAt = 0
   /** The window was closed to the tray. */
   let away = false
@@ -116,7 +119,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   let places = readPlaces(placeStore.get())
   let layout: ReturnType<typeof deskLayout> | null = null
   /** The island inside its window, as the page last reported it. */
-  let islandRect: { x: number, y: number, width: number, height: number } | null = null
+  let islandRect: Rect | null = null
   let ignoring = true
   let pointerTimer: ReturnType<typeof setInterval> | undefined
   /** While the island is dragged: where the pointer was, and the display and point it is over. */
@@ -146,7 +149,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     shown.setBounds(next.bounds)
   }
 
-  function setIgnoring(value) {
+  function setIgnoring(value: boolean) {
     const shown = live()
     if (value === ignoring || !shown) return
     ignoring = value
@@ -171,7 +174,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   }
 
   /** The page shows the island's tools under a resting pointer; done waits while the pointer rests on it. */
-  function setHovering(value) {
+  function setHovering(value: boolean) {
     if (value === hovering) return
     hovering = value
     if (form !== 'done') return send()
@@ -278,20 +281,20 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
 
   return {
     /** The window's island changed. */
-    setView(next) {
+    setView(next: DeskView) {
       if (next.form === 'done' && view?.form !== 'done') doneAt = Date.now()
       view = next
       refresh()
     },
     /** Whether the app's window was closed to the tray; shown again, it has its own island and input. */
-    setAway(value) {
+    setAway(value: boolean) {
       away = value
       if (value) hidden = false
       if (!value) closeInput()
       refresh()
     },
     /** Where the island is inside its window (the page reports it whenever its shape changes). */
-    setIslandRect(rect) {
+    setIslandRect(rect: Rect) {
       islandRect = rect
       checkPointer()
     },
@@ -341,7 +344,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     /** The user has seen what the island can do: the first-time note goes for good. */
     markCoached,
     /** The right-click menu, over the island. */
-    popup(menu) {
+    popup(menu: Pick<Menu, 'popup'>) {
       const shown = live()
       if (shown?.isVisible()) menu.popup({ window: shown })
     },
@@ -352,16 +355,16 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       refresh()
     },
     /** The user's switch in settings, or 不再显示桌面岛 in its menu. */
-    setEnabled(value) {
+    setEnabled(value: boolean) {
       enabled = value
       refresh()
     },
     /** For the smoke run, whose window is never in front: show the island as if it were away. */
-    force(on) {
+    force(on: boolean) {
       forced = on
       refresh()
     },
-    owns: (sender) => {
+    owns: (sender: WebContents) => {
       const shown = live()
       return Boolean(shown && sender === shown.webContents)
     },
