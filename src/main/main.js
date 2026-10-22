@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.js'
@@ -18,6 +18,7 @@ import { registerFilesIpc } from './files-ipc.js'
 import { openHistoryDb } from './history-db.js'
 import { imagesForPrompt, registerImageIpc } from './image-ipc.js'
 import { IMAGE_SCHEME_PRIVILEGES, registerImageProtocol } from './image-protocol.js'
+import { checkedIpc } from './ipc-contract.js'
 import { createImageStore } from './image-store.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { registerRewindIpc } from './rewind-ipc.js'
@@ -49,6 +50,9 @@ const FALLBACK_PROFILE = 'acp'
 /** After a turn the memory plugin's background pass may still write; look again this often, this long. */
 const LATE_MEMORY_POLL_MS = 2_000
 const LATE_MEMORY_WINDOW_MS = 30_000
+
+/** Every channel the pages send on goes through the contract's check first (ipc-contract.js). */
+const ipcMain = checkedIpc(electronIpcMain, { onRefused: (_channel, problem) => console.error('[ipc] refused:', problem) })
 
 let settingsStore = null
 /** Switches from settings, such as the desktop island (preferences.js). */
