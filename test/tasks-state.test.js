@@ -139,6 +139,24 @@ test('「#name」 at the start goes to the background task it names, as words in
   assert.deepEqual(steered.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
 })
 
+test('tasks the last launch left going are offered; taken up, one goes on with what it had said', () => {
+  const offered = reduce(initialState, { type: 'tasks_unfinished', list: [{ id: 's1', title: '整理发布说明', segmentId: 'c1', startedAt: 5 }, { id: 's2', title: '查天气', segmentId: 'c2', startedAt: 6 }] })
+  assert.deepEqual(offered.tasks.unfinished.map((entry) => entry.id), ['s1', 's2'])
+
+  const taken = reduce(offered, {
+    type: 'task_resumed', at: 50,
+    task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' },
+    messages: [{ role: 'user', text: '整理发布说明', receipt: null }, { role: 'assistant', text: '先看提交…', receipt: null }],
+  })
+  const [task] = liveTasks(taken)
+  assert.deepEqual([task.id, task.status, task.startedAt], ['s1', 'running', 50])
+  assert.deepEqual(taskMessages(task).map((m) => m.text), ['整理发布说明', '先看提交…'])
+  assert.deepEqual(taken.tasks.unfinished.map((entry) => entry.id), ['s2'], 'no longer offered')
+  assert.deepEqual(reduce(taken, { type: 'task_forgotten', taskId: 's2' }).tasks.unfinished, [])
+  const said = reduce(taken, { type: 'task_update', taskId: 's1', update: chunk('三组改动。'), at: 51 })
+  assert.equal(taskMessages(liveTasks(said)[0]).at(-1).text, '三组改动。', 'what it says now follows')
+})
+
 test('a task has its own tab in the drawer, showing what it did', () => {
   const state = spun(working())
   const tab = taskTab('s1')

@@ -56,10 +56,14 @@ function shownView() {
   return payload?.form === 'mini' ? { ...view, form: 'mini', tone: 'idle', mood: 'idle' } : view
 }
 
+/** The 后台 list, opened by a click on the count at the island's tail; it closes when no task is left. */
+let listOpen = false
+
 function show() {
   if (!payload && !dropping) return
   const view = shownView()
-  island.update(view, { now: Date.now() })
+  if (!view.background?.items.length) listOpen = false
+  island.update(view, { now: Date.now(), pinned: listOpen })
   if (view.form === 'input' && !view.busy && document.activeElement !== input.field) input.field.focus()
 }
 
@@ -130,6 +134,18 @@ island.el.addEventListener('click', (event) => {
   dragged = false
   event.stopPropagation()
   event.preventDefault()
+}, true)
+
+/** Forms in which the island shows what waits on the user: that comes first, and the count opens the window. */
+const SHOWS_WAITING = new Set(['waiting', 'asking'])
+
+// The count at the tail opens the 后台 list here instead of the window (the rest of the head opens the window).
+island.el.addEventListener('click', (event) => {
+  if (!event.target.closest('.isl-bg') || SHOWS_WAITING.has(shownView().form)) return
+  event.stopPropagation()
+  event.preventDefault()
+  listOpen = !listOpen
+  show()
 }, true)
 
 // The right-click menu is the main process's: a menu of the system's, not of the page.

@@ -51,6 +51,9 @@ const ACTIONS = {
     : null),
   /** 跳过: the question goes unanswered, as from the thread's card. */
   skip: ({ questionId }) => (isText(questionId, MAX_ID_CHARS) ? { kind: 'skip', questionId } : null),
+  /** A task in the island's 后台 list: what it did, in the window's drawer; or 停下. */
+  task: ({ taskId }) => (isText(taskId, MAX_ID_CHARS) ? { kind: 'task', taskId } : null),
+  'stop-task': ({ taskId }) => (isText(taskId, MAX_ID_CHARS) ? { kind: 'stop-task', taskId } : null),
 }
 
 /** @returns {object | null} only the fields the action's kind uses, or null for anything else */

@@ -174,9 +174,73 @@ async function reportSteps(win, outDir, expect) {
   expect(!after.report, 'closed, the task\'s report should go too', after)
 }
 
+const ASKS_LATER = '接入演示服务，再问我城市'
+const TRAIN_ASK = '帮我订一张下周的火车票'
+
+/**
+ * A task asks something after it went to the background: its own card in the thread, named, answers it, and
+ * the task carries on to its end and reports back.
+ */
+async function laterQuestionSteps(win, outDir, expect) {
+  await submit(win, ASKS_LATER)
+  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
+  await submit(win, TRAIN_ASK)
+  await until(win, `document.querySelector('#thread .fold-task') && ${JSON.stringify(TRAIN_ASK)}`, 'the turn in the background')
+  // Declined, the task goes on to ask which city.
+  await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
+  const card = await until(win, `(() => {
+    const card = document.querySelector('.confirm.ask')
+    return card && { head: card.querySelector('.confirm-head')?.textContent ?? '', options: [...card.querySelectorAll('.ask-option')].map((el) => el.textContent) }
+  })()`, "the task's question")
+  expect(card.head.startsWith(`#${ASKS_LATER}`) && card.options.join() === '上海,北京', "the task's question should be its own card, named", card)
+  await run(win, `document.querySelector('.confirm.ask').scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-question')
+  await run(win, `[...document.querySelectorAll('.confirm.ask .ask-option')].find((el) => el.textContent === '上海').click()`)
+  const report = await until(win, `[...document.querySelectorAll('#thread .task-report')].map((el) => el.textContent).find((text) => text.includes(${JSON.stringify(ASKS_LATER)})) ?? null`, "the task's report after the answer")
+  expect(report.includes('按上海来看'), 'answered, the task should carry on and report what it said', report)
+  const asked = await run(win, `[...document.querySelectorAll('#thread > .msg-user, #thread > .msg-user-row .msg-user')].map((el) => el.textContent)`)
+  expect(!asked.includes('上海'), 'the answer should go to the task, not the conversation on screen', asked)
+}
+
+const LEFT_ASK = '帮我接入演示服务，留到下次'
+
+/** Last in the memory phase: a task left going in the background, waiting on its approval, as Viva quits. */
+async function leaveRunning(win) {
+  await submit(win, LEFT_ASK)
+  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
+  await submit(win, '帮我订一张下周的船票')
+  await until(win, `[...document.querySelectorAll('#thread .fold-task')].some((el) => el.textContent.includes(${JSON.stringify(LEFT_ASK)}))`, 'the task left going')
+}
+
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win, outDir, expect, hooks) {
   await moveSteps(win, outDir, expect, hooks)
   await undoSteps(win, outDir, expect)
   await offerSteps(win, outDir, expect)
+  await laterQuestionSteps(win, outDir, expect)
+  await leaveRunning(win)
+}
+
+/**
+ * The `resume` phase, on the profile `memory` left: the task Viva quit on is offered; taken up, it goes on
+ * in the background and reports back once done. @returns {Promise<string[]>} failed expectations
+ */
+export async function checkResume(win, outDir) {
+  const failures = []
+  const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
+  const card = await until(win, `document.querySelector('#thread .task-unfinished')?.textContent ?? null`, 'the task Viva quit on')
+  expect(card.includes(`#${LEFT_ASK}`) && card.includes('接着做') && card.includes('不做了'), 'the task Viva quit on should be offered', card)
+  await run(win, `document.querySelector('#thread .task-unfinished').scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-unfinished')
+  await run(win, `[...document.querySelectorAll('#thread .task-unfinished button')].find((el) => el.textContent === '接着做').click()`)
+  const report = await until(win, `[...document.querySelectorAll('#thread .task-report:not(.task-unfinished)')].map((el) => el.textContent).find((text) => text.includes(${JSON.stringify(LEFT_ASK)})) ?? null`, 'the task taken up reporting back')
+  expect(report.includes('做完了'), 'taken up, the task should carry on to its end', report)
+  expect(!(await run(win, `Boolean(document.querySelector('#thread .task-unfinished'))`)), 'taken up, it is no longer offered')
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-resumed')
+  const left = await run(win, `window.agent.unfinishedTasks()`)
+  expect(left.length === 0, 'done with, nothing is left to offer at the next launch', left)
+  return failures
 }

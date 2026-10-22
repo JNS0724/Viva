@@ -183,6 +183,16 @@ function reportCard(report, handlers) {
     h('button', { class: 'icon-btn task-report-x', type: 'button', 'aria-label': '收起', text: '×', onClick: () => handlers.dismissReport(report.taskId) }))
 }
 
+/** A task Viva was closed on: offered once more, to go on in the background or be let go. */
+function unfinishedCard(task, handlers) {
+  return h('div', { class: 'task-report task-unfinished', role: 'group', 'aria-label': '上次没做完' },
+    h('div', { class: 'task-report-main' },
+      h('b', { class: 'task-report-head', text: `#${task.title}` }),
+      h('span', { class: 'task-report-text', text: '上次关掉 Viva 时这件还没做完' })),
+    h('button', { class: `${BUTTON.primary} task-report-open`, type: 'button', text: '接着做', onClick: () => handlers.resumeUnfinished(task.id) }),
+    h('button', { class: `${BUTTON.text} task-report-open`, type: 'button', text: '不做了', onClick: () => handlers.forgetUnfinished(task.id) }))
+}
+
 /** The agent said the turn will take long (E): 放到后台 beside it, while it runs. Not a card: it asks nothing. */
 function offerRow(state, handlers) {
   const offered = offeredBackground(state)
@@ -289,6 +299,7 @@ export function renderThread(container, state, handlers, now) {
   const focus = editorFocus()
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
+    ...state.tasks.unfinished.map((task) => unfinishedCard(task, handlers)),
     ...state.tasks.reports.filter((report) => report.shown).map((report) => reportCard(report, handlers)),
     offerRow(state, handlers),
     state.permission ? permissionCard(state.permission, handlers) : '',

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { createTaskActions, FINISHED_MS, REPORT_RETRY_MS } from '../src/renderer/task-actions.js'
+import { createTaskActions, FINISHED_MS, REPORT_RETRY_MS, SAVE_EVERY_MS } from '../src/renderer/task-actions.js'
 import { liveTasks, taskMessages } from '../src/renderer/tasks-state.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -193,11 +193,53 @@ test('「#name」 words go into that task\'s turn', async () => {
   assert.equal(taskMessages(liveTasks(win.state())[0]).at(-1).text, '加上版本号')
 })
 
+test('what a task says is saved along the way, at most every so often, so a quit loses little', async () => {
+  const timers = []
+  const saved = []
+  const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async (...args) => { saved.push(args) } }, {
+    later: (run, ms) => timers.push({ run, ms }),
+  })
+  await win.actions.moveAndAsk('明天周会几点？')
+  win.actions.noteUpdate('s1')
+  win.actions.noteUpdate('s1')
+  assert.deepEqual(timers.map((timer) => timer.ms), [SAVE_EVERY_MS], 'one save waiting, however much it says meanwhile')
+  await timers.shift().run()
+  assert.deepEqual(saved.map(([id, , options]) => [id, options]), [['s1', undefined]], 'saved, still going')
+  win.actions.noteUpdate('s1')
+  assert.equal(timers.length, 1, 'and the next one after that')
+})
+
+test('tasks the last launch left going are offered, taken up, or let go', async () => {
+  const resumed = []
+  const forgotten = []
+  const win = windowWith({
+    unfinishedTasks: async () => [{ id: 's9', title: '整理发布说明', segmentId: 'c9', startedAt: 1 }],
+    resumeTask: async (taskId) => { resumed.push(taskId); return { ok: true, task: { id: taskId, segmentId: 'c9', title: '整理发布说明', words: '整理发布说明' }, messages: [{ role: 'user', text: '整理发布说明' }] } },
+    forgetTask: async (taskId) => { forgotten.push(taskId) },
+  })
+  await win.actions.loadUnfinished()
+  assert.deepEqual(win.state().tasks.unfinished.map((entry) => entry.id), ['s9'])
+  await win.actions.resumeUnfinished('s9')
+  assert.deepEqual([resumed, liveTasks(win.state()).map((task) => task.id), win.state().tasks.unfinished], [['s9'], ['s9'], []])
+
+  const other = windowWith({
+    unfinishedTasks: async () => [{ id: 's8', title: '查天气', segmentId: 'c8', startedAt: 1 }],
+    resumeTask: async () => ({ ok: false, problem: '这件事接不上了' }),
+    forgetTask: async (taskId) => { forgotten.push(taskId) },
+  })
+  await other.actions.loadUnfinished()
+  await other.actions.resumeUnfinished('s8')
+  assert.deepEqual(other.said.toasts, ['这件事接不上了'])
+  await other.actions.forgetUnfinished('s8')
+  assert.deepEqual([forgotten, other.state().tasks.unfinished], [['s8'], []])
+})
+
 test('an ended task keeps what it said', async () => {
   const saved = []
   const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async (...args) => { saved.push(args) } })
   await win.actions.moveAndAsk('明天周会几点？')
   win.actions.ended('s1')
 
-  assert.deepEqual(saved, [['s1', [{ role: 'user', text: WORDS }, { role: 'assistant', text: '先看提交…' }]]])
+  assert.deepEqual(saved, [['s1', [{ role: 'user', text: WORDS }, { role: 'assistant', text: '先看提交…' }], { ended: true }]],
+    'ended: not offered at the next launch')
 })

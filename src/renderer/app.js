@@ -320,6 +320,9 @@ const handlers = {
   pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),
   /** A task's report in the thread, put away (view/thread.js reportCard). */
   dismissReport: (taskId) => taskActions.dismissReport(taskId),
+  /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
+  resumeUnfinished: (taskId) => taskActions.resumeUnfinished(taskId),
+  forgetUnfinished: (taskId) => taskActions.forgetUnfinished(taskId),
   submitTaskAnswer: (taskId) => taskActions.submitTaskAnswer(taskId),
   skipTaskQuestion: (taskId) => taskActions.skipTaskQuestion(taskId),
   send() {
@@ -532,9 +535,13 @@ function closeHistoryOnOutsideClick(event) {
 
 function wireDismissal() {
   document.addEventListener('click', (event) => {
-    if (state.island && !dom.island.contains(event.target)) dispatch({ type: 'close_island' })
-    if (state.picker && !dom.modelArea.contains(event.target)) dispatch({ type: 'picker_close' })
-    if (state.workDir.menu && !dom.workdirArea.contains(event.target)) workDirActions.closeMenu()
+    // The path as it was at the click: a click that opens a menu re-renders its button, so by now the element
+    // clicked (the model's name, the folder's) is no longer in the page and contains() would call it outside.
+    const path = event.composedPath()
+    const within = (el) => path.includes(el)
+    if (state.island && !within(dom.island)) dispatch({ type: 'close_island' })
+    if (state.picker && !within(dom.modelArea)) dispatch({ type: 'picker_close' })
+    if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
     closeHistoryOnOutsideClick(event)
   })
@@ -614,6 +621,7 @@ function handleEvent(event) {
     filesActions.filesAfterTurn()
     sendAfterTurn()
   }
+  if (event?.type === 'task_update') taskActions.noteUpdate(event.taskId)
   if (event?.type === 'task_end') {
     taskActions.ended(event.taskId)
     filesActions.filesAfterTurn()
@@ -638,6 +646,8 @@ async function boot() {
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh()])
+  // What the last launch left going in the background, offered to take up or let go.
+  await taskActions.loadUnfinished()
   await timelineActions.loadEarlier()
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })

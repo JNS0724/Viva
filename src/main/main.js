@@ -19,6 +19,7 @@ import { openHistoryDb } from './history-db.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { registerRewindIpc } from './rewind-ipc.js'
 import { registerTaskIpc } from './task-ipc.js'
+import { createTaskStore } from './task-store.js'
 import { registerWorkDirIpc } from './work-dir-ipc.js'
 import { migrateLegacyHistory } from './history-migrate.js'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.js'
@@ -100,10 +101,10 @@ let lastInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
 function isolateSmokeUserData() {
   const { smoke, smokePhase, smokeOut } = resolveConfig(process.env, fs.existsSync)
   if (!smoke) return
-  // `relaunch` reopens what `walkthrough` left; the other phases start from nothing of their own.
+  // `relaunch` reopens what `walkthrough` left, `resume` what `memory` left; the others start from nothing.
   const shared = smokePhase === 'walkthrough' || smokePhase === 'relaunch'
-  const dir = path.join(smokeOut, shared ? 'userData' : `userData-${smokePhase}`)
-  if (smokePhase !== 'relaunch') removeTree(dir)
+  const dir = path.join(smokeOut, shared ? 'userData' : `userData-${smokePhase === 'resume' ? 'memory' : smokePhase}`)
+  if (smokePhase !== 'relaunch' && smokePhase !== 'resume') removeTree(dir)
   // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too; so is the workspace,
   // so a smoke run never writes into the developer's.
   app.setPath('userData', dir)
@@ -664,6 +665,8 @@ function openHistory(config) {
   })
   registerTaskIpc(ipcMain, {
     db: historyDb,
+    // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).
+    store: createTaskStore({ file: path.join(userData, 'background-tasks.json'), onError: (err) => console.error('[tasks]', err.message) }),
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
     isBusy: () => turn.active,
@@ -684,6 +687,8 @@ const taskAgent = {
   closeTask: (taskId) => bridge?.closeTask(taskId),
   cancelTask: (taskId) => bridge?.cancelTask(taskId),
   steerTask: (taskId, text) => requireBridge().steerTask(taskId, text),
+  resumeTask: (request) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
+  promptTask: (taskId, text) => bridge?.promptTask(taskId, text),
 }
 
 /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
@@ -753,7 +758,8 @@ async function startSmokeModel() {
   // The installed app has no test folder; SMOKE_FIXTURES points a smoke run of it at the repository's.
   const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
   const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
-  smokeModel = await startFakeLlm()
+  // `resume` reopens the profile `memory` left, whose models point at the stand-in: the same port both times.
+  smokeModel = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0 })
   process.env.DEEPSEEK_BASE_URL = smokeModel.url
 }
 
@@ -817,7 +823,7 @@ app.whenReady().then(async () => {
     switchTo: switchWorkDir,
     reveal: (dir) => shell.openPath(dir),
   })
-  if (config.smokePhase === 'memory') await startSmokeModel()
+  if (config.smokePhase === 'memory' || config.smokePhase === 'resume') await startSmokeModel()
   if (!config.smoke) {
     bringLegacyData()
     bringDshData(config)

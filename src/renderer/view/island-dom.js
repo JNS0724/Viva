@@ -127,9 +127,11 @@ function coachPanel(act, shortcut) {
  * Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the
  * steps and the tasks in the background.
  */
-function hasPanel(view, host) {
-  if (host === 'desk') return OPENS_ITSELF.has(view.form)
-  return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || Boolean(view.background?.items.length))
+function hasPanel(view, host, pinned = false) {
+  const tasks = Boolean(view.background?.items.length)
+  // On the desktop the 后台 list opens only when asked for (a click on the count at the tail, desk.js).
+  if (host === 'desk') return OPENS_ITSELF.has(view.form) || (pinned && tasks)
+  return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || tasks)
 }
 
 /** How long a turn runs before the opened island offers it the background (D). */
@@ -153,7 +155,8 @@ const offerRow = (act) => h('div', { class: 'isl-offer' },
 function panelParts(view, host, act, shortcut, offer, now) {
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
-  if (host === 'desk') return coachPanel(act, shortcut)
+  if (host === 'desk' && view.form === 'coach') return coachPanel(act, shortcut)
+  if (host === 'desk') return [backgroundSection(view, act, now)]
   const working = view.form === 'working'
   const steps = view.recent.length ? [
     stepList(view),
@@ -249,7 +252,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
   function update(view, { now = Date.now(), pinned = false } = {}) {
     last = { view, now, pinned }
     const wide = Boolean(input) && INPUT_FORMS.has(view.form)
-    const unfolds = wide || hasPanel(view, host)
+    const unfolds = wide || hasPanel(view, host, pinned)
     const open = unfolds && (wide || pinned || host === 'desk')
     const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
     const offer = host === 'bar' && open && offersBackground(view, now)
@@ -261,6 +264,8 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     }
     const panelChanged = next.panel !== signature.panel
     signature = next
+    // The panel fades in as it opens; redrawn while open (a step every second as the agent works) it stays put.
+    const wasOpen = el.dataset.open === 'true'
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
     head.replaceChildren(...(view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tailCell(view)].filter(Boolean)))
@@ -276,7 +281,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     else head.removeAttribute('aria-expanded')
     if (panelChanged) {
       const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut, offer, now)
-      panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
+      panel.replaceChildren(...(open ? [h('div', { class: wasOpen ? 'isl-in isl-in-still' : 'isl-in' }, parts)] : []))
       panel.inert = !open
     }
     layout(open, wide)

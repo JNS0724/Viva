@@ -20,6 +20,17 @@ export const initialTasks = Object.freeze({
    * shown: put in the thread once the user is not typing (task-actions.js); gone once put away.
    */
   reports: [],
+  /** Tasks the last launch left going (task-store.js), offered to take up or let go: { id, title, segmentId, startedAt }. */
+  unfinished: [],
+})
+
+/** A task taken up again starts from what it had said; the rest of its view begins afresh, at work. */
+const takenUpView = (messages, at) => ({
+  messages: messages.map((message, i) => ({
+    id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open: false, receipt: message.receipt ?? null,
+  })),
+  thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
+  turn: { startedAt: at, tools: 0, thoughts: 0 }, phase: 'working', usage: null, lastReceipt: null, error: null,
 })
 
 /** The parts of the state a task's view keeps (the conversation, as it was when the turn left). */
@@ -177,6 +188,15 @@ export function taskActions(handlers) {
       const reports = [...state.tasks.reports.filter((entry) => entry.taskId !== taskId), report]
       return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports })
     },
+
+    tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),
+    task_forgotten: (state, { taskId }) => withTasks(state, { unfinished: state.tasks.unfinished.filter((entry) => entry.id !== taskId) }),
+    /** Taken up again after a relaunch: it goes on as a task in the background, with what it had said. */
+    task_resumed: (state, { task, messages, at }) => withTasks(state, {
+      unfinished: state.tasks.unfinished.filter((entry) => entry.id !== task.id),
+      list: [...state.tasks.list.filter((entry) => entry.id !== task.id),
+        settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: takenUpView(messages, at) })],
+    }),
 
     task_report_shown: (state, { taskId }) => withTasks(state, {
       reports: state.tasks.reports.map((entry) => (entry.taskId === taskId ? { ...entry, shown: true } : entry)),

@@ -51,6 +51,11 @@ test('only the actions the island offers get through, with their ids', () => {
   assert.equal(checkIslandAction({ kind: 'permission', requestId: 5 }), null)
   assert.equal(checkIslandAction({ kind: 'answer', questionId: 'q', id: 'a', label: 'x'.repeat(500) }), null)
   assert.equal(checkIslandAction(null), null)
+  // A task in the island's 后台 list: opened in the window's drawer, or stopped.
+  assert.deepEqual(checkIslandAction({ kind: 'task', taskId: 's1', x: 1 }), { kind: 'task', taskId: 's1' })
+  assert.deepEqual(checkIslandAction({ kind: 'stop-task', taskId: 's1' }), { kind: 'stop-task', taskId: 's1' })
+  assert.equal(checkIslandAction({ kind: 'stop-task', taskId: 'x'.repeat(500) }), null)
+  assert.equal(checkIslandAction({ kind: 'task' }), null)
 })
 
 test('a view from the window must look like one and stay small', () => {

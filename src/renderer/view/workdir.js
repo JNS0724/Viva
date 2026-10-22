@@ -1,6 +1,7 @@
 import { DEFAULT_DIR_NAME, workDirMenu, workspaceName } from '../selectors.js'
 import { isBusy } from '../state.js'
 import { h } from './dom.js'
+import { icon } from './icons.js'
 
 /**
  * The working directory under the input (single-conversation design): a chip with the folder in use, its menu
@@ -17,7 +18,8 @@ function renderChip(button, state) {
   button.replaceChildren(
     h('span', { class: 'workdir-ico', 'aria-hidden': 'true', text: '📁' }),
     h('span', { class: 'workdir-name', text: workDir.switching ? '正在切换…' : name }),
-    h('span', { class: 'workdir-caret', 'aria-hidden': 'true', text: '▾' }))
+    // The same chevron as the model's button beside it (model-picker.js).
+    icon('chevron', 14))
   button.disabled = workDir.switching || busy
   button.title = busy ? '助手工作时不能换工作目录' : `工作目录：${workDir.current || state.info.cwd}`
   button.setAttribute('aria-expanded', String(workDir.menu))

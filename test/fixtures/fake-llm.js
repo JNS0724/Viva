@@ -6,7 +6,8 @@
  * - 「记住：X」 → calls memory_remember with X, and the names from KNOWN_NAMES in X as keywords;
  * - 「查一下 X」 → calls memory_recall with X;
  * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
- * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result;
+ * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result,
+ *   or, told 「再问我城市」 too, asks which city as for the weather;
  * - 「把全部…」 → offers the background with viva_offer_background, then goes on (「开始整理」, or, asked to
  *   接入演示服务 too, to that);
  * - after a tool result → says what the tool did;
@@ -21,6 +22,7 @@ const REMEMBER = /记住[:：]\s*(.+)$/s
 const RECALL = /查一下\s*(.+)$/s
 const WEATHER = /明天.*天气/
 const CONNECT = /接入演示服务/
+const THEN_ASK = /再问我城市/
 /** 「把全部…」: a job that will take long, which the fake offers the background first (viva_offer_background). */
 const BIG_JOB = /^把全部/
 /** What the fake asks to set up: a local server whose key the user types in the window. */
@@ -91,6 +93,8 @@ function afterTool(messages, result) {
     const city = cityFrom(result)
     return { text: city ? `好的，按${city}来看：明天多云转晴。` : `没问到城市：${resultText(result)}` }
   }
+  // 「…再问我城市」: once the server is dealt with, it asks which city (a question later in the turn).
+  if (use?.name === 'viva_mcp_add' && THEN_ASK.test(lastWords(messages))) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
   if (use?.name === 'viva_offer_background') {
     // Asked to set up the demo service too, it goes on to that, whose approval holds the turn open.
@@ -187,8 +191,11 @@ function stream(res, request, index) {
   res.end()
 }
 
-/** @returns {Promise<{ url: string, requests: object[], close: () => Promise<void> }>} */
-export function startFakeLlm() {
+/**
+ * @param {{ port?: number }} [options] a fixed port, for smoke phases that share a profile (its models keep the URL)
+ * @returns {Promise<{ url: string, requests: object[], close: () => Promise<void> }>}
+ */
+export function startFakeLlm({ port = 0 } = {}) {
   const requests = []
   const server = http.createServer((req, res) => {
     let body = ''
@@ -208,7 +215,7 @@ export function startFakeLlm() {
       }
     })
   })
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
     url: `http://127.0.0.1:${server.address().port}`,
     requests,
     close: () => new Promise((done) => server.close(() => done())),

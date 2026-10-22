@@ -1,7 +1,7 @@
 {
   "name": "viva",
   "productName": "Viva",
-  "version": "0.3.1-beta.4",
+  "version": "0.3.1-beta.5",
   "private": true,
   "description": "Viva：个人桌面助手，Electron 外壳 + DeepSeek Harness（ACP）",
   "license": "MIT",
@@ -16,11 +16,12 @@
     "start": "electron .",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.js\"",
     "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.js\"",
-    "smoke": "npm run smoke:setup && npm run smoke:walkthrough && npm run smoke:relaunch && npm run smoke:memory",
+    "smoke": "npm run smoke:setup && npm run smoke:walkthrough && npm run smoke:relaunch && npm run smoke:memory && npm run smoke:resume",
     "smoke:setup": "cross-env SMOKE_PHASE=setup DEEPSEEK_API_KEY= electron .",
     "smoke:walkthrough": "cross-env SMOKE_PHASE=walkthrough DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "smoke:relaunch": "cross-env SMOKE_PHASE=relaunch DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
-    "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key electron .",
+    "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
+    "smoke:resume": "cross-env SMOKE_PHASE=resume DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
     "dist:mac": "electron-builder --mac dmg",
     "dist:win": "electron-builder --win nsis"

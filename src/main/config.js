@@ -10,9 +10,10 @@ const DEFAULT_DSH_ENTRY = path.join(APP_ROOT, 'node_modules', '@deepseek-ai', 'd
 const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs'])
 /**
  * Automated runs: `walkthrough` uses a fresh profile, `relaunch` reopens it, `setup` starts without a key,
- * `memory` runs the real dsh with the memory plugin against a fake model.
+ * `memory` runs the real dsh with the memory plugin against a fake model, and `resume` reopens what it left
+ * (a task still going in the background when it quit).
  */
-const SMOKE_PHASES = new Set(['walkthrough', 'relaunch', 'setup', 'memory'])
+const SMOKE_PHASES = new Set(['walkthrough', 'relaunch', 'setup', 'memory', 'resume'])
 
 /** The app's own dsh profile: the ACP template plus the memory plugin; see dsh-profile.js. */
 export const DSH_PROFILE = 'viva'

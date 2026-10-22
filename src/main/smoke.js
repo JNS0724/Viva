@@ -3,6 +3,7 @@ import path from 'node:path'
 import { checkDeskAsk } from './smoke-desk.js'
 import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 import { checkMemory } from './smoke-memory.js'
+import { checkResume } from './smoke-tasks.js'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -36,6 +37,37 @@ const THREAD_METRICS = `(() => {
   }
 })()`
 
+/** Past the 30 seconds after which the opened island offers the background (view/island-dom.js OFFER_MS). */
+const OFFER_SHIFT_MS = 31_000
+const OFFER_WAIT_MS = 5000
+
+/**
+ * D: a turn that has run a while is offered 放到后台 on the opened island. The page's clock is moved on
+ * rather than waiting half a minute; the fake dsh here cannot fork, so the move itself is left to the memory
+ * phase (smoke-tasks.js), which takes the background on the real dsh.
+ */
+async function checkOffer(win, outDir) {
+  await run(win, `(() => {
+    window.smokeNow = Date.now
+    Date.now = () => window.smokeNow() + ${OFFER_SHIFT_MS}
+    document.querySelector('#island .isl-head').click()
+  })()`)
+  const offer = await until(win, `document.querySelector('#island .isl-offer')?.textContent ?? null`, 'the offer on the opened island', OFFER_WAIT_MS)
+    .catch(() => null)
+  const shown = await run(win, `(() => {
+    const el = document.querySelector('#island .isl')
+    return { open: el?.dataset.open, time: el?.querySelector('.isl-time')?.textContent, height: el?.style.height }
+  })()`)
+  report(`offer: ${JSON.stringify({ offer, ...shown })}`)
+  await wait(UI_WAIT_MS)
+  if (offer) await capture(win, outDir, 'long-offer')
+  await run(win, `(() => {
+    Date.now = window.smokeNow
+    document.querySelector('#island .isl-head').click()
+  })()`)
+  return offer?.includes('放到后台') ? [] : [`a turn past 30 seconds should be offered the background on the opened island: ${offer}`]
+}
+
 /** Long run: the reader parks the trace mid-way, then a long answer streams in. Returns failed expectations. */
 async function checkLongTask(win, outDir) {
   const failures = []
@@ -53,6 +85,7 @@ async function checkLongTask(win, outDir) {
   if (parked.overflow <= DRAWER_PARK_TOP) failures.push('drawer did not overflow; scroll check is inconclusive')
   else if (Math.abs(drawerTop - parked.top) > 1) failures.push(`drawer jumped from ${parked.top} to ${drawerTop}`)
   await capture(win, outDir, 'long-drawer')
+  failures.push(...await checkOffer(win, outDir))
 
   await wait(LONG_ANSWER_WAIT_MS)
   const during = await run(win, THREAD_METRICS)
@@ -238,6 +271,28 @@ async function walkthrough(win, outDir, hooks) {
   failures.push(...await checkLongTask(win, outDir))
   await finishTurn(win)
   failures.push(...await checkFiles(win, outDir, hooks.cwd))
+  failures.push(...await checkPickers(win, outDir))
+  return failures
+}
+
+/**
+ * The model's button and the folder's chip open their menus from anywhere on them, not only the chevron:
+ * the name is clicked here, which the re-render takes out of the page as the menu opens.
+ */
+async function checkPickers(win, outDir) {
+  const failures = []
+  await run(win, `document.querySelector('#model-btn .model-btn-name').click()`)
+  await wait(UI_WAIT_MS)
+  const model = await run(win, `Boolean(document.querySelector('#model-menu .model-menu'))`)
+  if (!model) failures.push("a click on the model's name should open its menu")
+  else await capture(win, outDir, 'picker-model')
+  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+  await run(win, `document.querySelector('#composer-context .workdir-name').click()`)
+  await wait(UI_WAIT_MS)
+  const folder = await run(win, `Boolean(document.querySelector('#workdir-menu .workdir-menu'))`)
+  if (!folder) failures.push("a click on the folder's name should open its menu")
+  else await capture(win, outDir, 'picker-folder')
+  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   return failures
 }
 
@@ -440,6 +495,7 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hook
       problems.push(...await checkDeskAsk(win, outDir, hooks.desk?.()))
     }
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
+    else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)

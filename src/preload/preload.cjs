@@ -47,7 +47,12 @@ contextBridge.exposeInMainWorld('agent', {
    * conversation goes on with `text`: { ok, task, info, conversation, folds } | { ok: false, reason | problem }.
    */
   spinOffTask: (request) => ipcRenderer.invoke('task:spin-off', request),
-  saveTask: (taskId, messages) => ipcRenderer.invoke('task:save', taskId, messages),
+  /** Saved along the way and at its end ({ ended: true }, after which it is not offered at the next launch). */
+  saveTask: (taskId, messages, options) => ipcRenderer.invoke('task:save', taskId, messages, options),
+  /** Tasks an earlier launch left going: [{ id, title, segmentId, startedAt }]; taken up again, or let go. */
+  unfinishedTasks: () => ipcRenderer.invoke('task:unfinished'),
+  resumeTask: (taskId) => ipcRenderer.invoke('task:resume', taskId),
+  forgetTask: (taskId) => ipcRenderer.invoke('task:forget', taskId),
   undoTask: (taskId) => ipcRenderer.invoke('task:undo', taskId),
   closeTask: (taskId) => ipcRenderer.invoke('task:close', taskId),
   stopTask: (taskId) => ipcRenderer.invoke('task:stop', taskId),
