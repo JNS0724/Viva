@@ -1,4 +1,4 @@
-import { answersFrom } from './question-state.ts'
+import { answersFrom, type QuestionAnswer } from './question-state.ts'
 import { spinOffTarget, taskMessages } from './tasks-state.ts'
 
 /**
@@ -15,18 +15,21 @@ export const REPORT_RETRY_MS = 1000
 export const SAVE_EVERY_MS = 10_000
 const UNDO_FAILED = '没能撤销'
 const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_question_closed'])
-const ofTask = (event) => TASK_EVENTS.has(event?.type) || Boolean(event?.taskId)
+/** What the main process says of the agent (acp-bridge.ts), as far as holding it back reads it. */
+type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
+const ofTask = (event: AgentEvent | null | undefined) => TASK_EVENTS.has(event?.type ?? '') || Boolean(event?.taskId)
 
 /** isTyping: words are in the input; later: setTimeout, for tests. */
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, isTyping = () => false, later = setTimeout }: {
-  api: any, getState: () => any, dispatch: (action: object) => void, showToast: (text: string) => void,
-  errorMessage: (err: unknown) => string,
-  deliver: (event: object) => void, isTyping?: () => boolean, later?: (run: () => void, ms: number) => unknown,
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, isTyping = () => false, later = setTimeout }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
+  api: Pick<AgentApi, 'spinOffTask' | 'startTask' | 'undoTask' | 'steerTask' | 'saveTask' | 'unfinishedTasks' | 'finishedTasks'
+    | 'askTask' | 'resumeTask' | 'forgetTask' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
+  deliver: (event: AgentEvent) => void, isTyping?: () => boolean, later?: (run: () => void, ms: number) => unknown,
 }) {
   /** While a move is on its way: which events wait ({ keeps }), and those that came. */
-  let holding: { keeps: (event: any) => boolean, events: any[] } | null = null
+  let holding: { keeps: (event: AgentEvent) => boolean, events: AgentEvent[] } | null = null
 
-  async function call(request) {
+  /** What the main process answered, or why it could not be asked. */
+  async function call(request: () => Promise<any>): Promise<any> {
     try {
       return await request()
     } catch (err) {
@@ -41,7 +44,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   /** @returns {boolean} whether the event waits for a move on its way */
-  function hold(event) {
+  function hold(event: AgentEvent) {
     if (!holding?.keeps(event)) return false
     holding = { ...holding, events: [...holding.events, event] }
     return true
@@ -67,7 +70,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * is); the conversation on screen goes on as it was.
    * @returns {Promise<boolean>} whether the task started
    */
-  async function startTask(text) {
+  async function startTask(text: string) {
     const words = spinOffTarget(getState())?.words
     const result = await call(() => api.startTask(words ? { text, words } : { text }))
     if (!result.ok) {
@@ -99,14 +102,14 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       showToast(result.problem ?? UNDO_FAILED)
       return
     }
-    const its = (event) => event.taskId === move.taskId
+    const its = (event: AgentEvent) => event.taskId === move.taskId
     events.filter(its).forEach(deliver)
     dispatch({ type: 'task_undone', taskId: move.taskId, conversationId: result.conversation.id, info: result.info })
     events.filter((event) => !its(event) && (ofTask(event) || !event.sessionId || event.sessionId === move.taskId)).forEach(deliver)
   }
 
   /** The island has said it long enough; not while the user types, who may not have looked up yet. */
-  function settleFinished(taskId) {
+  function settleFinished(taskId: string) {
     later(() => {
       if (getState().tasks.finished?.taskId !== taskId) return
       if (isTyping()) settleFinished(taskId)
@@ -115,32 +118,34 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   /** What it came back with goes into the conversation, but not under the user's typing (F). */
-  function showReport(taskId) {
-    if (!getState().tasks.reports.some((entry) => entry.taskId === taskId && !entry.shown)) return
+  function showReport(taskId: string) {
+    if (!getState().tasks.reports.some((entry: TaskReport) => entry.taskId === taskId && !entry.shown)) return
     if (isTyping()) later(() => showReport(taskId), REPORT_RETRY_MS)
     else dispatch({ type: 'task_report_shown', taskId })
   }
 
   /** 「#name …」: the words go into that task's turn; it says if they could not. */
-  function steerTask(taskId, text) {
+  function steerTask(taskId: string, text: string) {
     dispatch({ type: 'task_steer', taskId, text, at: Date.now() })
     api.steerTask(taskId, text)
-      .then((result) => result?.ok || showToast('这件事已经停下了，话没有送到'))
-      .catch((err) => showToast(errorMessage(err)))
+      .then((result: { ok?: boolean } | null) => result?.ok || showToast('这件事已经停下了，话没有送到'))
+      .catch((err: unknown) => showToast(errorMessage(err)))
   }
 
+  const taskById = (taskId: string): BackgroundTask | undefined => getState().tasks.list.find((entry: BackgroundTask) => entry.id === taskId)
+
   function save(taskId: string, options?: { ended?: boolean, status?: string }) {
-    const task = getState().tasks.list.find((entry) => entry.id === taskId)
+    const task = taskById(taskId)
     if (!task) return
     api.saveTask(taskId, taskMessages(task), options)
-      .catch((err) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
+      .catch((err: unknown) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
   }
 
   /** Tasks with a save waiting: one each, however much they say meanwhile. */
-  let saving = new Set()
+  let saving = new Set<string>()
 
   /** A task said something: saved soon, so that quitting Viva midway loses little (task-store.js). */
-  function noteUpdate(taskId) {
+  function noteUpdate(taskId: string) {
     if (saving.has(taskId)) return
     saving = new Set([...saving, taskId])
     later(() => {
@@ -153,8 +158,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * A task that ended keeps what it said, in its own part of the timeline, and how it ended, to be asked again
    * later (接着问); the island says it ended a moment.
    */
-  function ended(taskId) {
-    const task = getState().tasks.list.find((entry) => entry.id === taskId)
+  function ended(taskId: string) {
+    const task = taskById(taskId)
     if (!task) return
     settleFinished(taskId)
     showReport(taskId)
@@ -176,8 +181,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * 接着问 / 「#name …」 to a task that ended: the words are its next question, in its own session; it is back
    * at work at once. Should it not be reachable, it says why and the task is as it was.
    */
-  async function askTask(taskId, text) {
-    const before = getState().tasks.list.find((entry) => entry.id === taskId)
+  async function askTask(taskId: string, text: string) {
+    const before = taskById(taskId)
     if (!before) return
     dispatch({ type: 'task_asked', taskId, text, at: Date.now() })
     const result = await call(() => api.askTask(taskId, text))
@@ -187,32 +192,32 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   /** 接着做: it goes on in the background, from what it had said. */
-  async function resumeUnfinished(taskId) {
+  async function resumeUnfinished(taskId: string) {
     const result = await call(() => api.resumeTask(taskId))
     if (!result.ok) return showToast(result.problem ?? '没能接着做')
     return dispatch({ type: 'task_resumed', task: result.task, messages: result.messages, at: Date.now() })
   }
 
   /** 不做了: let go, and not offered again. */
-  async function forgetUnfinished(taskId) {
+  async function forgetUnfinished(taskId: string) {
     await call(() => api.forgetTask(taskId))
     dispatch({ type: 'task_forgotten', taskId })
   }
 
-  const questionOf = (taskId) => getState().tasks.list.find((task) => task.id === taskId)?.view.question ?? null
+  const questionOf = (taskId: string) => taskById(taskId)?.view.question ?? null
 
   /** Answers what a task asks; the reply joins the task at once, as in the conversation (app.js answer). */
-  function answerTask(taskId, answers) {
+  function answerTask(taskId: string, answers: QuestionAnswer[]) {
     const question = questionOf(taskId)
     if (!question) return
     dispatch({ type: 'question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
     api.answerQuestion(question.questionId, answers)
-      .then((accepted) => accepted || showToast('这个问题已经结束，回答没有送出'))
-      .catch((err) => showToast(errorMessage(err)))
+      .then((accepted: boolean) => accepted || showToast('这个问题已经结束，回答没有送出'))
+      .catch((err: unknown) => showToast(errorMessage(err)))
   }
 
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
-  function pickTaskOption(taskId, id, label) {
+  function pickTaskOption(taskId: string, id: string, label: string) {
     const question = questionOf(taskId)
     if (!question) return
     const only = question.questions.length === 1 && !question.questions[0].multiSelect
@@ -220,12 +225,12 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     else dispatch({ type: 'question_pick', taskId, id, label })
   }
 
-  async function stopTask(taskId) {
+  async function stopTask(taskId: string) {
     const result = await call(() => api.stopTask(taskId))
     if (result?.ok === false) showToast(result.problem)
   }
 
-  async function closeTask(taskId) {
+  async function closeTask(taskId: string) {
     const result = await call(() => api.closeTask(taskId))
     if (result?.ok === false) return showToast(result.problem)
     return dispatch({ type: 'task_closed', taskId })
@@ -246,19 +251,19 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     loadUnfinished,
     resumeUnfinished,
     forgetUnfinished,
-    dismissReport: (taskId) => dispatch({ type: 'task_report_dismissed', taskId }),
-    submitTaskAnswer: (taskId) => {
+    dismissReport: (taskId: string) => dispatch({ type: 'task_report_dismissed', taskId }),
+    submitTaskAnswer: (taskId: string) => {
       const question = questionOf(taskId)
       if (question) answerTask(taskId, answersFrom(question))
     },
     /** Typed on the 后台 page while the task asks: the answer, as typing in the composer is for the conversation's. */
-    typeTaskAnswer: (taskId, text) => {
+    typeTaskAnswer: (taskId: string, text: string) => {
       const question = questionOf(taskId)
       if (question) answerTask(taskId, answersFrom(question, text))
     },
-    skipTaskQuestion: (taskId) => {
+    skipTaskQuestion: (taskId: string) => {
       const question = questionOf(taskId)
-      if (question) answerTask(taskId, question.questions.map((item) => ({ id: item.id, selected: [] })))
+      if (question) answerTask(taskId, question.questions.map((item: QuestionItem) => ({ id: item.id, selected: [] })))
     },
     toggleRoute: () => dispatch({ type: 'route_toggle' }),
   }

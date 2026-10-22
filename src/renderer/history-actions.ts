@@ -1,28 +1,23 @@
 const SEARCH_DEBOUNCE_MS = 200
 const TOAST_MS = 3000
 
-/**
- * The 搜索 page (⌘F; view/hub.js), the toasts, and the trace of a restored conversation.
- * @param {{
- *   api: typeof window.agent, getState: () => object, dispatch: (action: object) => void,
- *   searchField: HTMLInputElement, errorMessage: (err: unknown) => string,
- *   jumpTo: (hit: object) => Promise<boolean>,
- * }} deps
- */
-export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, jumpTo }) {
+/** The 搜索 page (⌘F; view/hub.js), the toasts, and the trace of a restored conversation. */
+export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, jumpTo }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
+  searchField: HTMLInputElement, jumpTo: (hit: SearchHit) => Promise<boolean>,
+}) {
   let toastKey = 0
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   /** `action` ({ label, kind, payload }) adds a button; the app decides what each kind does. */
-  function showToast(text, { action = null as { label: string, kind: string } | null, ms = TOAST_MS } = {}) {
+  function showToast(text: string, { action = null as ToastAction | null, ms = TOAST_MS } = {}) {
     const key = ++toastKey
     dispatch({ type: 'toast_show', toast: { key, text, action } })
     setTimeout(() => dispatch({ type: 'toast_hide', key }), ms)
   }
-  const report = (what) => (err) => showToast(`${what}：${errorMessage(err)}`)
+  const report = (what: string) => (err: unknown) => showToast(`${what}：${errorMessage(err)}`)
 
   /** Searching finds messages anywhere in the one timeline (history-db.js searchMessages). */
-  async function runSearch(query) {
+  async function runSearch(query: string) {
     try {
       dispatch({ type: 'history_results', query, results: await api.searchTimeline(query.trim()) })
     } catch (err) {
@@ -31,7 +26,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
   }
 
   /** Reads the restored messages' trace from dsh's logs, in the background. */
-  async function loadTrace(conversationId) {
+  async function loadTrace(conversationId: string) {
     try {
       dispatch({ type: 'trace_restored', conversationId, ...await api.loadTrace(conversationId, Date.now()) })
     } catch (err) {
@@ -64,7 +59,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
       if (!getState().history.open) dispatch({ type: 'history_open' })
       focusField()
     },
-    async jumpToHit(hit) {
+    async jumpToHit(hit: SearchHit) {
       dispatch({ type: 'history_close' })
       try {
         if (!await jumpTo(hit)) showToast('这条消息已经不在时间线上了')
@@ -73,7 +68,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
       }
     },
 
-    searchHistory(query) {
+    searchHistory(query: string) {
       dispatch({ type: 'history_query', query })
       clearTimeout(searchTimer)
       if (query.trim()) searchTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS)

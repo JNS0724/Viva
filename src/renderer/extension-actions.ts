@@ -1,21 +1,17 @@
 import { isBusy } from './state.ts'
 
 /** What to tell the user after removing a server, from what the main process reports back. */
-const removedNotice = (view) => (view.info ? '已删除，当前对话已经生效' : '已删除，下次连接时生效')
+const removedNotice = (view: { info?: unknown }) => (view.info ? '已删除，当前对话已经生效' : '已删除，下次连接时生效')
 
 /**
  * The 扩展 section of settings: the user's MCP servers and skills, listed and removable. They are added
  * from the conversation (viva-config).
- * @param {{
- *   api: typeof window.agent, getState: () => object, dispatch: (action: object) => void,
- *   errorMessage: (err: unknown) => string,
- * }} deps
  */
-export function createExtensionActions({ api, getState, dispatch, errorMessage }) {
-  const fail = (err) => dispatch({ type: 'extensions_failed', message: errorMessage(err) })
+export function createExtensionActions({ api, getState, dispatch, errorMessage }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'>) {
+  const fail = (err: unknown) => dispatch({ type: 'extensions_failed', message: errorMessage(err) })
 
   /** Runs `request` unless another change is in flight; `noticeFor` turns the answer into a status line. */
-  async function change(request, noticeFor) {
+  async function change(request: () => Promise<{ info?: unknown, [field: string]: any }>, noticeFor: (view: { info?: unknown }) => string) {
     if (getState().extensions.busy) return
     dispatch({ type: 'extensions_busy' })
     try {
@@ -42,9 +38,9 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
         fail(err)
       }
     },
-    removeServer(name) {
+    removeServer(name: string) {
       if (guardMcp()) change(() => api.removeMcpServer(name), removedNotice)
     },
-    removeSkill: (skill) => change(() => api.removeSkill(skill.id), () => `已把「${skill.name}」移到废纸篓`),
+    removeSkill: (skill: { id: string, name: string }) => change(() => api.removeSkill(skill.id), () => `已把「${skill.name}」移到废纸篓`),
   }
 }

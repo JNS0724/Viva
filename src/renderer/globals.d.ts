@@ -12,7 +12,8 @@ type Untyped = any
 
 /**
  * What a part of the state can hold, from its first value: false any boolean, '' any text; a field that starts
- * null, or a list that starts empty, holds what is not written out yet (Untyped).
+ * null, or a list that starts empty, holds what is not written out yet (Untyped); an object that starts empty
+ * ({}), entries by key.
  */
 type Widened<T> = [T] extends [never] ? Untyped
   : T extends null ? Untyped
@@ -21,7 +22,7 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends boolean ? boolean
   : T extends readonly (infer U)[] ? ReadonlyArray<Widened<U>>
   : T extends (...args: any[]) => any ? T
-  : T extends object ? { -readonly [K in keyof T]: Widened<T[K]> }
+  : T extends object ? ([keyof T] extends [never] ? Readonly<Record<string, Untyped>> : { -readonly [K in keyof T]: Widened<T[K]> })
   : T
 /** What the main process tells the window of the agent (session-info.ts, acp-bridge.ts): the fields the window reads. */
 interface AgentInfo {
@@ -66,6 +67,28 @@ interface ThreadMessage {
   taskId?: string
   [field: string]: any
 }
+/** A message of an earlier segment, as the history keeps it: `seq` counts the segment's saved messages. */
+interface SegmentMessage {
+  seq: number
+  role: string
+  text: string
+  receipt?: Receipt | null
+  at?: number
+  images?: ReadonlyArray<{ id: string }>
+  [field: string]: any
+}
+/** A part of the one timeline before the one on screen (history-db.ts segmentsBefore). */
+interface Segment {
+  id: string
+  cwd?: string | null
+  /** What it went on from (topics.ts). */
+  parentId?: string | null
+  createdAt: number
+  messages: ReadonlyArray<SegmentMessage>
+  [field: string]: any
+}
+/** Where a search found the words (history-db.ts searchMessages): the segment, and the message's seq in it. */
+interface SearchHit { segmentId: string, seq: number, [field: string]: any }
 /** One answer dsh offers to an approval: allow once, always, reject. */
 interface PermissionOption { optionId: string, name: string, kind?: string }
 /** One question the agent asks, with its options. */
@@ -101,6 +124,18 @@ type State = Widened<typeof import('./state.ts').initialState>
 type Action = { type?: string, [field: string]: any }
 /** The state after an action: a new object, never the one given changed in place. */
 type Reducer = (state: State, action: Action) => State
+/** A button on a toast: what it says, what it does (app.ts TOAST_ACTIONS), and what that needs. */
+type ToastAction = { label: string, kind: string, payload?: unknown }
+/** What the window's action modules (*-actions.ts) are given: the bridge, the state, how to change it and say so. */
+interface ActionDeps {
+  api: AgentApi
+  getState: () => State
+  dispatch: (action: Action) => void
+  errorMessage: (err: unknown) => string
+  showToast: (text: string, options?: { action?: ToastAction | null, ms?: number }) => void
+  /** Sends words as the user's next question (app.ts ask); false when the agent can't take them now. */
+  ask: (text: string) => boolean
+}
 /** What the views call back (app.ts handlers), by name. */
 type Handlers = Readonly<Record<string, (...args: any[]) => any>>
 

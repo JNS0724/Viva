@@ -10,7 +10,7 @@ import { createHistoryActions } from './history-actions.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
 import { islandView } from './island-view.ts'
-import { answersFrom } from './question-state.ts'
+import { answersFrom, type QuestionAnswer } from './question-state.ts'
 import { hubPage } from './hub-state.ts'
 import { historyMessages, setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
@@ -344,7 +344,7 @@ function sendAfterTurn() {
 }
 
 /** What the user answers to each question: the options picked, and words of their own. */
-type Answers = Array<{ id: string, selected: string[], custom?: string }>
+type Answers = QuestionAnswer[]
 
 /** Answers the agent's open question; the reply shows at once, like an approval. */
 function answer(answers: Answers) {

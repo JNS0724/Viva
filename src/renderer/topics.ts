@@ -16,13 +16,13 @@ export function rememberedIds(segments: ReadonlyArray<{ id: string, parentId?: s
   return ids
 }
 
-/**
- * The earlier segments as topics, in order: a topic goes on while each segment continues the one before it.
- * @returns {{ remembered: boolean, segments: object[], at: number | null, count: number }[]}
- */
-export function topicBlocks(segments, parentId) {
+/** Earlier segments that read as one topic: whether the assistant has them in mind, when it began, how many messages. */
+type TopicBlock = { remembered: boolean, segments: readonly Segment[], at: number | null, count: number }
+
+/** The earlier segments as topics, in order: a topic goes on while each segment continues the one before it. */
+export function topicBlocks(segments: readonly Segment[], parentId: string | null): TopicBlock[] {
   const remembered = rememberedIds(segments, parentId)
-  return segments.reduce((blocks, segment, i) => {
+  return segments.reduce((blocks: TopicBlock[], segment, i) => {
     const keep = remembered.has(segment.id)
     const last = blocks.at(-1)
     const continues = i > 0 && segment.parentId === segments[i - 1].id
@@ -38,10 +38,9 @@ export function topicBlocks(segments, parentId) {
  *   'new': a new topic (undoable while nothing has been said in it);
  *   'back': it goes on from an earlier topic, not the segment just above (回到这个话题);
  *   null: it goes on from the segment just above, or there is nothing above.
- * @returns {{ kind: 'new', at: number | null, undo: string | null } | { kind: 'back', at: number | null } | null}
  */
-export function topicStart(state) {
-  const { segments } = state.earlier
+export function topicStart(state: State): { kind: 'new', at: number | null, undo: string | null } | { kind: 'back', at: number | null } | null {
+  const segments: readonly Segment[] = state.earlier.segments
   const last = segments.at(-1)
   if (!last) return null
   const { parentId, startedAt } = state.topic
@@ -52,11 +51,12 @@ export function topicStart(state) {
 }
 
 /** How many messages the assistant has in mind now: the topic's earlier segments and the conversation on screen. */
-export function topicCount(state) {
-  const remembered = rememberedIds(state.earlier.segments, state.topic.parentId)
-  const earlier = state.earlier.segments.filter((segment) => remembered.has(segment.id)).reduce((sum, segment) => sum + segment.messages.length, 0)
+export function topicCount(state: State) {
+  const segments: readonly Segment[] = state.earlier.segments
+  const remembered = rememberedIds(segments, state.topic.parentId)
+  const earlier = segments.filter((segment) => remembered.has(segment.id)).reduce((sum, segment) => sum + segment.messages.length, 0)
   return earlier + state.messages.length
 }
 
-/** @returns {number | null} the share of the context used, 0–1, once the agent has said */
-export const contextShare = (usage) => (usage?.size ? Math.min(1, usage.used / usage.size) : null)
+/** The share of the context used, 0–1, once the agent has said. */
+export const contextShare = (usage: { used: number, size: number } | null | undefined): number | null => (usage?.size ? Math.min(1, usage.used / usage.size) : null)

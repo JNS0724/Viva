@@ -8,16 +8,11 @@ import { rewindTarget } from './rewind-state.ts'
 const NOT_NOW = '助手在忙，或这句话还没保存好，稍后再试'
 const FAILED = '没能回到那里'
 
-/**
- * @param {{
- *   api: Record<'rewind' | 'rewindEffects' | 'foldedPath' | 'switchPath', (...args: any[]) => Promise<any>>,
- *   getState: () => any, dispatch: (action: object) => void,
- *   showToast: (text: string) => void, errorMessage: (err: unknown) => string, ask: (text: string) => boolean,
- * }} deps
- */
-export function createRewindActions({ api, getState, dispatch, showToast, errorMessage, ask }) {
+export function createRewindActions({ api, getState, dispatch, showToast, errorMessage, ask }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage' | 'ask'> & {
+  api: Pick<AgentApi, 'rewind' | 'rewindEffects' | 'foldedPath' | 'switchPath'>,
+}) {
   /** What the part that would fold changed on the computer; none known when it cannot be read. */
-  async function effectsOf(target) {
+  async function effectsOf(target: NonNullable<ReturnType<typeof rewindTarget>>) {
     try {
       return await api.rewindEffects({ keep: target.keep })
     } catch (err) {
@@ -27,7 +22,7 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
   }
 
   /** Going back over files written or commands run asks first (view/rewind.js rewindConfirm); else it just goes. */
-  async function goBack(id, text, { confirmed = false } = {}) {
+  async function goBack(id: string, text: string | undefined, { confirmed = false } = {}) {
     const target = rewindTarget(getState(), id)
     const words = text?.trim()
     if (!target || !words) return showToast(NOT_NOW)
@@ -51,7 +46,7 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
   }
 
   /** Opens a folded path in place to read it, or closes it again. */
-  async function toggleFold(id) {
+  async function toggleFold(id: string) {
     if (getState().rewind.open[id]) return dispatch({ type: 'fold_closed', id })
     try {
       return dispatch({ type: 'fold_opened', id, ...await api.foldedPath(id) })
@@ -61,7 +56,7 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
   }
 
   /** Back onto a folded path; the one on screen folds where the two part. */
-  async function switchPath(id) {
+  async function switchPath(id: string) {
     const state = getState()
     if (state.phase !== 'idle' || state.rewind.busy) return showToast('先停止当前任务，再切到另一条路')
     dispatch({ type: 'rewind_busy' })
@@ -81,10 +76,10 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
   return {
     toggleFold,
     switchPath,
-    redoFrom: (id) => goBack(id, getState().messages.find((message) => message.id === id)?.text),
-    editFrom: (id) => (rewindTarget(getState(), id) ? dispatch({ type: 'rewind_edit', id }) : showToast(NOT_NOW)),
+    redoFrom: (id: string) => goBack(id, getState().messages.find((message: ThreadMessage) => message.id === id)?.text),
+    editFrom: (id: string) => (rewindTarget(getState(), id) ? dispatch({ type: 'rewind_edit', id }) : showToast(NOT_NOW)),
     cancelEdit: () => dispatch({ type: 'rewind_cancel' }),
-    submitEdit: (id, text) => goBack(id, text),
+    submitEdit: (id: string, text: string) => goBack(id, text),
     /** 知道了，重来: the user knows what will not be undone. */
     confirmRewind() {
       const asked = getState().rewind.confirm

@@ -6,10 +6,15 @@ import { closeStreams } from './streams.ts'
  */
 const SKIPPED = '（跳过）'
 
-const askedText = (questions) => questions.map((question) => question.question).join('\n')
+/** An answer to one question: the options picked, and the user's own words. */
+export type QuestionAnswer = { id: string, selected: string[], custom?: string }
+/** What the agent asks while it waits (state.question): its questions, and what is picked so far, by question. */
+type AskedQuestion = { questionId: string, questions: readonly QuestionItem[], picks: Readonly<Record<string, readonly string[]>> }
+
+const askedText = (questions: readonly QuestionItem[]) => questions.map((question) => question.question).join('\n')
 
 /** The answer as the user would put it: the picks, then their own words; one line per question when there are several. */
-export function answerText(questions, answers) {
+export function answerText(questions: readonly QuestionItem[], answers: readonly QuestionAnswer[]) {
   const said = questions.map((question) => {
     const answer = answers.find((item) => item.id === question.id)
     return [...(answer?.selected ?? []), answer?.custom].filter(Boolean).join('、') || SKIPPED
@@ -19,18 +24,18 @@ export function answerText(questions, answers) {
 }
 
 /** The answers to send: what was picked per question, with `text` (typed in the composer) for the ones it answers. */
-export function answersFrom(question, text = '') {
+export function answersFrom(question: AskedQuestion, text = ''): QuestionAnswer[] {
   const typed = text.trim()
   // Typed words go to the first question without a pick (the last one when all have picks).
   const target = question.questions.find((item) => !(question.picks[item.id] ?? []).length) ?? question.questions.at(-1)
   return question.questions.map((item) => ({
     id: item.id,
-    selected: question.picks[item.id] ?? [],
-    ...(typed && item.id === target.id ? { custom: typed } : {}),
+    selected: [...(question.picks[item.id] ?? [])],
+    ...(typed && item.id === target?.id ? { custom: typed } : {}),
   }))
 }
 
-function togglePick(item, current, label) {
+function togglePick(item: QuestionItem, current: readonly string[], label: string) {
   if (item.multiSelect) return current.includes(label) ? current.filter((picked) => picked !== label) : [...current, label]
   return current[0] === label ? [] : [label]
 }
@@ -47,7 +52,7 @@ export const QUESTION_ACTIONS: Record<string, Reducer> = {
   },
 
   question_pick: (state, { id, label }) => {
-    const item = state.question?.questions.find((question) => question.id === id)
+    const item = state.question?.questions.find((question: QuestionItem) => question.id === id)
     if (!item) return state
     const picks = { ...state.question.picks, [id]: togglePick(item, state.question.picks[id] ?? [], label) }
     return { ...state, question: { ...state.question, picks } }

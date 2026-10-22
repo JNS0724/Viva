@@ -3,31 +3,32 @@
  * Each keeps its own slice (history, memory, settings) and its own open and close actions; this keeps
  * only one of them open and remembers which to open on next. Pure, like the rest of `state.js`.
  */
-export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks'])
+export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks'] as const)
+type HubPage = typeof HUB_PAGES[number]
 /** The 后台 page shares the space but not the sidebar: the 关于你 icon never opens on it. */
-const REMEMBERED = new Set(['search', 'profile', 'settings'])
+const REMEMBERED = new Set<string>(['search', 'profile', 'settings'])
 
 export const initialHub = Object.freeze({
   /** The page it opens on when opened without naming one: the one last shown. */
   last: 'profile',
 })
 
-const IS_OPEN = {
+const IS_OPEN: Record<HubPage, (state: State) => boolean> = {
   search: (state) => state.history.open,
   profile: (state) => state.memory.open,
   settings: (state) => state.settings.open,
   tasks: (state) => state.tasks.page.open,
 }
-const CLOSE_ACTION = { search: 'history_close', profile: 'memory_close', settings: 'settings_close', tasks: 'tasks_page_close' }
+const CLOSE_ACTION: Record<HubPage, string> = { search: 'history_close', profile: 'memory_close', settings: 'settings_close', tasks: 'tasks_page_close' }
 
 /** The page that is open, or null. */
-export const hubPage = (state) => HUB_PAGES.find((page) => IS_OPEN[page](state)) ?? null
+export const hubPage = (state: State): HubPage | null => HUB_PAGES.find((page) => IS_OPEN[page](state)) ?? null
 
 /**
  * After an action: a page it opened closes the one that was open and becomes the one to open on next.
- * @param {(state: object, action: object) => object} reduce the whole reducer, to close a page with its own action
+ * @param reduce the whole reducer, to close a page with its own action
  */
-export function oneHubPage(before, after, reduce) {
+export function oneHubPage(before: State, after: State, reduce: Reducer): State {
   const opened = HUB_PAGES.find((page) => IS_OPEN[page](after) && !IS_OPEN[page](before))
   if (!opened) return after
   const remembered = after.hub.last === opened || !REMEMBERED.has(opened) ? after : { ...after, hub: { ...after.hub, last: opened } }
@@ -37,7 +38,7 @@ export function oneHubPage(before, after, reduce) {
 }
 
 /** ← 返回, Esc, or the 关于你 icon again: whichever page is open closes. */
-export function closeHub(state, reduce) {
+export function closeHub(state: State, reduce: Reducer): State {
   const page = hubPage(state)
   return page ? reduce(state, { type: CLOSE_ACTION[page] }) : state
 }
