@@ -13,7 +13,9 @@ contextBridge.exposeInMainWorld('desk', {
   act: (action) => ipcRenderer.send('island:act', action),
   /** @param {File[]} files from a drop @returns {Promise<{ files?: object[], error?: string }>} */
   describeFiles: (files) => ipcRenderer.invoke('island:files', Array.from(files, (file) => webUtils.getPathForFile(file))),
-  ask: (text, files) => ipcRenderer.invoke('island:ask', { text, files }),
+  ask: (text, files, images = []) => ipcRenderer.invoke('island:ask', { text, files, images }),
+  /** A picture pasted into the island's input, into the pictures folder: { id, mimeType, size } (main/image-ipc.js). */
+  keepImage: (bytes) => ipcRenderer.invoke('island:keep-image', bytes),
   /** The ask shortcut as the user presses it (island-main.js ASK_SHORTCUT). */
   shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl+Shift+Space',
 })

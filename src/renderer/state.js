@@ -71,6 +71,10 @@ export const initialState = Object.freeze({
     busy: false,
     error: null,
     notice: null,
+    /** The pictures folder (main/image-store.js): { dir, bytes, count }, and whether 清空 waits for a yes. */
+    images: null,
+    imagesConfirm: false,
+    imagesBusy: false,
   },
 })
 
@@ -179,9 +183,11 @@ const ACTION_HANDLERS = {
     error: state.phase === 'error' ? null : state.error,
   }),
 
-  user_prompt: (state, { text, at, via = null }) => {
+  user_prompt: (state, { text, at, via = null, images = [] }) => {
     const closed = closeStreams(state)
-    const message = { id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, ...(via ? { via } : {}) }
+    const message = {
+      id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
+    }
     return {
       ...closed,
       phase: 'working',
@@ -295,7 +301,7 @@ const ACTION_HANDLERS = {
       folds,
       restoredTrace: 'loading',
       messages: messages.map((m, i) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
+        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
       })),
       restored: { count: messages.length, savedAt },
     }
@@ -367,6 +373,12 @@ const ACTION_HANDLERS = {
   settings_close: (state) => ({ ...state, settings: { ...state.settings, open: false } }),
   settings_loaded: (state, { view }) => ({ ...state, settings: { ...state.settings, ...view, loaded: true } }),
   settings_busy: (state) => ({ ...state, settings: { ...state.settings, busy: true, error: null, notice: null } }),
+  /** 贴过的图片: emptying asks first; while it is emptied or moved its buttons wait; then its new size. */
+  images_confirm: (state, { open }) => ({ ...state, settings: { ...state.settings, imagesConfirm: open } }),
+  images_busy: (state) => ({ ...state, settings: { ...state.settings, imagesBusy: true, imagesConfirm: false } }),
+  images_done: (state, { usage }) => ({
+    ...state, settings: { ...state.settings, images: usage ?? state.settings.images, imagesBusy: false, imagesConfirm: false },
+  }),
   settings_failed: (state, { message }) => ({ ...state, settings: { ...state.settings, busy: false, error: message } }),
   settings_saved: (state, { view, notice }) => ({
     ...state, settings: { ...state.settings, ...view, loaded: true, busy: false, error: null, notice },

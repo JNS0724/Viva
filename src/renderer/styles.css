@@ -210,6 +210,19 @@ html:not([data-platform="darwin"]) {
 }
 /* Files handed over with a question (from the desktop island): chips above its text. */
 .msg-files { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; white-space: normal; }
+/* Pictures sent with a question, above its words (view/pictures.js); one gone from the folder says so. */
+.msg-pics { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 8px; }
+.msg-pic { display: block; max-width: 240px; max-height: 180px; border-radius: 10px; border: 1px solid var(--line-2); object-fit: cover; background: var(--raised); }
+.pic-gone { display: grid; place-items: center; width: 120px; height: 72px; font-size: 12px; color: var(--ink-3); border-style: dashed; }
+/* Pictures waiting in the input, above the words (draft-images.js). */
+.draft-pics { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 10px; }
+.draft-pic { position: relative; width: 72px; height: 72px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line-2); background: var(--raised); }
+.draft-pic-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.draft-pic-img.pic-gone { width: 100%; height: 100%; border: none; }
+.draft-pic-x {
+  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; padding: 0; border: none; border-radius: 50%;
+  background: rgba(6, 11, 22, .8); color: var(--ink); font-size: 12px; line-height: 20px; cursor: pointer;
+}
 .msg-file {
   display: inline-flex; align-items: center; gap: 8px; max-width: 100%; height: 32px; padding: 0 10px; border-radius: 9px;
   background: var(--panel); border: 1px solid var(--line-2); font-size: 13px; line-height: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -302,6 +315,11 @@ html:not([data-platform="darwin"]) {
 .doc-ico { position: relative; flex: none; width: 14px; height: 17px; border-radius: 3px; background: var(--ink); }
 .doc-ico::after { content: ''; position: absolute; left: 3px; right: 3px; top: 5px; height: 6px; border-top: 2px solid var(--accent); border-bottom: 2px solid var(--accent); box-sizing: border-box; }
 .desk-reset { align-self: flex-start; margin-top: 12px; }
+/* 贴过的图片 (view/settings.js imagesSection): its folder on one line; emptying asks first. */
+.images-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.images-confirm { display: flex; flex-direction: column; gap: 10px; }
+.images-confirm .help { color: var(--orange); }
+.images-clear { color: var(--red); border-color: color-mix(in srgb, var(--red) 50%, transparent); }
 .msg-agent { display: flex; gap: 14px; }
 .msg-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .msg-text { margin: 0; font-size: 16px; line-height: 1.8; white-space: pre-wrap; word-break: break-word; }
@@ -724,11 +742,13 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .history-snippet mark { background: rgba(90, 169, 255, .22); color: var(--ink); border-radius: 3px; padding: 0 2px; }
 .hit-open { flex: none; white-space: nowrap; }
 /* A folder held over the window (app.js wireFolderDrop): letting go works there. */
-body.drop-folder::after {
+body.drop-folder::after, body.drop-images::after {
   content: '松开，在这个文件夹里工作'; position: fixed; inset: 12px; z-index: 90; pointer-events: none;
   display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 500; color: var(--ink);
   border: 2px dashed rgba(90, 169, 255, .8); border-radius: 18px; background: color-mix(in srgb, var(--raised) 90%, transparent);
 }
+/* Pictures held over the window: they go into the input. */
+body.drop-images::after { content: '松开，把图片放进输入框'; }
 /* The message search jumped to, marked for a moment (app.js revealMessage). */
 .msg-found { outline: 2px solid rgba(90, 169, 255, .7); outline-offset: 4px; border-radius: 12px; transition: outline-color .6s; }
 .history-hint { padding: 12px; color: var(--ink-3); font-size: 13px; }

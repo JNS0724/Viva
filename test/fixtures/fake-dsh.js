@@ -198,7 +198,7 @@ function createAgent(conn) {
     async initialize(params) {
       return {
         protocolVersion: params.protocolVersion,
-        agentCapabilities: { sessionCapabilities: { resume: {}, close: {} } },
+        agentCapabilities: { sessionCapabilities: { resume: {}, close: {} }, promptCapabilities: { image: true } },
         authMethods: [],
       }
     },
@@ -241,8 +241,11 @@ function createAgent(conn) {
       const controller = new AbortController()
       session.turn = controller
       const text = params.prompt.map((block) => block.text ?? '').join('\n')
+      // Pictures come as image blocks, base64; the answer says what came, so the smoke run can see they got here.
+      const images = params.prompt.filter((block) => block.type === 'image' && block.data && block.mimeType)
       try {
-        if (LONG_TASK.test(text)) await longScript(params.sessionId, session, controller.signal)
+        if (images.length) await turnTools(params.sessionId, controller.signal).stream('agent_message_chunk', `看到了 ${images.length} 张图片（${images.map((i) => i.mimeType).join('、')}）`, PIECE_CHARS, PIECE_RATIO)
+        else if (LONG_TASK.test(text)) await longScript(params.sessionId, session, controller.signal)
         else if (MARKDOWN_DEMO.test(text)) await turnTools(params.sessionId, controller.signal).stream('agent_message_chunk', MARKDOWN_ANSWER, LONG_PIECE_CHARS, LONG_PIECE_RATIO)
         else await defaultScript(params.sessionId, session, text, controller.signal)
         return { stopReason: 'end_turn' }

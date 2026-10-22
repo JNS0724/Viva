@@ -17,6 +17,8 @@ const SHUTDOWN_GRACE_MS = 1500
 // The version the app was built as, so it cannot fall behind a release (package.json ships in the app).
 const CLIENT_INFO = { name: 'viva', version: pkg.version }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
+/** dsh decides at launch, from the model it starts on, whether its prompts take pictures. */
+const NO_IMAGES = '这个模型看不了图片（DeepSeek 里只有 V41-Flash 能看），图片没有发出去'
 const NO_MCP = () => []
 
 /**
@@ -63,6 +65,8 @@ export function createAcpBridge({
   /** The working directory of the session in use: dsh's own at first, another one once a fork moved it. */
   let sessionCwd = cwd
   let canResume = false
+  /** Whether the model dsh started on reads pictures (dsh asks the model's catalog entry). */
+  let seesImages = false
   let stderrTail = ''
   let disposed = false
   const toPlugins = (message) => {
@@ -194,18 +198,27 @@ export function createAcpBridge({
         clientInfo: CLIENT_INFO,
       })
       canResume = Boolean(init.agentCapabilities?.sessionCapabilities?.resume)
+      seesImages = Boolean(init.agentCapabilities?.promptCapabilities?.image)
       return await resumeOrOpen(resumeSessionId)
     } catch (err) {
       throw new Error(describeError(err, stderrTail))
     }
   }
 
-  /** Its end is the main conversation's, or (once the turn went to the background) its task's. */
-  async function prompt(text) {
+  /**
+   * Its end is the main conversation's, or (once the turn went to the background) its task's.
+   * @param {string} text @param {{ data: string, mimeType: string }[]} [images] pictures pasted with it, base64
+   */
+  async function prompt(text, images = []) {
+    if (images.length && !seesImages) {
+      emit({ type: 'error', message: NO_IMAGES })
+      return
+    }
     const asked = sessionId
     running.add(asked)
     try {
-      const response = await connection.prompt({ sessionId: asked, prompt: [{ type: 'text', text }] })
+      const blocks = [...images.map(({ data, mimeType }) => ({ type: 'image', data, mimeType })), ...(text ? [{ type: 'text', text }] : [])]
+      const response = await connection.prompt({ sessionId: asked, prompt: blocks })
       if (tasks.has(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
       else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason })
     } catch (err) {

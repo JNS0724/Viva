@@ -4,7 +4,15 @@ contextBridge.exposeInMainWorld('agent', {
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: process.platform,
   getInfo: () => ipcRenderer.invoke('agent:info'),
-  prompt: (text) => ipcRenderer.invoke('agent:prompt', text),
+  /** @param {{ id: string }[]} [images] pictures kept by keepImage, sent with the words */
+  prompt: (text, images = []) => ipcRenderer.invoke('agent:prompt', text, images),
+  /** A pasted or dropped picture into the pictures folder: { id, mimeType, size } (main/image-store.js). */
+  keepImage: (bytes) => ipcRenderer.invoke('images:keep', bytes),
+  /** Settings' 贴过的图片: its size and place; open, empty or move it. */
+  imagesUsage: () => ipcRenderer.invoke('images:usage'),
+  openImagesFolder: () => ipcRenderer.invoke('images:open-folder'),
+  clearImages: () => ipcRenderer.invoke('images:clear'),
+  moveImages: () => ipcRenderer.invoke('images:move'),
   /** Words for the turn that is running (viva-steer): { ok, reason? }. */
   steer: (text) => ipcRenderer.invoke('agent:steer', text),
   cancel: () => ipcRenderer.invoke('agent:cancel'),

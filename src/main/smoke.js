@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { checkDeskAsk } from './smoke-desk.js'
+import { checkPictures } from './smoke-images.js'
 import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 import { checkMemory } from './smoke-memory.js'
 import { checkResume } from './smoke-tasks.js'
@@ -503,8 +504,9 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hook
     if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
     else if (smokePhase === 'relaunch') {
       problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
-      // Last on this profile: it adds a question to the conversation the checks above look at.
+      // Last on this profile: they add questions to the conversation the checks above look at.
       problems.push(...await checkDeskAsk(win, outDir, hooks.desk?.()))
+      problems.push(...await checkPictures(win, outDir, hooks.desk?.()))
     }
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))

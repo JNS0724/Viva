@@ -50,7 +50,7 @@ export function workspaceName(cwd) {
 /** What gets saved: finished messages only, in the shape the main process stores. */
 export const historyMessages = (state) => state.messages
   .filter((m) => !m.open)
-  .map(({ role, text, receipt }) => ({ role, text, receipt: receipt ?? null }))
+  .map(({ role, text, receipt, images }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}) }))
 
 const DAY_MS = 86_400_000
 const startOfDay = (ts) => new Date(ts).setHours(0, 0, 0, 0)
@@ -128,7 +128,9 @@ export function earlierRows(earlier, { currentCwd = null, now = Date.now() } = {
       const day = timelineDay(message.at, now)
       if (day !== lastDay) rows.push({ kind: 'day', label: day })
       lastDay = day
-      rows.push({ kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt })
+      rows.push({
+        kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt, ...(message.images ? { images: message.images } : {}),
+      })
     }
   }
   if (currentCwd && lastCwd && currentCwd !== lastCwd) rows.push({ kind: 'workdir', cwd: currentCwd })

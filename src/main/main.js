@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
@@ -16,6 +16,9 @@ import { dshEnv, restartDelay } from './dsh-runtime.js'
 import { registerExtensionsIpc } from './extensions-ipc.js'
 import { registerFilesIpc } from './files-ipc.js'
 import { openHistoryDb } from './history-db.js'
+import { imagesForPrompt, registerImageIpc } from './image-ipc.js'
+import { IMAGE_SCHEME_PRIVILEGES, registerImageProtocol } from './image-protocol.js'
+import { createImageStore } from './image-store.js'
 import { registerHistoryIpc } from './history-ipc.js'
 import { registerRewindIpc } from './rewind-ipc.js'
 import { registerTaskIpc } from './task-ipc.js'
@@ -55,6 +58,8 @@ let deskAllowed = true
 /** Model providers the user added besides DeepSeek; see model-providers.js. */
 let modelStore = null
 let historyDb = null
+/** Pictures pasted into questions, and dsh's copies of them, in a folder the user may move (image-store.js). */
+let imageStore = null
 /** The user's MCP servers, encrypted where they hold keys (mcp-config.js). */
 let mcpStore = null
 /** An MCP server was added or removed from the conversation: reattach the session once the turn is over. */
@@ -121,6 +126,9 @@ const currentConfig = () => resolveConfig(process.env, fs.existsSync, settingsSt
   userData: app.getPath('userData'), execPath: process.execPath, packaged: app.isPackaged,
 })
 
+/** The pictures folder: where the user moved it, or in the app's data. */
+const imagesDir = () => preferences.get().imagesDir || path.join(app.getPath('userData'), 'images')
+
 const isFolder = (dir) => {
   try {
     return fs.statSync(dir).isDirectory()
@@ -169,7 +177,7 @@ function prepareProfile(config) {
     })
     pluginProblems = problems
     problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
-    ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config) })
+    ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir() })
     return DSH_PROFILE
   } catch (err) {
     console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
@@ -359,6 +367,7 @@ function settingsView() {
     encryptionAvailable: safeStorage.isEncryptionAvailable(),
     deskIsland: preferences.get().deskIsland,
     shortcut: shortcutHeld === null ? null : { keys: ASK_SHORTCUT, held: shortcutHeld },
+    images: imageStore.usage(),
   }
 }
 
@@ -371,8 +380,10 @@ function assertText(value, name, maxLength) {
 
 function registerAgentIpc() {
   ipcMain.handle('agent:info', () => lastInfo)
-  ipcMain.handle('agent:prompt', (_event, text) => {
-    const question = assertText(text, 'prompt', MAX_PROMPT_CHARS)
+  ipcMain.handle('agent:prompt', (_event, text, images = []) => {
+    // With pictures the words may be left out.
+    const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
+    const pictures = imagesForPrompt(imageStore, images)
     const agent = requireBridge()
     try {
       personal.habits()
@@ -380,7 +391,7 @@ function registerAgentIpc() {
       console.error('[memory] could not update the habits:', err.message)
     }
     turn = { active: true, startedAt: Date.now() }
-    return agent.prompt(question)
+    return agent.prompt(question, pictures)
   })
   /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
   ipcMain.handle('agent:steer', (_event, text) => {
@@ -744,6 +755,8 @@ function createWindow(config) {
 }
 
 isolateSmokeUserData()
+// Before the app is ready: the pages load pasted pictures by name from viva-image:// (image-protocol.js).
+protocol.registerSchemesAsPrivileged([IMAGE_SCHEME_PRIVILEGES])
 // dsh's home is the app's own now, so a second copy of the app would share it: hand over to the first.
 if (!app.requestSingleInstanceLock()) app.exit(0)
 app.on('second-instance', () => showWindow())
@@ -808,6 +821,19 @@ app.whenReady().then(async () => {
     file: path.join(app.getPath('userData'), 'models.json'),
     crypto: safeStorage,
     onError: (err) => console.error('[models] could not read the model providers:', err.message),
+  })
+  imageStore = createImageStore({ dir: imagesDir })
+  registerImageProtocol(protocol, imageStore)
+  registerImageIpc(ipcMain, {
+    store: imageStore,
+    setDir: (dir) => preferences.set('imagesDir', dir),
+    chooseFolder: async () => {
+      const result = await dialog.showOpenDialog(win, { title: '把图片放到哪里', properties: ['openDirectory', 'createDirectory'] })
+      return result.canceled ? null : result.filePaths[0] ?? null
+    },
+    reveal: (dir) => shell.openPath(dir),
+    isBusy: () => turn.active,
+    restart: restartKeepingConversation,
   })
   registerAgentIpc()
   registerSettingsIpc()

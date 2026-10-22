@@ -8,6 +8,7 @@ import { caretHost, renderMarkdown } from './markdown.js'
 import { foldAfter, rewindTarget } from '../rewind-state.js'
 import { offeredBackground } from '../tasks-state.js'
 import { cardedTasks, taskCard } from './task-card.js'
+import { sentPictures } from './pictures.js'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.js'
 
 const AVATAR_CAT_PX = 36
@@ -76,6 +77,7 @@ const fileChip = (filePath) => h('span', { class: 'msg-file', title: filePath },
 function askedView(message) {
   const { text, files } = splitFiles(message.text)
   const bubble = h('div', { class: 'msg-user' },
+    sentPictures(message.images),
     files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
     text)
   const notes = [message.steered && '工作中插话', message.via === 'island' && '从 Viva 岛发送', message.failed && '没有送到'].filter(Boolean)

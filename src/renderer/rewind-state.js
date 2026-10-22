@@ -68,7 +68,7 @@ export function rewindActions(newSession) {
       earlier: state.earlier,
       conversationId: conversation.id,
       messages: conversation.messages.map((m, i) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null,
+        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, ...(m.images ? { images: m.images } : {}),
       })),
       folds,
     }),

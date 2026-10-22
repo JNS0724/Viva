@@ -1,3 +1,5 @@
+import { checkImages } from '../shared/images.js'
+
 /**
  * What crosses between the window, the main process and the desktop island (desk-island.js). The view
  * comes from the window's renderer; the actions come from the desktop island's page. Both are checked here,
@@ -70,10 +72,15 @@ export function checkDroppedPaths(paths) {
   return paths.every((item) => isText(item, ASK_LIMITS.pathChars)) ? [...paths] : null
 }
 
-/** @returns {{ text: string, files: string[] } | null} a question from the island's input */
+/** @returns {{ text: string, files: string[], images: { id: string }[] } | null} a question from the island's input */
 export function checkAsk(ask) {
-  if (!ask || typeof ask !== 'object' || !isText(ask.text?.trim?.(), ASK_LIMITS.chars)) return null
+  if (!ask || typeof ask !== 'object') return null
+  const images = checkImages(ask.images)
+  if (!images) return null
+  // With pictures the words may be left out.
+  const text = typeof ask.text === 'string' ? ask.text.trim() : null
+  if (text === null || !(isText(text, ASK_LIMITS.chars) || (text === '' && images.length))) return null
   const files = ask.files ?? []
   if (!Array.isArray(files) || (files.length > 0 && !checkDroppedPaths(files))) return null
-  return { text: ask.text.trim(), files: [...files] }
+  return { text, files: [...files], images }
 }
