@@ -72,7 +72,11 @@ export async function checkPictures(win, outDir, desk) {
   // 设置 › 贴过的图片: how many and how much, and 清空 asks first.
   await run(win, `document.getElementById('open-profile').click()`)
   await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
-  const section = await until(win, `document.querySelector('[aria-label="贴过的图片"]')?.textContent`, 'the pictures in settings')
+  // The section is drawn at once and counts the pictures when the main process answers: wait for the count.
+  const section = await until(win, `(() => {
+    const text = document.querySelector('[aria-label="贴过的图片"]')?.textContent ?? ''
+    return text.includes('1 张') ? text : null
+  })()`, 'the pictures counted in settings')
   await run(win, `[...document.querySelectorAll('[aria-label="贴过的图片"] button')].find((b) => b.textContent === '清空').click()`)
   const warning = await until(win, `document.querySelector('.images-confirm')?.textContent`, 'emptying asking first')
   await run(win, `document.querySelector('[aria-label="贴过的图片"]').scrollIntoView({ block: 'center' })`)
