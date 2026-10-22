@@ -35,7 +35,7 @@ function isUsableName(name) {
 
 /** The name itself, then the four-character windows of every Han run longer than four characters. */
 function aliasesOf(key) {
-  const windows = []
+  const windows: string[] = []
   for (const run of key.match(/\p{Script=Han}+/gu) ?? []) {
     const chars = [...run]
     if (chars.length <= ALIAS_CHARS) continue

@@ -55,7 +55,7 @@ const sectionTitle = (title) => `【${title}】`
 
 /** The leading lines that fit in `room` characters (one newline each), so the block keeps its budget. */
 function fitting(lines, room) {
-  const kept = []
+  const kept: string[] = []
   let used = 0
   for (const line of lines) {
     if (used + line.length + 1 > room) break
@@ -85,7 +85,7 @@ function fixedLines({ profile, synthesis, recent, habits }) {
   const { kept } = parts.reduce(({ kept: done, room }, lines) => {
     const fitted = lines.length && sizeOf(lines.slice(0, 2)) <= room ? fitting(lines, room) : []
     return { kept: [...done, ...fitted], room: room - sizeOf(fitted) }
-  }, { kept: [], room: MAX_CONTEXT_CHARS - TAGS_CHARS - FIXED_INTRO.length - 1 - sizeOf(rules) })
+  }, { kept: [] as string[], room: MAX_CONTEXT_CHARS - TAGS_CHARS - FIXED_INTRO.length - 1 - sizeOf(rules) })
   return [FIXED_INTRO, ...rules, ...kept]
 }
 

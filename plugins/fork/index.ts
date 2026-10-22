@@ -50,7 +50,7 @@ const WORD_EVENTS = new Set(['agent/inbox/spliced', 'user/message'])
  * @returns {string[]} per turn, its words' events as JSON
  */
 function wordsByTurn(events) {
-  const turns = []
+  const turns: string[] = []
   let current = -1
   events.forEach((event, i) => {
     if (event.type === 'turn/start') current += 1

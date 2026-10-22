@@ -26,7 +26,7 @@ export function apply(ctx, _config, port = process) {
     log('dsh was not started by the app: the config tools are left out')
     return
   }
-  const channel = createConfigChannel(port, log)
+  const channel = createConfigChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, log)
   // The channel must not keep dsh running once its input closes.
   port.channel?.unref?.()
   ctx.effect(() => () => channel.close(), 'config channel')

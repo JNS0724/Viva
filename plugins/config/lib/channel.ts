@@ -10,7 +10,7 @@
 const MAX_TEXT_CHARS = 4000
 
 /** @param port the IPC channel to the app */
-export function createConfigChannel(port: { send?: (message: object) => unknown, on: Function, off: Function }, log: (message: string) => void): {
+export function createConfigChannel(port: { send: (message: object) => unknown, on: Function, off: Function }, log: (message: string) => void): {
   request: (op: string, args: object, sessionId: string | null, signal?: AbortSignal) => Promise<string>, close: () => void,
 } {
   const waiting = new Map()
@@ -43,7 +43,7 @@ export function createConfigChannel(port: { send?: (message: object) => unknown,
       function onAbort() {
         entry.settle(() => {
           port.send({ type: 'config_closed', id })
-          reject(signal.reason ?? new Error('aborted'))
+          reject(signal?.reason ?? new Error('aborted'))
         })
       }
       signal?.addEventListener('abort', onAbort)

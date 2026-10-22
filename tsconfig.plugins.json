@@ -1,7 +1,7 @@
-// The dsh plugins: Node, inside dsh.
+// The dsh plugins: Node, inside dsh. Strict, except that a type left out is still any until each is written.
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "lib": ["ES2023"], "types": ["node"] },
+  "compilerOptions": { "lib": ["ES2023"], "types": ["node"], "strict": true, "noImplicitAny": false },
   "include": ["plugins/**/*.js", "plugins/**/*.ts"],
   "exclude": ["plugins/**/node_modules"]
 }

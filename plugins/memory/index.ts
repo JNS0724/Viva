@@ -53,7 +53,7 @@ const isFromUser = (message) => message?.source?.kind === 'user'
 
 /** The session's events of `turn`, oldest first (the turn is the latest one). */
 function turnEvents(agent, turn) {
-  const events = []
+  const events: any[] = []
   for (let seq = agent.session.seq - 1; seq >= 0; seq -= 1) {
     const event = agent.session.eventAt(SessionSeq(seq))
     if (event?.type === 'turn/start' && event.data.turn === turn) break

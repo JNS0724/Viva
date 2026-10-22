@@ -30,14 +30,14 @@ export function keptArguments(raw) {
 
 const reasoningOf = (message) => (message?.content ?? []).filter((part) => part.type === 'reasoning').map((part) => part.text).join('')
 
-/**
- * @param {Array<{ type: string, seq: number, time: number, data: any }>} events oldest first
- * @returns {Array<{ seq: number, at: number, kind: 'thought', text: string }
- *   | { seq: number, at: number, kind: 'tool', callId: string, name: string, args: object, status: string }>}
- */
-export function stepsFrom(events) {
-  const steps = []
-  const toolAt = new Map()
+type ThoughtStep = { seq: number, at: number, kind: 'thought', text: string }
+type ToolStep = { seq: number, at: number, kind: 'tool', callId: string, name: string, args: object, status: string }
+export type Step = ThoughtStep | ToolStep
+
+/** @param events oldest first */
+export function stepsFrom(events: Array<{ type: string, seq: number, time: number, data: any }>): Step[] {
+  const steps: Step[] = []
+  const toolAt = new Map<unknown, number>()
   for (const { type, seq, time, data } of events) {
     if (!data) continue
     if (type === 'assistant/message') {
@@ -48,7 +48,7 @@ export function stepsFrom(events) {
       steps.push({ seq, at: time, kind: 'tool', callId: String(data.callId), name: String(data.name ?? ''), args: keptArguments(data.arguments), status: 'in_progress' })
     } else if (type === 'tool/result') {
       const index = toolAt.get(data.message?.toolCallId)
-      if (index !== undefined) steps[index] = { ...steps[index], status: data.message.isError ? 'failed' : 'completed' }
+      if (index !== undefined) steps[index] = { ...(steps[index] as ToolStep), status: data.message.isError ? 'failed' : 'completed' }
     }
   }
   return steps

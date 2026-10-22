@@ -153,7 +153,7 @@ function addLaterColumns(db) {
   for (const [name, type] of LATER_COLUMNS.filter(([column]) => !columns.has(column))) {
     try {
       db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${type}`)
-    } catch (err) {
+    } catch (err: any) {
       if (!/duplicate column/i.test(err.message)) throw err
     }
   }
@@ -502,7 +502,7 @@ export function openMemoryDb({ file, now = Date.now }) {
     }
     return transaction(() => {
       const at = now()
-      const invalidated = []
+      const invalidated: number[] = []
       const added = add.map((item) => {
         const id = upsertAgentMemory(item, at)
         if (item.replaces !== null && item.replaces !== undefined && item.replaces !== id) {

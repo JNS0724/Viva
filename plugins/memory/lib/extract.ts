@@ -99,7 +99,10 @@ export function parseExtraction(text) {
  * @returns {Promise<null | { added: object[], invalidated: number[] }>} null when the turn was skipped
  * @throws when the model call fails or its answer is unusable; nothing has been written then
  */
-export async function extractTurn({ db, userWords, answers = [], reply, today, complete }) {
+export async function extractTurn({ db, userWords, answers = [], reply, today, complete }: {
+  db: any, userWords: string, answers?: Array<{ question: string, answer: string }>, reply: string, today: string,
+  complete: (system: string, input: string) => Promise<string>,
+}) {
   const memories = db.allMemories()
   const profile = db.getProfile()
   const lexicon = buildLexicon(profile, memories)
