@@ -6,24 +6,23 @@
  * Loaded by the app's dsh profile (src/main/dsh-profile.js).
  */
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+// What dsh adds to the context: the user-questions/request event.
+import type {} from '@deepseek-ai/dsh-user-questions'
 import { createQuestionChannel } from './lib/channel.ts'
 
 export const name = 'viva-questions'
 export const Config = z.object({})
 
-const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
+const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
 
-/**
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {object} _config
- * @param {NodeJS.Process} [port] the channel to the app (tests pass their own)
- */
-export function apply(ctx, _config, port = process) {
+/** @param port the channel to the app (tests pass their own) */
+export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') {
     log('dsh was not started by the app: questions are left to other answerers')
     return
   }
-  const channel = createQuestionChannel(port, log)
+  const channel = createQuestionChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, log)
   // The channel must not keep dsh running once its input closes.
   port.channel?.unref?.()
   ctx.effect(() => () => channel.close(), 'questions channel')

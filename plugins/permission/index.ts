@@ -7,6 +7,9 @@
  * the user only about the ones it will not allow.
  */
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+// What dsh adds to the context: ctx.permissionPresets.
+import type {} from '@deepseek-ai/dsh-permission-presets'
 
 export const name = 'viva-permission'
 export const inject = ['permissionPresets', 'sessions']
@@ -14,9 +17,8 @@ export const inject = ['permissionPresets', 'sessions']
 export const LEVELS = Object.freeze(['danger-full-access', 'auto', 'workspace-write', 'read-only'])
 export const Config = z.object({ preset: z.union(LEVELS).default('workspace-write') })
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx @param {{ preset: string }} config */
-export function apply(ctx, config) {
-  const pin = (session) => {
+export function apply(ctx: Context, config: { preset: string }) {
+  const pin = (session: Parameters<Context['permissionPresets']['current']>[0]) => {
     try {
       if (ctx.permissionPresets.current(session) !== config.preset) ctx.permissionPresets.set(session, config.preset)
     } catch (err: any) {

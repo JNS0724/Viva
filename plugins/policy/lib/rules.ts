@@ -9,19 +9,16 @@ export const DRAFT_ONLY = '按用户的设置，你只能起草，不能直接�
 const OUTBOUND_WORDS = new Set(['send', 'reply', 'forward', 'post', 'publish', 'deliver', 'broadcast'])
 
 /** `mcp__<server>__<tool>` → `<tool>`; null for dsh's own tools, which do not reach other people. */
-function mcpToolName(name) {
+function mcpToolName(name: unknown): string | null {
   const parts = String(name ?? '').split('__')
   return parts[0] === 'mcp' && parts.length >= 3 ? parts.slice(2).join('__') : null
 }
 
 /** "send_email", "sendEmail", "reply-to-thread" → their words, lower case. */
-const wordsOf = (name) => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+const wordsOf = (name: string) => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
 
-/**
- * @param {{ name: string }} call the tool about to run
- * @returns {{ kind: 'deny', reason: string } | null} null leaves the call to dsh's usual approval
- */
-export function decide({ name }) {
+/** @param call the tool about to run; null leaves the call to dsh's usual approval */
+export function decide({ name }: { name: string }): { kind: 'deny', reason: string } | null {
   const tool = mcpToolName(name)
   if (tool && wordsOf(tool).some((word) => OUTBOUND_WORDS.has(word))) return { kind: 'deny', reason: DRAFT_ONLY }
   return null

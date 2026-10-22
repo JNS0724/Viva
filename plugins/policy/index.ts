@@ -4,13 +4,15 @@
  * Loaded by the app's dsh profile (src/main/dsh-profile.js).
  */
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+// What dsh adds to the context: ctx.tools and its tools/pre-execute hook.
+import type {} from '@deepseek-ai/dsh-tools'
 import { decide } from './lib/rules.ts'
 
 export const name = 'viva-policy'
 export const inject = ['tools']
 export const Config = z.object({})
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx */
-export function apply(ctx) {
+export function apply(ctx: Context) {
   ctx.on('tools/pre-execute', async (exec, next) => decide(exec) ?? next(), { prepend: true })
 }
