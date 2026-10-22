@@ -8,8 +8,11 @@ const WRITE_TOOLS = new Set(['write'])
 const EDIT_TOOLS = new Set(['edit', 'str_replace_editor'])
 const COMMAND_LIMIT = 60
 
+/** A tool call's arguments, as the agent announced them. */
+type ToolInput = Record<string, any> | null | undefined
+
 /** The app's own configuration tools (viva-config plugin), said plainly. */
-const CONFIG_TITLES = {
+const CONFIG_TITLES: Readonly<Record<string, (input: ToolInput) => string>> = {
   viva_mcp_add: (input) => `接入 MCP 服务器「${input?.name ?? ''}」`,
   viva_mcp_remove: (input) => `移除 MCP 服务器「${input?.name ?? ''}」`,
   viva_skill_create: (input) => `新建 skill「${input?.name ?? ''}」`,
@@ -18,21 +21,20 @@ const CONFIG_TITLES = {
 }
 
 /** What each kind of answer is called on the card, whatever dsh names it. */
-const OPTION_NAMES = { allow_once: '允许', allow_always: '总是允许', reject_once: '拒绝', reject_always: '总是拒绝' }
+const OPTION_NAMES: Readonly<Record<string, string>> = { allow_once: '允许', allow_always: '总是允许', reject_once: '拒绝', reject_always: '总是拒绝' }
 
-const fileName = (input) => String(input?.path ?? input?.file_path ?? '').split(/[\\/]/).filter(Boolean).pop() ?? ''
+const fileName = (input: ToolInput) => String(input?.path ?? input?.file_path ?? '').split(/[\\/]/).filter(Boolean).pop() ?? ''
 
-function oneLine(text) {
+function oneLine(text: string) {
   const line = text.replace(/\s+/g, ' ').trim()
   return line.length > COMMAND_LIMIT ? `${line.slice(0, COMMAND_LIMIT - 1)}…` : line
 }
 
 /**
  * A short title for the card: the command to run, the file to write or change, else the tool's name.
- * @param {{ title: string, rawInput?: object } | null | undefined} tool the announced tool call
- * @returns {string | null}
+ * @param tool the announced tool call
  */
-export function approvalTitle(tool) {
+export function approvalTitle(tool: { title: string, rawInput?: ToolInput } | null | undefined): string | null {
   if (!tool) return null
   const input = tool.rawInput
   if (CONFIG_TITLES[tool.title]) return CONFIG_TITLES[tool.title](input)
@@ -43,5 +45,4 @@ export function approvalTitle(tool) {
   return tool.title
 }
 
-/** @param {{ name: string, kind?: string }} option @returns {string} */
-export const optionName = (option) => OPTION_NAMES[option.kind] ?? option.name
+export const optionName = (option: { name: string, kind?: string }): string => OPTION_NAMES[option.kind ?? ''] ?? option.name

@@ -302,7 +302,7 @@ export function fileItems(state: State) {
 }
 
 /** What the confirmation card shows of the tool's arguments: a command as itself, anything else pretty-printed. */
-export function permissionDetail(permission: { rawInput?: Record<string, unknown> } | null | undefined): string {
+export function permissionDetail(permission: { rawInput?: Record<string, unknown> | null } | null | undefined): string {
   if (!permission?.rawInput) return ''
   const { command } = permission.rawInput
   if (typeof command === 'string' && Object.keys(permission.rawInput).length === 1) return truncate(command, 600)

@@ -312,7 +312,8 @@ let afterTurn: string[] = []
  */
 function steer(text, via) {
   dispatch({ type: 'user_steer', text, via })
-  const { id } = state.messages.at(-1)
+  // The words just said, the last message now (user_steer above).
+  const id = state.messages.at(-1)?.id
   api.steer(text)
     .then((result) => {
       if (result.ok) return

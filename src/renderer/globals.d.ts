@@ -45,6 +45,55 @@ interface ToolCall {
 }
 /** How a turn ended, shown under its answer. */
 interface Receipt { ms: number, stopReason?: string, tools?: number, [field: string]: any }
+/** A message of the conversation on screen: who said it, what, and how far it is typed out. */
+interface ThreadMessage {
+  id: string
+  role: string
+  text: string
+  /** Still arriving from the agent. */
+  open?: boolean
+  /** How much of the text is typed out so far. */
+  shown?: number
+  receipt?: Receipt | null
+  restored?: boolean
+  images?: ReadonlyArray<{ id: string }>
+  /** Where it was said from ('island'), whether into a running turn, whether it got through. */
+  via?: string
+  steered?: boolean
+  failed?: boolean
+  /** The agent's question it answers. */
+  asked?: string
+  taskId?: string
+  [field: string]: any
+}
+/** One answer dsh offers to an approval: allow once, always, reject. */
+interface PermissionOption { optionId: string, name: string, kind?: string }
+/** One question the agent asks, with its options. */
+interface QuestionItem {
+  id: string
+  question: string
+  header?: string
+  options: ReadonlyArray<{ label: string, description?: string }>
+  multiSelect?: boolean
+}
+/** A turn that went on in the background (tasks-state.ts): where it stands, and the view of what it says. */
+interface BackgroundTask {
+  id: string
+  title: string
+  /** running, waiting (on the user), done, stopped, error. */
+  status: string
+  /** What it is doing now, in a few words. */
+  now?: string | null
+  startedAt?: number
+  endedAt?: number | null
+  permission?: any
+  question?: any
+  [field: string]: any
+}
+/** What an ended task came back with, for the conversation: shown in the thread until put away. */
+interface TaskReport { taskId: string, title: string, status: string, preview: string, shown: boolean }
+/** What a view draws: an element, several, text, or nothing. */
+type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
 /** The window's state: what state.ts's initialState can become (a task's view has the same shape). */
 type State = Widened<typeof import('./state.ts').initialState>

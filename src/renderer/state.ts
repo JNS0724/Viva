@@ -21,7 +21,7 @@ export const initialState = Object.freeze({
   info: { mode: 'connecting', model: '', cwd: '', reason: '' } as AgentInfo,
   /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
   phase: 'idle' as 'idle' | 'working' | 'waiting' | 'asking' | 'error',
-  messages: [] as Untyped[],
+  messages: [] as ThreadMessage[],
   thoughts: [] as Untyped[],
   tools: {} as Record<string, ToolCall>,
   timeline: [] as Untyped[],
