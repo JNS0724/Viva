@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { answerFor, DECLINED } from '../plugins/questions/lib/channel.js'
+import { answerFor, DECLINED } from '../plugins/questions/lib/channel.ts'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 import { CITY_QUESTION } from './fixtures/fake-llm.js'
 

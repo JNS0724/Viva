@@ -5,8 +5,8 @@
  */
 import z from '@deepseek-ai/schemastery'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
-import { stepsFrom } from './lib/steps.js'
-import { openTraceDb } from './lib/store.js'
+import { stepsFrom } from './lib/steps.ts'
+import { openTraceDb } from './lib/store.ts'
 
 export const name = 'viva-trace'
 export const inject = ['agents']

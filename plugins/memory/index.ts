@@ -21,13 +21,13 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { z as zod } from 'zod'
-import { dateLine } from './lib/context.js'
-import { extractTurn } from './lib/extract.js'
-import { contextForTurn } from './lib/inject.js'
-import { ownWords } from './lib/layers.js'
-import { openMemoryDb } from './lib/store.js'
-import { synthesizeProfile } from './lib/synthesize.js'
-import { memoryTools } from './lib/tools.js'
+import { dateLine } from './lib/context.ts'
+import { extractTurn } from './lib/extract.ts'
+import { contextForTurn } from './lib/inject.ts'
+import { ownWords } from './lib/layers.ts'
+import { openMemoryDb } from './lib/store.ts'
+import { synthesizeProfile } from './lib/synthesize.ts'
+import { memoryTools } from './lib/tools.ts'
 
 export const name = 'viva-memory'
 export const inject = ['agents', 'tools', 'sessionProjections', 'llm']
@@ -40,6 +40,13 @@ const EXTRACT_MAX_TOKENS = 800
 const SYNTHESIS_MAX_TOKENS = 1200
 const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
 const messageOf = (err) => (err instanceof Error ? err.message : String(err))
+
+type MessageSource = Parameters<typeof createUserMessage>[0]['source']
+/**
+ * This plugin's messages say they come from it (`source.kind`), and dsh keeps that as given; its types list
+ * only dsh's own kinds, so the plugin's own one is cast here, in one place.
+ */
+const ownSource = (source: { kind: string, [field: string]: unknown }) => source as unknown as MessageSource
 
 const textOf = (message) => (message?.content ?? []).filter((part) => part.type === 'text').map((part) => part.text).join('\n')
 const isFromUser = (message) => message?.source?.kind === 'user'
@@ -134,7 +141,7 @@ async function complete(ctx, agent, { system, input, signal, maxTokens }) {
     provider,
     model,
     system,
-    messages: [createUserMessage({ content: [{ type: 'text', text: input }], source: { kind: name } })],
+    messages: [createUserMessage({ content: [{ type: 'text', text: input }], source: ownSource({ kind: name }) })],
     maxTokens,
     sessionId: agent.session.id,
     purpose: 'memory-extract',
@@ -153,7 +160,7 @@ async function complete(ctx, agent, { system, input, signal, maxTokens }) {
 function registerAfterTurn(ctx, db, enabled) {
   /** The user's own words per session, kept from the turn's first step until the turn stops. */
   const turns = new Map()
-  const running = new Set()
+  const running = new Set<AbortController>()
   ctx.effect(() => () => running.forEach((controller) => controller.abort()), 'memory extraction')
 
   ctx.on('agent/turn-stopping', ({ agent, turn }) => {
@@ -219,7 +226,7 @@ export function apply(ctx, config) {
       if (!text) return decision
       const message = createUserMessage({
         content: [{ type: 'text', text }],
-        source: { kind: name, form: 'snapshot', sections: [{ name, text }] },
+        source: ownSource({ kind: name, form: 'snapshot', sections: [{ name, text }] }),
       })
       return { ...decision, messages: [...decision.messages, message] }
     } catch (err) {

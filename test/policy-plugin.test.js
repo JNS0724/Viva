@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { decide, DRAFT_ONLY } from '../plugins/policy/lib/rules.js'
+import { decide, DRAFT_ONLY } from '../plugins/policy/lib/rules.ts'
 import { DSH_TIMEOUT_MS, ROOT, replies, startHarness } from './fixtures/dsh-harness.js'
 
 /** The policy plugin: the app sends nothing on the user's behalf, decided in code before a tool runs. */

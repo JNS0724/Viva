@@ -1,7 +1,7 @@
 import { activeHours } from './habits.ts'
 import { EXTRA_COMMAND_DIRS, resolveCommand, toAcpServers } from './mcp-config.ts'
 
-type MemoryDb = ReturnType<typeof import('../../plugins/memory/lib/store.js').openMemoryDb>
+type MemoryDb = ReturnType<typeof import('../../plugins/memory/lib/store.ts').openMemoryDb>
 type HistoryDb = ReturnType<typeof import('./history-db.ts').openHistoryDb>
 type McpStore = ReturnType<typeof import('./mcp-config.ts').createMcpConfigStore>
 

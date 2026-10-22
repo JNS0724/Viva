@@ -9,12 +9,10 @@
  */
 const MAX_TEXT_CHARS = 4000
 
-/**
- * @param {{ send?: (message: object) => unknown, on: Function, off: Function }} port the IPC channel to the app
- * @param {(message: string) => void} log
- * @returns {{ request: (op: string, args: object, sessionId: string | null, signal?: AbortSignal) => Promise<string>, close: () => void }}
- */
-export function createConfigChannel(port, log) {
+/** @param port the IPC channel to the app */
+export function createConfigChannel(port: { send?: (message: object) => unknown, on: Function, off: Function }, log: (message: string) => void): {
+  request: (op: string, args: object, sessionId: string | null, signal?: AbortSignal) => Promise<string>, close: () => void,
+} {
   const waiting = new Map()
   let seq = 0
 
@@ -29,9 +27,9 @@ export function createConfigChannel(port, log) {
   port.on('message', onMessage)
 
   /** Asks the app to perform `op`; resolves with what it did, rejects with why not (the model sees either). */
-  function request(op, args, sessionId, signal) {
+  function request(op: string, args: object, sessionId: string | null, signal?: AbortSignal): Promise<string> {
     const id = `c${++seq}-${Date.now().toString(36)}`
-    return new Promise((resolve, reject) => {
+    return new Promise<string>((resolve, reject) => {
       if (signal?.aborted) return reject(signal.reason ?? new Error('aborted'))
       const entry = {
         resolve,

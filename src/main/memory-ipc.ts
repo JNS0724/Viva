@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { MAX_MEMORY_CHARS } from '../../plugins/memory/lib/store.js'
+import { MAX_MEMORY_CHARS } from '../../plugins/memory/lib/store.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'
@@ -45,7 +45,7 @@ function assertMemoryText(value) {
  * IPC for the "关于你" page and the intro: the profile, the memories and the habits read from history.
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
- *   db: ReturnType<import('../../plugins/memory/lib/store.js').openMemoryDb>,
+ *   db: ReturnType<import('../../plugins/memory/lib/store.ts').openMemoryDb>,
  *   habits: () => { text: string, samples: number },
  *   cwd: () => string,
  *   chooseDocs: () => Promise<string[] | null>,

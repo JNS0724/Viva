@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openMemoryDb } from '../plugins/memory/lib/store.js'
+import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.ts'
 import { ROOT } from './fixtures/dsh-harness.js'
 
