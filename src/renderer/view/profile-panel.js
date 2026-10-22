@@ -1,4 +1,4 @@
-import { PROFILE_FIELDS } from '../../shared/profile-fields.js'
+import { PROFILE_FIELDS } from '../../shared/profile-fields.ts'
 import { formatListTime } from '../selectors.js'
 import { h, keepingInput, label } from './dom.js'
 import { icon } from './icons.js'

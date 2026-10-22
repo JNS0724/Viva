@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { fieldLabel, MAX_FIELD_CHARS, PROFILE_KEYS, RETIRED_FIELDS } from '../../../src/shared/profile-fields.js'
+import { fieldLabel, MAX_FIELD_CHARS, PROFILE_KEYS, RETIRED_FIELDS } from '../../../src/shared/profile-fields.ts'
 
 /** role: who the user is (job, team, field); person / project: who and what they deal with. */
 export const MEMORY_KINDS = Object.freeze(['fact', 'preference', 'person', 'project', 'role'])

@@ -1,4 +1,4 @@
-import { checkImages } from '../shared/images.js'
+import { checkImages } from '../shared/images.ts'
 
 /**
  * What crosses between the window, the main process and the desktop island (desk-island.js). The view

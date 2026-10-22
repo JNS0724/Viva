@@ -1,4 +1,4 @@
-import { IMAGE_LIMITS } from '../shared/images.js'
+import { IMAGE_LIMITS } from '../shared/images.ts'
 import { draftPictures, pictureKept } from './view/pictures.js'
 
 const TOO_MANY = `一次最多 ${IMAGE_LIMITS.perMessage} 张图`

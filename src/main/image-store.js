@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { IMAGE_LIMITS, IMAGE_TYPES, isImageId, sniffImageType } from '../shared/images.js'
+import { IMAGE_LIMITS, IMAGE_TYPES, isImageId, sniffImageType } from '../shared/images.ts'
 import { removeTree } from './remove-tree.js'
 
 /**

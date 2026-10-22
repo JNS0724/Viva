@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fileName, splitFiles, withFiles } from '../src/shared/attachments.js'
+import { fileName, splitFiles, withFiles } from '../src/shared/attachments.ts'
 import { initialState, reduce } from '../src/renderer/state.js'
 
 test('files go with a question as a block at its end, and come back out of it', () => {

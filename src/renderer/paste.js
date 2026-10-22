@@ -1,4 +1,4 @@
-import { IMAGE_TYPES } from '../shared/images.js'
+import { IMAGE_TYPES } from '../shared/images.ts'
 
 /**
  * What a paste carries, for the main input and the desktop island's: the pictures, and the words. Copied from

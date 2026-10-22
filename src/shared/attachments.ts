@@ -6,14 +6,14 @@
 const HEADER = '附带的文件（本机路径）：'
 const ITEM = '- '
 
-/** @param {string} text @param {string[]} paths @returns {string} the question as sent to the agent */
-export function withFiles(text, paths) {
+/** The question as sent to the agent. */
+export function withFiles(text: string, paths: readonly string[]): string {
   if (!paths.length) return text
   return `${text}\n\n${HEADER}\n${paths.map((item) => `${ITEM}${item}`).join('\n')}`
 }
 
-/** @param {string} prompt @returns {{ text: string, files: string[] }} the question and the files it names */
-export function splitFiles(prompt) {
+/** The question and the files it names. */
+export function splitFiles(prompt: unknown): { text: string, files: string[] } {
   const text = String(prompt ?? '')
   const marker = `\n\n${HEADER}\n`
   const at = text.lastIndexOf(marker)
@@ -24,4 +24,4 @@ export function splitFiles(prompt) {
 }
 
 /** The file's name from a path written on either platform. */
-export const fileName = (filePath) => String(filePath).split(/[\\/]/).filter(Boolean).pop() ?? String(filePath)
+export const fileName = (filePath: unknown): string => String(filePath).split(/[\\/]/).filter(Boolean).pop() ?? String(filePath)

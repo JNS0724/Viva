@@ -1,4 +1,4 @@
-import { imageUrl } from '../../shared/images.js'
+import { imageUrl } from '../../shared/images.ts'
 import { h } from './dom.js'
 
 /** Shown where a picture was when the pictures folder no longer has it (emptied in settings). */

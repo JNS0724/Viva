@@ -1,5 +1,5 @@
-import { withFiles } from '../shared/attachments.js'
-import { IMAGE_TYPES } from '../shared/images.js'
+import { withFiles } from '../shared/attachments.ts'
+import { IMAGE_TYPES } from '../shared/images.ts'
 import { createDraftImages } from './draft-images.js'
 import { insertText, pastedParts } from './paste.js'
 import { markAllGone, pictureKept } from './view/pictures.js'

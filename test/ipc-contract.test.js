@@ -17,7 +17,7 @@ const sentByPages = () => channelsIn(
 /** What the main process registers: ipcMain.handle / on, and the `handle('…'` shorthand of the register*Ipc modules. */
 const registeredByMain = () => {
   const dir = path.join(ROOT, 'src', 'main')
-  const sources = fs.readdirSync(dir).filter((name) => name.endsWith('.js')).map((name) => read(path.join('src', 'main', name))).join('\n')
+  const sources = fs.readdirSync(dir).filter((name) => /\.[jt]s$/.test(name)).map((name) => read(path.join('src', 'main', name))).join('\n')
   return channelsIn(sources, /(?:ipcMain\.(?:handle|on)|\bhandle)\('([^']+)'/g)
 }
 

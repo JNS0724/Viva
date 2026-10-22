@@ -42,7 +42,7 @@ function emitCode() {
 
 /** The node_modules files the pages import, relative to ROOT. */
 function pageLibraries() {
-  const found = filesIn(PAGES).filter((rel) => rel.endsWith('.js')).flatMap((rel) => {
+  const found = filesIn(PAGES).filter((rel) => /\.[jt]s$/.test(rel)).flatMap((rel) => {
     const source = fs.readFileSync(path.join(ROOT, rel), 'utf8')
     return [...source.matchAll(PAGE_LIBRARY)].map((match) => path.relative(ROOT, path.resolve(ROOT, path.dirname(rel), match[1])))
   })
