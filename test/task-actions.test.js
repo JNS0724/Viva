@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { createTaskActions, FINISHED_MS, REPORT_RETRY_MS, SAVE_EVERY_MS } from '../src/renderer/task-actions.js'
-import { liveTasks, taskMessages } from '../src/renderer/tasks-state.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { createTaskActions, FINISHED_MS, REPORT_RETRY_MS, SAVE_EVERY_MS } from '../src/renderer/task-actions.ts'
+import { liveTasks, taskMessages } from '../src/renderer/tasks-state.ts'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 const WORDS = '整理这周的提交，写成发布说明'

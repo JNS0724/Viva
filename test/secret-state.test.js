@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { islandView } from '../src/renderer/island-view.js'
-import { traceItems } from '../src/renderer/selectors.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { islandView } from '../src/renderer/island-view.ts'
+import { traceItems } from '../src/renderer/selectors.ts'
 
 const T0 = 1_000
 const run = (actions) => actions.reduce(reduce, initialState)

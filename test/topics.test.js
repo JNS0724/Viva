@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { contextShare, rememberedIds, topicBlocks, topicCount, topicStart } from '../src/renderer/topics.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { contextShare, rememberedIds, topicBlocks, topicCount, topicStart } from '../src/renderer/topics.ts'
 
 /** 话题: what the assistant has in mind, told apart from the rest of the one timeline. */
 

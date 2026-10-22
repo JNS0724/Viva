@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, isBusy, isRevealing, reduce, revealStep } from '../src/renderer/state.js'
+import { initialState, isBusy, isRevealing, reduce, revealStep } from '../src/renderer/state.ts'
 
 const T0 = 1_000_000
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_ROWS, parseTable } from '../src/renderer/csv.js'
+import { MAX_ROWS, parseTable } from '../src/renderer/csv.ts'
 
 test('fields split on the delimiter; quotes hold delimiters, quotes and line breaks', () => {
   assert.deepEqual(parseTable('a,b,c\n1,"x, y","say ""hi"""\n2,"two\nlines",\n', ','), {

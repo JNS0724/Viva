@@ -4,8 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openHistoryDb } from '../src/main/history-db.ts'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { earlierRows, historyMessages } from '../src/renderer/selectors.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { earlierRows, historyMessages } from '../src/renderer/selectors.ts'
 
 /** Pictures pasted with a question: kept with the message, by name, through saving, reopening and the timeline. */
 

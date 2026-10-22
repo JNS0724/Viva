@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { checkAnswers, createQuestionDesk, parseQuestion } from '../src/main/question-channel.ts'
-import { answersFrom, answerText } from '../src/renderer/question-state.js'
-import { statusView, traceItems } from '../src/renderer/selectors.js'
-import { initialState, isBusy, reduce } from '../src/renderer/state.js'
+import { answersFrom, answerText } from '../src/renderer/question-state.ts'
+import { statusView, traceItems } from '../src/renderer/selectors.ts'
+import { initialState, isBusy, reduce } from '../src/renderer/state.ts'
 
 /** The app's side of the agent's questions: what the main process lets through, and how the window keeps them. */
 

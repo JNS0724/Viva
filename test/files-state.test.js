@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { touchedPaths } from '../src/renderer/files-state.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { touchedPaths } from '../src/renderer/files-state.ts'
 
 const run = (actions, from = initialState) => actions.reduce(reduce, from)
 const entry = (path, kind = 'file') => ({ name: path.split('/').pop(), path, kind, size: 1, heavy: false })

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileName, splitFiles, withFiles } from '../src/shared/attachments.ts'
-import { initialState, reduce } from '../src/renderer/state.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
 
 test('files go with a question as a block at its end, and come back out of it', () => {
   const prompt = withFiles('总结', ['/Users/me/文稿/Q3 周报.docx', 'C:\\Users\\me\\报价单.xlsx'])

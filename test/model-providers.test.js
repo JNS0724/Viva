@@ -7,7 +7,7 @@ import { patchFor } from '../src/main/dsh-profile.ts'
 import {
   createModelStore, defaultModel, keyEnvName, modelValue, parseModelValue, parseProviderInput, piAiProviders, providerEnv, providerView,
 } from '../src/main/model-providers.ts'
-import { initialState, reduce } from '../src/renderer/state.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
 import { scratch } from './fixtures/scratch.js'
 
 const SAMPLE_KEY = 'sk-gateway-0000000000wxyz'

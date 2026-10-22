@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { workDirMenu } from '../src/renderer/selectors.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { workDirMenu } from '../src/renderer/selectors.ts'
 
 /** The working directory as the window shows it: the chip, its menu, and the confirmation the first time. */
 
