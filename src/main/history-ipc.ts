@@ -1,22 +1,29 @@
 import fs from 'node:fs/promises'
 import { readSessionTrace } from './dsh-log.ts'
 import { exportFileName, toMarkdown } from './history-export.ts'
+import type { Conversation, openHistoryDb } from './history-db.ts'
 import { assertId } from './history-schema.ts'
+import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
+import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
 
 /** How long "已删除 · 撤销" stays up; the conversation is purged for good after that. */
 export const UNDO_WINDOW_MS = 8000
 const PURGE_SLACK_MS = 1000
 const MAX_QUERY_CHARS = 200
 
-const summaryOf = (conversation) => ({ id: conversation.id, title: conversation.title, updatedAt: conversation.updatedAt })
+type HistoryDb = ReturnType<typeof openHistoryDb>
+/** The agent as it started on a session (acp-bridge.ts): the session, where it runs, whether dsh had it still. */
+export type StartedAgent = { sessionId: string | null, cwd?: string | null, resumed?: boolean, [field: string]: unknown }
+
+const summaryOf = (conversation: Pick<Conversation, 'id' | 'title' | 'updatedAt'>) => ({ id: conversation.id, title: conversation.title, updatedAt: conversation.updatedAt })
 /** With what it goes on from and when it began: the window draws where its topic starts (renderer/topics.js). */
-const viewOf = (found) => (found
+const viewOf = (found: ReturnType<HistoryDb['get']>) => (found
   ? { ...summaryOf(found.conversation), parentId: found.conversation.parentId, createdAt: found.conversation.createdAt, messages: found.messages }
   : null)
 const BUSY = '助手正在工作，等这一轮结束再回到那个话题'
 const GONE = '那个话题接不回来了：助手那边已经没有它的记录'
 
-function assertQuery(value) {
+function assertQuery(value: unknown) {
   if (typeof value !== 'string' || value.length > MAX_QUERY_CHARS) throw new Error('invalid search query')
   return value
 }
@@ -24,23 +31,22 @@ function assertQuery(value) {
 /**
  * IPC for the history panel. The main process owns "the conversation on screen" and the agent;
  * they are reached through the callbacks so this module stays testable without Electron.
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   db: ReturnType<import('./history-db.ts').openHistoryDb>,
- *   dshHome: string,
- *   traceDb?: () => ReturnType<import('../../plugins/trace/lib/store.ts').openTraceDb> | null,
- *   current: () => object, setCurrent: (conversation: object) => void,
- *   agentInfo: () => object, switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<object>,
- *   chooseExportPath: (defaultName: string) => Promise<string | null>,
- *   schedule?: (fn: () => void, ms: number) => void,
- *   isBusy?: () => boolean,
- * }} deps
  */
-export function registerHistoryIpc(ipcMain, deps) {
+export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
+  db: HistoryDb,
+  dshHome: string,
+  traceDb?: () => ReturnType<typeof openTraceDb> | null,
+  current: () => Conversation, setCurrent: (conversation: Conversation) => void,
+  agentInfo: () => { mode: string | null, model: string | null, [field: string]: unknown },
+  switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<StartedAgent>,
+  chooseExportPath: (defaultName: string) => Promise<string | null>,
+  schedule?: (fn: () => void, ms: number) => void,
+  isBusy?: () => boolean,
+}) {
   const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
   const isBusy = deps.isBusy ?? (() => false)
-  const schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms).unref?.())
-  const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
+  const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref?.())
+  const handle = handlerOf(ipcMain)
 
   /** The conversation on screen, with the paths folded off it where the user went back (rewind-ipc.js). */
   handle('history:load', () => {
@@ -91,7 +97,7 @@ export function registerHistoryIpc(ipcMain, deps) {
     dshHome,
     traceDb: traceDb?.() ?? null,
     sessionIds: db.sessionIds(assertId(id)),
-    until: Number.isFinite(until) ? until : Date.now(),
+    until: typeof until === 'number' && Number.isFinite(until) ? until : Date.now(),
   }))
 
   handle('history:rename', (id, title) => db.rename(id, title))

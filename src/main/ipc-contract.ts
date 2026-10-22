@@ -142,11 +142,19 @@ export function argsProblem(channel: string, args: readonly unknown[]): string |
 }
 
 type Listener = (event: any, ...args: any[]) => unknown
+/** A listener on `channel`: the event, then what the page sent, as the table says it is once checked. */
+type ChannelListener<C extends Channel> = (event: any, ...args: ChannelArgs<C>) => unknown
 
-/** What of Electron's ipcMain the gate wraps, and what every register*Ipc is given. */
-export interface IpcRegistry {
+/** What of Electron's ipcMain the gate wraps. */
+export interface RawIpc {
   handle: (channel: string, listener: Listener) => void
   on: (channel: string, listener: Listener) => void
+}
+
+/** What every register*Ipc is given: only channels in the table, each listener taking that channel's arguments. */
+export interface IpcRegistry {
+  handle: <C extends Channel>(channel: C, listener: ChannelListener<C>) => void
+  on: <C extends Channel>(channel: C, listener: ChannelListener<C>) => void
 }
 
 /**
@@ -154,7 +162,7 @@ export interface IpcRegistry {
  * A channel missing from the table is refused when it is registered, so none can go unchecked. What fits goes
  * on unchanged: the gate never rewrites what the page sent.
  */
-export function checkedIpc(ipcMain: IpcRegistry, { onRefused = () => {} }: { onRefused?: (channel: string, problem: string) => void } = {}): IpcRegistry {
+export function checkedIpc(ipcMain: RawIpc, { onRefused = () => {} }: { onRefused?: (channel: string, problem: string) => void } = {}): IpcRegistry {
   const known = (channel: string) => {
     if (!Object.hasOwn(IPC_ARGS, channel)) throw new Error(`IPC channel ${channel} has no entry in ipc-contract.ts`)
   }
@@ -167,7 +175,7 @@ export function checkedIpc(ipcMain: IpcRegistry, { onRefused = () => {} }: { onR
           onRefused(channel, problem)
           throw new Error(problem)
         }
-        return listener(event, ...args)
+        return (listener as Listener)(event, ...args)
       })
     },
     /** One-way messages have no one to answer; what does not fit is dropped. */
@@ -176,8 +184,14 @@ export function checkedIpc(ipcMain: IpcRegistry, { onRefused = () => {} }: { onR
       ipcMain.on(channel, (event, ...args) => {
         const problem = argsProblem(channel, args)
         if (problem) return onRefused(channel, problem)
-        return listener(event, ...args)
+        return (listener as Listener)(event, ...args)
       })
     },
   }
+}
+
+/** handle without the event, for the modules whose handlers only read what the page sent. */
+export function handlerOf(ipcMain: Pick<IpcRegistry, 'handle'>) {
+  return <C extends Channel>(channel: C, listener: (...args: ChannelArgs<C>) => unknown) =>
+    ipcMain.handle(channel, (_event, ...args) => listener(...args))
 }

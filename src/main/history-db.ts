@@ -79,7 +79,11 @@ const ADDED_COLUMNS = Object.freeze([
   ['messages', 'images', 'TEXT'],
 ])
 
-function addMissingColumns(db) {
+/** A row as a query selects it: its columns by name. */
+type Row = Record<string, any>
+type Statement = { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint } }
+
+function addMissingColumns(db: DatabaseSync) {
   for (const [table, column, type] of ADDED_COLUMNS) {
     const present = db.prepare(`PRAGMA table_info(${table})`).all().some((info) => info.name === column)
     if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
@@ -100,7 +104,7 @@ export interface Conversation {
   parentId: string | null
 }
 
-const toConversation = (row): Conversation => ({
+const toConversation = (row: Row): Conversation => ({
   id: row.id,
   title: row.title,
   titleCustom: Boolean(row.title_custom),
@@ -113,21 +117,21 @@ const toConversation = (row): Conversation => ({
   parentId: row.parent_id ?? null,
 })
 
-const toSummary = (row) => ({
+const toSummary = (row: Row) => ({
   id: row.id, title: row.title, updatedAt: row.updated_at, model: row.model, mode: row.mode, pinned: Boolean(row.pinned),
 })
 
-const toMessage = (row) => ({
+const toMessage = (row: Row) => ({
   role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}),
 })
 /** A message of an earlier segment of the timeline: where it is, and when it was written (ms). */
-const toTimelineMessage = (row) => ({ seq: row.seq, ...toMessage(row), at: row.created_at })
+const toTimelineMessage = (row: Row) => ({ seq: row.seq, ...toMessage(row), at: row.created_at })
 
-const escapeLike = (text) => text.replace(/[\\%_]/g, (c) => `\\${c}`)
-const ftsPhrase = (text) => `"${text.replaceAll('"', '""')}"`
+const escapeLike = (text: string) => text.replace(/[\\%_]/g, (c) => `\\${c}`)
+const ftsPhrase = (text: string) => `"${text.replaceAll('"', '""')}"`
 
 /** The text around the first match, split so the view can highlight it without HTML. */
-function snippetOf(text, query) {
+function snippetOf(text: string, query: string) {
   const index = text.toLowerCase().indexOf(query.toLowerCase())
   if (index < 0) return { before: '', hit: '', after: text.slice(0, SNIPPET_AFTER) }
   const end = index + query.length
@@ -141,7 +145,7 @@ function snippetOf(text, query) {
 }
 
 /** A message next to a search hit, cut short; null when there is none. */
-function contextOf(row) {
+function contextOf(row: Row | undefined) {
   if (!row) return null
   const text = row.text.replace(/\s+/g, ' ').trim()
   return { role: row.role, text: text.length > CONTEXT_CHARS ? `${text.slice(0, CONTEXT_CHARS)}…` : text }
@@ -151,9 +155,8 @@ function contextOf(row) {
  * Permanent conversation history in one SQLite file (`node:sqlite`, no native module).
  * Stores what the conversation column shows, plus which dsh session each message came from,
  * so the trace can be read back from dsh's own logs later.
- * @param {{ file: string, now?: () => number, newId?: () => string }} options
  */
-export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
+export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { file: string, now?: () => number, newId?: () => string }) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
@@ -161,7 +164,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   addMissingColumns(db)
 
   /** A row is a record of what its query selects; each function below says what it returns. */
-  const sql: Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint } }> = {
+  const sql: Record<string, Statement> = {
     conversation: db.prepare('SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL'),
     anyConversation: db.prepare('SELECT title, title_custom FROM conversations WHERE id = ?'),
     upsert: db.prepare(`
@@ -204,7 +207,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
       WHERE title LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ${SEARCH_SCAN_LIMIT}`),
   }
 
-  function transaction(work) {
+  function transaction<T>(work: () => T): T {
     db.exec('BEGIN IMMEDIATE')
     try {
       const result = work()
@@ -217,7 +220,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   }
 
   /** Earlier messages never change; only the last stored one (receipt, final text) and new ones are written. */
-  function syncMessages(id, messages, sessionId, at) {
+  function syncMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined, at: number) {
     const stored = sql.count.get(id).n
     const start = Math.max(0, Math.min(stored, messages.length) - 1)
     sql.trim.run(id, messages.length)
@@ -230,7 +233,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     }
   }
 
-  function get(id) {
+  function get(id: unknown) {
     const row = sql.conversation.get(assertId(id))
     return row ? { conversation: toConversation(row), messages: sql.messages.all(id).map(toMessage) } : null
   }
@@ -242,7 +245,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   }
 
   /** @returns the conversation as stored (or as given, while it is still empty) */
-  function save(conversation, input) {
+  function save<C extends Partial<Conversation> & { id: string }>(conversation: C, input: unknown): C | Conversation {
     const id = assertId(conversation.id)
     const messages = normalizeMessages(input)
     if (messages.length === 0) return conversation
@@ -266,8 +269,9 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   }
 
   /** Brings in a conversation from the old JSON files, keeping its timestamps; skips ids already present. */
-  function importConversation({ id, createdAt, updatedAt, sessionId, messages }) {
-    if (sql.anyConversation.get(assertId(id))) return false
+  function importConversation({ id: given, createdAt, updatedAt, sessionId, messages }: { id: unknown, createdAt: number, updatedAt: number, sessionId: string | null, messages: unknown }) {
+    const id = assertId(given)
+    if (sql.anyConversation.get(id)) return false
     const list = normalizeMessages(messages)
     if (list.length === 0) return false
     transaction(() => {
@@ -289,12 +293,12 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   }
 
   /** One result per conversation, newest first, with a snippet around the first hit. */
-  function search(input) {
+  function search(input: unknown) {
     const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
     if (!query) return []
     const like = `%${escapeLike(query)}%`
     const messageHits = [...query].length >= TRIGRAM_MIN_CHARS ? sql.ftsHits.all(ftsPhrase(query)) : sql.likeHits.all(like)
-    const firstHit = new Map()
+    const firstHit = new Map<string, string>()
     for (const hit of [...messageHits, ...sql.titleHits.all(like)]) {
       if (!firstHit.has(hit.id)) firstHit.set(hit.id, hit.text)
     }
@@ -311,9 +315,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   /**
    * The segments of the timeline right before `id`, oldest first, each with its messages and when they were
    * written; `hasMore` when there are earlier ones still. Deleted segments are left out.
-   * @param {string} id @param {{ limit?: number }} [options]
    */
-  function segmentsBefore(id, { limit = SEGMENT_PAGE } = {}) {
+  function segmentsBefore(id: unknown, { limit = SEGMENT_PAGE }: { limit?: number } = {}) {
     // A segment not yet written (it reaches the database with its first message) comes after all that are.
     const position = sql.position.get(assertId(id)) ?? { created_at: Number.MAX_SAFE_INTEGER, rowid: Number.MAX_SAFE_INTEGER }
     const size = Math.min(Math.max(1, Math.trunc(limit) || SEGMENT_PAGE), MAX_SEGMENT_PAGE)
@@ -332,7 +335,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * Messages of the whole timeline that contain `input`, newest first, with where each is, its directory,
    * and the messages right before and after it in its segment.
    */
-  function searchMessages(input) {
+  function searchMessages(input: unknown) {
     const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
     if (!query) return []
     const rows = [...query].length >= TRIGRAM_MIN_CHARS
@@ -345,7 +348,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     }))
   }
 
-  function changeOne(statement, ...params) {
+  function changeOne(statement: Pick<Statement, 'run'>, ...params: unknown[]) {
     if (statement.run(...params).changes === 0) throw new Error('找不到这段对话')
   }
 
@@ -353,37 +356,37 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * The user went back to an earlier point of `id` and on from there in `into`: `id` leaves the timeline and
    * hangs, folded, off `into` after its first `at` messages (the ones both have).
    */
-  const fold = (id, { into, at, kind = null as string | null }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), kind !== null && FOLD_KINDS.has(kind) ? kind : null, assertId(id))
+  const fold = (id: unknown, { into, at, kind = null as string | null }: { into: unknown, at: number, kind?: string | null }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), kind !== null && FOLD_KINDS.has(kind) ? kind : null, assertId(id))
   /** A segment's messages with where each is and when it was written (ms). */
-  const timelineOf = (id) => sql.timelineMessages.all(assertId(id)).map(toTimelineMessage)
+  const timelineOf = (id: unknown) => sql.timelineMessages.all(assertId(id)).map(toTimelineMessage)
 
   /** `id` is back in the timeline (the user switched back to it). */
-  const unfold = (id) => changeOne(sql.fold, null, null, null, assertId(id))
+  const unfold = (id: unknown) => changeOne(sql.fold, null, null, null, assertId(id))
 
   /**
    * The paths folded off `id`: where each hangs (after that many of `id`'s messages), how many it folds, and
    * whether it is a path left behind ('path') or a turn moved to the background ('task').
    */
-  const foldsOf = (id) => sql.foldsOf.all(assertId(id))
+  const foldsOf = (id: unknown) => sql.foldsOf.all(assertId(id))
     // A task started on its own (后台做) has its card in the conversation, not a line where it folds.
     .filter((row) => row.fold_kind !== 'side')
     .map((row) => ({ id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at), kind: row.fold_kind ?? 'path' }))
 
-  const rename = (id, title) => changeOne(
+  const rename = (id: unknown, title: unknown) => changeOne(
     db.prepare('UPDATE conversations SET title = ?, title_custom = 1 WHERE id = ? AND deleted_at IS NULL'), normalizeTitle(title), assertId(id))
-  const setPinned = (id, pinned) => changeOne(
+  const setPinned = (id: unknown, pinned: boolean) => changeOne(
     db.prepare('UPDATE conversations SET pinned = ? WHERE id = ? AND deleted_at IS NULL'), pinned ? 1 : 0, assertId(id))
-  const softDelete = (id) => changeOne(
+  const softDelete = (id: unknown) => changeOne(
     db.prepare('UPDATE conversations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL'), now(), assertId(id))
-  const restore = (id) => changeOne(
+  const restore = (id: unknown) => changeOne(
     db.prepare('UPDATE conversations SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL'), assertId(id))
 
   /** Removes conversations deleted at least `olderThanMs` ago, messages and index entries included. */
-  function purgeDeleted({ olderThanMs }) {
+  function purgeDeleted({ olderThanMs }: { olderThanMs: number }) {
     return db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(now() - olderThanMs).changes
   }
 
-  const sessionIds = (id) => sql.sessions.all(assertId(id)).map((row) => row.session_id)
+  const sessionIds = (id: unknown): string[] => sql.sessions.all(assertId(id)).map((row) => row.session_id)
 
   /** When the user asked their latest questions (ms), newest first; feeds the habit analysis. @returns {number[]} */
   const questionTimes = (limit = QUESTION_TIMES_LIMIT) => db.prepare(`SELECT m.created_at FROM messages m

@@ -890,7 +890,7 @@ app.whenReady().then(async () => {
   defaultWorkDir = config.cwd
   registerFilesIpc(ipcMain, { root: workDirNow, shell, notify: emitToRenderer })
   registerWorkDirIpc(ipcMain, {
-    current: workDirNow,
+    current: () => workDirNow() ?? config.cwd,
     defaultDir: config.cwd,
     preferences,
     chooseFolder: chooseWorkFolder,

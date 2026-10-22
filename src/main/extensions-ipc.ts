@@ -1,9 +1,10 @@
-import { serverView } from './mcp-config.ts'
-import { listSkills, removeSkill } from './skills.ts'
+import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
+import { serverView, type createMcpConfigStore } from './mcp-config.ts'
+import { listSkills, removeSkill, type skillRoots } from './skills.ts'
 
 const MAX_ID_CHARS = 300
 
-function assertName(value) {
+function assertName(value: unknown) {
   if (typeof value !== 'string' || !value || value.length > MAX_ID_CHARS) throw new Error('invalid name')
   return value
 }
@@ -11,25 +12,23 @@ function assertName(value) {
 /**
  * IPC for the 扩展 section of settings: the user's MCP servers and skills, to list and remove. Adding
  * happens in the conversation (viva-config, config-channel.js). Removing a server reattaches the session.
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   store: ReturnType<import('./mcp-config.ts').createMcpConfigStore>,
- *   roots: () => ReturnType<import('./skills.ts').skillRoots>,
- *   mcpStatus: () => { active: string[], dropped: Array<{ name: string, reason: string }> },
- *   applyMcp: () => Promise<object | null>,
- *   trash: (file: string) => Promise<void>,
- * }} deps
  */
-export function registerExtensionsIpc(ipcMain, deps) {
+export function registerExtensionsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
+  store: ReturnType<typeof createMcpConfigStore>,
+  roots: () => ReturnType<typeof skillRoots>,
+  mcpStatus: () => { active: string[], dropped: Array<{ name: string, reason: string }> },
+  applyMcp: () => Promise<object | null>,
+  trash: (file: string) => Promise<void>,
+}) {
   const { store, roots, mcpStatus, applyMcp, trash } = deps
-  const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
+  const handle = handlerOf(ipcMain)
   const userRoot = () => roots().find((root) => root.managed)
 
   const view = () => ({
     servers: store.list().map(serverView),
     status: mcpStatus(),
     skills: listSkills(roots()),
-    skillDir: userRoot().dir,
+    skillDir: userRoot()?.dir,
   })
 
   handle('ext:get', view)

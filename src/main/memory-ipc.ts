@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { MAX_MEMORY_CHARS } from '../../plugins/memory/lib/store.ts'
+import { MAX_MEMORY_CHARS, type openMemoryDb } from '../../plugins/memory/lib/store.ts'
+import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'
@@ -9,7 +10,7 @@ const MAX_DOC_BYTES = 50 * 1024 * 1024
 const MAX_COPY_ATTEMPTS = 100
 
 /** `name.ext`, or `name (2).ext` and so on when that is taken. */
-function freeName(dir, fileName) {
+function freeName(dir: string, fileName: string) {
   const { name, ext } = path.parse(fileName)
   for (let n = 1; n <= MAX_COPY_ATTEMPTS; n += 1) {
     const candidate = n === 1 ? fileName : `${name} (${n})${ext}`
@@ -20,9 +21,9 @@ function freeName(dir, fileName) {
 
 /**
  * Copies the picked documents into `<cwd>/我的资料`, leaving the originals alone.
- * @returns {Array<{ name: string, path: string }>} paths relative to the workspace, with forward slashes
+ * @returns paths relative to the workspace, with forward slashes
  */
-export function copyIntoWorkspace(files, cwd) {
+export function copyIntoWorkspace(files: readonly string[], cwd: string): Array<{ name: string, path: string }> {
   if (files.length > MAX_DOCS) throw new Error(`一次最多添加 ${MAX_DOCS} 份文档`)
   const dir = path.join(cwd, DOCS_DIR_NAME)
   fs.mkdirSync(dir, { recursive: true })
@@ -36,23 +37,21 @@ export function copyIntoWorkspace(files, cwd) {
   })
 }
 
-function assertMemoryText(value) {
+function assertMemoryText(value: unknown) {
   if (typeof value !== 'string' || value.length > MAX_MEMORY_CHARS * 2) throw new Error('invalid memory text')
   return value
 }
 
 /**
  * IPC for the "关于你" page and the intro: the profile, the memories and the habits read from history.
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   db: ReturnType<import('../../plugins/memory/lib/store.ts').openMemoryDb>,
- *   habits: () => { text: string, samples: number },
- *   cwd: () => string,
- *   chooseDocs: () => Promise<string[] | null>,
- * }} deps
  */
-export function registerMemoryIpc(ipcMain, { db, habits, cwd, chooseDocs }) {
-  const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
+export function registerMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, habits, cwd, chooseDocs }: {
+  db: ReturnType<typeof openMemoryDb>,
+  habits: () => { text: string, samples: number },
+  cwd: () => string,
+  chooseDocs: () => Promise<string[] | null>,
+}) {
+  const handle = handlerOf(ipcMain)
 
   handle('memory:get', () => ({
     profile: db.getProfile(),
