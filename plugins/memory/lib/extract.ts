@@ -1,6 +1,13 @@
 import { recallMatches } from './match.ts'
 import { buildLexicon, namesIn, namesOfMemory } from './names.ts'
+import type { NameEntry } from './names.ts'
 import { MAX_EXTRACTED_CHANGES, MEMORY_KINDS } from './store.ts'
+import type { Memory, MemoryDb } from './store.ts'
+
+/** What the extracting model answered, parsed: anything at all, so every field is checked before it is used. */
+type ModelOutput = any
+/** One change the extractor may make: a memory to add, maybe replacing one it was shown. */
+type Addition = { text: string, kind: string, keywords: string[], replaces: number | null }
 
 /**
  * The background pass after each turn: a second model call reads what the user said and the answer,
@@ -31,17 +38,17 @@ export const EXTRACT_SYSTEM = [
 ].join('\n')
 
 /** Whether this turn is worth a model call at all. */
-export function worthExtracting(userWords, lexicon) {
+export function worthExtracting(userWords: unknown, lexicon: readonly NameEntry[]): boolean {
   const words = String(userWords ?? '').trim()
   if (words.length < MIN_WORDS) return false
   return SIGNALS.test(words) || namesIn(words, lexicon).size > 0
 }
 
 /** The memories the extractor sees, and so the only ones it may replace: about what the turn names, then by wording. */
-export function candidatesFor(userWords, memories, lexicon) {
+export function candidatesFor(userWords: string, memories: readonly Memory[], lexicon: readonly NameEntry[]): Memory[] {
   const named = namesIn(userWords, lexicon)
   const entries = lexicon.filter((entry) => named.has(entry.key))
-  const isAboutNamed = (memory) => [...namesOfMemory(memory, entries)].some((key) => named.has(key))
+  const isAboutNamed = (memory: Memory) => [...namesOfMemory(memory, entries)].some((key) => named.has(key))
   const byName = named.size ? memories.filter(isAboutNamed) : []
   const byWords = recallMatches(memories, userWords, MAX_CANDIDATES)
   const unique = new Map([...byName, ...byWords].map((memory) => [memory.id, memory]))
@@ -50,7 +57,8 @@ export function candidatesFor(userWords, memories, lexicon) {
 
 /** Everything goes in as JSON, so nothing the user typed can pose as an instruction or a delimiter. */
 export function extractionInput({ userWords, answers = [], reply, today, candidates, profile = {} }: {
-  userWords: string, answers?: unknown[], reply: string, today: string, candidates: any[], profile?: Record<string, { value: string }>,
+  userWords: string, answers?: unknown[], reply: string, today: string,
+  candidates: ReadonlyArray<Pick<Memory, 'id' | 'text' | 'kind' | 'source'>>, profile?: Record<string, { value: string }>,
 }) {
   return JSON.stringify({
     today,
@@ -62,10 +70,10 @@ export function extractionInput({ userWords, answers = [], reply, today, candida
   })
 }
 
-const isId = (value) => Number.isSafeInteger(value) && value > 0
-const isStringList = (value) => Array.isArray(value) && value.every((item) => typeof item === 'string')
+const isId = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0
+const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === 'string')
 
-function checkAddition(item) {
+function checkAddition(item: ModelOutput): Addition {
   if (typeof item !== 'object' || item === null || typeof item.text !== 'string') throw new Error('add 里的每一项都要有 text')
   if (item.kind !== undefined && !MEMORY_KINDS.includes(item.kind)) throw new Error(`未知的 kind：${item.kind}`)
   if (item.keywords !== undefined && !isStringList(item.keywords)) throw new Error('keywords 必须是文本列表')
@@ -75,11 +83,10 @@ function checkAddition(item) {
 
 /**
  * The model's answer as a checked change set. Anything off-shape throws, and the whole answer is dropped.
- * @returns {{ add: Array<{ text: string, kind: string, keywords: string[], replaces: number | null }>, invalidate: number[] }}
  */
-export function parseExtraction(text) {
+export function parseExtraction(text: unknown): { add: Addition[], invalidate: number[] } {
   const body = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  let value
+  let value: ModelOutput
   try {
     value = JSON.parse(body)
   } catch {
@@ -100,7 +107,7 @@ export function parseExtraction(text) {
  * @throws when the model call fails or its answer is unusable; nothing has been written then
  */
 export async function extractTurn({ db, userWords, answers = [], reply, today, complete }: {
-  db: any, userWords: string, answers?: Array<{ question: string, answer: string }>, reply: string, today: string,
+  db: MemoryDb, userWords: string, answers?: Array<{ question: string, answer: string }>, reply: string, today: string,
   complete: (system: string, input: string) => Promise<string>,
 }) {
   const memories = db.allMemories()

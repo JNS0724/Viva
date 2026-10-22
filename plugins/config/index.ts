@@ -6,6 +6,7 @@
  * Loaded by the app's dsh profile (src/main/dsh-profile.js).
  */
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createConfigChannel } from './lib/channel.ts'
 import { CONFIG_TOOLS } from './lib/tools.ts'
@@ -14,14 +15,10 @@ export const name = 'viva-config'
 export const inject = ['tools']
 export const Config = z.object({})
 
-const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
+const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
 
-/**
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {object} _config
- * @param {NodeJS.Process} [port] the channel to the app (tests pass their own)
- */
-export function apply(ctx, _config, port = process) {
+/** @param port the channel to the app (tests pass their own) */
+export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') {
     log('dsh was not started by the app: the config tools are left out')
     return

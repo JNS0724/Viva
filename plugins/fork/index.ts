@@ -7,15 +7,21 @@
  */
 import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+import { SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import { createForkChannel, REASONS } from './lib/channel.ts'
+import type { ForkRequest } from './lib/channel.ts'
 
 export const name = 'viva-fork'
 export const inject = ['sessions', 'agents']
 export const Config = z.object({})
 
-const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
-const refuse = (reason, message) => Object.assign(new Error(message), { reason })
+/** An event of a live session, as dsh gives it. */
+type SessionEvent = ReturnType<NonNullable<ReturnType<Context['sessions']['get']>>['snapshotEvents']>[number]
+
+const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
+const refuse = (reason: string, message: string) => Object.assign(new Error(message), { reason })
 const DELIVERY_MARKER = 'session-log-deepseek/delivery-accepted'
 
 /**
@@ -23,23 +29,23 @@ const DELIVERY_MARKER = 'session-log-deepseek/delivery-accepted'
  * ACP will not resume; so the copied markers are made the new session's own. A log-only record, not something
  * the model sees. PROTOTYPE: the real fix is in dsh (resume a seeded top-level session, or fork with a cwd).
  */
-const ownMarkers = (events, sourceId, childId) => events.map((event) => (
+const ownMarkers = (events: readonly SessionEvent[], sourceId: string, childId: string) => events.map((event: any) => (
   event.type === DELIVERY_MARKER && event.data?.sessionId === sourceId ? { ...event, data: { ...event.data, sessionId: childId } } : event))
 
 /**
  * The last event before the `before`-th turn (each turn is one thing the user said, with the context dsh adds to
  * it as further user messages), or the last event; undefined for an empty prefix.
  */
-function boundaryOf(events, before) {
+function boundaryOf(events: readonly SessionEvent[], before: number | undefined): SessionSeq | undefined {
   if (before === undefined) return events.at(-1)?.seq
   const turns = events.filter((event) => event.type === 'turn/start')
   if (before > turns.length) throw refuse(REASONS.invalid, `only ${turns.length} turns`)
   const cut = turns[before]
   if (!cut) return events.at(-1)?.seq
   // The user's words reach the agent's inbox just before their turn starts: the cut goes before that too.
-  let start = cut.seq
+  let start: number = cut.seq
   while (start > 0 && events[start - 1].type === 'agent/inbox/spliced') start -= 1
-  return start === 0 ? undefined : start - 1
+  return start === 0 ? undefined : SessionSeq(start - 1)
 }
 
 const WORD_EVENTS = new Set(['agent/inbox/spliced', 'user/message'])
@@ -49,7 +55,7 @@ const WORD_EVENTS = new Set(['agent/inbox/spliced', 'user/message'])
  * anything else the turn under way's (words said while it works, the context dsh adds).
  * @returns {string[]} per turn, its words' events as JSON
  */
-function wordsByTurn(events) {
+function wordsByTurn(events: readonly SessionEvent[]) {
   const turns: string[] = []
   let current = -1
   events.forEach((event, i) => {
@@ -64,7 +70,7 @@ function wordsByTurn(events) {
 }
 
 /** The index of the `occurrence`-th turn from the end in which the user said `words`. */
-function turnWithWords(events, words, occurrence) {
+function turnWithWords(events: readonly SessionEvent[], words: string, occurrence: number) {
   const needle = JSON.stringify(words).slice(1, -1)
   const matches = wordsByTurn(events).flatMap((json, turn) => (json?.includes(needle) ? [turn] : []))
   const turn = matches.at(-1 - occurrence)
@@ -72,29 +78,24 @@ function turnWithWords(events, words, occurrence) {
   return turn
 }
 
-/**
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {object} _config
- * @param {NodeJS.Process} [port]
- */
-export function apply(ctx, _config, port = process) {
+export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') {
     log('dsh was not started by the app: nothing to fork for')
     return
   }
-  async function fork({ sessionId, before, words, occurrence = 0, cwd }) {
-    const source = ctx.sessions.get(sessionId)
+  async function fork({ sessionId, before, words, occurrence = 0, cwd }: ForkRequest) {
+    const source = ctx.sessions.get(SessionId(sessionId))
     if (!source) throw refuse(REASONS.missing, `no live session ${sessionId}`)
     const events = source.snapshotEvents()
     const boundary = boundaryOf(events, words === undefined ? before : turnWithWords(events, words, occurrence))
-    const childId = `fork-${randomUUID()}`
+    const childId = SessionId(`fork-${randomUUID()}`)
     const seed = boundary === undefined ? [] : ownMarkers(buildForkSeed(events, boundary), source.id, childId)
     // Made by dsh's agent factory, which stores a seeded session as its own fork children are stored, then let go
     // at once: the app resumes it over ACP.
     const handle = await ctx.agents.create({
       sessionId: childId,
       seed,
-      inheritedEventCount: boundary === undefined ? 0 : boundary + 1,
+      inheritedEventCount: SessionLogOffset(boundary === undefined ? 0 : boundary + 1),
       // No parentSession: dsh's ACP front end resumes only top-level sessions, so the app keeps the link itself.
       meta: { cwd: cwd ?? source.header.cwd, isSeeded: boundary !== undefined },
     })
@@ -102,7 +103,7 @@ export function apply(ctx, _config, port = process) {
     await handle.dispose()
     return childId
   }
-  const channel = createForkChannel(port, fork, log)
+  const channel = createForkChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, fork, log)
   port.channel?.unref?.()
   ctx.effect(() => () => channel.close(), 'fork channel')
 }

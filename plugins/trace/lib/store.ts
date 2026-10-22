@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import type { Step } from './steps.ts'
 
 /**
  * trace.db: the steps of every turn, written by the trace plugin inside dsh and read by the app for the
@@ -27,12 +28,17 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `
 
-const toStep = (row) => (row.kind === 'thought'
-  ? { seq: row.seq, at: row.at, kind: 'thought', text: row.text ?? '' }
-  : { seq: row.seq, at: row.at, kind: 'tool', callId: row.call_id, name: row.name, args: JSON.parse(row.args ?? '{}'), status: row.status })
+/** A row of `steps`, as SCHEMA declares it. */
+interface StepRow {
+  session_id: string, seq: number, at: number, kind: string, call_id: string | null, name: string | null,
+  args: string | null, text: string | null, status: string | null
+}
 
-/** @param {{ file: string }} options */
-export function openTraceDb({ file }) {
+const toStep = (row: StepRow): Step => (row.kind === 'thought'
+  ? { seq: row.seq, at: row.at, kind: 'thought', text: row.text ?? '' }
+  : { seq: row.seq, at: row.at, kind: 'tool', callId: row.call_id ?? '', name: row.name ?? '', args: JSON.parse(row.args ?? '{}'), status: row.status ?? '' })
+
+export function openTraceDb({ file }: { file: string }) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000;')
@@ -56,7 +62,7 @@ export function openTraceDb({ file }) {
   if (found < CONTRACT_VERSION) sql.setMeta.run('contract_version', String(CONTRACT_VERSION))
 
   /** Records a turn's steps; a step seen again (a tool that finished) only updates its status. */
-  function recordSteps(sessionId, steps) {
+  function recordSteps(sessionId: string, steps: readonly Step[]) {
     db.exec('BEGIN IMMEDIATE')
     try {
       for (const step of steps) {
@@ -75,9 +81,9 @@ export function openTraceDb({ file }) {
   return {
     recordSteps,
     /** The session's steps up to `until` (ms), in order. */
-    stepsOf: (sessionId, until = Number.MAX_SAFE_INTEGER) => sql.ofSession.all(String(sessionId), until).map(toStep),
+    stepsOf: (sessionId: string, until = Number.MAX_SAFE_INTEGER): Step[] => (sql.ofSession.all(String(sessionId), until) as unknown as StepRow[]).map(toStep),
     /** Whether the plugin recorded this session; older sessions are only in dsh's own log. */
-    hasSession: (sessionId) => Boolean(sql.hasSession.get(String(sessionId))),
+    hasSession: (sessionId: string) => Boolean(sql.hasSession.get(String(sessionId))),
     close: () => db.close(),
   }
 }

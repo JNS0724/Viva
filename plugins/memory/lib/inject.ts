@@ -1,25 +1,29 @@
 import { createHash } from 'node:crypto'
 import { buildContext, dateLine, RECENT_LIMIT } from './context.ts'
 import { initialSession, planTurn } from './layers.ts'
+import type { SessionState } from './layers.ts'
 import { buildLexicon } from './names.ts'
+import type { MemoryDb } from './store.ts'
 
-const signatureOf = (text) => createHash('sha256').update(text).digest('hex')
+const signatureOf = (text: string) => createHash('sha256').update(text).digest('hex')
 
 /**
  * What to put in front of the model for one turn, and the bookkeeping that goes with it: the session's
  * retrieval state is saved, and what was sent is logged for the app to show. Independent of dsh.
- * @param {ReturnType<import('./store.ts').openMemoryDb>} db
- * @param {{ sessionId: string, turn: number, question: string, epoch: number, today?: string }} turn
- *   epoch: how many times dsh has compacted this session; today: e.g. "2026-10-18（周日）"
- * @returns {string} the context block, or '' when nothing needs to be sent
+ * @param turn epoch: how many times dsh has compacted this session; today: e.g. "2026-10-18（周日）"
+ * @returns the context block, or '' when nothing needs to be sent
  */
-export function contextForTurn(db, { sessionId, turn, question, epoch, today = dateLine() }) {
+export function contextForTurn(db: MemoryDb, { sessionId, turn, question, epoch, today = dateLine() }: {
+  sessionId: string, turn: number, question: string, epoch: number, today?: string,
+}): string {
   const profile = db.getProfile()
   const synthesis = db.latestSynthesis()
   const recent = db.profileMemories({ since: synthesis?.createdAt ?? null, limit: RECENT_LIMIT })
   const fixed = { profile, synthesis: synthesis?.text ?? null, recent, habits: db.habits() }
   const memories = db.allMemories()
-  const plan = planTurn({ ...initialSession, ...db.sessionState(sessionId) }, {
+  // What planTurn returned last turn, saved below; anything missing starts as in a new session.
+  const saved = db.sessionState(sessionId) as Partial<SessionState> | null
+  const plan = planTurn({ ...initialSession, ...saved }, {
     question,
     // Memories learned during the session came from it, so the model has them: only the user's own
     // profile, a new synthesis or new habits send the fixed layer again.

@@ -18,7 +18,7 @@ const MIN_WORD_CHARS = 2
 /** Words say more than single Han pairs. */
 const WORD_WEIGHT = 2
 
-const isHan = (char) => /\p{Script=Han}/u.test(char)
+const isHan = (char: string) => /\p{Script=Han}/u.test(char)
 
 /** Lower-cased words and Han bigrams. */
 export function termsOf(text: string): Set<string> {
@@ -39,9 +39,9 @@ export function termsOf(text: string): Set<string> {
 
 /** Share of the query a memory must cover: one stray shared pair out of four is not a match. */
 export const MIN_COVERAGE = 0.34
-const termWeight = (term) => ([...term].some(isHan) ? 1 : WORD_WEIGHT)
+const termWeight = (term: string) => ([...term].some(isHan) ? 1 : WORD_WEIGHT)
 
-function scoreOf(queryTerms, text) {
+function scoreOf(queryTerms: Iterable<string>, text: string) {
   const haystack = text.toLowerCase()
   let score = 0
   for (const term of queryTerms) {
@@ -51,10 +51,10 @@ function scoreOf(queryTerms, text) {
 }
 
 /** The query's words, as the model separated them ("结算口径 财务"). */
-const queryWords = (query) => String(query).toLowerCase().split(/[\s,，、;；]+/).filter((word) => [...word].length >= 2)
+const queryWords = (query: string) => String(query).toLowerCase().split(/[\s,，、;；]+/).filter((word) => [...word].length >= 2)
 
 /** A keyword the memory was saved with appears in the query, or a query word is part of one. */
-function hitsKeyword(memory, words) {
+function hitsKeyword(memory: { keywords?: readonly string[] }, words: readonly string[]) {
   return (memory.keywords ?? []).some((keyword) => {
     const key = keyword.toLowerCase()
     return words.some((word) => word.includes(key) || key.includes(word))

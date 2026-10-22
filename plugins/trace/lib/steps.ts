@@ -8,9 +8,9 @@ const MAX_ARGS_CHARS = 2000
 /** When the arguments are too big to keep (file contents, long commands), only short values survive. */
 const MAX_KEPT_VALUE_CHARS = 200
 
-const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
-function parsedArguments(raw) {
+function parsedArguments(raw: unknown): Record<string, unknown> {
   try {
     const value = typeof raw === 'string' ? JSON.parse(raw) : raw
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -20,7 +20,7 @@ function parsedArguments(raw) {
 }
 
 /** The call's arguments, small enough to store: whole when short, else just their short scalar values. */
-export function keptArguments(raw) {
+export function keptArguments(raw: unknown): Record<string, unknown> {
   const args = parsedArguments(raw)
   if (JSON.stringify(args).length <= MAX_ARGS_CHARS) return args
   return Object.fromEntries(Object.entries(args).filter(([, value]) => (typeof value === 'string'
@@ -28,7 +28,8 @@ export function keptArguments(raw) {
     : typeof value === 'number' || typeof value === 'boolean')))
 }
 
-const reasoningOf = (message) => (message?.content ?? []).filter((part) => part.type === 'reasoning').map((part) => part.text).join('')
+const reasoningOf = (message: { content?: Array<{ type: string, text?: string }> } | undefined) => (message?.content ?? [])
+  .filter((part) => part.type === 'reasoning').map((part) => part.text ?? '').join('')
 
 type ThoughtStep = { seq: number, at: number, kind: 'thought', text: string }
 type ToolStep = { seq: number, at: number, kind: 'tool', callId: string, name: string, args: object, status: string }
