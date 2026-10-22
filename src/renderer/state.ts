@@ -92,50 +92,53 @@ const REVEAL_BASE_CPS = 90
 const REVEAL_MAX_LAG_S = 1.2
 
 /**
- * @param {number} shown characters already on screen
- * @param {number} length characters received so far
- * @param {number} dtMs time since the previous frame
- * @returns {number} characters to show after this frame
+ * @param shown characters already on screen
+ * @param length characters received so far
+ * @param dtMs time since the previous frame
+ * @returns characters to show after this frame
  */
-export function revealStep(shown, length, dtMs) {
+export function revealStep(shown: number, length: number, dtMs: number): number {
   if (shown >= length) return length
   const cps = Math.max(REVEAL_BASE_CPS, (length - shown) / REVEAL_MAX_LAG_S)
   return Math.min(length, shown + Math.max(1, Math.round((cps * dtMs) / 1000)))
 }
 
-const isRevealingMessage = (m) => m.role === 'assistant' && m.shown < m.text.length
+const isRevealingMessage = (m: ThreadMessage): m is ThreadMessage & { shown: number } => m.role === 'assistant' && m.shown !== undefined && m.shown < m.text.length
 
-/** @returns {boolean} whether some assistant text is still being typed out */
-export const isRevealing = (state) => state.messages.some(isRevealingMessage)
+/** Whether some assistant text is still being typed out. */
+export const isRevealing = (state: State): boolean => state.messages.some(isRevealingMessage)
 
-function contentText(content) {
+/** An update from the agent (ACP session/update), as the window gets it: its kind, and what each kind carries. */
+type AcpUpdate = { sessionUpdate?: string, [field: string]: any }
+
+function contentText(content: { type: string, text?: string } | null | undefined) {
   if (!content) return ''
   if (content.type === 'text') return content.text ?? ''
   return `[${content.type}]`
 }
 
-function appendStream(list, chunk, makeItem) {
+function appendStream<T extends { open?: boolean, text: string }>(list: readonly T[], chunk: string, makeItem: (index: number) => T): { list: T[], created: T | null } {
   const last = list[list.length - 1]
   if (last?.open) return { list: [...list.slice(0, -1), { ...last, text: last.text + chunk }], created: null }
   const item = makeItem(list.length)
   return { list: [...list, item], created: item }
 }
 
-const bumpTurn = (turn, key) => (turn ? { ...turn, [key]: turn[key] + 1 } : turn)
+const bumpTurn = (turn: State['turn'], key: 'tools' | 'thoughts') => (turn ? { ...turn, [key]: turn[key] + 1 } : turn)
 
-function onMessageChunk(state, update) {
+function onMessageChunk(state: State, update: AcpUpdate): State {
   const chunk = contentText(update.content)
   if (!chunk) return state
-  const { list } = appendStream(state.messages, chunk, (i) => ({
+  const { list } = appendStream(state.messages, chunk, (i): ThreadMessage => ({
     id: `m${i}`, role: 'assistant', text: chunk, shown: 0, open: true, receipt: null,
   }))
   return { ...state, thoughts: closeLast(state.thoughts), messages: list }
 }
 
-function onThoughtChunk(state, update, at) {
+function onThoughtChunk(state: State, update: AcpUpdate, at: number): State {
   const chunk = contentText(update.content)
   if (!chunk) return state
-  const { list, created } = appendStream(state.thoughts, chunk, (i) => ({ id: `t${i}`, text: chunk, open: true, at }))
+  const { list, created } = appendStream(state.thoughts, chunk, (i: number) => ({ id: `t${i}`, text: chunk, open: true, at }))
   return {
     ...state,
     messages: closeLast(state.messages),
@@ -145,7 +148,7 @@ function onThoughtChunk(state, update, at) {
   }
 }
 
-function mergeTool(existing, update, at) {
+function mergeTool(existing: ToolCall | undefined, update: AcpUpdate, at: number): ToolCall {
   const base = existing ?? { id: update.toolCallId, title: '工具调用', kind: 'other', status: 'pending', locations: [], at }
   const changes = Object.fromEntries(
     TOOL_FIELDS.filter((key) => update[key] !== undefined && update[key] !== null).map((key) => [key, update[key]]),
@@ -153,7 +156,7 @@ function mergeTool(existing, update, at) {
   return { ...base, ...changes }
 }
 
-function onToolUpdate(state, update, at) {
+function onToolUpdate(state: State, update: AcpUpdate, at: number): State {
   if (!update.toolCallId) return state
   const closed = closeStreams(state)
   const existing = closed.tools[update.toolCallId]
@@ -165,7 +168,7 @@ function onToolUpdate(state, update, at) {
   }
 }
 
-const UPDATE_HANDLERS = {
+const UPDATE_HANDLERS: Readonly<Record<string, (state: State, update: AcpUpdate, at: number) => State>> = {
   agent_message_chunk: onMessageChunk,
   agent_thought_chunk: onThoughtChunk,
   tool_call: onToolUpdate,
@@ -173,7 +176,7 @@ const UPDATE_HANDLERS = {
   usage_update: (state, update) => ({ ...state, usage: { used: update.used, size: update.size } }),
 }
 
-function attachReceipt(messages, receipt) {
+function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
   const last = messages[messages.length - 1]
   if (last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
   const text = receipt.stopReason === 'cancelled' ? '已停止本轮任务。' : '本轮没有文字回复。'
@@ -257,7 +260,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
 
   permission_resolved: (state, { requestId, optionId, at }) => {
     if (state.permission?.requestId !== requestId) return state
-    const option = state.permission.options.find((o) => o.optionId === optionId)
+    const option = state.permission.options.find((o: PermissionOption) => o.optionId === optionId)
     return {
       ...state,
       phase: 'working',
@@ -309,7 +312,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: 'loading',
-      messages: messages.map((m, i) => ({
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
       })),
       restored: { count: messages.length, savedAt },
@@ -324,7 +327,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
    * goes where its time puts it in the trace, ahead of the steps it informed.
    */
   memory_context: (state, { injected }) => {
-    const entries = (injected ?? []).map((injection, i) => ({ kind: 'memory', ref: `memory-${injection.at}-${i}`, at: injection.at, injection }))
+    const entries = (injected ?? []).map((injection: { at: number, [field: string]: any }, i: number) => ({ kind: 'memory', ref: `memory-${injection.at}-${i}`, at: injection.at, injection }))
     if (entries.length === 0) return state
     const timeline = [...state.timeline, ...entries].sort((a, b) => a.at - b.at)
     return { ...state, timeline }
@@ -425,21 +428,15 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...SECRET_ACTIONS,
 }
 
-/**
- * @param {typeof initialState} state
- * @param {{ type: string, [key: string]: unknown }} action
- * @returns {typeof initialState}
- */
 /** Sending the words ends Tab's say over where they go. */
 const SENT = new Set(['user_prompt', 'user_steer'])
 
-export function reduce(state, action) {
+export function reduce(state: State, action: Action): State {
   const routed = routeToTask(state, action, HANDLERS)
   if (routed) return routed
-  const handler = ACTION_HANDLERS[action?.type]
+  const handler = ACTION_HANDLERS[action?.type ?? '']
   const next = oneHubPage(state, handler ? handler(state, action) : state, reduce)
-  return SENT.has(action?.type) && next.tasks.flip ? { ...next, tasks: { ...next.tasks, flip: false } } : next
+  return SENT.has(action?.type ?? '') && next.tasks.flip ? { ...next, tasks: { ...next.tasks, flip: false } } : next
 }
 
-/** @param {{ phase: string }} state */
-export const isBusy = (state) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'
+export const isBusy = (state: { phase: string }): boolean => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'
