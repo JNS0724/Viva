@@ -309,7 +309,10 @@ export async function checkResume(win, outDir): Promise<string[]> {
   await run(win, `document.querySelector('#thread .task-unfinished').scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-unfinished')
-  await run(win, `[...document.querySelectorAll('#thread .task-unfinished button')].find((el) => el.textContent === '接着做').click()`)
+  // 接着做 waits for the agent to be connected, as a user would find it.
+  const goOn = `[...document.querySelectorAll('#thread .task-unfinished button')].find((el) => el.textContent === '接着做')`
+  await until(win, `!(${goOn}).disabled`, '接着做 once the agent is connected')
+  await run(win, `(${goOn}).click()`)
   const report = await until(win, `(() => { const card = ${cardState(LEFT_ASK)}; return card?.status === 'done' && card.text })()`, 'the task taken up reporting back')
     .catch(async (err) => {
       // What the card shows instead, and a picture of it, so a run that times out says where the task stood.
