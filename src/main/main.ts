@@ -744,8 +744,8 @@ const taskAgent = {
 }
 
 /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
-async function forkBack(request) {
-  if (!bridge) return { ok: false, reason: 'unavailable' }
+async function forkBack(request: { words: string, occurrence: number }) {
+  if (!bridge) return { ok: false as const, reason: 'unavailable' }
   const forked = await bridge.fork(request)
   if (forked.ok) lastInfo = { ...forked.info, remembersHistory: true }
   return forked
@@ -888,9 +888,11 @@ app.whenReady().then(async () => {
   registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: switchOffDesk })
   const config = currentConfig()
   defaultWorkDir = config.cwd
-  registerFilesIpc(ipcMain, { root: workDirNow, shell, notify: emitToRenderer })
+  // Set just above, so the folder in use is always one from here on.
+  const workDirInUse = () => workDirNow() ?? config.cwd
+  registerFilesIpc(ipcMain, { root: workDirInUse, shell, notify: emitToRenderer })
   registerWorkDirIpc(ipcMain, {
-    current: () => workDirNow() ?? config.cwd,
+    current: workDirInUse,
     defaultDir: config.cwd,
     preferences,
     chooseFolder: chooseWorkFolder,

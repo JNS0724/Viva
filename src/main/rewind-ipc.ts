@@ -3,11 +3,15 @@
  * 「改了重发」). The agent forks to before that turn (the viva-fork plugin finds it by the words); the timeline
  * goes on in a new segment holding what came before it and the new words; the segment left behind folds there.
  */
+import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
+import type { Conversation, openHistoryDb } from './history-db.ts'
+import type { StartedAgent } from './history-ipc.ts'
+import type { IpcRegistry } from './ipc-contract.ts'
 import { sideEffectsOf } from './side-effects.ts'
 
 const MAX_TEXT_CHARS = 20_000
 
-export const REWIND_PROBLEMS = Object.freeze({
+export const REWIND_PROBLEMS: Readonly<Record<string, string>> & { busy: string, unsaved: string } = Object.freeze({
   busy: '先停止当前任务，再回到前面重来',
   unsaved: '这句话还没有保存好，稍后再试',
   invalid: '在助手的记录里找不到这句话，没法从这里重来',
@@ -15,29 +19,25 @@ export const REWIND_PROBLEMS = Object.freeze({
   unavailable: '这个版本的助手不支持回到前面，请更新 Viva',
 })
 
-const isText = (value) => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
-const isCount = (value) => Number.isSafeInteger(value) && value >= 0
+const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
+const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 
 /** words: what the user said there; occurrence: which such turn from the end; keep: messages before it; text: the new words. */
-function checked(request) {
+function checked(request: { words?: unknown, occurrence?: unknown, keep?: unknown, text?: unknown } | null | undefined) {
   const { words, occurrence = 0, keep, text } = request ?? {}
   if (!isText(words) || !isCount(occurrence) || !isCount(keep) || !isText(text)) throw new Error('invalid rewind request')
   return { words, occurrence, keep, text }
 }
 
-/**
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   db: ReturnType<import('./history-db.ts').openHistoryDb>,
- *   current: () => object, setCurrent: (conversation: object) => void, isBusy: () => boolean,
- *   agentInfo: () => { mode?: string, model?: string },
- *   forkAgent: (request: { words: string, occurrence: number }) => Promise<{ ok: boolean, reason?: string, info?: object }>,
- *   switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<object>,
- *   traceDb?: () => { stepsOf: (sessionId: string) => object[] } | null,
- * }} deps
- */
-export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, agentInfo, forkAgent, switchAgent, traceDb }) {
-  async function rewind(request) {
+export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, current, setCurrent, isBusy, agentInfo, forkAgent, switchAgent, traceDb }: {
+  db: ReturnType<typeof openHistoryDb>,
+  current: () => Conversation, setCurrent: (conversation: Conversation) => void, isBusy: () => boolean,
+  agentInfo: () => { mode?: string | null, model?: string | null },
+  forkAgent: (request: { words: string, occurrence: number }) => Promise<{ ok: true, info: StartedAgent } | { ok: false, reason: string }>,
+  switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<StartedAgent>,
+  traceDb?: () => Pick<ReturnType<typeof openTraceDb>, 'stepsOf'> | null,
+}) {
+  async function rewind(request: Parameters<typeof checked>[0]) {
     const { words, occurrence, keep, text } = checked(request)
     if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
     const previous = current()
@@ -57,7 +57,7 @@ export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, ag
   }
 
   /** A path folded off the conversation on screen, or null. */
-  function foldedOff(id) {
+  function foldedOff(id: unknown) {
     if (typeof id !== 'string' || !id) throw new Error('invalid path id')
     const fold = db.foldsOf(current().id).find((entry) => entry.id === id)
     const found = fold && db.get(id)
@@ -65,7 +65,7 @@ export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, ag
   }
 
   /** What a folded path holds after the part it shares with the conversation on screen, to read in place. */
-  function folded(id) {
+  function folded(id: unknown) {
     const path = foldedOff(id)
     return { messages: path ? path.found.messages.slice(path.fold.at) : [] }
   }
@@ -74,7 +74,7 @@ export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, ag
    * Back onto a folded path: its own dsh session again, it back in the timeline, and the conversation that was
    * on screen folded off it where the two part.
    */
-  async function switchPath(id) {
+  async function switchPath(id: unknown) {
     if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
     const path = foldedOff(id)
     if (!path) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
@@ -96,7 +96,7 @@ export function registerRewindIpc(ipcMain, { db, current, setCurrent, isBusy, ag
    * What the part that would fold did to the computer: the steps of the conversation's sessions from the
    * message gone back to on (the trace plugin's record). Nothing when there is no record.
    */
-  function effects(request) {
+  function effects(request: { keep?: unknown } | null | undefined) {
     const keep = request?.keep
     if (!isCount(keep)) throw new Error('invalid rewind request')
     const trace = traceDb?.()
