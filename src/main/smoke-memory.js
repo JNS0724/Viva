@@ -101,6 +101,7 @@ async function steps(win, outDir, expect, hooks) {
   await capture(win, outDir, 'memory-remembered')
 
   await run(win, `document.getElementById('open-profile').click()`)
+  await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
   await wait(UI_WAIT_MS)
   const page = await run(win, `({
     role: document.querySelector('[data-field="role"] .profile-value')?.textContent ?? '',
@@ -129,7 +130,12 @@ async function steps(win, outDir, expect, hooks) {
   await questionSteps(win, outDir, expect)
   await configSteps(win, outDir, expect, hooks)
 
-  await run(win, `document.getElementById('open-settings').click()`)
+  // The icon opens the page last shown (关于你); the sidebar goes on to 设置.
+  await run(win, `document.getElementById('open-profile').click()`)
+  await wait(UI_WAIT_MS)
+  const shown = await run(win, `document.querySelector('.hub-nav[aria-current="page"]')?.dataset.page ?? ''`)
+  expect(shown === 'profile', 'the icon should open the page last shown', shown)
+  await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
   await wait(UI_WAIT_MS * 2)
   const ext = await run(win, `({
     memoryProblem: document.querySelector('.ext-memory')?.textContent ?? '',
@@ -165,7 +171,7 @@ async function modelSteps(win, outDir, expect) {
   expect(outcome.includes(`已添加「${PROVIDER}」`), 'the provider should be added', outcome)
   await run(win, `document.querySelector('[aria-label="模型"]')?.scrollIntoView()`)
   await capture(win, outDir, 'models-settings')
-  await run(win, `document.querySelector('[aria-label="关闭设置"]').click()`)
+  await run(win, `document.getElementById('hub-back').click()`)
 
   const options = await until(win, `(() => {
     const button = document.getElementById('model-btn')

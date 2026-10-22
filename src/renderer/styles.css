@@ -21,8 +21,8 @@
   --radius-tile: 28px;
   --titlebar-h: 48px;
   --titlebar-gutter: 12px;
-  /* 5 title bar buttons (36px) with 6px gaps */
-  --titlebar-actions: 204px;
+  /* 2 title bar buttons (36px) with a 6px gap */
+  --titlebar-actions: 78px;
   /* macOS: room for the traffic lights */
   --reserve-left: 84px;
   --reserve-right: 0px;
@@ -562,12 +562,10 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   /* No backdrop blur: with it, every repaint behind the panel made scrolling stutter. */
   background: rgba(6, 11, 22, .82);
 }
-.settings {
-  width: min(560px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; overscroll-behavior: contain; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius-tile);
-  padding: 28px; display: flex; flex-direction: column; gap: 18px; box-shadow: 0 24px 48px rgba(0, 0, 0, .5);
-}
+/* The 设置 and 关于你 pages of the hub: a column of sections, the page around them scrolls. */
+.settings { display: flex; flex-direction: column; gap: 18px; }
 .settings > .row-between .label { color: var(--ink-3); }
-.settings-title { margin: 0; font-size: 34px; font-weight: 700; }
+.settings-title { margin: 0; font-size: 28px; font-weight: 700; }
 .key-status { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; border-radius: 20px; padding: 18px 20px; background: var(--raised); }
 .key-status[data-has-key="true"] { background: var(--accent); color: var(--bg); }
 .key-status-copy { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -602,42 +600,71 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
-/* ---------- history panel ---------- */
-.history-panel {
-  position: absolute; top: 0; bottom: 0; left: 0; z-index: 40; width: min(360px, 90vw);
-  display: flex; flex-direction: column; gap: 14px; padding: 16px 14px;
-  background: var(--panel); border-right: 1px solid var(--line-2); box-shadow: 24px 0 60px rgba(0, 0, 0, .45);
-  transition: transform .22s ease, visibility .22s;
+/* ---------- 搜索 · 关于你 · 设置 (view/hub.js) ---------- */
+/* Over the conversation and the drawer, under the title bar: the island stays in reach and unfolds over it. */
+.hub { position: absolute; inset: 0; z-index: 32; display: flex; background: var(--bg); }
+.hub[data-open="false"] { display: none; }
+.hub-side {
+  flex: none; width: 220px; display: flex; flex-direction: column; gap: 4px; padding: 14px 12px;
+  background: var(--panel); border-right: 1px solid var(--line);
 }
-.history-panel[data-open="false"] { transform: translateX(-100%); visibility: hidden; }
-/* Visible at once when it opens, so ⌘F / ⌘K can put the cursor in its field; it hides only once slid away. */
-.history-panel[data-open="true"] { transition: transform .22s ease; }
-.history-head { display: flex; align-items: center; justify-content: space-between; color: var(--ink-3); padding-left: 4px; }
+.hub-back {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; height: 36px; padding: 0 12px; margin-bottom: 14px;
+  border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2); color: var(--ink);
+  font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+}
+.hub-back:hover { border-color: var(--accent); }
+.hub-back kbd, .hub-key { font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--ink-3); }
+.hub-back kbd { border: 1px solid var(--line-2); border-radius: 4px; padding: 0 4px; }
+.hub-nav {
+  position: relative; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px;
+  border: none; border-radius: 10px; background: none; color: var(--ink-2); font: inherit; font-size: 14px; text-align: left; cursor: pointer;
+}
+.hub-nav:hover { background: var(--panel-2); color: var(--ink); }
+.hub-nav[aria-current="page"] { background: var(--raised); color: var(--ink); font-weight: 700; }
+.hub-nav[aria-current="page"]::before {
+  content: ''; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent);
+}
+.hub-key { margin-left: auto; }
+.hub-foot { margin: auto 0 0; font-size: 12px; line-height: 1.7; color: var(--ink-3); }
+.hub-main { flex: 1; min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
+.hub-page { width: min(760px, 100%); margin: 0 auto; padding: 28px 32px 48px; }
+.hub-search { display: flex; flex-direction: column; gap: 18px; }
+.hub-page[hidden] { display: none; }
+@media (max-width: 720px) {
+  .hub-side { width: 160px; }
+  .hub-foot { display: none; }
+  .hub-page { padding: 20px 16px 40px; }
+}
+
+/* ---------- 搜索 page ---------- */
 .history-search {
   display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 42px; flex: none;
   border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel-2); color: var(--ink-3);
 }
 .history-search:focus-within { border-color: var(--accent); color: var(--accent); }
 .history-search input { flex: 1; min-width: 0; border: none; outline: none; background: none; color: var(--ink); font: inherit; font-size: 14px; }
-.history-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding-right: 2px; }
-.history-list > .label { color: var(--ink-3); padding-left: 10px; }
-.history-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.history-item { position: relative; display: flex; align-items: center; border-radius: 12px; }
-.history-item:hover { background: var(--raised); }
-.history-open {
-  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 10px 6px 10px 12px;
-  border: none; background: none; color: var(--ink); text-align: left; cursor: pointer; font: inherit;
+.history-list { display: flex; flex-direction: column; gap: 12px; }
+.history-list > .label { color: var(--ink-3); padding-left: 4px; }
+.history-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+/* A hit between what was said before and after it; 详情 goes to it in the conversation. */
+.search-hit {
+  display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: 14px;
+  background: var(--panel); border: 1px solid var(--line);
 }
-.history-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-hit:hover { background: var(--panel-2); border-color: var(--line-2); }
+.hit-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .history-meta { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
+.history-title { margin-right: 8px; font-family: var(--font-sans); font-size: 12px; font-weight: 700; color: var(--ink-2); letter-spacing: 0; }
+.hit-lines { display: flex; flex-direction: column; gap: 3px; padding-left: 12px; border-left: 2px solid var(--line-2); }
+.hit-context { font-size: 13px; line-height: 1.6; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hit-who { margin-right: 8px; font-size: 11px; color: var(--mute); }
 .history-snippet {
-  font-size: 12px; line-height: 1.6; color: var(--ink-2);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 14px; line-height: 1.6; color: var(--ink); word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .history-snippet mark { background: rgba(90, 169, 255, .22); color: var(--ink); border-radius: 3px; padding: 0 2px; }
-/* A search hit names who said it; the words carry the line. */
-.search-hit .history-title { font-size: 12px; color: var(--ink-3); }
-.search-hit .history-snippet { font-size: 13px; color: var(--ink); }
+.hit-open { flex: none; white-space: nowrap; }
 /* A folder held over the window (app.js wireFolderDrop): letting go works there. */
 body.drop-folder::after {
   content: '松开，在这个文件夹里工作'; position: fixed; inset: 12px; z-index: 90; pointer-events: none;
@@ -650,8 +677,8 @@ body.drop-folder::after {
 
 /* ---------- toast ---------- */
 .toast-root { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 60; }
-/* Over settings or 关于你 a toast would cover their buttons; it goes to the top instead. */
-body:has(.overlay) .toast-root { top: 20px; bottom: auto; }
+/* Over a dialog or the hub's pages a toast would cover their buttons; it goes to the top instead, under the title bar. */
+body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { top: calc(var(--titlebar-h) + 12px); bottom: auto; }
 .toast {
   display: flex; align-items: center; gap: 16px; padding: 10px 12px 10px 18px; border-radius: 999px;
   background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
@@ -662,7 +689,6 @@ body:has(.overlay) .toast-root { top: 20px; bottom: auto; }
   font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
 }
 .trace-note { border: 1px dashed var(--line-2); border-radius: 12px; padding: 12px 14px; font-size: 12px; line-height: 1.7; color: var(--ink-2); }
-@media (prefers-reduced-motion: reduce) { .history-panel { transition: none; } }
 
 /* Narrow windows: the open drawer floats over the conversation instead of squeezing it. */
 @media (max-width: 1100px) {

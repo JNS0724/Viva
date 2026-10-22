@@ -6,6 +6,7 @@ import { createMemoryActions } from './memory-actions.js'
 import { createModelActions } from './model-actions.js'
 import { islandView } from './island-view.js'
 import { answersFrom } from './question-state.js'
+import { hubPage } from './hub-state.js'
 import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createRewindActions } from './rewind-actions.js'
@@ -44,20 +45,22 @@ const dom = {
   workdirConfirm: byId('workdir-confirm-root'),
   rewindConfirm: byId('rewind-confirm-root'),
   toggleDrawer: byId('toggle-drawer'),
-  openSettings: byId('open-settings'),
   settings: byId('settings-root'),
   modelArea: byId('model-area'),
   modelBtn: byId('model-btn'),
   modelMenu: byId('model-menu'),
   jumpLatest: byId('jump-latest'),
-  toggleHistory: byId('toggle-history'),
-  historyPanel: byId('history-panel'),
-  historyClose: byId('history-close'),
   historySearch: byId('history-search'),
   historyList: byId('history-list'),
   toast: byId('toast-root'),
   openProfile: byId('open-profile'),
   profile: byId('profile-root'),
+  /** 搜索 · 关于你 · 设置, one page under the title bar (view/hub.js). */
+  hub: byId('hub'),
+  hubBack: byId('hub-back'),
+  hubNavs: [...document.querySelectorAll('.hub-nav')],
+  hubPages: [...document.querySelectorAll('.hub-page')],
+  hubSearchKey: byId('hub-search-key'),
 }
 dom.follower = createScrollFollower(dom.scroll, dom.jumpLatest)
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
@@ -387,6 +390,12 @@ const handlers = {
     }
   },
   closeSettings: () => dispatch({ type: 'settings_close' }),
+  /** The page under the title bar: on the page asked for, or on the one last shown (hub-state.js). */
+  openHubPage: (page) => HUB_OPENERS[page]?.(),
+  openHub: () => handlers.openHubPage(state.hub.last),
+  /** ← 返回, Esc, or the 关于你 icon again: back to the conversation. */
+  closeHub: () => dispatch({ type: 'hub_close' }),
+  toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
   async setDeskIsland(on) {
     try {
       dispatch({ type: 'settings_loaded', view: await api.setDeskIsland(on) })
@@ -429,6 +438,13 @@ const handlers = {
   revealWorkDir: () => workDirActions.reveal(),
   /** A link in an answer opens in the browser (or mail app), never inside the window. */
   openLink: (url) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
+}
+
+/** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */
+const HUB_OPENERS = {
+  search: () => handlers.openSearch(),
+  profile: () => handlers.openProfile(),
+  settings: () => handlers.openSettings(),
 }
 
 function saveNotice(info) {
@@ -496,14 +512,20 @@ function wireComposer() {
     handlers.send()
   })
   dom.context.addEventListener('click', () => workDirActions.toggleMenu())
-  dom.openSettings.addEventListener('click', () => handlers.openSettings())
-  dom.openProfile.addEventListener('click', () => (state.memory.open ? handlers.closeProfile() : handlers.openProfile()))
   dom.modelBtn.addEventListener('click', () => handlers.togglePicker())
   dom.jumpLatest.addEventListener('click', () => dom.follower.jumpToLatest())
   dom.toggleDrawer.addEventListener('click', () => dispatch({ type: 'toggle_drawer' }))
-  dom.toggleHistory.addEventListener('click', () => handlers.toggleHistory())
-  dom.historyClose.addEventListener('click', () => handlers.closeHistory())
   dom.historySearch.addEventListener('input', () => handlers.searchHistory(dom.historySearch.value))
+}
+
+function wireHub() {
+  dom.openProfile.addEventListener('click', () => handlers.toggleHub())
+  dom.hubBack.addEventListener('click', () => handlers.closeHub())
+  for (const nav of dom.hubNavs) {
+    nav.addEventListener('click', () => {
+      if (hubPage(state) !== nav.dataset.page) handlers.openHubPage(nav.dataset.page)
+    })
+  }
 }
 
 /** ⌘ on the Mac, Ctrl elsewhere (either works on both), with `key` and no Shift. */
@@ -516,21 +538,9 @@ function closeTopmost() {
   else if (state.rewind.editing) rewindActions.cancelEdit()
   else if (state.workDir.confirm) workDirActions.cancelConfirm()
   else if (state.workDir.menu) workDirActions.closeMenu()
-  else if (state.settings.open) dispatch({ type: 'settings_close' })
-  else if (state.memory.open) dispatch({ type: 'memory_close' })
-  else if (state.history.open) dispatch({ type: 'history_close' })
+  else if (state.island) dispatch({ type: 'close_island' })
+  else if (hubPage(state)) dispatch({ type: 'hub_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
-  else dispatch({ type: 'close_island' })
-}
-
-/**
- * Uses the event path captured at dispatch: a hit re-renders the list when clicked,
- * so by the time the click reaches the document its target is no longer in the page.
- */
-function closeHistoryOnOutsideClick(event) {
-  const path = event.composedPath()
-  const within = (el) => path.includes(el)
-  if (state.history.open && ![dom.historyPanel, dom.toggleHistory, dom.toast].some(within)) dispatch({ type: 'history_close' })
 }
 
 function wireDismissal() {
@@ -543,7 +553,6 @@ function wireDismissal() {
     if (state.picker && !within(dom.modelArea)) dispatch({ type: 'picker_close' })
     if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
-    closeHistoryOnOutsideClick(event)
   })
   document.addEventListener('keydown', (event) => {
     if (isHistoryShortcut(event)) {
@@ -598,9 +607,7 @@ function wireFolderDrop() {
 }
 
 function labelShortcuts() {
-  const shortcut = platform === 'darwin' ? '⌘F' : 'Ctrl+F'
-  dom.toggleHistory.title = `搜索 ${shortcut}`
-  dom.toggleHistory.setAttribute('aria-label', `搜索（${shortcut}）`)
+  dom.hubSearchKey.textContent = platform === 'darwin' ? '⌘F' : 'Ctrl+F'
 }
 
 /** An MCP server that would not start is left out; say so once per connection instead of failing. */
@@ -652,6 +659,7 @@ async function boot() {
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })
   wireComposer()
+  wireHub()
   wireDismissal()
   wireFolderDrop()
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)

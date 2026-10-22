@@ -2,6 +2,7 @@ import { approvalTitle, optionName } from './approval.js'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.js'
 import { FILES_ACTIONS, initialFiles } from './files-state.js'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.js'
+import { closeHub, initialHub, oneHubPage } from './hub-state.js'
 import { initialModels, MODEL_ACTIONS } from './model-state.js'
 import { QUESTION_ACTIONS } from './question-state.js'
 import { initialRewind, rewindActions } from './rewind-state.js'
@@ -41,6 +42,8 @@ export const initialState = Object.freeze({
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null,
   history: initialHistory,
+  /** 搜索, 关于你 and 设置 share one page over the conversation: the one it opens on next (hub-state.js). */
+  hub: initialHub,
   /** The one timeline: the segments before the one on screen (earlier-state.js). */
   earlier: initialEarlier,
   /** The working directory: the chip under the input, its menu, the confirmation (workdir-state.js). */
@@ -373,6 +376,7 @@ const ACTION_HANDLERS = {
   toggle_drawer: (state) => ({ ...state, drawer: state.drawer ? null : 'trace' }),
   toggle_island: (state) => ({ ...state, island: !state.island }),
   close_island: (state) => (state.island ? { ...state, island: false } : state),
+  hub_close: (state) => closeHub(state, reduce),
   ...HISTORY_ACTIONS,
   ...EARLIER_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
@@ -397,7 +401,7 @@ export function reduce(state, action) {
   const routed = routeToTask(state, action, HANDLERS)
   if (routed) return routed
   const handler = ACTION_HANDLERS[action?.type]
-  const next = handler ? handler(state, action) : state
+  const next = oneHubPage(state, handler ? handler(state, action) : state, reduce)
   return SENT.has(action?.type) && next.tasks.flip ? { ...next, tasks: { ...next.tasks, flip: false } } : next
 }
 
