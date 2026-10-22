@@ -1,7 +1,7 @@
 {
   "name": "viva",
   "productName": "Viva",
-  "version": "0.3.1-beta.6",
+  "version": "0.3.2-beta.1",
   "private": true,
   "description": "Viva：个人桌面助手，Electron 外壳 + DeepSeek Harness（ACP）",
   "license": "MIT",
