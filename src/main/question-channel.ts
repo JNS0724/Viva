@@ -77,7 +77,7 @@ interface Pending { question: QuestionSet, sessionId: string, taskId: string | n
  * task a session is, if any (its questions go to the window as task_question).
  */
 export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null }: {
-  send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
+  send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
 }) {
   const pending = new Map<string, Pending>()
 

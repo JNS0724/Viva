@@ -126,7 +126,7 @@ export interface ConfigActions {
  * send: to the plugin; emit: to the window; sessionId: the conversation on screen.
  */
 export function createConfigDesk({ send, emit, sessionId, actions }: {
-  send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null, actions: ConfigActions,
+  send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, actions: ConfigActions,
 }) {
   /** Servers waiting for the user's keys, by request id. */
   const pending = new Map<string, ServerSpec>()
