@@ -179,7 +179,7 @@ const mapTask = (state, taskId, change) => withTasks(state, {
  * @param {Record<string, Function>} handlers state.ts's handlers: a task's view is updated the way the
  *   conversation is, and the conversation goes on without the turn as after going back (`rewound`)
  */
-export function taskActions(handlers) {
+export function taskActions(handlers: Record<string, Reducer>): Record<string, Reducer> {
   const inView = (state, taskId, type, action) => mapTask(state, taskId, (task) => ({ ...task, view: handlers[type](task.view, action) }))
 
   return {

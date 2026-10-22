@@ -35,7 +35,7 @@ function togglePick(item, current, label) {
   return current[0] === label ? [] : [label]
 }
 
-export const QUESTION_ACTIONS = {
+export const QUESTION_ACTIONS: Record<string, Reducer> = {
   question_request: (state, { questionId, questions, at }) => {
     const closed = closeStreams(state)
     return {

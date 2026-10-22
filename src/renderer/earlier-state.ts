@@ -27,7 +27,7 @@ export function withCurrentKept(state, at = Date.now()) {
   return { ...state.earlier, segments: [...state.earlier.segments.filter((segment) => segment.id !== kept.id), kept] }
 }
 
-export const EARLIER_ACTIONS = {
+export const EARLIER_ACTIONS: Record<string, Reducer> = {
   earlier_loading: (state) => withEarlier(state, { loading: true }),
   /** A page of segments from before those shown; one already there is not shown twice. */
   earlier_loaded: (state, { segments, hasMore }) => {

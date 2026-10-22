@@ -5,7 +5,7 @@ import { closeStreams } from './streams.ts'
  * phase is 'asking'. The values go from the card straight to the main process; the state only ever holds
  * which server asks for which names, and the trace only that it was asked and whether it was filled in.
  */
-export const SECRET_ACTIONS = {
+export const SECRET_ACTIONS: Record<string, Reducer> = {
   secret_request: (state, { requestId, server, names, at }) => ({
     ...closeStreams(state),
     phase: 'asking',

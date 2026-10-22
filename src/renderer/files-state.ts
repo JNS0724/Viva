@@ -37,7 +37,7 @@ function withPage(current, page) {
 
 const withFiles = (state, changes) => ({ ...state, files: { ...state.files, ...changes } })
 
-export const FILES_ACTIONS = {
+export const FILES_ACTIONS: Record<string, Reducer> = {
   files_listed: (state, { path, entries }) => withFiles(state, { folders: { ...state.files.folders, [path]: entries }, error: null }),
   files_toggled: (state, { path }) => withFiles(state, {
     expanded: state.files.expanded.includes(path) ? state.files.expanded.filter((item) => item !== path) : [...state.files.expanded, path],

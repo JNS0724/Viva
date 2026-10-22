@@ -10,6 +10,26 @@ type Unlisten = () => void
 /** A part of the state whose shape is not written out yet: what an empty start (null, []) was before strict. */
 type Untyped = any
 
+/**
+ * What a part of the state can hold, from its first value: false any boolean, '' any text; a field that starts
+ * null, or a list that starts empty, holds what is not written out yet (Untyped).
+ */
+type Widened<T> = [T] extends [never] ? Untyped
+  : T extends null ? Untyped
+  : T extends string ? string
+  : T extends number ? number
+  : T extends boolean ? boolean
+  : T extends readonly (infer U)[] ? Widened<U>[]
+  : T extends (...args: any[]) => any ? T
+  : T extends object ? { -readonly [K in keyof T]: Widened<T[K]> }
+  : T
+/** The window's state: what state.ts's initialState can become (a task's view has the same shape). */
+type State = Widened<typeof import('./state.ts').initialState>
+/** What changes the state: its type, and the fields its reducer reads (each reducer destructures its own). */
+type Action = { type?: string, [field: string]: any }
+/** The state after an action: a new object, never the one given changed in place. */
+type Reducer = (state: State, action: Action) => State
+
 /** The main window's bridge to the main process (preload.cjs). */
 interface AgentApi {
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */

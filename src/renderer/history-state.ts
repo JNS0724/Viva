@@ -11,12 +11,12 @@ export const initialHistory = Object.freeze({
 
 const withHistory = (state, changes) => ({ ...state, history: { ...state.history, ...changes } })
 
-export const HISTORY_ACTIONS = {
+export const HISTORY_ACTIONS: Record<string, Reducer> = {
   history_open: (state) => withHistory({ ...state, island: false, picker: false }, { open: true }),
   history_close: (state) => withHistory(state, { open: false }),
   history_toggle: (state) => (state.history.open
-    ? HISTORY_ACTIONS.history_close(state)
-    : HISTORY_ACTIONS.history_open(state)),
+    ? HISTORY_ACTIONS.history_close(state, {})
+    : HISTORY_ACTIONS.history_open(state, {})),
 
   history_query: (state, { query }) => withHistory(state, {
     query,

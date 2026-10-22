@@ -19,7 +19,8 @@ import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-s
  */
 export const initialState = Object.freeze({
   info: { mode: 'connecting', model: '', cwd: '', reason: '' },
-  phase: 'idle',
+  /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
+  phase: 'idle' as 'idle' | 'working' | 'waiting' | 'asking' | 'error',
   messages: [] as Untyped[],
   thoughts: [] as Untyped[],
   tools: {} as Record<string, Untyped>,
@@ -180,9 +181,9 @@ function attachReceipt(messages, receipt) {
 }
 
 /** The handlers, looked up when used: a task's view is updated by the same ones (tasks-state.js). */
-const HANDLERS = new Proxy({}, { get: (_target, type) => ACTION_HANDLERS[type] })
+const HANDLERS: Record<string, Reducer> = new Proxy({}, { get: (_target, type) => ACTION_HANDLERS[String(type)] })
 
-const ACTION_HANDLERS = {
+const ACTION_HANDLERS: Record<string, Reducer> = {
   ready: (state, { info }) => ({
     ...state,
     info,
@@ -363,7 +364,7 @@ const ACTION_HANDLERS = {
 
   /** Picked from the history panel: start over with that conversation's messages and close the panel. */
   conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded(
-    { ...ACTION_HANDLERS.new_session(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false, menuFor: null, renaming: null } },
+    { ...ACTION_HANDLERS.new_session(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false } },
     { conversationId: conversation.id, messages: conversation.messages, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
   ),
 

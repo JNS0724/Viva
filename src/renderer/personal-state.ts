@@ -47,7 +47,7 @@ const withExtensions = (state, changes) => ({ ...state, extensions: { ...state.e
 /** @param {{ profile: object }} memory */
 export const isProfileEmpty = (memory) => Object.keys(memory.profile).length === 0
 
-export const PERSONAL_ACTIONS = {
+export const PERSONAL_ACTIONS: Record<string, Reducer> = {
   /** A reload keeps the hits of a search that is still typed. */
   memory_loaded: (state, { data }) => withMemory(state, {
     loaded: true,

@@ -47,7 +47,7 @@ export function foldAfter(state) {
 const withRewind = (state, changes) => ({ ...state, rewind: { ...state.rewind, ...changes } })
 
 /** @param {(state: object, action: object) => object} newSession state.ts's new_session, for the reset */
-export function rewindActions(newSession) {
+export function rewindActions(newSession: Reducer): Record<string, Reducer> {
   return {
     rewind_edit: (state, { id }) => withRewind(state, { editing: id }),
     rewind_cancel: (state) => withRewind(state, { editing: null }),
