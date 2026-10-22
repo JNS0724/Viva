@@ -71,5 +71,5 @@ export function renderDrawer(container, state, handlers) {
   const treeNow = container.querySelector('.file-tree')
   if (treeNow) treeNow.scrollTop = tree
   const previewNow = container.querySelector('.file-preview[data-path]')
-  if (previewNow && previewNow.dataset.path === preview?.path) previewNow.scrollTop = preview.top
+  if (previewNow && preview && previewNow.dataset.path === preview.path) previewNow.scrollTop = preview.top
 }

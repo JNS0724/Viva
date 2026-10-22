@@ -21,14 +21,14 @@ const api = window.desk
  * From the main process: the window's view, the form to show, where the island sits, whether it is dragged,
  * whether the user has yet to see what it can do (coach).
  */
-let payload = null
+let payload: { view?: any, form?: string, align?: string, dir?: string, dragging?: boolean, hover?: boolean, coach?: boolean } | null = null
 /**
  * The input's own state: files dropped so far, pictures pasted (kept in the pictures folder), the last refusal,
  * files being dragged over (their count).
  */
-let files = []
-let images = []
-let error = null
+let files: Array<{ path: string, name: string, size: number }> = []
+let images: Array<{ id: string, size: number }> = []
+let error: string | null = null
 let dropping = 0
 
 const messageOf = (err) => String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
@@ -73,6 +73,7 @@ const input = createIslandInput({
 })
 const island = createIsland('desk', (action) => api.act(action), { input, shortcut: api.shortcut })
 const stage = document.getElementById('desk')
+if (!stage) throw new Error('desk.html has no #desk')
 stage.append(island.el)
 
 /** Why the input cannot take a question now, if it cannot. */
@@ -142,7 +143,7 @@ new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFil
 // Holding the island and moving it drags it; the main process moves the window with the pointer, and the
 // island shrinks to its cat meanwhile. It moves at this page's frames, so in step with the screen at any
 // refresh rate, and not at all while the pointer rests. The click that ends a drag is not a click on the island.
-let press = null
+let press: { x: number, y: number, id: number } | null = null
 let dragged = false
 let frame = 0
 /** What a pointer or click on the island landed on: always an element of the island's page. */
@@ -203,7 +204,7 @@ island.el.addEventListener('contextmenu', (event) => {
 // While files are over it the page hears dragover again and again; when that stops, they have gone.
 const DRAG_GONE_MS = 300
 const hasFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
-let dropTimer = null
+let dropTimer: ReturnType<typeof setTimeout> | undefined
 const stopDropping = () => {
   clearTimeout(dropTimer)
   if (!dropping) return
@@ -214,7 +215,7 @@ island.el.addEventListener('dragenter', (event) => {
   if (hasFiles(event)) event.preventDefault()
 })
 island.el.addEventListener('dragover', (event) => {
-  if (!hasFiles(event)) return
+  if (!event.dataTransfer || !hasFiles(event)) return
   event.preventDefault()
   event.dataTransfer.dropEffect = 'copy'
   clearTimeout(dropTimer)
@@ -227,7 +228,7 @@ island.el.addEventListener('dragleave', (event) => {
   if (!island.el.contains(event.relatedTarget as Node | null)) stopDropping()
 })
 island.el.addEventListener('drop', async (event) => {
-  if (!hasFiles(event)) return
+  if (!event.dataTransfer || !hasFiles(event)) return
   event.preventDefault()
   clearTimeout(dropTimer)
   dropping = 0
@@ -235,7 +236,7 @@ island.el.addEventListener('drop', async (event) => {
   if (result.error) error = result.error
   else {
     const known = new Set(files.map((file) => file.path))
-    files = [...files, ...result.files.filter((file) => !known.has(file.path))].slice(0, MAX_FILES)
+    files = [...files, ...(result.files ?? []).filter((file) => !known.has(file.path))].slice(0, MAX_FILES)
     error = null
   }
   api.act({ kind: 'input' })

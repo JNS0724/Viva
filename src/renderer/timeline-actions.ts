@@ -30,7 +30,7 @@ export function createTimelineActions({ api, getState, dispatch, scroll, reveal 
       const top = scroll.scrollTop
       dispatch({ type: 'earlier_loaded', segments: page.segments, hasMore: page.hasMore })
       scroll.scrollTop = top + (scroll.scrollHeight - height)
-    } catch (err) {
+    } catch (err: any) {
       console.error('[timeline] could not read the earlier conversation:', err.message)
       dispatch({ type: 'earlier_failed' })
     }

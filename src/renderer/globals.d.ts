@@ -7,6 +7,9 @@ type Args<C extends import('../main/ipc-contract.ts').Channel> = import('../main
 type Invoke<C extends import('../main/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<any>
 type Unlisten = () => void
 
+/** A part of the state whose shape is not written out yet: what an empty start (null, []) was before strict. */
+type Untyped = any
+
 /** The main window's bridge to the main process (preload.cjs). */
 interface AgentApi {
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */

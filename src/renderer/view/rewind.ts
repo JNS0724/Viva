@@ -17,7 +17,7 @@ export function rewindBar(message, handlers) {
  * The editor lives across renders (the thread is rebuilt whenever the state changes): what is typed and where
  * the cursor is stay, and it keeps the keyboard.
  */
-let editor = null
+let editor: ReturnType<typeof makeEditor> | null = null
 
 function makeEditor(message, handlers, later) {
   const field = h('textarea', { class: 'rewind-field', rows: 2, 'aria-label': '改了重发' })
@@ -45,7 +45,7 @@ function makeEditor(message, handlers, later) {
 
 /** @param {number} later how many messages after it would fold */
 export function rewindEditor(message, handlers, later) {
-  if (editor?.id !== message.id) editor = makeEditor(message, handlers, later)
+  if (!editor || editor.id !== message.id) editor = makeEditor(message, handlers, later)
   return editor.el
 }
 

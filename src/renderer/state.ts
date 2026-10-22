@@ -20,28 +20,28 @@ import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-s
 export const initialState = Object.freeze({
   info: { mode: 'connecting', model: '', cwd: '', reason: '' },
   phase: 'idle',
-  messages: [],
-  thoughts: [],
-  tools: {},
-  timeline: [],
-  permission: null,
+  messages: [] as Untyped[],
+  thoughts: [] as Untyped[],
+  tools: {} as Record<string, Untyped>,
+  timeline: [] as Untyped[],
+  permission: null as Untyped,
   /** A question the agent is waiting on (question-state.js). */
-  question: null,
+  question: null as Untyped,
   /** Keys a server set up from the conversation waits for (secret-state.js): which server, which names. */
-  secret: null,
-  turn: null,
-  lastReceipt: null,
-  drawer: null,
+  secret: null as Untyped,
+  turn: null as Untyped,
+  lastReceipt: null as Untyped,
+  drawer: null as string | null,
   island: false,
   picker: false,
-  error: null,
-  usage: null,
+  error: null as Untyped,
+  usage: null as Untyped,
   /** Set when the thread opened with saved messages: how many there are and when they were saved. */
-  restored: null,
+  restored: null as Untyped,
   /** Id of the conversation on screen once it is in the history (null for a new, unsaved one). */
-  conversationId: null,
+  conversationId: null as number | null,
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
-  restoredTrace: null,
+  restoredTrace: null as 'loading' | 'loaded' | 'unavailable' | null,
   history: initialHistory,
   /** 搜索, 关于你 and 设置 share one page over the conversation: the one it opens on next (hub-state.js). */
   hub: initialHub,
@@ -52,7 +52,7 @@ export const initialState = Object.freeze({
   /** Going back to something the user said: the message being edited, and the agent going back (rewind-state.js). */
   rewind: initialRewind,
   /** Paths folded off the conversation on screen, each where it went another way: { id, at, count } (rewind-state.js). */
-  folds: [],
+  folds: [] as Untyped[],
   /** The topic on screen: the segment it goes on from (null: a new topic), when it started, its menu (topics.js). */
   topic: initialTopic,
   /** Turns that went on in the background, and the move that can still be undone (tasks-state.js). */
@@ -61,7 +61,7 @@ export const initialState = Object.freeze({
   memory: initialMemory,
   extensions: initialExtensions,
   models: initialModels,
-  toast: null,
+  toast: null as Untyped,
   /** A new or reopened conversation is on its way; sending now would land in the one being replaced. */
   switching: false,
   settings: {
@@ -69,13 +69,13 @@ export const initialState = Object.freeze({
     loaded: false,
     hasKey: false,
     keyHint: '',
-    source: null,
+    source: null as string | null,
     encryptionAvailable: true,
     busy: false,
-    error: null,
-    notice: null,
+    error: null as string | null,
+    notice: null as string | null,
     /** The pictures folder (main/image-store.js): { dir, bytes, count }, and whether 清空 waits for a yes. */
-    images: null,
+    images: null as { dir: string, bytes: number, count: number } | null,
     imagesConfirm: false,
     imagesBusy: false,
     /** What the assistant may do without asking (view/permission-picker.js), its menu, and a switch under way. */

@@ -10,8 +10,8 @@ export const MAX_ROWS = 2000
  * @returns {{ rows: string[][], more: number }} at most MAX_ROWS rows; `more` counts the rest
  */
 export function parseTable(text, delimiter) {
-  const rows = []
-  let row = []
+  const rows: string[][] = []
+  let row: string[] = []
   let field = ''
   let quoted = false
   let more = 0

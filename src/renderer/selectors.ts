@@ -120,10 +120,10 @@ function timelineDay(ts, now) {
  * @returns {Array<{ segment: string | null } & ({ kind: 'day', label: string } | { kind: 'workdir', cwd: string, continues: boolean } | { kind: 'message', id: string, role: string, text: string, receipt: object | null })>}
  */
 export function earlierRows(earlier, { currentCwd = null, now = Date.now(), currentContinues = false } = {}) {
-  /** @type {any[]} the rows as documented above */
-  const rows = []
-  let lastDay = null
-  let lastCwd = null
+  // The rows as documented above.
+  const rows: any[] = []
+  let lastDay: string | null = null
+  let lastCwd: string | null = null
   earlier.segments.forEach((segment, i) => {
     const continues = i > 0 && segment.parentId === earlier.segments[i - 1].id
     if (segment.cwd && lastCwd && segment.cwd !== lastCwd) rows.push({ kind: 'workdir', cwd: segment.cwd, continues, segment: segment.id })

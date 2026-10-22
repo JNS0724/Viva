@@ -1,6 +1,7 @@
-// The window's and the desktop island's pages: the browser, no Node.
+// The window's and the desktop island's pages: the browser, no Node. Strict, except that a type left out is
+// still any until each is written.
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "lib": ["ES2023", "DOM", "DOM.Iterable"], "types": [] },
+  "compilerOptions": { "lib": ["ES2023", "DOM", "DOM.Iterable"], "types": [], "strict": true, "noImplicitAny": false },
   "include": ["src/renderer/**/*.js", "src/renderer/**/*.ts", "src/shared/**/*.js", "src/shared/**/*.ts"]
 }
