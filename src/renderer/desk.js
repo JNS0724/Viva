@@ -1,4 +1,4 @@
-import { IMAGE_LIMITS } from '../shared/images.js'
+import { IMAGE_LIMITS } from '../shared/images.ts'
 import { insertText, pastedParts } from './paste.js'
 import { createIsland } from './view/island-dom.js'
 import { createIslandInput } from './view/island-input.js'

@@ -1,7 +1,12 @@
-// Shared by every part: check the JavaScript as it is (JSDoc for types), emit nothing.
+// Shared by every part: check the code (TypeScript, and the JavaScript not moved yet with JSDoc for types), emit nothing.
 // Each part's own file says where it runs (tsconfig.main / renderer / preload / plugins / test).
+// The tests run the sources as they are, Node dropping the types: imports name the .ts file (tsc writes .js into out/),
+// only syntax that can just be dropped (no enum, namespace or parameter properties), and type-only imports say so.
 {
   "compilerOptions": {
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",

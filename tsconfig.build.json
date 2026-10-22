@@ -12,6 +12,6 @@
     "types": [],
     "newLine": "lf"
   },
-  "include": ["src/**/*.js", "src/**/*.cjs", "plugins/**/*.js"],
+  "include": ["src/**/*.js", "src/**/*.cjs", "src/**/*.ts", "plugins/**/*.js", "plugins/**/*.ts"],
   "exclude": ["plugins/**/node_modules"]
 }

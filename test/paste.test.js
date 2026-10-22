@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { htmlToText, pastedParts } from '../src/renderer/paste.js'
-import { checkImages, imageUrl, isImageId, mimeOfId, sniffImageType } from '../src/shared/images.js'
+import { checkImages, imageUrl, isImageId, mimeOfId, sniffImageType } from '../src/shared/images.ts'
 
 const clipboard = ({ files = [], plain = '', html = '' } = {}) => ({
   files,

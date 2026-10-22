@@ -1,4 +1,4 @@
-import { PROFILE_FIELDS } from '../../../src/shared/profile-fields.js'
+import { PROFILE_FIELDS } from '../../../src/shared/profile-fields.ts'
 
 /**
  * The background sent ahead of a question: the fixed layer when it is due (rules, the profile the user

@@ -1,4 +1,4 @@
-import { fileName, splitFiles } from '../../shared/attachments.js'
+import { fileName, splitFiles } from '../../shared/attachments.ts'
 import { optionName } from '../approval.js'
 import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.js'
 import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.js'

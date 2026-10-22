@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { isImageId, mimeOfId } from '../shared/images.js'
+import { isImageId, mimeOfId } from '../shared/images.ts'
 
 /**
  * viva-image://img/<id>: a picture from the pictures folder, for the thread and the inputs to show by name

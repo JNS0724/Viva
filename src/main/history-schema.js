@@ -1,5 +1,5 @@
 /** Validation shared by the history database, the legacy JSON import and the IPC boundary. */
-import { checkImages } from '../shared/images.js'
+import { checkImages } from '../shared/images.ts'
 
 const MAX_MESSAGES = 5000
 const MAX_TEXT_CHARS = 200_000

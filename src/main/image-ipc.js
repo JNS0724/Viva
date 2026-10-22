@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { checkImages, IMAGE_LIMITS, mimeOfId } from '../shared/images.js'
+import { checkImages, IMAGE_LIMITS, mimeOfId } from '../shared/images.ts'
 
 const GONE = '有张图片已经不在图片文件夹里了（可能被清空了），去掉它再发'
 const BUSY = '助手正在工作，等这一轮结束再改'
