@@ -12,14 +12,20 @@ const MAX_LABEL_CHARS = 200
 const MAX_ANSWER_CHARS = 2000
 const MAX_ID_CHARS = 128
 
-const isText = (value, max) => typeof value === 'string' && value.trim().length > 0 && value.length <= max
+export interface QuestionOption { label: string, description?: string }
+export interface Question { id: string, question: string, header: string, options: QuestionOption[], multiSelect: boolean }
+/** What the plugin asked: one card of questions. */
+export interface QuestionSet { id: string, questions: Question[] }
+export interface Answer { id: string, selected: string[], custom?: string }
 
-function optionFrom(option) {
+const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max
+
+function optionFrom(option: any): QuestionOption | null {
   if (!isText(option?.label, MAX_LABEL_CHARS)) return null
   return { label: option.label, ...(isText(option.description, MAX_QUESTION_CHARS) ? { description: option.description } : {}) }
 }
 
-function questionFrom(item) {
+function questionFrom(item: any): Question | null {
   if (!isText(item?.id, MAX_ID_CHARS) || !isText(item.question, MAX_QUESTION_CHARS)) return null
   const options = (Array.isArray(item.options) ? item.options : []).slice(0, MAX_OPTIONS).map(optionFrom)
   if (options.some((option) => option === null)) return null
@@ -33,8 +39,8 @@ function questionFrom(item) {
   }
 }
 
-/** @returns {{ id: string, questions: object[] } | null} the question to show, or null when malformed */
-export function parseQuestion(message) {
+/** The question to show, or null when malformed. */
+export function parseQuestion(message: any): QuestionSet | null {
   if (!isText(message?.id, MAX_ID_CHARS) || !Array.isArray(message.questions)) return null
   if (message.questions.length === 0 || message.questions.length > MAX_QUESTIONS) return null
   const questions = message.questions.map(questionFrom)
@@ -46,38 +52,40 @@ export function parseQuestion(message) {
 /**
  * The window's answer, checked against the questions asked: one entry per question, picks among its options
  * (one unless it allows several), and optional text of the user's own.
- * @returns {Array<{ id: string, selected: string[], custom?: string }>}
  */
-export function checkAnswers(questions, answers) {
+export function checkAnswers(questions: readonly Question[], answers: unknown): Answer[] {
   if (!Array.isArray(answers) || answers.length !== questions.length) throw new Error('回答和问题对不上')
   return questions.map((question) => {
     const answer = answers.find((item) => item?.id === question.id)
-    const selected = Array.isArray(answer?.selected) ? answer.selected : null
-    const labels = new Set(question.options.map((option) => option.label))
+    const selected: unknown[] | null = Array.isArray(answer?.selected) ? answer.selected : null
+    const labels = new Set<unknown>(question.options.map((option) => option.label))
     if (!selected || !selected.every((label) => labels.has(label))) throw new Error('选项无效')
     if (!question.multiSelect && selected.length > 1) throw new Error('这个问题只能选一项')
     const custom = typeof answer.custom === 'string' ? answer.custom.trim() : ''
     if (custom.length > MAX_ANSWER_CHARS) throw new Error(`回答太长（上限 ${MAX_ANSWER_CHARS} 字）`)
-    return { id: question.id, selected: [...new Set(selected)], ...(custom ? { custom } : {}) }
+    return { id: question.id, selected: [...new Set(selected as string[])], ...(custom ? { custom } : {}) }
   })
 }
 
-/**
- * @param {{ send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null }} io
- *   send: to the plugin; emit: to the window; sessionId: the conversation on screen; taskOf: the background
- *   task a session is, if any (its questions go to the window as task_question)
- */
-export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null }) {
-  /** questionId → { question, sessionId, taskId } (taskId null for the main conversation's) */
-  const pending = new Map()
+/** A question waiting: from which session, and the background task it belongs to (null for the main conversation's). */
+interface Pending { question: QuestionSet, sessionId: string, taskId: string | null }
 
-  const closed = (questionId, taskId) => emit(taskId ? { type: 'task_question_closed', taskId, questionId } : { type: 'question_closed', questionId })
-  const shown = (entry) => emit(entry.taskId
+/**
+ * send: to the plugin; emit: to the window; sessionId: the conversation on screen; taskOf: the background
+ * task a session is, if any (its questions go to the window as task_question).
+ */
+export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null }: {
+  send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
+}) {
+  const pending = new Map<string, Pending>()
+
+  const closed = (questionId: string, taskId: string | null) => emit(taskId ? { type: 'task_question_closed', taskId, questionId } : { type: 'question_closed', questionId })
+  const shown = (entry: Pending) => emit(entry.taskId
     ? { type: 'task_question', taskId: entry.taskId, questionId: entry.question.id, questions: entry.question.questions }
     : { type: 'question', questionId: entry.question.id, questions: entry.question.questions })
 
   /** A message from the plugin. */
-  function receive(message) {
+  function receive(message: any): void {
     if (message?.type === 'question_closed') {
       const entry = pending.get(message.id)
       if (entry && pending.delete(message.id)) closed(message.id, entry.taskId)
@@ -98,8 +106,8 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
     shown(entry)
   }
 
-  /** @returns {boolean} false when the question is no longer waiting */
-  function answer(questionId, answers) {
+  /** @returns false when the question is no longer waiting */
+  function answer(questionId: string, answers: unknown): boolean {
     const entry = pending.get(questionId)
     if (!entry) return false
     const checked = checkAnswers(entry.question.questions, answers)
@@ -108,7 +116,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
     return true
   }
 
-  function decline(keep) {
+  function decline(keep: (entry: Pending) => boolean): void {
     for (const [questionId, entry] of [...pending]) {
       if (keep(entry)) continue
       pending.delete(questionId)
@@ -120,10 +128,10 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
   /** The conversation on screen is left (or dsh is going away): what it still asked goes unanswered; tasks' stay. */
   const declineAll = () => decline((entry) => entry.taskId !== null)
   /** A background task is closed: what it still asked goes unanswered. */
-  const declineTask = (taskId) => decline((entry) => entry.taskId !== taskId)
+  const declineTask = (taskId: string) => decline((entry) => entry.taskId !== taskId)
 
   /** The turn asking became a background task: its questions are the task's now. */
-  function moveToTask(fromSessionId, taskId) {
+  function moveToTask(fromSessionId: string, taskId: string): void {
     for (const entry of pending.values()) {
       if (entry.sessionId !== fromSessionId || entry.taskId) continue
       closed(entry.question.id, null)
@@ -133,7 +141,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
   }
 
   /** The task became the conversation on screen again (moving it to the background was undone). */
-  function moveToMain(taskId) {
+  function moveToMain(taskId: string): void {
     for (const entry of pending.values()) {
       if (entry.taskId !== taskId) continue
       closed(entry.question.id, taskId)

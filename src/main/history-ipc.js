@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import { readSessionTrace } from './dsh-log.ts'
 import { exportFileName, toMarkdown } from './history-export.ts'
-import { assertId } from './history-schema.js'
+import { assertId } from './history-schema.ts'
 
 /** How long "已删除 · 撤销" stays up; the conversation is purged for good after that. */
 export const UNDO_WINDOW_MS = 8000

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryDb } from '../plugins/memory/lib/store.js'
-import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.js'
+import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.ts'
 import { ROOT } from './fixtures/dsh-harness.js'
 
 /** The app's plugin list: what it puts in the profile, and what it leaves out and why. */

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { APP_ROOT, CODE_ROOT, dshLaunch, resolveConfig, rootsOf } from '../src/main/config.js'
+import { APP_ROOT, CODE_ROOT, dshLaunch, resolveConfig, rootsOf } from '../src/main/config.ts'
 import { externalUrl } from '../src/main/links.ts'
 import { createPermissionBroker } from '../src/main/permission-broker.ts'
 import { currentModelName, describeConfig, describeError } from '../src/main/session-info.ts'

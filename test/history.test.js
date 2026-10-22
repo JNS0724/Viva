@@ -4,8 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openHistoryDb } from '../src/main/history-db.js'
-import { migrateLegacyHistory } from '../src/main/history-migrate.js'
-import { autoTitle, normalizeMessages, normalizeTitle } from '../src/main/history-schema.js'
+import { migrateLegacyHistory } from '../src/main/history-migrate.ts'
+import { autoTitle, normalizeMessages, normalizeTitle } from '../src/main/history-schema.ts'
 
 const receipt = { ms: 4200, tools: 2, thoughts: 1, stopReason: 'end_turn' }
 const MESSAGES = [

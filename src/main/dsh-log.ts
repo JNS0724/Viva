@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { stepsFrom } from '../../plugins/trace/lib/steps.js'
-import { assertId } from './history-schema.js'
+import { assertId } from './history-schema.ts'
 import { decompressZstdFrames } from './zstd-frames.ts'
 
 /**

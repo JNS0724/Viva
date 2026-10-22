@@ -10,7 +10,7 @@ const BUSY = '助手正在工作，等这一轮结束再改'
  * starts again on the new folder (`restart`).
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
- *   store: ReturnType<import('./image-store.js').createImageStore>,
+ *   store: ReturnType<import('./image-store.ts').createImageStore>,
  *   setDir: (dir: string) => void,
  *   chooseFolder: () => Promise<string | null>,
  *   reveal: (dir: string) => Promise<string>,

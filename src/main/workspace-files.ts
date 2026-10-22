@@ -16,7 +16,7 @@ const HEAVY = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pyca
 const MARKDOWN = new Set(['.md', '.markdown'])
 const TABLES = new Set(['.csv', '.tsv'])
 /** Extension → highlight.js language (its "common" set). */
-const LANGUAGES = {
+const LANGUAGES: Readonly<Record<string, string>> = {
   '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript', '.jsx': 'javascript', '.ts': 'typescript', '.tsx': 'typescript',
   '.json': 'json', '.py': 'python', '.java': 'java', '.go': 'go', '.rs': 'rust', '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp',
   '.hpp': 'cpp', '.cs': 'csharp', '.rb': 'ruby', '.php': 'php', '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash', '.ps1': 'powershell',
@@ -24,19 +24,36 @@ const LANGUAGES = {
   '.htm': 'xml', '.css': 'css', '.scss': 'scss', '.less': 'less', '.sql': 'sql', '.swift': 'swift', '.kt': 'kotlin', '.lua': 'lua',
   '.r': 'r', '.diff': 'diff', '.patch': 'diff', '.pl': 'perl', '.vb': 'vbnet', '.m': 'objectivec', '.graphql': 'graphql',
 }
-const IMAGES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' }
+const IMAGES: Readonly<Record<string, string>> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' }
 /** Opening these would run them. */
 const PROGRAMS = new Set(['.exe', '.bat', '.cmd', '.com', '.ps1', '.sh', '.command', '.app', '.js', '.vbs', '.wsf', '.lnk', '.msi', '.jar', '.scr', '.pkg', '.dmg'])
 const BINARY_SAMPLE = 8000
 
+export interface FolderEntry { name: string, path: string, kind: 'folder' | 'file', size: number, heavy: boolean }
+
+/** A file as the preview shows it; `offset` and `nextOffset` page through text. */
+export interface FilePreview {
+  path: string
+  name: string
+  size: number
+  kind: 'markdown' | 'code' | 'csv' | 'text' | 'image' | 'binary'
+  text?: string
+  html?: string
+  language?: string
+  dataUrl?: string
+  offset?: number
+  nextOffset?: number | null
+  openable: boolean
+}
+
 const outside = () => new Error('这个位置不在工作区里')
 
 /**
- * @param {string} root the workspace folder
- * @param {string} rel a path inside it, '' for the workspace itself
- * @returns {string} the real absolute path
+ * @param root the workspace folder
+ * @param rel a path inside it, '' for the workspace itself
+ * @returns the real absolute path
  */
-export function resolveInside(root, rel) {
+export function resolveInside(root: string, rel: unknown): string {
   if (typeof rel !== 'string' || path.isAbsolute(rel)) throw outside()
   const base = fs.realpathSync(root)
   const target = path.resolve(base, rel)
@@ -46,22 +63,21 @@ export function resolveInside(root, rel) {
   return real
 }
 
-const toRel = (root, abs) => path.relative(fs.realpathSync(root), abs).split(path.sep).join('/')
-const byName = (a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { sensitivity: 'base', numeric: true })
+const toRel = (root: string, abs: string) => path.relative(fs.realpathSync(root), abs).split(path.sep).join('/')
+const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'zh-Hans-CN', { sensitivity: 'base', numeric: true })
 
-/** @returns {{ path: string, entries: { name: string, path: string, kind: 'folder' | 'file', size: number, heavy: boolean }[], truncated: boolean }} */
-export function listFolder(root, rel) {
+export function listFolder(root: string, rel: string): { path: string, entries: FolderEntry[], truncated: boolean } {
   const dir = resolveInside(root, rel)
   const dirents = fs.readdirSync(dir, { withFileTypes: true })
-  const entries = dirents.slice(0, MAX_ENTRIES).flatMap((dirent) => {
+  const entries = dirents.slice(0, MAX_ENTRIES).flatMap((dirent): FolderEntry[] => {
     const abs = path.join(dir, dirent.name)
-    let stat
+    let stat: fs.Stats
     try {
       stat = fs.statSync(abs)
     } catch {
       return []
     }
-    const kind = /** @type {'folder' | 'file'} */ (stat.isDirectory() ? 'folder' : 'file')
+    const kind = stat.isDirectory() ? 'folder' : 'file'
     return [{ name: dirent.name, path: toRel(root, abs), kind, size: kind === 'file' ? stat.size : 0, heavy: kind === 'folder' && HEAVY.has(dirent.name) }]
   })
   const folders = entries.filter((entry) => entry.kind === 'folder').sort(byName)
@@ -69,13 +85,13 @@ export function listFolder(root, rel) {
   return { path: toRel(root, dir), entries: [...folders, ...files], truncated: dirents.length > MAX_ENTRIES }
 }
 
-/** @param {string} name @returns {boolean} whether the default app may open it */
-export const canOpen = (name) => !PROGRAMS.has(path.extname(name).toLowerCase())
+/** Whether the default app may open it. */
+export const canOpen = (name: string): boolean => !PROGRAMS.has(path.extname(name).toLowerCase())
 
-const looksBinary = (buffer) => buffer.subarray(0, BINARY_SAMPLE).includes(0)
+const looksBinary = (buffer: Buffer) => buffer.subarray(0, BINARY_SAMPLE).includes(0)
 
 /** Where a page may end without splitting a character: after its last line break, else at a character edge. */
-function pageEnd(buffer) {
+function pageEnd(buffer: Buffer): number {
   const lineEnd = buffer.lastIndexOf(0x0a)
   if (lineEnd >= 0) return lineEnd + 1
   let lead = buffer.length - 1
@@ -84,8 +100,8 @@ function pageEnd(buffer) {
   return lead + width > buffer.length ? lead : buffer.length
 }
 
-/** @returns {{ buffer: Buffer, nextOffset: number | null }} one page from `offset`; nextOffset is null at the end */
-function readPage(file, size, offset) {
+/** One page from `offset`; nextOffset is null at the end. */
+function readPage(file: string, size: number, offset: number): { buffer: Buffer, nextOffset: number | null } {
   const length = Math.max(0, Math.min(size - offset, PREVIEW_LIMIT))
   const buffer = Buffer.alloc(length)
   const fd = fs.openSync(file, 'r')
@@ -100,15 +116,10 @@ function readPage(file, size, offset) {
 }
 
 /** Code as highlight.js marks it up: its own text escaped, wrapped only in hljs spans. */
-const highlighted = (text, language) => hljs.highlight(text, { language, ignoreIllegals: true }).value
+const highlighted = (text: string, language: string) => hljs.highlight(text, { language, ignoreIllegals: true }).value
 
-/**
- * @param {string} root @param {string} rel
- * @param {{ offset?: number }} [page] where to read from, for the pages after the first
- * @returns {{ path: string, name: string, size: number, kind: 'markdown' | 'code' | 'csv' | 'text' | 'image' | 'binary',
- *   text?: string, html?: string, language?: string, dataUrl?: string, offset?: number, nextOffset?: number | null, openable: boolean }}
- */
-export function previewFile(root, rel, { offset = 0 } = {}) {
+/** @param page where to read from, for the pages after the first */
+export function previewFile(root: string, rel: string, { offset = 0 }: { offset?: number } = {}): FilePreview {
   const file = resolveInside(root, rel)
   const stat = fs.statSync(file)
   if (!stat.isFile()) throw new Error('这不是文件')

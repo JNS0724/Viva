@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createConfigDesk, parseConfigRequest } from '../src/main/config-channel.js'
+import { createConfigDesk, parseConfigRequest } from '../src/main/config-channel.ts'
 
 const request = (op, args, extra = {}) => ({ type: 'config', id: 'c1', sessionId: 's1', op, args, ...extra })
 

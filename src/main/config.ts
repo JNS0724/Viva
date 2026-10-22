@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { dshHomeFor, dshRuntime } from './dsh-runtime.ts'
+import { type DshRuntime, dshHomeFor, dshRuntime } from './dsh-runtime.ts'
 
 /** Where `npm run build` puts the app as it runs (scripts/build.mjs), laid out like the repository. */
 export const BUILD_DIR = 'out'
@@ -10,9 +10,8 @@ export const BUILD_DIR = 'out'
  * Where the app's code is (its src/ and plugins/) and where the project is (node_modules, build/, test/fixtures,
  * workspace/), from the path of this file: one folder when the app runs from the sources, out/ and the folder
  * around it once built (in the repository, and inside app.asar).
- * @param {string} file @returns {{ codeRoot: string, appRoot: string }}
  */
-export function rootsOf(file) {
+export function rootsOf(file: string): { codeRoot: string, appRoot: string } {
   const codeRoot = path.resolve(path.dirname(file), '..', '..')
   return { codeRoot, appRoot: path.basename(codeRoot) === BUILD_DIR ? path.dirname(codeRoot) : codeRoot }
 }
@@ -34,34 +33,53 @@ export const DSH_PROFILE = 'viva'
 
 /**
  * How to start dsh in ACP mode. A JavaScript entry runs under `nodeBin` (the app's own executable as Node,
- * see dsh-runtime.js); anything else is executed directly.
- * @returns {{ command: string, args: string[] }}
+ * see dsh-runtime.ts); anything else is executed directly.
  */
-export function dshLaunch(dshBin, nodeBin, profile = DSH_PROFILE) {
+export function dshLaunch(dshBin: string, nodeBin: string, profile = DSH_PROFILE): { command: string, args: string[] } {
   const extension = path.extname(dshBin.replaceAll('\\', '/')).toLowerCase()
   return SCRIPT_EXTENSIONS.has(extension)
     ? { command: nodeBin, args: [dshBin, '--profile', profile] }
     : { command: dshBin, args: ['--profile', profile] }
 }
 
-const resolveIfPath = (value) => (/[\\/]/.test(value) ? path.resolve(value) : value)
+const resolveIfPath = (value: string) => (/[\\/]/.test(value) ? path.resolve(value) : value)
 
 /** 'no-key': no model to talk to, neither a DeepSeek key nor a provider the user added. */
-function problemFor(hasModel, dshBin, exists) {
+function problemFor(hasModel: boolean, dshBin: string, exists: (file: string) => boolean): 'no-key' | 'no-dsh' | null {
   if (!hasModel) return 'no-key'
   if (!exists(dshBin)) return 'no-dsh'
   return null
 }
 
+export interface LaunchConfig {
+  dshBin: string
+  nodeBin: string
+  runtime: DshRuntime
+  cwd: string
+  apiKey: string
+  keySource: 'saved' | 'env' | null
+  problem: 'no-key' | 'no-dsh' | null
+  dshHome: string | null
+  smoke: boolean
+  smokePhase: string | null
+  smokeOut: string
+}
+
 /**
  * Reads launch settings. A key saved in the settings panel wins over `DEEPSEEK_API_KEY` from the environment.
  * `problem` says what is missing before the agent can start (null when ready); other model providers
- * (model-providers.js) make the DeepSeek key optional. dsh's home lives in the app's data folder, and dsh
+ * (model-providers.ts) make the DeepSeek key optional. dsh's home lives in the app's data folder, and dsh
  * runs on the app's own executable (DSH_NODE names another Node, for development).
- * @param {{ userData?: string, execPath?: string, packaged?: boolean }} [app] where the app keeps its data, its
- *   executable, and whether it is the installed app (whose own folder is read-only: the workspace goes to userData)
+ * @param app where the app keeps its data, its executable, and whether it is the installed app (whose own
+ *   folder is read-only: the workspace goes to userData)
  */
-export function resolveConfig(env = process.env, exists = fs.existsSync, savedKey = '', hasProviders = false, app = {}) {
+export function resolveConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (file: string) => boolean = fs.existsSync,
+  savedKey = '',
+  hasProviders = false,
+  app: { userData?: string, execPath?: string, packaged?: boolean } = {},
+): LaunchConfig {
   // A relative path is taken from where the app was launched, not from the agent's workspace.
   const dshBin = env.DSH_BIN ? resolveIfPath(env.DSH_BIN) : DEFAULT_DSH_ENTRY
   const apiKey = savedKey || env.DEEPSEEK_API_KEY || ''
