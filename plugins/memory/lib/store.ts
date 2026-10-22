@@ -222,6 +222,9 @@ const escapeLike = (text: string) => text.replace(/[\\%_]/g, (c) => `\\${c}`)
  * Opened by the main process and by the memory MCP server (another process), so writes are short
  * transactions and WAL lets both read while one writes.
  */
+/** The store openMemoryDb opens. */
+export type MemoryDb = ReturnType<typeof openMemoryDb>
+
 export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () => number }) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)

@@ -1,4 +1,5 @@
 import { MAX_SYNTHESIS_CHARS } from './store.ts'
+import type { MemoryDb } from './store.ts'
 
 /**
  * The periodic profile: now and then the agent's model rewrites what the valid memories say about the
@@ -25,14 +26,16 @@ export const SYNTHESIS_SYSTEM = [
  * Whether a new synthesis is due: something changed, and either there is none yet, it is old, much changed,
  * or a profile memory it may repeat stopped being true (a profile saying the old manager is wrong at once).
  */
-export function synthesisDue({ latest, changes, invalidated = 0, now }) {
+export function synthesisDue({ latest, changes, invalidated = 0, now }: {
+  latest: { createdAt: number } | null, changes: number, invalidated?: number, now: number,
+}): boolean {
   if (changes === 0) return false
   if (!latest || invalidated > 0) return true
   return now - latest.createdAt >= SYNTHESIS_INTERVAL_MS || changes >= SYNTHESIS_MIN_CHANGES
 }
 
-const pad = (n) => String(n).padStart(2, '0')
-const day = (ts) => {
+const pad = (n: number) => String(n).padStart(2, '0')
+const day = (ts: number) => {
   const date = new Date(ts)
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
@@ -49,7 +52,7 @@ export function synthesisInput({ profile, memories }: { profile: Record<string, 
  * The model's profile, accepted only in the agreed form: known headings in order, then "- " lines.
  * @throws when it is anything else; the previous synthesis stays in use then
  */
-export function checkSynthesis(text) {
+export function checkSynthesis(text: unknown): string {
   const lines = String(text ?? '').trim().split('\n').map((line) => line.trim()).filter(Boolean)
   if (lines.length === 0) throw new Error('画像是空的')
   let lastSection = -1
@@ -68,10 +71,12 @@ export function checkSynthesis(text) {
 
 /**
  * Rewrites the profile when it is due. `complete(system, input)` calls the model.
- * @returns {Promise<null | { id: number, text: string, createdAt: number }>} null when not due
+ * @returns null when not due
  * @throws when the call fails or the answer is unusable; nothing is saved then
  */
-export async function synthesizeProfile({ db, complete, now = Date.now() }) {
+export async function synthesizeProfile({ db, complete, now = Date.now() }: {
+  db: MemoryDb, complete: (system: string, input: string) => Promise<string>, now?: number,
+}): Promise<{ id: number, text: string, createdAt: number } | null> {
   const latest = db.latestSynthesis()
   const since = latest?.createdAt ?? 0
   if (!synthesisDue({ latest, changes: db.changesSince(since), invalidated: db.profileInvalidationsSince(since), now })) return null
