@@ -532,9 +532,13 @@ function closeHistoryOnOutsideClick(event) {
 
 function wireDismissal() {
   document.addEventListener('click', (event) => {
-    if (state.island && !dom.island.contains(event.target)) dispatch({ type: 'close_island' })
-    if (state.picker && !dom.modelArea.contains(event.target)) dispatch({ type: 'picker_close' })
-    if (state.workDir.menu && !dom.workdirArea.contains(event.target)) workDirActions.closeMenu()
+    // The path as it was at the click: a click that opens a menu re-renders its button, so by now the element
+    // clicked (the model's name, the folder's) is no longer in the page and contains() would call it outside.
+    const path = event.composedPath()
+    const within = (el) => path.includes(el)
+    if (state.island && !within(dom.island)) dispatch({ type: 'close_island' })
+    if (state.picker && !within(dom.modelArea)) dispatch({ type: 'picker_close' })
+    if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
     closeHistoryOnOutsideClick(event)
   })

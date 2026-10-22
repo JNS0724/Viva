@@ -270,6 +270,28 @@ async function walkthrough(win, outDir, hooks) {
   failures.push(...await checkLongTask(win, outDir))
   await finishTurn(win)
   failures.push(...await checkFiles(win, outDir, hooks.cwd))
+  failures.push(...await checkPickers(win, outDir))
+  return failures
+}
+
+/**
+ * The model's button and the folder's chip open their menus from anywhere on them, not only the chevron:
+ * the name is clicked here, which the re-render takes out of the page as the menu opens.
+ */
+async function checkPickers(win, outDir) {
+  const failures = []
+  await run(win, `document.querySelector('#model-btn .model-btn-name').click()`)
+  await wait(UI_WAIT_MS)
+  const model = await run(win, `Boolean(document.querySelector('#model-menu .model-menu'))`)
+  if (!model) failures.push("a click on the model's name should open its menu")
+  else await capture(win, outDir, 'picker-model')
+  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+  await run(win, `document.querySelector('#composer-context .workdir-name').click()`)
+  await wait(UI_WAIT_MS)
+  const folder = await run(win, `Boolean(document.querySelector('#workdir-menu .workdir-menu'))`)
+  if (!folder) failures.push("a click on the folder's name should open its menu")
+  else await capture(win, outDir, 'picker-folder')
+  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   return failures
 }
 

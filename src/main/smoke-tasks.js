@@ -174,9 +174,39 @@ async function reportSteps(win, outDir, expect) {
   expect(!after.report, 'closed, the task\'s report should go too', after)
 }
 
+const ASKS_LATER = '接入演示服务，再问我城市'
+const TRAIN_ASK = '帮我订一张下周的火车票'
+
+/**
+ * A task asks something after it went to the background: its own card in the thread, named, answers it, and
+ * the task carries on to its end and reports back.
+ */
+async function laterQuestionSteps(win, outDir, expect) {
+  await submit(win, ASKS_LATER)
+  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
+  await submit(win, TRAIN_ASK)
+  await until(win, `document.querySelector('#thread .fold-task') && ${JSON.stringify(TRAIN_ASK)}`, 'the turn in the background')
+  // Declined, the task goes on to ask which city.
+  await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
+  const card = await until(win, `(() => {
+    const card = document.querySelector('.confirm.ask')
+    return card && { head: card.querySelector('.confirm-head')?.textContent ?? '', options: [...card.querySelectorAll('.ask-option')].map((el) => el.textContent) }
+  })()`, "the task's question")
+  expect(card.head.startsWith(`#${ASKS_LATER}`) && card.options.join() === '上海,北京', "the task's question should be its own card, named", card)
+  await run(win, `document.querySelector('.confirm.ask').scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-question')
+  await run(win, `[...document.querySelectorAll('.confirm.ask .ask-option')].find((el) => el.textContent === '上海').click()`)
+  const report = await until(win, `[...document.querySelectorAll('#thread .task-report')].map((el) => el.textContent).find((text) => text.includes(${JSON.stringify(ASKS_LATER)})) ?? null`, "the task's report after the answer")
+  expect(report.includes('按上海来看'), 'answered, the task should carry on and report what it said', report)
+  const asked = await run(win, `[...document.querySelectorAll('#thread > .msg-user, #thread > .msg-user-row .msg-user')].map((el) => el.textContent)`)
+  expect(!asked.includes('上海'), 'the answer should go to the task, not the conversation on screen', asked)
+}
+
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win, outDir, expect, hooks) {
   await moveSteps(win, outDir, expect, hooks)
   await undoSteps(win, outDir, expect)
   await offerSteps(win, outDir, expect)
+  await laterQuestionSteps(win, outDir, expect)
 }
