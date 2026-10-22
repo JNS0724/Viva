@@ -18,12 +18,12 @@ import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-s
  * Thoughts and tool calls live in `timeline` (shown in the drawer), never in `messages`.
  */
 export const initialState = Object.freeze({
-  info: { mode: 'connecting', model: '', cwd: '', reason: '' },
+  info: { mode: 'connecting', model: '', cwd: '', reason: '' } as AgentInfo,
   /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
   phase: 'idle' as 'idle' | 'working' | 'waiting' | 'asking' | 'error',
   messages: [] as Untyped[],
   thoughts: [] as Untyped[],
-  tools: {} as Record<string, Untyped>,
+  tools: {} as Record<string, ToolCall>,
   timeline: [] as Untyped[],
   permission: null as Untyped,
   /** A question the agent is waiting on (question-state.js). */

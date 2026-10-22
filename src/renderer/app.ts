@@ -88,7 +88,7 @@ const elements = {
 const dom = { ...elements, follower: createScrollFollower(elements.scroll, elements.jumpLatest) }
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
 
-let state = initialState
+let state: State = initialState
 let revealFrameId = 0
 let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
@@ -621,7 +621,7 @@ const HUB_OPENERS = {
 
 function saveNotice(info) {
   if (info?.mode === 'live') return `已保存并连接 · ${info.model || 'DeepSeek'}`
-  if (info?.mode === 'setup') return `已保存，但还不能连接：${setupView(info).title}`
+  if (info?.mode === 'setup') return `已保存，但还不能连接：${setupView(info)?.title ?? ''}`
   return '已保存，但没能连上 DeepSeek Harness，详情见对话区'
 }
 

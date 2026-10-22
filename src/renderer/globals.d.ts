@@ -19,10 +19,33 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends string ? string
   : T extends number ? number
   : T extends boolean ? boolean
-  : T extends readonly (infer U)[] ? Widened<U>[]
+  : T extends readonly (infer U)[] ? ReadonlyArray<Widened<U>>
   : T extends (...args: any[]) => any ? T
   : T extends object ? { -readonly [K in keyof T]: Widened<T[K]> }
   : T
+/** What the main process tells the window of the agent (session-info.ts, acp-bridge.ts): the fields the window reads. */
+interface AgentInfo {
+  mode: string
+  model: string
+  cwd: string
+  reason?: string
+  /** Why the agent cannot start ('no-key', 'no-dsh'), in setup mode. */
+  problem?: string
+  remembersHistory?: boolean
+  [field: string]: any
+}
+/** A tool call as the state keeps it from the agent's updates. */
+interface ToolCall {
+  title: string
+  kind?: string
+  status?: string
+  rawInput?: any
+  locations?: ReadonlyArray<{ path: string }>
+  [field: string]: any
+}
+/** How a turn ended, shown under its answer. */
+interface Receipt { ms: number, stopReason?: string, tools?: number, [field: string]: any }
+
 /** The window's state: what state.ts's initialState can become (a task's view has the same shape). */
 type State = Widened<typeof import('./state.ts').initialState>
 /** What changes the state: its type, and the fields its reducer reads (each reducer destructures its own). */
