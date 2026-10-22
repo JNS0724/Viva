@@ -663,6 +663,7 @@ function openHistory(config) {
     agentInfo: () => lastInfo,
     switchAgent,
     chooseExportPath,
+    isBusy: () => turn.active,
   })
   registerRewindIpc(ipcMain, {
     db: historyDb,

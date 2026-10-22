@@ -47,6 +47,8 @@ const dom = {
   bgSend: byId('bg-send'),
   context: byId('composer-context'),
   workdirArea: document.querySelector('.workdir-area'),
+  /** 本话题 · N 条 · 已用 X% by the input, and its menu (view/topic-label.js). */
+  ctxArea: byId('ctx-area'),
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
   rewindConfirm: byId('rewind-confirm-root'),
@@ -163,7 +165,10 @@ async function loadHistory() {
   try {
     const saved = await api.loadHistory()
     if (!saved) return
-    dispatch({ type: 'history_loaded', conversationId: saved.id, messages: saved.messages, savedAt: saved.updatedAt, folds: saved.folds ?? [] })
+    dispatch({
+      type: 'history_loaded', conversationId: saved.id, messages: saved.messages, savedAt: saved.updatedAt, folds: saved.folds ?? [],
+      parentId: saved.parentId ?? null, createdAt: saved.createdAt ?? null,
+    })
     dom.follower.jumpToLatest()
     historyActions.loadTrace(saved.id)
   } catch (err) {
@@ -452,16 +457,40 @@ const handlers = {
     dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
     api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   },
+  /** ⌘N, or 开新话题 in the label's menu: the assistant starts afresh; what was said stays above, dimmed. */
   async newSession() {
     if (state.switching) return
+    dispatch({ type: 'topic_menu', open: false })
+    if (isBusy(state)) return historyActions.showToast('先停止当前任务，再开新话题')
     dispatch({ type: 'session_switching' })
     try {
-      dispatch({ type: 'new_session', info: await api.newSession() })
+      dispatch({ type: 'new_session', info: await api.newSession(), at: Date.now() })
+      // Where the new topic starts is at the bottom: shown at once, before anything is said.
+      dom.follower.jumpToLatest()
       dom.input.focus()
     } catch (err) {
+      dispatch({ type: 'session_switch_failed' })
       dispatch({ type: 'error', message: errorMessage(err) })
     }
+    return undefined
   },
+  /** 回到这个话题 on an earlier topic, and 撤销 on a new one: the agent goes on from that segment. */
+  async resumeTopic(segmentId) {
+    if (state.switching) return undefined
+    if (isBusy(state)) return historyActions.showToast('助手正在工作，等这一轮结束再回到那个话题')
+    dispatch({ type: 'session_switching' })
+    try {
+      const { info, parentId } = await api.resumeTopic(segmentId)
+      dispatch({ type: 'topic_resumed', info, parentId, at: Date.now() })
+      dom.follower.jumpToLatest()
+      dom.input.focus()
+    } catch (err) {
+      dispatch({ type: 'session_switch_failed' })
+      historyActions.showToast(errorMessage(err))
+    }
+    return undefined
+  },
+  toggleTopicMenu: () => dispatch({ type: 'topic_menu', open: !state.topic.menu }),
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
@@ -645,6 +674,7 @@ function closeTopmost() {
   else if (state.rewind.editing) rewindActions.cancelEdit()
   else if (state.workDir.confirm) workDirActions.cancelConfirm()
   else if (state.workDir.menu) workDirActions.closeMenu()
+  else if (state.topic.menu) dispatch({ type: 'topic_menu', open: false })
   else if (state.island) dispatch({ type: 'close_island' })
   else if (hubPage(state)) dispatch({ type: 'hub_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
@@ -659,6 +689,7 @@ function wireDismissal() {
     if (state.island && !within(dom.island)) dispatch({ type: 'close_island' })
     if (state.picker && !within(dom.modelArea)) dispatch({ type: 'picker_close' })
     if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
+    if (state.topic.menu && !within(dom.ctxArea)) dispatch({ type: 'topic_menu', open: false })
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
   })
   document.addEventListener('keydown', (event) => {
@@ -672,8 +703,7 @@ function wireDismissal() {
     } else if (isShortcut(event, 'n')) {
       // ⌘N / Ctrl+N: a new topic; what was said before stays above it in the timeline.
       event.preventDefault()
-      if (isBusy(state)) historyActions.showToast('先停止当前任务，再开新话题')
-      else handlers.newSession()
+      handlers.newSession()
     } else if (isShortcut(event, 'o')) {
       // ⌘O / Ctrl+O: the system's folder dialog, as in any desktop app.
       event.preventDefault()

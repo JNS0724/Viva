@@ -9,7 +9,12 @@ const PURGE_SLACK_MS = 1000
 const MAX_QUERY_CHARS = 200
 
 const summaryOf = (conversation) => ({ id: conversation.id, title: conversation.title, updatedAt: conversation.updatedAt })
-const viewOf = (found) => (found ? { ...summaryOf(found.conversation), messages: found.messages } : null)
+/** With what it goes on from and when it began: the window draws where its topic starts (renderer/topics.js). */
+const viewOf = (found) => (found
+  ? { ...summaryOf(found.conversation), parentId: found.conversation.parentId, createdAt: found.conversation.createdAt, messages: found.messages }
+  : null)
+const BUSY = '助手正在工作，等这一轮结束再回到那个话题'
+const GONE = '那个话题接不回来了：助手那边已经没有它的记录'
 
 function assertQuery(value) {
   if (typeof value !== 'string' || value.length > MAX_QUERY_CHARS) throw new Error('invalid search query')
@@ -28,10 +33,12 @@ function assertQuery(value) {
  *   agentInfo: () => object, switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<object>,
  *   chooseExportPath: (defaultName: string) => Promise<string | null>,
  *   schedule?: (fn: () => void, ms: number) => void,
+ *   isBusy?: () => boolean,
  * }} deps
  */
 export function registerHistoryIpc(ipcMain, deps) {
   const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
+  const isBusy = deps.isBusy ?? (() => false)
   const schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms).unref?.())
   const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
 
@@ -62,6 +69,22 @@ export function registerHistoryIpc(ipcMain, deps) {
     const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
     setCurrent({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
     return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed } }
+  })
+
+  /**
+   * 回到这个话题, and 撤销 a new topic: the agent takes up that segment's session again, and what is said from
+   * now on goes in a new segment at the end of the timeline that goes on from it, so the timeline stays in order.
+   */
+  handle('history:resume-topic', async (id) => {
+    if (isBusy()) throw new Error(BUSY)
+    const found = db.get(assertId(id))
+    if (!found) throw new Error('找不到这段对话，可能已被删除')
+    const { sessionId, cwd } = found.conversation
+    const started = await switchAgent(sessionId, cwd)
+    if (!started.resumed) throw new Error(GONE)
+    const { mode, model } = agentInfo()
+    setCurrent(db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id }))
+    return { info: { ...started, remembersHistory: true }, parentId: found.conversation.id }
   })
 
   handle('history:trace', (id, until) => readSessionTrace({

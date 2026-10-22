@@ -10,6 +10,7 @@ import { initialTasks, routeToTask, taskActions } from './tasks-state.js'
 import { SECRET_ACTIONS } from './secret-state.js'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.js'
 import { closeLast, closeStreams } from './streams.js'
+import { initialTopic } from './topics.js'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.js'
 
 /**
@@ -52,6 +53,8 @@ export const initialState = Object.freeze({
   rewind: initialRewind,
   /** Paths folded off the conversation on screen, each where it went another way: { id, at, count } (rewind-state.js). */
   folds: [],
+  /** The topic on screen: the segment it goes on from (null: a new topic), when it started, its menu (topics.js). */
+  topic: initialTopic,
   /** Turns that went on in the background, and the move that can still be undone (tasks-state.js). */
   tasks: initialTasks,
   files: initialFiles,
@@ -293,12 +296,13 @@ const ACTION_HANDLERS = {
   }),
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
-  history_loaded: (state, { conversationId = null, messages, savedAt, folds = [] }) => {
+  history_loaded: (state, { conversationId = null, messages, savedAt, folds = [], parentId = null, createdAt = null }) => {
     if (state.messages.length > 0 || !messages?.length) return state
     return {
       ...state,
       conversationId,
       folds,
+      topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: 'loading',
       messages: messages.map((m, i) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
@@ -323,9 +327,10 @@ const ACTION_HANDLERS = {
 
   conversation_saved: (state, { id }) => (state.conversationId === id ? state : { ...state, conversationId: id }),
 
-  /** A new session goes on below what was said so far, which stays in the timeline above. */
-  new_session: (state, { info }) => ({
+  /** A new session goes on below what was said so far, which stays in the timeline above: a new topic. */
+  new_session: (state, { info, at = null }) => ({
     ...initialState,
+    topic: { ...initialTopic, startedAt: at },
     info: info ?? state.info,
     drawer: state.drawer,
     settings: state.settings,
@@ -339,13 +344,23 @@ const ACTION_HANDLERS = {
     toast: state.toast,
   }),
 
-  /** The conversation goes on in another working directory, with everything said so far (a fork). */
-  workdir_switched: (state, { info }) => ACTION_HANDLERS.new_session(state, { info }),
+  /** The conversation goes on in another working directory, with everything said so far (a fork): the same topic. */
+  workdir_switched: (state, { info }) => ({
+    ...ACTION_HANDLERS.new_session(state, { info }),
+    topic: { ...initialTopic, parentId: state.conversationId, startedAt: state.topic.startedAt },
+  }),
+
+  /** 回到这个话题 (or 撤销 a new one): the agent goes on from that segment; what is said next follows below. */
+  topic_resumed: (state, { info, parentId, at = null }) => ({
+    ...ACTION_HANDLERS.new_session(state, { info }),
+    topic: { ...initialTopic, parentId, startedAt: at },
+  }),
+  topic_menu: (state, { open }) => (state.topic.menu === open ? state : { ...state, topic: { ...state.topic, menu: open } }),
 
   /** Picked from the history panel: start over with that conversation's messages and close the panel. */
   conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded(
     { ...ACTION_HANDLERS.new_session(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false, menuFor: null, renaming: null } },
-    { conversationId: conversation.id, messages: conversation.messages, savedAt: conversation.updatedAt },
+    { conversationId: conversation.id, messages: conversation.messages, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
   ),
 
   /** Restored trace goes first: it happened before anything the live session has added since. */

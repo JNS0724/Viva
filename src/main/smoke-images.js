@@ -69,6 +69,18 @@ export async function checkPictures(win, outDir, desk) {
 
   const usage = await run(win, 'window.agent.imagesUsage()')
   if (usage.count < 1 || usage.bytes <= 0) failures.push(`settings should count the pictures: ${JSON.stringify(usage)}`)
+  // 设置 › 贴过的图片: how many and how much, and 清空 asks first.
+  await run(win, `document.getElementById('open-profile').click()`)
+  await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
+  const section = await until(win, `document.querySelector('[aria-label="贴过的图片"]')?.textContent`, 'the pictures in settings')
+  await run(win, `[...document.querySelectorAll('[aria-label="贴过的图片"] button')].find((b) => b.textContent === '清空').click()`)
+  const warning = await until(win, `document.querySelector('.images-confirm')?.textContent`, 'emptying asking first')
+  await run(win, `document.querySelector('[aria-label="贴过的图片"]').scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'images-settings')
+  if (!section.includes('1 张') || !warning.includes('图已清理')) failures.push(`settings should count the pictures and warn before emptying: ${JSON.stringify({ section, warning })}`)
+  await run(win, `[...document.querySelectorAll('.images-confirm button')].find((b) => b.textContent === '取消').click()`)
+  await run(win, `document.getElementById('hub-back').click()`)
   const emptied = await run(win, 'window.agent.clearImages()')
   if (emptied.bytes !== 0 || emptied.count !== 0) failures.push(`emptying should leave nothing: ${JSON.stringify(emptied)}`)
   report(`pictures: ${JSON.stringify({ draft, sent, usage, emptied })}`)

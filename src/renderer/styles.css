@@ -108,6 +108,47 @@ html:not([data-platform="darwin"]) {
   border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); font-size: 12px; color: var(--ink-2);
 }
 .timeline-workdir b { color: var(--ink); }
+/* Topics (view/earlier.js): one the assistant no longer has is a step quieter, its head says so. */
+.topic-old { display: flex; flex-direction: column; gap: 28px; opacity: .5; transition: opacity .2s; }
+.topic-old:hover, .topic-old:focus-within { opacity: .8; }
+.topic-head { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-3); }
+.topic-head b { color: var(--ink-2); font-weight: 600; }
+.topic-head::after { content: ''; flex: 1; height: 1px; background: var(--line); order: 2; }
+.topic-head .topic-back { order: 3; }
+.topic-back {
+  height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel);
+  color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.topic-back:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
+.topic-back:disabled { cursor: default; opacity: .6; }
+/* Where the topic on screen starts. */
+.topic-start { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.topic-start::before, .topic-start::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
+.topic-start time { font: 12px var(--font-mono); font-weight: 400; color: var(--ink-3); }
+.topic-note { align-self: center; margin-top: -16px; font-size: 12px; color: var(--ink-3); text-align: center; }
+
+/* By the input: what the assistant has in mind now (view/topic-label.js). */
+.ctx-area { position: relative; }
+.ctx-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; }
+.ctx-chip:hover, .ctx-chip[aria-expanded="true"] { border-color: var(--line-2); }
+.ctx-bar { width: 28px; height: 4px; border-radius: 2px; background: var(--line-2); overflow: hidden; }
+.ctx-bar i { display: block; height: 100%; background: var(--ink-3); }
+.ctx-chip[data-tone="full"] { color: var(--orange); }
+.ctx-chip[data-tone="full"] .ctx-bar i { background: var(--orange); }
+.ctx-menu {
+  position: absolute; left: 0; bottom: 38px; z-index: 30; width: 290px; padding: 6px; border: 1px solid var(--line-2);
+  border-radius: 14px; background: var(--panel-2); box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+}
+.ctx-menu-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.6; color: var(--ink-3); }
+.ctx-menu-info b { color: var(--ink); font-weight: 600; }
+.ctx-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 10px; border: none;
+  border-radius: 9px; background: none; color: var(--ink); font-size: 13px; text-align: left; cursor: pointer;
+}
+.ctx-item:hover:not(:disabled) { background: var(--raised); }
+.ctx-item:disabled { color: var(--ink-3); cursor: default; }
+.ctx-item kbd { font: 11px var(--font-mono); color: var(--ink-3); }
+.ctx-item small { font-size: 11px; color: var(--ink-3); }
 .timeline-workdir-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font-size: 11px; }
 
 /* ---------- composer ---------- */

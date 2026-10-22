@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('agent', {
   listHistory: (offset) => ipcRenderer.invoke('history:list', offset),
   searchHistory: (query) => ipcRenderer.invoke('history:search', query),
   openConversation: (id) => ipcRenderer.invoke('history:open', id),
+  /** 回到这个话题 / 撤销 a new topic: { info, parentId } (history-ipc.js). */
+  resumeTopic: (id) => ipcRenderer.invoke('history:resume-topic', id),
   loadTrace: (id, until) => ipcRenderer.invoke('history:trace', id, until),
   renameConversation: (id, title) => ipcRenderer.invoke('history:rename', id, title),
   pinConversation: (id, pinned) => ipcRenderer.invoke('history:pin', id, pinned),
