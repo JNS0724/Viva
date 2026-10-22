@@ -6,7 +6,7 @@
  */
 export const initialEarlier = Object.freeze({ segments: [], hasMore: true, loading: false })
 
-const withEarlier = (state, changes) => ({ ...state, earlier: { ...state.earlier, ...changes } })
+const withEarlier = (state: State, changes: Partial<State['earlier']>): State => ({ ...state, earlier: { ...state.earlier, ...changes } })
 
 /**
  * The earlier segments with the messages on screen added as the latest one, when there are any. Their times

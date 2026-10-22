@@ -35,7 +35,7 @@ function withPage(current, page) {
   }
 }
 
-const withFiles = (state, changes) => ({ ...state, files: { ...state.files, ...changes } })
+const withFiles = (state: State, changes: Partial<State['files']>): State => ({ ...state, files: { ...state.files, ...changes } })
 
 export const FILES_ACTIONS: Record<string, Reducer> = {
   files_listed: (state, { path, entries }) => withFiles(state, { folders: { ...state.files.folders, [path]: entries }, error: null }),

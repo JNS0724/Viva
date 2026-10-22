@@ -4,12 +4,8 @@
  */
 export const MAX_ROWS = 2000
 
-/**
- * @param {string} text
- * @param {',' | '\t'} delimiter
- * @returns {{ rows: string[][], more: number }} at most MAX_ROWS rows; `more` counts the rest
- */
-export function parseTable(text, delimiter) {
+/** At most MAX_ROWS rows; `more` counts the rest. */
+export function parseTable(text: string, delimiter: ',' | '\t'): { rows: string[][], more: number } {
   const rows: string[][] = []
   let row: string[] = []
   let field = ''

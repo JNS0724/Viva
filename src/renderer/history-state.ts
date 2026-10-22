@@ -9,7 +9,7 @@ export const initialHistory = Object.freeze({
   results: null,
 })
 
-const withHistory = (state, changes) => ({ ...state, history: { ...state.history, ...changes } })
+const withHistory = (state: State, changes: Partial<State['history']>): State => ({ ...state, history: { ...state.history, ...changes } })
 
 export const HISTORY_ACTIONS: Record<string, Reducer> = {
   history_open: (state) => withHistory({ ...state, island: false, picker: false }, { open: true }),

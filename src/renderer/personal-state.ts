@@ -41,8 +41,8 @@ export const initialExtensions = Object.freeze({
   notice: null,
 })
 
-const withMemory = (state, changes) => ({ ...state, memory: { ...state.memory, ...changes } })
-const withExtensions = (state, changes) => ({ ...state, extensions: { ...state.extensions, ...changes } })
+const withMemory = (state: State, changes: Partial<State['memory']>): State => ({ ...state, memory: { ...state.memory, ...changes } })
+const withExtensions = (state: State, changes: Partial<State['extensions']>): State => ({ ...state, extensions: { ...state.extensions, ...changes } })
 
 /** @param {{ profile: object }} memory */
 export const isProfileEmpty = (memory) => Object.keys(memory.profile).length === 0

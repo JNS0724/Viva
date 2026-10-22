@@ -131,7 +131,7 @@ export type ChannelArgs<C extends Channel> = z.input<(typeof IPC_ARGS)[C]>
  * left out (ipcRenderer.invoke('history:list', undefined) arrives as [undefined]).
  */
 export function argsProblem(channel: string, args: readonly unknown[]): string | null {
-  const schema: z.ZodType | undefined = IPC_ARGS[channel]
+  const schema: z.ZodType | undefined = (IPC_ARGS as Readonly<Record<string, z.ZodType>>)[channel]
   if (!schema) return `unknown channel ${channel}`
   let given = args
   while (given.length > 0 && given[given.length - 1] === undefined) given = given.slice(0, -1)

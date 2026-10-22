@@ -1,10 +1,11 @@
 import { hubPage } from '../hub-state.ts'
+import type { Dom } from '../app.ts'
 
 /**
  * 搜索 · 关于你 · 设置, one page over the conversation under the title bar. The sidebar and the pages are
  * static markup (index.html); this shows the open one and marks it in the sidebar. Each page renders itself.
  */
-export function renderHub(dom, state) {
+export function renderHub(dom: Dom, state: State) {
   const opened = hubPage(state)
   // The 后台 page shares the place but is a page of its own (view/tasks-page.js).
   const page = opened === 'tasks' ? null : opened

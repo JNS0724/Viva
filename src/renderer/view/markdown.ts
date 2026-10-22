@@ -1,5 +1,10 @@
-import { Lexer } from '../../../node_modules/marked/lib/marked.esm.js'
-import type { Token, Tokens } from 'marked'
+// The page imports marked by its file (it has no bundler, and the build copies what is imported this way,
+// scripts/build.mjs); marked's types are those of its package, so they are taken from there.
+// @ts-ignore the file has no types of its own beside it (an error only where noImplicitAny is on)
+import { Lexer as UntypedLexer } from '../../../node_modules/marked/lib/marked.esm.js'
+import type { Lexer as MarkedLexer, Token, Tokens } from 'marked'
+
+const Lexer: typeof MarkedLexer = UntypedLexer
 import { h } from './dom.ts'
 
 /** Where a link goes, and how a host shows a picture (or null to leave it as a link). */
@@ -79,7 +84,7 @@ function block(token: Token, ctx: Context, { tight }: { tight: boolean }): View 
       h('code', { text: token.text }))
     case 'blockquote': return h('blockquote', null, blocks(token.tokens, ctx))
     case 'list': return h(token.ordered ? 'ol' : 'ul', { start: token.ordered && token.start !== 1 ? token.start : null },
-      token.items.map((item) => listItem(item, ctx)))
+      (token as Tokens.List).items.map((item) => listItem(item, ctx)))
     // marked's own table token (a generic one could only share its type by name).
     case 'table': return table(token as Tokens.Table, ctx)
     case 'hr': return h('hr')
