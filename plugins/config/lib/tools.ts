@@ -3,9 +3,21 @@
  * lib/channel.js); `mutating` ones are asked of the user first through dsh's approval card, with `reason`
  * as what the card says. Parameters use dsh's schema DSL; the app checks them again before acting.
  */
-const NAME = { type: 'string', required: true, description: '服务器名称：字母、数字、- 或 _，例如 github' }
+import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 
-export const CONFIG_TOOLS = Object.freeze([
+/** A tool of this plugin: the operation it asks the app for, and what its approval card says. */
+export interface ConfigTool {
+  name: string
+  op: string
+  mutating: boolean
+  description: string
+  parameters: ParameterSchemaSpec
+  reason?: (args: Record<string, any>) => string
+}
+
+const NAME: ParameterSchemaSpec[string] = { type: 'string', required: true, description: '服务器名称：字母、数字、- 或 _，例如 github' }
+
+export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze([
   {
     name: 'viva_mcp_list',
     op: 'mcp_list',

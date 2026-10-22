@@ -16,7 +16,7 @@
     "build": "node scripts/build.mjs",
     "prestart": "npm run build",
     "start": "electron .",
-    "typecheck": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.preload.json",
+    "typecheck": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.plugins.json",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.js\"",
     "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.js\"",
     "presmoke": "npm run build",

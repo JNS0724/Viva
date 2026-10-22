@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto'
-import { buildContext, dateLine, RECENT_LIMIT } from './context.js'
-import { initialSession, planTurn } from './layers.js'
-import { buildLexicon } from './names.js'
+import { buildContext, dateLine, RECENT_LIMIT } from './context.ts'
+import { initialSession, planTurn } from './layers.ts'
+import { buildLexicon } from './names.ts'
 
 const signatureOf = (text) => createHash('sha256').update(text).digest('hex')
 
 /**
  * What to put in front of the model for one turn, and the bookkeeping that goes with it: the session's
  * retrieval state is saved, and what was sent is logged for the app to show. Independent of dsh.
- * @param {ReturnType<import('./store.js').openMemoryDb>} db
+ * @param {ReturnType<import('./store.ts').openMemoryDb>} db
  * @param {{ sessionId: string, turn: number, question: string, epoch: number, today?: string }} turn
  *   epoch: how many times dsh has compacted this session; today: e.g. "2026-10-18（周日）"
  * @returns {string} the context block, or '' when nothing needs to be sent

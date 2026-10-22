@@ -8,8 +8,8 @@
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { createSteerChannel, REASONS } from './lib/channel.js'
-import { OFFERED, OFFER_TOOL } from './lib/offer.js'
+import { createSteerChannel, REASONS } from './lib/channel.ts'
+import { OFFERED, OFFER_TOOL } from './lib/offer.ts'
 
 export const name = 'viva-steer'
 export const inject = ['agents', 'tools']

@@ -20,12 +20,9 @@ const WORD_WEIGHT = 2
 
 const isHan = (char) => /\p{Script=Han}/u.test(char)
 
-/**
- * @param {string} text
- * @returns {Set<string>} lower-cased words and Han bigrams
- */
-export function termsOf(text) {
-  const terms = new Set()
+/** Lower-cased words and Han bigrams. */
+export function termsOf(text: string): Set<string> {
+  const terms = new Set<string>()
   for (const segment of String(text).toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) {
     const chars = [...segment]
     if (!chars.some(isHan)) {
@@ -65,18 +62,15 @@ function hitsKeyword(memory, words) {
 }
 
 /**
- * @template {{ text: string, keywords?: string[], updatedAt: number }} T
- * @param {T[]} memories
- * @param {string} query keywords, separated by spaces
- * @param {number} limit
- * @returns {T[]} memories that match one of their keywords or cover enough of the query, best first;
+ * @param query keywords, separated by spaces
+ * @returns memories that match one of their keywords or cover enough of the query, best first;
  *   none at all rather than weak ones
  */
-export function recallMatches(memories, query, limit) {
+export function recallMatches<T extends { text: string, keywords?: string[], updatedAt: number }>(memories: readonly T[], query: string, limit: number): T[] {
   const terms = termsOf(query)
   const words = queryWords(query)
   if (terms.size === 0 && words.length === 0) return []
-  const total = [...terms].reduce((sum, term) => sum + termWeight(term), 0)
+  const total = [...terms].reduce((sum: number, term) => sum + termWeight(term), 0)
   const needed = Math.max(1, Math.ceil(total * MIN_COVERAGE))
   return memories
     .map((memory) => {

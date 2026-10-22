@@ -1,4 +1,4 @@
-import { namesIn, namesOfMemory } from './names.js'
+import { namesIn, namesOfMemory } from './names.ts'
 
 /**
  * Decides, turn by turn, what each retrieval layer puts in front of the model. Pure: the session state
@@ -80,7 +80,7 @@ function memoriesAbout(memories, named, lexicon) {
  *   epoch: number,
  *   today: string,
  *   memories: Array<{ id: number, text: string, keywords?: string[], updatedAt: number }>,
- *   lexicon: import('./names.js').NameEntry[],
+ *   lexicon: import('./names.ts').NameEntry[],
  *   inFixed: Set<number>,
  * }} turn inFixed: ids of memories the fixed layer carries already (the preferences)
  * @returns {{

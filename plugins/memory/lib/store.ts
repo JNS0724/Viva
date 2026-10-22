@@ -194,11 +194,8 @@ export function openMemoryDb({ file, now = Date.now }) {
   db.exec(SCHEMA)
   addLaterColumns(db)
 
-  /**
-   * A row is a record of what its query selects; each function below says what it returns.
-   * @type {Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint, lastInsertRowid: number | bigint } }>}
-   */
-  const sql = {
+  /** A row is a record of what its query selects; each function below says what it returns. */
+  const sql: Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint, lastInsertRowid: number | bigint } }> = {
     profile: db.prepare('SELECT field, value, source, updated_at FROM profile'),
     field: db.prepare('SELECT value, source FROM profile WHERE field = ?'),
     setField: db.prepare(`INSERT INTO profile (field, value, source, updated_at) VALUES (?, ?, ?, ?)

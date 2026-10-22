@@ -28,7 +28,7 @@ function assertQuery(value) {
  * @param {{
  *   db: ReturnType<import('./history-db.ts').openHistoryDb>,
  *   dshHome: string,
- *   traceDb?: () => ReturnType<import('../../plugins/trace/lib/store.js').openTraceDb> | null,
+ *   traceDb?: () => ReturnType<import('../../plugins/trace/lib/store.ts').openTraceDb> | null,
  *   current: () => object, setCurrent: (conversation: object) => void,
  *   agentInfo: () => object, switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<object>,
  *   chooseExportPath: (defaultName: string) => Promise<string | null>,

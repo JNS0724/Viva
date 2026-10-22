@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { NO_PLUGIN, createSteerDesk } from '../src/main/steer-channel.ts'
-import { createSteerChannel, REASONS } from '../plugins/steer/lib/channel.js'
+import { createSteerChannel, REASONS } from '../plugins/steer/lib/channel.ts'
 
 /** Both ends of the steer contract, joined as the IPC channel joins them. */
 function joined(steer) {

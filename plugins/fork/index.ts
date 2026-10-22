@@ -8,7 +8,7 @@
 import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
-import { createForkChannel, REASONS } from './lib/channel.js'
+import { createForkChannel, REASONS } from './lib/channel.ts'
 
 export const name = 'viva-fork'
 export const inject = ['sessions', 'agents']

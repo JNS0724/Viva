@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ensureDshProfile, patchFor } from '../src/main/dsh-profile.ts'
+import { ensureDshProfile, patchFor, pluginEntry } from '../src/main/dsh-profile.ts'
 
 function setup(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-profile-'))
@@ -27,6 +27,13 @@ const linked = (dir, name) => {
   const index = fs.readFileSync(path.join(dir, 'node_modules', name, 'index.js'), 'utf8')
   return path.dirname(fileURLToPath(/export \* from "(.*)"/.exec(index)[1]))
 }
+
+test('a plugin is entered by its TypeScript source where it has one, by the built index.js otherwise', (t) => {
+  const { memory } = setup(t)
+  assert.equal(pluginEntry(memory.dir), path.join(memory.dir, 'index.js'), 'built: out/plugins has only JavaScript')
+  fs.writeFileSync(path.join(memory.dir, 'index.ts'), 'export const name = "viva-memory"\n')
+  assert.equal(pluginEntry(memory.dir), path.join(memory.dir, 'index.ts'), 'from the sources, as the tests run it')
+})
 
 test('the profile is the ACP composition, the persona, and each plugin with its own config', (t) => {
   const { memory, trace, policy, options } = setup(t)

@@ -1,4 +1,4 @@
-import { STOP_BIGRAMS } from './match.js'
+import { STOP_BIGRAMS } from './match.ts'
 
 /**
  * Layer 2 of retrieval works on names, not words. The profile and the memories' keywords make a small

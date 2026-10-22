@@ -4,7 +4,7 @@
  * Loaded by the app's dsh profile (src/main/dsh-profile.js).
  */
 import z from '@deepseek-ai/schemastery'
-import { decide } from './lib/rules.js'
+import { decide } from './lib/rules.ts'
 
 export const name = 'viva-policy'
 export const inject = ['tools']

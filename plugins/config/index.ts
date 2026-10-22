@@ -7,8 +7,8 @@
  */
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { createConfigChannel } from './lib/channel.js'
-import { CONFIG_TOOLS } from './lib/tools.js'
+import { createConfigChannel } from './lib/channel.ts'
+import { CONFIG_TOOLS } from './lib/tools.ts'
 
 export const name = 'viva-config'
 export const inject = ['tools']
