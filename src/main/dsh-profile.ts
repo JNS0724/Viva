@@ -21,11 +21,19 @@ nodeLinker: hoisted
 autoInstallPeers: false
 `
 
-/** YAML single-quoted scalar: only the quote itself needs escaping, backslashes stay as they are. */
-const yamlString = (value) => `'${String(value).replaceAll("'", "''")}'`
-const yamlValue = (value) => (typeof value === 'boolean' || typeof value === 'number' ? String(value) : yamlString(value))
+/** A plugin of the app, as the profile lists it (app-plugins.ts): its config written into the patch. */
+type ProfilePlugin = { name: string, dir: string, config?: Readonly<Record<string, unknown>>, stock?: ReadonlyArray<{ id: string, name: string }> }
+/** Which models dsh offers (model-providers.ts): the user's providers, DeepSeek with a key, the one to start with. */
+type ProfileModels = { providers: Record<string, object>, deepseek: boolean, defaultModel: { provider: string, model: string } | null }
+type Persona = { prefix: string, suffix: string }
+/** The profile's package.json, as read: what the app does not write is kept. */
+type Manifest = { dependencies?: Record<string, string>, dsh?: { profile?: { bundles?: readonly string[], [field: string]: unknown }, [field: string]: unknown }, [field: string]: unknown }
 
-function configLines(config, indent) {
+/** YAML single-quoted scalar: only the quote itself needs escaping, backslashes stay as they are. */
+const yamlString = (value: unknown) => `'${String(value).replaceAll("'", "''")}'`
+const yamlValue = (value: unknown) => (typeof value === 'boolean' || typeof value === 'number' ? String(value) : yamlString(value))
+
+function configLines(config: ProfilePlugin['config'], indent: string) {
   const entries = Object.entries(config ?? {})
   if (entries.length === 0) return []
   return [`${indent}config:`, ...entries.map(([key, value]) => `${indent}  ${key}: ${yamlValue(value)}`)]
@@ -38,14 +46,13 @@ const DEEPSEEK_ENTRIES = Object.freeze(['llm-deepseek', 'llm-deepseek-account'])
 const ATTACHMENT_ENTRY = Object.freeze({ id: 'attachment-local', name: '@deepseek-ai/dsh-attachment-local' })
 
 /** JSON is YAML too: nested config goes in as one flow value. */
-const jsonEntry = (id, config) => [`- id: ${id}`, `  config: ${JSON.stringify(config)}`]
+const jsonEntry = (id: string, config: object) => [`- id: ${id}`, `  config: ${JSON.stringify(config)}`]
 
 /**
  * Which models dsh offers: the user's providers as `llm-pi-ai` routes, DeepSeek only with a key, and the
  * model new sessions start with (the `acp` entry's own default otherwise).
- * @param {{ providers: Record<string, object>, deepseek: boolean, defaultModel: { provider: string, model: string } | null }} models
  */
-function modelLines({ providers, deepseek, defaultModel }) {
+function modelLines({ providers, deepseek, defaultModel }: ProfileModels) {
   return [
     ...(Object.keys(providers).length ? jsonEntry('llm-pi-ai', { providers }) : []),
     ...(deepseek ? [] : DEEPSEEK_ENTRIES.flatMap((id) => [`- id: ${id}`, '  disabled: true'])),
@@ -57,7 +64,9 @@ function modelLines({ providers, deepseek, defaultModel }) {
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
  * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
-export function patchFor({ plugins, persona, models, imagesDir = null }) {
+export function patchFor({ plugins, persona, models, imagesDir = null }: {
+  plugins: readonly ProfilePlugin[], persona?: Persona | null, models?: ProfileModels | null, imagesDir?: string | null,
+}) {
   const lines = ['# Written by Viva on every launch; edits here are replaced.']
   if (persona) {
     lines.push('- id: system-prompt', '  config:', `    personaPrefix: ${yamlString(persona.prefix)}`, `    personaSuffix: ${yamlString(persona.suffix)}`)
@@ -75,12 +84,12 @@ export function patchFor({ plugins, persona, models, imagesDir = null }) {
 }
 
 /** Writes `text` unless the file already says exactly that. */
-function writeIfChanged(file, text) {
+function writeIfChanged(file: string, text: string) {
   if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === text) return
   fs.writeFileSync(file, text)
 }
 
-function readManifest(file) {
+function readManifest(file: string): Manifest {
   if (!fs.existsSync(file)) return {}
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -89,10 +98,10 @@ function readManifest(file) {
   }
 }
 
-const isOurs = (name) => name.startsWith(APP_PLUGIN_PREFIX)
+const isOurs = (name: string) => name.startsWith(APP_PLUGIN_PREFIX)
 
 /** Keeps whatever else the manifest declares; the app's plugin dependencies are exactly the given ones. */
-function manifestFor(current, plugins) {
+function manifestFor(current: Manifest, plugins: readonly ProfilePlugin[]) {
   const bundles = current.dsh?.profile?.bundles?.length ? current.dsh.profile.bundles : BUNDLES
   const others = Object.fromEntries(Object.entries(current.dependencies ?? {}).filter(([name]) => !isOurs(name)))
   const ours = Object.fromEntries(plugins.map((plugin) => [plugin.name, `link:${plugin.dir}`]))
@@ -109,7 +118,7 @@ function manifestFor(current, plugins) {
 const SHIM_MARK = '// Written by Viva: forwards to the plugin inside the app.'
 
 /** The plugin's manifest, kept as it is (dsh checks its peer versions), pointing at the forwarder. */
-function shimManifest({ name, dir }) {
+function shimManifest({ name, dir }: Pick<ProfilePlugin, 'name' | 'dir'>) {
   let manifest = {}
   try {
     manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
@@ -127,7 +136,7 @@ export function pluginEntry(dir: string): string {
   const source = path.join(dir, 'index.ts')
   return fs.existsSync(source) ? source : path.join(dir, 'index.js')
 }
-const isShim = (folder) => {
+const isShim = (folder: string) => {
   try {
     return fs.readFileSync(path.join(folder, 'index.js'), 'utf8').startsWith(SHIM_MARK)
   } catch {
@@ -141,7 +150,7 @@ const isShim = (folder) => {
  * so its own imports resolve among the app's packages; and no junction is needed on Windows. A link left
  * by an earlier version is replaced; a folder the app did not write is reported, never deleted.
  */
-function writeShim(modules, plugin) {
+function writeShim(modules: string, plugin: ProfilePlugin) {
   const folder = path.join(modules, plugin.name)
   const existing = fs.lstatSync(folder, { throwIfNoEntry: false })
   if (existing?.isSymbolicLink()) fs.unlinkSync(folder)
@@ -152,7 +161,7 @@ function writeShim(modules, plugin) {
 }
 
 /** Entries for app plugins no longer in the list go, so dsh stops loading them. */
-function removeDropped(modules, plugins) {
+function removeDropped(modules: string, plugins: readonly ProfilePlugin[]) {
   const keep = new Set(plugins.map((plugin) => plugin.name))
   for (const name of fs.readdirSync(modules).filter((entry) => isOurs(entry) && !keep.has(entry))) {
     const folder = path.join(modules, name)
@@ -161,18 +170,11 @@ function removeDropped(modules, plugins) {
   }
 }
 
-/**
- * @param {{
- *   dshHome: string,
- *   profile: string,
- *   plugins: Array<{ name: string, dir: string, config?: Record<string, string | boolean | number> }>,
- *   persona?: { prefix: string, suffix: string },
- *   models?: { providers: Record<string, object>, deepseek: boolean, defaultModel: { provider: string, model: string } | null },
- *   imagesDir?: string,
- * }} options
- * @returns {string} the profile directory
- */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir }) {
+/** @returns the profile directory */
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir }: {
+  dshHome: string, profile: string, plugins: readonly ProfilePlugin[],
+  persona?: Persona, models?: ProfileModels, imagesDir?: string,
+}): string {
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
   if (bad) throw new Error(`插件名必须以 ${APP_PLUGIN_PREFIX} 开头：${bad.name}`)
   const dir = path.join(dshHome, 'profiles', profile)
