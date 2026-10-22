@@ -64,7 +64,7 @@ export function openTraceDb({ file }) {
         sql.upsert.run(String(sessionId), step.seq, step.at, step.kind, tool ? step.callId : null, tool ? step.name : null,
           tool ? JSON.stringify(step.args ?? {}) : null, tool ? null : step.text, tool ? step.status : null)
       }
-      sql.prune.run(Number(sql.newest.get().id ?? 0), MAX_STEPS)
+      sql.prune.run(Number(sql.newest.get()?.id ?? 0), MAX_STEPS)
       db.exec('COMMIT')
     } catch (err) {
       db.exec('ROLLBACK')

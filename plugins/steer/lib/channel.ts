@@ -34,7 +34,7 @@ export function createSteerChannel(port, steer, log) {
     let reason
     try {
       reason = steer(message.sessionId, message.text)
-    } catch (err) {
+    } catch (err: any) {
       log(`could not steer: ${err.message}`)
       reason = REASONS.failed
     }

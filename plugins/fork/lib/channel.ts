@@ -47,7 +47,7 @@ export function createForkChannel(port, fork, log) {
     try {
       const sessionId = await fork({ sessionId: message.sessionId, ...point, cwd: message.cwd })
       reply({ ok: true, sessionId })
-    } catch (err) {
+    } catch (err: any) {
       log(`could not fork: ${err.message}`)
       reply({ ok: false, reason: err.reason ?? REASONS.failed })
     }

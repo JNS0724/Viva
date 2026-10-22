@@ -5,19 +5,17 @@
  */
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 
-/** A tool of this plugin: the operation it asks the app for, and what its approval card says. */
-export interface ConfigTool {
+/** A tool of this plugin: the operation it asks the app for, and, for a change, what its approval card says. */
+export type ConfigTool = {
   name: string
   op: string
-  mutating: boolean
   description: string
   parameters: ParameterSchemaSpec
-  reason?: (args: Record<string, any>) => string
-}
+} & ({ mutating: false } | { mutating: true, reason: (args: Record<string, any>) => string })
 
 const NAME: ParameterSchemaSpec[string] = { type: 'string', required: true, description: '服务器名称：字母、数字、- 或 _，例如 github' }
 
-export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze([
+export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   {
     name: 'viva_mcp_list',
     op: 'mcp_list',

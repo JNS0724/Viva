@@ -19,7 +19,7 @@ export function apply(ctx, config) {
   const pin = (session) => {
     try {
       if (ctx.permissionPresets.current(session) !== config.preset) ctx.permissionPresets.set(session, config.preset)
-    } catch (err) {
+    } catch (err: any) {
       ctx.logger?.warn?.(`viva-permission: could not set ${config.preset}: ${err.message}`)
     }
   }
