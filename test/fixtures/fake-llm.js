@@ -144,10 +144,21 @@ function synthesize(request) {
   return { text }
 }
 
+const ROUTER = '插话分流器'
+/** Something of its own, for the router (plugins/steer/lib/route.js): booking, the weather, a meeting. */
+const OTHER_THING = /订|天气|周会/
+
+/** Plays the steer plugin's router: words about something of their own are OTHER, the rest INTO. */
+function route(request) {
+  const { said } = JSON.parse(textParts(request.messages[request.messages.length - 1])[0])
+  return { text: OTHER_THING.test(said) ? 'OTHER' : 'INTO' }
+}
+
 /** @returns {{ tool: { name: string, input: object } } | { text: string }} */
 export function decide(request) {
   if (systemText(request).includes(EXTRACTOR)) return extract(request)
   if (systemText(request).includes(SYNTHESIZER)) return synthesize(request)
+  if (systemText(request).includes(ROUTER)) return route(request)
   const messages = request.messages
   const last = messages[messages.length - 1]
   const result = partsOf(last).find((part) => part.type === 'tool_result')

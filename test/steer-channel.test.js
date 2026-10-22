@@ -4,12 +4,12 @@ import { NO_PLUGIN, createSteerDesk } from '../src/main/steer-channel.js'
 import { createSteerChannel, REASONS } from '../plugins/steer/lib/channel.js'
 
 /** Both ends of the steer contract, joined as the IPC channel joins them. */
-function joined(steer) {
+function joined(steer, route) {
   const listeners = new Set()
   const toPlugin = { send: () => {}, on: (_event, fn) => listeners.add(fn), off: (_event, fn) => listeners.delete(fn) }
   let desk = null
   toPlugin.send = (message) => desk.receive(message)
-  createSteerChannel(toPlugin, steer, () => {})
+  createSteerChannel(toPlugin, steer, () => {}, route)
   desk = createSteerDesk({ send: (message) => listeners.forEach((fn) => fn(message)), sessionId: () => 'sess-1' })
   return desk
 }
@@ -43,6 +43,28 @@ test('no session, or a switched one, answers at once', async () => {
   const pending = desk.steer('x')
   desk.closeAll()
   assert.deepEqual(await pending, { ok: false, reason: NO_PLUGIN })
+})
+
+test('the model judges where words go; with no judgement the answer is null, and the window keeps its guess', async (t) => {
+  const asked = []
+  const desk = joined(() => null, async (sessionId, words, text) => {
+    asked.push([sessionId, words, text])
+    if (text === '坏了') throw new Error('model down')
+    return text.includes('机票') ? 'other' : 'into'
+  })
+  assert.equal(await desk.route('整理发布说明', '帮我订一张机票'), 'other')
+  assert.equal(await desk.route('整理发布说明', '加上版本号'), 'into')
+  assert.equal(await desk.route('整理发布说明', '坏了'), null, 'a failing model answers null')
+  assert.deepEqual(asked[0], ['sess-1', '整理发布说明', '帮我订一张机票'])
+
+  const older = joined(() => null)
+  assert.equal(await older.route('整理发布说明', '加上版本号'), null, 'a plugin that cannot judge answers null')
+
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const silent = createSteerDesk({ send: () => {}, sessionId: () => 'sess-1', timeoutMs: 100 })
+  const pending = silent.route('整理发布说明', 'x')
+  t.mock.timers.tick(100)
+  assert.equal(await pending, null, 'nothing in time: null')
 })
 
 test('the plugin answers a malformed request as failed and ignores one without an id', () => {

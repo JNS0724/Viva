@@ -6,13 +6,14 @@
  * Loaded by the app's dsh profile (src/main/dsh-profile.js).
  */
 import z from '@deepseek-ai/schemastery'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createSteerChannel, REASONS } from './lib/channel.js'
 import { OFFERED, OFFER_TOOL } from './lib/offer.js'
+import { ROUTE_MAX_TOKENS, ROUTE_SYSTEM, ROUTE_TIMEOUT_MS, routeInput, routeOf } from './lib/route.js'
 
 export const name = 'viva-steer'
-export const inject = ['agents', 'tools']
+export const inject = ['agents', 'tools', 'llm']
 export const Config = z.object({})
 
 const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
@@ -35,7 +36,27 @@ export function apply(ctx, _config, port = process) {
     agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
     return null
   }
-  const channel = createSteerChannel(port, steer, log)
+  /** Asks the session's own model where words typed now would go (lib/route.js); null when it cannot say. */
+  async function route(sessionId, words, text) {
+    const agent = ctx.agents.get(sessionId)
+    const { provider, model } = agent?.options ?? {}
+    if (!provider || !model) return null
+    const assembler = new BlockAssembler()
+    const stream = ctx.llm.stream({
+      provider,
+      model,
+      system: ROUTE_SYSTEM,
+      messages: [createUserMessage({ content: [{ type: 'text', text: routeInput(words, text) }], source: { kind: name } })],
+      maxTokens: ROUTE_MAX_TOKENS,
+      sessionId,
+      purpose: 'steer-route',
+      signal: AbortSignal.timeout(ROUTE_TIMEOUT_MS),
+    })
+    for await (const chunk of stream) assembler.push(chunk)
+    return routeOf(assembler.blocks().filter((block) => block.type === 'text').map((block) => block.text).join(''))
+  }
+
+  const channel = createSteerChannel(port, steer, log, route)
   // The channel must not keep dsh running once its input closes.
   port.channel?.unref?.()
   ctx.effect(() => () => channel.close(), 'steer channel')

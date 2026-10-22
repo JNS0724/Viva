@@ -480,6 +480,8 @@ function wireComposer() {
   dom.input.addEventListener('input', () => {
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
+    // As typing pauses, the running turn's model says where the words go, and the hint follows it.
+    if (isBusy(state)) taskActions.judgeLater(dom.input.value)
   })
   dom.input.addEventListener('keydown', (event) => {
     // Tab, while the line over the input says where the words would go: the other way.

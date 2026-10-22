@@ -346,6 +346,8 @@ export function createAcpBridge({
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   const steer = (text) => steering.steer(text)
+  /** Where words typed now would go, judged by the main conversation's model (viva-steer): 'into', 'other' or null. */
+  const route = (words, text) => steering.route(words, text)
 
   function respondPermission(requestId, optionId) {
     return broker.resolve(requestId, optionId)
@@ -383,5 +385,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, fork, spinOff, mergeBack, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, route, fork, spinOff, mergeBack, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }

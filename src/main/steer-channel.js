@@ -6,6 +6,7 @@
 const STEER_TIMEOUT_MS = 5_000
 /** No answer from the plugin: it is not loaded, or dsh is gone. */
 export const NO_PLUGIN = 'unavailable'
+const ROUTES = new Set(['into', 'other'])
 
 /**
  * @param {{ send: (message: object) => void, sessionId: () => string | null, timeoutMs?: number }} deps
@@ -38,9 +39,29 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS 
     })
   }
 
+  /**
+   * Where words typed now would go, judged by the session's model (the route message, same contract): 'into'
+   * the turn or 'other', or null when nothing answers in time, and the window keeps its own guess.
+   * @param {string} words what started the running turn @param {string} text what is typed now
+   * @returns {Promise<'into' | 'other' | null>}
+   */
+  function route(words, text, session = sessionId()) {
+    if (!session) return Promise.resolve(null)
+    const id = `r${++seq}-${Date.now().toString(36)}`
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => settle(id, null), timeoutMs)
+      timer.unref?.()
+      waiting.set(id, { resolve, timer })
+      send({ type: 'route', id, sessionId: session, words, text })
+    })
+  }
+
   function receive(message) {
-    if (message?.type !== 'steer_result' || typeof message.id !== 'string' || typeof message.ok !== 'boolean') return
-    settle(message.id, message.ok ? { ok: true } : { ok: false, reason: typeof message.reason === 'string' ? message.reason : NO_PLUGIN })
+    if (message?.type === 'route_result' && typeof message.id === 'string') {
+      return settle(message.id, ROUTES.has(message.route) ? message.route : null)
+    }
+    if (message?.type !== 'steer_result' || typeof message.id !== 'string' || typeof message.ok !== 'boolean') return undefined
+    return settle(message.id, message.ok ? { ok: true } : { ok: false, reason: typeof message.reason === 'string' ? message.reason : NO_PLUGIN })
   }
 
   /** dsh is going away or the session is switched: nothing will answer. */
@@ -48,5 +69,5 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS 
     for (const id of [...waiting.keys()]) settle(id, { ok: false, reason: NO_PLUGIN })
   }
 
-  return { steer, receive, closeAll }
+  return { steer, route, receive, closeAll }
 }

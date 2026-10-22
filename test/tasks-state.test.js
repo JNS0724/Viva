@@ -58,6 +58,16 @@ test('a task\'s steps are its own turn\'s, not those of the turns before it', ()
 
 const WORDS_LATER = '整理发布说明'
 
+test('the model\'s judgement of where words go wins over the guess, for those very words, and Tab still turns it', () => {
+  const state = working()
+  assert.equal(routeOf(state, '发布说明里的问题挺多'), 'into', 'the guess: shares words with what runs')
+  const judged = reduce(state, { type: 'route_judged', text: '发布说明里的问题挺多', route: 'other' })
+  assert.equal(routeOf(judged, '发布说明里的问题挺多'), 'other', 'the model said it is something else')
+  assert.equal(routeOf(judged, '发布说明里的问题挺多吗'), 'into', 'other words: the guess again until judged')
+  assert.equal(routeOf(reduce(judged, { type: 'route_toggle' }), '发布说明里的问题挺多'), 'into', 'Tab turns the judgement too')
+  assert.equal(reduce(judged, { type: 'user_steer', text: '发布说明里的问题挺多' }).tasks.judged, null, 'said: forgotten')
+})
+
 test('what moves to the background: the words that started the turn and where they are among what is saved', () => {
   assert.deepEqual(spinOffTarget(working()), { words: '整理这周的提交，写成发布说明', keep: 2 })
   assert.equal(spinOffTarget(initialState), null)

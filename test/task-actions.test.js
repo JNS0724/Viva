@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { createTaskActions, FINISHED_MS, REPORT_RETRY_MS } from '../src/renderer/task-actions.js'
+import { createTaskActions, FINISHED_MS, JUDGE_PAUSE_MS, REPORT_RETRY_MS } from '../src/renderer/task-actions.js'
 import { liveTasks, taskMessages } from '../src/renderer/tasks-state.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -191,6 +191,37 @@ test('「#name」 words go into that task\'s turn', async () => {
   win.actions.steerTask('s1', '加上版本号')
   assert.deepEqual(steered, [['s1', '加上版本号']])
   assert.equal(taskMessages(liveTasks(win.state())[0]).at(-1).text, '加上版本号')
+})
+
+test('as the user pauses typing, the running turn\'s model is asked once where the words go', async () => {
+  const timers = []
+  const asked = []
+  const win = windowWith({
+    routeWords: async (words, text) => { asked.push([words, text]); return text.includes('机票') ? 'other' : 'into' },
+  }, { later: (run, ms) => timers.push({ run, ms }) })
+
+  win.actions.judgeLater('帮我订')
+  win.actions.judgeLater('帮我订一张机票')
+  assert.ok(timers.every((timer) => timer.ms === JUDGE_PAUSE_MS))
+  for (const timer of timers.splice(0)) await timer.run()
+  assert.deepEqual(asked, [[WORDS, '帮我订一张机票']], 'only the words left when typing paused')
+  assert.deepEqual(win.state().tasks.judged, { text: '帮我订一张机票', route: 'other' })
+
+  win.actions.judgeLater('帮我订一张机票')
+  assert.equal(timers.length, 0, 'the same words are not asked again')
+})
+
+test('no judgement while nothing runs, or when the model cannot say', async () => {
+  const timers = []
+  const idle = windowWith({ routeWords: async () => 'other' }, { later: (run, ms) => timers.push({ run, ms }) })
+  idle.dispatch({ type: 'turn_end', stopReason: 'end_turn', at: 90 })
+  idle.actions.judgeLater('帮我订一张机票')
+  assert.equal(timers.length, 0, 'nothing runs, nothing to judge')
+
+  const silent = windowWith({ routeWords: async () => null }, { later: (run, ms) => timers.push({ run, ms }) })
+  silent.actions.judgeLater('帮我订一张机票')
+  await timers.pop().run()
+  assert.equal(silent.state().tasks.judged, null, 'no answer: the guess stays')
 })
 
 test('an ended task keeps what it said', async () => {
