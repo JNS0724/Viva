@@ -264,6 +264,8 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     }
     const panelChanged = next.panel !== signature.panel
     signature = next
+    // The panel fades in as it opens; redrawn while open (a step every second as the agent works) it stays put.
+    const wasOpen = el.dataset.open === 'true'
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
     head.replaceChildren(...(view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tailCell(view)].filter(Boolean)))
@@ -279,7 +281,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     else head.removeAttribute('aria-expanded')
     if (panelChanged) {
       const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut, offer, now)
-      panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
+      panel.replaceChildren(...(open ? [h('div', { class: wasOpen ? 'isl-in isl-in-still' : 'isl-in' }, parts)] : []))
       panel.inert = !open
     }
     layout(open, wide)

@@ -36,6 +36,37 @@ const THREAD_METRICS = `(() => {
   }
 })()`
 
+/** Past the 30 seconds after which the opened island offers the background (view/island-dom.js OFFER_MS). */
+const OFFER_SHIFT_MS = 31_000
+const OFFER_WAIT_MS = 5000
+
+/**
+ * D: a turn that has run a while is offered 放到后台 on the opened island. The page's clock is moved on
+ * rather than waiting half a minute; the fake dsh here cannot fork, so the move itself is left to the memory
+ * phase (smoke-tasks.js), which takes the background on the real dsh.
+ */
+async function checkOffer(win, outDir) {
+  await run(win, `(() => {
+    window.smokeNow = Date.now
+    Date.now = () => window.smokeNow() + ${OFFER_SHIFT_MS}
+    document.querySelector('#island .isl-head').click()
+  })()`)
+  const offer = await until(win, `document.querySelector('#island .isl-offer')?.textContent ?? null`, 'the offer on the opened island', OFFER_WAIT_MS)
+    .catch(() => null)
+  const shown = await run(win, `(() => {
+    const el = document.querySelector('#island .isl')
+    return { open: el?.dataset.open, time: el?.querySelector('.isl-time')?.textContent, height: el?.style.height }
+  })()`)
+  report(`offer: ${JSON.stringify({ offer, ...shown })}`)
+  await wait(UI_WAIT_MS)
+  if (offer) await capture(win, outDir, 'long-offer')
+  await run(win, `(() => {
+    Date.now = window.smokeNow
+    document.querySelector('#island .isl-head').click()
+  })()`)
+  return offer?.includes('放到后台') ? [] : [`a turn past 30 seconds should be offered the background on the opened island: ${offer}`]
+}
+
 /** Long run: the reader parks the trace mid-way, then a long answer streams in. Returns failed expectations. */
 async function checkLongTask(win, outDir) {
   const failures = []
@@ -53,6 +84,7 @@ async function checkLongTask(win, outDir) {
   if (parked.overflow <= DRAWER_PARK_TOP) failures.push('drawer did not overflow; scroll check is inconclusive')
   else if (Math.abs(drawerTop - parked.top) > 1) failures.push(`drawer jumped from ${parked.top} to ${drawerTop}`)
   await capture(win, outDir, 'long-drawer')
+  failures.push(...await checkOffer(win, outDir))
 
   await wait(LONG_ANSWER_WAIT_MS)
   const during = await run(win, THREAD_METRICS)
