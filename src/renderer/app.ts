@@ -86,6 +86,8 @@ const elements = {
 }
 /** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */
 const dom = { ...elements, follower: createScrollFollower(elements.scroll, elements.jumpLatest) }
+/** The page's elements, as the views draw into them. */
+export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
 
 let state: State = initialState

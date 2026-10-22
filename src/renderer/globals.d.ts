@@ -52,6 +52,8 @@ type State = Widened<typeof import('./state.ts').initialState>
 type Action = { type?: string, [field: string]: any }
 /** The state after an action: a new object, never the one given changed in place. */
 type Reducer = (state: State, action: Action) => State
+/** What the views call back (app.ts handlers), by name. */
+type Handlers = Readonly<Record<string, (...args: any[]) => any>>
 
 /** The main window's bridge to the main process (preload.cjs). */
 interface AgentApi {
