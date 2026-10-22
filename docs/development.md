@@ -111,6 +111,11 @@ npm run smoke       # 真的启动 Electron，分四次：
 ```
 
 - **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和四个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。
+- **GitHub 上的自动检查**（`.github/workflows/`）：每个 PR 都在 macOS 和 Windows 上各跑一遍类型检查、构建、单元测试和全部 smoke 阶段（`check.yml`）；改到构建或打包相关的文件时（也可在 Actions 页面手动运行），再在两个平台上打出安装包、装到仓库之外、对装好的应用跑 memory 阶段，Windows 上最后卸载（`package.yml`）。
+- **什么时候在真机上测**：GitHub 的机器是虚拟机，看不到真实屏幕上的样子。
+  - macOS：每次改动，提交前在真机上跑完类型检查、单元测试和全部 smoke。
+  - Windows 真机，只在这几种时候：每次发版前（beta 和正式版），跑完整的 `verify-windows.ps1 -Package`，并在 4K 屏上人工看一遍界面、留截图；改到 Windows 上特有的东西时（标题栏右上角的系统按钮、托盘、桌面岛、安装和卸载、文件路径和权限）；GitHub 上的检查通过、但用户在 Windows 上遇到问题时，去真机复现。
+  - 其余改动只靠 GitHub 上的 Windows 检查。
 - **数据隔离**：smoke 用 `smoke/userData` 作为独立的数据目录，不会碰你自己的历史记录和 key。
 - **假模型**：记忆相关的测试和 smoke 用真实的 dsh，把 `DEEPSEEK_BASE_URL` 指向 `test/fixtures/fake-llm.js`。它记录 dsh 发给模型的每个请求，并按固定规则回复（「记住：…」会调用 `memory_remember`），不需要 key。
 - **假 dsh**：其余 smoke 和集成测试里的 dsh 换成 `test/fixtures/fake-dsh.js`。它讲真实的 ACP 协议，按固定剧本回复：提问里带「长任务」会连续调用 16 次工具，再输出长回复。这样走的是和真实使用完全相同的代码路径，只是不调用模型。应用里没有演示模式。
