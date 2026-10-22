@@ -52,7 +52,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
       for (const close of [...closers].reverse()) close()
       await llm.close()
     } finally {
-      removeTree(dir)
+      await removeEventually(dir)
     }
   })
   const defer = (close) => { closers.push(close) }
@@ -74,6 +74,23 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
     return created
   }
   return { dir, dshHome, userData, workspace, file, llm, events, bridge, defer }
+}
+
+/** On Windows what dsh started (an image worker, or a virus scanner looking at what it wrote) may hold the folder a while after it exits. */
+const REMOVE_PATIENCE_MS = 15_000
+const REMOVE_PAUSE_MS = 500
+
+async function removeEventually(dir) {
+  const deadline = Date.now() + REMOVE_PATIENCE_MS
+  for (;;) {
+    try {
+      removeTree(dir)
+      return
+    } catch (err) {
+      if ((err.code !== 'EPERM' && err.code !== 'EBUSY') || Date.now() > deadline) throw err
+      await new Promise((resolve) => setTimeout(resolve, REMOVE_PAUSE_MS))
+    }
+  }
 }
 
 /** The assistant's visible text, in order. */

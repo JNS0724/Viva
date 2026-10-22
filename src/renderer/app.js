@@ -2,6 +2,7 @@ import { withFiles } from '../shared/attachments.js'
 import { IMAGE_TYPES } from '../shared/images.js'
 import { createDraftImages } from './draft-images.js'
 import { insertText, pastedParts } from './paste.js'
+import { markAllGone, pictureKept } from './view/pictures.js'
 import { createExtensionActions } from './extension-actions.js'
 import { createFilesActions } from './files-actions.js'
 import { createHistoryActions } from './history-actions.js'
@@ -271,6 +272,8 @@ function askWithImages(text, images, via) {
     return false
   }
   dom.follower.resetForPrompt()
+  // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
+  for (const { id } of images) pictureKept(id)
   dispatch({ type: 'user_prompt', text, at: Date.now(), via, images })
   api.prompt(text, images).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   return true
@@ -425,7 +428,13 @@ const handlers = {
   openImagesFolder: () => api.openImagesFolder().catch((err) => historyActions.showToast(errorMessage(err))),
   askClearImages: () => dispatch({ type: 'images_confirm', open: true }),
   cancelClearImages: () => dispatch({ type: 'images_confirm', open: false }),
-  clearImages: () => imagesChange(() => api.clearImages(), '图片已清空'),
+  clearImages: () => imagesChange(async () => {
+    const usage = await api.clearImages()
+    // Gone from the folder: so from the input waiting to send them, and from what is on screen.
+    draftImages.clear()
+    markAllGone(document)
+    return usage
+  }, '图片已清空'),
   moveImages: () => imagesChange(() => api.moveImages(), '图片已经搬过去了'),
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
   pickOption(id, label) {

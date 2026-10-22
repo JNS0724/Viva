@@ -79,10 +79,16 @@ export async function checkPictures(win, outDir, desk) {
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'images-settings')
   if (!section.includes('1 张') || !warning.includes('图已清理')) failures.push(`settings should count the pictures and warn before emptying: ${JSON.stringify({ section, warning })}`)
-  await run(win, `[...document.querySelectorAll('.images-confirm button')].find((b) => b.textContent === '取消').click()`)
+  // Emptied after the yes: the folder is empty, and the pictures on screen say so at once.
+  await run(win, `[...document.querySelectorAll('.images-confirm button')].find((b) => b.textContent === '清空').click()`)
+  await until(win, `document.querySelector('[aria-label="贴过的图片"]')?.textContent.includes('0 张')`, 'the pictures emptied')
   await run(win, `document.getElementById('hub-back').click()`)
-  const emptied = await run(win, 'window.agent.clearImages()')
+  const emptied = await run(win, 'window.agent.imagesUsage()')
   if (emptied.bytes !== 0 || emptied.count !== 0) failures.push(`emptying should leave nothing: ${JSON.stringify(emptied)}`)
+  const shown = await run(win, `({ pictures: document.querySelectorAll('#thread img.msg-pic').length, gone: document.querySelectorAll('#thread .msg-pic.pic-gone').length })`)
+  if (shown.pictures !== 0 || shown.gone < 1) failures.push(`pictures on screen should show as gone once emptied: ${JSON.stringify(shown)}`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'images-gone')
   report(`pictures: ${JSON.stringify({ draft, sent, usage, emptied })}`)
   return failures
 }

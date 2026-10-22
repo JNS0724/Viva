@@ -1,5 +1,5 @@
 import { IMAGE_LIMITS } from '../shared/images.js'
-import { draftPictures } from './view/pictures.js'
+import { draftPictures, pictureKept } from './view/pictures.js'
 
 const TOO_MANY = `一次最多 ${IMAGE_LIMITS.perMessage} 张图`
 /** IPC errors arrive as "Error invoking remote method 'x': Error: msg"; keep only the message. */
@@ -39,6 +39,7 @@ export function createDraftImages({ keep, container, onChange = () => {}, showEr
       }
       try {
         const kept = await keep(new Uint8Array(await file.arrayBuffer()))
+        pictureKept(kept.id)
         if (!images.some((image) => image.id === kept.id)) images = [...images, { id: kept.id }]
       } catch (err) {
         showError(messageOf(err))
