@@ -20,10 +20,10 @@ test('config reports what is missing before the agent can start, or nothing when
 })
 
 test('the code is found beside the project from the sources, and in out/ once built', () => {
-  const repo = path.join('/repo')
+  const repo = path.resolve('/repo')
   assert.deepEqual(rootsOf(path.join(repo, 'src', 'main', 'config.js')), { codeRoot: repo, appRoot: repo })
   assert.deepEqual(rootsOf(path.join(repo, 'out', 'src', 'main', 'config.js')), { codeRoot: path.join(repo, 'out'), appRoot: repo })
-  const asar = path.join('/Applications/Viva.app/Contents/Resources/app.asar')
+  const asar = path.resolve('/Applications/Viva.app/Contents/Resources/app.asar')
   assert.deepEqual(rootsOf(path.join(asar, 'out', 'src', 'main', 'config.js')), { codeRoot: path.join(asar, 'out'), appRoot: asar })
   assert.equal(CODE_ROOT, APP_ROOT, 'the tests run from the sources')
 })
