@@ -17,6 +17,11 @@
  * Swapping the memory design means swapping this plugin; the app only depends on the memory.db contract.
  */
 import z from '@deepseek-ai/schemastery'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+// What dsh adds to the context and the session log: ctx.sessionProjections, the compaction/end event.
+import type {} from '@deepseek-ai/dsh-session-projection'
+import type {} from '@deepseek-ai/dsh-compaction'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -26,6 +31,7 @@ import { extractTurn } from './lib/extract.ts'
 import { contextForTurn } from './lib/inject.ts'
 import { ownWords } from './lib/layers.ts'
 import { openMemoryDb } from './lib/store.ts'
+import type { MemoryDb } from './lib/store.ts'
 import { synthesizeProfile } from './lib/synthesize.ts'
 import { memoryTools } from './lib/tools.ts'
 
@@ -34,12 +40,24 @@ export const inject = ['agents', 'tools', 'sessionProjections', 'llm']
 export const Config = z.object({ file: z.string(), extract: z.boolean(), synthesize: z.boolean() })
 
 const PROJECTION = 'vivaMemory'
+
+declare module '@deepseek-ai/dsh-session-projection/types' {
+  interface SessionProjectionStateMap {
+    /** How many times dsh has compacted the session: the fixed layer goes out again after each. */
+    vivaMemory: { compactions: number }
+  }
+}
 /** The work after a turn (extraction, then maybe a synthesis) gives up after this. */
 const AFTER_TURN_TIMEOUT_MS = 120_000
 const EXTRACT_MAX_TOKENS = 800
 const SYNTHESIS_MAX_TOKENS = 1200
-const log = (message) => process.stderr.write(`[${name}] ${message}\n`)
-const messageOf = (err) => (err instanceof Error ? err.message : String(err))
+const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
+const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
+/** An event of the session log; what each kind carries is dsh's log format, read here as the trace plugin reads it. */
+type LoggedEvent = { type: string, data: any }
+/** A message as far as its text and who said it are read. */
+type Message = { content?: ReadonlyArray<{ type: string, text?: string }>, source?: { kind?: string } }
 
 type MessageSource = Parameters<typeof createUserMessage>[0]['source']
 /**
@@ -47,13 +65,15 @@ type MessageSource = Parameters<typeof createUserMessage>[0]['source']
  * only dsh's own kinds, so the plugin's own one is cast here, in one place.
  */
 const ownSource = (source: { kind: string, [field: string]: unknown }) => source as unknown as MessageSource
+/** The same for what a model call is for: dsh's types list its own purposes only, and it passes ours through. */
+const EXTRACT_PURPOSE = 'memory-extract' as unknown as NonNullable<Parameters<Context['llm']['stream']>[0]['purpose']>
 
-const textOf = (message) => (message?.content ?? []).filter((part) => part.type === 'text').map((part) => part.text).join('\n')
-const isFromUser = (message) => message?.source?.kind === 'user'
+const textOf = (message: Message | undefined) => (message?.content ?? []).filter((part) => part.type === 'text').map((part) => part.text ?? '').join('\n')
+const isFromUser = (message: Message | undefined) => message?.source?.kind === 'user'
 
 /** The session's events of `turn`, oldest first (the turn is the latest one). */
-function turnEvents(agent, turn) {
-  const events: any[] = []
+function turnEvents(agent: Agent, turn: number): LoggedEvent[] {
+  const events: LoggedEvent[] = []
   for (let seq = agent.session.seq - 1; seq >= 0; seq -= 1) {
     const event = agent.session.eventAt(SessionSeq(seq))
     if (event?.type === 'turn/start' && event.data.turn === turn) break
@@ -63,14 +83,14 @@ function turnEvents(agent, turn) {
 }
 
 /** What the user typed this turn: entered messages from the session log, then the proposed ones. */
-function userWords(agent, turn, proposed) {
+function userWords(agent: Agent, turn: number, proposed: readonly Message[]) {
   const entered = turnEvents(agent, turn).filter((event) => event.type === 'user/message').map((event) => event.data)
   return [...entered, ...proposed].filter(isFromUser).map(textOf).join('\n')
 }
 
 const ASK_TOOL = 'ask_user_question'
 
-const argumentsOf = (block) => {
+const argumentsOf = (block: { arguments?: unknown }): Record<string, any> => {
   if (typeof block.arguments !== 'string') return block.arguments ?? {}
   try {
     return JSON.parse(block.arguments)
@@ -80,29 +100,30 @@ const argumentsOf = (block) => {
 }
 
 /** One answer of ask_user_question's result, as the user would say it. */
-const saidOf = (answer) => [...(answer.selected ?? []), answer.custom].filter(Boolean).join('、')
+const saidOf = (answer: { selected?: string[], custom?: string }) => [...(answer.selected ?? []), answer.custom].filter(Boolean).join('、')
 
 /**
  * What the user answered this turn when the agent asked (ask_user_question): each question with its answer.
  * The question is in the agent's tool call, the answer in the tool's result.
  */
-function answersOf(agent, turn) {
+function answersOf(agent: Agent, turn: number): Array<{ question: string, answer: string }> {
   const events = turnEvents(agent, turn)
-  const asked = new Map(events
+  const asked = new Map<string, Array<{ id: string, question: string }>>(events
     .filter((event) => event.type === 'assistant/message')
     .flatMap((event) => event.data.message?.content ?? [])
-    .filter((block) => block.type === 'tool-call' && block.name === ASK_TOOL)
-    .map((block) => [block.id, argumentsOf(block).questions ?? []]))
+    .filter((block: any) => block.type === 'tool-call' && block.name === ASK_TOOL)
+    .map((block: any) => [block.id, argumentsOf(block).questions ?? []]))
   return events
     .filter((event) => event.type === 'tool/result' && asked.has(event.data.message?.toolCallId) && !event.data.message.isError)
     .flatMap((event) => {
-      let result
+      // The tool's result, in dsh-tool-ask-user's shape: { answers: [{ id, selected, custom? }] }.
+      let result: { answers?: Array<{ id: string, selected?: string[], custom?: string }> }
       try {
         result = JSON.parse(textOf(event.data.message))
       } catch {
         return []
       }
-      const questions = asked.get(event.data.message.toolCallId)
+      const questions = asked.get(event.data.message.toolCallId) ?? []
       return (result.answers ?? []).map((answer) => ({
         question: questions.find((item) => item.id === answer.id)?.question ?? '',
         answer: saidOf(answer),
@@ -111,12 +132,12 @@ function answersOf(agent, turn) {
 }
 
 /** dsh logs an assistant message as `{ turn, step, message }`, unlike a user message, which is the message itself. */
-const replyOf = (agent, turn) => turnEvents(agent, turn)
+const replyOf = (agent: Agent, turn: number) => turnEvents(agent, turn)
   .filter((event) => event.type === 'assistant/message')
   .map((event) => textOf(event.data.message))
   .join('\n')
 
-function registerTools(ctx, db) {
+function registerTools(ctx: Context, db: MemoryDb) {
   for (const tool of memoryTools(db)) {
     ctx.tools.register(defineTool({
       name: tool.name,
@@ -133,7 +154,9 @@ function registerTools(ctx, db) {
 }
 
 /** One text-only model call on the agent's own route, for the background pass. */
-async function complete(ctx, agent, { system, input, signal, maxTokens }) {
+async function complete(ctx: Context, agent: Agent, { system, input, signal, maxTokens }: {
+  system: string, input: string, signal: AbortSignal, maxTokens: number,
+}): Promise<string> {
   const { provider, model } = agent.options
   if (!provider || !model) throw new Error('the agent has no model route to reuse')
   const assembler = new BlockAssembler()
@@ -144,7 +167,7 @@ async function complete(ctx, agent, { system, input, signal, maxTokens }) {
     messages: [createUserMessage({ content: [{ type: 'text', text: input }], source: ownSource({ kind: name }) })],
     maxTokens,
     sessionId: agent.session.id,
-    purpose: 'memory-extract',
+    purpose: EXTRACT_PURPOSE,
     signal,
   })
   for await (const chunk of stream) assembler.push(chunk)
@@ -155,11 +178,10 @@ async function complete(ctx, agent, { system, input, signal, maxTokens }) {
 /**
  * After each turn, in the background and one after the other: extraction, then the profile synthesis
  * when due, so it sees what extraction just wrote. Turns are never held up; unloading aborts the work.
- * @param {{ extract: boolean, synthesize: boolean }} enabled
  */
-function registerAfterTurn(ctx, db, enabled) {
+function registerAfterTurn(ctx: Context, db: MemoryDb, enabled: { extract: boolean, synthesize: boolean }) {
   /** The user's own words per session, kept from the turn's first step until the turn stops. */
-  const turns = new Map()
+  const turns = new Map<string, { turn: number, text: string }>()
   const running = new Set<AbortController>()
   ctx.effect(() => () => running.forEach((controller) => controller.abort()), 'memory extraction')
 
@@ -171,7 +193,7 @@ function registerAfterTurn(ctx, db, enabled) {
     const controller = new AbortController()
     running.add(controller)
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(AFTER_TURN_TIMEOUT_MS)])
-    const call = (maxTokens) => (system, input) => complete(ctx, agent, { system, input, signal, maxTokens })
+    const call = (maxTokens: number) => (system: string, input: string) => complete(ctx, agent, { system, input, signal, maxTokens })
     const extract = () => extractTurn({
       db, userWords: words.text, answers: answersOf(agent, turn), reply: replyOf(agent, turn), today: dateLine(), complete: call(EXTRACT_MAX_TOKENS),
     })
@@ -184,15 +206,11 @@ function registerAfterTurn(ctx, db, enabled) {
       .finally(() => running.delete(controller))
   })
 
-  return (sessionId, turn, question) => turns.set(sessionId, { turn, text: ownWords(question) })
+  return (sessionId: string, turn: number, question: string) => turns.set(sessionId, { turn, text: ownWords(question) })
 }
 
-/**
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ file: string, extract?: boolean, synthesize?: boolean }} config extract / synthesize: the
- *   background passes after each turn (each on unless false)
- */
-export function apply(ctx, config) {
+/** @param config extract / synthesize: the background passes after each turn (each on unless false) */
+export function apply(ctx: Context, config: { file: string, extract?: boolean, synthesize?: boolean }) {
   if (!config?.file) throw new Error(`${name}: config.file (the memory.db path) is required`)
   const db = openMemoryDb({ file: config.file })
   ctx.effect(() => () => db.close(), 'memory.db')
@@ -221,7 +239,7 @@ export function apply(ctx, config) {
         sessionId,
         turn,
         question,
-        epoch: ctx.sessionProjections.stateOf(agent.session, PROJECTION).compactions,
+        epoch: ctx.sessionProjections.stateOf(agent.session, PROJECTION)?.compactions ?? 0,
       })
       if (!text) return decision
       const message = createUserMessage({

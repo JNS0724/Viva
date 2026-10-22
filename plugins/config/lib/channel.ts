@@ -8,6 +8,8 @@
  *   app → plugin  { type: 'config_result', id, ok, text }      what happened, in words for the model
  */
 const MAX_TEXT_CHARS = 4000
+/** What arrives over IPC: anything at all, so every field is checked before it is used. */
+type Incoming = any
 
 /** @param port the IPC channel to the app */
 export function createConfigChannel(port: { send: (message: object) => unknown, on: Function, off: Function }, log: (message: string) => void): {
@@ -16,7 +18,7 @@ export function createConfigChannel(port: { send: (message: object) => unknown, 
   const waiting = new Map()
   let seq = 0
 
-  function onMessage(message) {
+  function onMessage(message: Incoming) {
     if (message?.type !== 'config_result') return
     const entry = waiting.get(message.id)
     if (!entry) return
@@ -34,7 +36,7 @@ export function createConfigChannel(port: { send: (message: object) => unknown, 
       const entry = {
         resolve,
         reject,
-        settle(finish) {
+        settle(finish: () => void) {
           waiting.delete(id)
           signal?.removeEventListener('abort', onAbort)
           finish()

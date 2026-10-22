@@ -1,23 +1,24 @@
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import { recallMatches } from './match.ts'
 import { MEMORY_KINDS } from './store.ts'
+import type { Memory } from './store.ts'
 
 /** Prefixed so they can't clash with another plugin's tools; dsh shows them to the model under these names. */
 export const MEMORY_TOOL_NAMES = Object.freeze(['memory_remember', 'memory_recall', 'memory_forget'])
 const RECALL_LIMIT = 5
 const MAX_QUERY_CHARS = 200
 
-const pad = (n) => String(n).padStart(2, '0')
-const day = (ts) => {
+const pad = (n: number) => String(n).padStart(2, '0')
+const day = (ts: number) => {
   const date = new Date(ts)
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
-const listLine = (memory) => {
+const listLine = (memory: Memory) => {
   const keywords = memory.keywords.length ? `〔${memory.keywords.join('、')}〕` : ''
   return `#${memory.id}（${day(memory.createdAt)}，${memory.kind}）${memory.text}${keywords}`
 }
 
-function assertQuery(query) {
+function assertQuery(query: unknown): string {
   if (typeof query !== 'string' || !query.trim() || query.length > MAX_QUERY_CHARS) throw new Error('查询要写 2–4 个关键词')
   return query
 }
@@ -74,6 +75,8 @@ export function memoryTools(db: ReturnType<typeof import('./store.ts').openMemor
         if (!known) return `没有编号为 #${id} 的记忆。`
         if (known.invalidAt) return `#${id} 之前已经忘掉了。`
         const forgotten = db.invalidateMemory(id, { by: 'user' })
+        // Gone in between (deleted from the app meanwhile): as if it had never been there.
+        if (!forgotten) return `没有编号为 #${id} 的记忆。`
         return `已忘掉 #${id}：${forgotten.text}（用户可以在「关于你」里恢复）`
       },
     },

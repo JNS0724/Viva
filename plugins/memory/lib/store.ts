@@ -26,7 +26,46 @@ const MAX_INJECTIONS = 1000
 const MAX_HABITS_CHARS = 200
 const MAX_SYNTHESES_KEPT = 20
 /** Profile fields the agent used to append to, before it wrote memories instead, and the kind they become. */
-const FIELD_KINDS = { role: 'role', department: 'role', domain: 'role', projects: 'project', people: 'person', preferences: 'preference' }
+const FIELD_KINDS: Readonly<Record<string, string>> = { role: 'role', department: 'role', domain: 'role', projects: 'project', people: 'person', preferences: 'preference' }
+
+/** A memory as the app and the plugin hold it. */
+export interface Memory {
+  id: number
+  text: string
+  kind: string
+  source: string
+  keywords: string[]
+  conversationId: string | null
+  createdAt: number
+  updatedAt: number
+  /** Set when the memory stopped being true (replaced, or forgotten); null while it is valid. */
+  invalidAt: number | null
+  supersededBy: number | null
+  invalidatedBy: string | null
+}
+
+/** A row of `memories`, as SCHEMA declares it (keywords one per line). */
+interface MemoryRow {
+  id: number, text: string, norm: string, kind: string, source: string, conversation_id: string | null,
+  created_at: number, updated_at: number, keywords: string, invalid_at: number | null, superseded_by: number | null,
+  invalidated_by: string | null
+}
+
+/** The filled profile fields, by field. */
+export type Profile = Record<string, { value: string, source: string, updatedAt: number }>
+
+/** What addMemory is given; text and keywords are checked before anything is kept. */
+export interface NewMemory { text: unknown, kind?: string, source?: string, conversationId?: string | null, keywords?: unknown }
+
+/** One background extraction: shown, the ids of the memories the extractor was given, the only ones it may invalidate. */
+export interface Extraction {
+  add: Array<{ text: string, kind?: string, keywords?: string[], replaces?: number | null }>
+  invalidate: number[]
+  shown: Set<number>
+}
+
+/** What a turn put in front of the model, as logged. */
+export interface Injection { id: number, turn: number, at: number, fixed: string | null, pushed: Array<{ text: string, names: string[] }> }
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS profile (
@@ -86,15 +125,14 @@ const SECRET_PATTERNS = [
 ]
 
 /** Document links carry long ids (a Google Docs id is 44 characters) that are not secrets. */
-const withoutLinks = (text) => text.replace(/https?:\/\/\S+/gi, ' ')
+const withoutLinks = (text: string) => text.replace(/https?:\/\/\S+/gi, ' ')
 
-/** @param {string} text */
-export const looksSecret = (text) => SECRET_PATTERNS.some((pattern) => pattern.test(withoutLinks(text)))
+export const looksSecret = (text: string): boolean => SECRET_PATTERNS.some((pattern) => pattern.test(withoutLinks(text)))
 
 /** Same memory, different spacing or closing punctuation. */
-const normalize = (text) => text.toLowerCase().replace(/\s+/g, ' ').replace(/[。.!！?？;；,，\s]+$/u, '').trim()
+const normalize = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').replace(/[。.!！?？;；,，\s]+$/u, '').trim()
 
-function cleanText(input, { max, what }) {
+function cleanText(input: unknown, { max, what }: { max: number, what: string }): string {
   if (typeof input !== 'string') throw new Error(`${what}必须是文本`)
   const text = input.trim()
   if (!text) throw new Error(`${what}不能为空`)
@@ -103,31 +141,30 @@ function cleanText(input, { max, what }) {
   return text
 }
 
-function assertOneOf(value, allowed, what) {
-  if (!allowed.includes(value)) throw new Error(`invalid ${what}: ${value}`)
-  return value
+function assertOneOf<T extends string>(value: unknown, allowed: readonly T[], what: string): T {
+  if (!(allowed as readonly unknown[]).includes(value)) throw new Error(`invalid ${what}: ${value}`)
+  return value as T
 }
 
-function assertMemoryId(id) {
-  if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`invalid memory id: ${id}`)
-  return id
+function assertMemoryId(id: unknown): number {
+  if (!Number.isSafeInteger(id) || (id as number) <= 0) throw new Error(`invalid memory id: ${id}`)
+  return id as number
 }
 
 /**
  * The names a memory is about ("张三", "对账系统"), so that mentioning one brings it back. Unusable
  * ones (too short, too long, secret-looking) are dropped rather than refusing the whole memory.
- * @returns {string[]}
  */
-function cleanKeywords(input) {
+function cleanKeywords(input: unknown): string[] {
   if (input === undefined || input === null) return []
   if (!Array.isArray(input)) throw new Error('关键词必须是列表')
   const usable = input
-    .map((keyword) => (typeof keyword === 'string' ? keyword.replace(/\s+/g, ' ').trim() : ''))
+    .map((keyword: unknown) => (typeof keyword === 'string' ? keyword.replace(/\s+/g, ' ').trim() : ''))
     .filter((keyword) => {
       const length = [...keyword].length
       return length >= MIN_KEYWORD_CHARS && length <= MAX_KEYWORD_CHARS && !looksSecret(keyword)
     })
-  const seen = new Set()
+  const seen = new Set<string>()
   return usable.filter((keyword) => {
     const key = keyword.toLowerCase()
     if (seen.has(key)) return false
@@ -136,8 +173,8 @@ function cleanKeywords(input) {
   }).slice(0, MAX_KEYWORDS)
 }
 
-const splitKeywords = (text) => (text ? text.split('\n') : [])
-const joinKeywords = (keywords) => keywords.join('\n')
+const splitKeywords = (text: string | null | undefined): string[] => (text ? text.split('\n') : [])
+const joinKeywords = (keywords: readonly string[]) => keywords.join('\n')
 
 /** Columns added after the first release; older databases get them on open. */
 const LATER_COLUMNS = [
@@ -148,7 +185,7 @@ const LATER_COLUMNS = [
 ]
 
 /** Adds missing columns; the other process may add one first, which is fine. */
-function addLaterColumns(db) {
+function addLaterColumns(db: DatabaseSync) {
   const columns = new Set(db.prepare('PRAGMA table_info(memories)').all().map((column) => column.name))
   for (const [name, type] of LATER_COLUMNS.filter(([column]) => !columns.has(column))) {
     try {
@@ -159,12 +196,12 @@ function addLaterColumns(db) {
   }
 }
 
-const lines = (text) => text.split('\n').map((line) => line.trim()).filter(Boolean)
+const lines = (text: string) => text.split('\n').map((line) => line.trim()).filter(Boolean)
 /** "张三（上级）" → "张三", "李四：风控对接人" → "李四". */
-const nameIn = (line) => line.replace(/[（(][^）)]*[）)]/g, ' ').split(/[:：]/)[0].replace(/^[-*•\s]+/, '').trim()
-const clipTo = (text, max) => ([...text].length > max ? `${[...text].slice(0, max - 1).join('')}…` : text)
+const nameIn = (line: string) => line.replace(/[（(][^）)]*[）)]/g, ' ').split(/[:：]/)[0].replace(/^[-*•\s]+/, '').trim()
+const clipTo = (text: string, max: number) => ([...text].length > max ? `${[...text].slice(0, max - 1).join('')}…` : text)
 
-const toMemory = (row) => ({
+const toMemory = (row: MemoryRow): Memory => ({
   id: row.id,
   text: row.text,
   kind: row.kind,
@@ -173,21 +210,22 @@ const toMemory = (row) => ({
   conversationId: row.conversation_id,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
-  /** Set when the memory stopped being true (replaced, or forgotten); null while it is valid. */
   invalidAt: row.invalid_at ?? null,
   supersededBy: row.superseded_by ?? null,
   invalidatedBy: row.invalidated_by ?? null,
 })
 
-const escapeLike = (text) => text.replace(/[\\%_]/g, (c) => `\\${c}`)
+const escapeLike = (text: string) => text.replace(/[\\%_]/g, (c) => `\\${c}`)
 
 /**
  * The user's profile and long-term memories, in one SQLite file next to the history.
  * Opened by the main process and by the memory MCP server (another process), so writes are short
  * transactions and WAL lets both read while one writes.
- * @param {{ file: string, now?: () => number }} options
  */
-export function openMemoryDb({ file, now = Date.now }) {
+/** The store openMemoryDb opens. */
+export type MemoryDb = ReturnType<typeof openMemoryDb>
+
+export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () => number }) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 3000;')
@@ -248,7 +286,7 @@ export function openMemoryDb({ file, now = Date.now }) {
     setMeta: db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value'),
   }
 
-  function transaction(work) {
+  function transaction<T>(work: () => T): T {
     db.exec('BEGIN IMMEDIATE')
     try {
       const result = work()
@@ -260,14 +298,14 @@ export function openMemoryDb({ file, now = Date.now }) {
     }
   }
 
-  /** @returns {Record<string, { value: string, source: string, updatedAt: number }>} filled fields only */
-  function getProfile() {
+  /** Filled fields only. */
+  function getProfile(): Profile {
     return Object.fromEntries(sql.profile.all()
       .filter((row) => PROFILE_KEYS.includes(row.field))
       .map((row) => [row.field, { value: row.value, source: row.source, updatedAt: row.updated_at }]))
   }
 
-  function writeField(key, value, source, at) {
+  function writeField(key: string, value: string, source: string, at: number) {
     if (value) sql.setField.run(key, value, source, at)
     else sql.dropField.run(key)
   }
@@ -275,9 +313,8 @@ export function openMemoryDb({ file, now = Date.now }) {
   /**
    * Replaces the given fields; an empty value clears one. Profile text may name people and projects,
    * so only key-shaped secrets are refused, not every mention.
-   * @param {Record<string, string>} changes
    */
-  function setProfile(changes, source = 'user') {
+  function setProfile(changes: Record<string, unknown> | null | undefined, source = 'user'): Profile {
     assertOneOf(source, MEMORY_SOURCES, 'source')
     const entries = Object.entries(changes ?? {}).map(([key, value]) => {
       assertOneOf(key, PROFILE_KEYS, 'profile field')
@@ -350,10 +387,10 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /**
-   * @returns {{ memory: ReturnType<typeof toMemory>, created: boolean }} an existing equal memory is
-   *   refreshed instead (made valid again if it had been invalidated), and gains the new keywords
+   * An existing equal memory is refreshed instead (made valid again if it had been invalidated), and gains
+   * the new keywords.
    */
-  function addMemory({ text: input, kind = 'fact', source = 'user', conversationId = null, keywords: keywordInput = [] }) {
+  function addMemory({ text: input, kind = 'fact', source = 'user', conversationId = null, keywords: keywordInput = [] }: NewMemory): { memory: Memory, created: boolean } {
     const text = cleanText(input, { max: MAX_MEMORY_CHARS, what: '记忆' })
     const keywords = cleanKeywords(keywordInput)
     assertOneOf(kind, MEMORY_KINDS, 'memory kind')
@@ -373,12 +410,12 @@ export function openMemoryDb({ file, now = Date.now }) {
     })
   }
 
-  function getMemory(id) {
+  function getMemory(id: unknown): Memory | null {
     const row = sql.byId.get(assertMemoryId(id))
     return row ? toMemory(row) : null
   }
 
-  function updateMemory(id, input) {
+  function updateMemory(id: unknown, input: unknown): Memory {
     const text = cleanText(input, { max: MAX_MEMORY_CHARS, what: '记忆' })
     const norm = normalize(text)
     return transaction(() => {
@@ -392,7 +429,7 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /** @returns the deleted memory, so it can be put back, or null if there was none */
-  function deleteMemory(id) {
+  function deleteMemory(id: unknown): Memory | null {
     return transaction(() => {
       const row = sql.byId.get(assertMemoryId(id))
       if (!row) return null
@@ -401,9 +438,10 @@ export function openMemoryDb({ file, now = Date.now }) {
     })
   }
 
-  /** Puts back a memory returned by `deleteMemory` (undo), keeping its id and dates. */
-  function restoreMemory(memory) {
-    const text = cleanText(memory?.text, { max: MAX_MEMORY_CHARS, what: '记忆' })
+  /** Puts back a memory returned by `deleteMemory` (undo), keeping its id and dates; it comes back from the window, so each field is checked. */
+  function restoreMemory(input: Record<string, any> | null | undefined): Memory {
+    const memory = input ?? {}
+    const text = cleanText(memory.text, { max: MAX_MEMORY_CHARS, what: '记忆' })
     const norm = normalize(text)
     return transaction(() => {
       const existing = sql.byNorm.get(norm)
@@ -428,7 +466,7 @@ export function openMemoryDb({ file, now = Date.now }) {
    * Valid memories, newest first; with a query, the ones containing it. `invalid` counts the
    * invalidated ones, which `listInvalid` returns.
    */
-  function listMemories({ query = '', limit = LIST_LIMIT } = {}) {
+  function listMemories({ query = '', limit = LIST_LIMIT }: { query?: unknown, limit?: unknown } = {}): { items: Memory[], total: number, invalid: number } {
     if (typeof query !== 'string' || query.length > MAX_QUERY_CHARS) throw new Error('invalid memory query')
     const size = Math.min(Math.max(1, Number(limit) || LIST_LIMIT), LIST_LIMIT)
     const needle = query.trim()
@@ -437,16 +475,14 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /** Invalidated memories, most recently invalidated first. */
-  const listInvalid = (limit = LIST_LIMIT) => sql.invalidList.all(Math.min(Math.max(1, Number(limit) || LIST_LIMIT), LIST_LIMIT)).map(toMemory)
+  const listInvalid = (limit: unknown = LIST_LIMIT): Memory[] => sql.invalidList.all(Math.min(Math.max(1, Number(limit) || LIST_LIMIT), LIST_LIMIT)).map(toMemory)
 
   /**
    * Marks a memory as no longer true without deleting it. Only `by: 'user'` may invalidate what the
    * user wrote; the agent never overrides the user.
-   * @param {number} id
-   * @param {{ by: 'user' | 'agent', supersededBy?: number | null }} options
    * @returns the memory as it now is, or null when there is no such memory
    */
-  function invalidateMemory(id, { by, supersededBy = null }) {
+  function invalidateMemory(id: unknown, { by, supersededBy = null }: { by: unknown, supersededBy?: number | null }): Memory | null {
     assertOneOf(by, MEMORY_SOURCES, 'invalidated by')
     return transaction(() => {
       const row = sql.byId.get(assertMemoryId(id))
@@ -458,7 +494,7 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /** Makes an invalidated memory valid again (undo, or the user disagreeing with an update). */
-  function reviveMemory(id) {
+  function reviveMemory(id: unknown): Memory {
     return transaction(() => {
       const row = sql.byId.get(assertMemoryId(id))
       if (!row) throw new Error('找不到这条记忆，可能已被删除')
@@ -468,10 +504,10 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /** What the agent invalidated since `since`, for the app to tell the user. */
-  const invalidatedSince = (since) => sql.invalidatedSince.all(since).map(toMemory)
+  const invalidatedSince = (since: number): Memory[] => sql.invalidatedSince.all(since).map(toMemory)
 
   /** Adds an agent memory, or refreshes an equal one; @returns its id. */
-  function upsertAgentMemory(item, at) {
+  function upsertAgentMemory(item: Extraction['add'][number], at: number): number {
     const text = cleanText(item.text, { max: MAX_MEMORY_CHARS, what: '记忆' })
     const kind = assertOneOf(item.kind ?? 'fact', MEMORY_KINDS, 'memory kind')
     const norm = normalize(text)
@@ -486,16 +522,10 @@ export function openMemoryDb({ file, now = Date.now }) {
   /**
    * Applies one background extraction, all or nothing: any change that would fail (a secret, an
    * unknown kind, a memory the extractor was not shown, one the user wrote) rolls the whole batch back.
-   * @param {{
-   *   add: Array<{ text: string, kind?: string, keywords?: string[], replaces?: number | null }>,
-   *   invalidate: number[],
-   *   shown: Set<number>,
-   * }} changes shown: ids of the memories the extractor was given, the only ones it may invalidate
-   * @returns {{ added: Array<ReturnType<typeof toMemory>>, invalidated: number[] }}
    */
-  function applyExtraction({ add, invalidate, shown }) {
+  function applyExtraction({ add, invalidate, shown }: Extraction): { added: Memory[], invalidated: number[] } {
     if (add.length + invalidate.length > MAX_EXTRACTED_CHANGES) throw new Error(`一次最多 ${MAX_EXTRACTED_CHANGES} 处改动`)
-    const assertChangeable = (id) => {
+    const assertChangeable = (id: number) => {
       const row = sql.byId.get(assertMemoryId(id))
       if (!shown.has(id) || !row) throw new Error(`#${id} 不在可修改的范围里`)
       if (row.source === 'user') throw new Error(`#${id} 是用户自己写的，后台不能让它失效`)
@@ -523,23 +553,23 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /** Valid profile-kind memories, newest first; with `since`, only those written or refreshed after it. */
-  const profileMemories = ({ since = null, limit = LIST_LIMIT } = {}) => (since === null
+  const profileMemories = ({ since = null, limit = LIST_LIMIT }: { since?: number | null, limit?: number } = {}): Memory[] => (since === null
     ? sql.profileKinds.all(...PROFILE_KINDS, limit)
     : sql.profileKindsSince.all(...PROFILE_KINDS, since, limit)).map(toMemory)
 
   /** The latest profile the agent synthesised from the memories, or null before the first. */
-  function latestSynthesis() {
+  function latestSynthesis(): { id: number, text: string, createdAt: number } | null {
     const row = sql.latestSynthesis.get()
     return row ? { id: row.id, text: row.text, createdAt: row.created_at } : null
   }
 
   /** How many memories were written, refreshed or invalidated after `since`. */
-  const changesSince = (since) => sql.changesSince.get(since, since).n
+  const changesSince = (since: number): number => sql.changesSince.get(since, since).n
   /** Profile memories that stopped being true after `since`: the synthesis may now say something false. */
-  const profileInvalidationsSince = (since) => sql.profileInvalidationsSince.get(since, ...PROFILE_KINDS).n
+  const profileInvalidationsSince = (since: number): number => sql.profileInvalidationsSince.get(since, ...PROFILE_KINDS).n
 
   /** Keeps a new synthesis (and the last few before it). Checked like any memory text: no secrets, bounded. */
-  function saveSynthesis(input) {
+  function saveSynthesis(input: unknown) {
     const text = cleanText(input, { max: MAX_SYNTHESIS_CHARS, what: '画像' })
     return transaction(() => {
       const { lastInsertRowid } = sql.saveSynthesis.run(text, now())
@@ -549,14 +579,14 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /** Every memory, for retrieval to score; the store holds a few thousand short lines at most. */
-  const allMemories = () => sql.all.all().map(toMemory)
-  const ofKind = (kind, limit) => sql.ofKind.all(assertOneOf(kind, MEMORY_KINDS, 'memory kind'), limit).map(toMemory)
+  const allMemories = (): Memory[] => sql.all.all().map(toMemory)
+  const ofKind = (kind: string, limit: number): Memory[] => sql.ofKind.all(assertOneOf(kind, MEMORY_KINDS, 'memory kind'), limit).map(toMemory)
 
   /**
    * What the agent wrote since `since` (through the memory tools, in the other process): its new
    * memories are tied to `conversationId` so the profile page can say where they came from.
    */
-  function claimChanges(since, conversationId) {
+  function claimChanges(since: number, conversationId: string): { memories: Memory[] } {
     return transaction(() => {
       const memories = sql.unclaimed.all(since).map(toMemory)
       for (const memory of memories) sql.claim.run(conversationId, memory.id)
@@ -565,7 +595,7 @@ export function openMemoryDb({ file, now = Date.now }) {
   }
 
   /** A session's retrieval state as the plugin saved it, or null (new session, or unreadable). */
-  function sessionState(sessionId) {
+  function sessionState(sessionId: string): unknown {
     const row = sql.sessionState.get(String(sessionId))
     if (!row) return null
     try {
@@ -575,13 +605,10 @@ export function openMemoryDb({ file, now = Date.now }) {
     }
   }
 
-  const saveSessionState = (sessionId, state) => sql.saveSession.run(String(sessionId), JSON.stringify(state), now())
+  const saveSessionState = (sessionId: string, state: unknown) => sql.saveSession.run(String(sessionId), JSON.stringify(state), now())
 
-  /**
-   * Records what was put in front of the model on a turn, so the app can show it.
-   * @param {{ sessionId: string, turn: number, fixed: string | null, pushed: Array<{ text: string, names: string[] }> }} entry
-   */
-  function logInjection({ sessionId, turn, fixed, pushed }) {
+  /** Records what was put in front of the model on a turn, so the app can show it. */
+  function logInjection({ sessionId, turn, fixed, pushed }: { sessionId: string } & Omit<Injection, 'id' | 'at'>) {
     const { lastInsertRowid } = sql.logInjection.run(String(sessionId), turn, now(), fixed, JSON.stringify(pushed))
     sql.pruneInjections.run(Number(lastInsertRowid), MAX_INJECTIONS)
   }
@@ -589,23 +616,22 @@ export function openMemoryDb({ file, now = Date.now }) {
   /**
    * The session's injections logged after the one with id `afterId`: ids only grow, so a reader that
    * remembers the last id it saw gets each entry exactly once.
-   * @returns {Array<{ id: number, turn: number, at: number, fixed: string | null, pushed: Array<{ text: string, names: string[] }> }>}
    */
-  const injectionsAfter = (afterId, sessionId) => sql.injectionsAfter.all(String(sessionId), afterId).map((row) => ({
+  const injectionsAfter = (afterId: number, sessionId: string): Injection[] => sql.injectionsAfter.all(String(sessionId), afterId).map((row) => ({
     id: row.id, turn: row.turn, at: row.created_at, fixed: row.fixed, pushed: JSON.parse(row.pushed),
   }))
   const lastInjectionId = () => sql.lastInjection.get().id
 
   /** Work habits, read by the app from its own history; part of the fixed layer. */
   const habits = () => sql.meta.get('habits')?.value ?? ''
-  const setHabits = (text) => sql.setMeta.run('habits', String(text ?? '').slice(0, MAX_HABITS_CHARS))
+  const setHabits = (text: unknown) => sql.setMeta.run('habits', String(text ?? '').slice(0, MAX_HABITS_CHARS))
 
   /** Set by the plugin when dsh loads it, so the app can tell whether memory is working. */
   const pluginStartedAt = () => Number(sql.meta.get('plugin_started_at')?.value ?? 0)
   const markPluginStarted = () => sql.setMeta.run('plugin_started_at', String(now()))
 
   const onboarding = () => sql.meta.get('onboarding')?.value ?? 'pending'
-  const setOnboarding = (status) => sql.setMeta.run('onboarding', assertOneOf(status, ONBOARDING_STATES, 'onboarding state'))
+  const setOnboarding = (status: unknown) => sql.setMeta.run('onboarding', assertOneOf(status, ONBOARDING_STATES, 'onboarding state'))
 
   migrateAgentProfile()
   migrateRetiredFields()

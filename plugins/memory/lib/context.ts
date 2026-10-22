@@ -32,9 +32,21 @@ const PUSHED_INTRO = '用户的话里提到了下面这些人或事，系统已�
 
 const WEEKDAYS = '日一二三四五六'
 
-const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
-const pad = (n) => String(n).padStart(2, '0')
-const day = (ts) => {
+/** The fixed layer's parts: what the user wrote, the latest synthesis, profile memories since it, habits. */
+export interface FixedLayer {
+  profile: Readonly<Record<string, { value: string } | undefined>>
+  synthesis?: string | null
+  recent?: ReadonlyArray<MemoryLike>
+  habits?: string
+}
+/** A memory as far as the block shows it. */
+type MemoryLike = { text: string, createdAt: number, updatedAt?: number }
+/** A memory pushed because the question named something, with the names it was found by. */
+export interface PushedMemory { memory: MemoryLike, names: string[] }
+
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+const pad = (n: number) => String(n).padStart(2, '0')
+const day = (ts: number) => {
   const date = new Date(ts)
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
@@ -44,17 +56,18 @@ export function dateLine(date = new Date()) {
   return `${day(date.getTime())}（周${WEEKDAYS[date.getDay()]}）`
 }
 
-function profileLines(profile) {
-  return PROFILE_FIELDS
-    .filter(({ key }) => profile[key]?.value)
-    .map(({ key, label }) => `${label}：${clip(profile[key].value.replace(/\n+/g, '；'), FIELD_CHARS)}`)
+function profileLines(profile: FixedLayer['profile']) {
+  return PROFILE_FIELDS.flatMap(({ key, label }) => {
+    const value = profile[key]?.value
+    return value ? [`${label}：${clip(value.replace(/\n+/g, '；'), FIELD_CHARS)}`] : []
+  })
 }
 
-const memoryLine = (memory) => `- （${day(memory.updatedAt ?? memory.createdAt)}）${memory.text}`
-const sectionTitle = (title) => `【${title}】`
+const memoryLine = (memory: MemoryLike) => `- （${day(memory.updatedAt ?? memory.createdAt)}）${memory.text}`
+const sectionTitle = (title: string) => `【${title}】`
 
 /** The leading lines that fit in `room` characters (one newline each), so the block keeps its budget. */
-function fitting(lines, room) {
+function fitting(lines: readonly string[], room: number) {
   const kept: string[] = []
   let used = 0
   for (const line of lines) {
@@ -65,8 +78,8 @@ function fitting(lines, room) {
   return kept
 }
 
-const section = (title, lines) => (lines.length ? [sectionTitle(title), ...lines] : [])
-const sizeOf = (lines) => lines.reduce((total, line) => total + line.length + 1, 0)
+const section = (title: string, lines: readonly string[]): string[] => (lines.length ? [sectionTitle(title), ...lines] : [])
+const sizeOf = (lines: readonly string[]) => lines.reduce((total, line) => total + line.length + 1, 0)
 
 const TAGS_CHARS = `<${CONTEXT_TAG}>`.length + `</${CONTEXT_TAG}>`.length + 2
 
@@ -74,7 +87,7 @@ const TAGS_CHARS = `<${CONTEXT_TAG}>`.length + `</${CONTEXT_TAG}>`.length + 2
  * Each part in order of authority, as far as the budget goes: the rules always, then what the user
  * wrote, the synthesis, what was learned since it, and habits. A part goes in only with at least one line.
  */
-function fixedLines({ profile, synthesis, recent, habits }) {
+function fixedLines({ profile, synthesis, recent, habits }: Required<FixedLayer>) {
   const rules = section('记忆规则', [MEMORY_RULES])
   const parts = [
     section('画像', profileLines(profile)),
@@ -89,22 +102,13 @@ function fixedLines({ profile, synthesis, recent, habits }) {
   return [FIXED_INTRO, ...rules, ...kept]
 }
 
-const pushedLine = ({ memory, names }) => `${memoryLine(memory)}〔${names.join('、')}〕`
+const pushedLine = ({ memory, names }: PushedMemory) => `${memoryLine(memory)}〔${names.join('、')}〕`
 
 /**
- * @param {{
- *   fixed: null | {
- *     profile: Record<string, { value: string }>,
- *     synthesis?: string | null,
- *     recent?: Array<{ text: string, createdAt: number, updatedAt?: number }>,
- *     habits?: string,
- *   },
- *   pushed: Array<{ memory: { text: string, createdAt: number }, names: string[] }>,
- *   today?: string,
- * }} layers today: sent as 【今天】 when given
- * @returns {string} '' when there is nothing to tell
+ * @param layers today: sent as 【今天】 when given
+ * @returns '' when there is nothing to tell
  */
-export function buildContext({ fixed, pushed, today = '' }) {
+export function buildContext({ fixed, pushed, today = '' }: { fixed: FixedLayer | null, pushed: readonly PushedMemory[], today?: string }): string {
   const lines = [
     ...(today ? section('今天', [today]) : []),
     ...(fixed ? fixedLines({ synthesis: null, recent: [], habits: '', ...fixed }) : []),

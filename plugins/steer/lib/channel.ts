@@ -17,21 +17,28 @@ export const REASONS = Object.freeze({
 const MAX_ID_CHARS = 128
 const MAX_TEXT_CHARS = 20_000
 
-const isText = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max
+/** Why the words did not reach the turn. */
+export type SteerReason = (typeof REASONS)[keyof typeof REASONS]
+/** What arrives over IPC: anything at all, so every field is checked before it is used. */
+type Incoming = any
+
+const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max
 
 /**
- * @param {{ send?: (message: object) => unknown, on: Function, off: Function }} port the IPC channel to the app
- * @param {(sessionId: string, text: string) => keyof REASONS | null} steer null once dsh has the words
- * @param {(message: string) => void} log
- * @returns {{ close: () => void }}
+ * @param port the IPC channel to the app
+ * @param steer null once dsh has the words
  */
-export function createSteerChannel(port, steer, log) {
-  function onMessage(message) {
+export function createSteerChannel(
+  port: { send: (message: object) => unknown, on: Function, off: Function },
+  steer: (sessionId: string, text: string) => SteerReason | null,
+  log: (message: string) => void,
+): { close: () => void } {
+  function onMessage(message: Incoming) {
     if (message?.type !== 'steer') return
     if (!isText(message.id, MAX_ID_CHARS)) return log('ignored a steer without an id')
-    const reply = (reason) => port.send({ type: 'steer_result', id: message.id, ok: !reason, ...(reason ? { reason } : {}) })
+    const reply = (reason: SteerReason | null) => port.send({ type: 'steer_result', id: message.id, ok: !reason, ...(reason ? { reason } : {}) })
     if (!isText(message.sessionId, MAX_ID_CHARS) || !isText(message.text, MAX_TEXT_CHARS)) return reply(REASONS.failed)
-    let reason
+    let reason: SteerReason | null
     try {
       reason = steer(message.sessionId, message.text)
     } catch (err: any) {
