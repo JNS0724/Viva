@@ -1,4 +1,4 @@
-import { earlierRows, formatListTime, workspaceName } from '../selectors.ts'
+import { earlierRows, formatListTime, workspaceName, type EarlierRow } from '../selectors.ts'
 import { isBusy } from '../state.ts'
 import { topicBlocks, topicStart } from '../topics.ts'
 import { h } from './dom.ts'
@@ -13,7 +13,11 @@ import { markMessage, pastMessageView } from './thread.ts'
 const NEW_TOPIC_NOTE = '助手从这里重新开始，不带上面的内容；关于你的记忆照常'
 const BACK_NOTE = '助手接着那个话题的内容聊，中间的不记得'
 
-function workdirLine(row) {
+type RowOf<K extends EarlierRow['kind']> = Extract<EarlierRow, { kind: K }>
+type TopicBlock = ReturnType<typeof topicBlocks>[number]
+type Options = { now: number, busy: boolean }
+
+function workdirLine(row: RowOf<'workdir'>) {
   return h('div', { class: 'timeline-workdir', role: 'separator', title: row.cwd },
     h('span', { class: 'timeline-workdir-ico', 'aria-hidden': 'true', text: '📁' }),
     ...(row.continues
@@ -21,29 +25,30 @@ function workdirLine(row) {
       : [h('span', { text: '工作目录换成 ' }), h('b', { text: workspaceName(row.cwd) }), h('span', { class: 'timeline-workdir-path mono', text: row.cwd })]))
 }
 
-const ROW_VIEWS = {
+const ROW_VIEWS: { [K in EarlierRow['kind']]: (row: RowOf<K>, handlers: Handlers) => View } = {
   day: (row) => h('div', { class: 'timeline-day', role: 'separator', text: row.label }),
   workdir: (row) => workdirLine(row),
   message: (row, handlers) => markMessage(pastMessageView(row, handlers), row.id),
 }
-const rowViews = (rows, handlers) => rows.flatMap((row) => ROW_VIEWS[row.kind](row, handlers))
-const topicTime = (at, now) => (at ? formatListTime(at, now) : '')
+const rowView = (row: EarlierRow, handlers: Handlers) => (ROW_VIEWS[row.kind] as (row: EarlierRow, handlers: Handlers) => View)(row, handlers)
+const rowViews = (rows: readonly EarlierRow[], handlers: Handlers): View[] => rows.flatMap((row) => rowView(row, handlers))
+const topicTime = (at: number | null, now: number) => (at ? formatListTime(at, now) : '')
 
 /** An earlier topic the assistant no longer has: quieter, and 回到这个话题 takes it up again from its last segment. */
-function oldTopic(block, rows, handlers, { now, busy }) {
+function oldTopic(block: TopicBlock, rows: readonly EarlierRow[], handlers: Handlers, { now, busy }: Options) {
   return h('div', { class: 'topic-old' },
     h('div', { class: 'topic-head' },
       h('b', { text: `话题 · ${topicTime(block.at, now)}` }),
       h('span', { text: `${block.count} 条 · 助手不记得这段` }),
       h('button', {
         class: 'topic-back', type: 'button', disabled: busy, title: busy ? '等这一轮结束再回去' : null, text: '回到这个话题',
-        onClick: () => handlers.resumeTopic(block.segments.at(-1).id),
+        onClick: () => handlers.resumeTopic(block.segments.at(-1)?.id),
       })),
     ...rowViews(rows, handlers))
 }
 
 /** Where the topic on screen starts: a new one (undoable until something is said), or back to an earlier one. */
-function startLine(start, handlers, { now, busy }) {
+function startLine(start: ReturnType<typeof topicStart>, handlers: Handlers, { now, busy }: Options): View[] {
   if (!start) return []
   const when = topicTime(start.at, now)
   if (start.kind === 'back') {
@@ -57,11 +62,10 @@ function startLine(start, handlers, { now, busy }) {
 }
 
 /**
- * @param {HTMLElement} container
- * @param {object} state the renderer state (its `earlier` slice, the topic and the current directory)
- * @param {{ loadEarlier: () => void, resumeTopic: (segmentId: string) => void }} handlers
+ * @param state the renderer state (its `earlier` slice, the topic and the current directory)
+ * @param handlers loadEarlier, and resumeTopic (segmentId)
  */
-export function renderEarlier(container, state, handlers, now = Date.now()) {
+export function renderEarlier(container: HTMLElement, state: State, handlers: Handlers, now = Date.now()) {
   const { earlier } = state
   const { parentId } = state.topic
   const last = earlier.segments.at(-1)
@@ -76,5 +80,5 @@ export function renderEarlier(container, state, handlers, now = Date.now()) {
     : null
   const views = blocks.flatMap((block, i) => (block.remembered ? rowViews(grouped[i], handlers) : [oldTopic(block, grouped[i], handlers, options)]))
   container.hidden = rows.length === 0
-  container.replaceChildren(...[more, ...views, ...rowViews(tail, handlers), ...startLine(topicStart(state), handlers, options)].filter(Boolean))
+  container.replaceChildren(...[more, ...views, ...rowViews(tail, handlers), ...startLine(topicStart(state), handlers, options)].filter((view): view is Node | string => Boolean(view)))
 }
