@@ -5,24 +5,27 @@
  */
 export const initialRewind = Object.freeze({
   /** The message being edited in place (改了重发), by id. */
-  editing: null,
+  editing: null as string | null,
   /** The agent is going back; nothing else may be sent until it has. */
   busy: false,
   /** Folded paths opened in place to be read: their messages after the shared part, by path id. */
-  open: {},
+  open: {} as Record<string, Untyped>,
   /** Going back over changes to the computer waits on the user: { id, text, effects } (main/side-effects.js). */
-  confirm: null,
+  confirm: null as Untyped,
 })
 
+/** A path folded off the conversation: where it hangs (after that many saved messages), how many it folds, and whether a path or a task. */
+export type Fold = { id: string, at: number, count: number, kind: string }
+
 /** Words that started a turn of their own: not said into a running one, not an answer, not left unsent. */
-const startsTurn = (message) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
+const startsTurn = (message: ThreadMessage) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
 
 /**
  * Where to go back to for the message `id`: its words, which such turn from the end (dsh finds the turn by them,
  * plugins/fork), and how many saved messages come before it (selectors.js historyMessages keeps the finished ones).
- * @returns {{ words: string, occurrence: number, keep: number } | null} null when it cannot be gone back to now
+ * @returns null when it cannot be gone back to now
  */
-export function rewindTarget(state, id) {
+export function rewindTarget(state: State, id: string): { words: string, occurrence: number, keep: number } | null {
   if (state.phase !== 'idle' || !state.conversationId || state.rewind.busy) return null
   const saved = state.messages.filter((message) => !message.open)
   const keep = saved.findIndex((message) => message.id === id)
@@ -36,18 +39,18 @@ export function rewindTarget(state, id) {
  * The folded paths by the message they hang after (its id; '' before everything): a fold at `at` follows the
  * `at`-th saved message.
  */
-export function foldAfter(state) {
+export function foldAfter(state: State): Record<string, Fold[]> {
   const saved = state.messages.filter((message) => !message.open)
-  return state.folds.reduce((byMessage, fold) => {
+  return state.folds.reduce((byMessage: Record<string, Fold[]>, fold: Fold) => {
     const key = fold.at === 0 ? '' : saved[fold.at - 1]?.id
     return key === undefined ? byMessage : { ...byMessage, [key]: [...(byMessage[key] ?? []), fold] }
   }, {})
 }
 
-const withRewind = (state, changes) => ({ ...state, rewind: { ...state.rewind, ...changes } })
+const withRewind = (state: State, changes: Partial<State['rewind']>): State => ({ ...state, rewind: { ...state.rewind, ...changes } })
 
-/** @param {(state: object, action: object) => object} newSession state.ts's new_session, for the reset */
-export function rewindActions(newSession) {
+/** @param newSession state.ts's new_session, for the reset */
+export function rewindActions(newSession: Reducer): Record<string, Reducer> {
   return {
     rewind_edit: (state, { id }) => withRewind(state, { editing: id }),
     rewind_cancel: (state) => withRewind(state, { editing: null }),
@@ -69,7 +72,7 @@ export function rewindActions(newSession) {
       // Going back is within the topic.
       topic: state.topic,
       conversationId: conversation.id,
-      messages: conversation.messages.map((m, i) => ({
+      messages: conversation.messages.map((m: SegmentMessage, i: number) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, ...(m.images ? { images: m.images } : {}),
       })),
       folds,

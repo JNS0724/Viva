@@ -11,9 +11,9 @@ export const initialModels = Object.freeze({
   notice: null,
 })
 
-const withModels = (state, changes) => ({ ...state, models: { ...state.models, ...changes } })
+const withModels = (state: State, changes: Partial<State['models']>): State => ({ ...state, models: { ...state.models, ...changes } })
 
-export const MODEL_ACTIONS = {
+export const MODEL_ACTIONS: Record<string, Reducer> = {
   models_loaded: (state, { view }) => withModels(state, { ...view, loaded: true, busy: false }),
   models_busy: (state) => withModels(state, { busy: true, error: null, notice: null }),
   models_failed: (state, { message }) => withModels(state, { busy: false, error: message }),

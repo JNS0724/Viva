@@ -26,21 +26,26 @@ const BODY = 'M84.8 16.2 C84.1 16.3 83.4 16.6 82.7 16.9 C82.0 17.1 81.4 17.5 80.
 const EAR_LEFT = 'M24.0 36.1 C23.5 36.2 23.0 36.4 22.7 36.7 C22.4 37.0 22.2 37.5 22.0 38.0 C21.8 38.4 21.7 38.9 21.6 39.4 C21.5 39.8 21.4 40.3 21.3 40.8 C21.2 41.3 21.2 41.7 21.1 42.2 C21.0 42.7 21.0 43.2 21.0 43.7 C20.9 44.1 20.9 44.6 20.9 45.1 C20.9 45.6 20.9 46.1 20.9 46.5 C21.0 47.0 21.0 47.5 21.0 48.0 C21.1 48.5 21.1 48.9 21.2 49.4 C21.2 49.9 21.3 50.4 21.4 50.9 C21.5 51.3 21.5 51.8 21.6 52.3 C21.7 52.8 21.8 53.2 21.9 53.7 C22.0 54.2 22.1 55.0 22.3 55.1 C22.5 55.2 22.9 54.7 23.2 54.4 C23.5 54.1 23.7 53.6 24.0 53.2 C24.3 52.8 24.6 52.5 24.9 52.1 C25.2 51.7 25.5 51.3 25.8 51.0 C26.1 50.6 26.4 50.2 26.8 49.9 C27.1 49.5 27.4 49.2 27.8 48.8 C28.1 48.5 28.4 48.1 28.8 47.8 C29.1 47.5 29.5 47.1 29.9 46.8 C30.2 46.5 30.6 46.2 30.9 45.9 C31.3 45.6 31.7 45.3 32.1 45.0 C32.5 44.7 32.8 44.4 33.2 44.1 C33.6 43.8 34.1 43.6 34.4 43.3 C34.7 42.9 35.2 42.6 35.2 42.2 C35.1 41.9 34.5 41.6 34.1 41.3 C33.8 40.9 33.4 40.6 33.0 40.3 C32.6 40.0 32.2 39.7 31.8 39.5 C31.5 39.2 31.0 38.9 30.6 38.7 C30.2 38.4 29.8 38.2 29.4 37.9 C29.0 37.7 28.6 37.5 28.1 37.3 C27.7 37.1 27.2 36.8 26.8 36.7 C26.4 36.5 25.9 36.3 25.4 36.2 C25.0 36.1 24.4 36.1 24.0 36.1 Z'
 const EAR_RIGHT = 'M85.5 24.6 C85.1 24.7 84.6 24.9 84.2 25.2 C83.8 25.4 83.4 25.7 83.0 26.0 C82.7 26.3 82.3 26.6 81.9 26.9 C81.6 27.3 81.2 27.6 80.9 27.9 C80.6 28.3 80.3 28.7 80.0 29.0 C79.7 29.4 79.3 29.8 79.1 30.1 C78.8 30.5 78.5 30.9 78.2 31.3 C77.9 31.7 77.6 32.1 77.4 32.5 C77.1 32.9 76.8 33.3 76.6 33.7 C76.4 34.1 76.1 34.7 76.3 35.0 C76.5 35.2 77.2 35.3 77.6 35.4 C78.1 35.6 78.5 35.8 79.0 35.9 C79.4 36.1 79.9 36.3 80.3 36.5 C80.8 36.7 81.2 36.9 81.6 37.1 C82.1 37.3 82.5 37.5 82.9 37.7 C83.4 37.9 83.8 38.1 84.2 38.4 C84.6 38.6 85.0 38.8 85.4 39.1 C85.9 39.3 86.3 39.6 86.7 39.8 C87.1 40.1 87.5 40.4 87.8 40.6 C88.2 40.9 88.6 41.2 89.0 41.5 C89.4 41.8 89.8 42.1 90.1 42.4 C90.5 42.7 90.9 43.1 91.2 43.3 C91.6 43.6 92.2 44.0 92.3 43.8 C92.5 43.7 92.4 42.9 92.4 42.4 C92.3 41.9 92.3 41.4 92.3 41.0 C92.2 40.5 92.2 40.0 92.2 39.5 C92.1 39.0 92.0 38.6 92.0 38.1 C91.9 37.6 91.8 37.1 91.7 36.7 C91.7 36.2 91.6 35.7 91.4 35.3 C91.3 34.8 91.2 34.3 91.1 33.9 C91.0 33.4 90.9 32.9 90.7 32.5 C90.6 32.0 90.5 31.6 90.3 31.1 C90.2 30.7 90.0 30.2 89.8 29.8 C89.7 29.3 89.5 28.9 89.3 28.4 C89.1 28.0 88.9 27.6 88.7 27.1 C88.4 26.7 88.2 26.3 87.9 25.9 C87.7 25.5 87.3 25.1 86.9 24.9 C86.5 24.7 86.0 24.6 85.5 24.6 Z'
 const MOUTH = 'M69.5 76.2 C69.3 76.2 69.1 76.3 68.9 76.4 C68.8 76.6 68.7 76.8 68.7 77.0 C68.6 77.2 68.5 77.4 68.4 77.5 C68.3 77.7 68.2 77.9 68.0 78.0 C67.9 78.1 67.7 78.2 67.5 78.3 C67.3 78.3 67.1 78.3 66.9 78.3 C66.7 78.3 66.5 78.2 66.3 78.2 C66.1 78.1 65.9 77.9 65.8 77.8 C65.6 77.7 65.5 77.5 65.3 77.4 C65.2 77.3 65.0 77.1 64.8 77.0 C64.6 77.0 64.4 77.0 64.2 77.1 C64.0 77.2 63.9 77.4 63.8 77.5 C63.7 77.7 63.6 77.9 63.5 78.1 C63.4 78.2 63.3 78.4 63.2 78.6 C63.1 78.8 62.9 78.9 62.8 79.0 C62.6 79.1 62.4 79.2 62.2 79.3 C62.0 79.3 61.8 79.3 61.6 79.3 C61.4 79.3 61.2 79.2 61.0 79.1 C60.8 79.0 60.7 78.8 60.6 78.7 C60.4 78.6 60.3 78.4 60.2 78.2 C60.0 78.1 59.8 78.0 59.6 78.0 C59.4 78.0 59.2 78.1 59.0 78.3 C58.9 78.4 58.8 78.6 58.8 78.8 C58.7 79.0 58.8 79.2 58.9 79.4 C58.9 79.6 59.1 79.7 59.2 79.9 C59.3 80.1 59.5 80.2 59.6 80.3 C59.8 80.5 59.9 80.6 60.1 80.7 C60.3 80.8 60.5 80.9 60.7 81.0 C60.8 81.0 61.0 81.1 61.2 81.1 C61.4 81.2 61.7 81.2 61.9 81.2 C62.1 81.2 62.3 81.2 62.5 81.1 C62.7 81.1 62.9 81.0 63.1 80.9 C63.3 80.9 63.4 80.8 63.6 80.6 C63.8 80.5 63.9 80.4 64.1 80.3 C64.3 80.1 64.4 80.0 64.5 79.8 C64.7 79.7 64.9 79.6 65.1 79.6 C65.3 79.6 65.4 79.8 65.6 79.9 C65.8 80.0 66.0 80.0 66.2 80.1 C66.4 80.1 66.6 80.2 66.8 80.2 C67.0 80.2 67.2 80.2 67.4 80.2 C67.6 80.2 67.8 80.1 68.0 80.1 C68.2 80.0 68.4 79.9 68.6 79.8 C68.8 79.7 69.0 79.6 69.1 79.5 C69.3 79.4 69.4 79.2 69.6 79.1 C69.7 78.9 69.8 78.8 69.9 78.6 C70.0 78.4 70.1 78.2 70.2 78.0 C70.3 77.9 70.3 77.7 70.4 77.5 C70.4 77.3 70.4 77.0 70.3 76.8 C70.3 76.7 70.2 76.4 70.0 76.3 C69.9 76.2 69.7 76.1 69.5 76.2 Z'
-/** Without a disc the body ends in a rounded edge; on the disc it ends where the disc does. */
-const CLIP_PLAIN = ['rect', { x: 3, y: -60, width: 114, height: 174, rx: 16 }]
-const CLIP_DISC = ['path', { d: 'M-50 -50 H170 V75.4 H115.2 A55.2 55.2 0 0 1 4.8 75.4 H-50 Z' }]
+/** An SVG element as data: its tag, its attributes, what it holds. */
+type Shape = readonly [tag: string, attrs: Readonly<Record<string, string | number>>, children?: readonly Shape[]]
+/** How a mood looks: the face, and what is around the cat; tilt: the head leans; the ω mouth moves, or is not drawn. */
+type Look = { face: readonly Shape[], props?: readonly Shape[], tilt?: boolean, mouthClass?: string, noMouth?: boolean }
 
-const eye = (cx, cy, rx, ry, angle) => ['ellipse', { cx, cy, rx, ry, transform: `rotate(${angle} ${cx} ${cy})`, fill: EYE }]
-const eyes = (dy = 0, scale = 1, height = 1) => [
+/** Without a disc the body ends in a rounded edge; on the disc it ends where the disc does. */
+const CLIP_PLAIN: Shape = ['rect', { x: 3, y: -60, width: 114, height: 174, rx: 16 }]
+const CLIP_DISC: Shape = ['path', { d: 'M-50 -50 H170 V75.4 H115.2 A55.2 55.2 0 0 1 4.8 75.4 H-50 Z' }]
+
+const eye = (cx: number, cy: number, rx: number, ry: number, angle: number): Shape => ['ellipse', { cx, cy, rx, ry, transform: `rotate(${angle} ${cx} ${cy})`, fill: EYE }]
+const eyes = (dy = 0, scale = 1, height = 1): Shape[] => [
   eye(48.99, 73.58 + dy, 3.64 * scale, 4.94 * scale * height, -8),
   eye(78.26, 68.31 + dy, 3.67 * scale, 5.01 * scale * height, -7.2),
 ]
-const stroke = (d, width) => ['path', { d, fill: 'none', stroke: EYE, 'stroke-width': width, 'stroke-linecap': 'round' }]
-const sparkle = (x, y, r, cls) => ['path', { class: cls, d: `M${x} ${y - r} Q${x} ${y} ${x + r} ${y} Q${x} ${y} ${x} ${y + r} Q${x} ${y} ${x - r} ${y} Q${x} ${y} ${x} ${y - r} Z`, fill: PAPER }]
-const sign = (mark) => [['g', { class: 'cat-bounce' }, [['circle', { cx: 114, cy: 18, r: 13, fill: PAPER }], ...mark]]]
+const stroke = (d: string, width: number): Shape => ['path', { d, fill: 'none', stroke: EYE, 'stroke-width': width, 'stroke-linecap': 'round' }]
+const sparkle = (x: number, y: number, r: number, cls: string): Shape => ['path', { class: cls, d: `M${x} ${y - r} Q${x} ${y} ${x + r} ${y} Q${x} ${y} ${x} ${y + r} Q${x} ${y} ${x - r} ${y} Q${x} ${y} ${x} ${y - r} Z`, fill: PAPER }]
+const sign = (mark: readonly Shape[]): Shape[] => [['g', { class: 'cat-bounce' }, [['circle', { cx: 114, cy: 18, r: 13, fill: PAPER }], ...mark]]]
 
 /** What each mood draws on the face (eyes, and the mouth when it is not the usual ω) and around the cat. */
-const MOODS = {
+const MOODS: Readonly<Record<string, Look>> & { idle: Look } = {
   idle: { face: [['g', { class: 'cat-blink' }, eyes()]] },
   thinking: {
     face: [['g', { transform: 'translate(1.6 -2)' }, eyes()]],
@@ -59,7 +64,7 @@ const MOODS = {
     props: [
       ['rect', { x: 16, y: 100, width: 88, height: 20, rx: 7, fill: PAPER }],
       ['g', { fill: KEY }, [
-        ...[23, 33, 43, 53, 63, 73, 83].map((x) => ['rect', { x, y: 104, width: 7, height: 4, rx: 1.5 }]),
+        ...[23, 33, 43, 53, 63, 73, 83].map((x): Shape => ['rect', { x, y: 104, width: 7, height: 4, rx: 1.5 }]),
         ['rect', { x: 93, y: 104, width: 5, height: 4, rx: 1.5 }],
         ['rect', { x: 23, y: 111, width: 10, height: 4, rx: 1.5 }],
         ['rect', { x: 36, y: 111, width: 40, height: 4, rx: 1.5 }],
@@ -102,16 +107,16 @@ const MOODS = {
 
 let clipSeq = 0
 
-function draw([tag, attrs, children = []]) {
+function draw([tag, attrs, children = []]: Shape): Element {
   const el = document.createElementNS(NS, tag)
   for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value))
   for (const child of children) el.append(draw(child))
   return el
 }
 
-const layer = (children) => draw(['svg', { class: 'cat-layer', viewBox: `0 0 ${BOX} ${BOX}`, 'aria-hidden': 'true' }, children])
+const layer = (children: readonly Shape[]) => draw(['svg', { class: 'cat-layer', viewBox: `0 0 ${BOX} ${BOX}`, 'aria-hidden': 'true' }, children])
 
-function box(className, styles) {
+function box(className: string, styles: Partial<CSSStyleDeclaration>) {
   const el = document.createElement('div')
   el.className = className
   Object.assign(el.style, styles)
@@ -119,16 +124,14 @@ function box(className, styles) {
 }
 
 /**
- * @param {string} mood one of CAT_MOODS (anything else draws `idle`)
- * @param {{ size?: number, frame?: boolean, still?: boolean }} [options] frame: on its blue disc; still: no motion
- *   (cats that only mark a past answer)
- * @returns {HTMLElement}
+ * @param mood one of CAT_MOODS (anything else draws `idle`)
+ * @param options frame: on its blue disc; still: no motion (cats that only mark a past answer)
  */
-export function drawCat(mood, { size = 120, frame = false, still = false } = {}) {
+export function drawCat(mood: string, { size = 120, frame = false, still = false } = {}): HTMLElement {
   const look = MOODS[mood] ?? MOODS.idle
   const clipId = `cat-clip-${++clipSeq}`
   const cat = box(still ? 'cat cat-still' : 'cat', { width: `${size}px`, height: `${size}px` })
-  cat.dataset.mood = CAT_MOODS.includes(mood) ? mood : 'idle'
+  cat.dataset.mood = (CAT_MOODS as readonly string[]).includes(mood) ? mood : 'idle'
   if (frame) cat.append(box('cat-disc', {}))
   // The drawing's box, scaled so that on a disc the disc's circle in it lands on the disc.
   const scale = frame ? size / DISC : size / BOX
@@ -139,7 +142,7 @@ export function drawCat(mood, { size = 120, frame = false, still = false } = {})
   head.append(layer([
     ['defs', {}, [['clipPath', { id: clipId }, [frame ? CLIP_DISC : CLIP_PLAIN]]]],
     ['g', { 'clip-path': `url(#${clipId})` }, [['path', { d: BODY, fill: INK }], ['path', { d: EAR_LEFT, fill: EAR }], ['path', { d: EAR_RIGHT, fill: EAR }]]],
-    ...(look.noMouth ? [] : [['g', look.mouthClass ? { class: look.mouthClass } : {}, [['path', { d: MOUTH, fill: EYE }]]]]),
+    ...(look.noMouth ? [] : [['g', look.mouthClass ? { class: look.mouthClass } : {}, [['path', { d: MOUTH, fill: EYE }]]] as const]),
     ...look.face,
   ]))
   inner.append(head)

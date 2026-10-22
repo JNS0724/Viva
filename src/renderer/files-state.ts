@@ -23,8 +23,11 @@ export const initialFiles = Object.freeze({
   error: null,
 })
 
+/** A page of a file's preview (files:preview): its text from `offset`, and where the next page starts (null at the end). */
+type PreviewPage = { path: string, text: string, html?: string, offset: number, nextOffset: number | null }
+
 /** A page after the first joins the preview; the first page of the file (read again) replaces it. */
-function withPage(current, page) {
+function withPage(current: PreviewPage | null, page: PreviewPage): PreviewPage {
   if (page.offset === 0 || !current) return page
   if (page.offset !== current.nextOffset) return current
   return {
@@ -35,9 +38,9 @@ function withPage(current, page) {
   }
 }
 
-const withFiles = (state, changes) => ({ ...state, files: { ...state.files, ...changes } })
+const withFiles = (state: State, changes: Partial<State['files']>): State => ({ ...state, files: { ...state.files, ...changes } })
 
-export const FILES_ACTIONS = {
+export const FILES_ACTIONS: Record<string, Reducer> = {
   files_listed: (state, { path, entries }) => withFiles(state, { folders: { ...state.files.folders, [path]: entries }, error: null }),
   files_toggled: (state, { path }) => withFiles(state, {
     expanded: state.files.expanded.includes(path) ? state.files.expanded.filter((item) => item !== path) : [...state.files.expanded, path],
@@ -54,10 +57,10 @@ export const FILES_ACTIONS = {
   files_stale: (state) => withFiles(state, { folders: {} }),
 }
 
-const slashes = (value) => String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
+const slashes = (value: unknown) => String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
 
 /** The files the agent touched in this conversation, as workspace paths (what the tree is keyed by). */
-export function touchedPaths(state) {
+export function touchedPaths(state: State) {
   const root = `${slashes(state.info.cwd)}/`
   return new Set(fileItems(state)
     .map((item) => slashes(item.path))

@@ -6,33 +6,33 @@
  */
 export const initialEarlier = Object.freeze({ segments: [], hasMore: true, loading: false })
 
-const withEarlier = (state, changes) => ({ ...state, earlier: { ...state.earlier, ...changes } })
+const withEarlier = (state: State, changes: Partial<State['earlier']>): State => ({ ...state, earlier: { ...state.earlier, ...changes } })
 
 /**
  * The earlier segments with the messages on screen added as the latest one, when there are any. Their times
  * are when they were put away, close enough for the day they belong to.
  */
-export function withCurrentKept(state, at = Date.now()) {
+export function withCurrentKept(state: State, at = Date.now()): State['earlier'] {
   if (state.messages.length === 0) return state.earlier
-  const kept = {
+  const kept: Segment = {
     id: state.conversationId ?? `unsaved-${at}`,
     cwd: state.info.cwd || null,
     // What it went on from, so the topic it belongs to still reads as one (topics.js).
     parentId: state.topic?.parentId ?? null,
     createdAt: at,
-    messages: state.messages.map((message, seq) => ({
+    messages: state.messages.map((message: ThreadMessage, seq: number) => ({
       seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at, ...(message.images ? { images: message.images } : {}),
     })),
   }
-  return { ...state.earlier, segments: [...state.earlier.segments.filter((segment) => segment.id !== kept.id), kept] }
+  return { ...state.earlier, segments: [...state.earlier.segments.filter((segment: Segment) => segment.id !== kept.id), kept] }
 }
 
-export const EARLIER_ACTIONS = {
+export const EARLIER_ACTIONS: Record<string, Reducer> = {
   earlier_loading: (state) => withEarlier(state, { loading: true }),
   /** A page of segments from before those shown; one already there is not shown twice. */
   earlier_loaded: (state, { segments, hasMore }) => {
-    const shown = new Set(state.earlier.segments.map((segment) => segment.id))
-    const fresh = (segments ?? []).filter((segment) => !shown.has(segment.id))
+    const shown = new Set(state.earlier.segments.map((segment: Segment) => segment.id))
+    const fresh = (segments ?? []).filter((segment: Segment) => !shown.has(segment.id))
     return withEarlier(state, { segments: [...fresh, ...state.earlier.segments], hasMore: Boolean(hasMore), loading: false })
   },
   earlier_failed: (state) => withEarlier(state, { loading: false }),

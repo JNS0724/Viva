@@ -2,6 +2,7 @@ import { fileName, splitFiles } from '../../shared/attachments.ts'
 import { optionName } from '../approval.ts'
 import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.ts'
 import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.ts'
+import type { CatMood } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h, label } from './dom.ts'
 import { caretHost, renderMarkdown } from './markdown.ts'
@@ -14,27 +15,30 @@ import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } f
 const AVATAR_CAT_PX = 36
 /** While the agent waits on the user, the cat beside its answer holds up the same sign as the island's. */
 const AVATAR_MOODS = new Set(['confirm', 'ask'])
-const avatarCats = new Map()
+const avatarCats = new Map<string, { key: string, el: HTMLElement }>()
+
+/** Whether a message is the answer of the turn in progress or just finished, and what the cat is doing. */
+type Look = { latest: boolean, mood: CatMood | 'idle' }
 
 /** A small cat on its disc beside each answer; only the one of the turn in progress or just finished moves. */
-const avatar = (message, look) => h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
+const avatar = (message: ThreadMessage, look: Look) => h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
   catFor(avatarCats, message.id, look.latest && AVATAR_MOODS.has(look.mood) ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
 
 /** A restored message links to the trace only once it has been read back from dsh's logs. */
-function receiptButton(message, handlers, traceReady) {
+function receiptButton(message: ThreadMessage & { receipt: Receipt }, handlers: Handlers, traceReady: boolean) {
   if (message.restored && !traceReady) return h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) })
   return h('button', { class: 'receipt', onClick: () => handlers.openDrawer('trace') },
     `${receiptLine(message.receipt)} · 查看过程 →`)
 }
 
-function historyDivider(note) {
+function historyDivider(note: { when: string, memory: string }) {
   return h('div', { class: 'history-divider', role: 'separator' },
     h('span', { class: 'history-when', text: `以上是历史消息 · ${note.when}` }),
     note.memory ? h('span', { text: note.memory }) : null)
 }
 
 /** Cut at `shown` without splitting a surrogate pair (emoji, rare CJK). */
-function visibleText(text, shown) {
+function visibleText(text: string, shown: number | undefined) {
   const end = Math.min(shown ?? text.length, text.length)
   const code = text.charCodeAt(end - 1)
   return text.slice(0, code >= 0xD800 && code <= 0xDBFF ? end + 1 : end)
@@ -44,18 +48,20 @@ function visibleText(text, shown) {
  * The thread is rebuilt on every frame while an answer types out; each answer is parsed again only when
  * its visible text changed. The element is reused as is (its links keep their handlers).
  */
-const renderedAnswers = new Map()
+const renderedAnswers = new Map<string, { text: string, el: HTMLElement }>()
 
-function answerText(message, handlers) {
+function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
   const text = visibleText(message.text, message.shown)
   const cached = renderedAnswers.get(message.id)
   if (cached?.text === text) return cached.el
-  const el = renderMarkdown(text, handlers)
+  const el = renderMarkdown(text, { openLink: handlers.openLink })
   renderedAnswers.set(message.id, { text, el })
   return el
 }
 
-function assistantView(message, handlers, traceReady, look) {
+const hasReceipt = (message: ThreadMessage): message is ThreadMessage & { receipt: Receipt } => Boolean(message.receipt)
+
+function assistantView(message: ThreadMessage, handlers: Handlers, traceReady: boolean, look: Look) {
   const typing = message.open || (message.shown ?? message.text.length) < message.text.length
   const text = answerText(message, handlers)
   text.querySelector('.caret')?.remove()
@@ -64,17 +70,17 @@ function assistantView(message, handlers, traceReady, look) {
     avatar(message, look),
     h('div', { class: 'msg-body' },
       text,
-      message.receipt && !typing ? receiptButton(message, handlers, traceReady) : null))
+      hasReceipt(message) && !typing ? receiptButton(message, handlers, traceReady) : null))
 }
 
-const fileChip = (filePath) => h('span', { class: 'msg-file', title: filePath }, h('span', { class: 'doc-ico', 'aria-hidden': 'true' }), fileName(filePath))
+const fileChip = (filePath: string) => h('span', { class: 'msg-file', title: filePath }, h('span', { class: 'doc-ico', 'aria-hidden': 'true' }), fileName(filePath))
 
 /**
  * A question with the files handed over with it (attachments.js): the files as chips above the text, and
  * below it where it came from (the desktop island), whether it was said while the agent worked, and
  * whether it failed to get through.
  */
-function askedView(message) {
+function askedView(message: ThreadMessage): View {
   const { text, files } = splitFiles(message.text)
   const bubble = h('div', { class: 'msg-user' },
     sentPictures(message.images),
@@ -86,33 +92,32 @@ function askedView(message) {
 }
 
 /** A reply to the agent's question shows what it answers. */
-const userView = (message) => (message.asked
+const userView = (message: ThreadMessage): View => (message.asked
   ? h('div', { class: 'msg-user msg-answer' }, h('div', { class: 'msg-asked', text: message.asked }), h('div', { text: message.text }))
   : askedView(message))
 
-const MESSAGE_VIEWS = {
+const MESSAGE_VIEWS: Readonly<Record<string, (message: ThreadMessage, handlers: Handlers, traceReady: boolean, look: Look) => View>> = {
   user: userView,
   assistant: assistantView,
   note: (message, handlers, traceReady) => h('div', { class: 'msg-note' },
     h('span', { text: message.text }),
-    message.receipt ? receiptButton(message, handlers, traceReady) : null),
+    hasReceipt(message) ? receiptButton(message, handlers, traceReady) : null),
 }
 
-const STILL = Object.freeze({ latest: false, mood: 'idle' })
+const STILL: Look = Object.freeze({ latest: false, mood: 'idle' })
 
 /** A search hit is found by its message's row (timeline-search.js); a view may be several elements, or none. */
-export function markMessage(view, id) {
+export function markMessage<T extends View>(view: T, id: string): T {
   const first = Array.isArray(view) ? view[0] : view
-  first?.setAttribute('data-msg', id)
+  if (first instanceof Element) first.setAttribute('data-msg', id)
   return view
 }
 
 /**
  * A message from an earlier part of the timeline (view/earlier.js): as it was shown, fully typed out, its
  * receipt as plain text (its trace belongs to a session no longer on screen).
- * @param {{ id: string, role: string, text: string, receipt: object | null }} message
  */
-export function pastMessageView(message, handlers) {
+export function pastMessageView(message: ThreadMessage, handlers: Handlers): View {
   if (message.role === 'user') return userView(message)
   if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
   return h('div', { class: 'msg-agent' },
@@ -123,12 +128,12 @@ export function pastMessageView(message, handlers) {
 }
 
 /** A card's buttons by role (prompt-card.js); the island draws the same roles at its own size. */
-const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
+const BUTTON: Readonly<Record<string, string>> = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
 
-const cardHead = (text) => h('div', { class: 'confirm-head' }, h('span', { text }), h('span', { class: 'pulse-dot' }))
+const cardHead = (text: string) => h('div', { class: 'confirm-head' }, h('span', { text }), h('span', { class: 'pulse-dot' }))
 
 /** The conversation's request; a background task's is asked on its card (view/task-card.js). */
-function permissionCard(permission, handlers) {
+function permissionCard(permission: NonNullable<State['permission']>, handlers: Handlers) {
   const head = PROMPT_HEADS.permission
   const { title, detail } = cardOf(permission)
   return h('section', { class: 'confirm', 'aria-label': head },
@@ -144,7 +149,10 @@ function permissionCard(permission, handlers) {
       h('span', { class: 'confirm-hint', text: '有风险的操作总会先问你' })))
 }
 
-function questionItem(item, question, handlers) {
+/** The agent's question as the state keeps it: its questions, and what is picked so far for each. */
+type AskedQuestion = { questions: readonly QuestionItem[], picks: Readonly<Record<string, readonly string[] | undefined>> }
+
+function questionItem(item: QuestionItem, question: AskedQuestion, handlers: Handlers) {
   const picked = question.picks[item.id] ?? []
   return h('div', { class: 'ask-item' },
     item.header ? h('span', { class: 'ask-header', text: item.header }) : null,
@@ -163,7 +171,7 @@ function questionItem(item, question, handlers) {
  * The agent's question, mid-turn. A single question with single choice is answered by its option; otherwise
  * picks are gathered and sent with 提交. Words typed in the composer (Enter) answer it too.
  */
-function questionCard(question, handlers) {
+function questionCard(question: AskedQuestion, handlers: Handlers) {
   const head = PROMPT_HEADS.question
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
   return h('section', { class: 'confirm ask', 'aria-label': head },
@@ -179,7 +187,7 @@ function questionCard(question, handlers) {
  * A task Viva was closed on: offered once more, to go on in the background or be let go. 接着做 waits for the
  * agent to be connected: until then the main process has no session to take the task up in.
  */
-function unfinishedCard(task, handlers, ready) {
+function unfinishedCard(task: { id: string, title: string }, handlers: Handlers, ready: boolean) {
   return h('div', { class: 'task-report task-unfinished', role: 'group', 'aria-label': '上次没做完' },
     h('div', { class: 'task-report-main' },
       h('b', { class: 'task-report-head', text: `#${task.title}` }),
@@ -192,7 +200,7 @@ function unfinishedCard(task, handlers, ready) {
 }
 
 /** The agent said the turn will take long (E): 放到后台 beside it, while it runs. Not a card: it asks nothing. */
-function offerRow(state, handlers) {
+function offerRow(state: State, handlers: Handlers) {
   const offered = offeredBackground(state)
   if (!offered) return ''
   return h('div', { class: 'offer', role: 'note' },
@@ -200,16 +208,16 @@ function offerRow(state, handlers) {
     h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: '放到后台', onClick: () => handlers.moveToBackground() }))
 }
 
-const workingCats = new Map()
+const workingCats = new Map<string, { key: string, el: HTMLElement }>()
 
 /** Where the next answer will appear: the cat at work and what it is doing now (the island keeps the time). */
-function workingRow(state) {
+function workingRow(state: State) {
   return h('div', { class: 'msg-working', role: 'status' },
     h('span', { class: 'cat-avatar', 'aria-hidden': 'true' }, catFor(workingCats, 'working', catMood(state), { size: AVATAR_CAT_PX, frame: true })),
     h('span', { class: 'msg-working-text', text: `${currentAction(state)}…` }))
 }
 
-function errorRow(message) {
+function errorRow(message: string) {
   return h('div', { class: 'msg-error', role: 'alert' },
     label('出错了'),
     h('div', { text: message }),
@@ -222,14 +230,14 @@ let secretForm: { requestId: string, el: HTMLFormElement } | null = null
  * Keys a server the model set up needs. The form is kept while the same request waits, since the thread is
  * rebuilt on every frame and would otherwise lose what was typed.
  */
-function secretCard(secret, handlers) {
+function secretCard(secret: { requestId: string, server: string, names: readonly string[] }, handlers: Handlers) {
   if (secretForm && secretForm.requestId === secret.requestId) return secretForm.el
   const inputs = secret.names.map((name) => h('input', {
     class: 'field', type: 'password', name: `secret-${name}`, autocomplete: 'off', spellcheck: 'false', 'aria-label': name, placeholder: name,
   }))
   const el = h('form', {
     class: 'confirm ask secret', 'aria-label': '需要你填写密钥',
-    onSubmit: (event) => {
+    onSubmit: (event: SubmitEvent) => {
       event.preventDefault()
       handlers.submitSecrets(Object.fromEntries(secret.names.map((name, i) => [name, inputs[i].value])))
     },
@@ -245,7 +253,10 @@ function secretCard(secret, handlers) {
   return el
 }
 
-const dimmed = (view) => [view].flat().filter(Boolean).map((el) => {
+/** The elements of a view, one level down, without the empty parts. */
+const elementsOf = (view: View): Element[] => [view].flat().filter((el): el is Element => el instanceof Element)
+
+const dimmed = (view: View) => elementsOf(view).map((el) => {
   el.classList.add('rewind-dim')
   return el
 })
@@ -254,7 +265,7 @@ const dimmed = (view) => [view].flat().filter(Boolean).map((el) => {
  * A message with what going back adds to it: over the user's words the bar to go back there (or the editor, in
  * place, with what would fold after it dimmed), and after it the paths folded where it went another way.
  */
-function messageEntries(state, views, handlers) {
+function messageEntries(state: State, views: readonly View[], handlers: Handlers): View[][] {
   const editing = state.messages.findIndex((message) => message.id === state.rewind.editing)
   const later = editing < 0 ? 0 : state.messages.length - editing - 1
   const folds = foldAfter(state)
@@ -264,18 +275,21 @@ function messageEntries(state, views, handlers) {
     else if (editing >= 0 && i > editing) view = dimmed(view)
     else if (message.role === 'user' && rewindTarget(state, message.id)) {
       // The bar beside the bubble, not in it: the bubble's text and place stay what they were.
-      const [bubble, ...notes] = [view].flat().filter(Boolean)
+      const [bubble, ...notes] = elementsOf(view)
       view = markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
     }
-    const strip = (fold) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past) => pastMessageView(past, handlers), tasks: state.tasks })
+    const strip = (fold: Untyped) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past: ThreadMessage) => pastMessageView(past, handlers), tasks: state.tasks })
     const strips = (folds[message.id] ?? []).flatMap(strip)
     const before = i === 0 ? (folds[''] ?? []).flatMap(strip) : []
     return [...before, ...[view].flat(), ...strips]
   })
 }
 
+/** What can go into an element: nodes and text; the empty parts of a view are left out. */
+const isContent = (part: unknown): part is Node | string => part instanceof Node || (typeof part === 'string' && part !== '')
+
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
-export function renderThread(container, state, handlers, now) {
+export function renderThread(container: HTMLElement, state: State, handlers: Handlers, now: number) {
   const last = state.messages[state.messages.length - 1]
   const note = restoredNote(state, now)
   const traceReady = state.restoredTrace === 'loaded'
@@ -286,14 +300,14 @@ export function renderThread(container, state, handlers, now) {
   // A background task's card goes under the words that started it (后台做); one moved there mid-turn, at the end.
   const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id, taskCard(task, report, handlers, now)]))
   const views = messageEntries(state, plain, handlers).map((entries, i) => {
-    const card = cards.get(state.messages[i].taskId)
+    const card = cards.get(state.messages[i].taskId ?? '')
     if (!card) return entries
-    cards.delete(state.messages[i].taskId)
+    cards.delete(state.messages[i].taskId ?? '')
     return [...entries, card]
   })
   const focus = editorFocus()
   container.replaceChildren(
-    ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
+    ...(note ? views.toSpliced(state.restored.count, 0, [historyDivider(note)]) : views).flat().filter(isContent),
     ...state.tasks.unfinished.map((task) => unfinishedCard(task, handlers, state.info.mode === 'live')),
     ...cards.values(),
     offerRow(state, handlers),

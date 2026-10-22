@@ -10,10 +10,10 @@ import { renderThread } from './thread.ts'
  * its whole conversation as the thread shows one, its steps folded under it, and its own input: words into
  * its turn while it works, its next question once it has ended. Same place as 搜索 · 关于你 · 设置.
  */
-const GROUP_NAMES = { waiting: '等你确认', running: '在做', ended: '做完了' }
+const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你确认', running: '在做', ended: '做完了' }
 const LIVE = new Set(['running', 'waiting'])
 
-function sideView(state, handlers, now) {
+function sideView(state: State, handlers: Handlers, now: number) {
   const selected = state.tasks.page.selected
   return h('nav', { class: 'hub-side tp-side', 'aria-label': '后台任务' },
     h('button', { class: 'hub-back', type: 'button', onClick: () => handlers.closeHub() },
@@ -30,11 +30,11 @@ function sideView(state, handlers, now) {
 }
 
 /** The task's view as the thread draws one: all of what it said shown, nothing to go back to, no tasks of its own. */
-function threadState(state, task) {
+function threadState(state: State, task: BackgroundTask): State {
   return {
     ...state,
     ...task.view,
-    messages: task.view.messages.map((message) => ({ ...message, shown: message.text.length })),
+    messages: task.view.messages.map((message: ThreadMessage) => ({ ...message, shown: message.text.length })),
     conversationId: null,
     restored: null,
     folds: [],
@@ -43,14 +43,14 @@ function threadState(state, task) {
 }
 
 /** Its question is answered from here for the task, not for the conversation on screen. */
-const scopedHandlers = (handlers, task) => ({
+const scopedHandlers = (handlers: Handlers, task: BackgroundTask): Handlers => ({
   ...handlers,
-  pickOption: (id, label) => handlers.pickTaskOption(task.id, id, label),
+  pickOption: (id: string, label: string) => handlers.pickTaskOption(task.id, id, label),
   submitAnswer: () => handlers.submitTaskAnswer(task.id),
   skipQuestion: () => handlers.skipTaskQuestion(task.id),
 })
 
-function stepsView(state, task, handlers) {
+function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
   const items = traceItems(task.view)
   if (!items.length) return null
   const open = state.tasks.page.steps
@@ -66,7 +66,7 @@ function stepsView(state, task, handlers) {
       : null)
 }
 
-function inputView(task, handlers) {
+function inputView(task: BackgroundTask, handlers: Handlers) {
   const live = LIVE.has(task.status)
   const field = h('textarea', {
     class: 'tp-input', name: `task-input-${task.id}`, rows: 2, 'aria-label': live ? '插话' : '接着问',
@@ -83,12 +83,12 @@ function inputView(task, handlers) {
     event.preventDefault()
     send()
   })
-  return h('form', { class: 'tp-composer', onSubmit: (event) => { event.preventDefault(); send() } },
+  return h('form', { class: 'tp-composer', onSubmit: (event: SubmitEvent) => { event.preventDefault(); send() } },
     field,
     h('button', { class: 'send-btn', type: 'submit', 'aria-label': live ? '插话' : '接着问' }, icon('send', 20)))
 }
 
-function mainView(state, handlers, now) {
+function mainView(state: State, handlers: Handlers, now: number) {
   const task = pageTask(state)
   if (!task) {
     return h('div', { class: 'tp-main tp-empty' },
@@ -109,14 +109,14 @@ function mainView(state, handlers, now) {
 }
 
 /** Rebuilt as the tasks change; what was typed and where it was scrolled to stay. */
-export function renderTasksPage(container, state, handlers, now = Date.now()) {
+export function renderTasksPage(container: HTMLElement, state: State, handlers: Handlers, now = Date.now()) {
   container.dataset.open = String(state.tasks.page.open)
   if (!state.tasks.page.open) {
     container.replaceChildren()
     return
   }
   const scroller = container.querySelector('.tp-scroll')
-  const sameTask = container.querySelector('.tp-main')?.dataset.task === state.tasks.page.selected
+  const sameTask = container.querySelector<HTMLElement>('.tp-main')?.dataset.task === state.tasks.page.selected
   const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
   const top = scroller?.scrollTop ?? 0
   keepingInput(container, () => container.replaceChildren(sideView(state, handlers, now), mainView(state, handlers, now)))

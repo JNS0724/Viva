@@ -8,7 +8,7 @@ import { currentAction } from './selectors.ts'
  */
 export const initialTasks = Object.freeze({
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
-  list: [] as Untyped[],
+  list: [] as BackgroundTask[],
   /** The move just made, while it can still be undone: { taskId, prefix, text }. */
   undo: null as Untyped,
   /** Tab: the words typed now go the other way than routeOf would send them. */
@@ -19,7 +19,7 @@ export const initialTasks = Object.freeze({
    * What ended tasks came back with, for the conversation (F): { taskId, title, status, preview, shown }.
    * shown: put in the thread once the user is not typing (task-actions.js); gone once put away.
    */
-  reports: [] as Untyped[],
+  reports: [] as TaskReport[],
   /** Tasks the last launch left going (task-store.js), offered to take up or let go: { id, title, segmentId, startedAt }. */
   unfinished: [] as Untyped[],
   /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
@@ -30,8 +30,8 @@ export const initialTasks = Object.freeze({
  * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
  * when taken up again (`at`), at rest when it had ended (no `at`).
  */
-const savedView = (messages, at = null) => ({
-  messages: messages.map((message, i) => ({
+const savedView = (messages: ReadonlyArray<{ role: string, text: string, receipt?: Receipt | null }>, at: number | null = null) => ({
+  messages: messages.map((message, i): ThreadMessage => ({
     id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open: false, receipt: message.receipt ?? null,
   })),
   thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
@@ -40,27 +40,27 @@ const savedView = (messages, at = null) => ({
 
 /** The parts of the state a task's view keeps (the conversation, as it was when the turn left). */
 const VIEW_KEYS = ['messages', 'thoughts', 'tools', 'timeline', 'permission', 'question', 'secret', 'turn', 'phase', 'usage', 'lastReceipt', 'error']
-const viewOf = (state) => Object.fromEntries(VIEW_KEYS.map((key) => [key, state[key]]))
+const viewOf = (state: State) => Object.fromEntries(VIEW_KEYS.map((key) => [key, state[key as keyof State]]))
 
-const ENDED = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
+const ENDED: Readonly<Record<string, string>> = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
 const LIVE = new Set(['running', 'waiting'])
 
 /**
  * status: running · waiting (on the user) · done · stopped · error; now: what it is doing (its tool calls);
  * permission / question: what it waits on the user for.
  */
-function settled(task) {
+function settled(task: BackgroundTask): BackgroundTask {
   const asks = { permission: task.view.permission, question: task.view.question }
   if (task.endedAt !== null) return { ...task, ...asks, now: null }
   const waiting = task.view.phase === 'waiting' || task.view.phase === 'asking'
   return { ...task, ...asks, status: waiting ? 'waiting' : 'running', now: currentAction(task.view) }
 }
 
-export const liveTasks = (state) => state.tasks.list.filter((task) => LIVE.has(task.status))
-export const endedTasks = (state) => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => b.endedAt - a.endedAt)
+export const liveTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => LIVE.has(task.status))
+export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 
 /** The 后台 page's list: those waiting on the user, then those at work, then those that ended, latest first. */
-export function pageGroups(state) {
+export function pageGroups(state: State): Array<{ key: string, tasks: BackgroundTask[] }> {
   const groups = [
     { key: 'waiting', tasks: state.tasks.list.filter((task) => task.status === 'waiting') },
     { key: 'running', tasks: state.tasks.list.filter((task) => task.status === 'running') },
@@ -70,27 +70,26 @@ export function pageGroups(state) {
 }
 
 /** The task the 后台 page shows whole, or null. */
-export const pageTask = (state) => state.tasks.list.find((task) => task.id === state.tasks.page.selected) ?? null
-const firstOnPage = (state) => pageGroups(state)[0]?.tasks[0]?.id ?? null
+export const pageTask = (state: State): BackgroundTask | null => state.tasks.list.find((task) => task.id === state.tasks.page.selected) ?? null
+const firstOnPage = (state: State): string | null => pageGroups(state)[0]?.tasks[0]?.id ?? null
 
 /** A task's tab in the drawer (view/drawer.js): what it did, as the 过程 tab shows the conversation's. */
 const TAB_PREFIX = 'task:'
-export const taskTab = (taskId) => `${TAB_PREFIX}${taskId}`
-export function taskOfTab(state, tab) {
+export const taskTab = (taskId: string) => `${TAB_PREFIX}${taskId}`
+export function taskOfTab(state: State, tab: string | null): BackgroundTask | null {
   if (!tab?.startsWith(TAB_PREFIX)) return null
   return state.tasks.list.find((task) => task.id === tab.slice(TAB_PREFIX.length)) ?? null
 }
-export const taskMessages = (task) => task.view.messages.map(({ role, text }) => ({ role, text }))
+export const taskMessages = (task: BackgroundTask) => task.view.messages.map(({ role, text }: ThreadMessage) => ({ role, text }))
 
-const startsTurn = (message) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
-const isBusy = (state) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'
+const startsTurn = (message: ThreadMessage) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
+const isBusy = (state: { phase: string }) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'
 
 /**
  * What would move to the background now: the words that started the turn running, and how many saved
  * messages come before them (selectors.js historyMessages keeps the finished ones).
- * @returns {{ words: string, keep: number } | null}
  */
-export function spinOffTarget(state) {
+export function spinOffTarget(state: State): { words: string, keep: number } | null {
   if (!isBusy(state) || !state.conversationId) return null
   const saved = state.messages.filter((message) => !message.open)
   for (let keep = saved.length - 1; keep >= 0; keep -= 1) {
@@ -101,7 +100,7 @@ export function spinOffTarget(state) {
 
 const PREVIEW_CHARS = 80
 /** The first line of what a task said last, for its report (the drawer tab has all of it). */
-function previewOf(view) {
+function previewOf(view: { error?: string | null, messages: readonly ThreadMessage[] }) {
   // Failed, why it did; else the first line of what it said last.
   const answer = view.error || (view.messages.findLast((message) => message.role === 'assistant')?.text ?? '')
   const line = answer.split('\n').map((item) => item.trim()).find(Boolean) ?? ''
@@ -109,7 +108,7 @@ function previewOf(view) {
 }
 
 /** What a task said last, whole: its drawer tab shows it above what it did (view/drawer.js). */
-export const taskAnswer = (task) => task.view.messages.findLast((message) => message.role === 'assistant')?.text ?? ''
+export const taskAnswer = (task: BackgroundTask): string => task.view.messages.findLast((message: ThreadMessage) => message.role === 'assistant')?.text ?? ''
 
 /** 「#name 」 and what follows: found as soon as the name is written, so the line over the input says where words will go. */
 const MENTION = /^#(\S+)\s+([\s\S]*)$/
@@ -117,12 +116,11 @@ const MENTION = /^#(\S+)\s+([\s\S]*)$/
  * 「#name words」: the words go to the background task whose title has `name` in it, not to the
  * conversation on screen. A task still going reads them in its turn; one that ended (`ended`) is asked
  * them as its next question. Tasks still going come first, then those that ended, latest first.
- * @returns {{ taskId: string, title: string, text: string, ended: boolean } | null}
  */
-export function mentionedTask(state, text) {
+export function mentionedTask(state: State, text: string): { taskId: string, title: string, text: string, ended: boolean } | null {
   const match = MENTION.exec(text.trimStart())
   if (!match) return null
-  const ended = state.tasks.list.filter((task) => !LIVE.has(task.status)).sort((a, b) => b.endedAt - a.endedAt)
+  const ended = state.tasks.list.filter((task) => !LIVE.has(task.status)).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
   const task = [...liveTasks(state), ...ended].find((entry) => entry.title.includes(match[1]))
   return task ? { taskId: task.id, title: task.title, text: match[2].trim(), ended: !LIVE.has(task.status) } : null
 }
@@ -133,9 +131,8 @@ export const OFFER_TOOL = 'viva_offer_background'
 /**
  * Whether the agent said the turn running will take long (E): the window then offers 放到后台 beside it.
  * Only for the turn it said so in, and only while there is a turn to move.
- * @returns {{ why: string } | null}
  */
-export function offeredBackground(state) {
+export function offeredBackground(state: State): { why: string } | null {
   if (!spinOffTarget(state)) return null
   const since = state.turn?.startedAt ?? Infinity
   const entry = state.timeline.findLast((item) => item.kind === 'tool' && item.at >= since && state.tools[item.ref]?.title === OFFER_TOOL)
@@ -148,7 +145,7 @@ const GOES_ON = /^(顺便|再|还要|还有|另外|也|并且|然后|接着|改�
 const ASKING = /^(帮我|帮忙|麻烦|给我|请|查一?下|看一?下|问一?下|搜一?下|写一?个|做一?个|翻译|算一?下)/
 const NEW_THING = new RegExp(`[？?]$|${ASKING.source}`)
 /** What the words are about: two letters at a time, leaving out how a request starts (「帮我」). */
-const pairsOf = (text) => {
+const pairsOf = (text: string) => {
   const letters = [...text.replace(ASKING, '').replace(/[\s\p{P}\p{S}]+/gu, '')]
   return new Set(letters.slice(1).map((letter, i) => `${letters[i]}${letter}`))
 }
@@ -159,7 +156,7 @@ const pairsOf = (text) => {
  * started it; else 'into' the turn (the viva-steer plugin), which, when unsure, adds nothing to undo. Tab turns
  * it round. null when nothing runs.
  */
-export function routeOf(state, text) {
+export function routeOf(state: State, text: string): 'other' | 'into' | null {
   const target = spinOffTarget(state)
   const words = text.trim()
   if (!target || !words) return null
@@ -170,17 +167,17 @@ export function routeOf(state, text) {
   return auto === 'into' ? 'other' : 'into'
 }
 
-const withTasks = (state, changes) => ({ ...state, tasks: { ...state.tasks, ...changes } })
-const mapTask = (state, taskId, change) => withTasks(state, {
+const withTasks = (state: State, changes: Partial<State['tasks']>): State => ({ ...state, tasks: { ...state.tasks, ...changes } })
+const mapTask = (state: State, taskId: string, change: (task: BackgroundTask) => BackgroundTask) => withTasks(state, {
   list: state.tasks.list.map((task) => (task.id === taskId ? settled(change(task)) : task)),
 })
 
 /**
- * @param {Record<string, Function>} handlers state.ts's handlers: a task's view is updated the way the
- *   conversation is, and the conversation goes on without the turn as after going back (`rewound`)
+ * @param handlers state.ts's handlers: a task's view is updated the way the conversation is, and the
+ *   conversation goes on without the turn as after going back (`rewound`)
  */
-export function taskActions(handlers) {
-  const inView = (state, taskId, type, action) => mapTask(state, taskId, (task) => ({ ...task, view: handlers[type](task.view, action) }))
+export function taskActions(handlers: Record<string, Reducer>): Record<string, Reducer> {
+  const inView = (state: State, taskId: string, type: string, action: Action) => mapTask(state, taskId, (task) => ({ ...task, view: handlers[type](task.view, action) }))
 
   return {
     route_toggle: (state) => withTasks(state, { flip: !state.tasks.flip }),
@@ -226,8 +223,8 @@ export function taskActions(handlers) {
     }),
     /** Tasks that had ended by the last launch (task-store.js): back as they were, to be asked again or closed. */
     tasks_restored: (state, { list }) => withTasks(state, {
-      list: [...state.tasks.list.filter((entry) => !list.some((item) => item.task.id === entry.id)),
-        ...list.map(({ task, status, endedAt, messages }) => settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))],
+      list: [...state.tasks.list.filter((entry) => !list.some((item: { task: BackgroundTask }) => item.task.id === entry.id)),
+        ...list.map(({ task, status, endedAt, messages }: { task: BackgroundTask, status: string, endedAt: number, messages: ThreadMessage[] }) => settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))],
     }),
     /**
      * 接着问 or 「#name …」 to a task that ended: the words are its next question, and it is back at work in
@@ -253,9 +250,10 @@ export function taskActions(handlers) {
 
     /** The 后台 page, on the task asked for, else the one it was on, else the first in its list. */
     tasks_page_open: (state, { taskId = null }) => {
-      const known = (id) => state.tasks.list.some((task) => task.id === id)
+      const known = (id: string | null) => state.tasks.list.some((task) => task.id === id)
       const selected = [taskId, state.tasks.page.selected].find((id) => id && known(id)) ?? firstOnPage(state)
-      return withTasks({ ...state, island: false }, { page: { open: true, selected } })
+      // Opened again, its steps start folded.
+      return withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false } })
     },
     tasks_page_close: (state) => withTasks(state, { page: { ...state.tasks.page, open: false } }),
     tasks_page_select: (state, { taskId }) => withTasks(state, { page: { ...state.tasks.page, selected: taskId } }),
@@ -285,7 +283,7 @@ export function taskActions(handlers) {
       return {
         ...state,
         ...task.view,
-        messages: [...state.tasks.undo?.prefix ?? [], ...task.view.messages].map((m, i) => ({ ...m, id: `m${i}` })),
+        messages: [...state.tasks.undo?.prefix ?? [], ...task.view.messages].map((m: ThreadMessage, i: number) => ({ ...m, id: `m${i}` })),
         timeline: [...state.tasks.undo?.timeline ?? [], ...task.view.timeline],
         conversationId,
         info: { ...state.info, ...info },
@@ -315,11 +313,11 @@ const ASKED_OF_TASK = new Set(['question_pick', 'question_answered'])
 /**
  * A permission request or answer, or a pick or answer for a question, that belongs to a task: into its view
  * instead of the conversation's.
- * @returns {object | null} the state, or null when the action is the conversation's own
+ * @returns the state, or null when the action is the conversation's own
  */
-export function routeToTask(state, action, handlers) {
-  if (ASKED_OF_TASK.has(action.type) && action.taskId) {
-    return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers[action.type](task.view, action) }))
+export function routeToTask(state: State, action: Action, handlers: Record<string, Reducer>): State | null {
+  if (ASKED_OF_TASK.has(action.type ?? '') && action.taskId) {
+    return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers[action.type ?? ''](task.view, action) }))
   }
   if (action.type === 'permission_request' && action.taskId) {
     return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers.permission_request(task.view, action) }))

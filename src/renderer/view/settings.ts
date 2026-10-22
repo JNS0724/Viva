@@ -3,9 +3,15 @@ import { h, keepingInput, label } from './dom.ts'
 import { extensionsSection } from './extensions.ts'
 import { modelsSection } from './models.ts'
 
-const SOURCE_COPY = { saved: '已保存在本机', env: '来自环境变量 DEEPSEEK_API_KEY' }
+/**
+ * The 设置 page's part of the state (state.ts), with what only comes once the settings are read (settings:get):
+ * whether the desktop island is on, and whether the ask shortcut is held.
+ */
+type Settings = State['settings'] & { deskIsland?: boolean, shortcut?: { held: boolean } | null }
 
-function keyStatus(settings) {
+const SOURCE_COPY: Readonly<Record<string, string>> = { saved: '已保存在本机', env: '来自环境变量 DEEPSEEK_API_KEY' }
+
+function keyStatus(settings: Settings) {
   return h('div', { class: 'key-status', 'data-has-key': String(settings.hasKey) },
     h('div', { class: 'key-status-copy' },
       label('DeepSeek key'),
@@ -13,7 +19,7 @@ function keyStatus(settings) {
     h('span', { class: 'key-hint', text: settings.hasKey ? settings.keyHint : '----' }))
 }
 
-function keyForm(settings, handlers) {
+function keyForm(settings: Settings, handlers: Handlers) {
   const input = h('input', {
     id: 'settings-key',
     class: 'field',
@@ -36,7 +42,7 @@ function keyForm(settings, handlers) {
   })
   const form = h('form', {
     class: 'settings-form',
-    onSubmit: (event) => {
+    onSubmit: (event: SubmitEvent) => {
       event.preventDefault()
       handlers.saveKey(input.value)
     },
@@ -56,7 +62,7 @@ function keyForm(settings, handlers) {
   return { form, input }
 }
 
-function feedback(settings) {
+function feedback(settings: Settings) {
   if (!settings.encryptionAvailable) return h('p', { class: 'form-error', role: 'alert', text: '系统钥匙串不可用，暂时无法安全保存 key。可以改用环境变量 DEEPSEEK_API_KEY 启动。' })
   if (settings.error) return h('p', { class: 'form-error', role: 'alert', text: settings.error })
   if (settings.notice) return h('p', { class: 'form-notice', role: 'status', text: settings.notice })
@@ -67,7 +73,7 @@ function feedback(settings) {
 const shortcutKeys = () => (document.documentElement.dataset.platform === 'darwin' ? '⌘ ⇧ Space' : 'Ctrl + Shift + Space')
 
 /** The shortcut works with the island switched off too; another app may already hold it. */
-function shortcutLine(settings) {
+function shortcutLine(settings: Settings) {
   if (!settings.shortcut) return null
   return settings.shortcut.held
     ? h('span', { class: 'help', text: `在任何程序里按 ${shortcutKeys()}，在岛上问 Viva。` })
@@ -75,7 +81,7 @@ function shortcutLine(settings) {
 }
 
 /** The desktop island can be turned off (it is on by default) and put back at the top centre. */
-function deskSection(settings, handlers) {
+function deskSection(settings: Settings, handlers: Handlers) {
   return h('section', { class: 'ext', 'aria-label': '桌面岛' },
     h('label', { class: 'pref-row' },
       h('span', { class: 'pref-copy' },
@@ -84,7 +90,7 @@ function deskSection(settings, handlers) {
         shortcutLine(settings)),
       h('input', {
         type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': '桌面岛',
-        onChange: (event) => handlers.setDeskIsland(event.target.checked),
+        onChange: (event: Event) => handlers.setDeskIsland((event.target as HTMLInputElement).checked),
       })),
     h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: '放回顶部正中', onClick: () => handlers.resetDeskPlace() }))
 }
@@ -92,7 +98,7 @@ function deskSection(settings, handlers) {
 const CLEAR_WARNING = '清空后，以前对话里的图片会显示成「图已清理」，回到那些话题时助手也看不到那些图了。'
 
 /** 贴过的图片: where they are and how much they take; open the folder, move it, or empty it (after a yes). */
-function imagesSection(settings, handlers) {
+function imagesSection(settings: Settings, handlers: Handlers) {
   const usage = settings.images
   if (!usage) return null
   const busy = settings.imagesBusy
@@ -118,7 +124,7 @@ function imagesSection(settings, handlers) {
  * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, then MCP servers and skills.
  * Re-rendered only when its slices change, and typed text survives a re-render.
  */
-export function renderSettings(container, settings, models, extensions, handlers, { connected }) {
+export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], extensions: State['extensions'], handlers: Handlers, { connected }: { connected: boolean }) {
   if (!settings.open) {
     container.replaceChildren()
     return

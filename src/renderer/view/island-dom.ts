@@ -27,7 +27,8 @@ import { backgroundSection, tailCell, taskTag } from './island-tasks.ts'
 const NS = 'http://www.w3.org/2000/svg'
 /** The island's border, on both sides: its content is this much narrower than the shape. */
 const BORDER = 3
-const SIZES = {
+type Host = 'bar' | 'desk'
+const SIZES: Record<Host, { head: number, panel: number, maxHead: number, cat: number, input?: number }> = {
   bar: { head: 36, panel: 360, maxHead: 360, cat: 24 },
   desk: { head: 48, panel: 392, maxHead: 420, cat: 36, input: 560 },
 }
@@ -55,17 +56,16 @@ function ring() {
   return svg
 }
 
-const elapsedSince = (view, now) => formatElapsed(now - (view.startedAt ?? now))
+const elapsedSince = (view: IslandShown, now: number) => formatElapsed(now - (view.startedAt ?? now))
 
 /**
  * What sits beside the cat: the label and, depending on the host, a few words more.
- * @param {any} view what the island shows (island-view.js)
- * @param {{ host: string, now: number, tools: boolean, shortcut: string }} context tools: the pointer rests on it
+ * @param context tools: the pointer rests on it
  */
-function headParts(view, { host, now, tools, shortcut }) {
-  const label = (text) => h('b', { class: 'isl-label', text })
-  const time = (text) => h('span', { class: 'isl-time', text })
-  const more = (text) => (text ? h('span', { class: 'isl-more', text }) : null)
+function headParts(view: IslandShown, { host, now, tools, shortcut }: { host: Host, now: number, tools: boolean, shortcut: string }) {
+  const label = (text: string) => h('b', { class: 'isl-label', text })
+  const time = (text: string) => h('span', { class: 'isl-time', text })
+  const more = (text: string | null | undefined) => (text ? h('span', { class: 'isl-more', text }) : null)
   const desk = host === 'desk'
   switch (view.form) {
     case 'mini': return tools
@@ -83,42 +83,42 @@ function headParts(view, { host, now, tools, shortcut }) {
   }
 }
 
-function stepList(view) {
+function stepList(view: IslandShown) {
   return h('ol', { class: 'isl-steps' }, view.recent.map((step) => h('li', { 'data-tone': step.tone, text: step.title })))
 }
 
-const button = (text, cls, onClick) => h('button', { type: 'button', class: `isl-btn ${cls}`, text, onClick })
+const button = (text: string, cls: string, onClick: () => void) => h('button', { type: 'button', class: `isl-btn ${cls}`, text, onClick })
 /** Buttons by role (prompt-card.js), as on the thread's card: the main one filled, the others outlined, the least a link. */
-const ROLE = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
+const ROLE: Readonly<Record<string, string>> & { text: string, secondary: string } = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
 
 /** What it is to allow: its title and, for a command, the command itself on one line. */
-function permissionPanel(view, act) {
+function permissionPanel(view: IslandShown, act: IslandAct) {
   const { permission } = view
   return [
     taskTag(view),
     h('div', { class: 'isl-title', text: permission.title }),
     permission.command ? h('pre', { class: 'isl-detail', text: permission.command, title: permission.command }) : null,
     h('div', { class: 'isl-actions' },
-      permission.options.map((option) => button(option.name, ROLE[option.role],
+      permission.options.map((option: { optionId: string, name: string, role: string }) => button(option.name, ROLE[option.role],
         () => act({ kind: 'permission', requestId: permission.requestId, optionId: option.optionId }))),
       button('查看详情', `${ROLE.text} isl-push`, () => act({ kind: 'open' }))),
   ]
 }
 
-function questionPanel(view, act) {
+function questionPanel(view: IslandShown, act: IslandAct) {
   const { question } = view
   return [
     question.header ? h('span', { class: 'isl-tag', text: question.header }) : null,
     h('div', { class: 'isl-title', text: question.text }),
     h('div', { class: 'isl-actions' },
-      question.options.map((label) => button(label, ROLE.secondary, () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }))),
+      question.options.map((label: string) => button(label, ROLE.secondary, () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }))),
       button(question.options.length ? '其他…' : '打开窗口回答', question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
       question.skippable ? button('跳过', `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null),
   ]
 }
 
 /** The first time the cat rests on the desktop: what it can do, which nothing on it shows otherwise. */
-function coachPanel(act, shortcut) {
+function coachPanel(act: IslandAct, shortcut: string) {
   const tips = [`点我，或在任何应用里按 ${shortcut}，随时提问`, '把文件拖到我身上，交给我处理', '按住可以拖到别处；右键看更多']
   return [
     h('ul', { class: 'isl-tips' }, tips.map((text) => h('li', { text }))),
@@ -130,7 +130,7 @@ function coachPanel(act, shortcut) {
  * Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the
  * steps and the tasks in the background.
  */
-function hasPanel(view, host, pinned = false) {
+function hasPanel(view: IslandShown, host: Host, pinned = false) {
   const tasks = Boolean(view.background?.items.length)
   // On the desktop the 后台 list opens only when asked for (a click on the count at the tail, desk.js).
   if (host === 'desk') return OPENS_ITSELF.has(view.form) || (pinned && tasks)
@@ -144,18 +144,18 @@ export const OFFER_MS = 30_000
  * Whether the opened island offers the turn the background: one with words to move by that has run a while,
  * or that the agent said would take long.
  */
-export function offersBackground(view, now) {
+export function offersBackground(view: IslandShown, now: number) {
   if (view.form !== 'working' || !view.movable) return false
   return Boolean(view.offered) || now - (view.startedAt ?? now) >= OFFER_MS
 }
 
 /** 这件要一会儿: not asked, only there for whoever opens the island while waiting (D). */
-const offerRow = (act) => h('div', { class: 'isl-offer' },
+const offerRow = (act: IslandAct) => h('div', { class: 'isl-offer' },
   h('span', { text: '这件要一会儿。放到后台，你先忙别的？' }),
   button('放到后台', 'isl-btn-blue isl-push', () => act({ kind: 'background' })))
 
 /** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far, then the tasks. */
-function panelParts(view, host, act, shortcut, offer, now) {
+function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: string, offer: boolean, now: number): View[] {
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
   if (host === 'desk' && view.form === 'coach') return coachPanel(act, shortcut)
@@ -170,13 +170,13 @@ function panelParts(view, host, act, shortcut, offer, now) {
   return [...steps, offer ? offerRow(act) : null, backgroundSection(view, act, now)]
 }
 
-const tool = (label, cls, onClick, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
+const tool = (label: string, cls: string, onClick: () => void, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
 
 /**
  * On the desktop, with the pointer resting on the island: stop while it works, the window when a click
  * would not open it, and the grip it is dragged by.
  */
-function deskTools(view, act) {
+function deskTools(view: IslandShown, act: IslandAct) {
   const grip = h('span', { class: 'isl-grip', title: '按住拖动', 'aria-hidden': 'true' })
   if (view.form === 'working') return [tool('停止', 'isl-tool-stop', () => act({ kind: 'cancel' })), grip]
   if (view.form === 'mini') return [tool('打开窗口', 'isl-tool-open', () => act({ kind: 'open' }), '↗'), grip]
@@ -187,7 +187,7 @@ function deskTools(view, act) {
  * A click on the head. On the desktop: the resting cat takes a question, anything else opens the window.
  * In the title bar it unfolds the steps, or, when the agent waits on the user, goes to the card.
  */
-function headAction(view, host, unfolds) {
+function headAction(view: IslandShown, host: Host, unfolds: boolean): { kind: string } | null {
   if (host === 'desk') return view.form === 'mini' || view.form === 'coach' ? { kind: 'input' } : { kind: 'open' }
   if (NEEDS_USER.has(view.form)) return { kind: 'jump' }
   return unfolds ? { kind: 'toggle' } : null
@@ -197,22 +197,17 @@ function headAction(view, host, unfolds) {
  * What an update has to redraw. The row (head and tools) follows the pointer as well; the panel does not, so
  * the tools appearing under a resting pointer leave its buttons alone: one held down meanwhile is the one
  * let go, and the click still happens.
- * @param {object} view @param {boolean} open @param {boolean} showTools @param {boolean} [offer] offersBackground
+ * @param offer offersBackground
  */
-export function islandSignatures(view, open, showTools, offer = false) {
+export function islandSignatures(view: IslandShown, open: boolean, showTools: boolean, offer = false) {
   const panel = JSON.stringify([view, open, offer])
   return { panel, row: JSON.stringify([panel, showTools]) }
 }
 
-/**
- * @param {'bar' | 'desk'} host
- * @param {(action: object) => void} act
- * @param {{ input?: ReturnType<import('./island-input.ts').createIslandInput>, shortcut?: string }} [options]
- *   the desktop's input, and the ask shortcut as the user presses it
- */
-export function createIsland(host, act, { input = null as ReturnType<typeof createIslandInput> | null, shortcut = '' } = {}) {
+/** options: the desktop's input, and the ask shortcut as the user presses it */
+export function createIsland(host: Host, act: IslandAct, { input = null as ReturnType<typeof createIslandInput> | null, shortcut = '' } = {}) {
   const size = SIZES[host]
-  const cats = new Map()
+  const cats = new Map<string, { key: string, el: HTMLElement }>()
   const cat = h('span', { class: 'isl-cat', 'aria-hidden': 'true' })
   const head = h('button', { type: 'button', class: 'isl-head' })
   const tools = h('span', { class: 'isl-tools' })
@@ -220,7 +215,7 @@ export function createIsland(host, act, { input = null as ReturnType<typeof crea
   const panel = h('div', { class: 'isl-panel' })
   const clip = h('div', { class: 'isl-clip' }, row, panel)
   const el = h('div', { class: 'isl', 'data-host': host }, clip, cat)
-  let last: { view: any, now: number, pinned: boolean } | null = null
+  let last: { view: IslandShown, now: number, pinned: boolean } | null = null
   let signature = { panel: '', row: '' }
   let hovered = false
   let onHead: { kind: string } | null = null
@@ -233,9 +228,9 @@ export function createIsland(host, act, { input = null as ReturnType<typeof crea
 
   /**
    * Sizes are set in pixels, so the shape can animate between them; never wider than its place allows.
-   * @param {boolean} open @param {boolean} wide the input's forms, as wide as the input
+   * @param wide the input's forms, as wide as the input
    */
-  function layout(open, wide) {
+  function layout(open: boolean, wide: boolean) {
     if (!el.isConnected) return
     const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
     head.style.width = 'max-content'
@@ -245,7 +240,7 @@ export function createIsland(host, act, { input = null as ReturnType<typeof crea
     const contentWidth = bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth
     const headWidth = Math.min(contentWidth, size.maxHead, room)
     const opened = open ? Math.min(size.panel - BORDER, room) : headWidth
-    const inner = wide ? Math.min(size.input - BORDER, room) : opened
+    const inner = wide ? Math.min((size.input ?? size.panel) - BORDER, room) : opened
     head.style.width = `${Math.max(inner - toolsWidth, 0)}px`
     panel.style.width = `${inner}px`
     el.style.width = `${inner + BORDER}px`
@@ -253,10 +248,10 @@ export function createIsland(host, act, { input = null as ReturnType<typeof crea
   }
 
   /**
-   * @param {object} view from islandView, with form 'mini' for the desktop's resting cat
-   * @param {{ now?: number, pinned?: boolean }} [options] pinned: opened by a click in the title bar
+   * @param view from islandView, with form 'mini' for the desktop's resting cat
+   * @param options pinned: opened by a click in the title bar
    */
-  function update(view, { now = Date.now(), pinned = false } = {}) {
+  function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
     last = { view, now, pinned }
     const wide = Boolean(input) && INPUT_FORMS.has(view.form)
     const unfolds = wide || hasPanel(view, host, pinned)
@@ -301,7 +296,7 @@ export function createIsland(host, act, { input = null as ReturnType<typeof crea
    * resting on it shows its tools, one passing by on its way elsewhere does not.
    */
   let hoverTimer: ReturnType<typeof setTimeout> | undefined
-  function setPointer(on) {
+  function setPointer(on: boolean) {
     clearTimeout(hoverTimer)
     hoverTimer = setTimeout(() => {
       if (hovered === on) return

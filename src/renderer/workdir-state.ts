@@ -16,9 +16,9 @@ export const initialWorkDir = Object.freeze({
   error: null,
 })
 
-const withWorkDir = (state, changes) => ({ ...state, workDir: { ...state.workDir, ...changes } })
+const withWorkDir = (state: State, changes: Partial<State['workDir']>): State => ({ ...state, workDir: { ...state.workDir, ...changes } })
 
-export const WORKDIR_ACTIONS = {
+export const WORKDIR_ACTIONS: Record<string, Reducer> = {
   workdir_loaded: (state, { view }) => withWorkDir(state, {
     current: view.current, defaultDir: view.defaultDir, isDefault: Boolean(view.isDefault), recent: view.recent ?? [], switching: false, error: null,
   }),

@@ -7,7 +7,13 @@ import { h } from './dom.ts'
  */
 
 /** Over a message of the user's, on hover: say it again from here, or change it first. */
-export function rewindBar(message, handlers) {
+/** A part of the timeline folded away (rewind-state.ts): its id, how many messages, and whether a task took it. */
+type Fold = { id: string, count: number, kind?: string | null }
+type FoldOptions = { opened: readonly ThreadMessage[] | undefined, handlers: Handlers, messageView: (message: ThreadMessage) => View, tasks?: State['tasks'] }
+/** Where the editor's cursor was, before the thread was rebuilt. */
+type EditorFocus = { start: number | null, end: number | null }
+
+export function rewindBar(message: ThreadMessage, handlers: Handlers) {
   return h('div', { class: 'rewind-bar', role: 'toolbar', 'aria-label': '回到这句话' },
     h('button', { class: 'rewind-act', type: 'button', title: '回到这句话之前，原话再问一次', text: '↺ 从这里重来', onClick: () => handlers.redoFrom(message.id) }),
     h('button', { class: 'rewind-act', type: 'button', title: '改一改再发，后面的会折起来', text: '✎ 改了重发', onClick: () => handlers.editFrom(message.id) }))
@@ -19,7 +25,7 @@ export function rewindBar(message, handlers) {
  */
 let editor: ReturnType<typeof makeEditor> | null = null
 
-function makeEditor(message, handlers, later) {
+function makeEditor(message: ThreadMessage, handlers: Handlers, later: number) {
   const field = h('textarea', { class: 'rewind-field', rows: 2, 'aria-label': '改了重发' })
   field.value = message.text
   const send = () => handlers.submitEdit(message.id, field.value)
@@ -43,20 +49,20 @@ function makeEditor(message, handlers, later) {
   return { id: message.id, el, field, fresh: true }
 }
 
-/** @param {number} later how many messages after it would fold */
-export function rewindEditor(message, handlers, later) {
+/** @param later how many messages after it would fold */
+export function rewindEditor(message: ThreadMessage, handlers: Handlers, later: number) {
   if (!editor || editor.id !== message.id) editor = makeEditor(message, handlers, later)
   return editor.el
 }
 
 /** Before the thread is rebuilt: whether the editor has the keyboard, and where its cursor is. */
-export function editorFocus() {
+export function editorFocus(): EditorFocus | null {
   if (!editor || document.activeElement !== editor.field) return editor?.fresh ? { start: editor.field.value.length, end: editor.field.value.length } : null
   return { start: editor.field.selectionStart, end: editor.field.selectionEnd }
 }
 
 /** After the thread is rebuilt: the editor gets the keyboard back (or for the first time), cursor where it was. */
-export function restoreEditorFocus(focus, editingId) {
+export function restoreEditorFocus(focus: EditorFocus | null, editingId: string | null) {
   if (editor && editor.id !== editingId) editor = null
   if (!editor || !focus) return
   editor.fresh = false
@@ -64,16 +70,18 @@ export function restoreEditorFocus(focus, editingId) {
   editor.field.setSelectionRange(focus.start, focus.end)
 }
 
-const timesNote = (times) => (times > 1 ? `（改过 ${times} 次）` : '')
+const timesNote = (times: number) => (times > 1 ? `（改过 ${times} 次）` : '')
 
-let shownConfirm = null
+/** What going back would not undo (timeline:rewind-effects), as the question shown asks it. */
+type Confirm = { id: string, text: string, effects: { files: ReadonlyArray<{ path: string, times: number }>, commands: readonly string[] } }
+let shownConfirm: Confirm | null = null
 
 /**
  * Before going back over a part that wrote files or ran commands: what will not be undone, and that the agent
  * will not know about it. Shown only then; built once per question so its button keeps the keyboard.
  */
-export function renderRewindConfirm(root, state, handlers) {
-  const asked = state.rewind.confirm
+export function renderRewindConfirm(root: HTMLElement, state: State, handlers: Handlers) {
+  const asked: Confirm | null = state.rewind.confirm
   if (asked === shownConfirm) return
   shownConfirm = asked
   if (!asked) return root.replaceChildren()
@@ -89,16 +97,14 @@ export function renderRewindConfirm(root, state, handlers) {
       h('div', { class: 'workdir-sheet-actions' },
         h('button', { class: 'btn btn-secondary', type: 'button', text: '取消', onClick: () => handlers.cancelRewindConfirm() }),
         h('button', { class: 'btn btn-primary rewind-confirm', type: 'button', text: '知道了，重来', onClick: () => handlers.confirmRewind() }))))
-  return root.querySelector('.rewind-confirm')?.focus()
+  return root.querySelector<HTMLElement>('.rewind-confirm')?.focus()
 }
 
 /**
  * A path left behind, folded where the conversation went another way: opened, what it holds is shown under it,
  * read-only; switched to, it is the conversation again and this one folds in its place.
- * @param {{ id: string, count: number, kind?: string | null }} fold
- * @param {{ opened: object[] | undefined, handlers: any, messageView: (message: object) => Node | Node[], tasks?: object[] }} options
  */
-export function foldStrip(fold, { opened, handlers, messageView, tasks }) {
+export function foldStrip(fold: Fold, { opened, handlers, messageView, tasks }: FoldOptions): View[] {
   if (fold.kind === 'task') return taskStrip(fold, { opened, handlers, messageView, tasks })
   const strip = h('div', { class: 'fold', role: 'group', 'aria-label': '另一条路', 'data-fold': fold.id },
     h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '⑂' }),
@@ -110,21 +116,21 @@ export function foldStrip(fold, { opened, handlers, messageView, tasks }) {
   return withBody(strip, fold, { opened, messageView })
 }
 
-function withBody(strip, fold, { opened, messageView }) {
+function withBody(strip: HTMLElement, fold: Fold, { opened, messageView }: Pick<FoldOptions, 'opened' | 'messageView'>): View[] {
   if (!opened) return [strip]
   return [strip, h('div', { class: 'fold-body' }, ...opened.flatMap((message, i) => [messageView({ ...message, id: `${fold.id}-${i}` })].flat()))]
 }
 
-const TASK_STATUS = { running: '在后台做', waiting: '在后台等你', done: '做完了', stopped: '停下了', error: '出错了' }
+const TASK_STATUS: Readonly<Record<string, string>> = { running: '在后台做', waiting: '在后台等你', done: '做完了', stopped: '停下了', error: '出错了' }
 
 /**
  * Where a turn moved to the background (tasks-state.js): what it is doing now, and 撤销 while the move can
  * still be undone. Once it is no longer running here, what it said can be opened like a path.
  */
-function taskStrip(fold, { opened, handlers, messageView, tasks }) {
-  const task = tasks?.list.find((entry) => entry.segmentId === fold.id)
-  const undoable = task && tasks.undo?.taskId === task.id
-  const status = task?.status === 'running' && task.now ? `在${task.now}` : TASK_STATUS[task?.status] ?? `${fold.count} 条消息`
+function taskStrip(fold: Fold, { opened, handlers, messageView, tasks }: FoldOptions) {
+  const task: BackgroundTask | undefined = tasks?.list.find((entry: BackgroundTask) => entry.segmentId === fold.id)
+  const undoable = task && tasks?.undo?.taskId === task.id
+  const status = task?.status === 'running' && task.now ? `在${task.now}` : TASK_STATUS[task?.status ?? ''] ?? `${fold.count} 条消息`
   const live = task?.status === 'running' || task?.status === 'waiting'
   const strip = h('div', { class: 'fold fold-task', role: 'group', 'aria-label': '挪到后台的事', 'data-fold': fold.id },
     h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '↗' }),

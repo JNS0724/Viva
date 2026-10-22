@@ -6,14 +6,8 @@
 const BUSY = '助手正在工作，等这一轮结束再换工作目录'
 const FAILED = '没能切换工作目录'
 
-/**
- * @param {{
- *   api: object, getState: () => object, dispatch: (action: object) => void,
- *   errorMessage: (err: unknown) => string, showToast: (text: string) => void,
- * }} deps
- */
-export function createWorkDirActions({ api, getState, dispatch, errorMessage, showToast }) {
-  const refused = (message) => {
+export function createWorkDirActions({ api, getState, dispatch, errorMessage, showToast }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast'>) {
+  const refused = (message: string) => {
     dispatch({ type: 'workdir_failed', message })
     showToast(message)
   }
@@ -26,8 +20,8 @@ export function createWorkDirActions({ api, getState, dispatch, errorMessage, sh
     }
   }
 
-  /** @param {string} dir @param {{ confirmed?: boolean }} [options] confirmed: the user said 在这里工作 */
-  async function switchTo(dir, { confirmed = false } = {}) {
+  /** confirmed: the user said 在这里工作 */
+  async function switchTo(dir: string, { confirmed = false } = {}) {
     dispatch({ type: 'workdir_switching' })
     try {
       const result = await api.switchWorkDir(dir, { confirmed })
@@ -54,7 +48,7 @@ export function createWorkDirActions({ api, getState, dispatch, errorMessage, sh
     if (dir) switchTo(dir, { confirmed: true })
   }
 
-  async function forget(dir) {
+  async function forget(dir: string) {
     dispatch({ type: 'workdir_loaded', view: await api.forgetWorkDir(dir) })
   }
 

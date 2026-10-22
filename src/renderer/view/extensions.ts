@@ -1,14 +1,23 @@
 import { h, label } from './dom.ts'
 
-const TYPE_LABEL = { stdio: '本地命令', http: '远程地址' }
+/** The 扩展 part of the state (personal-state.ts). */
+type Extensions = State['extensions']
+/** An MCP server as the user set it up (mcp-config.ts), its secrets known only by name. */
+type Server = { name: string, type: string, url?: string, command?: string, args: readonly string[], envNames: readonly string[], headerNames: readonly string[] }
+/** A skill dsh found, where, and whether it can be removed here. */
+type Skill = { id: string, name: string, rootLabel: string, description?: string, problem?: string, managed?: boolean }
+/** What the agent loaded this time (session-info.ts): servers connected or dropped, the memory plugin. */
+type ExtensionStatus = { active: readonly string[], dropped: ReadonlyArray<{ name: string, reason: string }>, memory?: boolean, plugins?: ReadonlyArray<{ contract: string, problem?: string }> }
 
-function serverStatus(server, status) {
+const TYPE_LABEL: Readonly<Record<string, string>> = { stdio: '本地命令', http: '远程地址' }
+
+function serverStatus(server: Server, status: ExtensionStatus) {
   if (status.active.includes(server.name)) return { tone: 'ok', text: '已连接' }
   const dropped = status.dropped.find((item) => item.name === server.name)
   return { tone: 'off', text: dropped ? `未连接：${dropped.reason}` : '未连接' }
 }
 
-function serverItem(server, extensions, handlers) {
+function serverItem(server: Server, extensions: Extensions, handlers: Handlers) {
   const target = server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')
   const secrets = [...server.envNames, ...server.headerNames]
   const status = serverStatus(server, extensions.status)
@@ -26,7 +35,7 @@ function serverItem(server, extensions, handlers) {
     }))
 }
 
-function skillItem(skill, extensions, handlers) {
+function skillItem(skill: Skill, extensions: Extensions, handlers: Handlers) {
   return h('li', { class: 'ext-item', 'data-name': skill.name },
     h('div', { class: 'ext-copy' },
       h('div', { class: 'ext-title' },
@@ -41,10 +50,10 @@ function skillItem(skill, extensions, handlers) {
 }
 
 /** Why the memory plugin was left out of the profile, if it was. */
-const memoryProblem = (status) => (status.plugins ?? []).find((plugin) => plugin.contract === 'memory')?.problem
+const memoryProblem = (status: ExtensionStatus) => (status.plugins ?? []).find((plugin) => plugin.contract === 'memory')?.problem
 
 /** Said only when memory is off: when it works there is nothing to say. */
-function memoryLine(status) {
+function memoryLine(status: ExtensionStatus) {
   if (status.memory) return null
   const problem = memoryProblem(status)
   return h('p', { class: 'ext-memory', 'data-on': 'false' },
@@ -54,7 +63,7 @@ function memoryLine(status) {
 const HINT = '想接入新的服务，或者把一套做法存下来，直接在对话里说，例如「帮我接入 GitHub」「把刚才的做法存成 skill」。助手会先请你确认，需要密钥时请你在窗口里填写。'
 
 /** The 扩展 part of settings: what is set up, each removable; adding happens in the conversation (viva-config). */
-export function extensionsSection(extensions, handlers, { connected }) {
+export function extensionsSection(extensions: Extensions, handlers: Handlers, { connected }: { connected: boolean }) {
   if (!extensions.loaded) return h('section', { class: 'ext' }, label('扩展'), h('p', { class: 'help', text: '读取中…' }))
   return h('section', { class: 'ext', 'aria-label': '扩展' },
     label('扩展'),
@@ -63,12 +72,12 @@ export function extensionsSection(extensions, handlers, { connected }) {
     h('div', { class: 'ext-group' },
       h('h3', { class: 'profile-heading', text: 'MCP 服务器' }),
       extensions.servers.length
-        ? h('ul', { class: 'ext-list' }, extensions.servers.map((server) => serverItem(server, extensions, handlers)))
+        ? h('ul', { class: 'ext-list' }, extensions.servers.map((server: Server) => serverItem(server, extensions, handlers)))
         : h('p', { class: 'help', text: '还没有接入。' })),
     h('div', { class: 'ext-group' },
       h('h3', { class: 'profile-heading', text: 'Skills' }),
       extensions.skills.length
-        ? h('ul', { class: 'ext-list' }, extensions.skills.map((skill) => skillItem(skill, extensions, handlers)))
+        ? h('ul', { class: 'ext-list' }, extensions.skills.map((skill: Skill) => skillItem(skill, extensions, handlers)))
         : h('p', { class: 'help', text: '还没有。' })),
     extensions.error ? h('p', { class: 'form-error', role: 'alert', text: extensions.error }) : null,
     extensions.notice ? h('p', { class: 'form-notice', role: 'status', text: extensions.notice }) : null)

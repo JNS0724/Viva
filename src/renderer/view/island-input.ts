@@ -47,7 +47,7 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
   let pictures = 0
 
   /** The field as the view wants it: open for typing, or showing why it is not. */
-  function sync(view) {
+  function sync(view: IslandShown) {
     pictures = view.images?.length ?? 0
     field.disabled = Boolean(view.busy)
     field.placeholder = view.busy?.text ?? (view.steering ? PLACEHOLDER_STEER : view.files.length ? PLACEHOLDER_FILES : pictures ? PLACEHOLDER_IMAGES : PLACEHOLDER)
@@ -55,20 +55,20 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
     ready()
   }
 
-  const hint = (...parts) => h('div', { class: 'isl-hint' }, ...parts)
-  const fileChip = (file) => h('span', { class: 'isl-file', title: file.path },
+  const hint = (...parts: View[]) => h('div', { class: 'isl-hint' }, ...parts)
+  const fileChip = (file: { path: string, name: string, size: number }) => h('span', { class: 'isl-file', title: file.path },
     h('span', { class: 'doc-ico', 'aria-hidden': 'true' }),
     h('span', { class: 'isl-file-name', text: file.name }),
     h('small', { text: formatSize(file.size) }),
     h('button', { type: 'button', class: 'isl-file-x', 'aria-label': `去掉 ${file.name}`, text: '×', onClick: () => removeFile(file.path) }))
-  const imageChip = (image, i) => h('span', { class: 'isl-file isl-image' },
+  const imageChip = (image: { id: string, size: number }, i: number) => h('span', { class: 'isl-file isl-image' },
     picture(image.id, { cls: 'isl-file-thumb' }),
     h('span', { class: 'isl-file-name', text: `图片 ${i + 1}` }),
     h('small', { text: formatSize(image.size) }),
     h('button', { type: 'button', class: 'isl-file-x', 'aria-label': `去掉图片 ${i + 1}`, text: '×', onClick: () => removeImage(image.id) }))
 
-  /** @returns {Node[]} what unfolds below the field */
-  function panel(view) {
+  /** What unfolds below the field. */
+  function panel(view: IslandShown): View[] {
     if (view.form === 'drop') {
       return [h('div', { class: 'isl-drop' },
         h('b', { text: '松手，交给 Viva' }),

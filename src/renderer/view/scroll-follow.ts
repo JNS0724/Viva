@@ -4,15 +4,13 @@ const BOTTOM_SLACK_PX = 32
 const ANCHOR_GAP_PX = 24
 const KEYS_THAT_SCROLL_UP = new Set(['PageUp', 'ArrowUp', 'Home'])
 
-/** @param {{ scrollTop: number, scrollHeight: number, clientHeight: number }} el */
-export const distanceFromBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight
+export const distanceFromBottom = (el: { scrollTop: number, scrollHeight: number, clientHeight: number }) => el.scrollHeight - el.scrollTop - el.clientHeight
 
 /**
  * Where to scroll while following new output: the bottom, but never so far that the
  * latest question (at `anchorTop`) leaves the top of the viewport.
- * @returns {{ scrollTop: number, capped: boolean }}
  */
-export function followTarget({ scrollHeight, clientHeight, anchorTop }) {
+export function followTarget({ scrollHeight, clientHeight, anchorTop }: { scrollHeight: number, clientHeight: number, anchorTop?: number | null }): { scrollTop: number, capped: boolean } {
   const bottom = Math.max(0, scrollHeight - clientHeight)
   if (anchorTop === null || anchorTop === undefined) return { scrollTop: bottom, capped: false }
   const cap = Math.max(0, anchorTop - ANCHOR_GAP_PX)
@@ -24,10 +22,8 @@ export function followTarget({ scrollHeight, clientHeight, anchorTop }) {
  * - follows new output while the reader is at the bottom;
  * - stops once a long answer would push the latest question off screen, and shows the jump button;
  * - hands control to the reader the moment they scroll up, and resumes when they come back down.
- * @param {HTMLElement} scrollEl
- * @param {HTMLElement} jumpButton
  */
-export function createScrollFollower(scrollEl, jumpButton) {
+export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElement) {
   let following = true
   let anchorSpent = false
   let lastWrite = Number.NaN
@@ -36,7 +32,7 @@ export function createScrollFollower(scrollEl, jumpButton) {
     jumpButton.hidden = following || distanceFromBottom(scrollEl) <= BOTTOM_SLACK_PX
   }
 
-  const write = (top) => {
+  const write = (top: number) => {
     scrollEl.scrollTop = top
     lastWrite = scrollEl.scrollTop
   }
@@ -65,7 +61,7 @@ export function createScrollFollower(scrollEl, jumpButton) {
 
   return {
     /** Call after the thread re-renders. `anchorTop` is the latest user message's offset, or null. */
-    afterRender({ anchorTop }) {
+    afterRender({ anchorTop }: { anchorTop: number | null }) {
       if (following) {
         const target = followTarget({
           scrollHeight: scrollEl.scrollHeight,
@@ -104,15 +100,16 @@ export function createScrollFollower(scrollEl, jumpButton) {
 /**
  * Where the drawer list should sit after a re-render: on the latest step when the trace opens,
  * stuck to the bottom if the reader was there, otherwise exactly where they left it.
- * @param {{ tab: string, top: number, atBottom: boolean } | null} prev
- * @param {string} tab
  */
-export function drawerScrollPlan(prev, tab) {
+export function drawerScrollPlan(prev: ScrollSnapshot | null, tab: string) {
   if (!prev || prev.tab !== tab) return { stickToBottom: tab === 'trace', top: 0 }
   return { stickToBottom: prev.atBottom, top: prev.top }
 }
 
+/** Where a scroll container was, and on which tab, before it was replaced. */
+type ScrollSnapshot = { tab: string, top: number, atBottom: boolean }
+
 /** Snapshot of a scroll container before it is replaced. */
-export function scrollSnapshot(el, tab) {
+export function scrollSnapshot(el: Element | null, tab: string): ScrollSnapshot | null {
   return el ? { tab, top: el.scrollTop, atBottom: distanceFromBottom(el) <= BOTTOM_SLACK_PX } : null
 }
