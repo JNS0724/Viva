@@ -11,12 +11,15 @@
     "url": "https://github.com/JNS0724/Viva.git"
   },
   "type": "module",
-  "main": "src/main/main.js",
+  "main": "out/src/main/main.js",
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prestart": "npm run build",
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.preload.json",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.js\"",
     "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.js\"",
+    "presmoke": "npm run build",
     "smoke": "npm run smoke:setup && npm run smoke:walkthrough && npm run smoke:relaunch && npm run smoke:memory && npm run smoke:resume",
     "smoke:setup": "cross-env SMOKE_PHASE=setup DEEPSEEK_API_KEY= electron .",
     "smoke:walkthrough": "cross-env SMOKE_PHASE=walkthrough DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
@@ -24,7 +27,9 @@
     "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
     "smoke:resume": "cross-env SMOKE_PHASE=resume DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
+    "predist:mac": "npm run build",
     "dist:mac": "electron-builder --mac dmg",
+    "predist:win": "npm run build",
     "dist:win": "electron-builder --win nsis"
   },
   "dependencies": {
@@ -53,8 +58,7 @@
     },
     "files": [
       "package.json",
-      "src/**/*",
-      "plugins/**/*"
+      "out/**/*"
     ],
     "asar": true,
     "npmRebuild": false,

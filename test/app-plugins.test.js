@@ -25,7 +25,7 @@ function fakePlugin(root, manifest) {
 const memoryOnly = [APP_PLUGINS.find((plugin) => plugin.name === 'viva-memory')]
 
 test('the plugins shipped with the app all pass, each with its data file under userData', () => {
-  const { plugins, problems } = resolvePlugins({ appRoot: ROOT, userData: '/data', dshVersion: installedDshVersion(ROOT) })
+  const { plugins, problems } = resolvePlugins({ codeRoot: ROOT, userData: '/data', dshVersion: installedDshVersion(ROOT) })
   assert.deepEqual(problems, [])
   assert.deepEqual(plugins.map((plugin) => [plugin.name, plugin.config]), [
     ['viva-memory', { file: path.join('/data', 'memory.db') }],
@@ -39,7 +39,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
   ])
   assert.deepEqual(plugins.find((plugin) => plugin.name === 'viva-questions').stock.map((entry) => entry.name), ['@deepseek-ai/dsh-tool-ask-user'])
   // The level the user picked goes to viva-permission, with dsh's Auto review loaded for 自动.
-  const auto = resolvePlugins({ appRoot: ROOT, userData: '/data', dshVersion: installedDshVersion(ROOT), permission: 'auto' })
+  const auto = resolvePlugins({ codeRoot: ROOT, userData: '/data', dshVersion: installedDshVersion(ROOT), permission: 'auto' })
   const permission = auto.plugins.find((plugin) => plugin.name === 'viva-permission')
   assert.deepEqual(permission.config, { preset: 'auto' })
   assert.deepEqual(permission.stock.map((entry) => entry.name), ['@deepseek-ai/dsh-experimental-auto-review'])
@@ -53,7 +53,7 @@ test('a plugin with another contract version, another dsh, or no manifest is lef
   const dir = tempDir(t)
   const resolve = (manifest) => {
     if (manifest) fakePlugin(dir, manifest)
-    return resolvePlugins({ appRoot: dir, userData: '/data', dshVersion: '0.2.0-rc.2', plugins: memoryOnly })
+    return resolvePlugins({ codeRoot: dir, userData: '/data', dshVersion: '0.2.0-rc.2', plugins: memoryOnly })
   }
   const ok = { name: 'viva-memory', viva: { contract: { memory: CONTRACTS.memory } }, peerDependencies: { '@deepseek-ai/dsh-llm': '0.2.0-rc.2', zod: '^4.0.0' } }
 

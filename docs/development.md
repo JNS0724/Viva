@@ -11,6 +11,8 @@ npm install
 npm start
 ```
 
+应用从 `out/` 运行：`npm run build`（`scripts/build.mjs`）用 TypeScript 把 `src/` 和 `plugins/` 的代码写到 `out/src`、`out/plugins`，页面、样式、图标和插件的 `package.json` 原样复制过去，目录结构和仓库一样。`npm start`、`npm run smoke` 和打包会先自动构建；单独跑某个 smoke 阶段（如 `npm run smoke:memory`）前要自己先 `npm run build`。单元测试直接测 `src/`，不需要构建。类型检查是另一回事：`npm run typecheck`。
+
 | 环境变量 | 作用 | 默认 |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | 模型凭据（也可以在设置面板里填） | — |

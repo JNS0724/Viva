@@ -6,7 +6,7 @@ import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain,
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.js'
-import { APP_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
+import { APP_ROOT, CODE_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
 import { createAcpBridge } from './acp-bridge.js'
 import { createDeskIsland } from './desk-island.js'
 import { leaveFullScreen } from './full-screen.js'
@@ -177,7 +177,7 @@ function reportTurnMemories() {
 function prepareProfile(config) {
   try {
     const { plugins, problems } = resolvePlugins({
-      appRoot: APP_ROOT, userData: app.getPath('userData'), dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
+      codeRoot: CODE_ROOT, userData: app.getPath('userData'), dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
     })
     pluginProblems = problems
     problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
@@ -484,7 +484,7 @@ function hideToTray() {
   win.hide()
   tray ??= createTray({
     Tray, Menu, nativeImage,
-    iconDir: path.join(APP_ROOT, 'src', 'assets', 'tray'),
+    iconDir: path.join(CODE_ROOT, 'src', 'assets', 'tray'),
     platform: process.platform,
     onOpen: showWindow,
     onQuit: () => app.quit(),
@@ -501,8 +501,8 @@ function attachDeskIsland(config) {
   desk = createDeskIsland({
     BrowserWindow,
     screen,
-    preload: path.join(APP_ROOT, 'src', 'preload', 'desk-preload.cjs'),
-    page: path.join(APP_ROOT, 'src', 'renderer', 'desk.html'),
+    preload: path.join(CODE_ROOT, 'src', 'preload', 'desk-preload.cjs'),
+    page: path.join(CODE_ROOT, 'src', 'renderer', 'desk.html'),
     mainWindow: win,
     enabled: deskAllowed && preferences.get().deskIsland,
     places: { get: () => preferences.get().deskPlaces, set: (places) => preferences.set('deskPlaces', places) },
@@ -749,7 +749,7 @@ function createWindow(config) {
     show: false,
     backgroundColor: '#060B16',
     webPreferences: {
-      preload: path.join(APP_ROOT, 'src', 'preload', 'preload.cjs'),
+      preload: path.join(CODE_ROOT, 'src', 'preload', 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -772,7 +772,7 @@ function createWindow(config) {
       })
     }
   })
-  win.loadFile(path.join(APP_ROOT, 'src', 'renderer', 'index.html'))
+  win.loadFile(path.join(CODE_ROOT, 'src', 'renderer', 'index.html'))
 }
 
 isolateSmokeUserData()

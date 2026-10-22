@@ -44,6 +44,8 @@ if (-not $nodeVersion) {
 
 Step 'install' { npm ci }
 Step 'test' { npm test }
+# The app runs from out/ (scripts/build.mjs); the phases below start it one by one, without npm's presmoke.
+Step 'build' { npm run build }
 Step 'smoke-setup' { npm run smoke:setup }
 Step 'smoke-walkthrough' { npm run smoke:walkthrough }
 Step 'smoke-relaunch' { npm run smoke:relaunch }

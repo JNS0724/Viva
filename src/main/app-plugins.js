@@ -94,11 +94,12 @@ export function pluginProblem(plugin, { dir, dshVersion }) {
 
 /**
  * The plugins to put in the profile, with their config, and the ones left out with the reason.
+ * codeRoot: the folder with the app's plugins/ (config.js CODE_ROOT); dshVersion: the dsh installed in the project.
  * @returns {{ plugins: Array<{ name: string, dir: string, config: object, stock: Array<{ id: string, name: string }> }>, problems: Array<{ name: string, contract: string, problem: string }> }}
  */
-export function resolvePlugins({ appRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS }) {
+export function resolvePlugins({ codeRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS }) {
   return plugins.reduce(({ plugins: usable, problems }, plugin) => {
-    const dir = path.join(appRoot, plugin.dir)
+    const dir = path.join(codeRoot, plugin.dir)
     const problem = pluginProblem(plugin, { dir, dshVersion })
     return problem
       ? { plugins: usable, problems: [...problems, { name: plugin.name, contract: plugin.contract, problem }] }

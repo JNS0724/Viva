@@ -37,7 +37,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
   const workspace = path.join(dir, 'workspace')
   fs.mkdirSync(workspace)
   const userData = path.join(dir, 'userData')
-  const { plugins, problems } = resolvePlugins({ appRoot: ROOT, userData, dshVersion: installedDshVersion(ROOT), permission })
+  const { plugins, problems } = resolvePlugins({ codeRoot: ROOT, userData, dshVersion: installedDshVersion(ROOT), permission })
   assert.deepEqual(problems, [], 'every app plugin passes the compatibility check')
   const file = memoryFile ?? path.join(userData, 'memory.db')
   const withFile = plugins.map((plugin) => (plugin.name === 'viva-memory' ? { ...plugin, config: { file } } : plugin))

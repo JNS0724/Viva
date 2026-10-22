@@ -125,7 +125,7 @@ async function main() {
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
   fs.mkdirSync(workspace)
-  const { plugins } = resolvePlugins({ appRoot: ROOT, userData: dir, dshVersion: installedDshVersion(ROOT) })
+  const { plugins } = resolvePlugins({ codeRoot: ROOT, userData: dir, dshVersion: installedDshVersion(ROOT) })
   ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA })
   // dshEnv drops any DEEPSEEK_BASE_URL left in the environment: this is the real API.
   const env = process.env

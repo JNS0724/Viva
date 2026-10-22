@@ -6,3 +6,4 @@ smoke.log
 .ruff_cache/
 .claude/
 dist/
+out/

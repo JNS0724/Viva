@@ -1,0 +1,17 @@
+// What `npm run build` emits into out/ (scripts/build.mjs), laid out like the repository: out/src, out/plugins.
+// It only writes the code out; `npm run typecheck` is what checks it.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "checkJs": false,
+    "outDir": "out",
+    "rootDir": ".",
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM"],
+    "types": [],
+    "newLine": "lf"
+  },
+  "include": ["src/**/*.js", "src/**/*.cjs", "plugins/**/*.js"],
+  "exclude": ["plugins/**/node_modules"]
+}
