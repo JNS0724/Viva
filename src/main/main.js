@@ -388,13 +388,6 @@ function registerAgentIpc() {
     if (!turn.active) return { ok: false, reason: 'idle' }
     return requireBridge().steer(words)
   })
-  /** Where words typed while a turn runs would go, as its model judges: 'into', 'other', or null (the window guesses). */
-  ipcMain.handle('agent:route', (_event, words, text) => {
-    const running = assertText(words, 'route', MAX_PROMPT_CHARS)
-    const typed = assertText(text, 'route', MAX_PROMPT_CHARS)
-    if (!turn.active || !bridge) return null
-    return bridge.route(running, typed)
-  })
   ipcMain.handle('agent:cancel', () => bridge?.cancel())
   ipcMain.handle('agent:new-session', async () => {
     if (!bridge) {

@@ -20,7 +20,6 @@ const mainIdle = `(() => {
 async function moveSteps(win, outDir, expect, hooks) {
   await submit(win, BUSY_ASK)
   await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
-  await judgeSteps(win, outDir, expect)
   const hint = await run(win, `(() => {
     const input = document.getElementById('composer-input')
     input.value = ${JSON.stringify(OTHER_ASK)}
@@ -50,9 +49,7 @@ async function moveSteps(win, outDir, expect, hooks) {
   expect(moved.fold.includes('挪到后台接着做了') && moved.fold.includes(`#${BUSY_ASK}`) && moved.fold.includes('撤销'), 'the move should leave a line to undo it', moved.fold)
   expect(moved.asked.includes(OTHER_ASK) && !moved.asked.includes(BUSY_ASK), 'the conversation should go on with the new words, without the turn moved', moved.asked)
   expect(moved.cards.length === 1 && moved.cards[0].startsWith(`#${BUSY_ASK}`), 'the moved turn\'s approval should stay, marked as the task\'s', moved.cards)
-  // The router's question names both on purpose (plugins/steer/lib/route.js); the answer is what counts here.
-  const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request))
-    .find((json) => json.includes(OTHER_ASK) && !json.includes('插话分流器')) ?? ''
+  const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(OTHER_ASK)) ?? ''
   const at = answering.indexOf(BUSY_ASK)
   expect(answering && at < 0, 'the agent answering the new words should not see the turn moved', { found: Boolean(answering), around: answering.slice(Math.max(0, at - 300), at + 60) })
   const island = await run(win, `(() => {
@@ -66,25 +63,6 @@ async function moveSteps(win, outDir, expect, hooks) {
   await capture(win, outDir, 'tasks-moved')
   await drawerSteps(win, outDir, expect)
   await mentionSteps(win, outDir, expect)
-}
-
-/** Words the guess takes for the running turn's, and its model for something else (fake-llm.js route). */
-const JUDGED_WORDS = '周会改到几点了'
-
-/** As typing pauses, the running turn's model judges where the words go, and the hint over the input follows it. */
-async function judgeSteps(win, outDir, expect) {
-  const typed = await run(win, `(() => {
-    const input = document.getElementById('composer-input')
-    input.value = ${JSON.stringify(JUDGED_WORDS)}
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    return document.getElementById('route-hint').dataset.route
-  })()`)
-  expect(typed === 'into', 'before the model has judged, the hint is the guess', typed)
-  const judged = await until(win, `document.getElementById('route-hint').dataset.route === 'other' && 'other'`, "the model's judgement in the hint")
-    .catch(() => run(win, `document.getElementById('route-hint').dataset.route`))
-  expect(judged === 'other', 'once typing pauses, the hint should follow the model', judged)
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-judged')
 }
 
 const MENTION_WORDS = '顺便说一声'

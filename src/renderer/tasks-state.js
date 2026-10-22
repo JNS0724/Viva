@@ -13,8 +13,6 @@ export const initialTasks = Object.freeze({
   undo: null,
   /** Tab: the words typed now go the other way than routeOf would send them. */
   flip: false,
-  /** The running turn's model on where these words go (app.js asks it as the user pauses): { text, route }. */
-  judged: null,
   /** The task that just ended, for the island to say so a moment: { taskId, title, status }. */
   finished: null,
   /**
@@ -131,13 +129,6 @@ const pairsOf = (text) => {
   return new Set(letters.slice(1).map((letter, i) => `${letters[i]}${letter}`))
 }
 
-/** The guess from the words alone, until the model has judged them (routeOf). */
-function guessRoute(running, words) {
-  const asked = pairsOf(running)
-  const shares = [...pairsOf(words)].some((pair) => asked.has(pair))
-  return NEW_THING.test(words) && !GOES_ON.test(words) && !shares ? 'other' : 'into'
-}
-
 /**
  * Where words typed while a turn runs would go: on their own ('other'), the turn moving to the background,
  * when they ask something of their own and share nothing with what started it; else 'into' the turn (the
@@ -147,8 +138,9 @@ export function routeOf(state, text) {
   const target = spinOffTarget(state)
   const words = text.trim()
   if (!target || !words) return null
-  const judged = state.tasks.judged?.text === words ? state.tasks.judged.route : null
-  const auto = judged ?? guessRoute(target.words, words)
+  const asked = pairsOf(target.words)
+  const shares = [...pairsOf(words)].some((pair) => asked.has(pair))
+  const auto = NEW_THING.test(words) && !GOES_ON.test(words) && !shares ? 'other' : 'into'
   if (!state.tasks.flip) return auto
   return auto === 'into' ? 'other' : 'into'
 }
@@ -167,7 +159,6 @@ export function taskActions(handlers) {
 
   return {
     route_toggle: (state) => withTasks(state, { flip: !state.tasks.flip }),
-    route_judged: (state, { text, route }) => withTasks(state, { judged: text?.trim() ? { text: text.trim(), route } : null }),
 
     /** The running turn went to the background: it takes its part of the conversation with it. */
     task_spun: (state, { task, conversation, info, folds, at, text = null }) => {

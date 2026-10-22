@@ -1,5 +1,5 @@
 import { answersFrom } from './question-state.js'
-import { mentionedTask, spinOffTarget, taskMessages } from './tasks-state.js'
+import { spinOffTarget, taskMessages } from './tasks-state.js'
 
 /**
  * Background tasks from the window (phase 3): words about something else, said while a turn runs, move that
@@ -11,8 +11,6 @@ import { mentionedTask, spinOffTarget, taskMessages } from './tasks-state.js'
 export const FINISHED_MS = 5000
 /** While the user types, how often to look again before a task's report comes into the conversation (F). */
 export const REPORT_RETRY_MS = 1000
-/** A pause in typing this long, and the running turn's model is asked where the words go (routeOf). */
-export const JUDGE_PAUSE_MS = 700
 /** While a task talks, what it said is saved at most this often, so quitting Viva loses little. */
 export const SAVE_EVERY_MS = 10_000
 const MOVE_FAILED = '没能挪到后台，这句插进了正在做的事'
@@ -111,27 +109,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       if (isTyping()) settleFinished(taskId)
       else dispatch({ type: 'task_finish_seen', taskId })
     }, FINISHED_MS)
-  }
-
-  /** The last words asked about, and which ask is the latest: a newer keystroke makes an older ask moot. */
-  let judging = ''
-  let asks = 0
-
-  /**
-   * As the user pauses typing while a turn runs: its model says where the words go (viva-steer's route), and
-   * the hint over the input follows it. Asked once per words; no answer leaves the guess (tasks-state.js).
-   */
-  function judgeLater(text) {
-    const words = text.trim()
-    const ask = ++asks
-    const target = spinOffTarget(getState())
-    if (!target || !words || words === judging || mentionedTask(getState(), words)) return
-    later(async () => {
-      if (ask !== asks) return
-      judging = words
-      const route = await call(() => api.routeWords(target.words, words))
-      if (route === 'into' || route === 'other') dispatch({ type: 'route_judged', text: words, route })
-    }, JUDGE_PAUSE_MS)
   }
 
   /** What it came back with goes into the conversation, but not under the user's typing (F). */
@@ -238,7 +215,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     closeTask,
     pickTaskOption,
     steerTask,
-    judgeLater,
     noteUpdate,
     loadUnfinished,
     resumeUnfinished,

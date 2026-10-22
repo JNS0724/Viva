@@ -39,24 +39,6 @@ test('a job that will take long: the model can offer the background first, and g
   assert.match(answer, /开始整理/, 'the model went on with the job')
 })
 
-test('the running turn\'s model judges where words typed now would go', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { events, llm, bridge } = await setup(t, { configActions: { listServers: () => [], prepareServer: () => {} } })
-  const agent = bridge()
-  await agent.start()
-  const turn = agent.prompt('帮我接入演示服务')
-  const card = await eventually(() => events.find((event) => event.type === 'permission'))
-
-  assert.equal(await agent.route('帮我接入演示服务', '帮我订一张周五的机票'), 'other')
-  assert.equal(await agent.route('帮我接入演示服务', '顺便把令牌也配上'), 'into')
-  const asked = llm.requests.filter((request) => JSON.stringify(request.system ?? '').includes('插话分流器'))
-  assert.equal(asked.length, 2, 'one short call each, on the session\'s own model')
-  assert.equal(events.filter((event) => event.type === 'update' && event.update.sessionUpdate === 'agent_message_chunk').length, 0,
-    'judging says nothing in the conversation')
-
-  agent.respondPermission(card.requestId, 'reject-once')
-  await turn
-})
-
 test('with no turn running the plugin says idle, so the app asks it as a new question', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { bridge } = await setup(t)
   const agent = bridge()

@@ -398,9 +398,7 @@ export function reduce(state, action) {
   if (routed) return routed
   const handler = ACTION_HANDLERS[action?.type]
   const next = handler ? handler(state, action) : state
-  // Said: Tab's turn and the model's judgement were for those words only.
-  const said = SENT.has(action?.type) && (next.tasks.flip || next.tasks.judged)
-  return said ? { ...next, tasks: { ...next.tasks, flip: false, judged: null } } : next
+  return SENT.has(action?.type) && next.tasks.flip ? { ...next, tasks: { ...next.tasks, flip: false } } : next
 }
 
 /** @param {typeof initialState} state */
