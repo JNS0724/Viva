@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { hitTarget } from '../src/renderer/timeline-search.js'
-import { createTimelineActions } from '../src/renderer/timeline-actions.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { hitTarget } from '../src/renderer/timeline-search.ts'
+import { createTimelineActions } from '../src/renderer/timeline-actions.ts'
 
 const segment = (id, seqs) => ({ id, cwd: '/w', parentId: null, createdAt: 1, messages: seqs.map((seq) => ({ seq, role: 'user', text: `${id}-${seq}`, receipt: null, at: 1 })) })
 const hit = (segmentId, seq) => ({ segmentId, seq, role: 'user', at: 1, cwd: '/w', snippet: { before: '', hit: 'x', after: '' } })

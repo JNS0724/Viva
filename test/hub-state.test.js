@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hubPage } from '../src/renderer/hub-state.js'
-import { initialState, reduce } from '../src/renderer/state.js'
+import { hubPage } from '../src/renderer/hub-state.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
 
 /**
  * 搜索, 关于你 and 设置 share one page over the conversation (view/hub.js): one of them at a time,

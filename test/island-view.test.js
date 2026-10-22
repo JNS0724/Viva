@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { answerPreview, islandView } from '../src/renderer/island-view.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { answerPreview, islandView } from '../src/renderer/island-view.ts'
 
 const T0 = new Date(2026, 9, 20, 10, 0, 0).getTime()
 const live = { type: 'ready', info: { mode: 'live', model: 'deepseek-v4-flash', cwd: '/w', reason: '' } }

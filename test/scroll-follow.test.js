@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createScrollFollower, distanceFromBottom, drawerScrollPlan, followTarget } from '../src/renderer/view/scroll-follow.js'
+import { createScrollFollower, distanceFromBottom, drawerScrollPlan, followTarget } from '../src/renderer/view/scroll-follow.ts'
 
 /** Minimal stand-in for a scrollable element: clamps scrollTop like a browser and lets tests fire events. */
 function fakeScroller({ scrollHeight, clientHeight = 600, scrollTop = 0 }) {

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { PROMPT_HEADS, permissionCard, promptButtons } from '../src/renderer/prompt-card.js'
+import { PROMPT_HEADS, permissionCard, promptButtons } from '../src/renderer/prompt-card.ts'
 
 const option = (optionId, kind) => ({ optionId, name: optionId, kind })
 

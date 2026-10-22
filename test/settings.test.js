@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createSettingsStore, keyHint, validateApiKey } from '../src/main/settings-store.ts'
 import { resolveConfig } from '../src/main/config.ts'
-import { initialState, reduce } from '../src/renderer/state.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
 
 const SAMPLE_KEY = 'sk-test-0000000000000000abcd'
 

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { formatListTime } from '../src/renderer/selectors.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { formatListTime } from '../src/renderer/selectors.ts'
 
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {

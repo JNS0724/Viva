@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { islandSignatures, OFFER_MS, offersBackground } from '../src/renderer/view/island-dom.js'
+import { islandSignatures, OFFER_MS, offersBackground } from '../src/renderer/view/island-dom.ts'
 
 const asking = Object.freeze({
   form: 'asking', tone: 'waiting', mood: 'ask', label: '等你回答', recent: [],

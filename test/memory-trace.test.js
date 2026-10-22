@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { memoryTrace, traceItems } from '../src/renderer/selectors.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { memoryTrace, traceItems } from '../src/renderer/selectors.ts'
 
 /** What the memory plugin sent with a question, as the 过程 tab shows it. */
 const T0 = new Date(2026, 9, 18, 14, 20, 0).getTime()

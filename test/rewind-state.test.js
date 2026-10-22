@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { foldAfter, rewindTarget } from '../src/renderer/rewind-state.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { foldAfter, rewindTarget } from '../src/renderer/rewind-state.ts'
 
 const msg = (id, role, text, extra = {}) => ({ id, role, text, open: false, receipt: null, ...extra })
 const withMessages = (messages, changes = {}) => ({ ...initialState, conversationId: 'now', messages, ...changes })

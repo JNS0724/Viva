@@ -6,8 +6,8 @@ import path from 'node:path'
 import { candidatesFor, extractionInput, extractTurn, parseExtraction, worthExtracting } from '../plugins/memory/lib/extract.js'
 import { buildLexicon } from '../plugins/memory/lib/names.js'
 import { openMemoryDb } from '../plugins/memory/lib/store.js'
-import { introChanges, introPrompt, memoryNotice } from '../src/renderer/memory-actions.js'
-import { initialState, reduce } from '../src/renderer/state.js'
+import { introChanges, introPrompt, memoryNotice } from '../src/renderer/memory-actions.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
 
 function tempDb(t, now) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-extract-'))

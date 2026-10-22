@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.js'
+import { initialState, reduce } from '../src/renderer/state.ts'
 import {
   catMood,
   fileItems, formatElapsed, greeting, historyMessages, modeLine, permissionDetail, receiptLine, restoredNote, setupView, statusView,
   toolDetail, traceItems, truncate, usageLabel, workspaceName,
-} from '../src/renderer/selectors.js'
+} from '../src/renderer/selectors.ts'
 
 const T0 = new Date(2026, 9, 18, 14, 20, 0).getTime()
 const live = { type: 'ready', info: { mode: 'live', model: 'DeepSeek V4 Flash', cwd: '/Users/me/work', reason: '' } }

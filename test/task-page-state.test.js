@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hubPage } from '../src/renderer/hub-state.js'
-import { initialState, reduce } from '../src/renderer/state.js'
-import { liveTasks, pageGroups, pageTask, taskMessages } from '../src/renderer/tasks-state.js'
+import { hubPage } from '../src/renderer/hub-state.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { liveTasks, pageGroups, pageTask, taskMessages } from '../src/renderer/tasks-state.ts'
 
 /**
  * The 后台 page (view/tasks-page.js): every background task, grouped by where it stands, and the one picked
