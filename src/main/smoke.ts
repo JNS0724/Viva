@@ -73,7 +73,7 @@ async function checkOffer(win, outDir) {
 
 /** Long run: the reader parks the trace mid-way, then a long answer streams in. Returns failed expectations. */
 async function checkLongTask(win, outDir) {
-  const failures = []
+  const failures: string[] = []
   await click(win, 'toggle-drawer')
   await submit(win, LONG_PROMPT)
   await wait(DRAWER_PARK_AFTER_MS)
@@ -131,7 +131,7 @@ async function checkTitlebarOn(win, platform) {
   await wait(UI_WAIT_MS)
   const m = await run(win, TITLEBAR_METRICS)
   const reserve = platform === 'darwin' ? 0 : m.width - (m.controlsLeft ?? m.width - SIMULATED_CONTROLS_PX)
-  const failures = []
+  const failures: string[] = []
   const label = `${platform}${platform !== 'darwin' && m.controlsLeft === null ? ' (simulated)' : ''} @ ${m.width}px`
   if (Math.abs(m.islandCenter - m.width / 2) > LAYOUT_SLACK_PX) failures.push(`${label}: island is off centre (${JSON.stringify(m)})`)
   if (m.islandRight > m.actionsLeft - 8) failures.push(`${label}: island overlaps the buttons (${JSON.stringify(m)})`)
@@ -144,7 +144,7 @@ async function checkTitlebarOn(win, platform) {
 async function checkLayouts(win, outDir) {
   const realPlatform = await run(win, 'document.documentElement.dataset.platform')
   const [width, height] = win.getSize()
-  const failures = []
+  const failures: string[] = []
   for (const size of [[width, height], NARROW_SIZE]) {
     win.setSize(...size)
     for (const platform of ['darwin', 'win32']) {
@@ -174,7 +174,7 @@ async function checkSetup(win, outDir) {
   }))()`)
   report(`setup: ${JSON.stringify(seen)}`)
   await capture(win, outDir, 'setup')
-  const failures = []
+  const failures: string[] = []
   if (seen.title !== '连接模型') failures.push(`setup card missing: ${JSON.stringify(seen)}`)
   if (!seen.composerDisabled || !seen.sendDisabled) failures.push('composer should be disabled without a key')
   if (seen.titlebarLeft !== '') failures.push(`title bar left should be empty, was "${seen.titlebarLeft}"`)
@@ -199,7 +199,7 @@ async function checkRelaunch(win, outDir) {
   })()`)
   report(`relaunch: ${JSON.stringify(restored)}`)
   await capture(win, outDir, 'relaunch')
-  const failures = []
+  const failures: string[] = []
   if (restored.questions !== WALKTHROUGH_QUESTIONS) failures.push(`expected ${WALKTHROUGH_QUESTIONS} restored questions, found ${restored.questions}`)
   if (!restored.divider.includes('助手记得')) failures.push(`divider should say the agent remembers, was "${restored.divider}"`)
   if (!restored.lastAnswer.startsWith('长任务演示完成')) failures.push('the last restored answer should be the long task summary')
@@ -242,7 +242,7 @@ async function checkDeskIsland(win, outDir, desk) {
     const contents = desk.webContents()
     if (!contents) return ['the desktop island did not open']
     const page = { webContents: contents }
-    const logged = []
+    const logged: string[] = []
     contents.on('console-message', (event) => logged.push(`${event.level}: ${event.message}`))
     const seen = await until(page, `(() => { const s = ${DESK_ISLAND_STATE}; return s?.form === 'waiting' && s.allow && s })()`, 'the desktop island asking to allow')
       .catch(async (err) => {
@@ -283,7 +283,7 @@ async function walkthrough(win, outDir, hooks) {
  * the name is clicked here, which the re-render takes out of the page as the menu opens.
  */
 async function checkPickers(win, outDir) {
-  const failures = []
+  const failures: string[] = []
   await run(win, `document.querySelector('#model-btn .model-btn-name').click()`)
   await wait(UI_WAIT_MS)
   const model = await run(win, `Boolean(document.querySelector('#model-menu .model-menu'))`)
@@ -318,7 +318,7 @@ async function checkFiles(win, outDir, cwd) {
   await fs.writeFile(path.join(cwd, 'tools', 'run.sh'), 'echo hi\n')
   await fs.writeFile(path.join(cwd, 'notes', 'app.ts'), 'const answer: number = 42\n')
   await fs.writeFile(path.join(cwd, 'notes', '账目.csv'), '日期,金额\n10-20,"1,200"\n')
-  const failures = []
+  const failures: string[] = []
   const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   // The long task left the drawer open; open it only if it is not.
   await run(win, `document.getElementById('drawer').dataset.open === 'true' || document.getElementById('toggle-drawer').click()`)
@@ -373,7 +373,7 @@ const MARKDOWN_STATE = `(() => {
 
 /** Markdown in an answer becomes real headings, lists, tables and code; nothing in it runs, loads or navigates. */
 async function checkMarkdown(win, outDir) {
-  const failures = []
+  const failures: string[] = []
   await newTopic(win)
   await wait(UI_WAIT_MS)
   await submit(win, MARKDOWN_PROMPT)
@@ -423,7 +423,7 @@ const typeSearch = (text) => `(() => {
 
 /** ⌘K, a new topic with the first kept above it, ⌘F and a jump to a hit. */
 async function checkHistoryPanel(win, outDir) {
-  const failures = []
+  const failures: string[] = []
   try {
     await historyPanelSteps(win, outDir, failures)
   } catch (err) {
@@ -496,7 +496,7 @@ async function historyPanelSteps(win, outDir, failures) {
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
 export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hooks: { desk?: () => any, [hook: string]: any } = {}) {
-  const problems = []
+  const problems: string[] = []
   win.webContents.on('console-message', (event) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)
   })

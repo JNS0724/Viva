@@ -136,7 +136,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
   async function perform(id: string, op: string, args: any): Promise<void> {
     try {
       reply(id, true, await RUN[op](args))
-    } catch (err) {
+    } catch (err: any) {
       reply(id, false, err?.message ?? String(err))
     }
   }
@@ -171,7 +171,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
     if (op !== 'mcp_add' || args.secrets.length === 0) return perform(id, op, args)
     try {
       actions.prepareServer(args)
-    } catch (err) {
+    } catch (err: any) {
       return reply(id, false, err?.message ?? String(err))
     }
     pending.set(id, args)

@@ -30,7 +30,7 @@ const unquote = (value) => value.replace(/^(['"])(.*)\1$/, '$2')
 
 /** A `>` or `|` block: the indented lines after `index`. */
 function blockValue(rows, index, style) {
-  const block = []
+  const block: string[] = []
   for (const next of rows.slice(index + 1)) {
     if (next.trim() && !/^\s/.test(next)) break
     block.push(next.trim())

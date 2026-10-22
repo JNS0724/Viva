@@ -1,5 +1,6 @@
 import { activeHours } from './habits.ts'
 import { EXTRA_COMMAND_DIRS, resolveCommand, toAcpServers } from './mcp-config.ts'
+import type { AcpServer } from './mcp-config.ts'
 
 type MemoryDb = ReturnType<typeof import('../../plugins/memory/lib/store.ts').openMemoryDb>
 type HistoryDb = ReturnType<typeof import('./history-db.ts').openHistoryDb>
@@ -20,7 +21,7 @@ export function createPersonal({ memoryDb, historyDb, mcpStore, now = Date.now }
   let reportedUntil = now()
   let lastInjection = memoryDb.lastInjectionId()
 
-  function mcpServers(): object[] {
+  function mcpServers(): AcpServer[] {
     const resolve = (command: string) => resolveCommand(command, { extraDirs: EXTRA_COMMAND_DIRS })
     const { servers, missing: notFound } = toAcpServers(mcpStore.list(), { resolve })
     missing = notFound

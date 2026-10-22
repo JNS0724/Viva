@@ -119,5 +119,5 @@ export function resolvePlugins({ codeRoot, userData, dshVersion, permission = DE
     return problem
       ? { plugins: usable, problems: [...problems, { name: plugin.name, contract: plugin.contract, problem }] }
       : { plugins: [...usable, { name: plugin.name, dir, config: plugin.config({ userData, permission }), stock: plugin.stock ?? [] }], problems }
-  }, { plugins: [], problems: [] })
+  }, { plugins: [] as UsablePlugin[], problems: [] as Array<{ name: string, contract: string, problem: string }> })
 }

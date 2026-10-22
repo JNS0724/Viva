@@ -7,7 +7,7 @@ const FORK_TIMEOUT_MS = 10_000
 /** No answer from the plugin: it is not loaded, or dsh is gone. */
 export const NO_PLUGIN = 'unavailable'
 
-export type ForkResult = { ok: boolean, sessionId?: string, reason?: string }
+export type ForkResult = { ok: true, sessionId: string } | { ok: false, reason: string }
 
 /**
  * before: index of the user message to go back to; or words: what the user said there, the occurrence-th

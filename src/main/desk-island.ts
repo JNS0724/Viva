@@ -1,4 +1,7 @@
+import type { BrowserWindow as Win, Display } from 'electron'
 import { DESK_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.ts'
+
+type Point = { x: number, y: number }
 
 /**
  * The Viva island on the desktop: a small transparent window, at the top centre of the screen unless the
@@ -89,21 +92,21 @@ function openWindow({ BrowserWindow, preload, page }) {
  * }} deps places: where the island was dragged to (preferences.json deskPlaces); coach: whether the user has
  *   seen what the island can do (preferences.json deskCoached)
  */
-export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN }) {
+export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN as { get: () => boolean, set: () => void } }) {
   let enabled = initiallyEnabled
   let coached = coach.get()
   /** The pointer is over the island. */
   let hovering = false
   /** Hidden from its menu: switched off until the window is next closed to the tray. */
   let hidden = false
-  let win = null
-  let view = null
+  let win: Win | null = null
+  let view: { form: string, [field: string]: any } | null = null
   let doneAt = 0
   /** The window was closed to the tray. */
   let away = false
   let forced = false
-  let form = null
-  let timer = null
+  let form: string | null = null
+  let timer: ReturnType<typeof setTimeout> | undefined
   /** Messages sent before the page has loaded would be lost; it gets the latest once it has. */
   let loaded = false
   /** The input is open (the shortcut, or files dropped on the island). */
@@ -111,19 +114,21 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   /** Called up while the island is switched off: it stays until what was asked is done. */
   let summoned = false
   let places = readPlaces(placeStore.get())
-  let layout = null
+  let layout: ReturnType<typeof deskLayout> | null = null
   /** The island inside its window, as the page last reported it. */
-  let islandRect = null
+  let islandRect: { x: number, y: number, width: number, height: number } | null = null
   let ignoring = true
-  let pointerTimer = null
-  /** While the island is dragged: the timer moving it, and the display and point it is over. */
-  let drag = null
+  let pointerTimer: ReturnType<typeof setInterval> | undefined
+  /** While the island is dragged: where the pointer was, and the display and point it is over. */
+  let drag: { cursor: Point | null, display: Display, point: Point | null } | null = null
 
-  const alive = () => win && !win.isDestroyed()
+  /** The island's window while it is there. */
+  const live = (): Win | null => (win && !win.isDestroyed() ? win : null)
 
   function send() {
-    if (!alive() || !loaded || !form) return
-    win.webContents.send('island:view', {
+    const shown = live()
+    if (!shown || !loaded || !form) return
+    shown.webContents.send('island:view', {
       view, form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached, hover: hovering,
     })
   }
@@ -134,16 +139,18 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     return last || screen.getDisplayMatching(mainWindow.getBounds())
   }
 
-  function place() {
+  function place(shown: Win) {
     const display = currentDisplay()
-    layout = deskLayout(pointOf(places.places[String(display.id)], display.workArea), display.workArea)
-    win.setBounds(layout.bounds)
+    const next = deskLayout(pointOf(places.places[String(display.id)], display.workArea), display.workArea)
+    layout = next
+    shown.setBounds(next.bounds)
   }
 
   function setIgnoring(value) {
-    if (value === ignoring || !alive()) return
+    const shown = live()
+    if (value === ignoring || !shown) return
     ignoring = value
-    win.setIgnoreMouseEvents(value)
+    shown.setIgnoreMouseEvents(value)
   }
 
   /**
@@ -152,10 +159,11 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
    * from here whether the pointer rests on the island (`hover`).
    */
   function checkPointer() {
-    if (!alive() || !win.isVisible()) return
+    const shown = live()
+    if (!shown || !shown.isVisible()) return
     if (drag) return setIgnoring(false)
     if (!islandRect) return setIgnoring(true)
-    const bounds = win.getBounds()
+    const bounds = shown.getBounds()
     const cursor = screen.getCursorScreenPoint()
     const inside = within({ x: cursor.x - bounds.x, y: cursor.y - bounds.y }, islandRect)
     setIgnoring(!inside)
@@ -179,20 +187,23 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   }
 
   function show() {
-    if (!alive()) {
+    let shown = live()
+    if (!shown) {
       loaded = false
       ignoring = true
-      win = openWindow({ BrowserWindow, preload, page })
-      win.webContents.on('did-finish-load', () => {
+      const opened: Win = openWindow({ BrowserWindow, preload, page })
+      win = opened
+      shown = opened
+      opened.webContents.on('did-finish-load', () => {
         loaded = true
         send()
         if (input) takeKeyboard()
       })
-      win.on('blur', () => input && closeInput())
+      opened.on('blur', () => input && closeInput())
     }
-    if (win.isVisible()) return
-    place()
-    win.showInactive()
+    if (shown.isVisible()) return
+    place(shown)
+    shown.showInactive()
     clearInterval(pointerTimer)
     pointerTimer = setInterval(checkPointer, POINTER_MS)
   }
@@ -204,8 +215,9 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
    */
   function hide() {
     clearInterval(pointerTimer)
-    if (!alive()) return
-    win.destroy()
+    const shown = live()
+    if (!shown) return
+    shown.destroy()
     win = null
     islandRect = null
     drag = null
@@ -229,9 +241,10 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
 
   /** A window focused before its page has loaded loses the focus again as it loads; so only once it has. */
   function takeKeyboard() {
-    if (!alive() || !loaded) return
-    win.setFocusable(true)
-    win.focus()
+    const shown = live()
+    if (!shown || !loaded) return
+    shown.setFocusable(true)
+    shown.focus()
   }
 
   /** @param {{ sent?: boolean }} [options] sent: what was asked keeps the island up until it is done */
@@ -239,9 +252,10 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (!input) return
     input = false
     summoned = summoned && sent
-    if (alive()) {
-      if (win.isFocused()) win.blur()
-      win.setFocusable(false)
+    const shown = live()
+    if (shown) {
+      if (shown.isFocused()) shown.blur()
+      shown.setFocusable(false)
     }
     refresh()
   }
@@ -252,12 +266,13 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
    * size it keeps, and the window grows a little at every move.
    */
   function dragMove() {
-    if (!alive() || !drag) return
+    const shown = live()
+    if (!shown || !drag) return
     const cursor = screen.getCursorScreenPoint()
     if (drag.cursor?.x === cursor.x && drag.cursor?.y === cursor.y) return
     const display = screen.getDisplayNearestPoint(cursor)
     const point = keepInside(cursor, display.workArea)
-    win.setBounds(dragBounds(point))
+    shown.setBounds(dragBounds(point))
     drag = { cursor, display, point }
   }
 
@@ -294,7 +309,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     inputOpen: () => input,
     /** The user holds the island and moves it: it shrinks to the cat and follows the pointer until let go. */
     startDrag() {
-      if (drag || !alive()) return
+      if (drag || !live()) return
       markCoached()
       drag = { cursor: null, display: currentDisplay(), point: null }
       send()
@@ -309,15 +324,17 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
         places = withPlace(places, display.id, settle(point, display.workArea))
         placeStore.set(places)
       }
-      if (alive()) place()
+      const shown = live()
+      if (shown) place(shown)
       send()
     },
     /** Settings: back to the top centre, on every display. */
     resetPlace() {
       places = readPlaces(null)
       placeStore.set(places)
-      if (alive() && win.isVisible()) {
-        place()
+      const shown = live()
+      if (shown?.isVisible()) {
+        place(shown)
         send()
       }
     },
@@ -325,7 +342,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     markCoached,
     /** The right-click menu, over the island. */
     popup(menu) {
-      if (alive() && win.isVisible()) menu.popup({ window: win })
+      const shown = live()
+      if (shown?.isVisible()) menu.popup({ window: shown })
     },
     working: () => view?.form === 'working',
     /** 先隐藏 in its menu: gone until the window is next closed to the tray; the shortcut still calls it up. */
@@ -343,13 +361,16 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       forced = on
       refresh()
     },
-    owns: (sender) => Boolean(alive() && sender === win.webContents),
-    webContents: () => (alive() ? win.webContents : null),
+    owns: (sender) => {
+      const shown = live()
+      return Boolean(shown && sender === shown.webContents)
+    },
+    webContents: () => live()?.webContents ?? null,
     destroy() {
       clearTimeout(timer)
       clearInterval(pointerTimer)
       drag = null
-      if (alive()) win.destroy()
+      live()?.destroy()
       win = null
     },
   }

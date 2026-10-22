@@ -119,15 +119,18 @@ export const EXTRA_COMMAND_DIRS: readonly string[] = Object.freeze(process.platf
 
 const toPairs = (record: Record<string, string>) => Object.entries(record).map(([name, value]) => ({ name, value }))
 
+/** A server as ACP `session/new` takes it: named, and run as a command or reached over HTTP. */
+export type AcpServer = { name: string, [field: string]: any }
+
 /**
  * The servers as ACP `session/new` expects them. A stdio server whose command cannot be found is left
  * out and reported, so one typo doesn't stop the agent from starting.
  */
 export function toAcpServers(configs: readonly ServerConfig[], { resolve = resolveCommand }: { resolve?: (command: string) => string | null } = {}): {
-  servers: object[], missing: Array<{ name: string, reason: string }>,
+  servers: AcpServer[], missing: Array<{ name: string, reason: string }>,
 } {
   const missing: Array<{ name: string, reason: string }> = []
-  const servers = configs.flatMap((config): object[] => {
+  const servers = configs.flatMap((config): AcpServer[] => {
     if (config.type === 'http') return [{ type: 'http', name: config.name, url: config.url, headers: toPairs(config.headers) }]
     const command = resolve(config.command)
     if (!command) {
@@ -158,7 +161,7 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
     try {
       const data = JSON.parse(fs.readFileSync(file, 'utf8'))
       return Array.isArray(data?.servers) ? data.servers : []
-    } catch (err) {
+    } catch (err: any) {
       if (err.code !== 'ENOENT') onError(err)
       return []
     }
@@ -169,7 +172,7 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
     try {
       const secrets = JSON.parse(crypto.decryptString(Buffer.from(stored.secrets, 'base64')))
       return { env: secrets.env ?? {}, headers: secrets.headers ?? {} }
-    } catch (err) {
+    } catch (err: any) {
       onError(new Error(`could not decrypt the secrets of MCP server "${stored.name}": ${err.message}`))
       return { env: {}, headers: {} }
     }

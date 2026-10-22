@@ -57,7 +57,8 @@ export function imagesForPrompt(store, images) {
   if (!checked) throw new Error('invalid images')
   return checked.map(({ id }) => {
     const file = store.pathOf(id)
-    if (!file) throw new Error(GONE)
-    return { data: fs.readFileSync(file).toString('base64'), mimeType: mimeOfId(id) }
+    const mimeType = mimeOfId(id)
+    if (!file || !mimeType) throw new Error(GONE)
+    return { data: fs.readFileSync(file).toString('base64'), mimeType }
   })
 }

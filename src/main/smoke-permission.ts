@@ -17,7 +17,7 @@ const pick = (level) => `document.querySelector('#perm-area .perm-item[data-leve
 
 /** @returns {Promise<string[]>} failures */
 export async function checkPermission(win, outDir) {
-  const failures = []
+  const failures: string[] = []
   const shown = await pickerWhen(win, 'true', 'the permission picker by the input')
   if (!shown.text.includes('工作区修改')) failures.push(`the picker should start on 工作区修改: ${JSON.stringify(shown)}`)
   await run(win, `document.getElementById('scroll').scrollTop = 1e9`)

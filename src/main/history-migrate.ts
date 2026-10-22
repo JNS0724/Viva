@@ -32,7 +32,7 @@ export function migrateLegacyHistory({ dir, db, onError = () => {} }: {
   for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.json'))) {
     try {
       if (db.importConversation(readLegacyFile(path.join(dir, name)))) imported += 1
-    } catch (err) {
+    } catch (err: any) {
       onError(new Error(`跳过无法导入的历史文件 ${name}：${err.message}`))
     }
   }

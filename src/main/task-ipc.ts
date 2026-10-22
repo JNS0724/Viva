@@ -1,3 +1,4 @@
+import type { Conversation } from './history-db.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 
@@ -51,8 +52,8 @@ function checked(request) {
 interface TaskIpcDeps {
   db: ReturnType<typeof import('./history-db.ts').openHistoryDb>
   store?: TaskStore
-  current: () => any
-  setCurrent: (conversation: object) => void
+  current: () => Conversation
+  setCurrent: (conversation: Conversation) => void
   isBusy: () => boolean
   setBusy: (busy: boolean) => void
   agentInfo: () => { mode?: string, model?: string }
@@ -76,7 +77,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     if (!isBusy()) return { ok: false, reason: 'idle' }
     const previous = current()
     const stored = db.get(previous.id)
-    if (stored?.messages[keep]?.text !== words) return { ok: false, problem: TASK_PROBLEMS.unsaved }
+    if (!stored || stored.messages[keep]?.text !== words) return { ok: false, problem: TASK_PROBLEMS.unsaved }
     const spun = await agent.spinOff({ words })
     if (!spun.ok) return { ok: false, problem: TASK_PROBLEMS[spun.reason] ?? `没能放到后台（${spun.reason}）` }
     setBusy(false)
@@ -150,6 +151,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     db.unfold(task.segmentId)
     db.softDelete(task.next)
     const found = db.get(task.segmentId)
+    if (!found) throw new Error('no such task')
     setCurrent(found.conversation)
     setBusy(true)
     return { ok: true, info: back.info, conversation: { id: found.conversation.id, messages: found.messages } }
@@ -175,11 +177,11 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   function finished() {
     return store.list()
       .filter((entry) => isEnded(entry) && !attached.has(entry.id))
-      .map((entry) => ({ entry, found: db.get(entry.segmentId) }))
-      .filter(({ found }) => found)
-      .map(({ entry, found }) => {
+      .flatMap((entry) => {
+        const found = db.get(entry.segmentId)
+        if (!found) return []
         tasks.set(entry.id, entry)
-        return { task: summaryOf(entry), status: entry.status, endedAt: entry.endedAt, messages: found.messages.slice(entry.keep) }
+        return [{ task: summaryOf(entry), status: entry.status, endedAt: entry.endedAt, messages: found.messages.slice(entry.keep) }]
       })
   }
 

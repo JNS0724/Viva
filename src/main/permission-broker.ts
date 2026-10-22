@@ -24,15 +24,15 @@ export function createPermissionBroker() {
     const entry = pending.get(requestId)
     if (!entry) return false
     pending.delete(requestId)
-    const isKnownOption = Boolean(optionId) && (entry.params.options ?? []).some((o) => o.optionId === optionId)
+    const isKnownOption = typeof optionId === 'string' && optionId !== '' && (entry.params.options ?? []).some((o) => o.optionId === optionId)
     entry.resolve(
       isKnownOption ? { outcome: { outcome: 'selected', optionId } } : { outcome: { outcome: 'cancelled' } },
     )
     return true
   }
 
-  /** @param sessionId only that session's requests (a background task's stay when the main turn stops) */
-  function cancelAll(sessionId?: string): void {
+  /** @param sessionId only that session's requests (a background task's stay when the main turn stops); none, all */
+  function cancelAll(sessionId?: string | null): void {
     for (const [requestId, entry] of [...pending]) {
       if (sessionId === undefined || entry.params.sessionId === sessionId) resolve(requestId, null)
     }

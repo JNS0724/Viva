@@ -83,7 +83,8 @@ export function resolveConfig(
   // A relative path is taken from where the app was launched, not from the agent's workspace.
   const dshBin = env.DSH_BIN ? resolveIfPath(env.DSH_BIN) : DEFAULT_DSH_ENTRY
   const apiKey = savedKey || env.DEEPSEEK_API_KEY || ''
-  const smokePhase = SMOKE_PHASES.has(env.SMOKE_PHASE) ? env.SMOKE_PHASE : null
+  const phase = env.SMOKE_PHASE
+  const smokePhase = phase && SMOKE_PHASES.has(phase) ? phase : null
   const runtime = dshRuntime({ env, execPath: app.execPath ?? process.execPath })
   return {
     dshBin,

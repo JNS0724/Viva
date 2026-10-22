@@ -53,7 +53,7 @@ const ISLAND_SENT = `(() => {
 
 /** @returns {Promise<string[]>} failures */
 export async function checkPictures(win, outDir, desk) {
-  const failures = []
+  const failures: string[] = []
   await run(win, pasteInto('#composer-input', true))
   const draft = await until(win, DRAFT, 'the pasted picture shown in the input')
   if (!draft.words.includes(HTML_WORDS)) failures.push(`words copied only as HTML should be pasted too: ${JSON.stringify(draft)}`)
