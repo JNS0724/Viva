@@ -21,38 +21,42 @@ const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 class Refused extends Error {}
-const refuse = (message) => { throw new Refused(message) }
+const refuse = (message: string): never => { throw new Refused(message) }
 
-function text(value, what, max, { optional = false } = {}) {
+function text(value: unknown, what: string, max: number, { optional = false } = {}): string {
   if (value === undefined || value === null || value === '') {
     if (optional) return ''
     refuse(`缺少${what}`)
   }
   if (typeof value !== 'string') refuse(`${what}要是文字`)
-  if (value.length > max) refuse(`${what}太长了（上限 ${max} 字）`)
-  return value.trim()
+  const given = value as string
+  if (given.length > max) refuse(`${what}太长了（上限 ${max} 字）`)
+  return given.trim()
 }
 
-/** @param {any} value untrusted, checked below @param {string} what @param {{ max: number, itemMax: number, pattern?: RegExp }} limits */
-function list(value, what, { max, itemMax, pattern }) {
+function list(value: unknown, what: string, { max, itemMax, pattern }: { max: number, itemMax: number, pattern?: RegExp }): string[] {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value) || value.length > max) refuse(`${what}最多 ${max} 项`)
-  return value.map((item) => {
+  return (value as unknown[]).map((item) => {
     if (typeof item !== 'string' || item.length > itemMax) refuse(`${what}里有一项不对`)
-    if (pattern && !pattern.test(item)) refuse(`${what}不合法：${item.slice(0, 40)}`)
-    return item
+    const given = item as string
+    if (pattern && !pattern.test(given)) refuse(`${what}不合法：${given.slice(0, 40)}`)
+    return given
   })
 }
 
-function skillName(name) {
+function skillName(name: string): string {
   if (!SKILL_NAME.test(name)) refuse('skill 名字只能用英文小写字母、数字和连字符，例如 weekly-report')
   return name
 }
 
+/** An MCP server the model asked for; `secrets` names the keys the user is asked to type. */
+export interface ServerSpec { name: string, command: string, args: string[], url: string, secrets: string[] }
+
 /** Each operation's arguments, checked and reduced to what it uses. */
-const ARGS = {
+const ARGS: Record<string, (args: any) => any> = {
   mcp_list: () => ({}),
-  mcp_add: (args) => {
+  mcp_add: (args): ServerSpec => {
     const spec = {
       name: text(args.name, '服务器名称', MAX_NAME_CHARS),
       command: text(args.command, '启动命令', MAX_COMMAND_CHARS, { optional: true }),
@@ -74,13 +78,13 @@ const ARGS = {
   skill_remove: (args) => ({ id: text(args.id, 'skill 的 id', MAX_PATH_CHARS) }),
 }
 
-const isId = (value) => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS
+const isId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS
 
-/**
- * @returns {{ id: string, sessionId: string, op: string, args: object } | { id: string, problem: string } | null}
- *   null when there is no id to answer
- */
-export function parseConfigRequest(message) {
+/** A request as checked: to perform, or to answer with why not. */
+export type ConfigRequest = { id: string, sessionId: string, op: string, args: any } | { id: string, problem: string }
+
+/** @returns null when there is no id to answer */
+export function parseConfigRequest(message: any): ConfigRequest | null {
   if (message?.type !== 'config' || !isId(message.id)) return null
   const { id } = message
   if (!OPS.has(message.op)) return { id, problem: `不支持的配置操作：${String(message.op).slice(0, 40)}` }
@@ -94,7 +98,7 @@ export function parseConfigRequest(message) {
 }
 
 /** The keys as typed: one for every name asked, each on one line. */
-function checkSecrets(names, values) {
+function checkSecrets(names: readonly string[], values: any): Record<string, string> {
   return Object.fromEntries(names.map((name) => {
     const value = values?.[name]
     if (typeof value !== 'string' || !value.trim()) throw new Error(`请填写 ${name}`)
@@ -104,25 +108,32 @@ function checkSecrets(names, values) {
   }))
 }
 
-const bullet = (items) => items.map((item) => `- ${item}`).join('\n')
+const bullet = (items: readonly string[]) => items.map((item) => `- ${item}`).join('\n')
+
+/** What main.js does for the desk, with the MCP store and the skills folder. */
+export interface ConfigActions {
+  listServers(): string[]
+  prepareServer(spec: ServerSpec): void
+  addServer(spec: ServerSpec, secrets: Record<string, string>): string
+  removeServer(name: string): string
+  listSkills(): string[]
+  createSkill(spec: object): string
+  installSkill(path: string): string
+  removeSkill(id: string): Promise<string> | string
+}
 
 /**
- * @param {{
- *   send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null,
- *   actions: {
- *     listServers(): string[], prepareServer(spec: object): void, addServer(spec: object, secrets: Record<string, string>): string,
- *     removeServer(name: string): string, listSkills(): string[], createSkill(spec: object): string,
- *     installSkill(path: string): string, removeSkill(id: string): Promise<string> | string,
- *   },
- * }} io send: to the plugin; emit: to the window; sessionId: the conversation on screen
+ * send: to the plugin; emit: to the window; sessionId: the conversation on screen.
  */
-export function createConfigDesk({ send, emit, sessionId, actions }) {
+export function createConfigDesk({ send, emit, sessionId, actions }: {
+  send: (message: object) => void, emit: (event: object) => void, sessionId: () => string | null, actions: ConfigActions,
+}) {
   /** Servers waiting for the user's keys, by request id. */
-  const pending = new Map()
+  const pending = new Map<string, ServerSpec>()
 
-  const reply = (id, ok, text) => send({ type: 'config_result', id, ok, text })
+  const reply = (id: string, ok: boolean, text: string) => send({ type: 'config_result', id, ok, text })
 
-  async function perform(id, op, args) {
+  async function perform(id: string, op: string, args: any): Promise<void> {
     try {
       reply(id, true, await RUN[op](args))
     } catch (err) {
@@ -130,7 +141,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }) {
     }
   }
 
-  const RUN = {
+  const RUN: Record<string, (args: any) => string | Promise<string>> = {
     mcp_list: () => {
       const servers = actions.listServers()
       return servers.length ? `已接入的 MCP 服务器：\n${bullet(servers)}` : '用户还没有接入任何 MCP 服务器。'
@@ -147,7 +158,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }) {
   }
 
   /** A message from the plugin. */
-  function receive(message) {
+  function receive(message: any): void | Promise<void> {
     if (message?.type === 'config_closed') {
       if (pending.delete(message.id)) emit({ type: 'secret_closed', requestId: message.id })
       return
@@ -169,9 +180,9 @@ export function createConfigDesk({ send, emit, sessionId, actions }) {
 
   /**
    * The user filled in the keys (or declined with null).
-   * @returns {boolean} false when nothing waits for them any more; throws when they do not fit
+   * @returns false when nothing waits for them any more; throws when they do not fit
    */
-  function provideSecrets(requestId, values) {
+  function provideSecrets(requestId: string, values: Record<string, unknown> | null): boolean {
     const spec = pending.get(requestId)
     if (!spec) return false
     if (values === null) {
@@ -188,7 +199,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }) {
   }
 
   /** The conversation is left (or dsh is going away): no key is asked for any more. */
-  function closeAll() {
+  function closeAll(): void {
     for (const [requestId, spec] of [...pending]) {
       pending.delete(requestId)
       reply(requestId, false, `用户离开了这段对话，「${spec.name}」没有接入。`)

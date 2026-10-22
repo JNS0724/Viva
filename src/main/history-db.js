@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.js'
+import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
 
 const PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 200

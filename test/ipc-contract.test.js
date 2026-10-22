@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { IPC_ARGS, argsProblem, checkedIpc } from '../src/main/ipc-contract.js'
+import { IPC_ARGS, argsProblem, checkedIpc } from '../src/main/ipc-contract.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8')
@@ -90,6 +90,6 @@ test('a one-way message that does not fit is dropped, not thrown', () => {
 
 test('a channel missing from the contract cannot be registered', () => {
   const ipc = checkedIpc(fakeIpcMain())
-  assert.throws(() => ipc.handle('agent:unchecked', () => {}), /agent:unchecked has no entry in ipc-contract\.js/)
+  assert.throws(() => ipc.handle('agent:unchecked', () => {}), /agent:unchecked has no entry in ipc-contract\.ts/)
   assert.throws(() => ipc.on('agent:unchecked', () => {}), /has no entry/)
 })

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { openMemoryDb } from '../plugins/memory/lib/store.js'
 import { createAcpBridge, failingMcpServer } from '../src/main/acp-bridge.js'
 import { openHistoryDb } from '../src/main/history-db.js'
-import { createPersonal } from '../src/main/personal.js'
+import { createPersonal } from '../src/main/personal.ts'
 import { scratch } from './fixtures/scratch.js'
 
 /** The user's MCP servers through the real bridge and the fake dsh, and what the app reports after a turn. */

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { canOpen, listFolder, previewFile, PREVIEW_LIMIT, resolveInside } from '../src/main/workspace-files.js'
+import { canOpen, listFolder, previewFile, PREVIEW_LIMIT, resolveInside } from '../src/main/workspace-files.ts'
 import { registerFilesIpc } from '../src/main/files-ipc.js'
 import { scratch } from './fixtures/scratch.js'
 

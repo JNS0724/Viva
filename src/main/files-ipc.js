@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { nativeFileApplications, openNativeFileApplication } from '@deepseek-ai/dsh-native-command'
-import { canOpen, listFolder, previewFile, resolveInside } from './workspace-files.js'
+import { canOpen, listFolder, previewFile, resolveInside } from './workspace-files.ts'
 
 const MAX_PATH_CHARS = 1000
 const MAX_APP_ID_CHARS = 1000

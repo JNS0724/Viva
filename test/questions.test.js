@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { checkAnswers, createQuestionDesk, parseQuestion } from '../src/main/question-channel.js'
+import { checkAnswers, createQuestionDesk, parseQuestion } from '../src/main/question-channel.ts'
 import { answersFrom, answerText } from '../src/renderer/question-state.js'
 import { statusView, traceItems } from '../src/renderer/selectors.js'
 import { initialState, isBusy, reduce } from '../src/renderer/state.js'

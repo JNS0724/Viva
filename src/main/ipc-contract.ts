@@ -122,14 +122,16 @@ export const IPC_ARGS = Object.freeze({
   'island:keep-image': z.tuple([bytes]),
 })
 
+export type Channel = keyof typeof IPC_ARGS
+/** What a page sends on a channel, as the handler receives it. */
+export type ChannelArgs<C extends Channel> = z.input<(typeof IPC_ARGS)[C]>
+
 /**
  * Why `args` do not fit `channel`, or null when they do. A trailing argument the page left undefined counts as
  * left out (ipcRenderer.invoke('history:list', undefined) arrives as [undefined]).
- * @param {string} channel @param {unknown[]} args
- * @returns {string | null}
  */
-export function argsProblem(channel, args) {
-  const schema = IPC_ARGS[channel]
+export function argsProblem(channel: string, args: readonly unknown[]): string | null {
+  const schema: z.ZodType | undefined = IPC_ARGS[channel]
   if (!schema) return `unknown channel ${channel}`
   let given = args
   while (given.length > 0 && given[given.length - 1] === undefined) given = given.slice(0, -1)
@@ -139,16 +141,22 @@ export function argsProblem(channel, args) {
   return `invalid ${channel} arguments: ${issue.path.length ? `#${issue.path.join('.')} ` : ''}${issue.message}`
 }
 
+type Listener = (event: any, ...args: any[]) => unknown
+
+/** What of Electron's ipcMain the gate wraps, and what every register*Ipc is given. */
+export interface IpcRegistry {
+  handle: (channel: string, listener: Listener) => void
+  on: (channel: string, listener: Listener) => void
+}
+
 /**
  * `ipcMain` with every message checked against IPC_ARGS before its listener runs, given to every register*Ipc.
  * A channel missing from the table is refused when it is registered, so none can go unchecked. What fits goes
  * on unchanged: the gate never rewrites what the page sent.
- * @param {{ handle: (channel: string, listener: Function) => void, on: (channel: string, listener: Function) => void }} ipcMain
- * @param {{ onRefused?: (channel: string, problem: string) => void }} [options]
  */
-export function checkedIpc(ipcMain, { onRefused = () => {} } = {}) {
-  const known = (channel) => {
-    if (!Object.hasOwn(IPC_ARGS, channel)) throw new Error(`IPC channel ${channel} has no entry in ipc-contract.js`)
+export function checkedIpc(ipcMain: IpcRegistry, { onRefused = () => {} }: { onRefused?: (channel: string, problem: string) => void } = {}): IpcRegistry {
+  const known = (channel: string) => {
+    if (!Object.hasOwn(IPC_ARGS, channel)) throw new Error(`IPC channel ${channel} has no entry in ipc-contract.ts`)
   }
   return {
     handle(channel, listener) {

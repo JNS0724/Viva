@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import type { Protocol } from 'electron'
 import { isImageId, mimeOfId } from '../shared/images.ts'
 
 /**
@@ -9,9 +10,11 @@ import { isImageId, mimeOfId } from '../shared/images.ts'
 export const IMAGE_SCHEME = 'viva-image'
 export const IMAGE_SCHEME_PRIVILEGES = Object.freeze({ scheme: IMAGE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } })
 
-/** @param {string} url @param {{ pathOf: (id: string) => string | null }} store */
-export function imageResponse(url, store) {
-  let parsed
+/** What of the picture store this needs. */
+interface PictureFiles { pathOf: (id: string) => string | null }
+
+export function imageResponse(url: string, store: PictureFiles): Response {
+  let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
@@ -23,7 +26,6 @@ export function imageResponse(url, store) {
   return new Response(fs.readFileSync(file), { headers: { 'content-type': mimeOfId(id), 'cache-control': 'max-age=31536000, immutable' } })
 }
 
-/** @param {Electron.Protocol} protocol */
-export function registerImageProtocol(protocol, store) {
+export function registerImageProtocol(protocol: Pick<Protocol, 'handle'>, store: PictureFiles): void {
   protocol.handle(IMAGE_SCHEME, (request) => imageResponse(request.url, store))
 }

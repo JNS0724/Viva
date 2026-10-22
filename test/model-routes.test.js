@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { modelValue, piAiProviders, providerEnv } from '../src/main/model-providers.js'
+import { modelValue, piAiProviders, providerEnv } from '../src/main/model-providers.ts'
 import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.js'
 import { OPENAI_REPLY, startFakeOpenAi } from './fixtures/fake-openai.js'
 

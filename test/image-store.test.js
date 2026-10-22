@@ -3,8 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { imageResponse } from '../src/main/image-protocol.js'
-import { createImageStore, MOVED_FOLDER_NAME } from '../src/main/image-store.js'
+import { imageResponse } from '../src/main/image-protocol.ts'
+import { createImageStore, MOVED_FOLDER_NAME } from '../src/main/image-store.ts'
 
 const PNG = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
 

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { registerExtensionsIpc } from '../src/main/extensions-ipc.js'
-import { createMcpConfigStore, parseServerInput, resolveCommand, serverView, toAcpServers } from '../src/main/mcp-config.js'
+import { createMcpConfigStore, parseServerInput, resolveCommand, serverView, toAcpServers } from '../src/main/mcp-config.ts'
 import { createSkill, importSkill, listSkills, parseFrontmatter, removeSkill, skillRoots } from '../src/main/skills.js'
 
 function tempDir(t) {

@@ -30,19 +30,32 @@ export const PERSONA = Object.freeze({
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
-export const PERMISSION_LEVELS = Object.freeze(['danger-full-access', 'auto', 'workspace-write', 'read-only'])
+export const PERMISSION_LEVELS: readonly string[] = Object.freeze(['danger-full-access', 'auto', 'workspace-write', 'read-only'])
+
+/** dsh's own entry a plugin is for: its id in the profile, its package. */
+interface StockEntry { id: string, name: string }
+/** What a plugin is configured with in the profile (dsh-profile.js writes it as it is). */
+type PluginConfig = Record<string, string | number | boolean>
+
 
 /**
  * config: built from the app's data directory, written into the profile for the plugin.
  * stock: dsh's own entries the plugin is for, switched on only while the plugin is (an ask tool nobody
  * answers would leave the model waiting).
- * @type {ReadonlyArray<{ name: string, dir: string, contract: string, config: (data: { userData: string, permission: string }) => object, stock?: Array<{ id: string, name: string }> }>}
  */
-export const APP_PLUGINS = Object.freeze([
+export interface AppPlugin {
+  name: string
+  dir: string
+  contract: string
+  config: (data: { userData: string, permission: string }) => PluginConfig
+  stock?: StockEntry[]
+}
+
+export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze([
   { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData }) => ({ file: path.join(userData, 'memory.db') }) },
   { name: 'viva-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
   { name: 'viva-policy', dir: 'plugins/policy', contract: 'policy', config: () => ({}) },
@@ -62,23 +75,21 @@ export const APP_PLUGINS = Object.freeze([
 ])
 
 /** The dsh version installed with the app; plugins pin their dsh peers to it. */
-export function installedDshVersion(appRoot) {
+export function installedDshVersion(appRoot: string): string {
   const manifest = path.join(appRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
   return JSON.parse(fs.readFileSync(manifest, 'utf8')).version
 }
 
 /** dsh refuses a plugin whose exact dsh peers differ from its own version; say so before it does. */
-function peerProblem(peers, dshVersion) {
+function peerProblem(peers: Record<string, string> | undefined, dshVersion: string): string | null {
   const pinned = Object.entries(peers ?? {}).filter(([name, range]) => name.startsWith('@deepseek-ai/dsh') && /^\d/.test(range))
   const stale = pinned.find(([, range]) => range !== dshVersion)
   return stale ? `需要 dsh ${stale[1]}，当前是 ${dshVersion}` : null
 }
 
-/**
- * @returns {string | null} why the plugin can't be used, or null when it can
- */
-export function pluginProblem(plugin, { dir, dshVersion }) {
-  let manifest
+/** Why the plugin can't be used, or null when it can. */
+export function pluginProblem(plugin: Pick<AppPlugin, 'name' | 'contract'>, { dir, dshVersion }: { dir: string, dshVersion: string }): string | null {
+  let manifest: any
   try {
     manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
   } catch {
@@ -92,12 +103,16 @@ export function pluginProblem(plugin, { dir, dshVersion }) {
   return peerProblem(manifest.peerDependencies, dshVersion)
 }
 
+/** A plugin that passed, as dsh-profile.js writes it into the profile. */
+export interface UsablePlugin { name: string, dir: string, config: PluginConfig, stock: StockEntry[] }
+
 /**
  * The plugins to put in the profile, with their config, and the ones left out with the reason.
- * codeRoot: the folder with the app's plugins/ (config.js CODE_ROOT); dshVersion: the dsh installed in the project.
- * @returns {{ plugins: Array<{ name: string, dir: string, config: object, stock: Array<{ id: string, name: string }> }>, problems: Array<{ name: string, contract: string, problem: string }> }}
+ * codeRoot: the folder with the app's plugins/ (config.ts CODE_ROOT); dshVersion: the dsh installed in the project.
  */
-export function resolvePlugins({ codeRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS }) {
+export function resolvePlugins({ codeRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS }: {
+  codeRoot: string, userData: string, dshVersion: string, permission?: string, plugins?: readonly AppPlugin[],
+}): { plugins: UsablePlugin[], problems: Array<{ name: string, contract: string, problem: string }> } {
   return plugins.reduce(({ plugins: usable, problems }, plugin) => {
     const dir = path.join(codeRoot, plugin.dir)
     const problem = pluginProblem(plugin, { dir, dshVersion })

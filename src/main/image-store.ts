@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { IMAGE_LIMITS, IMAGE_TYPES, isImageId, sniffImageType } from '../shared/images.ts'
+import { type ImageMime, IMAGE_LIMITS, IMAGE_TYPES, isImageId, sniffImageType } from '../shared/images.ts'
 import { removeTree } from './remove-tree.ts'
 
 /**
@@ -10,14 +10,14 @@ import { removeTree } from './remove-tree.ts'
  * attachment store pointed here by dsh-profile.js). Settings show its size, and the user can move or empty it.
  * Only these folders are ever read, counted, moved or removed: the folder may be one the user picked.
  */
-export const IMAGE_FOLDERS = Object.freeze(['pasted', 'attachments', 'cache'])
+export const IMAGE_FOLDERS: readonly string[] = Object.freeze(['pasted', 'attachments', 'cache'])
 /** The folder made inside the one the user picks to move the pictures to. */
 export const MOVED_FOLDER_NAME = 'Viva 图片'
 const TOO_BIG = `图片太大了（上限 ${IMAGE_LIMITS.bytes / 1024 / 1024} MB）`
 const NOT_IMAGE = '只能发 PNG、JPG、GIF、WebP 图片'
 
-function sizeOf(dir) {
-  let entries
+function sizeOf(dir: string): { bytes: number, files: number } {
+  let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
   } catch (err) {
@@ -34,16 +34,16 @@ function sizeOf(dir) {
   }, { bytes: 0, files: 0 })
 }
 
-/** @param {{ dir: () => string }} options where the pictures are now (preferences, or the default in userData) */
-export function createImageStore({ dir }) {
-  const pastedDir = () => path.join(dir(), 'pasted')
-  const fileOf = (id) => path.join(pastedDir(), id)
+/** A picture kept: its name in the folder, its kind, its size. */
+export interface KeptImage { id: string, mimeType: ImageMime, size: number }
 
-  /**
-   * Keeps a pasted picture; the same bytes again are the same picture.
-   * @param {Uint8Array} bytes @returns {{ id: string, mimeType: string, size: number }}
-   */
-  function keep(bytes) {
+/** @param dir where the pictures are now (preferences, or the default in userData) */
+export function createImageStore({ dir }: { dir: () => string }) {
+  const pastedDir = () => path.join(dir(), 'pasted')
+  const fileOf = (id: string) => path.join(pastedDir(), id)
+
+  /** Keeps a pasted picture; the same bytes again are the same picture. */
+  function keep(bytes: Uint8Array): KeptImage {
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) throw new Error(NOT_IMAGE)
     if (bytes.length > IMAGE_LIMITS.bytes) throw new Error(TOO_BIG)
     const mimeType = sniffImageType(bytes)
@@ -59,29 +59,29 @@ export function createImageStore({ dir }) {
     return { id, mimeType, size: bytes.length }
   }
 
-  /** @returns {string | null} where the picture is, or null when it is not (any more) */
-  function pathOf(id) {
+  /** Where the picture is, or null when it is not (any more). */
+  function pathOf(id: unknown): string | null {
     if (!isImageId(id)) return null
     const file = fileOf(id)
     return fs.existsSync(file) ? file : null
   }
 
-  /** @returns {{ dir: string, bytes: number, count: number }} how much the pictures take, and how many were pasted */
-  function usage() {
+  /** How much the pictures take, and how many were pasted. */
+  function usage(): { dir: string, bytes: number, count: number } {
     const parts = IMAGE_FOLDERS.map((name) => sizeOf(path.join(dir(), name)))
     return { dir: dir(), bytes: parts.reduce((sum, part) => sum + part.bytes, 0), count: parts[0].files }
   }
 
   /** Removes every picture; the folder itself and anything else in it stay. */
-  function clear() {
+  function clear(): void {
     for (const name of IMAGE_FOLDERS) removeTree(path.join(dir(), name))
   }
 
   /**
    * Copies the pictures into `MOVED_FOLDER_NAME` inside `parent`, then removes them where they were.
-   * @returns {string} the new folder, for the preferences
+   * @returns the new folder, for the preferences
    */
-  function moveTo(parent) {
+  function moveTo(parent: string): string {
     const from = path.resolve(dir())
     const to = path.resolve(parent, MOVED_FOLDER_NAME)
     if (to === from) return to

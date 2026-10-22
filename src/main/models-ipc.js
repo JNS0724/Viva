@@ -1,4 +1,4 @@
-import { parseProviderInput, PROTOCOLS, providerView } from './model-providers.js'
+import { parseProviderInput, PROTOCOLS, providerView } from './model-providers.ts'
 
 const MAX_ID_CHARS = 100
 
@@ -12,7 +12,7 @@ function assertId(value) {
  * dsh reads them from its profile at launch, so a change restarts it; the conversation carries on.
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
- *   store: ReturnType<import('./model-providers.js').createModelStore>,
+ *   store: ReturnType<import('./model-providers.ts').createModelStore>,
  *   restart: () => Promise<object | null>,
  * }} deps
  */
