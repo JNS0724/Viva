@@ -22,7 +22,7 @@ function unlinkLinks(dir: string): void {
   let names: string[]
   try {
     names = fs.readdirSync(dir)
-  } catch (err) {
+  } catch (err: any) {
     if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return
     throw err
   }

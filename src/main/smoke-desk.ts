@@ -64,7 +64,7 @@ export async function checkDeskAsk(win, outDir, desk) {
   try {
     if (!desk.openInput()) return ['the desktop island would not open its input']
     const page = { webContents: desk.webContents() }
-    const logged = []
+    const logged: string[] = []
     page.webContents.on('console-message', (event) => logged.push(`${event.level}: ${event.message}`))
     const opened = await until(page, INPUT_STATE, 'the island input opening').catch(async (err) => {
       const shown = await run(page, `document.querySelector('.isl')?.dataset.form ?? null`)
@@ -94,7 +94,7 @@ export async function checkDeskAsk(win, outDir, desk) {
     await capture(win, outDir, 'desk-asked')
     report(`desk input: ${JSON.stringify({ opened, drop, refused, steering })}`)
 
-    const failures = []
+    const failures: string[] = []
     if (!opened.focused) failures.push('the island input should take the keyboard')
     if (!opened.hint.includes('发到当前对话')) failures.push(`the island input should say where the question goes: ${opened.hint}`)
     if (refused !== MISSING) failures.push(`a dropped file without a path should be refused with "${MISSING}", was "${refused}"`)

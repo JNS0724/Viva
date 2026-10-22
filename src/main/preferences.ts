@@ -37,7 +37,7 @@ export function createPreferences({ file, onError = () => {} }: { file: string, 
     try {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
       return Object.fromEntries(Object.entries(DEFAULTS).map(([key, value]) => [key, typeof saved[key] === typeof value ? saved[key] : value])) as Preferences
-    } catch (err) {
+    } catch (err: any) {
       if (err.code !== 'ENOENT') onError(err)
       return { ...DEFAULTS }
     }

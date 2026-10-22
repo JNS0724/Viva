@@ -27,7 +27,7 @@ export function createTaskStore({ file, onError = () => {} }: { file: string, on
     try {
       const data = JSON.parse(fs.readFileSync(file, 'utf8'))
       return Array.isArray(data?.tasks) ? data.tasks.filter(isTask) : []
-    } catch (err) {
+    } catch (err: any) {
       if (err.code !== 'ENOENT') onError(err)
       return []
     }

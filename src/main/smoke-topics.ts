@@ -21,7 +21,7 @@ const timelineWhen = (win, test, what) => until(win, `(() => { const seen = ${TI
 
 /** @returns {Promise<string[]>} failures */
 export async function checkTopics(win, outDir) {
-  const failures = []
+  const failures: string[] = []
   const expect = (ok, message, seen) => { if (!ok) failures.push(`topics: ${message}: ${JSON.stringify(seen)}`) }
 
   await newTopic(win)

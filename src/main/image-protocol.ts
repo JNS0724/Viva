@@ -22,8 +22,9 @@ export function imageResponse(url: string, store: PictureFiles): Response {
   }
   const id = decodeURIComponent(parsed.pathname.replace(/^\//, ''))
   const file = parsed.host === 'img' && isImageId(id) ? store.pathOf(id) : null
-  if (!file) return new Response(null, { status: 404 })
-  return new Response(fs.readFileSync(file), { headers: { 'content-type': mimeOfId(id), 'cache-control': 'max-age=31536000, immutable' } })
+  const mime = mimeOfId(id)
+  if (!file || !mime) return new Response(null, { status: 404 })
+  return new Response(fs.readFileSync(file), { headers: { 'content-type': mime, 'cache-control': 'max-age=31536000, immutable' } })
 }
 
 export function registerImageProtocol(protocol: Pick<Protocol, 'handle'>, store: PictureFiles): void {

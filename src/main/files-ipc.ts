@@ -35,8 +35,8 @@ const watchFile = (file, onChange) => fs.watch(file, { persistent: false }, onCh
  * }} deps
  */
 export function registerFilesIpc(ipcMain, { root, shell, notify, native = DSH_NATIVE, watch = watchFile }) {
-  let watched = null
-  let settle = null
+  let watched: { close: () => void } | null = null
+  let settle: ReturnType<typeof setTimeout> | undefined
 
   ipcMain.handle('files:list', (_event, rel) => listFolder(root(), checkPath(rel)))
   ipcMain.handle('files:preview', (_event, rel, offset = 0) => previewFile(root(), checkPath(rel), { offset }))
@@ -50,14 +50,14 @@ export function registerFilesIpc(ipcMain, { root, shell, notify, native = DSH_NA
     if (!canOpen(file)) return []
     try {
       return (await native.applications(file)).map(({ id, name, default: isDefault, icon }) => ({ id, name, default: isDefault, icon }))
-    } catch (err) {
+    } catch (err: any) {
       console.error('[files] could not list the apps for a file:', err.message)
       return []
     }
   })
 
   /** Opens with the given app (one of files:apps), or with the system default. */
-  ipcMain.handle('files:open', async (_event, rel, app = null) => {
+  ipcMain.handle('files:open', async (_event, rel, app: unknown = null) => {
     const file = resolveInside(root(), checkPath(rel))
     if (!canOpen(file)) throw new Error('这是程序或脚本，只能在文件夹中显示')
     if (app !== null) {

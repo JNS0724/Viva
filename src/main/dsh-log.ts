@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { stepsFrom } from '../../plugins/trace/lib/steps.ts'
+import type { Step } from '../../plugins/trace/lib/steps.ts'
 import { assertId } from './history-schema.ts'
 import { decompressZstdFrames } from './zstd-frames.ts'
 
@@ -13,9 +14,6 @@ import { decompressZstdFrames } from './zstd-frames.ts'
 const LOG_FILE = 'session.v4.jsonl.zstd'
 const MAX_LOG_BYTES = 64 * 1024 * 1024
 const TITLE_CHARS = 60
-
-/** A step of a session, as plugins/trace/lib/steps.js gives it. */
-interface Step { kind: string, at: number, text?: string, name?: string, args?: Record<string, any>, callId?: string, status?: string }
 
 /** What the drawer shows of a tool call. */
 interface ToolView { id: string, kind: string, title: string, status?: string, at: number, locations: Array<{ path: string }>, rawInput: object | null }
@@ -48,7 +46,7 @@ const TOOL_VIEWS: Record<string, (a: Record<string, any>) => Partial<ToolView>> 
   todo_write: () => ({ kind: 'think', title: '更新待办' }),
 }
 
-function toolFrom(sessionId: string, step: Step): ToolView {
+function toolFrom(sessionId: string, step: Extract<Step, { kind: 'tool' }>): ToolView {
   const view = TOOL_VIEWS[step.name]?.(step.args ?? {}) ?? { kind: 'other', title: String(step.name || '工具调用') }
   return { kind: 'other', title: '', locations: [], rawInput: null, ...view, id: `${sessionId}:${step.callId}`, status: step.status, at: step.at }
 }

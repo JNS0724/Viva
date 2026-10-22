@@ -113,7 +113,7 @@ export function registerAskShortcut(globalShortcut, { foreground, focusComposer,
         focusComposer()
       }
     })
-  } catch (err) {
+  } catch (err: any) {
     console.error('[island] could not register the shortcut:', err.message)
     return false
   }

@@ -36,7 +36,7 @@ export function createSettingsStore({ file, crypto, onError = () => {} }: { file
   function readFile(): { deepseekApiKey?: string } | null {
     try {
       return JSON.parse(fs.readFileSync(file, 'utf8'))
-    } catch (err) {
+    } catch (err: any) {
       if (err.code !== 'ENOENT') onError(err)
       return null
     }
@@ -54,7 +54,7 @@ export function createSettingsStore({ file, crypto, onError = () => {} }: { file
     if (!encoded) return ''
     try {
       return crypto.decryptString(Buffer.from(encoded, 'base64'))
-    } catch (err) {
+    } catch (err: any) {
       onError(err)
       return ''
     }

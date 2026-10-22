@@ -86,7 +86,21 @@ function addMissingColumns(db) {
   }
 }
 
-const toConversation = (row) => ({
+/** A segment of the one timeline, as the app holds it: saved once it has messages. */
+export interface Conversation {
+  id: string
+  title: string
+  titleCustom: boolean
+  createdAt: number
+  updatedAt: number
+  sessionId: string | null
+  mode: string | null
+  model: string | null
+  cwd: string | null
+  parentId: string | null
+}
+
+const toConversation = (row): Conversation => ({
   id: row.id,
   title: row.title,
   titleCustom: Boolean(row.title_custom),
@@ -222,7 +236,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
   }
 
   /** An unsaved conversation; it reaches the database with its first message. */
-  function create({ sessionId = null, mode = null, model = null, cwd = null, parentId = null } = {}) {
+  function create({ sessionId = null, mode = null, model = null, cwd = null, parentId = null }: Partial<Pick<Conversation, 'sessionId' | 'mode' | 'model' | 'cwd' | 'parentId'>> = {}): Conversation {
     const at = now()
     return { id: newId(), title: '', titleCustom: false, createdAt: at, updatedAt: at, sessionId, mode, model, cwd, parentId }
   }
@@ -339,7 +353,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
    * The user went back to an earlier point of `id` and on from there in `into`: `id` leaves the timeline and
    * hangs, folded, off `into` after its first `at` messages (the ones both have).
    */
-  const fold = (id, { into, at, kind = null }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), FOLD_KINDS.has(kind) ? kind : null, assertId(id))
+  const fold = (id, { into, at, kind = null as string | null }) => changeOne(sql.fold, assertId(into), Math.max(0, Math.trunc(at) || 0), kind !== null && FOLD_KINDS.has(kind) ? kind : null, assertId(id))
   /** A segment's messages with where each is and when it was written (ms). */
   const timelineOf = (id) => sql.timelineMessages.all(assertId(id)).map(toTimelineMessage)
 

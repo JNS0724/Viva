@@ -370,7 +370,7 @@ async function dropSteps(win, outDir, expect) {
 
 /** @returns {Promise<string[]>} failed expectations */
 export async function checkMemory(win, outDir, hooks = {}) {
-  const failures = []
+  const failures: string[] = []
   const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
   try {
     await steps(win, outDir, expect, hooks)

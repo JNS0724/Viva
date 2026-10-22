@@ -20,7 +20,7 @@ function sizeOf(dir: string): { bytes: number, files: number } {
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch (err) {
+  } catch (err: any) {
     if (err.code === 'ENOENT') return { bytes: 0, files: 0 }
     throw err
   }

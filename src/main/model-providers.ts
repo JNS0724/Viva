@@ -160,7 +160,7 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
     try {
       const data = JSON.parse(fs.readFileSync(file, 'utf8'))
       return { stored: Array.isArray(data?.providers) ? data.providers : [], lastModel: data?.lastModel ?? null }
-    } catch (err) {
+    } catch (err: any) {
       if (err.code !== 'ENOENT') onError(err)
       return { stored: [], lastModel: null }
     }
@@ -178,7 +178,7 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
     if (!stored.key) return ''
     try {
       return crypto.decryptString(Buffer.from(stored.key, 'base64'))
-    } catch (err) {
+    } catch (err: any) {
       onError(new Error(`could not decrypt the key of model provider "${stored.name}": ${err.message}`))
       return ''
     }

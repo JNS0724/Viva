@@ -84,7 +84,7 @@ function readManifest(file) {
   if (!fs.existsSync(file)) return {}
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch (err) {
+  } catch (err: any) {
     throw new Error(`dsh profile 的 package.json 无法读取（${file}）：${err.message}`)
   }
 }

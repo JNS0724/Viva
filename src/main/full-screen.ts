@@ -15,7 +15,7 @@ interface FullScreenWindow {
 
 /** @param then what to do once the window has left full screen */
 export function leaveFullScreen(win: FullScreenWindow, then: () => void): void {
-  let timer: ReturnType<typeof setTimeout> | null = null
+  let timer: ReturnType<typeof setTimeout> | undefined
   const done = () => {
     clearTimeout(timer)
     win.removeListener('leave-full-screen', done)

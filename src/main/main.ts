@@ -54,52 +54,56 @@ const LATE_MEMORY_WINDOW_MS = 30_000
 /** Every channel the pages send on goes through the contract's check first (ipc-contract.js). */
 const ipcMain = checkedIpc(electronIpcMain, { onRefused: (_channel, problem) => console.error('[ipc] refused:', problem) })
 
-let settingsStore = null
+type HistoryDb = ReturnType<typeof openHistoryDb>
+
+// The stores and databases are opened once at launch (app.whenReady, openHistory, openPersonal), before any
+// window or handler can reach them: `!` says so. What may be absent at any time says `| null`.
+let settingsStore!: ReturnType<typeof createSettingsStore>
 /** Switches from settings, such as the desktop island (preferences.js). */
-let preferences = null
+let preferences!: ReturnType<typeof createPreferences>
 /** False in smoke runs, which turn the desktop island on only while they check it. */
 let deskAllowed = true
 /** Model providers the user added besides DeepSeek; see model-providers.js. */
-let modelStore = null
-let historyDb = null
+let modelStore!: ReturnType<typeof createModelStore>
+let historyDb!: HistoryDb
 /** Pictures pasted into questions, and dsh's copies of them, in a folder the user may move (image-store.js). */
-let imageStore = null
+let imageStore!: ReturnType<typeof createImageStore>
 /** The user's MCP servers, encrypted where they hold keys (mcp-config.js). */
-let mcpStore = null
+let mcpStore!: ReturnType<typeof createMcpConfigStore>
 /** An MCP server was added or removed from the conversation: reattach the session once the turn is over. */
 let mcpReloadDue = false
-let memoryDb = null
+let memoryDb!: ReturnType<typeof openMemoryDb>
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
-let traceDb = null
+let traceDb: ReturnType<typeof openTraceDb> | null = null
 /** Plugins left out of the profile at the last launch, and why; shown in settings. */
-let pluginProblems = []
+let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
 /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.js. */
-let personal = null
+let personal!: ReturnType<typeof createPersonal>
 /** When the running dsh was launched: the memory plugin must have started after it to count as working. */
 let launchedAt = 0
 /** The turn in progress: memories the agent saves during it are reported when it ends. */
 let turn = { active: false, startedAt: 0 }
-let lateMemoryTimer = null
+let lateMemoryTimer: ReturnType<typeof setInterval> | undefined
 /** The conversation on screen: the latest one at launch, one picked from the history panel, or a fresh one. */
-let conversation = null
+let conversation!: ReturnType<HistoryDb['create']>
 /**
  * The working directory the agent works in now: the current conversation's own, or the app's (config.cwd,
  * defaultWorkDir) when it has none or it is gone. The user switches it from the window (work-dir-ipc.js).
  */
-let workDir = null
-let defaultWorkDir = null
-let win = null
+let workDir: string | null = null
+let defaultWorkDir: string | null = null
+let win: BrowserWindow | null = null
 /** The island on the desktop, shown while the window is in the background (desk-island.js). */
-let desk = null
+let desk: ReturnType<typeof createDeskIsland> | null = null
 /** The tray icon, made the first time the window is closed to it (tray.js). */
-let tray = null
+let tray: ReturnType<typeof createTray> | null = null
 /** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
-let shortcutHeld = null
-let bridge = null
+let shortcutHeld: ReturnType<typeof registerAskShortcut> | null = null
+let bridge: ReturnType<typeof createAcpBridge> | null = null
 let bridgeGeneration = 0
 /** When dsh died on its own lately; see restartDelay. */
-let crashes = []
-let restartTimer = null
+let crashes: number[] = []
+let restartTimer: ReturnType<typeof setTimeout> | undefined
 /** Set once quitting has begun: dsh is being stopped and must not be started again. */
 let quitting = false
 /** How long quitting waits for dsh to finish before the app goes anyway. */
@@ -153,7 +157,7 @@ function reportMemoryChanges() {
       emitToRenderer({ type: 'memory_changed', memories: report.memories, invalidated: report.invalidated })
     }
     if (report?.injected.length) emitToRenderer({ type: 'memory_context', injected: report.injected })
-  } catch (err) {
+  } catch (err: any) {
     console.error('[memory] could not read what was saved or sent:', err.message)
   }
 }
@@ -184,7 +188,7 @@ function prepareProfile(config) {
     problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
     ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir() })
     return DSH_PROFILE
-  } catch (err) {
+  } catch (err: any) {
     console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
     return FALLBACK_PROFILE
   }
@@ -213,7 +217,11 @@ const takenServerNames = () => mcpStore.list().map((server) => server.name)
  */
 function configActions(config) {
   const roots = () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() })
-  const userRoot = () => roots().find((root) => root.managed).dir
+  const userRoot = () => {
+    const root = roots().find((item) => item.managed)
+    if (!root) throw new Error('the app has no skill folder of its own')
+    return root.dir
+  }
   return {
     listServers: () => mcpStore.list().map((server) => `${server.name}（${server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')}）`),
     prepareServer: (spec) => {
@@ -333,7 +341,7 @@ async function startBridge() {
     conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
     emitToRenderer({ type: 'ready', info })
     return info
-  } catch (err) {
+  } catch (err: any) {
     console.error('[main] failed to start agent bridge:', err)
     emitToRenderer({ type: 'error', message: `连接助手失败：${err.message}` })
     return null
@@ -355,7 +363,7 @@ async function withLastModel(info) {
   if (!last) return info
   const value = modelValue(last)
   if (info.modelValue === value || !info.models?.some((model) => model.value === value)) return info
-  return { ...info, ...await bridge.setConfig('model', value) }
+  return { ...info, ...await requireBridge().setConfig('model', value) }
 }
 
 /** A new key (or none) means a different agent, so the conversation starts over. */
@@ -410,7 +418,7 @@ function registerAgentIpc() {
     const agent = requireBridge()
     try {
       personal.habits()
-    } catch (err) {
+    } catch (err: any) {
       console.error('[memory] could not update the habits:', err.message)
     }
     turn = { active: true, startedAt: Date.now() }
@@ -466,12 +474,18 @@ function showWindow() {
 
 const windowInFront = () => Boolean(win && !win.isDestroyed() && win.isFocused() && win.isVisible() && !win.isMinimized())
 
+/** The window, for what happens only while it is open: its dialogs, the shortcut's focus, closing it to the tray. */
+function mainWindow(): BrowserWindow {
+  if (!win || win.isDestroyed()) throw new Error('the window is not open')
+  return win
+}
+
 /** The shortcut that opens the island's input, from any app; not in smoke runs, which share the machine. */
 function registerShortcut(config) {
   if (config.smoke) return
   shortcutHeld = registerAskShortcut(globalShortcut, {
     foreground: windowInFront,
-    focusComposer: () => win.webContents.send('composer:focus'),
+    focusComposer: () => mainWindow().webContents.send('composer:focus'),
     openInput: () => desk?.openInput() ?? false,
     showWindow,
   })
@@ -480,12 +494,13 @@ function registerShortcut(config) {
 /** Closing the window keeps Viva running in the tray, with the island on the desktop. */
 function closeToTray() {
   // A full-screen window hidden as it is would leave its Space behind, black (full-screen.js).
-  if (win.isFullScreen()) leaveFullScreen(win, hideToTray)
+  const shown = mainWindow()
+  if (shown.isFullScreen()) leaveFullScreen(shown, hideToTray)
   else hideToTray()
 }
 
 function hideToTray() {
-  win.hide()
+  mainWindow().hide()
   tray ??= createTray({
     Tray, Menu, nativeImage,
     iconDir: path.join(CODE_ROOT, 'src', 'assets', 'tray'),
@@ -500,29 +515,29 @@ function hideToTray() {
  * The desktop island comes out when the window is closed to the tray and goes when it is shown again; a smoke
  * run turns it on only when it checks it, and closes the window for real.
  */
-function attachDeskIsland(config) {
+function attachDeskIsland(config, window: BrowserWindow) {
   deskAllowed = !config.smoke
   desk = createDeskIsland({
     BrowserWindow,
     screen,
     preload: path.join(CODE_ROOT, 'src', 'preload', 'desk-preload.cjs'),
     page: path.join(CODE_ROOT, 'src', 'renderer', 'desk.html'),
-    mainWindow: win,
+    mainWindow: window,
     enabled: deskAllowed && preferences.get().deskIsland,
     places: { get: () => preferences.get().deskPlaces, set: (places) => preferences.set('deskPlaces', places) },
     coach: { get: () => preferences.get().deskCoached, set: () => preferences.set('deskCoached', true) },
   })
-  win.on('close', (event) => {
+  window.on('close', (event) => {
     if (quitting || config.smoke) return
     event.preventDefault()
     closeToTray()
   })
-  win.on('show', () => desk?.setAway(false))
+  window.on('show', () => desk?.setAway(false))
   // Windows logging off or shutting down closes the window for real, or it would hold the session up.
-  win.on('session-end', () => {
+  window.on('session-end', () => {
     quitting = true
   })
-  win.on('closed', () => {
+  window.on('closed', () => {
     desk?.destroy()
     desk = null
   })
@@ -605,12 +620,12 @@ async function switchWorkDir(dir) {
 }
 
 async function chooseWorkFolder() {
-  const result = await dialog.showOpenDialog(win, { title: '选择工作目录', properties: ['openDirectory', 'createDirectory'] })
+  const result = await dialog.showOpenDialog(mainWindow(), { title: '选择工作目录', properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
 async function chooseExportPath(defaultName) {
-  const result = await dialog.showSaveDialog(win, {
+  const result = await dialog.showSaveDialog(mainWindow(), {
     title: '导出对话',
     defaultPath: path.join(app.getPath('documents'), defaultName),
     filters: [{ name: 'Markdown', extensions: ['md'] }],
@@ -627,7 +642,7 @@ async function applyMcpChange() {
 }
 
 const pickFiles = async (options) => {
-  const result = await dialog.showOpenDialog(win, options)
+  const result = await dialog.showOpenDialog(mainWindow(), options)
   return result.canceled ? null : result.filePaths
 }
 
@@ -654,7 +669,7 @@ function openPersonal(config) {
   memoryDb = openMemoryDb({ file: path.join(userData, 'memory.db') })
   try {
     traceDb = openTraceDb({ file: path.join(userData, 'trace.db') })
-  } catch (err) {
+  } catch (err: any) {
     console.error('[trace] could not open trace.db; reopened conversations fall back to dsh logs:', err.message)
   }
   mcpStore = createMcpConfigStore({
@@ -746,7 +761,7 @@ function useDevIcon() {
 
 function createWindow(config) {
   const icon = useDevIcon()
-  win = new BrowserWindow({
+  const created = new BrowserWindow({
     ...windowSize(screen.getPrimaryDisplay().workAreaSize),
     ...windowChrome(process.platform),
     ...(icon ? { icon } : {}),
@@ -761,12 +776,13 @@ function createWindow(config) {
       backgroundThrottling: !config.smoke,
     },
   })
-  attachDeskIsland(config)
-  win.once('ready-to-show', () => win.show())
+  win = created
+  attachDeskIsland(config, created)
+  created.once('ready-to-show', () => created.show())
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
-  win.webContents.on('will-navigate', (event) => event.preventDefault())
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  win.webContents.once('did-finish-load', () => {
+  created.webContents.on('will-navigate', (event) => event.preventDefault())
+  created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  created.webContents.once('did-finish-load', () => {
     startBridge()
     if (config.smoke) {
       // Nor may macOS App Nap suspend the app (and the fake model it serves) while nobody looks.
@@ -777,12 +793,12 @@ function createWindow(config) {
         quitting = true
         stopBridgeInTime().finally(() => app.exit(code))
       }
-      runSmoke(win, config, quitSmoke, {
+      runSmoke(created, config, quitSmoke, {
         agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
       })
     }
   })
-  win.loadFile(path.join(CODE_ROOT, 'src', 'renderer', 'index.html'))
+  created.loadFile(path.join(CODE_ROOT, 'src', 'renderer', 'index.html'))
 }
 
 isolateSmokeUserData()
@@ -795,7 +811,7 @@ app.on('second-instance', () => showWindow())
 app.on('activate', () => showWindow())
 
 /** The memory smoke run's stand-in model, kept so the run can check what the model was sent. */
-let smokeModel = null
+let smokeModel: { url: string, [field: string]: any } | null = null
 
 /** The memory smoke run talks to the real dsh, which calls a local stand-in for the DeepSeek API. */
 async function startSmokeModel() {
@@ -804,8 +820,9 @@ async function startSmokeModel() {
   const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
   const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
   // `resume` reopens the profile `memory` left, whose models point at the stand-in: the same port both times.
-  smokeModel = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0 })
-  process.env.DEEPSEEK_BASE_URL = smokeModel.url
+  const model = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0 })
+  smokeModel = model
+  process.env.DEEPSEEK_BASE_URL = model.url
 }
 
 /** Conversations and memories kept under the app's old name, my-agent, come along on the first launch as Viva. */
@@ -813,7 +830,7 @@ function bringLegacyData() {
   try {
     const copied = adoptLegacyData({ userData: app.getPath('userData'), legacyDir: path.join(app.getPath('appData'), LEGACY_NAME) })
     if (copied.length) process.stdout.write(`[viva] copied ${copied.join(', ')} from the ${LEGACY_NAME} data folder\n`)
-  } catch (err) {
+  } catch (err: any) {
     console.error(`[viva] could not copy the ${LEGACY_NAME} data:`, err.message)
   }
 }
@@ -831,7 +848,7 @@ function bringDshData(config) {
     if (sessions || skills.length || removed.length) {
       process.stdout.write(`[viva] moved to the app's own dsh home: ${sessions} sessions, skills ${skills.join(', ') || 'none'}; profiles removed: ${removed.join(', ') || 'none'}\n`)
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error(`[viva] could not bring the sessions over from ${fromHome}:`, err.message)
   }
 }
@@ -859,7 +876,7 @@ app.whenReady().then(async () => {
     store: imageStore,
     setDir: (dir) => preferences.set('imagesDir', dir),
     chooseFolder: async () => {
-      const result = await dialog.showOpenDialog(win, { title: '把图片放到哪里', properties: ['openDirectory', 'createDirectory'] })
+      const result = await dialog.showOpenDialog(mainWindow(), { title: '把图片放到哪里', properties: ['openDirectory', 'createDirectory'] })
       return result.canceled ? null : result.filePaths[0] ?? null
     },
     reveal: (dir) => shell.openPath(dir),
