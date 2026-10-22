@@ -28,7 +28,7 @@ function checked(request) {
 /**
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
- *   db: ReturnType<import('./history-db.js').openHistoryDb>,
+ *   db: ReturnType<import('./history-db.ts').openHistoryDb>,
  *   current: () => object, setCurrent: (conversation: object) => void, isBusy: () => boolean,
  *   agentInfo: () => { mode?: string, model?: string },
  *   forkAgent: (request: { words: string, occurrence: number }) => Promise<{ ok: boolean, reason?: string, info?: object }>,

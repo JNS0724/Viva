@@ -1,4 +1,4 @@
-import { capture, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+import { capture, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
 // newTopic: ⌘N, the first time; ＋ 新话题 above the input, the second.
 
 /**

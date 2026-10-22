@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { imagesForPrompt, registerImageIpc } from '../src/main/image-ipc.js'
+import { imagesForPrompt, registerImageIpc } from '../src/main/image-ipc.ts'
 import { createImageStore, MOVED_FOLDER_NAME } from '../src/main/image-store.ts'
 
 /** 设置 › 贴过的图片 in the main process: moving the folder (dsh restarting on it), emptying it, and reading pictures for the model. */

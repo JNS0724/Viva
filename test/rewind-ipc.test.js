@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.js'
-import { registerRewindIpc } from '../src/main/rewind-ipc.js'
+import { openHistoryDb } from '../src/main/history-db.ts'
+import { registerRewindIpc } from '../src/main/rewind-ipc.ts'
 
 /**
  * Going back to something the user said, from the window (phase 2): the agent forks to before that turn, the

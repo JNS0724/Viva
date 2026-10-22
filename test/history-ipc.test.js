@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.js'
-import { registerHistoryIpc, UNDO_WINDOW_MS } from '../src/main/history-ipc.js'
+import { openHistoryDb } from '../src/main/history-db.ts'
+import { registerHistoryIpc, UNDO_WINDOW_MS } from '../src/main/history-ipc.ts'
 
 const question = (text) => ({ role: 'user', text, receipt: null })
 

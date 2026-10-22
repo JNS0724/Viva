@@ -1,4 +1,4 @@
-import { capture, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+import { capture, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
 
 /**
  * The permission picker in the walkthrough smoke run (smoke.js): by the input it says what the assistant may

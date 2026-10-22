@@ -1,5 +1,5 @@
 import { MISSING } from './island-files.ts'
-import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
 
 /**
  * The desktop island's input in the walkthrough smoke run (smoke.js): opened as by the shortcut, it takes the

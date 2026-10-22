@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { resolveConfig } from '../src/main/config.ts'
-import { patchFor } from '../src/main/dsh-profile.js'
+import { patchFor } from '../src/main/dsh-profile.ts'
 import {
   createModelStore, defaultModel, keyEnvName, modelValue, parseModelValue, parseProviderInput, piAiProviders, providerEnv, providerView,
 } from '../src/main/model-providers.ts'

@@ -1,3 +1,6 @@
+import type { IpcRegistry } from './ipc-contract.ts'
+import type { StoredTask, TaskStore } from './task-store.ts'
+
 /**
  * Background tasks from the window (phase 3). While a turn runs, words about something else move it to the
  * background: it goes on in its own session as a task (acp-bridge.js spinOff), its segment of the timeline
@@ -20,7 +23,7 @@ export const TASK_PROBLEMS = Object.freeze({
 /** What a task taken up again is told: Viva was closed while it worked. */
 const GO_ON = '刚才 Viva 关掉了，请接着做没做完的事。'
 /** Without a store (tests that do not need one), nothing is kept between launches. */
-const NO_STORE = Object.freeze({ list: () => [], add: () => {}, remove: () => {} })
+const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remove: () => {} })
 /** Tasks that ended stay to be asked again (接着问), across launches too: the latest few, until closed. */
 const KEEP_ENDED = 5
 const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
@@ -28,8 +31,7 @@ const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 const isText = (value) => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
 const isCount = (value) => Number.isSafeInteger(value) && value >= 0
 const isEnded = (entry) => Number.isFinite(entry?.endedAt)
-/** @param {import('./task-store.ts').StoredTask} task */
-const summaryOf = ({ id, segmentId, title, words }) => ({ id, segmentId, title, words })
+const summaryOf = ({ id, segmentId, title, words }: StoredTask) => ({ id, segmentId, title, words })
 const titleOf = (words) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
@@ -45,17 +47,19 @@ function checked(request) {
   return { words, keep, text }
 }
 
-/**
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   db: ReturnType<import('./history-db.js').openHistoryDb>,
- *   store?: ReturnType<import('./task-store.ts').createTaskStore>,
- *   current: () => any, setCurrent: (conversation: object) => void,
- *   isBusy: () => boolean, setBusy: (busy: boolean) => void, agentInfo: () => { mode?: string, model?: string },
- *   agent: Record<'spinOff' | 'mergeBack' | 'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>,
- * }} deps
- */
-export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCurrent, isBusy, setBusy, agentInfo, agent }) {
+/** What the background tasks need from the app: the history, the task store, the conversation on screen, the agent. */
+interface TaskIpcDeps {
+  db: ReturnType<typeof import('./history-db.ts').openHistoryDb>
+  store?: TaskStore
+  current: () => any
+  setCurrent: (conversation: object) => void
+  isBusy: () => boolean
+  setBusy: (busy: boolean) => void
+  agentInfo: () => { mode?: string, model?: string }
+  agent: Record<'spinOff' | 'mergeBack' | 'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>
+}
+
+export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, current, setCurrent, isBusy, setBusy, agentInfo, agent }: TaskIpcDeps) {
   /** taskId → { id, segmentId, title, words, keep, next } (next: the segment the conversation went on in) */
   const tasks = new Map()
   /** Tasks whose dsh session this launch holds: moved here, or taken up again. Others must be taken up first. */

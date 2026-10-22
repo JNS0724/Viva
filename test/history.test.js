@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.js'
+import { openHistoryDb } from '../src/main/history-db.ts'
 import { migrateLegacyHistory } from '../src/main/history-migrate.ts'
 import { autoTitle, normalizeMessages, normalizeTitle } from '../src/main/history-schema.ts'
 

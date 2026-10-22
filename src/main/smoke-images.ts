@@ -1,4 +1,4 @@
-import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
 
 /**
  * Pictures in the walkthrough smoke run (smoke.js): a picture copied with words that came only as formatted

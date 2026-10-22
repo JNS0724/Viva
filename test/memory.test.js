@@ -7,7 +7,7 @@ import { buildContext, MAX_CONTEXT_CHARS } from '../plugins/memory/lib/context.j
 import { recallMatches, termsOf } from '../plugins/memory/lib/match.js'
 import { looksSecret, openMemoryDb } from '../plugins/memory/lib/store.js'
 import { memoryTools } from '../plugins/memory/lib/tools.js'
-import { copyIntoWorkspace, DOCS_DIR_NAME, registerMemoryIpc } from '../src/main/memory-ipc.js'
+import { copyIntoWorkspace, DOCS_DIR_NAME, registerMemoryIpc } from '../src/main/memory-ipc.ts'
 import { scratch } from './fixtures/scratch.js'
 
 const tempDir = (t) => scratch(t, 'memory-test-').dir

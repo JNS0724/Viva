@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createDeskIsland, DESK_TIMES, deskForm } from '../src/main/desk-island.js'
+import { createDeskIsland, DESK_TIMES, deskForm } from '../src/main/desk-island.ts'
 import { deskMenuTemplate } from '../src/main/desk-menu.ts'
 import { describeDropped, MISSING, NOT_A_FILE } from '../src/main/island-files.ts'
-import { ASK_LIMITS, checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from '../src/main/island-ipc.js'
+import { ASK_LIMITS, checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from '../src/main/island-ipc.ts'
 
 const view = (form, extra = {}) => ({ form, tone: 'idle', mood: 'idle', label: 'x', recent: [], ...extra })
 const away = { enabled: true, away: true, sinceDone: 0 }

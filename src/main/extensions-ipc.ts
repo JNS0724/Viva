@@ -1,5 +1,5 @@
 import { serverView } from './mcp-config.ts'
-import { listSkills, removeSkill } from './skills.js'
+import { listSkills, removeSkill } from './skills.ts'
 
 const MAX_ID_CHARS = 300
 
@@ -14,7 +14,7 @@ function assertName(value) {
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
  *   store: ReturnType<import('./mcp-config.ts').createMcpConfigStore>,
- *   roots: () => ReturnType<import('./skills.js').skillRoots>,
+ *   roots: () => ReturnType<import('./skills.ts').skillRoots>,
  *   mcpStatus: () => { active: string[], dropped: Array<{ name: string, reason: string }> },
  *   applyMcp: () => Promise<object | null>,
  *   trash: (file: string) => Promise<void>,

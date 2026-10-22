@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.js'
-import { taskSteps } from './smoke-tasks.js'
+import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { taskSteps } from './smoke-tasks.ts'
 
 /**
  * Smoke steps on the real dsh with the app's plugins and the fake model (test/fixtures/fake-llm.js): the

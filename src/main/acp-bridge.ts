@@ -269,10 +269,8 @@ export function createAcpBridge({
    * directory, and goes on there: the plugin writes the new session, this side resumes it. The session left
    * behind stays as it was.
    * Or to before the turn where the user said `words` (the `occurrence`-th such turn from the end, 0 the last).
-   * @param {{ before?: number, words?: string, occurrence?: number, cwd?: string }} [request]
-   * @returns {Promise<{ ok: boolean, reason?: string, info?: object }>}
    */
-  async function fork({ before, words, occurrence, cwd: targetCwd } = {}) {
+  async function fork({ before, words, occurrence, cwd: targetCwd }: { before?: number, words?: string, occurrence?: number, cwd?: string } = {}) {
     const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
     if (!result.ok) return result
     return { ok: true, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
@@ -355,10 +353,8 @@ export function createAcpBridge({
    * 后台做 (task-ipc.js task:start): a task of its own, beside the main conversation, in a session forked from it
    * as it is, or from before the turn running in it (named by its `words`), so it knows what was said; with
    * nothing said yet, in a fresh session. promptTask then asks it.
-   * @param {{ words?: string }} [request]
-   * @returns {Promise<{ ok: boolean, reason?: string, taskId?: string }>}
    */
-  async function startTask({ words } = {}) {
+  async function startTask({ words }: { words?: string } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
     if (!sessionId) return { ok: false, reason: 'missing' }
     const forked = await forking.fork(words ? { words, occurrence: 0 } : {})
     if (forked.ok) {
