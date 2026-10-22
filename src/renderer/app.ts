@@ -96,12 +96,12 @@ let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
 let historyReady = false
 
-function dispatch(action) {
+function dispatch(action: Action) {
   state = reduce(state, action)
   render(dom, state, handlers)
   startReveal()
   publishIsland()
-  if (SAVE_AFTER.has(action.type)) saveHistory()
+  if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
 }
 
 let publishedIsland = ''
@@ -123,13 +123,16 @@ function jumpToCard() {
 }
 
 /** The task in the background that asks `questionId`, if one does. */
-const askingTask = (questionId) => liveTasks(state).find((task) => task.question?.questionId === questionId)
+const askingTask = (questionId: string) => liveTasks(state).find((task) => task.question?.questionId === questionId)
+
+/** What the island asks for: its kind, and what goes with it (each entry below reads its own). */
+type IslandAction = { kind?: string, [field: string]: any }
 
 /**
  * What the island asks for, from the title bar or the desktop. Answers name the request or question they
  * were shown for, and one that has since closed is dropped.
  */
-const ISLAND_ACTIONS = {
+const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>> = {
   toggle: () => dispatch({ type: 'toggle_island' }),
   jump: jumpToCard,
   cancel: () => isBusy(state) && handlers.cancel(),
@@ -203,7 +206,7 @@ async function loadHistory() {
 }
 
 /** Types out assistant text frame by frame; stops by itself once everything received is on screen. */
-function revealFrame(now) {
+function revealFrame(now: number) {
   revealFrameId = 0
   const dt = Math.min(now - lastFrameAt, MAX_FRAME_MS)
   lastFrameAt = now
@@ -219,7 +222,7 @@ function startReveal() {
 }
 
 /** IPC errors arrive as "Error invoking remote method 'x': Error: msg"; keep only the message. */
-const errorMessage = (err) => String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+const errorMessage = (err: unknown) => String((err as { message?: unknown } | null)?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
 const historyActions = createHistoryActions({
   api,
@@ -227,20 +230,20 @@ const historyActions = createHistoryActions({
   dispatch,
   searchField: dom.historySearch,
   errorMessage,
-  jumpTo: (hit) => timelineActions.jumpTo(hit),
+  jumpTo: (hit: Untyped) => timelineActions.jumpTo(hit),
 })
 
 const draftImages = createDraftImages({
-  keep: (bytes) => api.keepImage(bytes),
+  keep: (bytes: Uint8Array<ArrayBuffer>) => api.keepImage(bytes),
   container: dom.draftPics,
-  showError: (message) => historyActions.showToast(message),
+  showError: (message: string) => historyActions.showToast(message),
 })
 
 /** How long a message found by search stays marked after the timeline scrolls to it. */
 const FOUND_MS = 2400
 
 /** Scrolls a message of the timeline (its `data-msg`, view/thread.js markMessage) to the middle and marks it a moment. */
-function revealMessage(msgId) {
+function revealMessage(msgId: string) {
   const row = dom.scroll.querySelector(`[data-msg="${CSS.escape(msgId)}"]`)
   if (!row) return
   row.scrollIntoView({ block: 'center' })
@@ -255,7 +258,7 @@ function revealMessage(msgId) {
  * as a new question (not into a running turn, nor to a background task).
  * @returns {boolean} false when the agent can't take it now
  */
-function ask(text, { via = null as string | null, images = [] as Array<{ id: string }> } = {}) {
+function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
   if ((!text && !images.length) || setupView(state.info) || state.switching) return false
   if (images.length) return askWithImages(text, images, via)
   // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
@@ -285,7 +288,7 @@ const IMAGES_WAIT = '助手正在工作，图片等这一轮结束再发'
 const IMAGES_NOT_TO_TASKS = '图片只能发在这里的对话里，不能交给后台任务'
 
 /** A question with pictures: only as the next question of the conversation on screen. */
-function askWithImages(text, images, via) {
+function askWithImages(text: string, images: Array<{ id: string }>, via: string | null) {
   if (mentionedTask(state, text)) {
     historyActions.showToast(IMAGES_NOT_TO_TASKS)
     return false
@@ -310,7 +313,7 @@ let afterTurn: string[] = []
  * Should that turn have just ended, the words go as the next question; should they not get through at all,
  * they stay in the thread marked as not sent.
  */
-function steer(text, via) {
+function steer(text: string, via: string | null) {
   dispatch({ type: 'user_steer', text, via })
   // The words just said, the last message now (user_steer above).
   const id = state.messages.at(-1)?.id
@@ -328,7 +331,7 @@ function steer(text, via) {
   return true
 }
 
-function resend(text) {
+function resend(text: string) {
   dispatch({ type: 'steer_resent', at: Date.now() })
   api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
 }
@@ -340,8 +343,11 @@ function sendAfterTurn() {
   resend(text)
 }
 
+/** What the user answers to each question: the options picked, and words of their own. */
+type Answers = Array<{ id: string, selected: string[], custom?: string }>
+
 /** Answers the agent's open question; the reply shows at once, like an approval. */
-function answer(answers) {
+function answer(answers: Answers) {
   const question = state.question
   if (!question) return
   dispatch({ type: 'question_answered', questionId: question.questionId, answers, at: Date.now() })
@@ -350,7 +356,7 @@ function answer(answers) {
     .catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
 }
 
-async function provideSecrets(values) {
+async function provideSecrets(values: Record<string, string> | null) {
   const secret = state.secret
   if (!secret) return
   try {
@@ -375,7 +381,7 @@ const modelActions = createModelActions({ api, getState: () => state, dispatch, 
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
 /** Emptying or moving the pictures folder; null back means the user picked no folder. */
-async function imagesChange(run, done) {
+async function imagesChange(run: () => Promise<unknown>, done: string) {
   dispatch({ type: 'images_busy' })
   try {
     const usage = await run()
@@ -388,7 +394,7 @@ async function imagesChange(run, done) {
 }
 
 /** What a toast's button does. */
-const TOAST_ACTIONS = {
+const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>) => unknown>> = {
   'open-profile': () => memoryActions.openProfile(),
   'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
   'open-settings': () => handlers.openSettings(),
@@ -406,11 +412,11 @@ const handlers = {
   undoMove: () => taskActions.undoMove(),
   /** 放到后台, beside a turn the agent said will take long (view/thread.js offerRow). */
   moveToBackground: () => taskActions.moveToBackground(),
-  stopTask: (taskId) => taskActions.stopTask(taskId),
-  closeTask: (taskId) => taskActions.closeTask(taskId),
-  pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),
+  stopTask: (taskId: string) => taskActions.stopTask(taskId),
+  closeTask: (taskId: string) => taskActions.closeTask(taskId),
+  pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),
   /** A task's report in the thread, put away (view/thread.js reportCard). */
-  dismissReport: (taskId) => taskActions.dismissReport(taskId),
+  dismissReport: (taskId: string) => taskActions.dismissReport(taskId),
   /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
   async startInBackground() {
     const text = dom.input.value.trim()
@@ -423,15 +429,15 @@ const handlers = {
     return undefined
   },
   /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. 「#name …」 still works too. */
-  followUpTask(taskId) {
+  followUpTask(taskId: string) {
     handlers.openTasks(taskId)
     dom.tasksPage.querySelector<HTMLTextAreaElement>('.tp-input')?.focus()
   },
   /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
-  resumeUnfinished: (taskId) => taskActions.resumeUnfinished(taskId),
-  forgetUnfinished: (taskId) => taskActions.forgetUnfinished(taskId),
-  submitTaskAnswer: (taskId) => taskActions.submitTaskAnswer(taskId),
-  skipTaskQuestion: (taskId) => taskActions.skipTaskQuestion(taskId),
+  resumeUnfinished: (taskId: string) => taskActions.resumeUnfinished(taskId),
+  forgetUnfinished: (taskId: string) => taskActions.forgetUnfinished(taskId),
+  submitTaskAnswer: (taskId: string) => taskActions.submitTaskAnswer(taskId),
+  skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     // 「#name 」 with no words yet (接着问 just wrote it): nothing to send, to the task or anywhere else.
@@ -461,7 +467,7 @@ const handlers = {
   }, '图片已清空'),
   moveImages: () => imagesChange(() => api.moveImages(), '图片已经搬过去了'),
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
-  pickOption(id, label) {
+  pickOption(id: string, label: string) {
     const question = state.question
     if (!question) return
     const only = question.questions.length === 1 && !question.questions[0].multiSelect
@@ -474,19 +480,19 @@ const handlers = {
     dom.input.value = ''
   },
   /** The card closes once the main process has the keys; a check that fails keeps it open and says why. */
-  submitSecrets: (values) => provideSecrets(values),
+  submitSecrets: (values: Record<string, string>) => provideSecrets(values),
   declineSecrets: () => provideSecrets(null),
   skipQuestion() {
-    if (state.question) answer(state.question.questions.map((item) => ({ id: item.id, selected: [] })))
+    if (state.question) answer(state.question.questions.map((item: QuestionItem) => ({ id: item.id, selected: [] })))
   },
-  toastAction(toast) {
+  toastAction(toast: NonNullable<State['toast']>) {
     dispatch({ type: 'toast_hide', key: toast.key })
-    TOAST_ACTIONS[toast.action?.kind]?.(toast)
+    TOAST_ACTIONS[toast.action?.kind ?? '']?.(toast)
   },
   cancel() {
     api.cancel().catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   },
-  respond(requestId, optionId) {
+  respond(requestId: string, optionId: string | null) {
     dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
     api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   },
@@ -508,7 +514,7 @@ const handlers = {
     return undefined
   },
   /** 回到这个话题 on an earlier topic, and 撤销 on a new one: the agent goes on from that segment. */
-  async resumeTopic(segmentId) {
+  async resumeTopic(segmentId: string) {
     if (state.switching) return undefined
     if (isBusy(state)) return historyActions.showToast('助手正在工作，等这一轮结束再回到那个话题')
     dispatch({ type: 'session_switching' })
@@ -526,7 +532,7 @@ const handlers = {
   toggleTopicMenu: () => dispatch({ type: 'topic_menu', open: !state.topic.menu }),
   /** The permission picker by the input (view/permission-picker.js): another level restarts dsh on this conversation. */
   togglePermissionMenu: () => dispatch({ type: 'permission_menu', open: !state.settings.permissionMenu }),
-  async setPermission(level) {
+  async setPermission(level: string) {
     if (level === state.settings.permission) return dispatch({ type: 'permission_menu', open: false })
     dispatch({ type: 'permission_busy' })
     try {
@@ -551,19 +557,19 @@ const handlers = {
   },
   closeSettings: () => dispatch({ type: 'settings_close' }),
   /** The page under the title bar: on the page asked for, or on the one last shown (hub-state.js). */
-  openHubPage: (page) => HUB_OPENERS[page]?.(),
+  openHubPage: (page: string) => HUB_OPENERS[page]?.(),
   openHub: () => handlers.openHubPage(state.hub.last),
   /** ← 返回, Esc, or the 关于你 icon again: back to the conversation. */
   closeHub: () => dispatch({ type: 'hub_close' }),
   /** The 后台 page, on `taskId` or the one it was on (view/tasks-page.js). */
-  openTasks: (taskId = null) => dispatch({ type: 'tasks_page_open', taskId }),
-  selectTask: (taskId) => dispatch({ type: 'tasks_page_select', taskId }),
+  openTasks: (taskId: string | null = null) => dispatch({ type: 'tasks_page_open', taskId }),
+  selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   /**
    * Typed on the 后台 page: the answer while the task asks, into its turn while it works, its next question
    * once it has ended.
    */
-  sendToTask(taskId, text) {
+  sendToTask(taskId: string, text: string) {
     const task = state.tasks.list.find((entry) => entry.id === taskId)
     if (!task) return
     if (task.question) taskActions.typeTaskAnswer(taskId, text)
@@ -571,7 +577,7 @@ const handlers = {
     else taskActions.askTask(taskId, text)
   },
   toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
-  async setDeskIsland(on) {
+  async setDeskIsland(on: boolean) {
     try {
       dispatch({ type: 'settings_loaded', view: await api.setDeskIsland(on) })
     } catch (err) {
@@ -586,50 +592,53 @@ const handlers = {
       dispatch({ type: 'settings_failed', message: errorMessage(err) })
     }
   },
-  saveKey: (value) => applySettingsChange(() => api.saveApiKey(value), saveNotice),
+  saveKey: (value: string) => applySettingsChange(() => api.saveApiKey(value), saveNotice),
   clearKey: () => applySettingsChange(() => api.clearApiKey(), () => '已清除保存的 key'),
   togglePicker: () => dispatch({ type: 'picker_toggle' }),
-  async setConfig(configId, value) {
+  async setConfig(configId: string, value: string) {
     try {
       dispatch({ type: 'config_applied', info: await api.setConfig(configId, value) })
     } catch (err) {
       dispatch({ type: 'error', message: `切换失败：${errorMessage(err)}` })
     }
   },
-  openDrawer(tab) {
+  openDrawer(tab: string) {
     dispatch({ type: 'open_drawer', tab })
     if (tab === 'files') filesActions.loadFiles()
   },
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
-  islandAction: (action) => ISLAND_ACTIONS[action?.kind]?.(action),
+  islandAction: (action: IslandAction) => ISLAND_ACTIONS[action?.kind ?? '']?.(action),
   /** The earlier part of the timeline, a page more (the button at its top). */
   loadEarlier: () => timelineActions.loadEarlier(),
   /** The working directory: the chip under the input, its menu, and the question the first time (view/workdir.js). */
-  pickWorkDir: (dir) => workDirActions.switchTo(dir),
+  pickWorkDir: (dir: string) => workDirActions.switchTo(dir),
   chooseWorkDir: () => workDirActions.choose(),
   confirmWorkDir: () => workDirActions.confirm(),
   cancelWorkDir: () => workDirActions.cancelConfirm(),
   closeWorkDirMenu: () => workDirActions.closeMenu(),
   revealWorkDir: () => workDirActions.reveal(),
   /** A link in an answer opens in the browser (or mail app), never inside the window. */
-  openLink: (url) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
+  openLink: (url: string) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
 }
 
 /** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */
-const HUB_OPENERS = {
+const HUB_OPENERS: Readonly<Record<string, () => unknown>> = {
   search: () => handlers.openSearch(),
   profile: () => handlers.openProfile(),
   settings: () => handlers.openSettings(),
 }
 
-function saveNotice(info) {
+function saveNotice(info: AgentInfo | null | undefined) {
   if (info?.mode === 'live') return `已保存并连接 · ${info.model || 'DeepSeek'}`
   if (info?.mode === 'setup') return `已保存，但还不能连接：${setupView(info)?.title ?? ''}`
   return '已保存，但没能连上 DeepSeek Harness，详情见对话区'
 }
 
 /** Saving or clearing the key restarts the agent in the main process, so the conversation starts over. */
-async function applySettingsChange(request, noticeFor) {
+async function applySettingsChange(
+  request: () => Promise<{ settings: unknown, info?: AgentInfo | null }>,
+  noticeFor: (info: AgentInfo | null | undefined) => string,
+) {
   if (state.settings.busy) return
   dispatch({ type: 'settings_busy' })
   try {
@@ -641,7 +650,10 @@ async function applySettingsChange(request, noticeFor) {
   }
 }
 
-const EVENT_ACTIONS = {
+/** What the main process says of the agent (main.ts agent:event): its type, and what goes with it. */
+type AgentEvent = { type?: string, [field: string]: any }
+
+const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   ready: (event) => ({ type: 'ready', info: event.info }),
   config: (event) => ({ type: 'config_applied', info: event.info }),
   update: (event) => ({ type: 'acp_update', update: event.update, at: Date.now() }),
@@ -707,14 +719,15 @@ function wireHub() {
   dom.hubBack.addEventListener('click', () => handlers.closeHub())
   for (const nav of dom.hubNavs) {
     nav.addEventListener('click', () => {
-      if (hubPage(state) !== nav.dataset.page) handlers.openHubPage(nav.dataset.page)
+      const page = nav.dataset.page ?? ''
+      if (hubPage(state) !== page) handlers.openHubPage(page)
     })
   }
 }
 
 /** ⌘ on the Mac, Ctrl elsewhere (either works on both), with `key` and no Shift. */
-const isShortcut = (event, key) => (event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === key
-const isHistoryShortcut = (event) => (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'
+const isShortcut = (event: KeyboardEvent, key: string) => (event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === key
+const isHistoryShortcut = (event: KeyboardEvent) => (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'
 
 /** Escape closes the innermost thing that is open. */
 function closeTopmost() {
@@ -734,7 +747,7 @@ function wireDismissal() {
     // The path as it was at the click: a click that opens a menu re-renders its button, so by now the element
     // clicked (the model's name, the folder's) is no longer in the page and contains() would call it outside.
     const path = event.composedPath()
-    const within = (el) => path.includes(el)
+    const within = (el: EventTarget | null) => el !== null && path.includes(el)
     if (state.island && !within(dom.island)) dispatch({ type: 'close_island' })
     if (state.picker && !within(dom.modelArea)) dispatch({ type: 'picker_close' })
     if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
@@ -764,7 +777,7 @@ function wireDismissal() {
   })
 }
 
-const carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+const carriesFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
 /** Only pictures the model reads are dragged: they go into the input, not to the working directory. */
 const carriesImages = (event: DragEvent) => {
   const items = Array.from(event.dataTransfer?.items ?? [])
@@ -777,7 +790,7 @@ const carriesImages = (event: DragEvent) => {
  * what letting go will do while it is over it.
  */
 function wireFolderDrop() {
-  const showing = (kind) => {
+  const showing = (kind: 'folder' | 'images' | null) => {
     document.body.classList.toggle('drop-folder', kind === 'folder')
     document.body.classList.toggle('drop-images', kind === 'images')
   }
@@ -812,16 +825,16 @@ function labelShortcuts() {
 }
 
 /** An MCP server that would not start is left out; say so once per connection instead of failing. */
-function reportMcpProblems(info) {
-  const dropped = info?.mcp?.dropped ?? []
+function reportMcpProblems(info: AgentInfo | undefined) {
+  const dropped: Array<{ name: string }> = info?.mcp?.dropped ?? []
   if (dropped.length === 0) return
   const names = dropped.map((item) => (item.name === 'memory' ? '记忆工具' : `「${item.name}」`)).join('、')
   historyActions.showToast(`${names} 没能连上，已暂时跳过`, { action: { label: '查看', kind: 'open-settings' }, ms: 8000 })
 }
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
-function handleEvent(event) {
-  const toAction = EVENT_ACTIONS[event?.type]
+function handleEvent(event: AgentEvent) {
+  const toAction = EVENT_ACTIONS[event?.type ?? '']
   if (toAction) dispatch(toAction(event))
   if (event?.type === 'ready') reportMcpProblems(event.info)
   if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
