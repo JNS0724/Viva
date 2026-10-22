@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('agent', {
   keepImage: (bytes) => ipcRenderer.invoke('images:keep', bytes),
   /** Settings' 贴过的图片: its size and place; open, empty or move it. */
   imagesUsage: () => ipcRenderer.invoke('images:usage'),
+  /** 完全 / 自动 / 工作区修改 / 仅可查看: dsh restarts with it on this conversation; { settings, info }. */
+  setPermission: (level) => ipcRenderer.invoke('settings:set-permission', level),
   openImagesFolder: () => ipcRenderer.invoke('images:open-folder'),
   clearImages: () => ipcRenderer.invoke('images:clear'),
   moveImages: () => ipcRenderer.invoke('images:move'),

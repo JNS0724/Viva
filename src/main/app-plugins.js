@@ -30,7 +30,11 @@ export const PERSONA = Object.freeze({
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1 })
+export const CONTRACTS = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1 })
+/** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
+export const DEFAULT_PERMISSION = 'workspace-write'
+/** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
+export const PERMISSION_LEVELS = Object.freeze(['danger-full-access', 'auto', 'workspace-write', 'read-only'])
 
 /**
  * config: built from the app's data directory, written into the profile for the plugin.
@@ -48,6 +52,12 @@ export const APP_PLUGINS = Object.freeze([
   { name: 'viva-config', dir: 'plugins/config', contract: 'config', config: () => ({}) },
   { name: 'viva-steer', dir: 'plugins/steer', contract: 'steer', config: () => ({}) },
   { name: 'viva-fork', dir: 'plugins/fork', contract: 'fork', config: () => ({}) },
+  {
+    name: 'viva-permission', dir: 'plugins/permission', contract: 'permission',
+    config: ({ permission }) => ({ preset: permission ?? DEFAULT_PERMISSION }),
+    // 自动 is dsh's experimental Auto review; it reviews only sessions set to it.
+    stock: [{ id: 'auto-review', name: '@deepseek-ai/dsh-experimental-auto-review' }],
+  },
 ])
 
 /** The dsh version installed with the app; plugins pin their dsh peers to it. */
@@ -85,12 +95,12 @@ export function pluginProblem(plugin, { dir, dshVersion }) {
  * The plugins to put in the profile, with their config, and the ones left out with the reason.
  * @returns {{ plugins: Array<{ name: string, dir: string, config: object, stock: Array<{ id: string, name: string }> }>, problems: Array<{ name: string, contract: string, problem: string }> }}
  */
-export function resolvePlugins({ appRoot, userData, dshVersion, plugins = APP_PLUGINS }) {
+export function resolvePlugins({ appRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS }) {
   return plugins.reduce(({ plugins: usable, problems }, plugin) => {
     const dir = path.join(appRoot, plugin.dir)
     const problem = pluginProblem(plugin, { dir, dshVersion })
     return problem
       ? { plugins: usable, problems: [...problems, { name: plugin.name, contract: plugin.contract, problem }] }
-      : { plugins: [...usable, { name: plugin.name, dir, config: plugin.config({ userData }), stock: plugin.stock ?? [] }], problems }
+      : { plugins: [...usable, { name: plugin.name, dir, config: plugin.config({ userData, permission }), stock: plugin.stock ?? [] }], problems }
   }, { plugins: [], problems: [] })
 }

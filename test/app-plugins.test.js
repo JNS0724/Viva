@@ -35,8 +35,14 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-config', {}],
     ['viva-steer', {}],
     ['viva-fork', {}],
+    ['viva-permission', { preset: 'workspace-write' }],
   ])
   assert.deepEqual(plugins.find((plugin) => plugin.name === 'viva-questions').stock.map((entry) => entry.name), ['@deepseek-ai/dsh-tool-ask-user'])
+  // The level the user picked goes to viva-permission, with dsh's Auto review loaded for 自动.
+  const auto = resolvePlugins({ appRoot: ROOT, userData: '/data', dshVersion: installedDshVersion(ROOT), permission: 'auto' })
+  const permission = auto.plugins.find((plugin) => plugin.name === 'viva-permission')
+  assert.deepEqual(permission.config, { preset: 'auto' })
+  assert.deepEqual(permission.stock.map((entry) => entry.name), ['@deepseek-ai/dsh-experimental-auto-review'])
   assert.match(PERSONA.prefix, /个人工作助手/)
   assert.match(PERSONA.prefix, /ask_user_question/, 'the model is told when to ask instead of guessing')
   assert.match(PERSONA.prefix, /memory_remember/, 'and to keep what the user told it')

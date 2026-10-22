@@ -3,6 +3,7 @@ import { IMAGE_TYPES } from '../shared/images.js'
 import { createDraftImages } from './draft-images.js'
 import { insertText, pastedParts } from './paste.js'
 import { markAllGone, pictureKept } from './view/pictures.js'
+import { PERMISSION_LEVELS } from './view/permission-picker.js'
 import { createExtensionActions } from './extension-actions.js'
 import { createFilesActions } from './files-actions.js'
 import { createHistoryActions } from './history-actions.js'
@@ -50,6 +51,8 @@ const dom = {
   workdirArea: document.querySelector('.workdir-area'),
   /** 本话题 · N 条 · 已用 X% by the input, and its menu (view/topic-label.js). */
   ctxArea: byId('ctx-area'),
+  /** What the assistant may do without asking, by the input (view/permission-picker.js). */
+  permArea: byId('perm-area'),
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
   rewindConfirm: byId('rewind-confirm-root'),
@@ -160,6 +163,15 @@ function saveHistory() {
       historyActions.refreshIfOpen()
     })
     .catch((err) => console.error('[history] could not save the conversation:', errorMessage(err)))
+}
+
+/** At launch: the permission level picked, shown by the input (the rest of settings is read when they open). */
+async function loadSettings() {
+  try {
+    dispatch({ type: 'settings_loaded', view: await api.getSettings() })
+  } catch (err) {
+    console.error('[settings] could not read them:', errorMessage(err))
+  }
 }
 
 async function loadHistory() {
@@ -500,6 +512,21 @@ const handlers = {
     return undefined
   },
   toggleTopicMenu: () => dispatch({ type: 'topic_menu', open: !state.topic.menu }),
+  /** The permission picker by the input (view/permission-picker.js): another level restarts dsh on this conversation. */
+  togglePermissionMenu: () => dispatch({ type: 'permission_menu', open: !state.settings.permissionMenu }),
+  async setPermission(level) {
+    if (level === state.settings.permission) return dispatch({ type: 'permission_menu', open: false })
+    dispatch({ type: 'permission_busy' })
+    try {
+      const { settings } = await api.setPermission(level)
+      dispatch({ type: 'permission_done', level: settings.permission })
+      historyActions.showToast(`权限已换成「${PERMISSION_LEVELS.find((item) => item.value === settings.permission)?.name ?? settings.permission}」`)
+    } catch (err) {
+      dispatch({ type: 'permission_done', level: null })
+      historyActions.showToast(errorMessage(err))
+    }
+    return undefined
+  },
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
@@ -684,6 +711,7 @@ function closeTopmost() {
   else if (state.workDir.confirm) workDirActions.cancelConfirm()
   else if (state.workDir.menu) workDirActions.closeMenu()
   else if (state.topic.menu) dispatch({ type: 'topic_menu', open: false })
+  else if (state.settings.permissionMenu) dispatch({ type: 'permission_menu', open: false })
   else if (state.island) dispatch({ type: 'close_island' })
   else if (hubPage(state)) dispatch({ type: 'hub_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
@@ -699,6 +727,7 @@ function wireDismissal() {
     if (state.picker && !within(dom.modelArea)) dispatch({ type: 'picker_close' })
     if (state.workDir.menu && !within(dom.workdirArea)) workDirActions.closeMenu()
     if (state.topic.menu && !within(dom.ctxArea)) dispatch({ type: 'topic_menu', open: false })
+    if (state.settings.permissionMenu && !within(dom.permArea)) dispatch({ type: 'permission_menu', open: false })
     if (state.files.menu && !event.composedPath().some((el) => el.classList?.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
   })
   document.addEventListener('keydown', (event) => {
@@ -812,7 +841,7 @@ async function boot() {
     if (taskActions.hold(event)) return undefined
     return handleEvent(event)
   })
-  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh()])
+  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings()])
   // What the last launch left going in the background, offered to take up or let go.
   await taskActions.loadUnfinished()
   await timelineActions.loadEarlier()

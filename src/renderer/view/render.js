@@ -16,6 +16,7 @@ import { renderRewindConfirm } from './rewind.js'
 import { renderSettings } from './settings.js'
 import { renderThread } from './thread.js'
 import { renderTopicLabel } from './topic-label.js'
+import { renderPermissionPicker } from './permission-picker.js'
 import { renderWorkDir } from './workdir.js'
 
 let renderedSettings = []
@@ -46,6 +47,19 @@ function renderTopicLabelIfChanged(area, state, handlers) {
   if (inputs.every((value, i) => value === renderedTopicInputs[i])) return
   renderedTopicInputs = inputs
   renderTopicLabel(area, state, handlers, { ready, busy: isBusy(state) })
+}
+
+let renderedPermissionInputs = []
+
+/** The permission picker by the input: redrawn when the level, its menu or whether a turn runs changes. */
+function renderPermissionIfChanged(area, state, handlers) {
+  if (!area) return
+  const ready = !setupView(state.info) && state.info.mode !== 'connecting'
+  const { permission, permissionMenu, permissionBusy } = state.settings
+  const inputs = [permission, permissionMenu, permissionBusy, ready, isBusy(state)]
+  if (inputs.every((value, i) => value === renderedPermissionInputs[i])) return
+  renderedPermissionInputs = inputs
+  renderPermissionPicker(area, state.settings, handlers, { ready, busy: isBusy(state) })
 }
 
 function renderSettingsIfChanged(container, state, handlers) {
@@ -169,6 +183,7 @@ function renderComposer(dom, state, handlers) {
   renderRouteHint(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   renderTopicLabelIfChanged(dom.ctxArea, state, handlers)
+  renderPermissionIfChanged(dom.permArea, state, handlers)
   dom.toggleDrawer.setAttribute('aria-pressed', String(Boolean(state.drawer)))
   renderModelPicker(dom, state, handlers)
 }

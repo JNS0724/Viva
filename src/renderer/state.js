@@ -78,6 +78,10 @@ export const initialState = Object.freeze({
     images: null,
     imagesConfirm: false,
     imagesBusy: false,
+    /** What the assistant may do without asking (view/permission-picker.js), its menu, and a switch under way. */
+    permission: 'workspace-write',
+    permissionMenu: false,
+    permissionBusy: false,
   },
 })
 
@@ -388,6 +392,10 @@ const ACTION_HANDLERS = {
   settings_close: (state) => ({ ...state, settings: { ...state.settings, open: false } }),
   settings_loaded: (state, { view }) => ({ ...state, settings: { ...state.settings, ...view, loaded: true } }),
   settings_busy: (state) => ({ ...state, settings: { ...state.settings, busy: true, error: null, notice: null } }),
+  /** The permission picker by the input: its menu, a switch under way (dsh restarts), and the level once switched. */
+  permission_menu: (state, { open }) => (state.settings.permissionMenu === open ? state : { ...state, settings: { ...state.settings, permissionMenu: open } }),
+  permission_busy: (state) => ({ ...state, settings: { ...state.settings, permissionBusy: true, permissionMenu: false } }),
+  permission_done: (state, { level }) => ({ ...state, settings: { ...state.settings, permission: level ?? state.settings.permission, permissionBusy: false } }),
   /** 贴过的图片: emptying asks first; while it is emptied or moved its buttons wait; then its new size. */
   images_confirm: (state, { open }) => ({ ...state, settings: { ...state.settings, imagesConfirm: open } }),
   images_busy: (state) => ({ ...state, settings: { ...state.settings, imagesBusy: true, imagesConfirm: false } }),
