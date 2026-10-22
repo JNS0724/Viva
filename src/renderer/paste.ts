@@ -8,16 +8,16 @@ import { IMAGE_TYPES } from '../shared/images.ts'
 const BLOCK_END = /<\/(p|div|li|tr|h[1-6]|blockquote|pre|section|article)>/gi
 const LINE_BREAK = /<br\s*\/?>/gi
 const DROPPED = /<(script|style|head|title)[^>]*>[\s\S]*?<\/\1>/gi
-const ENTITIES = Object.freeze({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' })
+const ENTITIES: Readonly<Record<string, string>> = Object.freeze({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' })
 
-function decodeEntity(whole, name) {
+function decodeEntity(whole: string, name: string) {
   if (name[0] !== '#') return ENTITIES[name.toLowerCase()] ?? whole
   const code = name[1].toLowerCase() === 'x' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10)
   return Number.isFinite(code) && code <= 0x10ffff ? String.fromCodePoint(code) : whole
 }
 
 /** The words of an HTML fragment, a line for each block, without the markup. */
-export function htmlToText(html) {
+export function htmlToText(html: unknown) {
   return String(html ?? '')
     .replace(DROPPED, '')
     .replace(LINE_BREAK, '\n')
@@ -44,10 +44,10 @@ export function pastedParts<F extends { type: string }>(data: { files?: ArrayLik
 }
 
 /** Puts `text` where the caret is in a text field, as typing it would, so undo and the field's own events follow. */
-export function insertText(field, text) {
+export function insertText(field: HTMLInputElement | HTMLTextAreaElement, text: string | null) {
   if (!text) return
   field.focus()
   if (field.ownerDocument.execCommand?.('insertText', false, text)) return
-  field.setRangeText(text, field.selectionStart, field.selectionEnd, 'end')
+  field.setRangeText(text, field.selectionStart ?? 0, field.selectionEnd ?? 0, 'end')
   field.dispatchEvent(new Event('input', { bubbles: true }))
 }

@@ -31,10 +31,10 @@ let images: Array<{ id: string, size: number }> = []
 let error: string | null = null
 let dropping = 0
 
-const messageOf = (err) => String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+const messageOf = (err: unknown) => String((err as Error | null)?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
 /** Pictures pasted into the island's input: kept at once, shown as chips, sent with the words. */
-async function addImages(pasted) {
+async function addImages(pasted: readonly File[]) {
   for (const file of pasted) {
     if (images.length >= IMAGE_LIMITS.perMessage) {
       error = `一次最多 ${IMAGE_LIMITS.perMessage} 张图`
@@ -71,13 +71,13 @@ const input = createIslandInput({
     if (parts.images.length) addImages(parts.images)
   },
 })
-const island = createIsland('desk', (action) => api.act(action), { input, shortcut: api.shortcut })
+const island = createIsland('desk', (action: Args<'island:act'>[0]) => api.act(action), { input, shortcut: api.shortcut })
 const stage = document.getElementById('desk')
 if (!stage) throw new Error('desk.html has no #desk')
 stage.append(island.el)
 
 /** Why the input cannot take a question now, if it cannot. */
-function busyOf(view) {
+function busyOf(view: { form: string }) {
   return view.form === 'pending' ? { text: '还没连上，先打开窗口看看' } : null
 }
 
@@ -106,7 +106,7 @@ function show() {
   if (view.form === 'input' && !view.busy && document.activeElement !== input.field) input.field.focus()
 }
 
-async function ask(text) {
+async function ask(text: string) {
   error = null
   const result = await api.ask(text, files.map((file) => file.path), images.map(({ id }) => ({ id })))
   if (result.ok) {
@@ -203,7 +203,7 @@ island.el.addEventListener('contextmenu', (event) => {
 // Files dragged from any app onto the island: it opens to take them, and dropping opens the input with them.
 // While files are over it the page hears dragover again and again; when that stops, they have gone.
 const DRAG_GONE_MS = 300
-const hasFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
 let dropTimer: ReturnType<typeof setTimeout> | undefined
 const stopDropping = () => {
   clearTimeout(dropTimer)

@@ -14,21 +14,32 @@ const RECENT_STEPS = 4
 const DETAIL_LIMIT = 60
 const PREVIEW_LIMIT = 40
 
-/**
- * @typedef {'pending' | 'idle' | 'working' | 'waiting' | 'asking' | 'done' | 'error'} IslandForm
- * @typedef {{ title: string, tone: string }} IslandStep
- * @typedef {{
- *   form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
- *   detail?: string, action?: string, startedAt?: number, steps?: number, elapsedMs?: number,
- *   permission?: { requestId: string, title: string, command: string, options: { optionId: string, name: string, role: string }[] },
- *   question?: { questionId: string, id: string, header?: string, text: string, options: string[], skippable?: boolean },
- * }} IslandView
- */
+type IslandForm = 'pending' | 'idle' | 'working' | 'waiting' | 'asking' | 'done' | 'error'
+type IslandStep = { title: string, tone: string }
+type IslandPermission = { requestId: string, title: string, command: string, options: Array<{ optionId: string, name: string, role: string }> }
+type IslandQuestion = { questionId: string, id: string, header?: string, text: string, options: string[], skippable?: boolean }
+/** A task in the background as the island lists it. */
+type IslandTask = {
+  id: string, title: string, status: string, now?: string | null, startedAt?: number,
+  permission?: IslandPermission, question?: IslandQuestion,
+}
+type IslandBackground = { count: number, waiting: number, done: number, items: IslandTask[], alsoWaiting?: number }
+export type IslandView = {
+  form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
+  detail?: string, action?: string | null, startedAt?: number | null, steps?: number, elapsedMs?: number,
+  /** The task it speaks for, when a task (not the conversation) has the island. */
+  task?: string,
+  movable?: boolean, offered?: boolean,
+  permission?: IslandPermission,
+  question?: IslandQuestion,
+  background?: IslandBackground,
+}
+type IslandBase = Pick<IslandView, 'mood' | 'recent'>
 
-const recentSteps = (state) => traceItems(state).slice(-RECENT_STEPS).map(({ title, tone }) => ({ title, tone }))
+const recentSteps = (state: State): IslandStep[] => traceItems(state).slice(-RECENT_STEPS).map(({ title, tone }: IslandStep) => ({ title, tone }))
 
 /** The first line of an answer as plain text: what the island shows of it once the turn is done. */
-export function answerPreview(text) {
+export function answerPreview(text: unknown) {
   const line = String(text ?? '').split('\n').map((item) => item.trim()).find(Boolean) ?? ''
   const plain = line
     .replace(/^(#{1,6}\s+|>\s*|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/, '')
@@ -38,13 +49,13 @@ export function answerPreview(text) {
 }
 
 /** The approval as the thread's card has it (prompt-card.js), with its command on one line instead of all its arguments. */
-function permissionView(permission) {
+function permissionView(permission: Untyped): IslandPermission {
   const { title, command } = permissionCard(permission)
   return {
     requestId: permission.requestId,
     title,
     command,
-    options: promptButtons(permission.options).map((option) => ({ optionId: option.optionId, name: optionName(option), role: option.role })),
+    options: promptButtons(permission.options).map((option: PermissionOption & { role: string }) => ({ optionId: option.optionId, name: optionName(option), role: option.role })),
   }
 }
 
@@ -52,7 +63,7 @@ function permissionView(permission) {
  * Only one question with one choice can be answered from the island; for anything else it opens the window.
  * Any question may be skipped from there, as from the thread.
  */
-function questionView(question) {
+function questionView(question: { questionId: string, questions: readonly QuestionItem[] }): IslandQuestion {
   const [first] = question.questions
   const single = question.questions.length === 1 && !first.multiSelect
   return {
@@ -65,12 +76,12 @@ function questionView(question) {
   }
 }
 
-function lastAnswer(state) {
-  const message = state.messages.findLast((item) => item.role === 'assistant')
+function lastAnswer(state: State) {
+  const message = state.messages.findLast((item: ThreadMessage) => item.role === 'assistant')
   return message ? answerPreview(message.text) : ''
 }
 
-function afterTurn(state, base) {
+function afterTurn(state: State, base: IslandBase): IslandView {
   const receipt = state.lastReceipt
   if (receipt.stopReason === 'cancelled') return { ...base, form: 'idle', tone: 'idle', label: '已停止', detail: state.info.model || '' }
   return { ...base, form: 'done', tone: 'done', label: '已完成', elapsedMs: receipt.ms, detail: lastAnswer(state) }
@@ -81,10 +92,10 @@ function afterTurn(state, base) {
  * (still there until closed, so the 后台 page stays a click away), and a line each for when the island opens.
  * null with none, so the island is as it always was.
  */
-function backgroundOf(state) {
-  const live = liveTasks(state)
+function backgroundOf(state: State): IslandBackground | null {
+  const live: BackgroundTask[] = liveTasks(state)
   if (!state.tasks.list.length && !state.tasks.finished) return null
-  const items = live
+  const items: IslandTask[] = live
     .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
     .map((task) => ({
       id: task.id, title: task.title, status: task.status, now: task.now, startedAt: task.startedAt,
@@ -95,13 +106,9 @@ function backgroundOf(state) {
   return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, done, items }
 }
 
-const TASK_ENDED = { done: ['做完了', 'done'], stopped: ['停下了', 'idle'], error: ['出错了', 'error'] }
+const TASK_ENDED: Readonly<Record<string, readonly [said: string, tone: string]>> = { done: ['做完了', 'done'], stopped: ['停下了', 'idle'], error: ['出错了', 'error'] }
 
-/**
- * @param {object} state the renderer state (state.js)
- * @returns {IslandView}
- */
-export function islandView(state) {
+export function islandView(state: State): IslandView {
   const background = backgroundOf(state)
   const view = mainView(state, background)
   if (!background) return view
@@ -115,8 +122,8 @@ export function islandView(state) {
  * What the island's head says: the conversation on screen, unless a task waits on the user and it does not
  * (then the task takes the whole island, named), or a task has just ended while it is quiet.
  */
-function mainView(state, background) {
-  const base = { mood: catMood(state), recent: recentSteps(state) }
+function mainView(state: State, background: IslandBackground | null): IslandView {
+  const base: IslandBase = { mood: catMood(state), recent: recentSteps(state) }
   if (state.phase === 'waiting' && state.permission) {
     return { ...base, form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, permission: permissionView(state.permission) }
   }

@@ -45,7 +45,7 @@ const withMemory = (state: State, changes: Partial<State['memory']>): State => (
 const withExtensions = (state: State, changes: Partial<State['extensions']>): State => ({ ...state, extensions: { ...state.extensions, ...changes } })
 
 /** @param {{ profile: object }} memory */
-export const isProfileEmpty = (memory) => Object.keys(memory.profile).length === 0
+export const isProfileEmpty = (memory: { profile: object }) => Object.keys(memory.profile).length === 0
 
 export const PERSONAL_ACTIONS: Record<string, Reducer> = {
   /** A reload keeps the hits of a search that is still typed. */
@@ -95,7 +95,7 @@ export const PERSONAL_ACTIONS: Record<string, Reducer> = {
   }),
   memory_onboarding: (state, { status }) => withMemory(state, { onboarding: status }),
   memory_docs_added: (state, { docs }) => withMemory(state, {
-    docs: [...state.memory.docs, ...docs.filter((doc) => !state.memory.docs.some((known) => known.path === doc.path))],
+    docs: [...state.memory.docs, ...docs.filter((doc: { path: string }) => !state.memory.docs.some((known) => known.path === doc.path))],
     busy: false,
   }),
 
