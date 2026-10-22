@@ -1,4 +1,4 @@
-import { MISSING } from './island-files.js'
+import { MISSING } from './island-files.ts'
 import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 
 /**

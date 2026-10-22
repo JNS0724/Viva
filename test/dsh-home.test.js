@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { adoptDshSessions } from '../src/main/dsh-migrate.js'
-import { removeTree } from '../src/main/remove-tree.js'
+import { removeTree } from '../src/main/remove-tree.ts'
 import { DSH_TIMEOUT_MS, startHarness } from './fixtures/dsh-harness.js'
 
 /** The real dsh, on the app's own runtime, with sessions brought over from another home. */

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { TITLEBAR_HEIGHT, devIcon, windowChrome, windowSize } from '../src/main/window-options.js'
+import { TITLEBAR_HEIGHT, devIcon, windowChrome, windowSize } from '../src/main/window-options.ts'
 
 test('macOS keeps its traffic lights, inset and centred in the shorter title bar', () => {
   const chrome = windowChrome('darwin')

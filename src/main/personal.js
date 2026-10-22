@@ -1,4 +1,4 @@
-import { activeHours } from './habits.js'
+import { activeHours } from './habits.ts'
 import { EXTRA_COMMAND_DIRS, resolveCommand, toAcpServers } from './mcp-config.js'
 
 /**

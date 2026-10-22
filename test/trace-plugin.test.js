@@ -6,7 +6,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { keptArguments, stepsFrom } from '../plugins/trace/lib/steps.js'
 import { openTraceDb } from '../plugins/trace/lib/store.js'
-import { readSessionTrace } from '../src/main/dsh-log.js'
+import { readSessionTrace } from '../src/main/dsh-log.ts'
 import { DSH_TIMEOUT_MS, eventually, startHarness } from './fixtures/dsh-harness.js'
 
 /** The trace plugin: what it keeps from dsh's events, its store, and the app reading it instead of dsh's log. */

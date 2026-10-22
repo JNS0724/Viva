@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { createTray } from '../src/main/tray.js'
+import { createTray } from '../src/main/tray.ts'
 
 /** A stand-in for Electron's Tray, Menu and nativeImage, recording what the tray was given. */
 function fakes() {

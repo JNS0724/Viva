@@ -1,5 +1,5 @@
-import { deskMenuTemplate } from './desk-menu.js'
-import { describeDropped, MISSING } from './island-files.js'
+import { deskMenuTemplate } from './desk-menu.ts'
+import { describeDropped, MISSING } from './island-files.ts'
 import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from './island-ipc.js'
 
 /**

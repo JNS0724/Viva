@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createTaskStore } from '../src/main/task-store.js'
+import { createTaskStore } from '../src/main/task-store.ts'
 
 /** Background tasks still going are kept on disk, so a later launch can offer to go on with them. */
 

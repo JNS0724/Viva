@@ -6,7 +6,7 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { createAcpBridge } from '../src/main/acp-bridge.js'
 import { adoptDshSessions, adoptDshSkills, projectKey, removeOwnProfiles } from '../src/main/dsh-migrate.js'
-import { CRASH_WINDOW_MS, dshEnv, dshHomeFor, dshRuntime, RESTART_DELAYS_MS, restartDelay } from '../src/main/dsh-runtime.js'
+import { CRASH_WINDOW_MS, dshEnv, dshHomeFor, dshRuntime, RESTART_DELAYS_MS, restartDelay } from '../src/main/dsh-runtime.ts'
 import { scratch } from './fixtures/scratch.js'
 
 test("dsh gets the user's environment without anything that steers dsh, then what the app sets", () => {

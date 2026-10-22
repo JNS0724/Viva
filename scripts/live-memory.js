@@ -18,8 +18,8 @@ import { createAcpBridge } from '../src/main/acp-bridge.js'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.js'
 import { DSH_PROFILE } from '../src/main/config.js'
 import { ensureDshProfile } from '../src/main/dsh-profile.js'
-import { dshEnv, dshRuntime } from '../src/main/dsh-runtime.js'
-import { removeTree } from '../src/main/remove-tree.js'
+import { dshEnv, dshRuntime } from '../src/main/dsh-runtime.ts'
+import { removeTree } from '../src/main/remove-tree.ts'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 /** The app's runtime: this script runs on the app's Electron as Node (or DSH_NODE), and so does dsh. */

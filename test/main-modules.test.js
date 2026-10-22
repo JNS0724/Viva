@@ -2,9 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { APP_ROOT, CODE_ROOT, dshLaunch, resolveConfig, rootsOf } from '../src/main/config.js'
-import { externalUrl } from '../src/main/links.js'
-import { createPermissionBroker } from '../src/main/permission-broker.js'
-import { currentModelName, describeConfig, describeError } from '../src/main/session-info.js'
+import { externalUrl } from '../src/main/links.ts'
+import { createPermissionBroker } from '../src/main/permission-broker.ts'
+import { currentModelName, describeConfig, describeError } from '../src/main/session-info.ts'
 
 const always = () => true
 const never = () => false

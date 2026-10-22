@@ -9,15 +9,14 @@ import path from 'node:path'
 export const NOT_A_FILE = '文件夹先不支持，请拖文件'
 export const MISSING = '找不到这个文件'
 
-/**
- * @param {string[]} paths absolute paths, as the system gave them for the drop
- * @returns {{ files: { path: string, name: string, size: number }[] } | { error: string }}
- */
-export function describeDropped(paths) {
-  const files = []
+export interface DroppedFile { path: string, name: string, size: number }
+
+/** @param paths absolute paths, as the system gave them for the drop */
+export function describeDropped(paths: readonly string[]): { files: DroppedFile[] } | { error: string } {
+  const files: DroppedFile[] = []
   for (const item of paths) {
     if (!path.isAbsolute(item)) return { error: MISSING }
-    let stat
+    let stat: fs.Stats
     try {
       stat = fs.statSync(item)
     } catch {

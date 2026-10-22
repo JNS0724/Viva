@@ -4,8 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
-import { parseSessionLog, readSessionTrace } from '../src/main/dsh-log.js'
-import { decompressZstdFrames, splitZstdFrames } from '../src/main/zstd-frames.js'
+import { parseSessionLog, readSessionTrace } from '../src/main/dsh-log.ts'
+import { decompressZstdFrames, splitZstdFrames } from '../src/main/zstd-frames.ts'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
 const event = (type, time, data) => JSON.stringify({ type, seq: time, time, data })

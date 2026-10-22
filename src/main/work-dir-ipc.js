@@ -1,4 +1,4 @@
-import { forgetDir, sameDir, withRecent, workDirProblem } from './work-dir.js'
+import { forgetDir, sameDir, withRecent, workDirProblem } from './work-dir.ts'
 
 /**
  * IPC for the working directory the user picks (single-conversation design). The window shows it and asks;

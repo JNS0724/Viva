@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { removeTree } from '../../src/main/remove-tree.js'
+import { removeTree } from '../../src/main/remove-tree.ts'
 
 /**
  * A temporary directory for one test, removed after it. `t.after` hooks run in the order they were added,

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deskLayout, DRAG_SIZE, dragBounds, homePoint, keepInside, pointOf, readPlaces, settle, withPlace } from '../src/main/desk-place.js'
+import { deskLayout, DRAG_SIZE, dragBounds, homePoint, keepInside, pointOf, readPlaces, settle, withPlace } from '../src/main/desk-place.ts'
 
 const mac = { x: 0, y: 25, width: 1440, height: 875 }
 const left = { x: -1920, y: 0, width: 1920, height: 1040 }

@@ -12,11 +12,8 @@ const DATA_FILES = Object.freeze(['history.db', 'memory.db', 'trace.db'])
 /** SQLite's write-ahead log and index travel with the database, or recent writes are lost. */
 const SQLITE_SIDECARS = Object.freeze(['', '-wal', '-shm'])
 
-/**
- * @param {{ userData: string, legacyDir: string }} dirs
- * @returns {string[]} the databases copied (none when there was nothing to bring or it is here already)
- */
-export function adoptLegacyData({ userData, legacyDir }) {
+/** @returns the databases copied (none when there was nothing to bring or it is here already) */
+export function adoptLegacyData({ userData, legacyDir }: { userData: string, legacyDir: string }): string[] {
   if (path.resolve(userData) === path.resolve(legacyDir) || !fs.existsSync(legacyDir)) return []
   fs.mkdirSync(userData, { recursive: true })
   return DATA_FILES.filter((name) => fs.existsSync(path.join(legacyDir, name)) && !fs.existsSync(path.join(userData, name)))

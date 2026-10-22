@@ -9,15 +9,21 @@ import path from 'node:path'
  */
 const FILE_VERSION = 1
 
-const isText = (value) => typeof value === 'string' && value.length > 0
-const isTask = (entry) => Boolean(entry) && typeof entry === 'object' && isText(entry.id) && isText(entry.segmentId) && isText(entry.title)
+/** A task as kept; task-ipc.js adds what else it needs (words, cwd, startedAt, endedAt, status). */
+export interface StoredTask { id: string, segmentId: string, title: string, [field: string]: any }
 
-/**
- * @param {{ file: string, onError?: (err: Error) => void }} options
- * @returns {{ list: () => object[], add: (task: object) => void, remove: (id: string) => void }}
- */
-export function createTaskStore({ file, onError = () => {} }) {
-  function read() {
+const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+const isTask = (entry: any): entry is StoredTask => Boolean(entry) && typeof entry === 'object' && isText(entry.id) && isText(entry.segmentId) && isText(entry.title)
+
+export interface TaskStore {
+  list: () => StoredTask[]
+  /** Kept once: the same task again replaces what was kept. */
+  add: (task: StoredTask) => void
+  remove: (id: string) => void
+}
+
+export function createTaskStore({ file, onError = () => {} }: { file: string, onError?: (err: Error) => void }): TaskStore {
+  function read(): StoredTask[] {
     try {
       const data = JSON.parse(fs.readFileSync(file, 'utf8'))
       return Array.isArray(data?.tasks) ? data.tasks.filter(isTask) : []
@@ -27,7 +33,7 @@ export function createTaskStore({ file, onError = () => {} }) {
     }
   }
 
-  function write(tasks) {
+  function write(tasks: StoredTask[]): void {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const tmp = `${file}.tmp`
     fs.writeFileSync(tmp, JSON.stringify({ version: FILE_VERSION, tasks }), { mode: 0o600 })
@@ -36,7 +42,6 @@ export function createTaskStore({ file, onError = () => {} }) {
 
   return {
     list: read,
-    /** Kept once: the same task again replaces what was kept. */
     add: (task) => write([...read().filter((entry) => entry.id !== task.id), task]),
     remove: (id) => write(read().filter((entry) => entry.id !== id)),
   }

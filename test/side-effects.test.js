@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sideEffectsOf } from '../src/main/side-effects.js'
+import { sideEffectsOf } from '../src/main/side-effects.ts'
 
 const tool = (at, name, args, status = 'completed') => ({ seq: at, at, kind: 'tool', callId: `c${at}`, name, args, status })
 

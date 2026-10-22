@@ -3,7 +3,7 @@
  * 「改了重发」). The agent forks to before that turn (the viva-fork plugin finds it by the words); the timeline
  * goes on in a new segment holding what came before it and the new words; the segment left behind folds there.
  */
-import { sideEffectsOf } from './side-effects.js'
+import { sideEffectsOf } from './side-effects.ts'
 
 const MAX_TEXT_CHARS = 20_000
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { dshHomeFor, dshRuntime } from './dsh-runtime.js'
+import { dshHomeFor, dshRuntime } from './dsh-runtime.ts'
 
 /** Where `npm run build` puts the app as it runs (scripts/build.mjs), laid out like the repository. */
 export const BUILD_DIR = 'out'

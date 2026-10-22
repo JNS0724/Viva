@@ -1,4 +1,5 @@
 import path from 'node:path'
+import type { Menu as ElectronMenu, NativeImage, Tray as ElectronTray } from 'electron'
 
 /**
  * The tray icon (the menu bar on macOS, the notification area on Windows): there from the first time the
@@ -8,16 +9,23 @@ import path from 'node:path'
 const TOOLTIP = 'Viva'
 
 /** macOS takes a black template image and colours it to suit the menu bar; Windows shows the app icon. */
-const iconFile = (platform) => (platform === 'darwin' ? 'trayTemplate.png' : 'tray.png')
+const iconFile = (platform: string) => (platform === 'darwin' ? 'trayTemplate.png' : 'tray.png')
 
-/**
- * @param {{ Tray: new (image: any) => any, Menu: any, nativeImage: any, iconDir: string, platform: string, onOpen: () => void, onQuit: () => void }} deps
- * @returns {{ destroy: () => void }}
- */
-export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit }) {
+/** Electron's Tray, Menu and nativeImage, handed in so the tray can be tested without Electron. */
+interface TrayDeps {
+  Tray: new (image: NativeImage) => Pick<ElectronTray, 'setToolTip' | 'setContextMenu' | 'on' | 'destroy'>
+  Menu: Pick<typeof ElectronMenu, 'buildFromTemplate'>
+  nativeImage: { createFromPath: (file: string) => Pick<NativeImage, 'setTemplateImage'> }
+  iconDir: string
+  platform: string
+  onOpen: () => void
+  onQuit: () => void
+}
+
+export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit }: TrayDeps): { destroy: () => void } {
   const image = nativeImage.createFromPath(path.join(iconDir, iconFile(platform)))
   if (platform === 'darwin') image.setTemplateImage(true)
-  const tray = new Tray(image)
+  const tray = new Tray(image as NativeImage)
   tray.setToolTip(TOOLTIP)
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开 Viva', click: onOpen },

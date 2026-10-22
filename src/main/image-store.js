@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { IMAGE_LIMITS, IMAGE_TYPES, isImageId, sniffImageType } from '../shared/images.ts'
-import { removeTree } from './remove-tree.js'
+import { removeTree } from './remove-tree.ts'
 
 /**
  * The pictures folder: what the user pasted or dropped into a question (pasted/, named by contents, so a picture
