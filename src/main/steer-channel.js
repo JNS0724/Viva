@@ -10,7 +10,7 @@ export const NO_PLUGIN = 'unavailable'
 /**
  * @param {{ send: (message: object) => void, sessionId: () => string | null, timeoutMs?: number }} deps
  * @returns {{
- *   steer: (text: string) => Promise<{ ok: boolean, reason?: string }>,
+ *   steer: (text: string, session?: string | null) => Promise<{ ok: boolean, reason?: string }>,
  *   receive: (message: object) => void, closeAll: () => void,
  * }}
  */

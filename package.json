@@ -14,6 +14,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
+    "typecheck": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.preload.json",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.js\"",
     "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.js\"",
     "smoke": "npm run smoke:setup && npm run smoke:walkthrough && npm run smoke:relaunch && npm run smoke:memory && npm run smoke:resume",
@@ -38,9 +39,11 @@
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@types/node": "24.19.2",
     "cross-env": "7.0.3",
     "electron": "44.7.0",
-    "electron-builder": "26.17.0"
+    "electron-builder": "26.17.0",
+    "typescript": "6.0.3"
   },
   "build": {
     "appId": "app.viva.desktop",

@@ -46,7 +46,7 @@ export function createTimelineActions({ api, getState, dispatch, scroll, reveal 
     for (let page = 0; page <= MAX_JUMP_PAGES; page += 1) {
       const target = hitTarget(getState(), hit)
       if (!target) return false
-      if (target.msgId) {
+      if ('msgId' in target) {
         reveal(target.msgId)
         return true
       }

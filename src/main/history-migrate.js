@@ -19,6 +19,7 @@ function readLegacyFile(file) {
 /**
  * One-time import of the earlier one-JSON-file-per-conversation history into the database.
  * The old folder is renamed to `<dir>-imported` rather than deleted, so nothing is lost if the import misses something.
+ * @param {{ dir: string, db: { importConversation: (conversation: object) => boolean }, onError?: (err: Error) => void }} options
  * @returns {number} how many conversations were imported
  */
 export function migrateLegacyHistory({ dir, db, onError = () => {} }) {

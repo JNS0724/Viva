@@ -10,6 +10,7 @@ import { EXTRA_COMMAND_DIRS, resolveCommand, toAcpServers } from './mcp-config.j
  *   memoryDb: ReturnType<import('../../plugins/memory/lib/store.js').openMemoryDb>,
  *   historyDb: ReturnType<import('./history-db.js').openHistoryDb>,
  *   mcpStore: ReturnType<import('./mcp-config.js').createMcpConfigStore>,
+ *   now?: () => number,
  * }} deps
  */
 export function createPersonal({ memoryDb, historyDb, mcpStore, now = Date.now }) {

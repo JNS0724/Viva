@@ -40,6 +40,7 @@ export const PERMISSION_LEVELS = Object.freeze(['danger-full-access', 'auto', 'w
  * config: built from the app's data directory, written into the profile for the plugin.
  * stock: dsh's own entries the plugin is for, switched on only while the plugin is (an ask tool nobody
  * answers would leave the model waiting).
+ * @type {ReadonlyArray<{ name: string, dir: string, contract: string, config: (data: { userData: string, permission: string }) => object, stock?: Array<{ id: string, name: string }> }>}
  */
 export const APP_PLUGINS = Object.freeze([
   { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData }) => ({ file: path.join(userData, 'memory.db') }) },

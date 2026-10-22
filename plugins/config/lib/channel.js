@@ -10,7 +10,7 @@
 const MAX_TEXT_CHARS = 4000
 
 /**
- * @param {{ send: (message: object) => void, on: Function, off: Function }} port the IPC channel to the app
+ * @param {{ send?: (message: object) => unknown, on: Function, off: Function }} port the IPC channel to the app
  * @param {(message: string) => void} log
  * @returns {{ request: (op: string, args: object, sessionId: string | null, signal?: AbortSignal) => Promise<string>, close: () => void }}
  */

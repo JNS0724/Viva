@@ -63,7 +63,7 @@ function parseModels(value) {
 
 /**
  * Validates what the settings form sends.
- * @param {unknown} input `{ name, api, baseURL, models, key }`, models as typed (lines or commas), key optional
+ * @param {any} input untrusted `{ name, api, baseURL, models, key }`, each field checked below; models as typed (lines or commas), key optional
  * @param {string[]} takenNames names already in use
  * @returns {{ name: string, api: string, baseURL: string, models: string[], key: string }}
  */

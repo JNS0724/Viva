@@ -95,8 +95,8 @@ export function renderRewindConfirm(root, state, handlers) {
 /**
  * A path left behind, folded where the conversation went another way: opened, what it holds is shown under it,
  * read-only; switched to, it is the conversation again and this one folds in its place.
- * @param {{ id: string, count: number }} fold
- * @param {{ opened: object[] | undefined, handlers: object, messageView: (message: object) => Node | Node[] }} options
+ * @param {{ id: string, count: number, kind?: string | null }} fold
+ * @param {{ opened: object[] | undefined, handlers: any, messageView: (message: object) => Node | Node[], tasks?: object[] }} options
  */
 export function foldStrip(fold, { opened, handlers, messageView, tasks }) {
   if (fold.kind === 'task') return taskStrip(fold, { opened, handlers, messageView, tasks })

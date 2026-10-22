@@ -59,7 +59,7 @@ function parseUrl(value) {
 /**
  * Validates what the settings form sends. Text fields are as typed: arguments one per line,
  * environment variables and headers as "NAME=value" lines.
- * @param {unknown} input
+ * @param {any} input untrusted: each field is checked below
  * @param {string[]} takenNames names already in use (the memory server's included)
  * @returns {{ name: string, type: 'stdio' | 'http', command: string, args: string[], url: string, env: Record<string, string>, headers: Record<string, string> }}
  */
@@ -80,7 +80,11 @@ export function parseServerInput(input, takenNames) {
   }
 }
 
-/** Absolute path of `command`, looked up on PATH like a shell would (PATHEXT on Windows), or null. */
+/**
+ * Absolute path of `command`, looked up on PATH like a shell would (PATHEXT on Windows), or null.
+ * @param {string} command
+ * @param {{ env?: Record<string, string | undefined>, platform?: string, exists?: (file: string) => boolean, extraDirs?: readonly string[] }} [options]
+ */
 export function resolveCommand(command, { env = process.env, platform = process.platform, exists = fs.existsSync, extraDirs = [] } = {}) {
   if (path.isAbsolute(command)) return exists(command) ? command : null
   if (/[\\/]/.test(command)) {

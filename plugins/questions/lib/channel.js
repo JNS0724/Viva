@@ -38,7 +38,7 @@ const questionView = (question) => ({
 })
 
 /**
- * @param {{ send: (message: object) => void, on: Function, off: Function }} port the IPC channel to the app
+ * @param {{ send?: (message: object) => unknown, on: Function, off: Function }} port the IPC channel to the app
  * @param {(message: string) => void} log
  * @returns {{ ask: (request: object) => Promise<{ answers: object[] }>, close: () => void }}
  */

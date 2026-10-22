@@ -32,7 +32,7 @@ function pointOf(message) {
 }
 
 /**
- * @param {{ send: (message: object) => void, on: Function, off: Function }} port
+ * @param {{ send?: (message: object) => unknown, on: Function, off: Function }} port
  * @param {(request: { sessionId: string, before?: number, words?: string, occurrence?: number, cwd?: string }) => Promise<string>} fork the child's id
  * @param {(message: string) => void} log
  */

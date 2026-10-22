@@ -37,7 +37,7 @@ export async function until(win, code, what, timeoutMs = TURN_TIMEOUT_MS) {
   throw new Error(`${what} never happened`)
 }
 
-/** Waits for the turn to end and be fully typed out, allowing any permission card on the way. @returns {number} cards allowed */
+/** Waits for the turn to end and be fully typed out, allowing any permission card on the way. @returns {Promise<number>} cards allowed */
 export async function finishTurn(win) {
   const deadline = Date.now() + TURN_TIMEOUT_MS
   let allowed = 0

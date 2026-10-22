@@ -58,6 +58,7 @@ const elapsedSince = (view, now) => formatElapsed(now - (view.startedAt ?? now))
 
 /**
  * What sits beside the cat: the label and, depending on the host, a few words more.
+ * @param {any} view what the island shows (island-view.js)
  * @param {{ host: string, now: number, tools: boolean, shortcut: string }} context tools: the pointer rests on it
  */
 function headParts(view, { host, now, tools, shortcut }) {
@@ -225,7 +226,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
 
   // The count at the tail is the way to the 后台 page; the rest of the head does what its form says.
   head.addEventListener('click', (event) => {
-    if (event.target.closest?.('.isl-bg')) act({ kind: 'tasks' })
+    if (/** @type {Element} */ (event.target).closest?.('.isl-bg')) act({ kind: 'tasks' })
     else if (onHead) act(onHead)
   })
 

@@ -7,6 +7,7 @@ import { h } from './dom.js'
  * link is a link only to http(s) or mailto, opened outside the app through `openLink`.
  */
 const LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
+/** @type {Array<'h3' | 'h4' | 'h5'>} */
 const HEADING_TAGS = ['h3', 'h3', 'h4', 'h5', 'h5', 'h5']
 
 /** The address if it is one the app may open in the browser or mail app, else null. */

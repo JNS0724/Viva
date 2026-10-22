@@ -1,0 +1,16 @@
+// Shared by every part: check the JavaScript as it is (JSDoc for types), emit nothing.
+// Each part's own file says where it runs (tsconfig.main / renderer / preload / plugins / test).
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}

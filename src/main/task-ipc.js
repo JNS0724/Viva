@@ -48,9 +48,10 @@ function checked(request) {
  * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
  * @param {{
  *   db: ReturnType<import('./history-db.js').openHistoryDb>,
- *   current: () => object, setCurrent: (conversation: object) => void,
+ *   store?: ReturnType<import('./task-store.js').createTaskStore>,
+ *   current: () => any, setCurrent: (conversation: object) => void,
  *   isBusy: () => boolean, setBusy: (busy: boolean) => void, agentInfo: () => { mode?: string, model?: string },
- *   agent: { spinOff: Function, mergeBack: Function, closeTask: Function, cancelTask: Function, steerTask: Function },
+ *   agent: Record<'spinOff' | 'mergeBack' | 'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>,
  * }} deps
  */
 export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCurrent, isBusy, setBusy, agentInfo, agent }) {

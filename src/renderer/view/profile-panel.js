@@ -173,7 +173,7 @@ function introView(memory, handlers) {
     class: 'intro-form',
     onSubmit: (event) => {
       event.preventDefault()
-      handlers.finishIntro(introValues(form), form.elements.namedItem('intro-analyze').checked)
+      handlers.finishIntro(introValues(form), /** @type {HTMLInputElement} */ (form.elements.namedItem('intro-analyze')).checked)
     },
   },
   ...INTRO_ITEMS.map((item) => introInput(item, current(item.key))),
