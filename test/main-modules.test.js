@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { APP_ROOT, dshLaunch, resolveConfig } from '../src/main/config.js'
+import { APP_ROOT, CODE_ROOT, dshLaunch, resolveConfig, rootsOf } from '../src/main/config.js'
 import { externalUrl } from '../src/main/links.js'
 import { createPermissionBroker } from '../src/main/permission-broker.js'
 import { currentModelName, describeConfig, describeError } from '../src/main/session-info.js'
@@ -17,6 +17,15 @@ test('config reports what is missing before the agent can start, or nothing when
   assert.equal(ready.problem, null)
   assert.equal(ready.dshBin, path.resolve('/opt/dsh'))
   assert.equal(ready.cwd, path.resolve('rel/dir'))
+})
+
+test('the code is found beside the project from the sources, and in out/ once built', () => {
+  const repo = path.resolve('/repo')
+  assert.deepEqual(rootsOf(path.join(repo, 'src', 'main', 'config.js')), { codeRoot: repo, appRoot: repo })
+  assert.deepEqual(rootsOf(path.join(repo, 'out', 'src', 'main', 'config.js')), { codeRoot: path.join(repo, 'out'), appRoot: repo })
+  const asar = path.resolve('/Applications/Viva.app/Contents/Resources/app.asar')
+  assert.deepEqual(rootsOf(path.join(asar, 'out', 'src', 'main', 'config.js')), { codeRoot: path.join(asar, 'out'), appRoot: asar })
+  assert.equal(CODE_ROOT, APP_ROOT, 'the tests run from the sources')
 })
 
 test('config defaults live under the app root, and smoke phases are named', () => {
