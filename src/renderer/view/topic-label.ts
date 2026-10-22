@@ -4,7 +4,7 @@ import { h } from './dom.ts'
 const NEW_TOPIC_KEY = () => (document.documentElement.dataset.platform === 'darwin' ? '⌘N' : 'Ctrl+N')
 
 /** The page's Content-Security-Policy refuses style attributes; set through the DOM, the width is allowed. */
-function barFill(percent) {
+function barFill(percent: number) {
   const fill = h('i')
   fill.style.width = `${percent}%`
   return fill
@@ -13,12 +13,11 @@ function barFill(percent) {
 /**
  * Above the input: what the assistant has in mind now, 本话题 · N 条 and how much of its context that takes
  * (near full it says so), and ＋ 新话题 beside it. A click on the label says what that means.
- * @param {HTMLElement} area #ctx-area
- * @param {object} state
- * @param {{ toggleTopicMenu: () => void, newSession: () => void }} handlers
- * @param {{ ready: boolean, busy: boolean }} options ready: connected to an agent; busy: a turn runs
+ * @param area #ctx-area
+ * @param handlers toggleTopicMenu, newSession
+ * @param options ready: connected to an agent; busy: a turn runs
  */
-export function renderTopicLabel(area, state, handlers, { ready, busy }) {
+export function renderTopicLabel(area: HTMLElement, state: State, handlers: Handlers, { ready, busy }: { ready: boolean, busy: boolean }) {
   area.hidden = !ready
   if (!ready) return area.replaceChildren()
   const count = topicCount(state)
@@ -36,11 +35,11 @@ export function renderTopicLabel(area, state, handlers, { ready, busy }) {
     class: 'ctx-new', type: 'button', disabled: busy, title: busy ? '先停止当前任务，再开新话题' : `开新话题（${NEW_TOPIC_KEY()}）`,
     onClick: () => handlers.newSession(),
   }, h('span', { 'aria-hidden': 'true', text: '＋' }), '新话题')
-  return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent) : null].filter(Boolean))
+  return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent) : null].filter((part) => part !== null))
 }
 
 /** What the label means: how much is remembered, what happens when it is full. */
-function topicInfo(count, percent) {
+function topicInfo(count: number, percent: number | null) {
   const used = percent === null ? '还没算出用了多少' : `已用 ${percent}%`
   return h('div', { class: 'ctx-menu', role: 'dialog', 'aria-label': '本话题' },
     h('div', { class: 'ctx-menu-info' },

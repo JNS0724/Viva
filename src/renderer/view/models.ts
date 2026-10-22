@@ -1,6 +1,11 @@
 import { h, label } from './dom.ts'
 
-function providerItem(provider, models, handlers) {
+/** The 模型 part of the state (state.ts). */
+type Models = State['models']
+/** A provider the user added (model-providers.ts), its key known only by its end. */
+type Provider = { id: string, name: string, api: string, baseURL: string, models: readonly string[], keyHint?: string }
+
+function providerItem(provider: Provider, models: Models, handlers: Handlers) {
   return h('li', { class: 'ext-item', 'data-name': provider.name },
     h('div', { class: 'ext-copy' },
       h('div', { class: 'ext-title' },
@@ -15,18 +20,18 @@ function providerItem(provider, models, handlers) {
     }))
 }
 
-function textField(name, title, hint, { multiline = false, secret = false } = {}) {
+function textField(name: string, title: string, hint: string, { multiline = false, secret = false } = {}) {
   const props = { class: 'field', name, placeholder: hint, 'aria-label': title, spellcheck: 'false', autocomplete: 'off' }
   const input = multiline ? h('textarea', { ...props, rows: 2 }) : h('input', { ...props, type: secret ? 'password' : 'text' })
   return h('label', { class: 'intro-item' }, label(title), input)
 }
 
-function providerForm(models, handlers) {
+function providerForm(models: Models, handlers: Handlers) {
   const form = h('form', {
     class: 'ext-form',
-    onSubmit: (event) => {
+    onSubmit: (event: SubmitEvent) => {
       event.preventDefault()
-      const value = (name) => (form.elements.namedItem(name) as HTMLInputElement | null)?.value ?? ''
+      const value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement | null)?.value ?? ''
       handlers.addProvider({
         name: value('model-name'), api: value('model-api'), baseURL: value('model-url'), models: value('model-ids'), key: value('model-key'),
       })
@@ -35,7 +40,7 @@ function providerForm(models, handlers) {
   h('div', { class: 'intro-pair' },
     textField('model-name', '名称', '例如 Kimi、公司网关'),
     h('label', { class: 'intro-item' }, label('接口协议'), h('select', { class: 'field', name: 'model-api', 'aria-label': '接口协议' },
-      Object.entries(models.protocols).map(([value, text]) => h('option', { value, text }))))),
+      Object.entries(models.protocols as Readonly<Record<string, string>>).map(([value, text]) => h('option', { value, text }))))),
   textField('model-url', '接口地址（baseURL）', 'https://api.example.com/v1'),
   textField('model-ids', '模型 ID（每行一个）', 'kimi-k2.6\nkimi-k2.7-code', { multiline: true }),
   textField('model-key', 'API key（本地模型可不填）', 'sk-…', { secret: true }),
@@ -47,7 +52,7 @@ function providerForm(models, handlers) {
 }
 
 /** The 模型 part of settings: providers besides DeepSeek, each speaking one of the protocols dsh supports. */
-export function modelsSection(models, handlers) {
+export function modelsSection(models: Models, handlers: Handlers) {
   if (!models.loaded) return h('section', { class: 'ext' }, label('模型'), h('p', { class: 'help', text: '读取中…' }))
   return h('section', { class: 'ext', 'aria-label': '模型' },
     label('模型'),
@@ -58,7 +63,7 @@ export function modelsSection(models, handlers) {
           class: 'btn btn-outline btn-small', type: 'button', id: 'add-model', text: '添加', onClick: () => handlers.toggleAddProvider(true),
         })),
       models.providers.length
-        ? h('ul', { class: 'ext-list' }, models.providers.map((provider) => providerItem(provider, models, handlers)))
+        ? h('ul', { class: 'ext-list' }, models.providers.map((provider: Provider) => providerItem(provider, models, handlers)))
         : h('p', { class: 'help', text: '可以接入 OpenAI 兼容或 Anthropic 兼容接口的模型，添加后在输入框左下角选择。' }),
       models.adding ? providerForm(models, handlers) : null),
     models.error ? h('p', { class: 'form-error', role: 'alert', text: models.error }) : null,

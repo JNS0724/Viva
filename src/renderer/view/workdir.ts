@@ -8,10 +8,13 @@ import { icon } from './icons.ts'
  * (the folders used lately, the system's folder dialog, the folder in Finder or Explorer), and the question
  * asked the first time a folder is used. Keys are the platform's: ⌘O on macOS, Ctrl+O elsewhere.
  */
-const keyFor = (platform) => (platform === 'darwin' ? '⌘O' : 'Ctrl+O')
-const revealLabel = (platform) => (platform === 'darwin' ? '在访达中显示当前目录' : '在资源管理器中显示当前目录')
+/** A folder in the menu (selectors.ts workDirMenu). */
+type MenuEntry = ReturnType<typeof workDirMenu>[number]
 
-function renderChip(button, state) {
+const keyFor = (platform: string) => (platform === 'darwin' ? '⌘O' : 'Ctrl+O')
+const revealLabel = (platform: string) => (platform === 'darwin' ? '在访达中显示当前目录' : '在资源管理器中显示当前目录')
+
+function renderChip(button: HTMLButtonElement, state: State) {
   const { workDir } = state
   const busy = isBusy(state)
   const name = workDir.isDefault ? DEFAULT_DIR_NAME : workspaceName(workDir.current || state.info.cwd)
@@ -25,9 +28,9 @@ function renderChip(button, state) {
   button.setAttribute('aria-expanded', String(workDir.menu))
 }
 
-function renderMenu(container, state, handlers, platform) {
+function renderMenu(container: HTMLElement, state: State, handlers: Handlers, platform: string) {
   if (!state.workDir.menu) return container.replaceChildren()
-  const item = (entry) => h('button', {
+  const item = (entry: MenuEntry) => h('button', {
     class: `workdir-item${entry.current ? ' is-current' : ''}`, type: 'button', role: 'menuitem', title: entry.dir,
     'aria-current': entry.current ? 'true' : null, onClick: () => (entry.current ? handlers.closeWorkDirMenu() : handlers.pickWorkDir(entry.dir)),
   },
@@ -47,7 +50,7 @@ function renderMenu(container, state, handlers, platform) {
       h('span', { class: 'workdir-check' }), h('span', { class: 'workdir-item-name', text: revealLabel(platform) }))))
 }
 
-function renderConfirm(root, state, handlers) {
+function renderConfirm(root: HTMLElement, state: State, handlers: Handlers) {
   const dir = state.workDir.confirm
   if (!dir) return root.replaceChildren()
   root.replaceChildren(h('div', { class: 'workdir-scrim', onClick: () => handlers.cancelWorkDir() }),
@@ -59,14 +62,11 @@ function renderConfirm(root, state, handlers) {
       h('div', { class: 'workdir-sheet-actions' },
         h('button', { class: 'btn btn-secondary', type: 'button', text: '取消', onClick: () => handlers.cancelWorkDir() }),
         h('button', { class: 'btn btn-accent', type: 'button', text: '在这里工作', onClick: () => handlers.confirmWorkDir() }))))
-  root.querySelector('.btn-accent')?.focus()
+  root.querySelector<HTMLElement>('.btn-accent')?.focus()
 }
 
-/**
- * @param {{ context: HTMLButtonElement, workdirMenu: HTMLElement, workdirConfirm: HTMLElement }} dom
- * @param {string} platform 'darwin' | 'win32' | 'linux'
- */
-export function renderWorkDir(dom, state, handlers, platform) {
+/** @param platform 'darwin' | 'win32' | 'linux' */
+export function renderWorkDir(dom: { context: HTMLButtonElement, workdirMenu: HTMLElement, workdirConfirm: HTMLElement }, state: State, handlers: Handlers, platform: string) {
   renderChip(dom.context, state)
   renderMenu(dom.workdirMenu, state, handlers, platform)
   renderConfirm(dom.workdirConfirm, state, handlers)

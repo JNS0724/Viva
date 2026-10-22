@@ -2,9 +2,12 @@ import { isBusy } from '../state.ts'
 import { h, label } from './dom.ts'
 import { icon } from './icons.ts'
 
-const effortName = (info) => info.efforts?.find((e) => e.value === info.effort)?.name ?? ''
+/** A choice dsh offers (a model, a reasoning effort): what it is called, and the value to set. */
+type Choice = { value: string, name: string, group?: string }
 
-function modelOption(model, info, handlers) {
+const effortName = (info: AgentInfo) => info.efforts?.find((e: Choice) => e.value === info.effort)?.name ?? ''
+
+function modelOption(model: Choice, info: AgentInfo, handlers: Handlers) {
   const selected = model.value === info.modelValue
   return h('button', {
     type: 'button',
@@ -17,8 +20,8 @@ function modelOption(model, info, handlers) {
   selected ? h('span', { class: 'model-check', text: '●' }) : null)
 }
 
-function effortRow(info, handlers) {
-  return h('div', { class: 'effort-row', role: 'group', 'aria-label': '推理强度' }, info.efforts.map((effort) => h('button', {
+function effortRow(info: AgentInfo, handlers: Handlers) {
+  return h('div', { class: 'effort-row', role: 'group', 'aria-label': '推理强度' }, info.efforts.map((effort: Choice) => h('button', {
     type: 'button',
     class: 'effort',
     'aria-pressed': String(effort.value === info.effort),
@@ -27,16 +30,16 @@ function effortRow(info, handlers) {
   })))
 }
 
-function menu(info, handlers) {
+function menu(info: AgentInfo, handlers: Handlers) {
   return h('div', { class: 'model-menu', role: 'dialog', 'aria-label': '选择模型' },
     label('MODEL'),
-    info.models.map((model) => modelOption(model, info, handlers)),
+    info.models.map((model: Choice) => modelOption(model, info, handlers)),
     info.efforts?.length ? [label('REASONING EFFORT'), effortRow(info, handlers)] : null,
     h('p', { class: 'model-hint', text: '从下一轮对话开始生效' }))
 }
 
 /** Model + reasoning-effort switcher in the composer. Disabled mid-turn because dsh pins the route per turn. */
-export function renderModelPicker(dom, state, handlers) {
+export function renderModelPicker(dom: { modelArea: HTMLElement, modelBtn: HTMLButtonElement, modelMenu: HTMLElement }, state: State, handlers: Handlers) {
   const { info } = state
   // No agent yet (setup state): there is nothing to choose from, so the switcher is not shown at all.
   dom.modelArea.hidden = info.mode === 'setup'
@@ -51,6 +54,6 @@ export function renderModelPicker(dom, state, handlers) {
     h('span', { class: 'model-btn-name', text: info.model || '—' }),
     effort ? h('span', { class: 'model-btn-effort', text: effort.toUpperCase() }) : null,
     icon('chevron', 14),
-  ].filter(Boolean))
+  ].filter((part): part is HTMLSpanElement | SVGSVGElement => Boolean(part)))
   dom.modelMenu.replaceChildren(...(state.picker && !disabled ? [menu(info, handlers)] : []))
 }
