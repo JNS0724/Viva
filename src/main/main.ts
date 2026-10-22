@@ -216,7 +216,7 @@ const takenServerNames = () => mcpStore.list().map((server) => server.name)
  * user approved it on the card: MCP servers through the encrypted store, skills in the app's own folder.
  */
 function configActions(config) {
-  const roots = () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() })
+  const roots = () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() ?? config.cwd })
   const userRoot = () => {
     const root = roots().find((item) => item.managed)
     if (!root) throw new Error('the app has no skill folder of its own')
@@ -656,7 +656,7 @@ function registerPersonalIpc(config, mcpStore) {
   registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
   registerExtensionsIpc(ipcMain, {
     store: mcpStore,
-    roots: () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() }),
+    roots: () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() ?? config.cwd }),
     mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
     applyMcp: applyMcpChange,
     trash: (file) => shell.trashItem(file),

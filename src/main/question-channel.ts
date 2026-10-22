@@ -27,8 +27,9 @@ function optionFrom(option: any): QuestionOption | null {
 
 function questionFrom(item: any): Question | null {
   if (!isText(item?.id, MAX_ID_CHARS) || !isText(item.question, MAX_QUESTION_CHARS)) return null
-  const options = (Array.isArray(item.options) ? item.options : []).slice(0, MAX_OPTIONS).map(optionFrom)
-  if (options.some((option) => option === null)) return null
+  const parsed: Array<QuestionOption | null> = (Array.isArray(item.options) ? item.options : []).slice(0, MAX_OPTIONS).map(optionFrom)
+  const options = parsed.filter((option) => option !== null)
+  if (options.length !== parsed.length) return null
   if (new Set(options.map((option) => option.label)).size !== options.length) return null
   return {
     id: item.id,
@@ -43,8 +44,9 @@ function questionFrom(item: any): Question | null {
 export function parseQuestion(message: any): QuestionSet | null {
   if (!isText(message?.id, MAX_ID_CHARS) || !Array.isArray(message.questions)) return null
   if (message.questions.length === 0 || message.questions.length > MAX_QUESTIONS) return null
-  const questions = message.questions.map(questionFrom)
-  if (questions.some((question) => question === null)) return null
+  const parsed: Array<Question | null> = message.questions.map(questionFrom)
+  const questions = parsed.filter((question) => question !== null)
+  if (questions.length !== parsed.length) return null
   if (new Set(questions.map((question) => question.id)).size !== questions.length) return null
   return { id: message.id, questions }
 }

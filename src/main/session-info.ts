@@ -17,7 +17,7 @@ export interface ConfigView {
 function flattenSelectOptions(options: unknown): Choice[] {
   if (!Array.isArray(options)) return []
   return options.flatMap((item) => (Array.isArray(item?.options)
-    ? item.options.map((option) => ({ ...option, group: item.name ?? item.group ?? '' }))
+    ? item.options.map((option: object) => ({ ...option, group: item.name ?? item.group ?? '' }))
     : [{ ...item, group: '' }]))
 }
 

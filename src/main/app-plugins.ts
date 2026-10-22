@@ -55,7 +55,7 @@ export interface AppPlugin {
   stock?: StockEntry[]
 }
 
-export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze([
+export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData }) => ({ file: path.join(userData, 'memory.db') }) },
   { name: 'viva-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
   { name: 'viva-policy', dir: 'plugins/policy', contract: 'policy', config: () => ({}) },
@@ -72,7 +72,7 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze([
     // 自动 is dsh's experimental Auto review; it reviews only sessions set to it.
     stock: [{ id: 'auto-review', name: '@deepseek-ai/dsh-experimental-auto-review' }],
   },
-])
+] satisfies AppPlugin[]))
 
 /** The dsh version installed with the app; plugins pin their dsh peers to it. */
 export function installedDshVersion(appRoot: string): string {

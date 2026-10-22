@@ -18,7 +18,7 @@ const OWN_PROFILES = Object.freeze({ viva: 'dsh-profile-viva', 'my-agent': 'dsh-
  * dsh's folder name for a working directory (dsh-session-persistence-jsonl `projectKey`, which it does
  * not export): separators become `-`, other unsafe characters `~XXXX`.
  */
-export function projectKey(cwd) {
+export function projectKey(cwd: string) {
   if (cwd.length === 0) throw new Error('cannot encode an empty project path')
   let readable = ''
   let separatorRun = false
@@ -39,9 +39,9 @@ export function projectKey(cwd) {
 
 /**
  * Copies the sessions of `cwd` from the old home unless the new one has them already.
- * @returns {number} sessions copied
+ * @returns sessions copied
  */
-export function adoptDshSessions({ fromHome, toHome, cwd }) {
+export function adoptDshSessions({ fromHome, toHome, cwd }: { fromHome: string, toHome: string, cwd: string }): number {
   if (path.resolve(fromHome) === path.resolve(toHome)) return 0
   const key = projectKey(cwd)
   const source = path.join(fromHome, 'sessions', key)
@@ -58,9 +58,9 @@ const SKILLS_ADOPTED = '.skills-adopted'
 /**
  * Copies the old home's skills (folders and single `.md` files) that the app's home does not have yet,
  * on the first launch only.
- * @returns {string[]} skills copied
+ * @returns skills copied
  */
-export function adoptDshSkills({ fromHome, toHome }) {
+export function adoptDshSkills({ fromHome, toHome }: { fromHome: string, toHome: string }): string[] {
   if (path.resolve(fromHome) === path.resolve(toHome)) return []
   const marker = path.join(toHome, SKILLS_ADOPTED)
   if (fs.existsSync(marker)) return []
@@ -76,7 +76,7 @@ export function adoptDshSkills({ fromHome, toHome }) {
   return copied
 }
 
-const manifestName = (dir) => {
+const manifestName = (dir: string): unknown => {
   try {
     return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).name
   } catch {
@@ -87,9 +87,9 @@ const manifestName = (dir) => {
 /**
  * Removes the profiles the app wrote into the old home. Their plugin links point into the app, so they
  * are unlinked rather than followed (remove-tree.js).
- * @returns {string[]} profiles removed
+ * @returns profiles removed
  */
-export function removeOwnProfiles({ fromHome, toHome }) {
+export function removeOwnProfiles({ fromHome, toHome }: { fromHome: string, toHome: string }): string[] {
   if (path.resolve(fromHome) === path.resolve(toHome)) return []
   return Object.entries(OWN_PROFILES)
     .filter(([profile, name]) => manifestName(path.join(fromHome, 'profiles', profile)) === name)
