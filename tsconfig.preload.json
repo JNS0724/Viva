@@ -1,6 +1,7 @@
-// The preload scripts: CommonJS, Electron's renderer side.
+// The preload scripts: CommonJS, Electron's renderer side. What they put on the page is checked against what the
+// page is told it has (src/renderer/globals.d.ts AgentApi, DeskApi).
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": { "lib": ["ES2023", "DOM"], "types": ["node"] },
-  "include": ["src/preload/**/*.cjs"]
+  "include": ["src/preload/**/*.cjs", "src/renderer/globals.d.ts"]
 }

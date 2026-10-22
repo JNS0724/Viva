@@ -117,7 +117,7 @@ export interface ConfigActions {
   addServer(spec: ServerSpec, secrets: Record<string, string>): string
   removeServer(name: string): string
   listSkills(): string[]
-  createSkill(spec: object): string
+  createSkill(spec: { name: string, description: string, instructions: string }): string
   installSkill(path: string): string
   removeSkill(id: string): Promise<string> | string
 }

@@ -125,7 +125,20 @@ function isolateSmokeUserData() {
   process.env.AGENT_CWD ||= path.join(dir, 'workspace')
 }
 
-function emitToRenderer(event) {
+/** What the window is told of the agent (renderer app.ts onEvent): its type, and what that type carries. */
+type AgentEvent = { type: string, [field: string]: any }
+/** The app's launch settings as resolved now (config.ts resolveConfig). */
+type Config = ReturnType<typeof currentConfig>
+/** What the model may change from the conversation (config-channel.ts), the app performing it. */
+type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configActions']>
+
+/** dsh's home, which resolveConfig always sets when given the app's data folder (as currentConfig does). */
+function dshHomeOf(config: Config): string {
+  if (!config.dshHome) throw new Error('dsh has no home folder')
+  return config.dshHome
+}
+
+function emitToRenderer(event: AgentEvent) {
   if (event.type === 'ready') lastInfo = event.info
   if (event.type === 'config') lastInfo = { ...lastInfo, ...event.info }
   if (win && !win.isDestroyed()) win.webContents.send('agent:event', event)
@@ -138,7 +151,7 @@ const currentConfig = () => resolveConfig(process.env, fs.existsSync, settingsSt
 /** The pictures folder: where the user moved it, or in the app's data. */
 const imagesDir = () => preferences.get().imagesDir || path.join(app.getPath('userData'), 'images')
 
-const isFolder = (dir) => {
+const isFolder = (dir: string) => {
   try {
     return fs.statSync(dir).isDirectory()
   } catch {
@@ -147,7 +160,7 @@ const isFolder = (dir) => {
 }
 const workDirNow = () => workDir ?? defaultWorkDir
 /** Where a conversation goes on: in its own directory while that is still there, else in the app's. */
-const workDirFor = (segment, config) => (segment?.cwd && isFolder(segment.cwd) ? segment.cwd : config.cwd)
+const workDirFor = (segment: { cwd?: string | null } | null | undefined, config: Config) => (segment?.cwd && isFolder(segment.cwd) ? segment.cwd : config.cwd)
 
 /** Tells the window what the agent remembered or replaced, and what background the plugin sent. */
 function reportMemoryChanges() {
@@ -179,14 +192,14 @@ function reportTurnMemories() {
  * Writes the app's dsh profile: the persona and the plugins that pass the compatibility check. Without it
  * dsh still runs on its stock profile, with no memory, trace or policy.
  */
-function prepareProfile(config) {
+function prepareProfile(config: Config) {
   try {
     const { plugins, problems } = resolvePlugins({
       codeRoot: CODE_ROOT, userData: app.getPath('userData'), dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
     })
     pluginProblems = problems
     problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
-    ensureDshProfile({ dshHome: config.dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir() })
+    ensureDshProfile({ dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir() })
     return DSH_PROFILE
   } catch (err: any) {
     console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
@@ -195,7 +208,7 @@ function prepareProfile(config) {
 }
 
 /** The models dsh offers: DeepSeek with a key, the user's providers, and the one new sessions start with. */
-function profileModels(config) {
+function profileModels(config: Config) {
   const providers = modelStore.list()
   const hasDeepSeek = Boolean(config.apiKey)
   return { providers: piAiProviders(providers), deepseek: hasDeepSeek, defaultModel: defaultModel({ lastModel: modelStore.lastModel(), providers, hasDeepSeek }) }
@@ -203,7 +216,7 @@ function profileModels(config) {
 
 /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
 /** The settings form's shape, which parseServerInput checks: keys as "NAME=value" lines, env or headers by type. */
-function serverForm(spec, secrets) {
+function serverForm(spec: { name: string, url?: string, command?: string, args: readonly string[] }, secrets: Readonly<Record<string, unknown>>) {
   const pairs = Object.entries(secrets).map(([name, value]) => `${name}=${value}`).join('\n')
   const http = Boolean(spec.url)
   return { name: spec.name, type: http ? 'http' : 'stdio', command: spec.command, args: spec.args.join('\n'), url: spec.url, env: http ? '' : pairs, headers: http ? pairs : '' }
@@ -215,8 +228,8 @@ const takenServerNames = () => mcpStore.list().map((server) => server.name)
  * What the model may change from the conversation (viva-config plugin, config-channel.js), each after the
  * user approved it on the card: MCP servers through the encrypted store, skills in the app's own folder.
  */
-function configActions(config) {
-  const roots = () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() ?? config.cwd })
+function configActions(config: Config): ConfigActions {
+  const roots = () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd })
   const userRoot = () => {
     const root = roots().find((item) => item.managed)
     if (!root) throw new Error('the app has no skill folder of its own')
@@ -252,14 +265,14 @@ function reloadMcpAfterTurn() {
     .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
 }
 
-function createBridge(config, cwd) {
+function createBridge(config: Config, cwd: string) {
   const generation = ++bridgeGeneration
   return createAcpBridge({
     dshBin: config.dshBin,
     nodeBin: config.nodeBin,
     profile: prepareProfile(config),
     cwd,
-    env: dshEnv({ base: process.env, dshHome: config.dshHome, runtime: config.runtime, settings: dshSettings(config) }),
+    env: dshEnv({ base: process.env, dshHome: dshHomeOf(config), runtime: config.runtime, settings: dshSettings(config) }),
     mcpServers: () => personal.mcpServers(),
     configActions: configActions(config),
     emit: (event) => {
@@ -275,7 +288,7 @@ function createBridge(config, cwd) {
 }
 
 /** What the app hands dsh: the keys, and in the memory smoke run the fake model's address. */
-function dshSettings(config) {
+function dshSettings(config: Config) {
   return {
     DEEPSEEK_API_KEY: config.apiKey,
     ...providerEnv(modelStore.list()),
@@ -284,7 +297,7 @@ function dshSettings(config) {
 }
 
 /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
-function recoverFromCrash({ message }) {
+function recoverFromCrash({ message }: { message: string }) {
   console.error('[dsh] exited unexpectedly:', message)
   bridge = null
   turn = { active: false, startedAt: 0 }
@@ -315,8 +328,8 @@ async function stopBridge() {
 const stopBridgeInTime = () => Promise.race([stopBridge(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT_MS))])
 
 /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
-const setupInfo = (config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '' })
-const SETUP_MESSAGES = { 'no-key': '请先在设置里填写 DeepSeek API key，或添加其他模型', 'no-dsh': '没有找到 DeepSeek Harness，请在项目目录运行 npm install' }
+const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '' })
+const SETUP_MESSAGES: Readonly<Record<string, string>> = { 'no-key': '请先在设置里填写 DeepSeek API key，或添加其他模型', 'no-dsh': '没有找到 DeepSeek Harness，请在项目目录运行 npm install' }
 
 function requireBridge() {
   if (!bridge) throw new Error(SETUP_MESSAGES[lastInfo.problem] ?? '助手还没有连接')
@@ -358,7 +371,7 @@ async function restartKeepingConversation() {
  * dsh starts a session in the same process on the model its profile named at launch; the user may have
  * picked another one since, and new conversations follow the latest pick.
  */
-async function withLastModel(info) {
+async function withLastModel<I extends { modelValue?: string, models?: ReadonlyArray<{ value: string }> }>(info: I) {
   const last = modelStore.lastModel()
   if (!last) return info
   const value = modelValue(last)
@@ -395,14 +408,14 @@ const permissionNow = () => (PERMISSION_LEVELS.includes(preferences.get().permis
  * Another permission level: dsh starts again with it (viva-permission applies it to every session), on the
  * conversation on screen. Not while a turn runs, which the restart would cut short.
  */
-async function setPermission(level) {
+async function setPermission(level: string) {
   if (!PERMISSION_LEVELS.includes(level)) throw new Error(`invalid permission level: ${level}`)
   if (turn.active) throw new Error('助手正在工作，等这一轮结束再换权限')
   preferences.set('permission', level)
   return { settings: settingsView(), info: await restartKeepingConversation() }
 }
 
-function assertText(value, name, maxLength) {
+function assertText(value: unknown, name: string, maxLength: number): string {
   if (typeof value !== 'string' || value.trim() === '' || value.length > maxLength) {
     throw new Error(`invalid ${name}`)
   }
@@ -481,7 +494,7 @@ function mainWindow(): BrowserWindow {
 }
 
 /** The shortcut that opens the island's input, from any app; not in smoke runs, which share the machine. */
-function registerShortcut(config) {
+function registerShortcut(config: Config) {
   if (config.smoke) return
   shortcutHeld = registerAskShortcut(globalShortcut, {
     foreground: windowInFront,
@@ -515,7 +528,7 @@ function hideToTray() {
  * The desktop island comes out when the window is closed to the tray and goes when it is shown again; a smoke
  * run turns it on only when it checks it, and closes the window for real.
  */
-function attachDeskIsland(config, window: BrowserWindow) {
+function attachDeskIsland(config: Config, window: BrowserWindow) {
   deskAllowed = !config.smoke
   desk = createDeskIsland({
     BrowserWindow,
@@ -544,7 +557,7 @@ function attachDeskIsland(config, window: BrowserWindow) {
 }
 
 /** The desktop island's switch, from settings or from 关闭桌面岛 in the island's menu. */
-function setDeskIsland(on) {
+function setDeskIsland(on: boolean) {
   preferences.set('deskIsland', on)
   desk?.setEnabled(on && deskAllowed)
 }
@@ -579,19 +592,20 @@ function registerSettingsIpc() {
  * Without an agent (setup state) an old conversation can still be read; it keeps its session for later.
  * A conversation goes on in its own directory while that is still there.
  */
-async function switchAgent(sessionId, cwd) {
+async function switchAgent(sessionId: string | null, cwd?: string | null) {
   const target = cwd && isFolder(cwd) ? cwd : workDirNow()
   if (!bridge) {
     workDir = target
     return { ...lastInfo, sessionId, cwd: target, resumed: false }
   }
-  const info = await bridge.switchSession(sessionId, target)
+  // With a bridge the agent has started somewhere, so there is a folder in use.
+  const info = await bridge.switchSession(sessionId, target ?? undefined)
   workDir = target
   lastInfo = { ...info, remembersHistory: info.resumed }
   return info
 }
 
-const FORK_PROBLEMS = Object.freeze({
+const FORK_PROBLEMS: Readonly<Record<string, string>> = Object.freeze({
   unavailable: '这个版本的助手不支持切换工作目录，请更新 Viva',
   missing: '当前对话已经结束，请稍后再试',
 })
@@ -600,7 +614,7 @@ const FORK_PROBLEMS = Object.freeze({
  * The user picked another working directory: the conversation goes on there, everything said so far with it
  * (a fork of the session into that directory), as a new segment of the timeline after the current one.
  */
-async function switchWorkDir(dir) {
+async function switchWorkDir(dir: string) {
   const previous = conversation
   const stored = Boolean(historyDb.get(previous.id))
   if (!bridge) {
@@ -624,13 +638,13 @@ async function chooseWorkFolder() {
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
-async function chooseExportPath(defaultName) {
+async function chooseExportPath(defaultName: string): Promise<string | null> {
   const result = await dialog.showSaveDialog(mainWindow(), {
     title: '导出对话',
     defaultPath: path.join(app.getPath('documents'), defaultName),
     filters: [{ name: 'Markdown', extensions: ['md'] }],
   })
-  return result.canceled ? null : result.filePath
+  return result.canceled ? null : result.filePath ?? null
 }
 
 /** Reattaches the session with the current MCP servers; not while a turn runs (it would be cancelled). */
@@ -641,12 +655,12 @@ async function applyMcpChange() {
   return lastInfo
 }
 
-const pickFiles = async (options) => {
+const pickFiles = async (options: Electron.OpenDialogOptions) => {
   const result = await dialog.showOpenDialog(mainWindow(), options)
   return result.canceled ? null : result.filePaths
 }
 
-function registerPersonalIpc(config, mcpStore) {
+function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createMcpConfigStore>) {
   registerMemoryIpc(ipcMain, {
     db: memoryDb,
     habits: () => personal.habits(),
@@ -656,7 +670,7 @@ function registerPersonalIpc(config, mcpStore) {
   registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
   registerExtensionsIpc(ipcMain, {
     store: mcpStore,
-    roots: () => skillRoots({ dshHome: config.dshHome, cwd: workDirNow() ?? config.cwd }),
+    roots: () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd }),
     mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
     applyMcp: applyMcpChange,
     trash: (file) => shell.trashItem(file),
@@ -664,7 +678,7 @@ function registerPersonalIpc(config, mcpStore) {
 }
 
 /** Profile and memories live next to the history; the memory plugin inside dsh opens the same file. */
-function openPersonal(config) {
+function openPersonal(config: Config) {
   const userData = app.getPath('userData')
   memoryDb = openMemoryDb({ file: path.join(userData, 'memory.db') })
   try {
@@ -682,7 +696,7 @@ function openPersonal(config) {
 }
 
 /** Opens the database, imports the old JSON history once, and drops conversations whose undo window has passed. */
-function openHistory(config) {
+function openHistory(config: Config) {
   const userData = app.getPath('userData')
   historyDb = openHistoryDb({ file: path.join(userData, 'history.db') })
   const imported = migrateLegacyHistory({
@@ -695,7 +709,7 @@ function openHistory(config) {
   conversation = historyDb.latest()?.conversation ?? historyDb.create({ cwd: config.cwd })
   registerHistoryIpc(ipcMain, {
     db: historyDb,
-    dshHome: config.dshHome,
+    dshHome: dshHomeOf(config),
     traceDb: () => traceDb,
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
@@ -728,19 +742,20 @@ function openHistory(config) {
 }
 
 /** The agent's side of background tasks; a change of the main session is the one shown from then on. */
-const withInfo = (result) => {
+const withInfo = <R extends { ok: boolean, info?: any }>(result: R): R => {
   if (result.ok) lastInfo = { ...result.info, remembersHistory: true }
   return result
 }
+type Bridge = ReturnType<typeof createAcpBridge>
 const taskAgent = {
-  spinOff: async (request) => withInfo(await requireBridge().spinOff(request)),
-  mergeBack: async (taskId) => withInfo(await requireBridge().mergeBack(taskId)),
-  closeTask: (taskId) => bridge?.closeTask(taskId),
-  cancelTask: (taskId) => bridge?.cancelTask(taskId),
-  steerTask: (taskId, text) => requireBridge().steerTask(taskId, text),
-  resumeTask: (request) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
-  startTask: (request) => (bridge ? bridge.startTask(request) : { ok: false, reason: 'unavailable' }),
-  promptTask: (taskId, text) => bridge?.promptTask(taskId, text),
+  spinOff: async (request: { words: string }) => withInfo(await requireBridge().spinOff(request)),
+  mergeBack: async (taskId: string) => withInfo(await requireBridge().mergeBack(taskId)),
+  closeTask: (taskId: string) => bridge?.closeTask(taskId),
+  cancelTask: (taskId: string) => bridge?.cancelTask(taskId),
+  steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
+  resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
+  startTask: (request: Parameters<Bridge['startTask']>[0]) => (bridge ? bridge.startTask(request) : { ok: false, reason: 'unavailable' }),
+  promptTask: (taskId: string, text: string) => bridge?.promptTask(taskId, text),
 }
 
 /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
@@ -759,7 +774,7 @@ function useDevIcon() {
   return process.platform === 'darwin' ? null : icon
 }
 
-function createWindow(config) {
+function createWindow(config: Config) {
   const icon = useDevIcon()
   const created = new BrowserWindow({
     ...windowSize(screen.getPrimaryDisplay().workAreaSize),
@@ -839,12 +854,13 @@ function bringLegacyData() {
  * The app's dsh used to live in the user's own ~/.dsh: its sessions come along (old conversations still
  * resume) and the profiles it wrote there go. The user's own sessions and profiles stay where they are.
  */
-function bringDshData(config) {
+function bringDshData(config: Config) {
   const fromHome = process.env.DSH_HOME ? path.resolve(process.env.DSH_HOME) : path.join(os.homedir(), '.dsh')
   try {
-    const sessions = adoptDshSessions({ fromHome, toHome: config.dshHome, cwd: config.cwd })
-    const skills = adoptDshSkills({ fromHome, toHome: config.dshHome })
-    const removed = removeOwnProfiles({ fromHome, toHome: config.dshHome })
+    const toHome = dshHomeOf(config)
+    const sessions = adoptDshSessions({ fromHome, toHome, cwd: config.cwd })
+    const skills = adoptDshSkills({ fromHome, toHome })
+    const removed = removeOwnProfiles({ fromHome, toHome })
     if (sessions || skills.length || removed.length) {
       process.stdout.write(`[viva] moved to the app's own dsh home: ${sessions} sessions, skills ${skills.join(', ') || 'none'}; profiles removed: ${removed.join(', ') || 'none'}\n`)
     }

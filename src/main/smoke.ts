@@ -496,7 +496,7 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
  * `memory`) and screenshots each step into `smokeOut`.
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
-export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhase }: { smokeOut: string, smokePhase: string }, quit: (code: number) => void, hooks: SmokeHooks = {}) {
+export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhase }: { smokeOut: string, smokePhase: string | null }, quit: (code: number) => void, hooks: SmokeHooks = {}) {
   const problems: string[] = []
   win.webContents.on('console-message', (event: { level: string, message: string }) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)

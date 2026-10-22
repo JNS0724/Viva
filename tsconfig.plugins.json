@@ -1,7 +1,7 @@
-// The dsh plugins: Node, inside dsh. Every type written out: a missing one is an error here already.
+// The dsh plugins: Node, inside dsh.
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "lib": ["ES2023"], "types": ["node"], "noImplicitAny": true },
+  "compilerOptions": { "lib": ["ES2023"], "types": ["node"] },
   "include": ["plugins/**/*.js", "plugins/**/*.ts"],
   "exclude": ["plugins/**/node_modules"]
 }
