@@ -63,6 +63,34 @@ test('undone, the task is the main conversation again and its turn ends there', 
   assert.equal(events.filter((e) => e.type === 'turn_end').length, 1)
 })
 
+test('after a relaunch, a task left unfinished is taken up again, remembering what it had', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const { events, llm, bridge } = await setup(t)
+  const first = bridge()
+  await first.start()
+  const running = first.prompt('明天天气怎么样').catch(() => {})
+  await eventually(() => events.find((e) => e.type === 'question'))
+  const spun = await first.spinOff({ words: '明天天气怎么样' })
+  assert.equal(spun.ok, true, JSON.stringify(spun))
+  // Viva quits: dsh goes, and the task with it, unfinished.
+  await first.dispose()
+  await running
+  assert.equal(events.some((e) => e.type === 'task_end' && e.taskId === spun.taskId), false, 'quitting does not end it: it is offered again')
+
+  const second = bridge()
+  await second.start()
+  const resumed = await second.resumeTask({ taskId: spun.taskId })
+  assert.equal(resumed.ok, true, JSON.stringify(resumed))
+  const before = events.length
+  await second.promptTask(spun.taskId, '刚才 Viva 关掉了，接着做没做完的事')
+
+  const ended = events.slice(before).find((e) => e.type === 'task_end' && e.taskId === spun.taskId)
+  assert.ok(ended, 'the task ends as a task, not as the main conversation')
+  assert.equal(events.slice(before).some((e) => e.type === 'turn_end'), false)
+  const asked = JSON.stringify(llm.requests.filter((r) => JSON.stringify(r).includes('接着做没做完的事')).at(0))
+  assert.ok(asked.includes('明天天气怎么样'), 'it still has what it was doing')
+  assert.deepEqual(await second.resumeTask({ taskId: 'no-such-session' }).then((r) => r.ok), false)
+})
+
 test('only a running turn can be spun off', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { bridge } = await setup(t)
   const agent = bridge()

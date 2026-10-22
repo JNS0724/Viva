@@ -13,6 +13,8 @@ export const FINISHED_MS = 5000
 export const REPORT_RETRY_MS = 1000
 /** A pause in typing this long, and the running turn's model is asked where the words go (routeOf). */
 export const JUDGE_PAUSE_MS = 700
+/** While a task talks, what it said is saved at most this often, so quitting Viva loses little. */
+export const SAVE_EVERY_MS = 10_000
 const MOVE_FAILED = '没能挪到后台，这句插进了正在做的事'
 const UNDO_FAILED = '没能撤销'
 const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_question_closed'])
@@ -147,14 +149,51 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       .catch((err) => showToast(errorMessage(err)))
   }
 
-  /** A task that ended keeps what it said, in its own part of the timeline; the island says it ended a moment. */
-  function ended(taskId) {
+  function save(taskId, options) {
     const task = getState().tasks.list.find((entry) => entry.id === taskId)
     if (!task) return
+    api.saveTask(taskId, taskMessages(task), options)
+      .catch((err) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
+  }
+
+  /** Tasks with a save waiting: one each, however much they say meanwhile. */
+  let saving = new Set()
+
+  /** A task said something: saved soon, so that quitting Viva midway loses little (task-store.js). */
+  function noteUpdate(taskId) {
+    if (saving.has(taskId)) return
+    saving = new Set([...saving, taskId])
+    later(() => {
+      saving = new Set([...saving].filter((id) => id !== taskId))
+      save(taskId)
+    }, SAVE_EVERY_MS)
+  }
+
+  /** A task that ended keeps what it said, in its own part of the timeline; the island says it ended a moment. */
+  function ended(taskId) {
+    if (!getState().tasks.list.some((entry) => entry.id === taskId)) return
     settleFinished(taskId)
     showReport(taskId)
-    api.saveTask(taskId, taskMessages(task))
-      .catch((err) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
+    save(taskId, { ended: true })
+  }
+
+  /** What the last launch left going (task-store.js), offered in the conversation. */
+  async function loadUnfinished() {
+    const list = await call(() => api.unfinishedTasks())
+    if (Array.isArray(list) && list.length) dispatch({ type: 'tasks_unfinished', list })
+  }
+
+  /** 接着做: it goes on in the background, from what it had said. */
+  async function resumeUnfinished(taskId) {
+    const result = await call(() => api.resumeTask(taskId))
+    if (!result.ok) return showToast(result.problem ?? '没能接着做')
+    return dispatch({ type: 'task_resumed', task: result.task, messages: result.messages, at: Date.now() })
+  }
+
+  /** 不做了: let go, and not offered again. */
+  async function forgetUnfinished(taskId) {
+    await call(() => api.forgetTask(taskId))
+    dispatch({ type: 'task_forgotten', taskId })
   }
 
   const questionOf = (taskId) => getState().tasks.list.find((task) => task.id === taskId)?.view.question ?? null
@@ -200,6 +239,10 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     pickTaskOption,
     steerTask,
     judgeLater,
+    noteUpdate,
+    loadUnfinished,
+    resumeUnfinished,
+    forgetUnfinished,
     dismissReport: (taskId) => dispatch({ type: 'task_report_dismissed', taskId }),
     submitTaskAnswer: (taskId) => {
       const question = questionOf(taskId)

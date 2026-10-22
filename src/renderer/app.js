@@ -320,6 +320,9 @@ const handlers = {
   pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),
   /** A task's report in the thread, put away (view/thread.js reportCard). */
   dismissReport: (taskId) => taskActions.dismissReport(taskId),
+  /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
+  resumeUnfinished: (taskId) => taskActions.resumeUnfinished(taskId),
+  forgetUnfinished: (taskId) => taskActions.forgetUnfinished(taskId),
   submitTaskAnswer: (taskId) => taskActions.submitTaskAnswer(taskId),
   skipTaskQuestion: (taskId) => taskActions.skipTaskQuestion(taskId),
   send() {
@@ -620,6 +623,7 @@ function handleEvent(event) {
     filesActions.filesAfterTurn()
     sendAfterTurn()
   }
+  if (event?.type === 'task_update') taskActions.noteUpdate(event.taskId)
   if (event?.type === 'task_end') {
     taskActions.ended(event.taskId)
     filesActions.filesAfterTurn()
@@ -644,6 +648,8 @@ async function boot() {
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh()])
+  // What the last launch left going in the background, offered to take up or let go.
+  await taskActions.loadUnfinished()
   await timelineActions.loadEarlier()
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })

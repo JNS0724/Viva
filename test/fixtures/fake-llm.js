@@ -202,8 +202,11 @@ function stream(res, request, index) {
   res.end()
 }
 
-/** @returns {Promise<{ url: string, requests: object[], close: () => Promise<void> }>} */
-export function startFakeLlm() {
+/**
+ * @param {{ port?: number }} [options] a fixed port, for smoke phases that share a profile (its models keep the URL)
+ * @returns {Promise<{ url: string, requests: object[], close: () => Promise<void> }>}
+ */
+export function startFakeLlm({ port = 0 } = {}) {
   const requests = []
   const server = http.createServer((req, res) => {
     let body = ''
@@ -223,7 +226,7 @@ export function startFakeLlm() {
       }
     })
   })
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
     url: `http://127.0.0.1:${server.address().port}`,
     requests,
     close: () => new Promise((done) => server.close(() => done())),

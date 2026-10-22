@@ -210,8 +210,10 @@ export function createAcpBridge({
       else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason })
     } catch (err) {
       const message = describeError(err, stderrTail)
-      if (tasks.has(asked)) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message })
-      else emit({ type: 'error', message })
+      // Viva quitting ends a task's turn too: it is not over, and the next launch offers it (task-store.js).
+      if (tasks.has(asked)) {
+        if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message })
+      } else emit({ type: 'error', message })
     } finally {
       running.delete(asked)
     }
@@ -308,6 +310,39 @@ export function createAcpBridge({
     return { ok: true, info: { ...infoFrom(task.config), resumed: true } }
   }
 
+  /**
+   * A task from an earlier launch, taken up again (task-ipc.js task:resume): its session is reattached beside the
+   * main conversation's, as a task, with all it had; promptTask then asks it to go on.
+   * @param {{ taskId: string, cwd?: string }} request
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function resumeTask({ taskId, cwd = sessionCwd }) {
+    if (!canResume) return { ok: false, reason: 'unavailable' }
+    try {
+      const response = await withMcpServers((servers) => connection.resumeSession({ sessionId: taskId, cwd, mcpServers: servers }))
+      tasks.set(taskId, { cwd, config: response.configOptions ?? configNow })
+      return { ok: true }
+    } catch (err) {
+      console.error('[acp-bridge] could not take up the task again:', describeError(err))
+      return { ok: false, reason: 'missing' }
+    }
+  }
+
+  /** A turn in a task's session: what it says arrives as task_update, its end as task_end (as for a spun-off turn). */
+  async function promptTask(taskId, text) {
+    if (!tasks.has(taskId)) return
+    running.add(taskId)
+    try {
+      const response = await connection.prompt({ sessionId: taskId, prompt: [{ type: 'text', text }] })
+      if (tasks.has(taskId)) emit({ type: 'task_end', taskId, stopReason: response.stopReason })
+    } catch (err) {
+      // As in prompt(): ended because Viva is quitting, it is not over.
+      if (tasks.has(taskId) && !disposed) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(err, stderrTail) })
+    } finally {
+      running.delete(taskId)
+    }
+  }
+
   /** Stops what a task is doing; it stays, answered as cancelled (task_end). */
   async function cancelTask(taskId) {
     if (!tasks.has(taskId)) return
@@ -385,5 +420,5 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, route, fork, spinOff, mergeBack, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, route, fork, spinOff, mergeBack, resumeTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
 }
