@@ -1,6 +1,5 @@
 import { h, keepingInput, label } from './dom.js'
 import { extensionsSection } from './extensions.js'
-import { icon } from './icons.js'
 import { modelsSection } from './models.js'
 
 const SOURCE_COPY = { saved: '已保存在本机', env: '来自环境变量 DEEPSEEK_API_KEY' }
@@ -90,7 +89,7 @@ function deskSection(settings, handlers) {
 }
 
 /**
- * Modal settings panel: the DeepSeek key, other models, the desktop island, then MCP servers and skills.
+ * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, then MCP servers and skills.
  * Re-rendered only when its slices change, and typed text survives a re-render.
  */
 export function renderSettings(container, settings, models, extensions, handlers, { connected }) {
@@ -100,26 +99,19 @@ export function renderSettings(container, settings, models, extensions, handlers
   }
   const isFirstShow = !container.firstChild
   const { form, input } = keyForm(settings, handlers)
-  keepingInput(container, () => container.replaceChildren(h('div', {
-    class: 'overlay',
-    onMousedown: (event) => {
-      if (event.target === event.currentTarget) handlers.closeSettings()
-    },
-  },
-  h('section', { class: 'settings', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'settings-title' },
-    h('div', { class: 'row-between' },
+  keepingInput(container, () => container.replaceChildren(
+    h('section', { class: 'settings', 'aria-labelledby': 'settings-title' },
       h('h2', { class: 'settings-title', id: 'settings-title', text: '设置' }),
-      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭设置', onClick: handlers.closeSettings }, icon('close', 16))),
-    keyStatus(settings),
-    form,
-    feedback(settings),
-    h('p', {
-      class: 'help',
-      id: 'settings-help',
-      text: '加密保存在本机，只显示末 4 位。换 key 会重新连接，当前对话清空；用其他模型时可以不填。',
-    }),
-    modelsSection(models, handlers),
-    deskSection(settings, handlers),
-    extensionsSection(extensions, handlers, { connected })))))
+      keyStatus(settings),
+      form,
+      feedback(settings),
+      h('p', {
+        class: 'help',
+        id: 'settings-help',
+        text: '加密保存在本机，只显示末 4 位。换 key 会重新连接，当前对话清空；用其他模型时可以不填。',
+      }),
+      modelsSection(models, handlers),
+      deskSection(settings, handlers),
+      extensionsSection(extensions, handlers, { connected }))))
   if (isFirstShow && !input.disabled) input.focus()
 }

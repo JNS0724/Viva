@@ -140,9 +140,7 @@ function memoriesSection(memory, handlers, now) {
 
 function profileView(memory, handlers, now) {
   return [
-    h('div', { class: 'row-between' },
-      h('h2', { class: 'settings-title', id: 'profile-title', text: '关于你' }),
-      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', onClick: handlers.closeProfile }, icon('close', 16))),
+    h('h2', { class: 'settings-title', id: 'profile-title', text: '关于你' }),
     h('p', { class: 'help', text: '助手对你的了解都在这里，每一条都可以改或删，只保存在这台电脑上。' }),
     memory.error ? h('p', { class: 'form-error', role: 'alert', text: memory.error }) : null,
     h('section', { class: 'profile-section' },
@@ -191,29 +189,22 @@ function introView(memory, handlers) {
     h('button', { class: 'btn btn-accent', type: 'submit', disabled: memory.busy, text: memory.busy ? '保存中…' : '保存' }),
     h('button', { class: 'btn btn-outline btn-field', type: 'button', text: '以后再说', onClick: handlers.skipIntro })))
   return [
-    h('div', { class: 'row-between' },
-      h('h2', { class: 'settings-title', id: 'profile-title', text: '让我认识你' }),
-      h('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', onClick: handlers.closeProfile }, icon('close', 16))),
+    h('h2', { class: 'settings-title', id: 'profile-title', text: '让我认识你' }),
     h('p', { class: 'help', text: '每一项都可以留空，以后在「关于你」里随时改。' }),
     form,
   ]
 }
 
-/** Modal "关于你" page, or the intro form. Rebuilt only when its slice changes; typed text survives. */
+/** The 关于你 page (view/hub.js), or the intro form in its place. Rebuilt only when its slice changes; typed text survives. */
 export function renderProfilePanel(container, memory, handlers, now = Date.now()) {
   if (!memory.open) {
     container.replaceChildren()
     return
   }
   const shownView = container.querySelector('.profile')?.dataset.view ?? null
-  keepingInput(container, () => container.replaceChildren(h('div', {
-    class: 'overlay',
-    onMousedown: (event) => {
-      if (event.target === event.currentTarget) handlers.closeProfile()
-    },
-  },
-  h('section', { class: 'settings profile', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'profile-title', 'data-view': memory.view },
-    ...(memory.view === 'intro' ? introView(memory, handlers) : profileView(memory, handlers, now)).filter(Boolean)))))
+  keepingInput(container, () => container.replaceChildren(
+    h('section', { class: 'settings profile', 'aria-labelledby': 'profile-title', 'data-view': memory.view },
+      ...(memory.view === 'intro' ? introView(memory, handlers) : profileView(memory, handlers, now)).filter(Boolean))))
   if (shownView !== 'intro' && memory.view === 'intro') container.querySelector('[name="intro-role"]')?.focus()
   container.querySelector('.profile-input')?.focus()
 }

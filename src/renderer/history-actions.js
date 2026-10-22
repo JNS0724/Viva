@@ -2,7 +2,7 @@ const SEARCH_DEBOUNCE_MS = 200
 const TOAST_MS = 3000
 
 /**
- * The search panel (⌘F), the toasts, and the trace of a restored conversation.
+ * The 搜索 page (⌘F; view/hub.js), the toasts, and the trace of a restored conversation.
  * @param {{
  *   api: typeof window.agent, getState: () => object, dispatch: (action: object) => void,
  *   searchField: HTMLInputElement, errorMessage: (err: unknown) => string,
@@ -59,8 +59,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
       dispatch({ type: 'history_toggle' })
       if (opening) focusField()
     },
-    closeHistory: () => dispatch({ type: 'history_close' }),
-    /** ⌘F / Ctrl+F: the panel stays open, its field takes the words. */
+    /** ⌘F / Ctrl+F: the 搜索 page, its field taking the words; what was typed before is still there. */
     openSearch() {
       if (!getState().history.open) dispatch({ type: 'history_open' })
       focusField()

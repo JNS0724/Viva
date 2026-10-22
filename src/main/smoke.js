@@ -177,8 +177,8 @@ async function checkSetup(win, outDir) {
   if (seen.titlebarLeft !== '') failures.push(`title bar left should be empty, was "${seen.titlebarLeft}"`)
   await run(win, `document.querySelector('.setup-action').click()`)
   await wait(UI_WAIT_MS)
-  const settingsOpen = await run(win, `Boolean(document.querySelector('#settings-root .settings'))`)
-  if (!settingsOpen) failures.push('the setup button should open the settings panel')
+  const settingsOpen = await run(win, `document.getElementById('hub').dataset.open === 'true' && Boolean(document.querySelector('#settings-root .settings'))`)
+  if (!settingsOpen) failures.push('the setup button should open the 设置 page')
   await capture(win, outDir, 'setup-settings')
   return failures
 }
@@ -398,11 +398,19 @@ async function checkMarkdown(win, outDir) {
 }
 
 const PANEL_STATE = `(() => ({
-  open: document.getElementById('history-panel').dataset.open === 'true',
+  open: document.getElementById('hub').dataset.open === 'true' && !document.querySelector('.hub-search').hidden,
   titles: [...document.querySelectorAll('.history-title')].map((el) => el.textContent),
   marks: [...document.querySelectorAll('.history-snippet mark')].map((el) => el.textContent),
+  contexts: [...document.querySelectorAll('.hit-context')].map((el) => el.textContent),
   list: document.getElementById('history-list').textContent,
 }))()`
+
+/** The hub covers what is under the title bar only: the island in the middle of it is still what a click there hits. */
+const ISLAND_REACHABLE = `(() => {
+  const box = document.getElementById('island').getBoundingClientRect()
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+  return Boolean(box.width && hit?.closest('#island'))
+})()`
 
 const typeSearch = (text) => `(() => {
   const input = document.getElementById('history-search')
@@ -431,7 +439,9 @@ async function historyPanelSteps(win, outDir, failures) {
   let seen = await panel()
   expect(seen.open && seen.titles.length === 0 && seen.list.includes('找回之前说过的话'), '⌘K should open the search with nothing listed', seen)
 
-  await run(win, 'document.body.click()')
+  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+  await wait(UI_WAIT_MS)
+  expect(!(await panel()).open, 'Esc should close the 搜索 page', null)
   expect(!await run(win, `Boolean(document.getElementById('new-session'))`), 'there should be no 新对话 button; ⌘N starts a new topic', null)
   await newTopic(win)
   await finishTurn(win)
@@ -454,9 +464,11 @@ async function historyPanelSteps(win, outDir, failures) {
   await wait(UI_WAIT_MS)
   seen = await panel()
   expect(seen.open && seen.titles.includes('你') && seen.marks.includes(SEARCH_TEXT), '⌘F should find the message and highlight the words', seen)
+  expect(seen.contexts.length > 0, 'a hit should show what was said next to it', seen)
+  expect(await run(win, ISLAND_REACHABLE), 'the island should stay in reach over the 搜索 page', null)
   await capture(win, outDir, 'history-search')
 
-  await run(win, `[...document.querySelectorAll('.search-hit .history-open')].find((el) => el.querySelector('.history-title').textContent === '你').click()`)
+  await run(win, `[...document.querySelectorAll('.search-hit')].find((el) => el.querySelector('.history-title').textContent === '你').querySelector('.hit-open').click()`)
   await wait(UI_WAIT_MS)
   const found = await run(win, `(() => {
     const el = document.querySelector('.msg-found')
@@ -465,11 +477,11 @@ async function historyPanelSteps(win, outDir, failures) {
     return {
       text: el?.textContent ?? '', inEarlier: Boolean(el?.closest('#earlier')),
       inView: Boolean(box && box.top >= view.top && box.bottom <= view.bottom),
-      panelOpen: document.getElementById('history-panel').dataset.open,
+      panelOpen: document.getElementById('hub').dataset.open,
     }
   })()`)
   expect(found.text.includes(SMOKE_PROMPT) && found.inEarlier && found.inView && found.panelOpen === 'false',
-    'a hit should scroll the earlier message into view, mark it and close the panel', found)
+    '详情 should close the page, scroll the earlier message into view and mark it', found)
   await capture(win, outDir, 'search-jump')
   expect(!seen.list.includes('null'), 'the list should not print "null"', seen.list)
   await run(win, typeSearch(''))

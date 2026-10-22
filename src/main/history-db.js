@@ -13,6 +13,8 @@ const MAX_QUERY_CHARS = 100
 const TRIGRAM_MIN_CHARS = 3
 const SNIPPET_BEFORE = 20
 const SNIPPET_AFTER = 40
+/** How much of the message before and after a search hit is shown with it. */
+const CONTEXT_CHARS = 60
 const QUESTION_TIMES_LIMIT = 1000
 /** Earlier segments of the timeline read back at a time, and the most at once. */
 const SEGMENT_PAGE = 5
@@ -117,6 +119,13 @@ function snippetOf(text, query) {
   }
 }
 
+/** A message next to a search hit, cut short; null when there is none. */
+function contextOf(row) {
+  if (!row) return null
+  const text = row.text.replace(/\s+/g, ' ').trim()
+  return { role: row.role, text: text.length > CONTEXT_CHARS ? `${text.slice(0, CONTEXT_CHARS)}…` : text }
+}
+
 /**
  * Permanent conversation history in one SQLite file (`node:sqlite`, no native module).
  * Stores what the conversation column shows, plus which dsh session each message came from,
@@ -150,6 +159,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
       JOIN conversations c ON c.id = m.conversation_id
       WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL AND c.folded_into IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
     messages: db.prepare('SELECT role, text, receipt FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
     update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ? WHERE conversation_id = ? AND seq = ?'),
@@ -295,7 +305,10 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
     return { segments, hasMore: rows.length > size }
   }
 
-  /** Messages of the whole timeline that contain `input`, newest first, with where each is and its directory. */
+  /**
+   * Messages of the whole timeline that contain `input`, newest first, with where each is, its directory,
+   * and the messages right before and after it in its segment.
+   */
   function searchMessages(input) {
     const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
     if (!query) return []
@@ -304,6 +317,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }) {
       : sql.likeMessageHits.all(`%${escapeLike(query)}%`)
     return rows.map((row) => ({
       segmentId: row.segment_id, seq: row.seq, role: row.role, at: row.created_at, cwd: row.cwd ?? null, snippet: snippetOf(row.text, query),
+      before: contextOf(sql.neighbour.get(row.segment_id, row.seq - 1)),
+      after: contextOf(sql.neighbour.get(row.segment_id, row.seq + 1)),
     }))
   }
 

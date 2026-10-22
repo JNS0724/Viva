@@ -111,3 +111,17 @@ test('searching the timeline finds messages, newest first, with where each one i
   assert.ok(Number.isFinite(hits[0].at))
   assert.deepEqual(db.searchMessages('   '), [])
 })
+
+test('a search hit carries the messages right before and after it in its segment, shortened', () => {
+  const { db } = freshDb()
+  segment(db, [user('先说别的'), answer('好的'), user('帮我把周报整理一下'), answer(`周报写好了${'。'.repeat(100)}`)])
+
+  const [hit] = db.searchMessages('整理')
+  assert.deepEqual(hit.before, { role: 'assistant', text: '好的' })
+  assert.equal(hit.after.role, 'assistant')
+  assert.ok(hit.after.text.startsWith('周报写好了') && hit.after.text.endsWith('…') && hit.after.text.length < 100, 'a long neighbour is cut short')
+
+  const [first] = db.searchMessages('先说别的')
+  assert.equal(first.before, null, 'nothing before the first message')
+  assert.deepEqual(first.after, { role: 'assistant', text: '好的' })
+})

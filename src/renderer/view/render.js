@@ -6,6 +6,7 @@ import { renderDrawer } from './drawer.js'
 import { renderEarlier } from './earlier.js'
 import { renderHistoryPanel, renderToast } from './history-panel.js'
 import { renderHome } from './home.js'
+import { renderHub } from './hub.js'
 import { icon } from './icons.js'
 import { renderIsland } from './island.js'
 import { renderModelPicker } from './model-picker.js'
@@ -156,7 +157,7 @@ export function render(dom, state, handlers, now = Date.now()) {
   renderComposer(dom, state, handlers)
   renderSettingsIfChanged(dom.settings, state, handlers)
   renderProfileIfChanged(dom.profile, state.memory, handlers)
-  dom.openProfile.setAttribute('aria-pressed', String(state.memory.open))
+  renderHub(dom, state)
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)

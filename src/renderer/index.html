@@ -19,14 +19,8 @@
       <div class="titlebar-left" id="titlebar-left"></div>
       <div class="titlebar-center" id="island"></div>
       <div class="titlebar-right">
-        <button class="icon-btn" id="toggle-history" type="button" aria-label="搜索（⌘F）" title="搜索 ⌘F" aria-pressed="false">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
-        </button>
-        <button class="icon-btn" id="open-profile" type="button" aria-label="关于你" title="关于你" aria-pressed="false">
+        <button class="icon-btn" id="open-profile" type="button" aria-label="搜索、关于你和设置" title="搜索 · 关于你 · 设置" aria-pressed="false">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>
-        </button>
-        <button class="icon-btn" id="open-settings" type="button" aria-label="设置" title="设置">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg>
         </button>
         <button class="icon-btn" id="toggle-drawer" type="button" aria-label="切换工具抽屉" title="工具抽屉" aria-pressed="false">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path></svg>
@@ -35,20 +29,40 @@
     </header>
 
     <div class="body">
-      <aside class="history-panel" id="history-panel" data-open="false" aria-label="搜索">
-        <div class="history-head">
-          <span class="label">搜索</span>
-          <button class="icon-btn" id="history-close" type="button" aria-label="收起">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+      <!-- 搜索 · 关于你 · 设置: one page over the conversation, under the title bar so the island stays in reach (view/hub.js). -->
+      <section class="hub" id="hub" data-open="false" aria-label="搜索、关于你和设置">
+        <nav class="hub-side" aria-label="页面">
+          <button class="hub-back" id="hub-back" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>
+            返回<kbd>Esc</kbd>
           </button>
+          <button class="hub-nav" type="button" data-page="search">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+            搜索<kbd class="hub-key" id="hub-search-key">⌘F</kbd>
+          </button>
+          <button class="hub-nav" type="button" data-page="profile">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>
+            关于你
+          </button>
+          <button class="hub-nav" type="button" data-page="settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg>
+            设置
+          </button>
+          <p class="hub-foot">助手在做的事照常进行，进展看标题栏上的岛。</p>
+        </nav>
+        <div class="hub-main">
+          <section class="hub-page hub-search" data-page="search" aria-label="搜索" hidden>
+            <label class="history-search">
+              <span class="sr-only">搜索说过的话</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+              <input id="history-search" type="search" placeholder="搜索说过的话…" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="history-list" id="history-list"></div>
+          </section>
+          <div class="hub-page" id="profile-root" data-page="profile" hidden></div>
+          <div class="hub-page" id="settings-root" data-page="settings" hidden></div>
         </div>
-        <label class="history-search">
-          <span class="sr-only">搜索说过的话</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
-          <input id="history-search" type="search" placeholder="搜索说过的话…" autocomplete="off" spellcheck="false">
-        </label>
-        <div class="history-list" id="history-list"></div>
-      </aside>
+      </section>
 
       <main class="main">
         <section class="scroll" id="scroll" aria-live="polite">
@@ -81,8 +95,6 @@
     </div>
   </div>
   <div class="toast-root" id="toast-root" aria-live="polite"></div>
-  <div id="profile-root"></div>
-  <div id="settings-root"></div>
   <div id="workdir-confirm-root"></div>
   <div id="rewind-confirm-root"></div>
 </body>

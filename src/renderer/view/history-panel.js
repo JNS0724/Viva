@@ -8,13 +8,26 @@ function snippetView(snippet) {
 
 const SPEAKERS = { user: '你', assistant: 'Viva' }
 
-/** One message that has the words; picking it scrolls the timeline to it (timeline-search.js). */
+/** The message said right before or after the hit, dimmed, so the hit reads in its place. */
+const contextLine = (message) => (message
+  ? h('span', { class: 'hit-context' }, h('span', { class: 'hit-who mono', text: SPEAKERS[message.role] ?? '' }), message.text)
+  : null)
+
+/**
+ * One message that has the words, between what was said before and after it;
+ * 详情 closes the page and scrolls the timeline to it (timeline-search.js).
+ */
 function hitView(hit, handlers, now) {
-  return h('li', { class: 'history-item search-hit' },
-    h('button', { class: 'history-open', type: 'button', onClick: () => handlers.jumpToHit(hit) },
-      h('span', { class: 'history-title', text: SPEAKERS[hit.role] ?? '记录' }),
-      snippetView(hit.snippet),
-      h('span', { class: 'history-meta mono', text: [formatListTime(hit.at, now), hit.cwd ? workspaceName(hit.cwd) : null].filter(Boolean).join(' · ') })))
+  const who = SPEAKERS[hit.role] ?? '记录'
+  const where = [formatListTime(hit.at, now), hit.cwd ? workspaceName(hit.cwd) : null].filter(Boolean).join(' · ')
+  return h('li', { class: 'search-hit' },
+    h('div', { class: 'hit-body' },
+      h('span', { class: 'history-meta mono' }, h('b', { class: 'history-title', text: who }), where),
+      h('div', { class: 'hit-lines' }, contextLine(hit.before), snippetView(hit.snippet), contextLine(hit.after))),
+    h('button', {
+      class: 'btn btn-outline btn-small hit-open', type: 'button', text: '详情 →', 'aria-label': `在对话里看${who}说的这句`,
+      onClick: () => handlers.jumpToHit(hit),
+    }))
 }
 
 const empty = (text) => h('div', { class: 'empty', text })
@@ -30,10 +43,8 @@ function searchView(state, handlers, now) {
   ]
 }
 
-/** Left overlay panel: search across the one timeline. Only the results re-render; the field is static markup so typing is never interrupted. */
+/** The 搜索 page (view/hub.js): search across the one timeline. Only the results re-render; the field is static markup so typing is never interrupted. */
 export function renderHistoryPanel(dom, state, handlers, now = Date.now()) {
-  dom.historyPanel.dataset.open = String(state.history.open)
-  dom.toggleHistory.setAttribute('aria-pressed', String(state.history.open))
   if (!state.history.open) return
   // replaceChildren would turn a null into the text "null", unlike h()
   dom.historyList.replaceChildren(...searchView(state, handlers, now).filter(Boolean))
