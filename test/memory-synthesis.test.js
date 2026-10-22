@@ -2,11 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { contextForTurn } from '../plugins/memory/lib/inject.js'
-import { openMemoryDb } from '../plugins/memory/lib/store.js'
+import { contextForTurn } from '../plugins/memory/lib/inject.ts'
+import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import {
   checkSynthesis, SYNTHESIS_INTERVAL_MS, SYNTHESIS_MIN_CHANGES, synthesisDue, synthesisInput, synthesizeProfile,
-} from '../plugins/memory/lib/synthesize.js'
+} from '../plugins/memory/lib/synthesize.ts'
 import { scratch } from './fixtures/scratch.js'
 
 const HOUR = 60 * 60 * 1000

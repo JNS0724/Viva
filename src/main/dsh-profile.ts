@@ -119,7 +119,14 @@ function shimManifest({ name, dir }) {
   return { ...manifest, name, type: 'module', main: 'index.js', exports: { '.': './index.js', './package.json': './package.json' }, vivaPlugin: dir }
 }
 
-const pluginEntry = (dir) => path.join(dir, 'index.js')
+/**
+ * The file dsh loads a plugin from: its TypeScript source where it has one (the repository, as the tests run it:
+ * Node drops the types, the file being outside node_modules), else the index.js the build wrote (out/plugins).
+ */
+export function pluginEntry(dir: string): string {
+  const source = path.join(dir, 'index.ts')
+  return fs.existsSync(source) ? source : path.join(dir, 'index.js')
+}
 const isShim = (folder) => {
   try {
     return fs.readFileSync(path.join(folder, 'index.js'), 'utf8').startsWith(SHIM_MARK)

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openMemoryDb } from '../plugins/memory/lib/store.js'
+import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 
 /** The memory plugin inside the real dsh, with the app's whole profile and a fake model. */

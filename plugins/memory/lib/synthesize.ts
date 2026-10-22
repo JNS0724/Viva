@@ -1,4 +1,4 @@
-import { MAX_SYNTHESIS_CHARS } from './store.js'
+import { MAX_SYNTHESIS_CHARS } from './store.ts'
 
 /**
  * The periodic profile: now and then the agent's model rewrites what the valid memories say about the
@@ -38,7 +38,7 @@ const day = (ts) => {
 }
 
 /** As JSON, so nothing in a memory can pose as an instruction. */
-export function synthesisInput({ profile, memories }) {
+export function synthesisInput({ profile, memories }: { profile: Record<string, { value: string }>, memories: ReadonlyArray<{ updatedAt: number, kind: string, text: string }> }) {
   return JSON.stringify({
     userProfile: Object.fromEntries(Object.entries(profile).map(([field, entry]) => [field, entry.value])),
     memories: memories.map((memory) => ({ date: day(memory.updatedAt), kind: memory.kind, text: memory.text })),

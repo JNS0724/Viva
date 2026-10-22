@@ -1,5 +1,6 @@
-import { recallMatches } from './match.js'
-import { MEMORY_KINDS } from './store.js'
+import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
+import { recallMatches } from './match.ts'
+import { MEMORY_KINDS } from './store.ts'
 
 /** Prefixed so they can't clash with another plugin's tools; dsh shows them to the model under these names. */
 export const MEMORY_TOOL_NAMES = Object.freeze(['memory_remember', 'memory_recall', 'memory_forget'])
@@ -25,9 +26,10 @@ function assertQuery(query) {
  * The memory tools, independent of dsh so they can be tested directly. `parameters` is dsh's schema DSL;
  * lengths and secrets are checked by the store, which throws a readable message the model can relay.
  * Each `run` returns the text the model sees.
- * @param {ReturnType<import('./store.js').openMemoryDb>} db
  */
-export function memoryTools(db) {
+export function memoryTools(db: ReturnType<typeof import('./store.ts').openMemoryDb>): Array<{
+  name: string, description: string, parameters: ParameterSchemaSpec, run: (args: any) => string,
+}> {
   return [
     {
       name: 'memory_remember',

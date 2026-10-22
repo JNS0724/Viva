@@ -1,6 +1,6 @@
-import { recallMatches } from './match.js'
-import { buildLexicon, namesIn, namesOfMemory } from './names.js'
-import { MAX_EXTRACTED_CHANGES, MEMORY_KINDS } from './store.js'
+import { recallMatches } from './match.ts'
+import { buildLexicon, namesIn, namesOfMemory } from './names.ts'
+import { MAX_EXTRACTED_CHANGES, MEMORY_KINDS } from './store.ts'
 
 /**
  * The background pass after each turn: a second model call reads what the user said and the answer,
@@ -49,7 +49,9 @@ export function candidatesFor(userWords, memories, lexicon) {
 }
 
 /** Everything goes in as JSON, so nothing the user typed can pose as an instruction or a delimiter. */
-export function extractionInput({ userWords, answers = [], reply, today, candidates, profile = {} }) {
+export function extractionInput({ userWords, answers = [], reply, today, candidates, profile = {} }: {
+  userWords: string, answers?: unknown[], reply: string, today: string, candidates: any[], profile?: Record<string, { value: string }>,
+}) {
   return JSON.stringify({
     today,
     profile: Object.fromEntries(Object.entries(profile).map(([field, entry]) => [field, entry.value])),

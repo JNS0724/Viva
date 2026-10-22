@@ -6,7 +6,7 @@
  * Loaded by the app's dsh profile (src/main/dsh-profile.js).
  */
 import z from '@deepseek-ai/schemastery'
-import { createQuestionChannel } from './lib/channel.js'
+import { createQuestionChannel } from './lib/channel.ts'
 
 export const name = 'viva-questions'
 export const Config = z.object({})
