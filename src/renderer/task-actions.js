@@ -146,18 +146,41 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     }, SAVE_EVERY_MS)
   }
 
-  /** A task that ended keeps what it said, in its own part of the timeline; the island says it ended a moment. */
+  /**
+   * A task that ended keeps what it said, in its own part of the timeline, and how it ended, to be asked again
+   * later (接着问); the island says it ended a moment.
+   */
   function ended(taskId) {
-    if (!getState().tasks.list.some((entry) => entry.id === taskId)) return
+    const task = getState().tasks.list.find((entry) => entry.id === taskId)
+    if (!task) return
     settleFinished(taskId)
     showReport(taskId)
-    save(taskId, { ended: true })
+    save(taskId, { ended: true, status: task.status })
   }
 
-  /** What the last launch left going (task-store.js), offered in the conversation. */
+  /**
+   * What the last launch left going (task-store.js), offered in the conversation; and the tasks that had
+   * ended, back as they were, to be asked again.
+   */
   async function loadUnfinished() {
     const list = await call(() => api.unfinishedTasks())
     if (Array.isArray(list) && list.length) dispatch({ type: 'tasks_unfinished', list })
+    const done = await call(() => api.finishedTasks())
+    if (Array.isArray(done) && done.length) dispatch({ type: 'tasks_restored', list: done })
+  }
+
+  /**
+   * 接着问 / 「#name …」 to a task that ended: the words are its next question, in its own session; it is back
+   * at work at once. Should it not be reachable, it says why and the task is as it was.
+   */
+  async function askTask(taskId, text) {
+    const before = getState().tasks.list.find((entry) => entry.id === taskId)
+    if (!before) return
+    dispatch({ type: 'task_asked', taskId, text, at: Date.now() })
+    const result = await call(() => api.askTask(taskId, text))
+    if (result?.ok) return
+    dispatch({ type: 'task_ask_failed', task: before })
+    showToast(result?.problem ?? '没能接着问')
   }
 
   /** 接着做: it goes on in the background, from what it had said. */
@@ -215,6 +238,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     closeTask,
     pickTaskOption,
     steerTask,
+    askTask,
     noteUpdate,
     loadUnfinished,
     resumeUnfinished,

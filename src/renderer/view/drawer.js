@@ -45,9 +45,11 @@ const tabsOf = (state) => [...TABS, ...state.tasks.list.map((task) => ({ id: tas
 const TASK_STATUS = { running: '在后台做', waiting: '在后台等你', done: '做完了', stopped: '停下了', error: '出错了' }
 const LIVE = new Set(['running', 'waiting'])
 
+const tabAct = (text, onClick) => h('button', { class: 'btn btn-secondary task-tab-act', type: 'button', text, onClick })
+
 /**
- * A task's tab: where it stands, with 停下 while it goes on or 关掉这件 once it ended (its session closes and
- * the tab goes), what it said last, then what it did.
+ * A task's tab: where it stands, with 停下 while it goes on, or 接着问 and 关掉这件 once it ended (closed, its
+ * session ends and the tab goes), what it said last, then what it did.
  */
 function taskView(state, task, handlers) {
   const live = LIVE.has(task.status)
@@ -55,9 +57,9 @@ function taskView(state, task, handlers) {
   return [
     h('div', { class: 'task-tab-head' },
       h('span', { class: 'task-tab-status', 'data-status': task.status, text: TASK_STATUS[task.status] ?? '' }),
-      live
-        ? h('button', { class: 'btn btn-secondary task-tab-act', type: 'button', text: '停下', onClick: () => handlers.stopTask(task.id) })
-        : h('button', { class: 'btn btn-secondary task-tab-act', type: 'button', text: '关掉这件', onClick: () => handlers.closeTask(task.id) })),
+      ...(live
+        ? [tabAct('停下', () => handlers.stopTask(task.id))]
+        : [tabAct('接着问', () => handlers.followUpTask(task.id)), tabAct('关掉这件', () => handlers.closeTask(task.id))])),
     answer ? h('section', { class: 'task-tab-answer', 'aria-label': '它的回答' }, renderMarkdown(answer, handlers)) : null,
     ...traceView({ ...state, ...task.view, restoredTrace: null }),
   ]

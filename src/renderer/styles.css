@@ -254,6 +254,8 @@ html:not([data-platform="darwin"]) {
 .task-report-x { flex: none; font-size: 18px; line-height: 1; }
 /* A task's drawer tab (view/drawer.js taskView): where it stands, then what it said, then what it did. */
 .task-tab-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+/* Where it stands on the left; its buttons (停下, or 接着问 and 关掉这件) together on the right. */
+.task-tab-head .task-tab-status { margin-right: auto; }
 .task-tab-status { font-size: 13px; font-weight: 700; color: var(--ink-2); }
 .task-tab-status[data-status="waiting"] { color: var(--orange); }
 .task-tab-status[data-status="error"] { color: var(--red); }

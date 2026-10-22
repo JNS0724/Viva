@@ -234,12 +234,46 @@ test('tasks the last launch left going are offered, taken up, or let go', async 
   assert.deepEqual([forgotten, other.state().tasks.unfinished], [['s8'], []])
 })
 
-test('an ended task keeps what it said', async () => {
+test('an ended task keeps what it said, and how it ended', async () => {
   const saved = []
   const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async (...args) => { saved.push(args) } })
   await win.actions.moveAndAsk('明天周会几点？')
+  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'cancelled', at: 70 })
   win.actions.ended('s1')
 
-  assert.deepEqual(saved, [['s1', [{ role: 'user', text: WORDS }, { role: 'assistant', text: '先看提交…' }], { ended: true }]],
-    'ended: not offered at the next launch')
+  assert.deepEqual(saved, [['s1', [{ role: 'user', text: WORDS }, { role: 'assistant', text: '先看提交…' }], { ended: true, status: 'stopped' }]],
+    'ended: kept to be asked again, not offered as unfinished')
+})
+
+test('a task that ended is asked again: it goes back to work, or says why it could not and stays as it was', async () => {
+  const asked = []
+  const win = windowWith({ spinOffTask: async () => spunReply, askTask: async (...args) => { asked.push(args); return { ok: true } } })
+  await win.actions.moveAndAsk('明天周会几点？')
+  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
+
+  await win.actions.askTask('s1', '再加上已知问题')
+  assert.deepEqual(asked, [['s1', '再加上已知问题']])
+  const [task] = liveTasks(win.state())
+  assert.deepEqual([task.id, taskMessages(task).at(-1).text], ['s1', '再加上已知问题'])
+
+  const refused = windowWith({ spinOffTask: async () => spunReply, askTask: async () => ({ ok: false, problem: '这件事接不上了' }) })
+  await refused.actions.moveAndAsk('明天周会几点？')
+  refused.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
+  await refused.actions.askTask('s1', '再加上已知问题')
+  assert.deepEqual(refused.said.toasts, ['这件事接不上了'])
+  const [still] = refused.state().tasks.list
+  assert.deepEqual([still.status, liveTasks(refused.state()).length], ['done', 0], 'as it was before')
+})
+
+test('tasks that had ended by the last launch come back at the start, beside those left going', async () => {
+  const win = windowWith({
+    unfinishedTasks: async () => [],
+    finishedTasks: async () => [{
+      task: { id: 's3', segmentId: 'c3', title: '查天气', words: '查天气' }, status: 'done', endedAt: 5,
+      messages: [{ role: 'user', text: '查天气', receipt: null }, { role: 'assistant', text: '晴。', receipt: null }],
+    }],
+  })
+  await win.actions.loadUnfinished()
+  const [task] = win.state().tasks.list
+  assert.deepEqual([task.id, task.status, taskMessages(task).map((m) => m.text)], ['s3', 'done', ['查天气', '晴。']])
 })

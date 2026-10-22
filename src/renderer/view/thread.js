@@ -180,6 +180,7 @@ function reportCard(report, handlers) {
       h('b', { class: 'task-report-head', text: `#${report.title} ${REPORT_SAID[report.status] ?? REPORT_SAID.done}` }),
       report.preview ? h('span', { class: 'task-report-text', text: report.preview }) : null),
     h('button', { class: `${BUTTON.secondary} task-report-open`, type: 'button', text: '看全部', onClick: () => handlers.openDrawer(taskTab(report.taskId)) }),
+    h('button', { class: `${BUTTON.secondary} task-report-open task-follow-up`, type: 'button', text: '接着问', onClick: () => handlers.followUpTask(report.taskId) }),
     h('button', { class: 'icon-btn task-report-x', type: 'button', 'aria-label': '收起', text: '×', onClick: () => handlers.dismissReport(report.taskId) }))
 }
 

@@ -24,13 +24,16 @@ export const initialTasks = Object.freeze({
   unfinished: [],
 })
 
-/** A task taken up again starts from what it had said; the rest of its view begins afresh, at work. */
-const takenUpView = (messages, at) => ({
+/**
+ * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
+ * when taken up again (`at`), at rest when it had ended (no `at`).
+ */
+const savedView = (messages, at = null) => ({
   messages: messages.map((message, i) => ({
     id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open: false, receipt: message.receipt ?? null,
   })),
   thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
-  turn: { startedAt: at, tools: 0, thoughts: 0 }, phase: 'working', usage: null, lastReceipt: null, error: null,
+  turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, lastReceipt: null, error: null,
 })
 
 /** The parts of the state a task's view keeps (the conversation, as it was when the turn left). */
@@ -90,17 +93,25 @@ function previewOf(view) {
 /** What a task said last, whole: its drawer tab shows it above what it did (view/drawer.js). */
 export const taskAnswer = (task) => task.view.messages.findLast((message) => message.role === 'assistant')?.text ?? ''
 
-const MENTION = /^#(\S+)\s+(\S[\s\S]*)$/
+/** 「#name 」 and what follows: found as soon as the name is written, so the line over the input says where words will go. */
+const MENTION = /^#(\S+)\s+([\s\S]*)$/
+/** How much of a task's title 接着问 writes after the #: enough to find it, short enough to read. */
+const MENTION_NAME_CHARS = 12
+/** The name 接着问 puts after the # for `task`: the start of its title, which `mentionedTask` finds it by. */
+export const mentionNameOf = (task) => task.title.trim().split(/\s+/)[0].slice(0, MENTION_NAME_CHARS)
+
 /**
  * 「#name words」: the words go to the background task whose title has `name` in it, not to the
- * conversation on screen. Only tasks still going take words.
- * @returns {{ taskId: string, title: string, text: string } | null}
+ * conversation on screen. A task still going reads them in its turn; one that ended (`ended`) is asked
+ * them as its next question. Tasks still going come first, then those that ended, latest first.
+ * @returns {{ taskId: string, title: string, text: string, ended: boolean } | null}
  */
 export function mentionedTask(state, text) {
-  const match = MENTION.exec(text.trim())
+  const match = MENTION.exec(text.trimStart())
   if (!match) return null
-  const task = liveTasks(state).find((entry) => entry.title.includes(match[1]))
-  return task ? { taskId: task.id, title: task.title, text: match[2].trim() } : null
+  const ended = state.tasks.list.filter((task) => !LIVE.has(task.status)).sort((a, b) => b.endedAt - a.endedAt)
+  const task = [...liveTasks(state), ...ended].find((entry) => entry.title.includes(match[1]))
+  return task ? { taskId: task.id, title: task.title, text: match[2].trim(), ended: !LIVE.has(task.status) } : null
 }
 
 /** The tool the agent calls to say, before it starts, that a job will take long (plugins/steer/lib/offer.js). */
@@ -195,8 +206,26 @@ export function taskActions(handlers) {
     task_resumed: (state, { task, messages, at }) => withTasks(state, {
       unfinished: state.tasks.unfinished.filter((entry) => entry.id !== task.id),
       list: [...state.tasks.list.filter((entry) => entry.id !== task.id),
-        settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: takenUpView(messages, at) })],
+        settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView(messages, at) })],
     }),
+    /** Tasks that had ended by the last launch (task-store.js): back as they were, to be asked again or closed. */
+    tasks_restored: (state, { list }) => withTasks(state, {
+      list: [...state.tasks.list.filter((entry) => !list.some((item) => item.task.id === entry.id)),
+        ...list.map(({ task, status, endedAt, messages }) => settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))],
+    }),
+    /**
+     * 接着问 or 「#name …」 to a task that ended: the words are its next question, and it is back at work in
+     * the background. Its card goes; a new one comes when it is done again.
+     */
+    task_asked: (state, { taskId, text, at }) => {
+      const asked = mapTask(state, taskId, (task) => ({ ...task, startedAt: at, endedAt: null, view: handlers.user_prompt(task.view, { text, at }) }))
+      return withTasks(asked, {
+        reports: asked.tasks.reports.filter((entry) => entry.taskId !== taskId),
+        finished: asked.tasks.finished?.taskId === taskId ? null : asked.tasks.finished,
+      })
+    },
+    /** The task could not be asked (its session is gone): it is as it was before. */
+    task_ask_failed: (state, { task }) => withTasks(state, { list: state.tasks.list.map((entry) => (entry.id === task.id ? task : entry)) }),
 
     task_report_shown: (state, { taskId }) => withTasks(state, {
       reports: state.tasks.reports.map((entry) => (entry.taskId === taskId ? { ...entry, shown: true } : entry)),

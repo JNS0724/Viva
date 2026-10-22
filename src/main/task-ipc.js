@@ -13,15 +13,22 @@ export const TASK_PROBLEMS = Object.freeze({
   missing: '当前对话已经结束，请稍后再试',
   unavailable: '这个版本的助手不支持后台任务，请更新 Viva',
   lost: '这件事接不上了：上次的记录找不到，可以选「不做了」',
+  gone: '这件事接不上了：上次的记录找不到，可以关掉它',
+  going: '这件还在做，直接说就会插进去',
 })
 
 /** What a task taken up again is told: Viva was closed while it worked. */
 const GO_ON = '刚才 Viva 关掉了，请接着做没做完的事。'
 /** Without a store (tests that do not need one), nothing is kept between launches. */
 const NO_STORE = Object.freeze({ list: () => [], add: () => {}, remove: () => {} })
+/** Tasks that ended stay to be asked again (接着问), across launches too: the latest few, until closed. */
+const KEEP_ENDED = 5
+const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 
 const isText = (value) => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
 const isCount = (value) => Number.isSafeInteger(value) && value >= 0
+const isEnded = (entry) => Number.isFinite(entry?.endedAt)
+const summaryOf = ({ id, segmentId, title, words }) => ({ id, segmentId, title, words })
 const titleOf = (words) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
@@ -49,6 +56,8 @@ function checked(request) {
 export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCurrent, isBusy, setBusy, agentInfo, agent }) {
   /** taskId → { id, segmentId, title, words, keep, next } (next: the segment the conversation went on in) */
   const tasks = new Map()
+  /** Tasks whose dsh session this launch holds: moved here, or taken up again. Others must be taken up first. */
+  let attached = new Set()
 
   const taskById = (taskId) => {
     const task = tasks.get(taskId)
@@ -75,21 +84,32 @@ export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCur
     setCurrent(next)
     const task = { id: spun.taskId, segmentId: previous.id, title: titleOf(words), words }
     tasks.set(task.id, { ...task, keep, next: next.id })
+    attached = new Set([...attached, task.id])
     // Kept on disk while it goes on: should Viva quit first, the next launch offers it again.
     store.add({ ...task, keep, next: next.id, cwd: previous.cwd ?? '', startedAt: Date.now() })
     return { ok: true, task, info: spun.info, conversation: { id: next.id, messages: kept }, folds: db.foldsOf(next.id) }
   }
 
+  const detach = (taskId) => { attached = new Set([...attached].filter((id) => id !== taskId)) }
+
   /**
    * What the task has said, from the words that started it on: kept after what came before them. Saved along
-   * the way and at its end; ended, it is let go from the store.
+   * the way and at its end; ended, it stays in the store marked so, to be asked again (`ask`).
    */
-  function save(taskId, messages, { ended = false } = {}) {
+  function save(taskId, messages, { ended = false, status = 'done' } = {}) {
     const task = taskById(taskId)
     const found = db.get(task.segmentId)
     if (!found) throw new Error('no such task')
     db.save(found.conversation, [...found.messages.slice(0, task.keep), ...messages])
-    if (ended) store.remove(taskId)
+    if (ended) keepEnded(task, status)
+  }
+
+  /** Ended: kept with how it ended; beyond the latest few, the oldest are let go. */
+  function keepEnded(task, status) {
+    const entry = store.list().find((item) => item.id === task.id) ?? task
+    store.add({ ...entry, endedAt: Date.now(), status: ENDED_STATUSES.has(status) ? status : 'done' })
+    store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED)
+      .forEach((old) => store.remove(old.id))
   }
 
   async function undo(taskId) {
@@ -97,6 +117,7 @@ export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCur
     const back = await agent.mergeBack(taskId)
     if (!back.ok) return { ok: false, problem: TASK_PROBLEMS[back.reason] ?? '没能撤销' }
     tasks.delete(taskId)
+    detach(taskId)
     store.remove(taskId)
     db.unfold(task.segmentId)
     db.softDelete(task.next)
@@ -109,14 +130,51 @@ export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCur
   async function close(taskId) {
     taskById(taskId)
     tasks.delete(taskId)
+    detach(taskId)
     store.remove(taskId)
     await agent.closeTask(taskId)
   }
 
   /** Tasks an earlier launch left going (task-store.js): offered at the start, to take up or let go. */
   const unfinished = () => store.list()
-    .filter((entry) => !tasks.has(entry.id))
+    .filter((entry) => !tasks.has(entry.id) && !isEnded(entry))
     .map(({ id, title, segmentId, startedAt }) => ({ id, title, segmentId, startedAt }))
+
+  /**
+   * Tasks that had ended by an earlier launch: back in the window as they were, with what they said, to be
+   * asked again or closed. Their sessions are taken up only when asked.
+   */
+  function finished() {
+    return store.list()
+      .filter((entry) => isEnded(entry) && !attached.has(entry.id))
+      .map((entry) => ({ entry, found: db.get(entry.segmentId) }))
+      .filter(({ found }) => found)
+      .map(({ entry, found }) => {
+        tasks.set(entry.id, entry)
+        return { task: summaryOf(entry), status: entry.status, endedAt: entry.endedAt, messages: found.messages.slice(entry.keep) }
+      })
+  }
+
+  /**
+   * 接着问: a task that ended is asked `text` as its next question, in its own session, which remembers all it
+   * did; taken up first when an earlier launch held it. It is going again, so kept as going.
+   */
+  async function ask(taskId, text) {
+    if (!isText(text)) throw new Error('invalid task request')
+    const kept = store.list().find((entry) => entry.id === taskId)
+    if (!kept) throw new Error('no such task')
+    if (!isEnded(kept)) return { ok: false, problem: TASK_PROBLEMS.going }
+    if (!attached.has(taskId)) {
+      const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
+      if (!taken.ok) return { ok: false, problem: TASK_PROBLEMS.gone }
+      attached = new Set([...attached, taskId])
+    }
+    const { endedAt: _endedAt, status: _status, ...going } = kept
+    store.add(going)
+    tasks.set(taskId, going)
+    agent.promptTask(taskId, text)
+    return { ok: true }
+  }
 
   /**
    * Taken up again: its dsh session is reattached as a task and asked to go on; the window gets what it had
@@ -128,14 +186,17 @@ export function registerTaskIpc(ipcMain, { db, store = NO_STORE, current, setCur
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok) return { ok: false, problem: TASK_PROBLEMS.lost }
     tasks.set(taskId, kept)
+    attached = new Set([...attached, taskId])
     agent.promptTask(taskId, GO_ON)
     const said = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
-    return { ok: true, task: { id: kept.id, segmentId: kept.segmentId, title: kept.title, words: kept.words }, messages: said }
+    return { ok: true, task: summaryOf(kept), messages: said }
   }
 
   ipcMain.handle('task:spin-off', (_event, request) => spinOff(request))
   ipcMain.handle('task:save', async (_event, taskId, messages, options) => save(taskId, messages, options))
   ipcMain.handle('task:unfinished', () => unfinished())
+  ipcMain.handle('task:finished', () => finished())
+  ipcMain.handle('task:ask', (_event, taskId, text) => ask(taskId, text))
   ipcMain.handle('task:resume', (_event, taskId) => resume(taskId))
   ipcMain.handle('task:forget', (_event, taskId) => store.remove(taskId))
   ipcMain.handle('task:undo', (_event, taskId) => undo(taskId))
