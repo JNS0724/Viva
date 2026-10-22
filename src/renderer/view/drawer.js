@@ -1,5 +1,6 @@
 import { traceItems, usageLabel } from '../selectors.js'
-import { taskOfTab, taskTab } from '../tasks-state.js'
+import { taskAnswer, taskOfTab, taskTab } from '../tasks-state.js'
+import { renderMarkdown } from './markdown.js'
 import { filesView } from './files-panel.js'
 import { h, label } from './dom.js'
 import { icon } from './icons.js'
@@ -41,9 +42,30 @@ const TAB_VIEWS = { trace: traceView, files: filesView }
 /** 过程 and 文件, then a tab a task in the background (tasks-state.js taskTab), its trace like the conversation's. */
 const tabsOf = (state) => [...TABS, ...state.tasks.list.map((task) => ({ id: taskTab(task.id), name: `#${task.title}`, task: true }))]
 
+const TASK_STATUS = { running: '在后台做', waiting: '在后台等你', done: '做完了', stopped: '停下了', error: '出错了' }
+const LIVE = new Set(['running', 'waiting'])
+
+/**
+ * A task's tab: where it stands, with 停下 while it goes on or 关掉这件 once it ended (its session closes and
+ * the tab goes), what it said last, then what it did.
+ */
+function taskView(state, task, handlers) {
+  const live = LIVE.has(task.status)
+  const answer = taskAnswer(task)
+  return [
+    h('div', { class: 'task-tab-head' },
+      h('span', { class: 'task-tab-status', 'data-status': task.status, text: TASK_STATUS[task.status] ?? '' }),
+      live
+        ? h('button', { class: 'btn btn-secondary task-tab-act', type: 'button', text: '停下', onClick: () => handlers.stopTask(task.id) })
+        : h('button', { class: 'btn btn-secondary task-tab-act', type: 'button', text: '关掉这件', onClick: () => handlers.closeTask(task.id) })),
+    answer ? h('section', { class: 'task-tab-answer', 'aria-label': '它的回答' }, renderMarkdown(answer, handlers)) : null,
+    ...traceView({ ...state, ...task.view, restoredTrace: null }),
+  ]
+}
+
 function bodyOf(state, handlers) {
   const task = taskOfTab(state, state.drawer)
-  if (task) return traceView({ ...state, ...task.view, restoredTrace: null })
+  if (task) return taskView(state, task, handlers)
   return (TAB_VIEWS[state.drawer] ?? traceView)(state, handlers)
 }
 

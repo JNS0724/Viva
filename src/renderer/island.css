@@ -122,6 +122,7 @@
   font: inherit; font-size: 12px; color: var(--ink-3); text-align: left; cursor: pointer;
 }
 .isl-bg-mid:hover b { text-decoration: underline; }
+.isl-bg-time { flex: none; font: 11px var(--font-mono); color: var(--ink-3); }
 .isl-bg-mid > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .isl-bg-mid b { font-size: 13px; color: var(--ink); }
 .isl-mini {

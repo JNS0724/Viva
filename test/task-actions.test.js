@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { createTaskActions, FINISHED_MS } from '../src/renderer/task-actions.js'
+import { createTaskActions, FINISHED_MS, REPORT_RETRY_MS } from '../src/renderer/task-actions.js'
 import { liveTasks, taskMessages } from '../src/renderer/tasks-state.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -133,13 +133,14 @@ test('the island says a task ended a moment, longer while the user is typing', a
   win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
   win.actions.ended('s1')
 
-  const first = timers.shift()
-  assert.equal(first.ms, FINISHED_MS)
+  // The island's timers only; the report into the conversation keeps its own (REPORT_RETRY_MS).
+  const island = () => timers.filter((timer) => timer.ms === FINISHED_MS)
+  const [first] = island()
   first.run()
   assert.equal(win.state().tasks.finished.taskId, 's1', 'still said while the user types')
-  assert.equal(timers.length, 1, 'it waits another while')
+  assert.equal(island().length, 2, 'it waits another while')
   typing = false
-  timers.shift().run()
+  island()[1].run()
   assert.equal(win.state().tasks.finished, null)
 })
 
@@ -164,6 +165,32 @@ test('a task\'s question is answered there: one choice by picking it, more with 
   ])
   assert.equal(liveTasks(win.state())[0].question, null)
   assert.equal(win.state().question, null, 'the conversation on screen was never asked')
+})
+
+test('a task\'s report comes into the conversation at once, or once the user stops typing', async () => {
+  const timers = []
+  let typing = true
+  const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async () => {} }, {
+    later: (run, ms) => timers.push({ run, ms }),
+    isTyping: () => typing,
+  })
+  await win.actions.moveAndAsk('明天周会几点？')
+  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
+  win.actions.ended('s1')
+  assert.equal(win.state().tasks.reports[0].shown, false, 'not while the user types')
+
+  typing = false
+  timers.filter((timer) => timer.ms === REPORT_RETRY_MS).forEach((timer) => timer.run())
+  assert.equal(win.state().tasks.reports[0].shown, true)
+})
+
+test('「#name」 words go into that task\'s turn', async () => {
+  const steered = []
+  const win = windowWith({ spinOffTask: async () => spunReply, steerTask: async (...args) => { steered.push(args); return { ok: true } } })
+  await win.actions.moveAndAsk('明天周会几点？')
+  win.actions.steerTask('s1', '加上版本号')
+  assert.deepEqual(steered, [['s1', '加上版本号']])
+  assert.equal(taskMessages(liveTasks(win.state())[0]).at(-1).text, '加上版本号')
 })
 
 test('an ended task keeps what it said', async () => {

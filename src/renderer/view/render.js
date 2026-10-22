@@ -1,6 +1,6 @@
 import { isBusy } from '../state.js'
 import { setupView } from '../selectors.js'
-import { routeOf } from '../tasks-state.js'
+import { mentionedTask, routeOf } from '../tasks-state.js'
 import { h } from './dom.js'
 import { renderDrawer } from './drawer.js'
 import { renderEarlier } from './earlier.js'
@@ -101,13 +101,27 @@ export function renderSendButton(dom, state) {
   dom.sendBtn.replaceChildren(icon(stops ? 'stop' : 'send', 22))
 }
 
+function renderMentionHint(dom, mentioned) {
+  const key = `task:${mentioned.taskId}`
+  if (dom.routeHint.dataset.route === key) return
+  dom.routeHint.dataset.route = key
+  dom.routeHint.hidden = false
+  dom.routeHint.replaceChildren(h('span', { 'aria-hidden': 'true', text: '↳' }), h('b', { text: `交给 #${mentioned.title}` }),
+    h('span', { text: '· 它下一步就会读到' }))
+}
+
 const ROUTES = {
   other: { mark: '↗', name: '另一件事', then: '· 刚才那件会挪到后台接着做', tab: '改成插话' },
   into: { mark: '↳', name: '插进正在做的事', then: '· 它下一步就会读到', tab: '当成另一件事' },
 }
 
-/** While the agent works and words are typed: whether they go into the turn or move it to the background; Tab turns it. */
+/**
+ * While the agent works and words are typed: whether they go into the turn or move it to the background;
+ * Tab turns it. Words starting 「#name」 go to that background task, busy or not.
+ */
 export function renderRouteHint(dom, state) {
+  const mentioned = state.question ? null : mentionedTask(state, dom.input.value)
+  if (mentioned) return renderMentionHint(dom, mentioned)
   const route = state.question ? null : routeOf(state, dom.input.value)
   if (dom.routeHint.dataset.route === (route ?? '')) return
   dom.routeHint.dataset.route = route ?? ''

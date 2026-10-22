@@ -15,6 +15,11 @@ export const initialTasks = Object.freeze({
   flip: false,
   /** The task that just ended, for the island to say so a moment: { taskId, title, status }. */
   finished: null,
+  /**
+   * What ended tasks came back with, for the conversation (F): { taskId, title, status, preview, shown }.
+   * shown: put in the thread once the user is not typing (task-actions.js); gone once put away.
+   */
+  reports: [],
 })
 
 /** The parts of the state a task's view keeps (the conversation, as it was when the turn left). */
@@ -61,6 +66,30 @@ export function spinOffTarget(state) {
     if (startsTurn(saved[keep])) return { words: saved[keep].text, keep }
   }
   return null
+}
+
+const PREVIEW_CHARS = 80
+/** The first line of what a task said last, for its report (the drawer tab has all of it). */
+function previewOf(view) {
+  const answer = view.messages.findLast((message) => message.role === 'assistant')?.text ?? ''
+  const line = answer.split('\n').map((item) => item.trim()).find(Boolean) ?? ''
+  return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS - 1)}…` : line
+}
+
+/** What a task said last, whole: its drawer tab shows it above what it did (view/drawer.js). */
+export const taskAnswer = (task) => task.view.messages.findLast((message) => message.role === 'assistant')?.text ?? ''
+
+const MENTION = /^#(\S+)\s+(\S[\s\S]*)$/
+/**
+ * 「#name words」: the words go to the background task whose title has `name` in it, not to the
+ * conversation on screen. Only tasks still going take words.
+ * @returns {{ taskId: string, title: string, text: string } | null}
+ */
+export function mentionedTask(state, text) {
+  const match = MENTION.exec(text.trim())
+  if (!match) return null
+  const task = liveTasks(state).find((entry) => entry.title.includes(match[1]))
+  return task ? { taskId: task.id, title: task.title, text: match[2].trim() } : null
 }
 
 /** The tool the agent calls to say, before it starts, that a job will take long (plugins/steer/lib/offer.js). */
@@ -135,12 +164,21 @@ export function taskActions(handlers) {
       const task = state.tasks.list.find((entry) => entry.id === taskId)
       if (!task) return state
       const status = ENDED[stopReason] ?? 'done'
-      const list = state.tasks.list.map((entry) => (entry.id === taskId
-        ? { ...entry, view: handlers.turn_end(entry.view, { stopReason, at }), status, now: null, endedAt: at }
-        : entry))
+      const view = handlers.turn_end(task.view, { stopReason, at })
+      const list = state.tasks.list.map((entry) => (entry.id === taskId ? { ...entry, view, status, now: null, endedAt: at } : entry))
       const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
-      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status } })
+      const report = { taskId, title: task.title, status, preview: previewOf(view), shown: false }
+      const reports = [...state.tasks.reports.filter((entry) => entry.taskId !== taskId), report]
+      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports })
     },
+
+    task_report_shown: (state, { taskId }) => withTasks(state, {
+      reports: state.tasks.reports.map((entry) => (entry.taskId === taskId ? { ...entry, shown: true } : entry)),
+    }),
+    task_report_dismissed: (state, { taskId }) => withTasks(state, { reports: state.tasks.reports.filter((entry) => entry.taskId !== taskId) }),
+
+    /** 「#name …」: words into that task's turn (task-ipc.js task:steer), shown in its part of the conversation. */
+    task_steer: (state, { taskId, text, at }) => inView(state, taskId, 'user_steer', { text, via: null, at }),
 
     /** The island has said the task ended. */
     task_finish_seen: (state, { taskId }) => (state.tasks.finished?.taskId === taskId ? withTasks(state, { finished: null }) : state),
@@ -167,6 +205,7 @@ export function taskActions(handlers) {
       ...withTasks(state, {
         list: state.tasks.list.filter((task) => task.id !== taskId),
         finished: state.tasks.finished?.taskId === taskId ? null : state.tasks.finished,
+        reports: state.tasks.reports.filter((entry) => entry.taskId !== taskId),
       }),
       drawer: state.drawer === taskTab(taskId) ? 'trace' : state.drawer,
     }),

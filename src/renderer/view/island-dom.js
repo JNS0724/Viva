@@ -150,7 +150,7 @@ const offerRow = (act) => h('div', { class: 'isl-offer' },
   button('放到后台', 'isl-btn-blue isl-push', () => act({ kind: 'background' })))
 
 /** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far, then the tasks. */
-function panelParts(view, host, act, shortcut, offer) {
+function panelParts(view, host, act, shortcut, offer, now) {
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
   if (host === 'desk') return coachPanel(act, shortcut)
@@ -161,7 +161,7 @@ function panelParts(view, host, act, shortcut, offer) {
       working ? button('停止', 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
       button('查看完整过程 →', ROLE.text, () => act({ kind: 'trace' }))),
   ] : []
-  return [...steps, offer ? offerRow(act) : null, backgroundSection(view, act)]
+  return [...steps, offer ? offerRow(act) : null, backgroundSection(view, act, now)]
 }
 
 const tool = (label, cls, onClick, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
@@ -275,7 +275,7 @@ export function createIsland(host, act, { input = null, shortcut = '' } = {}) {
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
     if (panelChanged) {
-      const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut, offer)
+      const parts = wide ? input.panel(view) : panelParts(view, host, act, shortcut, offer, now)
       panel.replaceChildren(...(open ? [h('div', { class: 'isl-in' }, parts)] : []))
       panel.inert = !open
     }

@@ -10,7 +10,7 @@ import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createRewindActions } from './rewind-actions.js'
 import { createTaskActions } from './task-actions.js'
-import { liveTasks, routeOf, taskTab } from './tasks-state.js'
+import { liveTasks, mentionedTask, routeOf, taskTab } from './tasks-state.js'
 import { createTimelineActions } from './timeline-actions.js'
 import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.js'
@@ -108,6 +108,8 @@ const ISLAND_ACTIONS = {
   trace: () => handlers.openDrawer('trace'),
   /** A task's line in the island's 后台 list: what it did, in its tab of the drawer. */
   task: ({ taskId }) => handlers.openDrawer(taskTab(taskId)),
+  /** 停下 on a task's line in the island's 后台 list. */
+  'stop-task': ({ taskId }) => handlers.stopTask(taskId),
   /** 放到后台, offered on the opened island once a turn runs a while (view/island-dom.js offersBackground). */
   background: () => {
     dispatch({ type: 'close_island' })
@@ -206,6 +208,12 @@ function revealMessage(msgId) {
  */
 function ask(text, { via = null } = {}) {
   if (!text || setupView(state.info) || state.switching) return false
+  // 「#name …」: to the background task it names, whether or not the conversation on screen is busy.
+  const mentioned = mentionedTask(state, text)
+  if (mentioned) {
+    taskActions.steerTask(mentioned.taskId, mentioned.text)
+    return true
+  }
   if (isBusy(state) && routeOf(state, text) === 'other') {
     taskActions.moveAndAsk(text)
     return true
@@ -310,6 +318,8 @@ const handlers = {
   stopTask: (taskId) => taskActions.stopTask(taskId),
   closeTask: (taskId) => taskActions.closeTask(taskId),
   pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),
+  /** A task's report in the thread, put away (view/thread.js reportCard). */
+  dismissReport: (taskId) => taskActions.dismissReport(taskId),
   submitTaskAnswer: (taskId) => taskActions.submitTaskAnswer(taskId),
   skipTaskQuestion: (taskId) => taskActions.skipTaskQuestion(taskId),
   send() {

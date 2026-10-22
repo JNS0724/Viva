@@ -6,7 +6,7 @@ import { catFor } from './cat.js'
 import { h, label } from './dom.js'
 import { caretHost, renderMarkdown } from './markdown.js'
 import { foldAfter, rewindTarget } from '../rewind-state.js'
-import { liveTasks, offeredBackground } from '../tasks-state.js'
+import { liveTasks, offeredBackground, taskTab } from '../tasks-state.js'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.js'
 
 const AVATAR_CAT_PX = 36
@@ -171,6 +171,18 @@ function questionCard(question, handlers, { head = PROMPT_HEADS.question, typed 
       typed ? h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' }) : null))
 }
 
+const REPORT_SAID = { done: '做完了', stopped: '停下了', error: '出错了' }
+
+/** A task that ended, back in the conversation (F): what it came back with, all of it in its drawer tab. */
+function reportCard(report, handlers) {
+  return h('div', { class: 'task-report', role: 'status', 'data-status': report.status },
+    h('div', { class: 'task-report-main' },
+      h('b', { class: 'task-report-head', text: `#${report.title} ${REPORT_SAID[report.status] ?? REPORT_SAID.done}` }),
+      report.preview ? h('span', { class: 'task-report-text', text: report.preview }) : null),
+    h('button', { class: `${BUTTON.secondary} task-report-open`, type: 'button', text: '看全部', onClick: () => handlers.openDrawer(taskTab(report.taskId)) }),
+    h('button', { class: 'icon-btn task-report-x', type: 'button', 'aria-label': '收起', text: '×', onClick: () => handlers.dismissReport(report.taskId) }))
+}
+
 /** The agent said the turn will take long (E): 放到后台 beside it, while it runs. Not a card: it asks nothing. */
 function offerRow(state, handlers) {
   const offered = offeredBackground(state)
@@ -277,6 +289,7 @@ export function renderThread(container, state, handlers, now) {
   const focus = editorFocus()
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, historyDivider(note)) : views).flat().filter(Boolean),
+    ...state.tasks.reports.filter((report) => report.shown).map((report) => reportCard(report, handlers)),
     offerRow(state, handlers),
     state.permission ? permissionCard(state.permission, handlers) : '',
     ...liveTasks(state).filter((task) => task.permission).map((task) => permissionCard(task.permission, handlers, `#${task.title} · ${PROMPT_HEADS.permission}`)),
