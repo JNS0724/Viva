@@ -1,3 +1,4 @@
+import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
 import { forgetDir, sameDir, withRecent, workDirProblem } from './work-dir.ts'
 
 /**
@@ -5,24 +6,23 @@ import { forgetDir, sameDir, withRecent, workDirProblem } from './work-dir.ts'
  * the main process checks every folder (work-dir.js), asks for a confirmation the first time a folder is used,
  * and switches by going on in a new session there (the fork in `switchTo`), never while a turn runs.
  * Kept in preferences.json as `workDirs`: the folders used lately, and the ones the user confirmed.
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   current: () => string, defaultDir: string,
- *   preferences: { get: () => { workDirs: { recent: string[], trusted: string[] } }, set: (key: string, value: object) => void },
- *   chooseFolder: () => Promise<string | null>, isBusy: () => boolean, switchTo: (dir: string) => Promise<object>,
- *   reveal?: (dir: string) => Promise<unknown>, platform?: string, problemOf?: (dir: string) => string | null,
- * }} deps reveal: opens the folder in Finder or Explorer
+ * deps.reveal: opens the folder in Finder or Explorer
  */
-export function registerWorkDirIpc(ipcMain, deps) {
+export function registerWorkDirIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
+  current: () => string, defaultDir: string,
+  preferences: { get: () => { workDirs?: { recent?: unknown, trusted?: unknown } }, set: (key: 'workDirs', value: { recent: string[], trusted: string[] }) => void },
+  chooseFolder: () => Promise<string | null>, isBusy: () => boolean, switchTo: (dir: string) => Promise<object>,
+  reveal?: (dir: string) => Promise<unknown>, platform?: string, problemOf?: (dir: string) => string | null,
+}) {
   const { current, defaultDir, preferences, chooseFolder, isBusy, switchTo, reveal = async () => {}, platform = process.platform, problemOf = workDirProblem } = deps
-  const handle = (channel, listener) => ipcMain.handle(channel, (_event, ...args) => listener(...args))
+  const handle = handlerOf(ipcMain)
   // preferences.json is read as written by an earlier run, or by hand: only lists of paths pass.
-  const paths = (list) => (Array.isArray(list) ? list.filter((item) => typeof item === 'string' && item.length > 0) : [])
+  const paths = (list: unknown): string[] => (Array.isArray(list) ? list.filter((item) => typeof item === 'string' && item.length > 0) : [])
   const saved = () => {
     const stored = preferences.get().workDirs
     return { recent: paths(stored?.recent), trusted: paths(stored?.trusted) }
   }
-  const isDefault = (dir) => sameDir(dir, defaultDir, platform)
+  const isDefault = (dir: string) => sameDir(dir, defaultDir, platform)
   const state = () => ({ current: current(), defaultDir, isDefault: isDefault(current()), recent: saved().recent })
 
   handle('workdir:get', state)

@@ -1,4 +1,4 @@
-import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * Pictures in the walkthrough smoke run (smoke.js): a picture copied with words that came only as formatted
@@ -10,7 +10,7 @@ const HTML_WORDS = '网页里的文字'
 const ISLAND_WORDS = '岛上这张图呢'
 
 /** A real PNG drawn in the page, pasted with HTML only, as WeChat and browsers copy a picture with words. */
-const pasteInto = (selector, withWords) => `(async () => {
+const pasteInto = (selector: string, withWords: boolean) => `(async () => {
   const canvas = document.createElement('canvas')
   canvas.width = 24
   canvas.height = 16
@@ -52,7 +52,7 @@ const ISLAND_SENT = `(() => {
 })()`
 
 /** @returns {Promise<string[]>} failures */
-export async function checkPictures(win, outDir, desk) {
+export async function checkPictures(win: SmokeWindow, outDir: string, desk: any) {
   const failures: string[] = []
   await run(win, pasteInto('#composer-input', true))
   const draft = await until(win, DRAFT, 'the pasted picture shown in the input')
@@ -97,7 +97,7 @@ export async function checkPictures(win, outDir, desk) {
   return failures
 }
 
-async function islandPicture(win, outDir, desk) {
+async function islandPicture(win: SmokeWindow, outDir: string, desk: any) {
   desk.force(true)
   try {
     if (!desk.openInput()) return ['the desktop island would not open its input for a picture']

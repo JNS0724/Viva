@@ -1,5 +1,5 @@
 import { MISSING } from './island-files.ts'
-import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * The desktop island's input in the walkthrough smoke run (smoke.js): opened as by the shortcut, it takes the
@@ -33,7 +33,7 @@ const DROP = `(() => {
   document.querySelector('.isl').dispatchEvent(new DragEvent('drop', { dataTransfer: window.smokeDrag.files, bubbles: true, cancelable: true }))
 })()`
 
-const typeAndSend = (text) => `(() => {
+const typeAndSend = (text: string) => `(() => {
   const field = document.querySelector('.isl-field')
   field.value = ${JSON.stringify(text)}
   field.dispatchEvent(new Event('input', { bubbles: true }))
@@ -58,14 +58,14 @@ const STEERED_IN_THREAD = `(() => {
 })()`
 
 /** @returns {Promise<string[]>} failures */
-export async function checkDeskAsk(win, outDir, desk) {
+export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: any) {
   if (!desk) return ['the desktop island was not created']
   desk.force(true)
   try {
     if (!desk.openInput()) return ['the desktop island would not open its input']
     const page = { webContents: desk.webContents() }
     const logged: string[] = []
-    page.webContents.on('console-message', (event) => logged.push(`${event.level}: ${event.message}`))
+    page.webContents.on('console-message', (event: { level: string, message: string }) => logged.push(`${event.level}: ${event.message}`))
     const opened = await until(page, INPUT_STATE, 'the island input opening').catch(async (err) => {
       const shown = await run(page, `document.querySelector('.isl')?.dataset.form ?? null`)
       throw new Error(`${err.message}; input open: ${desk.inputOpen()}, island showing ${shown}, logged ${JSON.stringify(logged)}`)

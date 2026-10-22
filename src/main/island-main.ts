@@ -1,6 +1,11 @@
 import { deskMenuTemplate } from './desk-menu.ts'
 import { describeDropped, MISSING } from './island-files.ts'
-import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from './island-ipc.ts'
+import type { BrowserWindow, GlobalShortcut, IpcMainEvent, IpcMainInvokeEvent, Menu as ElectronMenu } from 'electron'
+import type { createDeskIsland } from './desk-island.ts'
+import type { IpcRegistry } from './ipc-contract.ts'
+import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView, type IslandAction } from './island-ipc.ts'
+
+type DeskIsland = ReturnType<typeof createDeskIsland>
 
 /**
  * The main process's side of the Viva island: the messages between the window, the desktop island
@@ -10,19 +15,16 @@ import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from 
 export const ASK_SHORTCUT = 'CommandOrControl+Shift+Space'
 const NOT_SENT = '没能发送，请再试一次'
 
-/**
- * @param {object} ipcMain
- * @param {{
- *   desk: () => object | null, window: () => object | null, showWindow: () => void,
- *   Menu: object, switchOff: () => void,
- * }} deps Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu
- */
-export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, switchOff }) {
-  const fromDesk = (event) => {
+/** deps.Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu */
+export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff }: {
+  desk: () => DeskIsland | null, window: () => BrowserWindow | null, showWindow: () => void,
+  Menu: Pick<typeof ElectronMenu, 'buildFromTemplate'>, switchOff: () => void,
+}) {
+  const fromDesk = (event: IpcMainEvent | IpcMainInvokeEvent) => {
     const island = desk()
     return island?.owns(event.sender) ? island : null
   }
-  const toWindow = (action) => {
+  const toWindow = (action: IslandAction) => {
     const win = window()
     if (win && !win.isDestroyed()) win.webContents.send('island:action', action)
   }
@@ -33,11 +35,11 @@ export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, swi
     if (view) desk()?.setView(view)
   })
 
-  const openWindow = (island) => {
+  const openWindow = (island: DeskIsland) => {
     island.closeInput()
     showWindow()
   }
-  const menu = (island) => Menu.buildFromTemplate(deskMenuTemplate({
+  const menu = (island: DeskIsland) => Menu.buildFromTemplate(deskMenuTemplate({
     working: island.working(),
     shortcut: ASK_SHORTCUT,
     ask: () => island.openInput(),
@@ -48,18 +50,19 @@ export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, swi
     switchOff,
   }))
 
-  const LOCAL = {
+  // The actions come checked (checkIslandAction): each has the fields its kind needs, of their types.
+  const LOCAL: Readonly<Record<string, (island: DeskIsland, action: any) => unknown>> = {
     rect: (island, { x, y, width, height }) => island.setIslandRect({ x, y, width, height }),
-    drag: (island, { phase }) => ({ start: island.startDrag, move: island.dragMove, end: island.endDrag })[phase](),
+    drag: (island, { phase }: { phase: 'start' | 'move' | 'end' }) => ({ start: island.startDrag, move: island.dragMove, end: island.endDrag })[phase](),
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
     open: openWindow,
     // Background tasks are on the window's 后台 page: the window comes forward on it (on the task, for a line).
-    task: (island, action) => {
+    task: (island, action: IslandAction) => {
       toWindow(action)
       openWindow(island)
     },
-    tasks: (island, action) => {
+    tasks: (island, action: IslandAction) => {
       toWindow(action)
       openWindow(island)
     },
@@ -100,11 +103,11 @@ export function registerIslandIpc(ipcMain, { desk, window, showWindow, Menu, swi
 /**
  * The shortcut: with the window closed to the tray it opens the desktop island's input; otherwise it goes to
  * the window's own input, bringing the window to the front if something covers it.
- * @param {object} globalShortcut
- * @param {{ foreground: () => boolean, focusComposer: () => void, openInput: () => boolean, showWindow: () => void }} deps
- * @returns {boolean} false when another app holds the shortcut
+ * @returns false when another app holds the shortcut
  */
-export function registerAskShortcut(globalShortcut, { foreground, focusComposer, openInput, showWindow }) {
+export function registerAskShortcut(globalShortcut: Pick<GlobalShortcut, 'register'>, { foreground, focusComposer, openInput, showWindow }: {
+  foreground: () => boolean, focusComposer: () => void, openInput: () => boolean, showWindow: () => void,
+}): boolean {
   try {
     return globalShortcut.register(ASK_SHORTCUT, () => {
       if (foreground()) focusComposer()

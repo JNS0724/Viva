@@ -1,4 +1,4 @@
-import { capture, report, run, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { capture, report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * The permission picker in the walkthrough smoke run (smoke.js): by the input it says what the assistant may
@@ -12,11 +12,11 @@ const PICKER = `(() => {
 })()`
 
 /** Waits until the picker shows what `test` (page code over `seen`) asks, and returns what it showed. */
-const pickerWhen = (win, test, what) => until(win, `(() => { const seen = ${PICKER}; return seen && (${test}) && seen })()`, what)
-const pick = (level) => `document.querySelector('#perm-area .perm-item[data-level="${level}"]').click()`
+const pickerWhen = (win: SmokeWindow, test: string, what: string) => until(win, `(() => { const seen = ${PICKER}; return seen && (${test}) && seen })()`, what)
+const pick = (level: string) => `document.querySelector('#perm-area .perm-item[data-level="${level}"]').click()`
 
 /** @returns {Promise<string[]>} failures */
-export async function checkPermission(win, outDir) {
+export async function checkPermission(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   const shown = await pickerWhen(win, 'true', 'the permission picker by the input')
   if (!shown.text.includes('工作区修改')) failures.push(`the picker should start on 工作区修改: ${JSON.stringify(shown)}`)

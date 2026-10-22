@@ -1,33 +1,42 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import type { BrowserWindow } from 'electron'
 
 /** How the smoke runs (smoke.js, smoke-memory.js) drive the window: run page code, wait for what it shows. */
 export const UI_WAIT_MS = 600
 export const TURN_TIMEOUT_MS = 60_000
 const POLL_MS = 200
 
-export const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-export const run = (win, code) => win.webContents.executeJavaScript(code)
-export const click = (win, id) => run(win, `document.getElementById(${JSON.stringify(id)}).click()`)
+/** A window the smoke run drives: the app's, or the desktop island's. */
+export type SmokeWindow = Pick<BrowserWindow, 'webContents'>
+/** What a check finds: what looked wrong, and what was seen. */
+export type Expect = (ok: unknown, message: string, seen?: unknown) => void
+/** What main.ts lends a smoke run: the desktop island, the fake model, the agent to crash, and so on. */
+export type SmokeHooks = { desk?: () => any, [hook: string]: any }
+
+export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** What the page code returns; the code is the smoke run's own, so what comes back is what it was written to return. */
+export const run = (win: SmokeWindow, code: string): Promise<any> => win.webContents.executeJavaScript(code)
+export const click = (win: SmokeWindow, id: string) => run(win, `document.getElementById(${JSON.stringify(id)}).click()`)
 /** ⌘N / Ctrl+N: a new topic, the timeline kept above it (there is no button for it). */
-export const newTopic = (win) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, bubbles: true }))`)
-export const submit = (win, text) => run(win, `(() => {
+export const newTopic = (win: SmokeWindow) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, bubbles: true }))`)
+export const submit = (win: SmokeWindow, text: string) => run(win, `(() => {
   document.getElementById('composer-input').value = ${JSON.stringify(text)}
   document.getElementById('composer').requestSubmit()
 })()`)
 
-export function report(line) {
+export function report(line: string) {
   process.stdout.write(`[smoke] ${line}\n`)
 }
 
-export async function capture(win, outDir, name) {
+export async function capture(win: SmokeWindow, outDir: string, name: string) {
   const file = path.join(outDir, `${name}.png`)
   await fs.writeFile(file, (await win.webContents.capturePage()).toPNG())
   report(`saved ${file}`)
 }
 
 /** Polls page code until it returns something truthy, and returns that. */
-export async function until(win, code, what, timeoutMs = TURN_TIMEOUT_MS) {
+export async function until(win: SmokeWindow, code: string, what: string, timeoutMs = TURN_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = await run(win, code)
@@ -37,8 +46,8 @@ export async function until(win, code, what, timeoutMs = TURN_TIMEOUT_MS) {
   throw new Error(`${what} never happened`)
 }
 
-/** Waits for the turn to end and be fully typed out, allowing any permission card on the way. @returns {Promise<number>} cards allowed */
-export async function finishTurn(win) {
+/** Waits for the turn to end and be fully typed out, allowing any permission card on the way. @returns cards allowed */
+export async function finishTurn(win: SmokeWindow): Promise<number> {
   const deadline = Date.now() + TURN_TIMEOUT_MS
   let allowed = 0
   while (Date.now() < deadline) {

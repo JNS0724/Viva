@@ -1,6 +1,11 @@
 import fs from 'node:fs'
 import { nativeFileApplications, openNativeFileApplication } from '@deepseek-ai/dsh-native-command'
+import type { Shell } from 'electron'
+import type { IpcRegistry } from './ipc-contract.ts'
 import { canOpen, listFolder, previewFile, resolveInside } from './workspace-files.ts'
+
+/** An app that opens a file, as dsh's native associations list it. */
+type FileApp = { readonly id: string, readonly name: string, readonly default: boolean, readonly icon: string | null }
 
 const MAX_PATH_CHARS = 1000
 const MAX_APP_ID_CHARS = 1000
@@ -9,32 +14,30 @@ const OPEN_TIMEOUT_MS = 15_000
 /** Editors save in bursts; one announcement per burst. */
 const CHANGE_SETTLE_MS = 300
 
-function checkPath(value) {
+function checkPath(value: unknown) {
   if (typeof value !== 'string' || value.length > MAX_PATH_CHARS) throw new Error('invalid path')
   return value
 }
 
 /** dsh's own cross-platform file associations (LaunchServices, Shell handlers, GIO). */
 const DSH_NATIVE = {
-  applications: (file) => nativeFileApplications(file, AbortSignal.timeout(APPS_TIMEOUT_MS)),
-  openWith: (file, app) => openNativeFileApplication(file, app, AbortSignal.timeout(OPEN_TIMEOUT_MS)),
+  applications: (file: string): Promise<readonly FileApp[]> => nativeFileApplications(file, AbortSignal.timeout(APPS_TIMEOUT_MS)),
+  openWith: (file: string, app: string): Promise<void> => openNativeFileApplication(file, app, AbortSignal.timeout(OPEN_TIMEOUT_MS)),
 }
 
-const watchFile = (file, onChange) => fs.watch(file, { persistent: false }, onChange)
+const watchFile = (file: string, onChange: () => void) => fs.watch(file, { persistent: false }, onChange)
 
 /**
  * The 文件 tab's channels. Paths come from the page and are workspace paths; workspace-files.js keeps them
  * inside the workspace. A program or script is only shown in its folder, never opened, and lists no apps.
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   root: () => string,
- *   shell: Pick<import('electron').Shell, 'openPath' | 'showItemInFolder'>,
- *   notify: (event: { type: 'files_changed', path: string }) => void,
- *   native?: { applications: (file: string) => Promise<readonly object[]>, openWith: (file: string, app: string) => Promise<void> },
- *   watch?: (file: string, onChange: () => void) => { close: () => void },
- * }} deps
  */
-export function registerFilesIpc(ipcMain, { root, shell, notify, native = DSH_NATIVE, watch = watchFile }) {
+export function registerFilesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { root, shell, notify, native = DSH_NATIVE, watch = watchFile }: {
+  root: () => string,
+  shell: Pick<Shell, 'openPath' | 'showItemInFolder'>,
+  notify: (event: { type: 'files_changed', path: string }) => void,
+  native?: { applications: (file: string) => Promise<readonly FileApp[]>, openWith: (file: string, app: string) => Promise<void> },
+  watch?: (file: string, onChange: () => void) => { close: () => void },
+}) {
   let watched: { close: () => void } | null = null
   let settle: ReturnType<typeof setTimeout> | undefined
 

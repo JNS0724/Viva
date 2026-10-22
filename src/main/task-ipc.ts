@@ -11,7 +11,7 @@ import type { StoredTask, TaskStore } from './task-store.ts'
 const MAX_TEXT_CHARS = 20_000
 const MAX_TITLE_CHARS = 40
 
-export const TASK_PROBLEMS = Object.freeze({
+export const TASK_PROBLEMS: Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } = Object.freeze({
   unsaved: '这句话还没有保存好，就在这里接着说吧',
   invalid: '在助手的记录里找不到正在做的这件事',
   missing: '当前对话已经结束，请稍后再试',
@@ -29,11 +29,11 @@ const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remov
 const KEEP_ENDED = 5
 const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 
-const isText = (value) => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
-const isCount = (value) => Number.isSafeInteger(value) && value >= 0
-const isEnded = (entry) => Number.isFinite(entry?.endedAt)
+const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
+const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const isEnded = (entry: StoredTask | null | undefined) => Number.isFinite(entry?.endedAt)
 const summaryOf = ({ id, segmentId, title, words }: StoredTask) => ({ id, segmentId, title, words })
-const titleOf = (words) => {
+const titleOf = (words: string) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
 }
@@ -42,7 +42,7 @@ const titleOf = (words) => {
  * words: what started the running turn; keep: saved messages before it; text: the words about something
  * else, or none when the turn is just put in the background (the island's 放到后台).
  */
-function checked(request) {
+function checked(request: { words?: unknown, keep?: unknown, text?: unknown } | null | undefined) {
   const { words, keep, text = null } = request ?? {}
   if (!isText(words) || !isCount(keep) || (text !== null && !isText(text))) throw new Error('invalid task request')
   return { words, keep, text }
@@ -62,17 +62,17 @@ interface TaskIpcDeps {
 
 export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, current, setCurrent, isBusy, setBusy, agentInfo, agent }: TaskIpcDeps) {
   /** taskId → { id, segmentId, title, words, keep, next } (next: the segment the conversation went on in) */
-  const tasks = new Map()
+  const tasks = new Map<string, StoredTask>()
   /** Tasks whose dsh session this launch holds: moved here, or taken up again. Others must be taken up first. */
-  let attached = new Set()
+  let attached = new Set<string>()
 
-  const taskById = (taskId) => {
-    const task = tasks.get(taskId)
+  const taskById = (taskId: unknown) => {
+    const task = tasks.get(taskId as string)
     if (!task) throw new Error('no such task')
     return task
   }
 
-  async function spinOff(request) {
+  async function spinOff(request: Parameters<typeof checked>[0]) {
     const { words, keep, text } = checked(request)
     if (!isBusy()) return { ok: false, reason: 'idle' }
     const previous = current()
@@ -97,14 +97,14 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     return { ok: true, task, info: spun.info, conversation: { id: next.id, messages: kept }, folds: db.foldsOf(next.id) }
   }
 
-  const detach = (taskId) => { attached = new Set([...attached].filter((id) => id !== taskId)) }
+  const detach = (taskId: string) => { attached = new Set([...attached].filter((id) => id !== taskId)) }
 
   /**
    * 后台做: `text` goes to a task of its own, in a session forked from the conversation as it is (before the
    * turn running there, named by its `words`, if one is). The conversation on screen stays where it is; the
    * task's segment hangs off it, out of the timeline, and is kept like any task going on.
    */
-  async function start(request) {
+  async function start(request: { text?: unknown, words?: unknown } | null | undefined) {
     const { text, words = null } = request ?? {}
     if (!isText(text) || (words !== null && !isText(words))) throw new Error('invalid task request')
     const started = await agent.startTask(words === null ? {} : { words })
@@ -125,7 +125,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
    * What the task has said, from the words that started it on: kept after what came before them. Saved along
    * the way and at its end; ended, it stays in the store marked so, to be asked again (`ask`).
    */
-  function save(taskId, messages, { ended = false, status = 'done' } = {}) {
+  function save(taskId: string, messages: readonly unknown[], { ended = false, status = 'done' }: { ended?: boolean, status?: string } = {}) {
     const task = taskById(taskId)
     const found = db.get(task.segmentId)
     if (!found) throw new Error('no such task')
@@ -134,14 +134,14 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   }
 
   /** Ended: kept with how it ended; beyond the latest few, the oldest are let go. */
-  function keepEnded(task, status) {
+  function keepEnded(task: StoredTask, status: string) {
     const entry = store.list().find((item) => item.id === task.id) ?? task
     store.add({ ...entry, endedAt: Date.now(), status: ENDED_STATUSES.has(status) ? status : 'done' })
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED)
       .forEach((old) => store.remove(old.id))
   }
 
-  async function undo(taskId) {
+  async function undo(taskId: string) {
     const task = taskById(taskId)
     const back = await agent.mergeBack(taskId)
     if (!back.ok) return { ok: false, problem: TASK_PROBLEMS[back.reason] ?? '没能撤销' }
@@ -157,7 +157,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     return { ok: true, info: back.info, conversation: { id: found.conversation.id, messages: found.messages } }
   }
 
-  async function close(taskId) {
+  async function close(taskId: string) {
     taskById(taskId)
     tasks.delete(taskId)
     detach(taskId)
@@ -189,7 +189,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
    * 接着问: a task that ended is asked `text` as its next question, in its own session, which remembers all it
    * did; taken up first when an earlier launch held it. It is going again, so kept as going.
    */
-  async function ask(taskId, text) {
+  async function ask(taskId: string, text: unknown) {
     if (!isText(text)) throw new Error('invalid task request')
     const kept = store.list().find((entry) => entry.id === taskId)
     if (!kept) throw new Error('no such task')
@@ -210,7 +210,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
    * Taken up again: its dsh session is reattached as a task and asked to go on; the window gets what it had
    * said, from its own words on, to show it as it was.
    */
-  async function resume(taskId) {
+  async function resume(taskId: string) {
     const kept = store.list().find((entry) => entry.id === taskId)
     if (!kept) throw new Error('no such task')
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })

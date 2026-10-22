@@ -48,7 +48,8 @@ export function createPreferences({ file, onError = () => {} }: { file: string, 
   /** @returns the preferences after the change */
   function set(key: string, value: unknown): Preferences {
     if (!Object.hasOwn(DEFAULTS, key)) throw new Error(`unknown preference: ${key}`)
-    if (typeof value !== typeof DEFAULTS[key]) throw new Error(`${key} must be a ${typeof DEFAULTS[key]}`)
+    const known = DEFAULTS[key as keyof Preferences]
+    if (typeof value !== typeof known) throw new Error(`${key} must be a ${typeof known}`)
     const next = { ...read(), [key]: value }
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const tmp = `${file}.tmp`

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
+import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { taskSteps } from './smoke-tasks.ts'
 
 /**
@@ -20,7 +20,7 @@ const DEMO_KEY = 'smoke-demo-key-7f3a'
  * 「帮我接入演示服务」: the fake model sets up a server (viva_mcp_add). The approval card names it; allowed,
  * the window asks for its key; the key goes to the encrypted store and never to the model.
  */
-async function configSteps(win, outDir, expect, hooks) {
+async function configSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await submit(win, '帮我接入演示服务')
   const card = await until(win, `(() => { const c = document.querySelector('.confirm:not(.ask)'); return c && { title: c.querySelector('.confirm-title')?.textContent ?? '' } })()`, 'the approval card')
   expect(card.title === '接入 MCP 服务器「demo」', 'the card should say which server is set up', card)
@@ -45,7 +45,7 @@ async function configSteps(win, outDir, expect, hooks) {
  * 「明天天气怎么样」: the fake model asks which city (ask_user_question). The card offers the options, a click
  * answers, the answer joins the thread under the question, and the background pass keeps the city.
  */
-async function questionSteps(win, outDir, expect) {
+async function questionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await submit(win, '明天天气怎么样')
   const card = await until(win, `(() => {
     const card = document.querySelector('.ask')
@@ -71,7 +71,7 @@ async function questionSteps(win, outDir, expect) {
   expect(kept === '用户在上海', 'the answer should be remembered for next time', kept)
 }
 
-async function steps(win, outDir, expect, hooks) {
+async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await newTopic(win)
   await finishTurn(win)
   await wait(UI_WAIT_MS)
@@ -120,11 +120,11 @@ async function steps(win, outDir, expect, hooks) {
   await wait(UI_WAIT_MS)
   // The fake model says what background came with the question; 周报 is a keyword of the memory.
   const answers = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].map((el) => el.textContent)`)
-  expect(answers.some((text) => text.startsWith('我已经了解你的背景（1 条相关记忆）')), 'naming 周报 should bring its memory along', answers.map((t) => t.slice(0, 24)))
+  expect(answers.some((text: string) => text.startsWith('我已经了解你的背景（1 条相关记忆）')), 'naming 周报 should bring its memory along', answers.map((t: string) => t.slice(0, 24)))
   await run(win, `document.getElementById('toggle-drawer').click()`)
   await wait(UI_WAIT_MS)
   const trace = await run(win, `[...document.querySelectorAll('.trace-row')].map((row) => row.textContent)`)
-  expect(trace.some((row) => row.includes('带上记忆') && row.includes(`因为提到「周报」：${FACT}`)), 'the trace should show which memory went along and why', trace)
+  expect(trace.some((row: string) => row.includes('带上记忆') && row.includes(`因为提到「周报」：${FACT}`)), 'the trace should show which memory went along and why', trace)
   await capture(win, outDir, 'memory-trace')
 
   await questionSteps(win, outDir, expect)
@@ -154,7 +154,7 @@ async function steps(win, outDir, expect, hooks) {
  * Adds a provider through the form (the fake model's address, speaking Anthropic Messages like it does),
  * then picks its model and talks to it. The conversation on screen has to survive the restart.
  */
-async function modelSteps(win, outDir, expect) {
+async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
   await run(win, `document.getElementById('add-model').click()`)
   await wait(UI_WAIT_MS)
@@ -180,7 +180,7 @@ async function modelSteps(win, outDir, expect) {
     const seen = [...document.querySelectorAll('.model-option')].map((el) => [el.querySelector('.model-option-name')?.textContent, el.querySelector('.model-option-group')?.textContent])
     return seen.some(([, group]) => group === ${JSON.stringify(PROVIDER)}) ? seen : null
   })()`, 'the added model showing in the picker')
-  expect(options.some(([name]) => name === PROVIDER_MODEL), 'the picker should offer the added model', options)
+  expect(options.some(([name]: string[]) => name === PROVIDER_MODEL), 'the picker should offer the added model', options)
   await capture(win, outDir, 'models-picker')
   await run(win, `[...document.querySelectorAll('.model-option')].find((el) => el.querySelector('.model-option-group')?.textContent === ${JSON.stringify(PROVIDER)}).click()`)
   const label = await until(win, `(() => { const name = document.querySelector('.model-btn-name')?.textContent; return name === ${JSON.stringify(PROVIDER_MODEL)} ? name : null })()`, 'switching to the added model')
@@ -195,7 +195,7 @@ async function modelSteps(win, outDir, expect) {
 }
 
 /** dsh is killed mid-conversation: the app says it reconnects, starts dsh again on the same conversation, and it answers. */
-async function crashSteps(win, outDir, expect, hooks) {
+async function crashSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   const pid = hooks.agentPid?.()
   expect(Boolean(pid), 'dsh should be running', pid)
   if (!pid) return
@@ -225,7 +225,7 @@ async function crashSteps(win, outDir, expect, hooks) {
  * the chip names it, the timeline says where the folder changed with what was said before still above, and the
  * agent answers there. A name with a space and Chinese in it, as people's folders have.
  */
-async function workDirSteps(win, outDir, expect, hooks) {
+async function workDirSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   const dir = path.join(path.dirname(hooks.cwd), '其他 项目')
   fs.mkdirSync(dir, { recursive: true })
   const asked = await run(win, `document.querySelectorAll('#earlier .msg-user, #thread .msg-user').length`)
@@ -275,7 +275,7 @@ const EDITED_ASK = '第二问：绿色的伞'
  * 改了重发 on what the user said: the bubble turns into an editor in place with what follows dimmed; sent, the
  * agent goes back to before it (the model no longer sees the old words), and what followed folds there.
  */
-async function rewindSteps(win, outDir, expect, hooks) {
+async function rewindSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   for (const text of [FIRST_ASK, SECOND_ASK]) {
     await submit(win, text)
     await finishTurn(win)
@@ -311,7 +311,7 @@ async function rewindSteps(win, outDir, expect, hooks) {
     'the edited words should replace the old ones, what came before kept', after)
   expect(after.fold.includes('另一条路') && after.fold.includes('2 条消息'), 'the old path should fold where it went another way', after.fold)
   // The first request with the new words is the agent answering them (the memory pass after a turn comes later).
-  const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(EDITED_ASK)) ?? ''
+  const answering = (hooks.model?.()?.requests ?? []).map((request: unknown) => JSON.stringify(request)).find((json: string) => json.includes(EDITED_ASK)) ?? ''
   expect(answering.includes(FIRST_ASK) && !answering.includes(SECOND_ASK), 'the agent should no longer see the old words',
     { found: Boolean(answering), first: answering.includes(FIRST_ASK), old: answering.includes(SECOND_ASK) })
   await run(win, `document.querySelector('#thread .fold')?.scrollIntoView({ block: 'center' })`)
@@ -323,8 +323,8 @@ async function rewindSteps(win, outDir, expect, hooks) {
 const BACK_ASK = '回到红色那条接着说'
 
 /** The folded path opens in place to be read; switched to, it is the conversation again, the agent with it. */
-async function switchBackSteps(win, outDir, expect, hooks) {
-  const foldAct = (label) => `[...document.querySelectorAll('#thread .fold .fold-act')].find((el) => el.textContent === ${JSON.stringify(label)}).click()`
+async function switchBackSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+  const foldAct = (label: string) => `[...document.querySelectorAll('#thread .fold .fold-act')].find((el) => el.textContent === ${JSON.stringify(label)}).click()`
   await run(win, foldAct('展开看看'))
   const body = await until(win, `document.querySelector('#thread .fold-body')?.textContent ?? null`, 'the folded path opened')
   expect(body.includes(SECOND_ASK), 'opened, the folded path should show what it holds', body.slice(0, 80))
@@ -343,14 +343,14 @@ async function switchBackSteps(win, outDir, expect, hooks) {
 
   await submit(win, BACK_ASK)
   await finishTurn(win)
-  const answering = (hooks.model?.()?.requests ?? []).map((request) => JSON.stringify(request)).find((json) => json.includes(BACK_ASK)) ?? ''
+  const answering = (hooks.model?.()?.requests ?? []).map((request: unknown) => JSON.stringify(request)).find((json: string) => json.includes(BACK_ASK)) ?? ''
   expect(answering.includes(SECOND_ASK) && !answering.includes(EDITED_ASK), 'the agent should go on from the old path',
     { found: Boolean(answering), old: answering.includes(SECOND_ASK), edited: answering.includes(EDITED_ASK) })
   await capture(win, outDir, 'rewind-switched')
 }
 
 /** Something held over the window says letting go works there; what is not a folder on disk is turned down. */
-async function dropSteps(win, outDir, expect) {
+async function dropSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   const held = await run(win, `(() => {
     window.smokeDrop = new DataTransfer()
     window.smokeDrop.items.add(new File(['x'], '不在磁盘上.txt'))
@@ -368,10 +368,10 @@ async function dropSteps(win, outDir, expect) {
   expect(after.toast.includes('这不是电脑上的文件夹') && !after.held, 'a drop that is not a folder on disk should be turned down', after)
 }
 
-/** @returns {Promise<string[]>} failed expectations */
-export async function checkMemory(win, outDir, hooks = {}) {
+/** @returns failed expectations */
+export async function checkMemory(win: SmokeWindow, outDir: string, hooks: SmokeHooks = {}): Promise<string[]> {
   const failures: string[] = []
-  const expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
+  const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
   try {
     await steps(win, outDir, expect, hooks)
     await crashSteps(win, outDir, expect, hooks)

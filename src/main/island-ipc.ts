@@ -17,11 +17,16 @@ const MAX_RECT_PX = 2000
 
 const DRAG_PHASES = new Set(['start', 'move', 'end'])
 
-const isText = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max
-const isPx = (value) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_RECT_PX
+/** What the page sent, before it is checked: its fields by name. */
+type Fields = { readonly [field: string]: unknown }
+/** An action from the island, as checked: its kind, and only the fields that kind uses. */
+export type IslandAction = { kind: string, [field: string]: unknown }
 
-/** @returns {object | null} the view as given, or null when it is not one */
-export function checkIslandView(view) {
+const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max
+const isPx = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_RECT_PX
+
+/** @returns the view as given, or null when it is not one */
+export function checkIslandView(view: any): { form: string, label: string, recent: unknown[], [field: string]: any } | null {
   if (!view || typeof view !== 'object' || !FORMS.has(view.form)) return null
   if (typeof view.label !== 'string' || !Array.isArray(view.recent)) return null
   try {
@@ -31,7 +36,7 @@ export function checkIslandView(view) {
   }
 }
 
-const ACTIONS = {
+const ACTIONS: Readonly<Record<string, (fields: Fields) => IslandAction | null>> = {
   open: () => ({ kind: 'open' }),
   cancel: () => ({ kind: 'cancel' }),
   /** Files dropped on the island, or the input closed with Esc. */
@@ -40,11 +45,11 @@ const ACTIONS = {
   /** The right-click menu, and the first-time note seen. */
   menu: () => ({ kind: 'menu' }),
   coached: () => ({ kind: 'coached' }),
-  rect: ({ x, y, width, height }) => ([x, y, width, height].every(isPx) && width >= 0 && height >= 0
+  rect: ({ x, y, width, height }) => (isPx(x) && isPx(y) && isPx(width) && isPx(height) && width >= 0 && height >= 0
     ? { kind: 'rect', x, y, width, height }
     : null),
   /** Held and moved: start, a move at each frame the page draws meanwhile, end. */
-  drag: ({ phase }) => (DRAG_PHASES.has(phase) ? { kind: 'drag', phase } : null),
+  drag: ({ phase }) => (typeof phase === 'string' && DRAG_PHASES.has(phase) ? { kind: 'drag', phase } : null),
   permission: ({ requestId, optionId }) => (isText(requestId, MAX_ID_CHARS) && isText(optionId, MAX_ID_CHARS)
     ? { kind: 'permission', requestId, optionId }
     : null),
@@ -60,20 +65,20 @@ const ACTIONS = {
   'stop-task': ({ taskId }) => (isText(taskId, MAX_ID_CHARS) ? { kind: 'stop-task', taskId } : null),
 }
 
-/** @returns {object | null} only the fields the action's kind uses, or null for anything else */
-export function checkIslandAction(action) {
+/** @returns only the fields the action's kind uses, or null for anything else */
+export function checkIslandAction(action: any): IslandAction | null {
   if (!action || typeof action !== 'object' || !Object.hasOwn(ACTIONS, action.kind)) return null
   return ACTIONS[action.kind](action)
 }
 
-/** @returns {string[] | null} paths of files dropped on the island, or null when they are not that */
-export function checkDroppedPaths(paths) {
+/** @returns paths of files dropped on the island, or null when they are not that */
+export function checkDroppedPaths(paths: unknown): string[] | null {
   if (!Array.isArray(paths) || paths.length === 0 || paths.length > ASK_LIMITS.files) return null
   return paths.every((item) => isText(item, ASK_LIMITS.pathChars)) ? [...paths] : null
 }
 
-/** @returns {{ text: string, files: string[], images: { id: string }[] } | null} a question from the island's input */
-export function checkAsk(ask) {
+/** @returns a question from the island's input */
+export function checkAsk(ask: any): { text: string, files: string[], images: Array<{ id: string }> } | null {
   if (!ask || typeof ask !== 'object') return null
   const images = checkImages(ask.images)
   if (!images) return null

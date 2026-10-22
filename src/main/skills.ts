@@ -16,9 +16,8 @@ const SKIPPED_DIRS = new Set(['.system'])
  * The folders dsh scans that hold skills, in its priority order. The home ones are the app's own dsh home
  * (dsh-runtime.js), not the user's ~/.dsh or ~/.agents; the project root is the workspace (dsh uses the
  * nearest folder with `.git`; the default workspace has none).
- * @param {{ dshHome: string, cwd: string }} options
  */
-export function skillRoots({ dshHome, cwd }) {
+export function skillRoots({ dshHome, cwd }: { dshHome: string, cwd: string }) {
   return [
     { id: 'user', dir: path.join(dshHome, 'skills'), label: '本机 · Viva 的 skill 文件夹', managed: true },
     { id: 'workspace', dir: path.join(cwd, '.dsh', 'skills'), label: '工作区 · .dsh/skills', managed: false },
@@ -26,10 +25,12 @@ export function skillRoots({ dshHome, cwd }) {
   ]
 }
 
-const unquote = (value) => value.replace(/^(['"])(.*)\1$/, '$2')
+type SkillRoot = ReturnType<typeof skillRoots>[number]
+
+const unquote = (value: string) => value.replace(/^(['"])(.*)\1$/, '$2')
 
 /** A `>` or `|` block: the indented lines after `index`. */
-function blockValue(rows, index, style) {
+function blockValue(rows: readonly string[], index: number, style: string) {
   const block: string[] = []
   for (const next of rows.slice(index + 1)) {
     if (next.trim() && !/^\s/.test(next)) break
@@ -41,9 +42,9 @@ function blockValue(rows, index, style) {
 /**
  * Reads `name` and `description` from the frontmatter. Handles plain, quoted and folded (`>`/`|`)
  * values, which is all skills use; anything fancier is left to dsh's own YAML parser.
- * @returns {{ name: string, description: string } | null} null when there is no frontmatter
+ * @returns null when there is no frontmatter
  */
-export function parseFrontmatter(text) {
+export function parseFrontmatter(text: string): { name: string, description: string } | null {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text.slice(0, MAX_FRONTMATTER_CHARS))
   if (!match) return null
   const rows = match[1].split(/\r?\n/)
@@ -56,7 +57,7 @@ export function parseFrontmatter(text) {
   return { name: String(fields.name ?? ''), description: String(fields.description ?? '') }
 }
 
-function readSkill(root, entry) {
+function readSkill(root: SkillRoot, entry: fs.Dirent) {
   const entryPath = path.join(root.dir, entry.name)
   const isFlat = entry.isFile() && entry.name.toLowerCase().endsWith('.md')
   if (!isFlat && !(entry.isDirectory() || entry.isSymbolicLink())) return null
@@ -81,7 +82,7 @@ function readSkill(root, entry) {
 }
 
 /** Every skill in the roots; a skill dsh would reject is listed with the reason. */
-export function listSkills(roots) {
+export function listSkills(roots: readonly SkillRoot[]) {
   return roots.flatMap((root) => {
     let entries
     try {
@@ -92,16 +93,16 @@ export function listSkills(roots) {
     return entries
       .filter((entry) => !entry.name.startsWith('.') && !SKIPPED_DIRS.has(entry.name))
       .map((entry) => readSkill(root, entry))
-      .filter(Boolean)
+      .filter((skill) => skill !== null)
       .sort((a, b) => a.name.localeCompare(b.name))
   })
 }
 
 /**
  * Copies a skill folder (with SKILL.md) or a single .md skill into `targetDir`.
- * @returns {string} the skill's name
+ * @returns the skill's name
  */
-export function importSkill(source, targetDir) {
+export function importSkill(source: string, targetDir: string): string {
   const isFolder = fs.statSync(source).isDirectory()
   if (!isFolder && !source.toLowerCase().endsWith('.md')) throw new Error('请选择包含 SKILL.md 的文件夹，或一个 .md 文件')
   const skillFile = isFolder ? path.join(source, SKILL_FILE) : source
@@ -117,14 +118,14 @@ export function importSkill(source, targetDir) {
 }
 
 /** One line without double quotes, safe inside a quoted frontmatter value. */
-const frontmatterValue = (text) => String(text).replace(/\s+/g, ' ').replace(/"/g, '”').trim()
+const frontmatterValue = (text: unknown) => String(text).replace(/\s+/g, ' ').replace(/"/g, '”').trim()
 
 /**
  * Writes a new skill, made in the conversation, into `targetDir`: a folder named after it holding SKILL.md.
  * `name` follows dsh's rule (lower case, digits, hyphens), checked by the caller.
- * @returns {string} the skill's name
+ * @returns the skill's name
  */
-export function createSkill({ name, description, instructions }, targetDir) {
+export function createSkill({ name, description, instructions }: { name: string, description: string, instructions: string }, targetDir: string): string {
   const target = path.join(targetDir, name)
   if (fs.existsSync(target)) throw new Error(`已经有名为「${name}」的 skill 了`)
   fs.mkdirSync(target, { recursive: true })
@@ -137,7 +138,7 @@ export function createSkill({ name, description, instructions }, targetDir) {
  * Moves one of the user-root skills to the trash (via `trash`, Electron's shell.trashItem), so a
  * mistaken removal can be undone from the system trash.
  */
-export async function removeSkill(id, roots, trash) {
+export async function removeSkill(id: string, roots: readonly SkillRoot[], trash: (file: string) => Promise<void>) {
   const skill = listSkills(roots).find((item) => item.id === id)
   if (!skill) throw new Error('找不到这个 skill，可能已被删除')
   if (!skill.managed) throw new Error('这个 skill 不在本应用管理的目录里，请到它所在的文件夹删除')

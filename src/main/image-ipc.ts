@@ -1,5 +1,7 @@
 import fs from 'node:fs'
 import { checkImages, IMAGE_LIMITS, mimeOfId } from '../shared/images.ts'
+import type { createImageStore } from './image-store.ts'
+import type { IpcRegistry } from './ipc-contract.ts'
 
 const GONE = '有张图片已经不在图片文件夹里了（可能被清空了），去掉它再发'
 const BUSY = '助手正在工作，等这一轮结束再改'
@@ -8,18 +10,16 @@ const BUSY = '助手正在工作，等这一轮结束再改'
  * The window's and the desktop island's side of pictures: keeping one pasted, and in settings the folder's size,
  * opening it, emptying it and moving it (image-store.js). Moving changes where dsh keeps its copies too, so dsh
  * starts again on the new folder (`restart`).
- * @param {{ handle: (channel: string, listener: Function) => void }} ipcMain
- * @param {{
- *   store: ReturnType<import('./image-store.ts').createImageStore>,
- *   setDir: (dir: string) => void,
- *   chooseFolder: () => Promise<string | null>,
- *   reveal: (dir: string) => Promise<string>,
- *   isBusy: () => boolean,
- *   restart: () => Promise<unknown>,
- * }} deps
  */
-export function registerImageIpc(ipcMain, { store, setDir, chooseFolder, reveal, isBusy, restart }) {
-  const keep = (_event, bytes) => {
+export function registerImageIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { store, setDir, chooseFolder, reveal, isBusy, restart }: {
+  store: ReturnType<typeof createImageStore>,
+  setDir: (dir: string) => void,
+  chooseFolder: () => Promise<string | null>,
+  reveal: (dir: string) => Promise<string>,
+  isBusy: () => boolean,
+  restart: () => Promise<unknown>,
+}) {
+  const keep = (_event: unknown, bytes: unknown) => {
     if (!(bytes instanceof Uint8Array) && !(bytes instanceof ArrayBuffer)) throw new Error('无效的图片')
     if (bytes.byteLength > IMAGE_LIMITS.bytes) throw new Error(`图片太大了（上限 ${IMAGE_LIMITS.bytes / 1024 / 1024} MB）`)
     return store.keep(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
@@ -50,9 +50,8 @@ export function registerImageIpc(ipcMain, { store, setDir, chooseFolder, reveal,
 
 /**
  * The pictures of a question, read for the model: base64, with their kind.
- * @returns {{ data: string, mimeType: string }[]}
  */
-export function imagesForPrompt(store, images) {
+export function imagesForPrompt(store: Pick<ReturnType<typeof createImageStore>, 'pathOf'>, images: unknown): Array<{ data: string, mimeType: string }> {
   const checked = checkImages(images)
   if (!checked) throw new Error('invalid images')
   return checked.map(({ id }) => {

@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
-contextBridge.exposeInMainWorld('agent', {
+// Each call takes its channel's arguments, as the page is told it does (globals.d.ts AgentApi).
+contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: process.platform,
   getInfo: () => ipcRenderer.invoke('agent:info'),
@@ -123,13 +124,13 @@ contextBridge.exposeInMainWorld('agent', {
   },
   /** What was clicked on the desktop island: allow, answer, stop, or a question asked there. */
   onIslandAction: (callback) => {
-    const listener = (_event, action) => callback(action)
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {unknown} */ action) => callback(action)
     ipcRenderer.on('island:action', listener)
     return () => ipcRenderer.removeListener('island:action', listener)
   },
   onEvent: (callback) => {
-    const listener = (_event, payload) => callback(payload)
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {unknown} */ payload) => callback(payload)
     ipcRenderer.on('agent:event', listener)
     return () => ipcRenderer.removeListener('agent:event', listener)
   },
-})
+}))
