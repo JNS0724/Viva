@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { liveTasks, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
+import { liveTasks, mentionedTask, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
 import { traceItems } from '../src/renderer/selectors.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -38,6 +38,25 @@ test('words typed while a turn runs: about the same thing go into it, about some
   assert.equal(routeOf(helping, '帮我把演示服务的端口改成 8080'), 'into')
   assert.equal(routeOf(reduce(state, { type: 'route_toggle', text: '明天周会几点？' }), '明天周会几点？'), 'into', 'Tab turns it round')
 })
+
+test('a task\'s steps are its own turn\'s, not those of the turns before it', () => {
+  const earlier = run([
+    { type: 'user_prompt', text: '先看看日志', at: 1 },
+    { type: 'acp_update', at: 2, update: { sessionUpdate: 'tool_call', toolCallId: 't0', title: '读取 app.log', kind: 'read', status: 'completed' } },
+    { type: 'turn_end', stopReason: 'end_turn', at: 3 },
+  ], working())
+  const state = run([
+    { type: 'user_prompt', text: WORDS_LATER, at: 10 },
+    { type: 'acp_update', at: 11, update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '运行 git log', kind: 'execute', status: 'in_progress' } },
+    { type: 'task_spun', task: { id: 's1', segmentId: 'c1', title: WORDS_LATER, words: WORDS_LATER }, conversation: { id: 'c2', messages: [] }, info: { sessionId: 's2' }, folds: [], at: 20 },
+  ], reduce(earlier, { type: 'conversation_saved', id: 'c1' }))
+  const [task] = liveTasks(state)
+  assert.deepEqual(task.view.timeline.map((entry) => entry.ref), ['t1'])
+  const back = reduce(state, { type: 'task_undone', taskId: 's1', conversationId: 'c1', info: { sessionId: 's1' } })
+  assert.deepEqual(back.timeline.map((entry) => entry.ref).sort(), ['t0', 't1'], 'undone, the earlier steps are back too')
+})
+
+const WORDS_LATER = '整理发布说明'
 
 test('what moves to the background: the words that started the turn and where they are among what is saved', () => {
   assert.deepEqual(spinOffTarget(working()), { words: '整理这周的提交，写成发布说明', keep: 2 })
@@ -99,6 +118,25 @@ test('the agent saying a job will take long offers the background while that tur
   const next = run([{ type: 'turn_end', stopReason: 'end_turn', at: 20 }, { type: 'user_prompt', text: '再来一份', at: 30 }], state)
   assert.equal(offeredBackground(next), null, 'a later turn is offered only if the agent says so again')
   assert.deepEqual(traceItems(state).at(-1), { key: traceItems(state).at(-1).key, time: traceItems(state).at(-1).time, title: '提议放到后台', detail: '要逐个读完所有提交', tone: 'done' })
+})
+
+test('a task that ends reports back to the conversation, once the user is not typing, until put away', () => {
+  const said = reduce(spun(working()), { type: 'task_update', taskId: 's1', update: chunk('三组改动，已写进 docs/release.md。'), at: 30 })
+  const ended = reduce(said, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 40 })
+  assert.deepEqual(ended.tasks.reports, [{ taskId: 's1', title: '整理这周的提交，写成发布说明', status: 'done', preview: '先看提交…三组改动，已写进 docs/release.md。', shown: false }])
+  const shown = reduce(ended, { type: 'task_report_shown', taskId: 's1' })
+  assert.equal(shown.tasks.reports[0].shown, true)
+  assert.deepEqual(reduce(shown, { type: 'task_report_dismissed', taskId: 's1' }).tasks.reports, [])
+})
+
+test('「#name」 at the start goes to the background task it names, as words into its turn', () => {
+  const state = spun(working())
+  assert.deepEqual(mentionedTask(state, '#发布说明 加上版本号'), { taskId: 's1', title: '整理这周的提交，写成发布说明', text: '加上版本号' })
+  assert.equal(mentionedTask(state, '#周会 几点'), null, 'no task by that name')
+  assert.equal(mentionedTask(state, '发布说明加上版本号'), null, 'only at the start')
+  const steered = reduce(state, { type: 'task_steer', taskId: 's1', text: '加上版本号', at: 50 })
+  assert.equal(taskMessages(liveTasks(steered)[0]).at(-1).text, '加上版本号')
+  assert.deepEqual(steered.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
 })
 
 test('a task has its own tab in the drawer, showing what it did', () => {

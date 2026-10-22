@@ -116,7 +116,7 @@ test('tasks in the background: a count at the tail, and one line each when the i
   const view = islandView(run(spun))
   assert.equal(view.form, 'idle', 'the island still says what the conversation on screen does')
   assert.deepEqual(view.background, {
-    count: 1, waiting: 0,
+    count: 1, waiting: 0, done: 0,
     items: [{ id: 's1', title: '明天上海天气', status: 'running', now: '运行 git log', startedAt: T0 }],
   })
   assert.equal(islandView(run([live])).background, undefined, 'with none, nothing changes')
@@ -136,7 +136,7 @@ test('a task that ends says so for a moment, while the conversation is quiet', (
   const ended = run([...spun, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: T0 + 9000 }])
   const view = islandView(ended)
   assert.deepEqual([view.form, view.tone, view.label], ['done', 'done', '#明天上海天气 做完了'])
-  assert.deepEqual(view.background.count, 0)
+  assert.deepEqual([view.background.count, view.background.done], [0, 1], 'and counts it among those done')
   assert.equal(islandView(reduce(ended, { type: 'task_finish_seen', taskId: 's1' })).label, '空闲')
   const failed = islandView(run([...spun, { type: 'task_end', taskId: 's1', stopReason: 'error', at: T0 + 9000 }]))
   assert.deepEqual([failed.label, failed.tone], ['#明天上海天气 出错了', 'error'])

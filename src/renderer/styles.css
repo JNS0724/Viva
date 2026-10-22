@@ -243,6 +243,22 @@ html:not([data-platform="darwin"]) {
 .fold b { color: var(--ink); font-weight: 600; }
 .fold-ico { color: var(--ink-3); font-family: var(--font-mono); }
 .fold-actions { margin-left: auto; display: flex; gap: 4px; }
+/* A task that ended, back in the conversation (view/thread.js reportCard). */
+.task-report { display: flex; align-items: center; gap: 10px; padding: 10px 8px 10px 16px; border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: 12px; background: var(--panel); }
+.task-report[data-status="error"] { border-left-color: var(--red); }
+.task-report[data-status="stopped"] { border-left-color: var(--ink-3); }
+.task-report-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.task-report-head { font-size: 14px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-report-text { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-report-open { flex: none; height: 32px; padding: 0 14px; font-size: 13px; }
+.task-report-x { flex: none; font-size: 18px; line-height: 1; }
+/* A task's drawer tab (view/drawer.js taskView): where it stands, then what it said, then what it did. */
+.task-tab-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.task-tab-status { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+.task-tab-status[data-status="waiting"] { color: var(--orange); }
+.task-tab-status[data-status="error"] { color: var(--red); }
+.task-tab-act { height: 30px; padding: 0 12px; font-size: 12px; }
+.task-tab-answer { margin-bottom: 16px; padding: 12px 14px; border-radius: 12px; background: var(--raised); font-size: 14px; }
 /* The agent said the turn will take long (view/thread.js offerRow): a quiet line with 放到后台. */
 .offer { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border: 1px solid var(--line-2); border-radius: 12px; font-size: 13px; color: var(--ink-2); }
 .offer-text { flex: 1; min-width: 0; }

@@ -9,6 +9,8 @@ import { spinOffTarget, taskMessages } from './tasks-state.js'
  */
 /** How long the island says a task ended (island-view.js), counted while the user is not typing. */
 export const FINISHED_MS = 5000
+/** While the user types, how often to look again before a task's report comes into the conversation (F). */
+export const REPORT_RETRY_MS = 1000
 const MOVE_FAILED = '没能挪到后台，这句插进了正在做的事'
 const UNDO_FAILED = '没能撤销'
 const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_question_closed'])
@@ -107,11 +109,27 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     }, FINISHED_MS)
   }
 
+  /** What it came back with goes into the conversation, but not under the user's typing (F). */
+  function showReport(taskId) {
+    if (!getState().tasks.reports.some((entry) => entry.taskId === taskId && !entry.shown)) return
+    if (isTyping()) later(() => showReport(taskId), REPORT_RETRY_MS)
+    else dispatch({ type: 'task_report_shown', taskId })
+  }
+
+  /** 「#name …」: the words go into that task's turn; it says if they could not. */
+  function steerTask(taskId, text) {
+    dispatch({ type: 'task_steer', taskId, text, at: Date.now() })
+    api.steerTask(taskId, text)
+      .then((result) => result?.ok || showToast('这件事已经停下了，话没有送到'))
+      .catch((err) => showToast(errorMessage(err)))
+  }
+
   /** A task that ended keeps what it said, in its own part of the timeline; the island says it ended a moment. */
   function ended(taskId) {
     const task = getState().tasks.list.find((entry) => entry.id === taskId)
     if (!task) return
     settleFinished(taskId)
+    showReport(taskId)
     api.saveTask(taskId, taskMessages(task))
       .catch((err) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
   }
@@ -157,6 +175,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     stopTask,
     closeTask,
     pickTaskOption,
+    steerTask,
+    dismissReport: (taskId) => dispatch({ type: 'task_report_dismissed', taskId }),
     submitTaskAnswer: (taskId) => {
       const question = questionOf(taskId)
       if (question) answerTask(taskId, answersFrom(question))

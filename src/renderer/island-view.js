@@ -90,7 +90,8 @@ function backgroundOf(state) {
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),
       ...(task.question ? { question: questionView(task.question) } : {}),
     }))
-  return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, items }
+  const done = state.tasks.list.length - live.length
+  return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, done, items }
 }
 
 const TASK_ENDED = { done: ['做完了', 'done'], stopped: ['停下了', 'idle'], error: ['出错了', 'error'] }
