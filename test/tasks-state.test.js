@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.js'
-import { liveTasks, mentionedTask, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
+import { liveTasks, mentionedTask, mentionNameOf, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.js'
 import { traceItems } from '../src/renderer/selectors.js'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -131,12 +131,47 @@ test('a task that ends reports back to the conversation, once the user is not ty
 
 test('「#name」 at the start goes to the background task it names, as words into its turn', () => {
   const state = spun(working())
-  assert.deepEqual(mentionedTask(state, '#发布说明 加上版本号'), { taskId: 's1', title: '整理这周的提交，写成发布说明', text: '加上版本号' })
+  assert.deepEqual(mentionedTask(state, '#发布说明 加上版本号'), { taskId: 's1', title: '整理这周的提交，写成发布说明', text: '加上版本号', ended: false })
   assert.equal(mentionedTask(state, '#周会 几点'), null, 'no task by that name')
   assert.equal(mentionedTask(state, '发布说明加上版本号'), null, 'only at the start')
   const steered = reduce(state, { type: 'task_steer', taskId: 's1', text: '加上版本号', at: 50 })
   assert.equal(taskMessages(liveTasks(steered)[0]).at(-1).text, '加上版本号')
   assert.deepEqual(steered.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
+})
+
+test('a task that ended can be asked again: 「#name」 reaches it, and it goes back to work with the words', () => {
+  const ended = run([
+    { type: 'task_update', taskId: 's1', update: chunk('写好了。'), at: 30 },
+    { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 40 },
+    { type: 'task_report_shown', taskId: 's1' },
+  ], spun(working()))
+  const [task] = ended.tasks.list
+  assert.deepEqual(mentionedTask(ended, '#发布说明 再加上已知问题'), { taskId: 's1', title: task.title, text: '再加上已知问题', ended: true })
+  assert.equal(mentionedTask(ended, `#${mentionNameOf(task)} 再加上已知问题`)?.taskId, 's1', '接着问 writes a name that finds it')
+  assert.deepEqual(mentionedTask(ended, `#${mentionNameOf(task)} `)?.text, '', 'found as soon as the name is written, before the words')
+  assert.equal(mentionedTask(ended, '#发布说明'), null, 'not before the space after the name')
+
+  const asked = reduce(ended, { type: 'task_asked', taskId: 's1', text: '再加上已知问题', at: 60 })
+  const [again] = liveTasks(asked)
+  assert.deepEqual([again.id, again.status, again.endedAt, again.startedAt], ['s1', 'running', null, 60])
+  assert.equal(taskMessages(again).at(-1).text, '再加上已知问题')
+  assert.deepEqual(asked.tasks.reports, [], 'its card goes: a new one comes when it is done again')
+  assert.deepEqual(asked.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
+})
+
+test('tasks that had ended by the last launch come back ended, and can be asked again', () => {
+  const restored = reduce(initialState, {
+    type: 'tasks_restored',
+    list: [{
+      task: { id: 's3', segmentId: 'c3', title: '查一下明天上海的天气', words: '查一下明天上海的天气' }, status: 'done', endedAt: 5,
+      messages: [{ role: 'user', text: '查一下明天上海的天气', receipt: null }, { role: 'assistant', text: '晴，18 到 25 度。', receipt: null }],
+    }],
+  })
+  const [task] = restored.tasks.list
+  assert.deepEqual([task.id, task.status, task.endedAt, liveTasks(restored).length], ['s3', 'done', 5, 0])
+  assert.deepEqual(taskMessages(task).map((m) => m.text), ['查一下明天上海的天气', '晴，18 到 25 度。'])
+  assert.deepEqual(restored.tasks.reports, [], 'reported last time already')
+  assert.equal(mentionedTask(restored, '#天气 后天呢')?.ended, true)
 })
 
 test('tasks the last launch left going are offered; taken up, one goes on with what it had said', () => {

@@ -102,13 +102,14 @@ export function renderSendButton(dom, state) {
   dom.sendBtn.replaceChildren(icon(stops ? 'stop' : 'send', 22))
 }
 
+/** Where 「#name …」 goes: into the turn of a task still going, or as the next question of one that ended. */
 function renderMentionHint(dom, mentioned) {
-  const key = `task:${mentioned.taskId}`
+  const key = `task:${mentioned.taskId}:${mentioned.ended}`
   if (dom.routeHint.dataset.route === key) return
   dom.routeHint.dataset.route = key
   dom.routeHint.hidden = false
   dom.routeHint.replaceChildren(h('span', { 'aria-hidden': 'true', text: '↳' }), h('b', { text: `交给 #${mentioned.title}` }),
-    h('span', { text: '· 它下一步就会读到' }))
+    h('span', { text: mentioned.ended ? '· 它在后台接着做，做完再告诉你' : '· 它下一步就会读到' }))
 }
 
 const ROUTES = {

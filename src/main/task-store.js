@@ -2,9 +2,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * Background tasks still going (task-ipc.js), kept on disk: dsh ends with the app, so a task that had not
- * finished is offered again at the next launch, to go on with or let go. A task leaves the store when it
- * ends, is closed, or is undone.
+ * Background tasks (task-ipc.js), kept on disk: dsh ends with the app, so a task that had not finished is
+ * offered again at the next launch, to go on with or let go, and one that ended (`endedAt`, `status`) comes
+ * back to be asked again. A task leaves the store when it is closed or undone, or when it is among the
+ * oldest of those that ended.
  */
 const FILE_VERSION = 1
 

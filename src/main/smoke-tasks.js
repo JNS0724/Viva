@@ -154,19 +154,53 @@ async function offerSteps(win, outDir, expect) {
   await reportSteps(win, outDir, expect)
 }
 
-/** An ended task reports back in the conversation; 看全部 opens its tab, and 关掉这件 puts it away. */
+const FOLLOW_UP = '刚才那件做得怎么样了'
+const userTexts = `[...document.querySelectorAll('#thread > .msg-user, #thread > .msg-user-row .msg-user')].map((el) => el.textContent)`
+
+/**
+ * 接着问 on an ended task's report: 「#name 」 in the input, the line over it saying where the words go; sent,
+ * the task works again in its own session and reports back once more, the conversation on screen left alone.
+ */
+async function followUpSteps(win, outDir, expect) {
+  await run(win, `document.querySelector('#thread .task-report .task-follow-up').click()`)
+  const typed = await run(win, `({
+    value: document.getElementById('composer-input').value,
+    hint: document.getElementById('route-hint').textContent,
+    focused: document.activeElement?.id ?? '',
+  })`)
+  expect(typed.value.startsWith('#') && typed.hint.includes(`交给 #${BIG_ASK}`) && typed.hint.includes('接着做') && typed.focused === 'composer-input',
+    '接着问 should address the input to the task', typed)
+  await run(win, `(() => {
+    const input = document.getElementById('composer-input')
+    input.value += ${JSON.stringify(FOLLOW_UP)}
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-follow-up')
+  await run(win, `document.getElementById('composer').requestSubmit()`)
+  const report = await until(win, `[...document.querySelectorAll('#thread .task-report')].map((el) => el.textContent).find((text) => text.includes(${JSON.stringify(FOLLOW_UP)})) ?? null`, 'the task answering the follow-up')
+  expect(report.includes(`#${BIG_ASK}`) && report.includes('做完了'), 'asked again, the task should report back once more', report)
+  const asked = await run(win, userTexts)
+  expect(!asked.some((text) => text.includes(FOLLOW_UP)), 'the follow-up should not land in the conversation on screen', asked)
+}
+
+/** An ended task reports back in the conversation; 接着问 asks it again; 看全部 opens its tab, and 关掉这件 puts it away. */
 async function reportSteps(win, outDir, expect) {
   const report = await until(win, `document.querySelector('#thread .task-report')?.textContent ?? null`, 'the task\'s report')
   expect(report.includes(`#${BIG_ASK}`), 'the report should name the task', report)
   await run(win, `document.querySelector('#thread .task-report').scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-report')
+  await followUpSteps(win, outDir, expect)
   await run(win, `document.querySelector('#thread .task-report-open').click()`)
-  const tab = await until(win, `document.querySelector('#drawer .task-tab-act')?.textContent ?? null`, 'the task\'s tab')
-  expect(tab === '关掉这件', 'an ended task\'s tab should offer to close it', tab)
+  const acts = await until(win, `(() => {
+    const acts = [...document.querySelectorAll('#drawer .task-tab-act')].map((el) => el.textContent)
+    return acts.length > 0 && acts
+  })()`, 'the task\'s tab')
+  expect(acts.join() === '接着问,关掉这件', 'an ended task\'s tab should offer to ask it again or close it', acts)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-closing')
-  await run(win, `document.querySelector('#drawer .task-tab-act').click()`)
+  await run(win, `[...document.querySelectorAll('#drawer .task-tab-act')].find((el) => el.textContent === '关掉这件').click()`)
   const after = await until(win, `(() => {
     const tabs = [...document.querySelectorAll('#drawer .tab-task')].map((el) => el.textContent)
     return !tabs.includes('#${BIG_ASK}') && { tabs, report: Boolean(document.querySelector('#thread .task-report')) }
@@ -242,5 +276,28 @@ export async function checkResume(win, outDir) {
   await capture(win, outDir, 'tasks-resumed')
   const left = await run(win, `window.agent.unfinishedTasks()`)
   expect(left.length === 0, 'done with, nothing is left to offer at the next launch', left)
+  await restoredSteps(win, outDir, expect)
   return failures
+}
+
+const RESTORED_ASK = '后来呢'
+
+/**
+ * A task that had ended by the last launch (laterQuestionSteps's) is back in the drawer; 「#name …」 asks it
+ * again, its session taken up first, and it reports back.
+ */
+async function restoredSteps(win, outDir, expect) {
+  const tabs = await run(win, `(() => {
+    if (document.getElementById('drawer').dataset.open !== 'true') document.getElementById('toggle-drawer').click()
+    return [...document.querySelectorAll('#drawer .tab-task')].map((el) => el.textContent)
+  })()`)
+  expect(tabs.includes(`#${ASKS_LATER}`), 'a task that ended last time should be back in the drawer', tabs)
+  await submit(win, `#再问我城市 ${RESTORED_ASK}`)
+  const report = await until(win, `[...document.querySelectorAll('#thread .task-report')].map((el) => el.textContent).find((text) => text.includes(${JSON.stringify(RESTORED_ASK)})) ?? null`, 'the task from last time answering')
+  expect(report.includes(`#${ASKS_LATER}`) && report.includes('做完了'), 'asked again after a relaunch, the task should report back', report)
+  const asked = await run(win, userTexts)
+  expect(!asked.some((text) => text.includes(RESTORED_ASK)), 'the words should not land in the conversation on screen', asked)
+  await run(win, `[...document.querySelectorAll('#thread .task-report')].at(-1).scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-restored')
 }

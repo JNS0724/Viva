@@ -11,7 +11,7 @@ import { historyMessages, setupView } from './selectors.js'
 import { initialState, isBusy, isRevealing, reduce } from './state.js'
 import { createRewindActions } from './rewind-actions.js'
 import { createTaskActions } from './task-actions.js'
-import { liveTasks, mentionedTask, routeOf, taskTab } from './tasks-state.js'
+import { liveTasks, mentionedTask, mentionNameOf, routeOf, taskTab } from './tasks-state.js'
 import { createTimelineActions } from './timeline-actions.js'
 import { createWorkDirActions } from './workdir-actions.js'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.js'
@@ -211,10 +211,14 @@ function revealMessage(msgId) {
  */
 function ask(text, { via = null } = {}) {
   if (!text || setupView(state.info) || state.switching) return false
-  // 「#name …」: to the background task it names, whether or not the conversation on screen is busy.
+  // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
+  // into its turn while it goes on, as its next question once it has ended.
   const mentioned = mentionedTask(state, text)
   if (mentioned) {
-    taskActions.steerTask(mentioned.taskId, mentioned.text)
+    // Only the name so far (接着问 just wrote it): nothing to send yet.
+    if (!mentioned.text) return false
+    if (mentioned.ended) taskActions.askTask(mentioned.taskId, mentioned.text)
+    else taskActions.steerTask(mentioned.taskId, mentioned.text)
     return true
   }
   if (isBusy(state) && routeOf(state, text) === 'other') {
@@ -323,6 +327,15 @@ const handlers = {
   pickTaskOption: (taskId, id, label) => taskActions.pickTaskOption(taskId, id, label),
   /** A task's report in the thread, put away (view/thread.js reportCard). */
   dismissReport: (taskId) => taskActions.dismissReport(taskId),
+  /** 接着问 on a task that ended (its card, its drawer tab): 「#name 」 in the input, for the words to go to it. */
+  followUpTask(taskId) {
+    const task = state.tasks.list.find((entry) => entry.id === taskId)
+    if (!task) return
+    dom.input.value = `#${mentionNameOf(task)} `
+    dom.input.focus()
+    renderSendButton(dom, state)
+    renderRouteHint(dom, state)
+  },
   /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
   resumeUnfinished: (taskId) => taskActions.resumeUnfinished(taskId),
   forgetUnfinished: (taskId) => taskActions.forgetUnfinished(taskId),
@@ -330,6 +343,8 @@ const handlers = {
   skipTaskQuestion: (taskId) => taskActions.skipTaskQuestion(taskId),
   send() {
     if (setupView(state.info)) return handlers.openSettings()
+    // 「#name 」 with no words yet (接着问 just wrote it): nothing to send, to the task or anywhere else.
+    if (!state.question && mentionedTask(state, dom.input.value)?.text === '') return undefined
     const text = dom.input.value.trim()
     if (state.question) {
       if (!text) return

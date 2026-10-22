@@ -47,10 +47,14 @@ contextBridge.exposeInMainWorld('agent', {
    * conversation goes on with `text`: { ok, task, info, conversation, folds } | { ok: false, reason | problem }.
    */
   spinOffTask: (request) => ipcRenderer.invoke('task:spin-off', request),
-  /** Saved along the way and at its end ({ ended: true }, after which it is not offered at the next launch). */
+  /** Saved along the way and at its end ({ ended: true, status }: kept to be asked again, not offered as unfinished). */
   saveTask: (taskId, messages, options) => ipcRenderer.invoke('task:save', taskId, messages, options),
   /** Tasks an earlier launch left going: [{ id, title, segmentId, startedAt }]; taken up again, or let go. */
   unfinishedTasks: () => ipcRenderer.invoke('task:unfinished'),
+  /** Tasks that had ended by an earlier launch: [{ task, status, endedAt, messages }]. */
+  finishedTasks: () => ipcRenderer.invoke('task:finished'),
+  /** 接着问: a task that ended is asked `text` as its next question: { ok } | { ok: false, problem }. */
+  askTask: (taskId, text) => ipcRenderer.invoke('task:ask', taskId, text),
   resumeTask: (taskId) => ipcRenderer.invoke('task:resume', taskId),
   forgetTask: (taskId) => ipcRenderer.invoke('task:forget', taskId),
   undoTask: (taskId) => ipcRenderer.invoke('task:undo', taskId),
