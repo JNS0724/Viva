@@ -5,9 +5,12 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1          # tests + smoke
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Live    # also the real model
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Package # also build the installer and smoke the built app
+#   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -PackageOnly # only that, after npm ci (CI: .github/workflows/package.yml)
 #
 # -Live needs DEEPSEEK_API_KEY in the environment; the key is never written to the report.
-param([switch]$Live, [switch]$Package)
+# Exits 1 when any step failed, so CI can tell.
+param([switch]$Live, [switch]$Package, [switch]$PackageOnly)
+if ($PackageOnly) { $Package = $true }
 
 $ErrorActionPreference = 'Continue'
 # node and npm print UTF-8; read it as such, and write every log as UTF-8 too.
@@ -42,14 +45,16 @@ if (-not $nodeVersion) {
   "commit: $(git rev-parse --short HEAD 2>$null)"
 ) | Set-Content -Path (Join-Path $report 'environment.txt')
 
-Step 'install' { npm ci }
-Step 'test' { npm test }
-# The app runs from out/ (scripts/build.mjs); the phases below start it one by one, without npm's presmoke.
-Step 'build' { npm run build }
-Step 'smoke-setup' { npm run smoke:setup }
-Step 'smoke-walkthrough' { npm run smoke:walkthrough }
-Step 'smoke-relaunch' { npm run smoke:relaunch }
-Step 'smoke-memory' { npm run smoke:memory }
+if (-not $PackageOnly) {
+  Step 'install' { npm ci }
+  Step 'test' { npm test }
+  # The app runs from out/ (scripts/build.mjs); the phases below start it one by one, without npm's presmoke.
+  Step 'build' { npm run build }
+  Step 'smoke-setup' { npm run smoke:setup }
+  Step 'smoke-walkthrough' { npm run smoke:walkthrough }
+  Step 'smoke-relaunch' { npm run smoke:relaunch }
+  Step 'smoke-memory' { npm run smoke:memory }
+}
 
 if ($Live) {
   if (-not $env:DEEPSEEK_API_KEY) {
@@ -124,3 +129,4 @@ $summary = $results.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" 
 $summary | Set-Content -Path (Join-Path $report 'summary.txt') -Encoding UTF8
 $summary | Write-Host
 Write-Host "Report: $report"
+if ($results.Values | Where-Object { $_ -like 'FAIL*' }) { exit 1 }

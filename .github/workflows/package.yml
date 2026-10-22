@@ -1,0 +1,71 @@
+# The app as users get it: the installer built, the app run from outside the repository (where a missing package
+# would show instead of being found in the repo's node_modules), through the memory smoke phase with dsh, its
+# plugins and the fake model. Slower than `check`, so only for changes to how the app is built or packaged, and
+# by hand (Actions > package > Run workflow), before a release for instance.
+name: package
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - scripts/**
+      - tsconfig*.json
+      - src/main/config.js
+      - src/main/app-plugins.js
+      - .github/workflows/package.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Unsigned builds, as released; no publishing from CI.
+  CSC_IDENTITY_AUTO_DISCOVERY: false
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:mac -- --publish never
+      - name: Smoke the app from the mounted dmg
+        run: |
+          dmg=$(ls dist/*.dmg | head -1)
+          volume=$(hdiutil attach -nobrowse -readonly "$dmg" | grep -o '/Volumes/.*' | head -1)
+          trap 'hdiutil detach "$volume" || true' EXIT
+          SMOKE_PHASE=memory SMOKE_OUT="$RUNNER_TEMP/viva-smoke" SMOKE_FIXTURES="$PWD/test/fixtures" DEEPSEEK_API_KEY=smoke-fake-key \
+            "$volume/Viva.app/Contents/MacOS/Viva"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-smoke
+          path: ${{ runner.temp }}/viva-smoke/*.png
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build the installer, install it silently, smoke it, uninstall
+        run: powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -PackageOnly
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-report
+          path: smoke/windows-report
