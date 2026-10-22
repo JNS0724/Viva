@@ -16,17 +16,17 @@ const ALIAS_CHARS = 4
 /** Too general to say what a question is about, even when a model offers them as keywords. */
 const GENERIC_NAMES = new Set(['项目', '系统', '工作', '问题', '事情', '用户', '今天', '明天', '公司', '同事', '文档'])
 
-const isWordChar = (char) => /[a-z0-9]/i.test(char ?? '')
+const isWordChar = (char: string | undefined) => /[a-z0-9]/i.test(char ?? '')
 
 /** "张三（产品）" → "张三", "张三：直属上级" → "张三", "- Q4 对账系统重构" → "Q4 对账系统重构". */
-const cleanName = (part) => part
+const cleanName = (part: string) => part
   .replace(/[（(][^）)]*[）)]/g, ' ')
   .split(/[:：]/)[0]
   .replace(/^[-*•\s]+/, '')
   .replace(/\s+/g, ' ')
   .trim()
 
-function isUsableName(name) {
+function isUsableName(name: string) {
   const length = [...name].length
   if (length < MIN_NAME_CHARS || length > MAX_NAME_CHARS) return false
   const key = name.toLowerCase()
@@ -34,7 +34,7 @@ function isUsableName(name) {
 }
 
 /** The name itself, then the four-character windows of every Han run longer than four characters. */
-function aliasesOf(key) {
+function aliasesOf(key: string) {
   const windows: string[] = []
   for (const run of key.match(/\p{Script=Han}+/gu) ?? []) {
     const chars = [...run]
@@ -45,7 +45,7 @@ function aliasesOf(key) {
 }
 
 /** Whether `needle` occurs in `haystack`; a Latin end must not run on into a longer word ("pr" ≠ "prompt"). */
-function occurs(haystack, needle) {
+function occurs(haystack: string, needle: string) {
   const startsWord = isWordChar(needle[0])
   const endsWord = isWordChar(needle[needle.length - 1])
   for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
@@ -56,13 +56,13 @@ function occurs(haystack, needle) {
   return false
 }
 
-/**
- * @typedef {{ name: string, key: string, aliases: string[] }} NameEntry
- *   name as written, key lower-cased (its identity), aliases the strings searched for
- */
+/** A name: as written, lower-cased (its identity), and the strings searched for. */
+export interface NameEntry { name: string, key: string, aliases: string[] }
 
-/** @returns {NameEntry | null} */
-function entryOf(raw) {
+/** The profile's fields, as far as names are read from them. */
+type ProfileValues = Readonly<Record<string, { value: string } | undefined>>
+
+function entryOf(raw: unknown): NameEntry | null {
   const name = cleanName(String(raw ?? ''))
   if (!isUsableName(name)) return null
   const key = name.toLowerCase()
@@ -70,24 +70,20 @@ function entryOf(raw) {
 }
 
 /** Names listed in the profile ("张三、李四", one project a line). */
-const profileNames = (profile) => NAME_FIELDS.flatMap((field) => (profile[field]?.value ?? '').split(NAME_SEPARATORS))
+const profileNames = (profile: ProfileValues) => NAME_FIELDS.flatMap((field) => (profile[field]?.value ?? '').split(NAME_SEPARATORS))
 
-/**
- * @param {Record<string, { value: string }>} profile
- * @param {Array<{ keywords?: string[] }>} memories
- * @returns {NameEntry[]} one entry per name, first spelling wins
- */
-export function buildLexicon(profile, memories) {
+/** One entry per name, first spelling wins. */
+export function buildLexicon(profile: ProfileValues, memories: ReadonlyArray<{ keywords?: readonly string[] }>): NameEntry[] {
   const raw = [...profileNames(profile), ...memories.flatMap((memory) => memory.keywords ?? [])]
-  const byKey = new Map()
+  const byKey = new Map<string, NameEntry>()
   for (const entry of raw.map(entryOf)) {
     if (entry && !byKey.has(entry.key)) byKey.set(entry.key, entry)
   }
   return [...byKey.values()]
 }
 
-/** @returns {Map<string, string>} key → name, for the lexicon names that `text` mentions */
-export function namesIn(text, lexicon) {
+/** key → name, for the lexicon names that `text` mentions. */
+export function namesIn(text: unknown, lexicon: readonly NameEntry[]): Map<string, string> {
   const haystack = String(text ?? '').toLowerCase()
   return new Map(lexicon
     .filter((entry) => entry.aliases.some((alias) => occurs(haystack, alias)))
@@ -97,11 +93,10 @@ export function namesIn(text, lexicon) {
 /**
  * The names a memory is about: its keywords, plus the candidate names its text mentions (a memory the
  * user typed has no keywords, but "周报交给张三" is still about 张三).
- * @param {{ text: string, keywords?: string[] }} memory
- * @param {NameEntry[]} candidates the entries worth checking, usually the ones the question named
- * @returns {Set<string>} keys
+ * @param candidates the entries worth checking, usually the ones the question named
+ * @returns keys
  */
-export function namesOfMemory(memory, candidates) {
+export function namesOfMemory(memory: { text: string, keywords?: readonly string[] }, candidates: readonly NameEntry[]): Set<string> {
   const own = (memory.keywords ?? []).map((keyword) => cleanName(keyword).toLowerCase())
   return new Set([...own, ...namesIn(memory.text, candidates).keys()])
 }
