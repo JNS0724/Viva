@@ -10,6 +10,8 @@
  *   or, told 「再问我城市」 too, asks which city as for the weather;
  * - 「把全部…」 → offers the background with viva_offer_background, then goes on (「开始整理」, or, asked to
  *   接入演示服务 too, to that);
+ * - 「删掉 X」 → removes X with the shell;
+ * - asked by dsh's Auto review about a step → allows it, unless it removes something;
  * - after a tool result → says what the tool did;
  * - anything else → 「收到：…」, prefixed with what background it was given;
  * - the memory plugin's background extractor gets the answers of `extract` below.
@@ -144,8 +146,21 @@ function synthesize(request) {
   return { text }
 }
 
+/** dsh's Auto review asks the model about each pending step; its request starts with this section. */
+const REVIEWER = 'REVIEW_POLICY'
+/** 「删掉 X」: removes X with the shell, which the fake reviewer will not allow by itself. */
+const DELETE = /^删掉\s*(\S+)/
+const SHELLS = ['bash', 'pwsh']
+
+/** Plays the Auto reviewer: removing anything goes to the user, everything else is let through. */
+function review(request) {
+  const removes = /rm -rf|Remove-Item/.test(JSON.stringify(request.messages))
+  return { text: JSON.stringify(removes ? { risk: 'medium', decision: 'deny', reason: '要删除原有的文件' } : { risk: 'low', decision: 'allow' }) }
+}
+
 /** @returns {{ tool: { name: string, input: object } } | { text: string }} */
 export function decide(request) {
+  if (JSON.stringify(request.messages).includes(REVIEWER) || systemText(request).includes(REVIEWER)) return review(request)
   if (systemText(request).includes(EXTRACTOR)) return extract(request)
   if (systemText(request).includes(SYNTHESIZER)) return synthesize(request)
   const messages = request.messages
@@ -165,6 +180,12 @@ export function decide(request) {
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }
+  const removal = DELETE.exec(question)
+  const shell = removal && (request.tools ?? []).find((tool) => SHELLS.includes(tool.name))
+  if (shell) {
+    const command = shell.name === 'pwsh' ? `Remove-Item -Recurse -Force ${removal[1]}` : `rm -rf ${removal[1]}`
+    return { tool: { name: shell.name, input: { command, description: `删除 ${removal[1]}` } } }
+  }
   const mail = MAIL.find(([pattern]) => pattern.test(question))
   const mailTool = mail && (request.tools ?? []).find((tool) => tool.name.endsWith(mail[1]))
   if (mailTool) return { tool: { name: mailTool.name, input: { to: '张三', body: question } } }

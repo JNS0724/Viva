@@ -127,8 +127,14 @@ html:not([data-platform="darwin"]) {
 .topic-start time { font: 12px var(--font-mono); font-weight: 400; color: var(--ink-3); }
 .topic-note { align-self: center; margin-top: -16px; font-size: 12px; color: var(--ink-3); text-align: center; }
 
-/* By the input: what the assistant has in mind now (view/topic-label.js). */
-.ctx-area { position: relative; }
+/* Above the input: what the assistant has in mind now, and ＋ 新话题 (view/topic-label.js). */
+.ctx-area { position: relative; width: 100%; max-width: 760px; display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ctx-new {
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2);
+  background: none; color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.ctx-new:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
+.ctx-new:disabled { cursor: default; opacity: .5; }
 .ctx-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; }
 .ctx-chip:hover, .ctx-chip[aria-expanded="true"] { border-color: var(--line-2); }
 .ctx-bar { width: 28px; height: 4px; border-radius: 2px; background: var(--line-2); overflow: hidden; }
@@ -136,7 +142,7 @@ html:not([data-platform="darwin"]) {
 .ctx-chip[data-tone="full"] { color: var(--orange); }
 .ctx-chip[data-tone="full"] .ctx-bar i { background: var(--orange); }
 .ctx-menu {
-  position: absolute; left: 0; bottom: 38px; z-index: 30; width: 290px; padding: 6px; border: 1px solid var(--line-2);
+  position: absolute; left: 0; bottom: 36px; z-index: 30; width: 290px; padding: 6px; border: 1px solid var(--line-2);
   border-radius: 14px; background: var(--panel-2); box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
 }
 .ctx-menu-info { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.6; color: var(--ink-3); }
@@ -559,7 +565,32 @@ html:not([data-platform="darwin"]) {
 /* ---------- model picker ---------- */
 /* ---------- working directory: the chip under the input, its menu, the first-time question (view/workdir.js) ---------- */
 .workdir-area { position: relative; min-width: 0; }
-.workdir-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; max-width: 280px; font-family: var(--font-sans); color: var(--ink); }
+/* It shrinks with the row, its name cut short, so nothing beside it can draw over it. */
+.workdir-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; max-width: min(280px, 100%); overflow: hidden; font-family: var(--font-sans); color: var(--ink); }
+.workdir-chip .workdir-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* What the assistant may do without asking (view/permission-picker.js). */
+.perm-area { position: relative; flex: none; }
+.perm-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; font-family: var(--font-sans); color: var(--ink); }
+.perm-chip:hover:not(:disabled), .perm-chip[aria-expanded="true"] { border-color: var(--line-2); }
+.perm-chip:disabled { cursor: default; opacity: .6; }
+.perm-chip > svg { flex: none; color: var(--ink-3); }
+.perm-chip[data-level="auto"] { color: var(--accent); }
+.perm-chip[data-level="danger-full-access"] { color: var(--orange); }
+.perm-menu {
+  position: absolute; left: 0; bottom: 40px; z-index: 30; width: 340px; padding: 6px; border: 1px solid var(--line-2);
+  border-radius: 14px; background: var(--panel-2); box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+}
+.perm-menu-head { padding: 8px 10px 6px; font-size: 12px; color: var(--ink-3); }
+.perm-item {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 9px 10px; border: none; border-radius: 9px;
+  background: none; color: var(--ink); text-align: left; cursor: pointer;
+}
+.perm-item:hover, .perm-item[aria-checked="true"] { background: var(--raised); }
+.perm-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.perm-item[aria-checked="true"] .perm-name::after { content: '✓'; margin-left: auto; color: var(--accent); font-weight: 400; }
+.perm-tag { padding: 0 6px; border-radius: 6px; background: rgba(90, 169, 255, .15); color: var(--accent); font-size: 10px; font-weight: 500; }
+.perm-help { font-size: 12px; line-height: 1.5; color: var(--ink-3); }
 .workdir-chip:hover:not(:disabled), .workdir-chip[aria-expanded="true"] { border-color: var(--line-2); }
 .workdir-chip[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 169, 255, .15); }
 .workdir-chip:disabled { cursor: default; opacity: .6; }
@@ -676,7 +707,8 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .hub[data-open="false"] { display: none; }
 .hub-side {
   flex: none; width: 220px; display: flex; flex-direction: column; gap: 4px; padding: 14px 12px;
-  background: var(--panel); border-right: 1px solid var(--line);
+  /* The title bar's ground, so the two read as one frame around the page. */
+  background: var(--bg); border-right: 1px solid var(--line);
 }
 .hub-back {
   display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; height: 36px; padding: 0 12px; margin-bottom: 14px;

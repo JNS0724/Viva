@@ -74,6 +74,8 @@
           <button class="jump-latest" id="jump-latest" type="button" hidden>↓ 新内容</button>
         </section>
 
+        <!-- 本话题 · N 条 · 已用 X%, and ＋ 新话题: what the assistant has in mind now (view/topic-label.js). -->
+        <div class="ctx-area" id="ctx-area" hidden></div>
         <form class="composer" id="composer">
           <label class="sr-only" for="composer-input">给助手发消息</label>
           <div class="route" id="route-hint" aria-live="polite" hidden></div>
@@ -88,13 +90,13 @@
               <button class="chip workdir-chip" id="composer-context" type="button" aria-haspopup="menu" aria-expanded="false"></button>
               <div id="workdir-menu"></div>
             </div>
-            <!-- 本话题 · N 条 · 已用 X%: what the assistant has in mind now, and 开新话题 (view/topic-label.js). -->
-            <div class="ctx-area" id="ctx-area" hidden></div>
+            <!-- What the assistant may do without asking: 完全 / 自动 / 工作区修改 / 仅可查看 (view/permission-picker.js). -->
+            <div class="perm-area" id="perm-area"></div>
             <button class="btn btn-secondary bg-send" id="bg-send" type="button" title="交给后台做，这里照常用">↗ 后台做</button>
             <button class="send-btn" id="send-btn" type="submit" aria-label="发送"></button>
           </div>
         </form>
-        <p class="disclaimer">助手可能出错；写文件、运行命令等操作会先征得你同意。</p>
+        <p class="disclaimer">助手可能出错；哪些操作会先问你，看输入框里选的权限。</p>
       </main>
 
       <aside class="drawer" id="drawer" aria-label="工具抽屉" data-open="false"></aside>

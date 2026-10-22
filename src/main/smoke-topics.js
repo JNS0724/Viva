@@ -1,4 +1,5 @@
 import { capture, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
+// newTopic: ⌘N, the first time; ＋ 新话题 above the input, the second.
 
 /**
  * Topics in the walkthrough smoke run (smoke.js): ⌘N shows at once where the new topic starts, the label by
@@ -36,8 +37,9 @@ export async function checkTopics(win, outDir) {
   // Topics the walkthrough started before stay dimmed; only the one just left is taken up again.
   expect(undone.old === fresh.old - 1 && !undone.label?.includes('· 0 条'), 'undone, the topic above is the one on screen again', { fresh, undone })
 
-  await newTopic(win)
-  await timelineWhen(win, 'seen.undo && !seen.switching', 'a second new topic')
+  // The second time with ＋ 新话题 above the input, as most people will.
+  await run(win, `document.querySelector('#ctx-area .ctx-new').click()`)
+  await timelineWhen(win, 'seen.undo && !seen.switching', 'a second new topic, from ＋ 新话题')
   await submit(win, '换个话题问问')
   await finishTurn(win)
   const moved = await timelineWhen(win, 'seen.old >= 1', 'the topic left behind, dimmed')
@@ -57,7 +59,7 @@ export async function checkTopics(win, outDir) {
   const menu = await until(win, `document.querySelector('#ctx-area .ctx-menu')?.textContent`, 'the label\'s menu')
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'topic-menu')
-  expect(menu.includes('开新话题') && menu.includes('记得'), 'the menu should say what is remembered and offer a new topic', menu)
+  expect(menu.includes('记得') && !menu.includes('压缩成要点'), 'the label should say what is remembered, and offer nothing not built', menu)
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   report(`topics: ${JSON.stringify({ fresh, undone, moved, back, menu })}`)
   return failures

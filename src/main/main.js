@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.js'
 import { openTraceDb } from '../../plugins/trace/lib/store.js'
-import { installedDshVersion, PERSONA, resolvePlugins } from './app-plugins.js'
+import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.js'
 import { APP_ROOT, DSH_PROFILE, resolveConfig } from './config.js'
 import { createAcpBridge } from './acp-bridge.js'
 import { createDeskIsland } from './desk-island.js'
@@ -173,7 +173,7 @@ function reportTurnMemories() {
 function prepareProfile(config) {
   try {
     const { plugins, problems } = resolvePlugins({
-      appRoot: APP_ROOT, userData: app.getPath('userData'), dshVersion: installedDshVersion(APP_ROOT),
+      appRoot: APP_ROOT, userData: app.getPath('userData'), dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
     })
     pluginProblems = problems
     problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
@@ -368,7 +368,22 @@ function settingsView() {
     deskIsland: preferences.get().deskIsland,
     shortcut: shortcutHeld === null ? null : { keys: ASK_SHORTCUT, held: shortcutHeld },
     images: imageStore.usage(),
+    permission: permissionNow(),
   }
+}
+
+/** The permission level picked; one no longer offered (an older or edited file) reads as the default. */
+const permissionNow = () => (PERMISSION_LEVELS.includes(preferences.get().permission) ? preferences.get().permission : DEFAULT_PERMISSION)
+
+/**
+ * Another permission level: dsh starts again with it (viva-permission applies it to every session), on the
+ * conversation on screen. Not while a turn runs, which the restart would cut short.
+ */
+async function setPermission(level) {
+  if (!PERMISSION_LEVELS.includes(level)) throw new Error(`invalid permission level: ${level}`)
+  if (turn.active) throw new Error('助手正在工作，等这一轮结束再换权限')
+  preferences.set('permission', level)
+  return { settings: settingsView(), info: await restartKeepingConversation() }
 }
 
 function assertText(value, name, maxLength) {
@@ -525,6 +540,7 @@ function registerSettingsIpc() {
     setDeskIsland(on)
     return settingsView()
   })
+  ipcMain.handle('settings:set-permission', (_event, level) => setPermission(level))
   ipcMain.handle('settings:reset-desk-place', () => {
     desk?.resetPlace()
     if (!desk) preferences.set('deskPlaces', { last: null, places: {} })

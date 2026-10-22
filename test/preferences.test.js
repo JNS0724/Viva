@@ -12,14 +12,18 @@ test('preferences start from their defaults and keep what is set', () => {
   const file = tempFile()
   const prefs = createPreferences({ file })
   const home = { last: null, places: {} }
-  assert.deepEqual(prefs.get(), { deskIsland: true, deskPlaces: home, deskCoached: false, workDirs: noDirs, imagesDir: '' })
-  assert.deepEqual(prefs.set('deskIsland', false), { deskIsland: false, deskPlaces: home, deskCoached: false, workDirs: noDirs, imagesDir: '' })
+  const fresh = { workDirs: noDirs, imagesDir: '', permission: 'workspace-write' }
+  assert.deepEqual(prefs.get(), { deskIsland: true, deskPlaces: home, deskCoached: false, ...fresh })
+  assert.deepEqual(prefs.set('deskIsland', false), { deskIsland: false, deskPlaces: home, deskCoached: false, ...fresh })
   const placed = { last: '1', places: { 1: { fx: 0.8, fy: 0.9 } } }
   prefs.set('deskPlaces', placed)
   const dirs = { recent: ['/me/site'], trusted: ['/me/site'] }
   prefs.set('workDirs', dirs)
   prefs.set('imagesDir', '/me/Pictures/Viva 图片')
-  assert.deepEqual(createPreferences({ file }).get(), { deskIsland: false, deskPlaces: placed, deskCoached: false, workDirs: dirs, imagesDir: '/me/Pictures/Viva 图片' }, 'kept across launches')
+  prefs.set('permission', 'auto')
+  assert.deepEqual(createPreferences({ file }).get(), {
+    deskIsland: false, deskPlaces: placed, deskCoached: false, workDirs: dirs, imagesDir: '/me/Pictures/Viva 图片', permission: 'auto',
+  }, 'kept across launches')
 })
 
 test('only known preferences of the right type are taken', () => {
@@ -32,6 +36,6 @@ test('a broken file falls back to the defaults and is reported', () => {
   const file = tempFile()
   fs.writeFileSync(file, '{not json')
   const problems = []
-  assert.deepEqual(createPreferences({ file, onError: (err) => problems.push(err.message) }).get(), { deskIsland: true, deskPlaces: { last: null, places: {} }, deskCoached: false, workDirs: noDirs, imagesDir: '' })
+  assert.deepEqual(createPreferences({ file, onError: (err) => problems.push(err.message) }).get(), { deskIsland: true, deskPlaces: { last: null, places: {} }, deskCoached: false, workDirs: noDirs, imagesDir: '', permission: 'workspace-write' })
   assert.equal(problems.length, 1)
 })

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { checkDeskAsk } from './smoke-desk.js'
 import { checkPictures } from './smoke-images.js'
 import { checkTopics } from './smoke-topics.js'
+import { checkPermission } from './smoke-permission.js'
 import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.js'
 import { checkMemory } from './smoke-memory.js'
 import { checkResume } from './smoke-tasks.js'
@@ -509,6 +510,7 @@ export async function runSmoke(win, { smokeOut: outDir, smokePhase }, quit, hook
       problems.push(...await checkDeskAsk(win, outDir, hooks.desk?.()))
       problems.push(...await checkPictures(win, outDir, hooks.desk?.()))
       problems.push(...await checkTopics(win, outDir))
+      problems.push(...await checkPermission(win, outDir))
     }
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))

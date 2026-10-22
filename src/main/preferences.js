@@ -10,7 +10,8 @@ const FILE_VERSION = 1
  * deskPlaces: where the desktop island was dragged to, per display (desk-place.js checks what is read);
  * deskCoached: the user has seen the island's first-time note on what it can do;
  * workDirs: the working directories used lately, and the ones the user confirmed (work-dir-ipc.js checks what is read);
- * imagesDir: where the user moved the pictures folder to (image-store.js); empty for the default in the app's data.
+ * imagesDir: where the user moved the pictures folder to (image-store.js); empty for the default in the app's data;
+ * permission: what the assistant may do without asking (plugins/permission; checked where it is set).
  */
 const DEFAULTS = Object.freeze({
   deskIsland: true,
@@ -18,6 +19,7 @@ const DEFAULTS = Object.freeze({
   deskCoached: false,
   workDirs: Object.freeze({ recent: Object.freeze([]), trusted: Object.freeze([]) }),
   imagesDir: '',
+  permission: 'workspace-write',
 })
 
 /** @param {{ file: string, onError?: (err: Error) => void }} options */
