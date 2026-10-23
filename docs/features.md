@@ -47,12 +47,20 @@
 
 ## 在对话里配置 MCP 和 skill
 
-设置里不再有添加 MCP 服务器和导入 skill 的表单，直接在对话里说就行，比如「帮我接入 GitHub」「把刚才写周报的做法存成 skill」。设置的「扩展」一节只列出已经接入的服务器和已有的 skill，可以删除。
+设置里不再有添加 MCP 服务器和导入 skill 的表单，直接在对话里说就行，比如「帮我接入 GitHub」「把刚才写周报的做法存成 skill」。设置的「扩展」一节列出已经接入的服务器和已有的 skill：服务器可以「编辑」（原地改，不用删了重加），也可以删除；skill 可以删除。
 
-- **先确认**：模型用 `viva-config` 插件（`plugins/config`）的工具配置：`viva_mcp_add` / `viva_mcp_remove` / `viva_mcp_list`，`viva_skill_create` / `viva_skill_install` / `viva_skill_remove` / `viva_skill_list`。会改动配置的那几个，先弹出审批卡片（「接入 MCP 服务器「github」」，下面是要运行的命令和参数），你允许后才执行。
+- **先确认**：模型用 `viva-config` 插件（`plugins/config`）的工具配置：`viva_mcp_add` / `viva_mcp_update` / `viva_mcp_remove` / `viva_mcp_list` / `viva_mcp_import`，`viva_skill_create` / `viva_skill_install` / `viva_skill_remove` / `viva_skill_list`。会改动配置的那几个，先弹出审批卡片（「接入 MCP 服务器「github」」，下面是要运行的命令和参数），你允许后才执行；从 dsh 导入例外，见下。
 - **密钥不进对话**：服务要令牌时，模型只写名字（比如 `GITHUB_TOKEN`），窗口里弹出一张输入卡片让你填写。填的值直接交给主进程，用系统钥匙串加密存进 `mcp-servers.json`，不经过 dsh，也不会出现在聊天记录或「过程」里；「过程」只记下「请你填写密钥」和「你填写了密钥」。
 - **谁来做**：插件只把请求交给应用（IPC，`config@1`，见 `plugins/config/lib/channel.js`）；应用在 `src/main/config-channel.js` 里逐项校验，再用和原来设置表单相同的代码写入。MCP 的改动在这一轮结束后重新接到会话上；skill 放进去就生效。新建的 skill 名字遵守 dsh 的规则（小写字母、数字和连字符），中文说明写在 description 里。
 - **人设**里写明：要接入服务或保存做法时用这些工具，绝不在对话里向用户要密钥的值。
+
+### 从 dsh 导入、原地编辑
+
+- **从 dsh 导入**：「扩展」里点「从 dsh 导入」，选默认位置（`DSH_HOME`，没设就是 `~/.dsh`）、上次用过的文件夹，或「选择其他 .dsh 文件夹…」；在对话里说「把 dsh 的 MCP 搬过来」（可以带路径）也一样。不弹审批卡、不让你填密钥：这些服务器本来就是你在 dsh 里配好的，只读取、不改动原来的配置。
+- **读哪里**：每个 profile 的 `profiles/<名字>/cordis.yml`、`cordis.patch.yml`，再加上 dsh 文件夹里的 `cordis.patch.yml`（按 dsh 的顺序叠加，能读到 `insert`、按 id 覆盖和 `disabled`），找出 `@deepseek-ai/dsh-mcp-client` 那几条（`src/main/dsh-mcp-import.ts`）。
+- **密钥**：直接写在配置里的照搬；写成 `!!js process.env.X`（或 `` `Bearer ${process.env.X}` `` 这类模板）的，按 dsh 的顺序找：你终端的环境（从登录 shell 读一次，因为从程序坞打开的应用拿不到）、应用自己的环境、dsh 文件夹里的 `.env`。其他 `!!js` 写法一律不执行。找不到的不打断导入：服务器照样加上，在列表里标「缺少密钥：X」，点「编辑」补上就行。
+- **重名**：名字已经有的跳过（不区分大小写），结果里说明。
+- **原地编辑**：点「编辑」在原位置展开表单，命令、参数、地址都已填好；已保存的密钥只显示名字，留空就保持不变，填了才替换，也可以新增或删除。保存后会话自动重新接一次。对话里用 `viva_mcp_update`（先审批，新密钥同样在窗口里填）。
 
 ## 模型和 key
 

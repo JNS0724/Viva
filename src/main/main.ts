@@ -11,6 +11,7 @@ import { createAcpBridge } from './acp-bridge.ts'
 import { createDeskIsland } from './desk-island.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.ts'
+import { expandHome, importDshServers, importSummary, userDshHome } from './dsh-mcp-import.ts'
 import { ensureDshProfile } from './dsh-profile.ts'
 import { dshEnv, restartDelay } from './dsh-runtime.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
@@ -30,7 +31,7 @@ import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-m
 import { createTray } from './tray.ts'
 import { adoptLegacyData, LEGACY_NAME } from './legacy-data.ts'
 import { externalUrl } from './links.ts'
-import { createMcpConfigStore, parseServerInput } from './mcp-config.ts'
+import { createMcpConfigStore, editServer, parseServerInput, type ServerChanges } from './mcp-config.ts'
 import { registerMemoryIpc } from './memory-ipc.ts'
 import { createModelStore, defaultModel, modelValue, parseModelValue, piAiProviders, providerEnv } from './model-providers.ts'
 import { registerModelsIpc } from './models-ipc.ts'
@@ -224,6 +225,23 @@ function serverForm(spec: { name: string, url?: string, command?: string, args: 
 
 const takenServerNames = () => mcpStore.list().map((server) => server.name)
 
+function serverNamed(name: string) {
+  const server = mcpStore.list().find((item) => item.name === name)
+  if (!server) throw new Error(`没有名为「${name}」的 MCP 服务器`)
+  return server
+}
+
+/** A change the model asked for (config-channel.ts ServerUpdate) as editServer takes it: what it names, and the keys typed. */
+type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
+const updateChanges = (spec: ServerUpdate, secrets: Readonly<Record<string, string>>): ServerChanges => ({
+  name: spec.newName || undefined,
+  type: spec.url ? 'http' : spec.command ? 'stdio' : undefined,
+  command: spec.command || undefined,
+  args: spec.args ?? undefined,
+  url: spec.url || undefined,
+  values: secrets,
+})
+
 /**
  * What the model may change from the conversation (viva-config plugin, config-channel.js), each after the
  * user approved it on the card: MCP servers through the encrypted store, skills in the app's own folder.
@@ -236,7 +254,8 @@ function configActions(config: Config): ConfigActions {
     return root.dir
   }
   return {
-    listServers: () => mcpStore.list().map((server) => `${server.name}（${server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')}）`),
+    listServers: () => mcpStore.list().map((server) => `${server.name}（${server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')}）`
+      + (server.missing.length ? ` 缺少密钥：${server.missing.join('、')}` : '')),
     prepareServer: (spec) => {
       parseServerInput(serverForm(spec, Object.fromEntries(spec.secrets.map((name) => [name, 'x']))), takenServerNames())
     },
@@ -250,6 +269,23 @@ function configActions(config: Config): ConfigActions {
       mcpStore.remove(name)
       mcpReloadDue = true
       return `已移除 MCP 服务器「${name}」，这一轮结束后生效。`
+    },
+    prepareUpdate: (spec) => {
+      editServer(serverNamed(spec.name), updateChanges(spec, Object.fromEntries(spec.secrets.map((name) => [name, 'x']))), takenServerNames())
+    },
+    updateServer: (spec, secrets) => {
+      const next = editServer(serverNamed(spec.name), updateChanges(spec, secrets), takenServerNames())
+      mcpStore.update(spec.name, next)
+      mcpReloadDue = true
+      return `已修改 MCP 服务器「${next.name}」，这一轮结束后生效${next.missing.length ? `；还缺 ${next.missing.join('、')}，用户可以在 设置 → 扩展 里点「编辑」补上` : ''}。`
+    },
+    /** No card: the servers and keys are the user's own, already set up in dsh (they asked for it this way). */
+    importServers: async (dir) => {
+      const target = dir ? expandHome(dir) : userDshHome()
+      const result = await importDsh(target)
+      if (result.added.length) mcpReloadDue = true
+      if (target !== userDshHome()) preferences.set('dshImportDir', target)
+      return importSummary(result, { forModel: true })
     },
     listSkills: () => listSkills(roots()).map((skill) => `${skill.id}：${skill.name}${skill.description ? ` — ${skill.description}` : ''}${skill.problem ? `（${skill.problem}）` : ''}`),
     createSkill: (spec) => `已新建 skill「${createSkill(spec, userRoot())}」，下次遇到同类事会用上。`,
@@ -660,6 +696,16 @@ const pickFiles = async (options: Electron.OpenDialogOptions) => {
   return result.canceled ? null : result.filePaths
 }
 
+/** Takes the MCP servers of a dsh home over, keys and all (dsh-mcp-import.ts); names already in use are skipped. */
+const importDsh = (dir: string) => importDshServers({ dir, store: mcpStore, takenNames: takenServerNames })
+
+async function chooseDshDir(): Promise<string | null> {
+  const result = await dialog.showOpenDialog(mainWindow(), {
+    title: '选择 dsh 的文件夹（通常叫 .dsh）', defaultPath: os.homedir(), properties: ['openDirectory', 'showHiddenFiles'],
+  })
+  return result.canceled ? null : result.filePaths[0] ?? null
+}
+
 function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createMcpConfigStore>) {
   registerMemoryIpc(ipcMain, {
     db: memoryDb,
@@ -674,6 +720,10 @@ function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createM
     mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
     applyMcp: applyMcpChange,
     trash: (file) => shell.trashItem(file),
+    dshDirs: () => ({ defaultDir: userDshHome(), lastDir: preferences.get().dshImportDir }),
+    chooseDshDir,
+    importDsh,
+    rememberDshDir: (dir) => preferences.set('dshImportDir', dir),
   })
 }
 
@@ -855,7 +905,7 @@ function bringLegacyData() {
  * resume) and the profiles it wrote there go. The user's own sessions and profiles stay where they are.
  */
 function bringDshData(config: Config) {
-  const fromHome = process.env.DSH_HOME ? path.resolve(process.env.DSH_HOME) : path.join(os.homedir(), '.dsh')
+  const fromHome = userDshHome()
   try {
     const toHome = dshHomeOf(config)
     const sessions = adoptDshSessions({ fromHome, toHome, cwd: config.cwd })

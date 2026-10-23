@@ -113,6 +113,8 @@ export const IPC_ARGS = Object.freeze({
 
   'ext:get': none,
   'ext:remove-mcp': z.tuple([id]),
+  'ext:update-mcp': z.tuple([id, record]),
+  'ext:import-dsh': z.tuple([z.enum(['default', 'last', 'choose'])]),
   'ext:remove-skill': z.tuple([id]),
 
   'island:view': z.tuple([record]),

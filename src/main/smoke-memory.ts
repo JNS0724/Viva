@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { mcpSteps } from './smoke-mcp.ts'
 import { taskSteps } from './smoke-tasks.ts'
 
 /**
@@ -147,6 +148,7 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   expect(ext.servers.includes('demo'), 'the server set up in the conversation should be listed', ext)
   await run(win, `document.querySelector('.ext').scrollIntoView()`)
   await capture(win, outDir, 'memory-settings')
+  await mcpSteps(win, outDir, expect, hooks)
   await modelSteps(win, outDir, expect)
 }
 
@@ -167,7 +169,7 @@ async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     field('model-key').value = 'sk-smoke-provider-0001'
     field('model-name').closest('form').requestSubmit()
   })()`)
-  const outcome = await until(win, `document.querySelector('.ext [role="status"], .ext [role="alert"]')?.textContent ?? ''`, 'adding a model provider')
+  const outcome = await until(win, `document.querySelector('[aria-label="模型"] [role="status"], [aria-label="模型"] [role="alert"]')?.textContent ?? ''`, 'adding a model provider')
   expect(outcome.includes(`已添加「${PROVIDER}」`), 'the provider should be added', outcome)
   await run(win, `document.querySelector('[aria-label="模型"]')?.scrollIntoView()`)
   await capture(win, outDir, 'models-settings')
