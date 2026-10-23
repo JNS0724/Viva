@@ -113,6 +113,8 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   watchFile: (rel) => ipcRenderer.invoke('files:watch', rel),
   getExtensions: () => ipcRenderer.invoke('ext:get'),
   removeMcpServer: (name) => ipcRenderer.invoke('ext:remove-mcp', name),
+  updateMcpServer: (name, changes) => ipcRenderer.invoke('ext:update-mcp', name, changes),
+  importDsh: (from) => ipcRenderer.invoke('ext:import-dsh', from),
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),

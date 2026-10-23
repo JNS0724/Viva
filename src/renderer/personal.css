@@ -88,6 +88,52 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .ext-form { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; border: 1px solid var(--line-2); }
 .ext-stdio, .ext-http { display: flex; flex-direction: column; gap: 12px; }
 .ext-form[data-type="stdio"] .ext-http, .ext-form[data-type="http"] .ext-stdio { display: none; }
+.ext-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ext-actions { display: flex; gap: 8px; flex: none; }
+.ext-import-note {
+  margin: 0; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; color: var(--ink);
+  background: rgba(90, 169, 255, .08); border: 1px solid rgba(90, 169, 255, .28);
+}
+
+/* 从 dsh 导入: the button and its menu of where from (the menu borrows the folder menu's look). */
+.import-area { position: relative; flex: none; }
+.import-btn { display: inline-flex; align-items: center; gap: 6px; }
+.import-btn > svg { color: var(--ink-3); transition: transform .15s; }
+.import-btn[aria-expanded="true"] { border-color: var(--accent); }
+.import-btn[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.import-scrim { position: fixed; inset: 0; z-index: 29; }
+.import-menu { left: auto; right: 0; bottom: auto; top: calc(100% + 8px); width: min(380px, 80vw); }
+.import-menu .workdir-item-name { max-width: none; }
+.import-menu-foot { margin: 4px 10px 6px; font-size: 11px; line-height: 1.6; color: var(--ink-3); }
+
+/* A server edited in place. */
+.ext-item[data-editing="true"] { display: block; padding: 0; border-color: var(--accent); background: var(--panel); }
+.ext-edit { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 18px; }
+.ext-edit-head { display: flex; align-items: center; gap: 8px; }
+.ext-edit-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 12px; }
+.ext-edit-row > .label { color: var(--ink-3); }
+.ext-edit-row.top { align-items: start; }
+.ext-edit-row.top > .label { padding-top: 14px; }
+.ext-edit .field { height: 40px; font-size: 13px; }
+.ext-edit textarea.field { height: auto; font-family: var(--font-mono); font-size: 13px; }
+.seg { display: inline-flex; gap: 2px; width: max-content; padding: 3px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+.seg button { padding: 5px 12px; border: none; border-radius: 7px; background: none; color: var(--ink-2); font-size: 13px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--raised); color: var(--ink); font-weight: 700; }
+.secret-rows { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.secret-row { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) 34px; gap: 8px; align-items: center; }
+.secret-key {
+  height: 40px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; overflow: hidden; text-overflow: ellipsis;
+  background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; color: var(--ink-2);
+}
+.secret-row[data-missing="true"] .field { border-color: var(--orange); }
+.secret-del {
+  width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; border: 1px solid var(--line);
+  background: transparent; color: var(--ink-3); cursor: pointer;
+}
+.secret-del:hover { color: var(--ink); border-color: var(--line-2); }
+.ext-add-key { margin-left: 0; width: max-content; }
+.ext-edit-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.ext-edit-foot .help { margin: 0 0 0 auto; }
 
 @media (max-width: 720px) {
   .intro-pair { grid-template-columns: minmax(0, 1fr); }

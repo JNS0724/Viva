@@ -29,7 +29,8 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
     mutating: true,
     description: '为用户接入一个 MCP 服务器（本地命令，或 HTTP 地址），让你获得它提供的工具。'
       + '服务需要令牌或密钥时，只在 secrets 里写变量名（本地服务器写环境变量名，HTTP 服务器写请求头名），用户会在窗口里的安全输入框填写；'
-      + '绝不要在对话里向用户要密钥的值，也不要把密钥写进参数。用户确认后才会接入，这一轮结束后生效。',
+      + '绝不要在对话里向用户要密钥的值，也不要把密钥写进参数。用户确认后才会接入，这一轮结束后生效。'
+      + '用户已经在自己的 dsh 里配好的服务器，用 viva_mcp_import 整体搬过来，不要一个个重新接入。',
     parameters: {
       name: NAME,
       command: { type: 'string', description: '本地服务器的启动命令，例如 npx；和 url 二选一' },
@@ -38,6 +39,33 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
       secrets: { type: 'array', items: { type: 'string' }, description: '需要用户填写的密钥名，例如 ["GITHUB_TOKEN"]；不需要就不写' },
     },
     reason: (args) => `接入 MCP 服务器「${args.name ?? ''}」`,
+  },
+  {
+    name: 'viva_mcp_update',
+    op: 'mcp_update',
+    mutating: true,
+    description: '修改用户已接入的一个 MCP 服务器，不用删了重加：只写要改的项，没写的保持不变，已保存的密钥也保持不变。'
+      + '要新增或更换密钥时，只在 secrets 里写名字，用户会在窗口里填写；绝不要在对话里要密钥的值。这一轮结束后生效。',
+    parameters: {
+      name: NAME,
+      new_name: { type: 'string', description: '新的名称；不改就不写' },
+      command: { type: 'string', description: '新的启动命令；不改就不写（写了就是本地服务器）' },
+      args: { type: 'array', items: { type: 'string' }, description: '新的完整启动参数列表；不改就不写' },
+      url: { type: 'string', description: '新的 HTTP 地址；不改就不写（写了就是 HTTP 服务器）' },
+      secrets: { type: 'array', items: { type: 'string' }, description: '要新增或更换的密钥名，用户在窗口里填写；不需要就不写' },
+    },
+    reason: (args) => `修改 MCP 服务器「${args.name ?? ''}」`,
+  },
+  {
+    name: 'viva_mcp_import',
+    op: 'mcp_import',
+    mutating: false,
+    description: '把用户自己的 dsh 里配好的 MCP 服务器整体搬到这里，密钥一起带过来，用户不用重新填写，也不需要确认。'
+      + '用户说「把 dsh 的 MCP 搬过来」「从 dsh 导入」时使用。没指定位置就从默认位置（~/.dsh）导入；名字已经有的会跳过。'
+      + '结果会说导入了哪些、还缺哪些密钥；把它转告用户。这一轮结束后生效。',
+    parameters: {
+      path: { type: 'string', description: 'dsh 的文件夹，例如 ~/work/team/.dsh；用户没说就不写' },
+    },
   },
   {
     name: 'viva_mcp_remove',

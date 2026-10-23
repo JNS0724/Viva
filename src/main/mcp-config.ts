@@ -20,7 +20,10 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9-]{1,128}$/
 export const SERVER_TYPES: readonly string[] = Object.freeze(['stdio', 'http'])
 
-/** A server as the main process holds it: its secrets (env, headers) decrypted. */
+/**
+ * A server as the main process holds it: its secrets (env, headers) decrypted. `missing` names keys it needs but
+ * has no value for yet (a server taken over from dsh whose variable was not set); the user fills them in by editing.
+ */
 export interface ServerConfig {
   name: string
   type: 'stdio' | 'http'
@@ -29,6 +32,7 @@ export interface ServerConfig {
   url: string
   env: Record<string, string>
   headers: Record<string, string>
+  missing: string[]
 }
 
 const lines = (text: unknown) => String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
@@ -40,17 +44,12 @@ function requireText(value: unknown, what: string, max: number): string {
 }
 
 /** "KEY=VALUE" per line. */
-function parsePairs(text: unknown, { pattern, what }: { pattern: RegExp, what: string }): Record<string, string> {
+function parsePairs(text: unknown, what: string): Record<string, string> {
   const pairs = lines(text).map((line) => {
     const at = line.indexOf('=')
     if (at <= 0) throw new Error(`${what}要写成「名称=值」，每行一个：${line.slice(0, 40)}`)
-    const name = line.slice(0, at).trim()
-    const value = line.slice(at + 1).trim()
-    if (!pattern.test(name)) throw new Error(`${what}名称不合法：${name.slice(0, 40)}`)
-    if (value.length > MAX_SECRET_CHARS) throw new Error(`${what}「${name}」的值太长了`)
-    return [name, value]
+    return [line.slice(0, at).trim(), line.slice(at + 1).trim()]
   })
-  if (pairs.length > MAX_PAIRS) throw new Error(`${what}最多 ${MAX_PAIRS} 个`)
   const names = pairs.map(([name]) => name)
   if (new Set(names).size !== names.length) throw new Error(`${what}有重复的名称`)
   return Object.fromEntries(pairs)
@@ -68,6 +67,45 @@ function parseUrl(value: unknown): string {
   return url.toString()
 }
 
+/** The keys of one kind (env or headers), with the names still missing a value: names fit, values fit. */
+function checkKeys(values: Record<string, string>, missing: readonly string[], kind: ServerConfig['type']) {
+  const http = kind === 'http'
+  const what = http ? '请求头' : '环境变量'
+  const pattern = http ? HEADER_NAME_PATTERN : ENV_NAME_PATTERN
+  const names = [...Object.keys(values), ...missing]
+  if (names.length > MAX_PAIRS) throw new Error(`${what}最多 ${MAX_PAIRS} 个`)
+  if (new Set(names.map((name) => (http ? name.toLowerCase() : name))).size !== names.length) throw new Error(`${what}有重复的名称`)
+  for (const name of names) if (!pattern.test(name)) throw new Error(`${what}名称不合法：${name.slice(0, 40)}`)
+  for (const [name, value] of Object.entries(values)) {
+    if (typeof value !== 'string') throw new Error(`${what}「${name}」的值不对`)
+    if (value.length > MAX_SECRET_CHARS) throw new Error(`${what}「${name}」的值太长了`)
+    if (http && /[\r\n]/.test(value)) throw new Error(`请求头「${name}」的值要写在一行里`)
+  }
+}
+
+/**
+ * Checks a whole server, however it was made (the form, an edit, dsh's config), and returns it as stored: the
+ * fields of its type only, the URL normalized.
+ * @param takenNames names already in use by other servers (the memory server's included)
+ */
+export function validateServer(config: ServerConfig, takenNames: readonly string[]): ServerConfig {
+  const name = requireText(config.name, '名称', 32)
+  if (!NAME_PATTERN.test(name)) throw new Error('名称只能用英文字母、数字、- 和 _，最多 32 个字符')
+  if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(`已经有名为「${name}」的服务器了`)
+  if (!SERVER_TYPES.includes(config.type)) throw new Error('请选择连接方式')
+  const missing = [...new Set(config.missing ?? [])]
+  if (config.type === 'http') {
+    const url = parseUrl(config.url)
+    checkKeys(config.headers, missing, 'http')
+    return { name, type: 'http', command: '', args: [], url, env: {}, headers: { ...config.headers }, missing }
+  }
+  const command = requireText(config.command, '启动命令', MAX_COMMAND_CHARS)
+  const args = [...config.args]
+  if (args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.length > MAX_ARG_CHARS)) throw new Error('参数太多或太长了')
+  checkKeys(config.env, missing, 'stdio')
+  return { name, type: 'stdio', command, args, url: '', env: { ...config.env }, headers: {}, missing }
+}
+
 /**
  * Validates what the settings form sends. Text fields are as typed: arguments one per line,
  * environment variables and headers as "NAME=value" lines.
@@ -76,19 +114,50 @@ function parseUrl(value: unknown): string {
  */
 export function parseServerInput(input: any, takenNames: readonly string[]): ServerConfig {
   if (!input || typeof input !== 'object') throw new Error('invalid MCP server')
-  const name = requireText(input.name, '名称', 32)
-  if (!NAME_PATTERN.test(name)) throw new Error('名称只能用英文字母、数字、- 和 _，最多 32 个字符')
-  if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(`已经有名为「${name}」的服务器了`)
-  if (!SERVER_TYPES.includes(input.type)) throw new Error('请选择连接方式')
-  if (input.type === 'http') {
-    return { name, type: 'http', command: '', args: [], url: parseUrl(input.url), env: {}, headers: parsePairs(input.headers, { pattern: HEADER_NAME_PATTERN, what: '请求头' }) }
-  }
-  const args = lines(input.args)
-  if (args.length > MAX_ARGS || args.some((arg) => arg.length > MAX_ARG_CHARS)) throw new Error('参数太多或太长了')
-  return {
-    name, type: 'stdio', command: requireText(input.command, '启动命令', MAX_COMMAND_CHARS), args, url: '',
-    env: parsePairs(input.env, { pattern: ENV_NAME_PATTERN, what: '环境变量' }), headers: {},
-  }
+  const http = input.type === 'http'
+  return validateServer({
+    name: input.name, type: input.type, command: input.command, args: lines(input.args), url: input.url,
+    env: http ? {} : parsePairs(input.env, '环境变量'), headers: http ? parsePairs(input.headers, '请求头') : {}, missing: [],
+  }, takenNames)
+}
+
+/** What an edit changes; a field left out stays as it was. */
+export interface ServerChanges {
+  name?: string
+  type?: ServerConfig['type']
+  command?: string
+  args?: string[]
+  url?: string
+  /** Every key the server keeps, as the form lists them: a blank value keeps the saved one. Left out: all kept. */
+  keys?: ReadonlyArray<{ name: string, value: string }>
+  /** Values to set besides (keys typed on the card in the conversation). */
+  values?: Readonly<Record<string, string>>
+}
+
+/**
+ * A server after an edit: what changed replaced, saved keys kept unless typed again, keys without a value
+ * listed as missing. Keys follow the server when it changes type (environment variables become headers).
+ * @param takenNames names in use by every server, this one's included
+ */
+export function editServer(current: ServerConfig, changes: ServerChanges, takenNames: readonly string[]): ServerConfig {
+  const saved: Record<string, string> = { ...current.env, ...current.headers }
+  const typed = Object.fromEntries((changes.keys ?? []).filter((key) => key.value.trim()).map((key) => [key.name.trim(), key.value.trim()]))
+  const next = { ...saved, ...typed, ...changes.values }
+  const listed = changes.keys ? changes.keys.map((key) => key.name.trim()).filter(Boolean) : [...Object.keys(saved), ...current.missing]
+  const names = [...new Set([...listed, ...Object.keys(changes.values ?? {})])]
+  const kept = Object.fromEntries(names.filter((name) => next[name] !== undefined).map((name) => [name, next[name]]))
+  const type = changes.type ?? current.type
+  const others = takenNames.filter((name) => name.toLowerCase() !== current.name.toLowerCase())
+  return validateServer({
+    name: changes.name ?? current.name,
+    type,
+    command: changes.command ?? current.command,
+    args: changes.args ?? current.args,
+    url: changes.url ?? current.url,
+    env: type === 'stdio' ? kept : {},
+    headers: type === 'http' ? kept : {},
+    missing: names.filter((name) => next[name] === undefined),
+  }, others)
 }
 
 /** Absolute path of `command`, looked up on PATH like a shell would (PATHEXT on Windows), or null. */
@@ -151,10 +220,11 @@ export const serverView = (config: ServerConfig) => ({
   url: config.url,
   envNames: Object.keys(config.env),
   headerNames: Object.keys(config.headers),
+  missingNames: config.missing,
 })
 
-/** A server as kept on disk: its secrets encrypted (base64 of the JSON), or null. */
-interface StoredServer { name: string, type: 'stdio' | 'http', command?: string, args?: string[], url?: string, secrets?: string | null }
+/** A server as kept on disk: its secrets encrypted (base64 of the JSON), or null; the names still missing a value. */
+interface StoredServer { name: string, type: 'stdio' | 'http', command?: string, args?: string[], url?: string, secrets?: string | null, missing?: string[] }
 
 export function createMcpConfigStore({ file, crypto, onError = () => {} }: { file: string, crypto: Encryption, onError?: (err: Error) => void }) {
   function readStored(): StoredServer[] {
@@ -182,7 +252,7 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
   function list(): ServerConfig[] {
     return readStored().map((stored) => ({
       name: stored.name, type: stored.type, command: stored.command ?? '', args: stored.args ?? [], url: stored.url ?? '',
-      ...decryptSecrets(stored),
+      ...decryptSecrets(stored), missing: Array.isArray(stored.missing) ? stored.missing : [],
     }))
   }
 
@@ -196,6 +266,7 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
   function writeAll(configs: readonly ServerConfig[]): void {
     const servers = configs.map((config) => ({
       name: config.name, type: config.type, command: config.command, args: config.args, url: config.url, secrets: encrypt(config),
+      ...(config.missing.length ? { missing: config.missing } : {}),
     }))
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const tmp = `${file}.tmp`
@@ -203,10 +274,20 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
     fs.renameSync(tmp, file)
   }
 
-  function add(config: ServerConfig): void {
+  /** Several at once (an import), in one write: all of them or, past the limit, none. */
+  function addMany(configs: readonly ServerConfig[]): void {
     const current = list()
-    if (current.length >= MAX_SERVERS) throw new Error(`最多添加 ${MAX_SERVERS} 个 MCP 服务器`)
-    writeAll([...current, config])
+    if (current.length + configs.length > MAX_SERVERS) throw new Error(`最多添加 ${MAX_SERVERS} 个 MCP 服务器，现在有 ${current.length} 个`)
+    writeAll([...current, ...configs])
+  }
+
+  const add = (config: ServerConfig): void => addMany([config])
+
+  /** The server named `name` replaced by `config`, in its place in the list. */
+  function update(name: string, config: ServerConfig): void {
+    const current = list()
+    if (!current.some((server) => server.name === name)) throw new Error(`没有名为「${name}」的服务器`)
+    writeAll(current.map((server) => (server.name === name ? config : server)))
   }
 
   function remove(name: string): void {
@@ -216,5 +297,5 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
     writeAll(next)
   }
 
-  return { list, add, remove }
+  return { list, add, addMany, update, remove }
 }

@@ -12,7 +12,8 @@ const FILE_VERSION = 1
  * deskCoached: the user has seen the island's first-time note on what it can do;
  * workDirs: the working directories used lately, and the ones the user confirmed (work-dir-ipc.js checks what is read);
  * imagesDir: where the user moved the pictures folder to (image-store.js); empty for the default in the app's data;
- * permission: what the assistant may do without asking (plugins/permission; checked where it is set).
+ * permission: what the assistant may do without asking (plugins/permission; checked where it is set);
+ * dshImportDir: the dsh folder MCP servers were last imported from when it was not the default one.
  */
 export interface Preferences {
   deskIsland: boolean
@@ -21,6 +22,7 @@ export interface Preferences {
   workDirs: any
   imagesDir: string
   permission: string
+  dshImportDir: string
 }
 
 const DEFAULTS: Readonly<Preferences> = Object.freeze({
@@ -30,6 +32,7 @@ const DEFAULTS: Readonly<Preferences> = Object.freeze({
   workDirs: Object.freeze({ recent: Object.freeze([]), trusted: Object.freeze([]) }),
   imagesDir: '',
   permission: 'workspace-write',
+  dshImportDir: '',
 })
 
 export function createPreferences({ file, onError = () => {} }: { file: string, onError?: (err: Error) => void }) {

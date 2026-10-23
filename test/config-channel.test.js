@@ -13,6 +13,9 @@ function desk({ session = 's1', actions = {} } = {}) {
     prepareServer: () => {},
     addServer: (spec, secrets) => { done.push(['add', spec, secrets]); return `已接入「${spec.name}」` },
     removeServer: (name) => { done.push(['remove', name]); return `已移除「${name}」` },
+    importServers: async (path) => { done.push(['import', path]); return `已从 ${path || '~/.dsh'} 导入` },
+    prepareUpdate: () => {},
+    updateServer: (spec, secrets) => { done.push(['update', spec, secrets]); return `已修改「${spec.name}」` },
     listSkills: () => [],
     createSkill: (spec) => { done.push(['create', spec]); return `已新建「${spec.name}」` },
     installSkill: (path) => `已安装 ${path}`,
@@ -91,6 +94,46 @@ test('a bad server is refused before any key is asked for; failures reach the mo
   await settle()
   assert.deepEqual(shown, [])
   assert.deepEqual(sent, [{ type: 'config_result', id: 'c1', ok: false, text: '名称只能用英文字母、数字、- 和 _' }])
+})
+
+test('importing from dsh asks nothing of the window: the folder named, or the default', async () => {
+  const { it, sent, shown, done } = desk()
+  it.receive(request('mcp_import', { path: '~/work/team/.dsh' }))
+  it.receive(request('mcp_import', {}, { id: 'c2' }))
+  await settle()
+  assert.deepEqual(done, [['import', '~/work/team/.dsh'], ['import', '']])
+  assert.deepEqual(shown, [])
+  assert.deepEqual(sent.map((m) => [m.id, m.ok, m.text]), [['c1', true, '已从 ~/work/team/.dsh 导入'], ['c2', true, '已从 ~/.dsh 导入']])
+  assert.match(parseConfigRequest(request('mcp_import', { path: 7 })).problem, /路径要是文字/)
+})
+
+test('an update changes only what is named; new keys are typed in the window like when adding', async () => {
+  assert.deepEqual(parseConfigRequest(request('mcp_update', { name: 'github', args: ['-y', 'x@2'] })).args,
+    { name: 'github', newName: '', command: '', args: ['-y', 'x@2'], url: '', secrets: [] })
+  assert.equal(parseConfigRequest(request('mcp_update', { name: 'github' })).args.args, null, 'args left out stay as they are')
+  assert.match(parseConfigRequest(request('mcp_update', { name: 'x', command: 'npx', url: 'https://a.example' })).problem, /二选一/)
+
+  const plain = desk()
+  plain.it.receive(request('mcp_update', { name: 'github', new_name: 'gh' }))
+  await settle()
+  assert.deepEqual(plain.done, [['update', { name: 'github', newName: 'gh', command: '', args: null, url: '', secrets: [] }, {}]])
+
+  const keyed = desk()
+  keyed.it.receive(request('mcp_update', { name: 'sentry', secrets: ['SENTRY_TOKEN'] }))
+  await settle()
+  assert.deepEqual(keyed.shown, [{ type: 'secret_request', requestId: 'c1', server: 'sentry', names: ['SENTRY_TOKEN'] }])
+  keyed.it.provideSecrets('c1', { SENTRY_TOKEN: 'tok' })
+  await settle()
+  assert.deepEqual(keyed.done[0][2], { SENTRY_TOKEN: 'tok' })
+  assert.ok(!JSON.stringify(keyed.sent).includes('tok'))
+
+  const declined = desk()
+  declined.it.receive(request('mcp_update', { name: 'sentry', secrets: ['SENTRY_TOKEN'] }))
+  await settle()
+  declined.it.provideSecrets('c1', null)
+  await settle()
+  assert.deepEqual(declined.done, [])
+  assert.match(declined.sent[0].text, /没有修改/)
 })
 
 test('lists come back as lines the model can read', async () => {

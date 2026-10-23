@@ -29,17 +29,36 @@ export const initialMemory = Object.freeze({
   error: null,
 })
 
+/** A key row of the edit form: its own id (rows come and go), its name, and whether a value is saved for it. */
+type KeyRow = { id: number, name: string, saved: boolean }
+/** The server being edited in place: its name as saved, the type picked, the key rows. */
+type EditDraft = { name: string, type: string, keys: KeyRow[], nextId: number }
+
 export const initialExtensions = Object.freeze({
   loaded: false,
   servers: [],
   status: { active: [], memory: false, dropped: [] },
   skills: [],
   skillDir: '',
-  /** The add-server form is open. */
+  /** Where MCP servers can be imported from, as shown: dsh's default home, and the folder used last if another. */
+  dsh: { defaultLabel: '', lastLabel: '' },
+  importMenu: false,
+  /** What the last import did, shown by the servers until the next change. */
+  importNote: null as string | null,
+  editing: null as EditDraft | null,
   busy: false,
   error: null,
   notice: null,
 })
+
+/** The edit form of `server` (extensions.ts Server): its saved keys first, then the ones still without a value. */
+function draftOf(server: { name: string, type: string, envNames: string[], headerNames: string[], missingNames?: string[] }): EditDraft {
+  const keys = [
+    ...[...server.envNames, ...server.headerNames].map((name) => ({ name, saved: true })),
+    ...(server.missingNames ?? []).map((name) => ({ name, saved: false })),
+  ].map((key, id) => ({ id, ...key }))
+  return { name: server.name, type: server.type, keys, nextId: keys.length }
+}
 
 const withMemory = (state: State, changes: Partial<State['memory']>): State => ({ ...state, memory: { ...state.memory, ...changes } })
 const withExtensions = (state: State, changes: Partial<State['extensions']>): State => ({ ...state, extensions: { ...state.extensions, ...changes } })
@@ -100,9 +119,24 @@ export const PERSONAL_ACTIONS: Record<string, Reducer> = {
   }),
 
   extensions_loaded: (state, { view }) => withExtensions(state, { ...view, loaded: true, busy: false }),
-  extensions_busy: (state) => withExtensions(state, { busy: true, error: null, notice: null }),
+  extensions_busy: (state) => withExtensions(state, { busy: true, error: null, notice: null, importNote: null }),
   extensions_failed: (state, { message }) => withExtensions(state, { busy: false, error: message }),
-  extensions_saved: (state, { view, notice }) => withExtensions(state, {
-    ...view, loaded: true, busy: false, error: null, notice,
+  extensions_saved: (state, { view, notice, importNote = null }) => withExtensions(state, {
+    ...view, loaded: true, busy: false, error: null, notice, importNote, editing: null, importMenu: false,
   }),
+  extensions_import_menu: (state, { open }) => withExtensions(state, { importMenu: open ?? !state.extensions.importMenu }),
+  /** server: the one to edit, or null to close the form. */
+  extensions_edit: (state, { server }) => withExtensions(state, { editing: server ? draftOf(server) : null, error: null, notice: null, importMenu: false }),
+  extensions_edit_type: (state, { kind }) => (state.extensions.editing
+    ? withExtensions(state, { editing: { ...state.extensions.editing, type: kind } })
+    : state),
+  extensions_edit_key_add: (state) => {
+    const editing = state.extensions.editing
+    if (!editing) return state
+    return withExtensions(state, { editing: { ...editing, keys: [...editing.keys, { id: editing.nextId, name: '', saved: false }], nextId: editing.nextId + 1 } })
+  },
+  extensions_edit_key_remove: (state, { id }) => {
+    const editing = state.extensions.editing
+    return editing ? withExtensions(state, { editing: { ...editing, keys: editing.keys.filter((key: KeyRow) => key.id !== id) } }) : state
+  },
 }

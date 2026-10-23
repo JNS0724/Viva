@@ -29,7 +29,8 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
   ctx.effect(() => () => channel.close(), 'config channel')
 
   const byName = new Map(CONFIG_TOOLS.map((tool) => [tool.name, tool]))
-  // Reading is free; every change waits for the user's yes on the approval card.
+  // Reading is free, and so is importing the user's own dsh servers; every other change waits for the user's yes
+  // on the approval card.
   ctx.on('tools/pre-execute', async (exec, next) => {
     const tool = byName.get(exec.name)
     if (!tool?.mutating) return next()
