@@ -1,6 +1,7 @@
 /* ---------- Viva island (view/island-dom.js): the title bar's and the desktop's ---------- */
 .isl {
-  --isl-head: 36px; --isl-pad: 38px; --isl-rim: var(--line);
+  /* Title bar and desktop alike: a 36px cat with the same gap all round (view/island-dom.ts SIZES). */
+  --isl-head: 48px; --isl-pad: 52px; --isl-rim: var(--line);
   position: relative; box-sizing: border-box; width: 120px; height: var(--isl-head); flex: none;
   border: 1.5px solid var(--isl-rim); border-radius: calc(var(--isl-head) / 2);
   background: #070C18; color: var(--ink); font-family: var(--font-sans);

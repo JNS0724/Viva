@@ -13,16 +13,17 @@ import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
 
 const AVATAR_CAT_PX = 36
-/** While the agent waits on the user, the cat beside its answer holds up the same sign as the island's. */
-const AVATAR_MOODS = new Set(['confirm', 'ask'])
 const avatarCats = new Map<string, { key: string, el: HTMLElement }>()
 
 /** Whether a message is the answer of the turn in progress or just finished, and what the cat is doing. */
 type Look = { latest: boolean, mood: CatMood | 'idle' }
 
-/** A small cat on its disc beside each answer; only the one of the turn in progress or just finished moves. */
+/** A small cat on its disc beside each answer: the latest one shows what the agent does now, earlier ones rest. */
 const avatar = (message: ThreadMessage, look: Look) => h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
-  catFor(avatarCats, message.id, look.latest && AVATAR_MOODS.has(look.mood) ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
+  catFor(avatarCats, message.id, look.latest ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
+
+/** Moods the cat leaves for `typing` while the answer is still being typed out, the agent's own turn over or not. */
+const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
 
 /** A restored message links to the trace only once it has been read back from dsh's logs. */
 function receiptButton(message: ThreadMessage & { receipt: Receipt }, handlers: Handlers, traceReady: boolean) {
@@ -66,8 +67,10 @@ function assistantView(message: ThreadMessage, handlers: Handlers, traceReady: b
   const text = answerText(message, handlers)
   text.querySelector('.caret')?.remove()
   if (typing) caretHost(text).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
+  // A request or an error still shows; otherwise the cat types as long as the words come out.
+  const mood = typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood
   return h('div', { class: 'msg-agent' },
-    avatar(message, look),
+    avatar(message, { ...look, mood }),
     h('div', { class: 'msg-body' },
       text,
       hasReceipt(message) && !typing ? receiptButton(message, handlers, traceReady) : null))
