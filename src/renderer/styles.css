@@ -15,11 +15,18 @@
   --white: #EEF3FF;
   --orange: #FF8A3D;
   --red: #FF4D5E;
+  /* The cat's speech bubbles (view/cat.ts): warm paper, like the cap. */
+  --cat-bubble: #FFF8E9;
+  --cat-bubble-ink: #332E28;
+  --cat-bubble-dot: #645B50;
+  --cat-sparkle: #FFDA88;
   --font-sans: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
   --font-dot: 'Doto', 'JetBrains Mono', ui-monospace, monospace;
   --radius-tile: 28px;
-  --titlebar-h: 48px;
+  /* The island (48px) with 4px above and below; main's window-options.ts TITLEBAR_HEIGHT matches it. */
+  --titlebar-h: 56px;
+  --island-h: 48px;
   --titlebar-gutter: 12px;
   /* 2 title bar buttons (36px) with a 6px gap */
   --titlebar-actions: 78px;
@@ -66,7 +73,7 @@ html:not([data-platform="darwin"]) {
 /* Centred on the window, not on the space between the reserved areas; shrinks before it can touch the buttons.
    Pinned to the top, so the island unfolds downwards only. */
 .titlebar-center {
-  position: absolute; left: 50%; top: calc((var(--titlebar-h) - 36px) / 2); transform: translateX(-50%); display: flex;
+  position: absolute; left: 50%; top: calc((var(--titlebar-h) - var(--island-h)) / 2); transform: translateX(-50%); display: flex;
   max-width: calc(100vw - 2 * (max(var(--reserve-left), var(--reserve-right)) + var(--titlebar-gutter) + var(--titlebar-actions) + 16px));
 }
 .titlebar-right { display: flex; justify-content: flex-end; gap: 6px; }
@@ -204,11 +211,12 @@ html:not([data-platform="darwin"]) {
 }
 
 /* ---------- the cat (view/cat.js) ---------- */
-.cat { position: relative; display: block; flex: none; }
+.cat { position: relative; display: block; flex: none; isolation: isolate; }
 .cat-disc { position: absolute; inset: 0; border-radius: 50%; background: var(--accent); transition: background .3s, box-shadow .3s; }
-.cat-inner, .cat-head { position: absolute; }
-.cat-head { inset: 0; }
-.cat-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.cat-art { position: absolute; inset: 0; transform-origin: 50% 86%; }
+.cat-image { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
+/* Small cats are the head close-ups (view/cat.ts); both sets share one frame and the disc's round lower edge. */
+.cat-compact .cat-disc { box-shadow: none; }
 .cat-hero { position: relative; width: 245px; height: 300px; flex: none; }
 .cat-hero .cat { position: absolute; left: 15px; top: 70px; }
 .cat-hero .cat-disc { box-shadow: 0 0 90px rgba(90, 169, 255, .35); }
@@ -217,28 +225,45 @@ html:not([data-platform="darwin"]) {
 .cat-hero[data-tone="pending"] .cat-disc { background: var(--mute); box-shadow: none; }
 .cat-avatar { flex: none; margin-top: 2px; }
 
-.cat-blink { transform-box: fill-box; transform-origin: center; animation: cat-blink 5s infinite; }
-@keyframes cat-blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.12); } }
-.cat-scan { animation: cat-scan 1.4s ease-in-out infinite alternate; }
-@keyframes cat-scan { from { transform: translateX(-3px); } to { transform: translateX(3px); } }
-.cat-tilt { transform-origin: 50% 62.8%; animation: cat-tilt .45s ease-out both; }
-@keyframes cat-tilt { from { transform: rotate(0); } to { transform: rotate(-8deg); } }
-.cat-pop { transform-box: fill-box; transform-origin: center; animation: cat-pop .6s ease-out both; }
-@keyframes cat-pop { 0% { transform: scale(.5); } 60% { transform: scale(1.2); } 100% { transform: scale(1); } }
-.cat-paw-l { animation: cat-paw .3s ease-in-out infinite alternate; }
-.cat-paw-r { animation: cat-paw .3s ease-in-out infinite alternate-reverse; }
-@keyframes cat-paw { from { transform: translateY(-4px); } to { transform: translateY(1px); } }
-.cat-dot { animation: cat-dot 1.2s ease-in-out infinite; }
-.cat-d2 { animation-delay: .2s; }
-.cat-d3 { animation-delay: .4s; }
+/* typing: the face and keyboard stay; the two paws take turns striking it. The keyboard is meant to be big,
+   wider than the head and out past the disc (docs/cat-character.md). */
+.cat-typing-paw { animation: cat-type-paw .56s ease-in-out infinite; transform-origin: 50% 78%; }
+.cat-typing-paw-right { animation-delay: -.28s; }
+.cat-typing-workstation { position: absolute; inset: 0; transform: translateY(4%) scale(1.65); transform-origin: 50% 85%; pointer-events: none; }
+.cat-typing-keyboard { clip-path: polygon(23% 77.6%, 77% 77.6%, 81% 82%, 83% 93%, 17% 93%, 19% 82%); }
+.cat-typing-mini { position: absolute; width: 170%; height: 48%; bottom: -25%; left: -35%; overflow: hidden; pointer-events: none; }
+.cat-mini-layer { position: absolute; width: 100%; height: auto; bottom: 0; left: 0; }
+@keyframes cat-type-paw {
+  0%, 12%, 100% { transform: translateY(0); }
+  38%, 55% { transform: translateY(-2.8%); }
+  72% { transform: translateY(.5%); }
+}
+
+/* What the picture cannot say: the thought dots, ! or ?, a finished turn's sparkles. */
+.cat-signal {
+  position: absolute; z-index: 1; right: 0; top: -5%; display: flex; align-items: center; justify-content: center;
+  background: var(--cat-bubble); color: var(--cat-bubble-ink); border-radius: 50%; box-shadow: 0 1px 5px rgba(0, 0, 0, .13);
+}
+.cat-thought { width: 28%; height: 18%; gap: 8%; border-radius: 999px; animation: cat-bounce 2s ease-in-out infinite; }
+.cat-thought::after { content: ''; position: absolute; width: 15%; height: 22%; left: 12%; bottom: -18%; border-radius: 50%; background: var(--cat-bubble); }
+.cat-dot { width: 12%; aspect-ratio: 1; border-radius: 50%; background: var(--cat-bubble-dot); animation: cat-dot 1.2s ease-in-out infinite; }
+.cat-dot:nth-child(2) { animation-delay: .2s; }
+.cat-dot:nth-child(3) { animation-delay: .4s; }
 @keyframes cat-dot { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
-.cat-bounce { animation: cat-bounce 1s ease-in-out infinite; }
-@keyframes cat-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+.cat-question { width: 22%; height: 22%; font: 800 24px/1 var(--font-sans); animation: cat-bounce 2s ease-in-out infinite; }
+.cat-compact .cat-question { font-size: 10px; width: 34%; height: 34%; right: -8%; }
+.cat-compact .cat-thought { width: 46%; height: 28%; right: -10%; }
+@keyframes cat-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8%); } }
+.cat-sparkles { position: absolute; inset: 0; pointer-events: none; }
+.cat-sparkle { position: absolute; width: 11%; height: 11%; color: var(--cat-sparkle); animation: cat-twinkle 1.2s ease-in-out 3 both; }
+.cat-sparkle:nth-child(1) { left: -2%; top: 30%; }
+.cat-sparkle:nth-child(2) { right: 0; top: 0; animation-delay: .2s; }
+.cat-sparkle:nth-child(3) { right: -3%; top: 48%; width: 7%; height: 7%; animation-delay: .4s; }
+/* A small cat's face fills its disc: one sparkle, up and out at the corner, keeps clear of it. */
+.cat-compact .cat-sparkle:nth-child(2) { width: 34%; height: 34%; right: -12%; top: -12%; }
+.cat-compact .cat-sparkle:not(:nth-child(2)) { display: none; }
 /* Sparkles twinkle three times after a turn, then go. */
-.cat-twinkle { transform-box: fill-box; transform-origin: center; animation: cat-twinkle 1.2s ease-in-out 3 both; }
 @keyframes cat-twinkle { 0% { transform: scale(.4); opacity: 0; } 50% { transform: scale(1); opacity: 1; } 100% { transform: scale(.4); opacity: 0; } }
-.cat-drip { animation: cat-drip 1.6s ease-in infinite; }
-@keyframes cat-drip { 0% { transform: translateY(-2px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(9px); opacity: 0; } }
 .cat-still * { animation: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .cat * { animation: none !important; }

@@ -6,7 +6,7 @@ import { h } from './dom.ts'
 const HERO_CAT_PX = 230
 const heroCats = new Map<string, { key: string, el: HTMLElement }>()
 
-/** The cat on its brand-blue disc (orange while it waits on the user), ears out past the edge. */
+/** The half-body cat on its brand-blue disc (orange while it waits on the user). */
 const heroCat = (state: State, tone: string) => h('div', { class: 'cat-hero', 'data-tone': tone },
   catFor(heroCats, 'hero', catMood(state), { size: HERO_CAT_PX, frame: true }))
 

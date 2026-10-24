@@ -8,7 +8,7 @@ test('macOS keeps its traffic lights, inset and centred in the shorter title bar
 
   assert.equal(chrome.titleBarStyle, 'hiddenInset')
   assert.equal(chrome.titleBarOverlay, undefined)
-  assert.equal(chrome.trafficLightPosition.y, 17, 'lights are about 14px tall, so they sit centred in 48px')
+  assert.equal(chrome.trafficLightPosition.y, 21, 'lights are about 14px tall, so they sit centred in 56px')
 })
 
 test('Windows and Linux get system-drawn window buttons in a matching overlay', () => {

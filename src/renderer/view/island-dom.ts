@@ -29,7 +29,7 @@ const NS = 'http://www.w3.org/2000/svg'
 const BORDER = 3
 type Host = 'bar' | 'desk'
 const SIZES: Record<Host, { head: number, panel: number, maxHead: number, cat: number, input?: number }> = {
-  bar: { head: 36, panel: 360, maxHead: 360, cat: 24 },
+  bar: { head: 48, panel: 360, maxHead: 360, cat: 36 },
   desk: { head: 48, panel: 392, maxHead: 420, cat: 36, input: 560 },
 }
 
