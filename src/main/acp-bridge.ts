@@ -10,6 +10,7 @@ import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk } from './steer-channel.ts'
 import { createForkDesk } from './fork-channel.ts'
+import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createQuestionDesk } from './question-channel.ts'
 import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
@@ -110,6 +111,8 @@ export function createAcpBridge({
   const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
+  // Follow-ups proposed in a conversation, and background preparation's tool-less model calls (viva-followups).
+  const followupDesk = createFollowupDesk({ send: toPlugins, emit })
 
   /** The model options of the session in use, kept so a task taken back to the main conversation keeps its own. */
   let configNow: ConfigOption[] | null = null
@@ -146,12 +149,14 @@ export function createAcpBridge({
       config?.receive(message)
       steering.receive(message)
       forking.receive(message)
+      followupDesk.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
     })
     proc.on('error', (err) => emit({ type: 'error', message: launchError(err, { command, nodeBin, cwd }) }))
     proc.on('exit', (code, signal) => {
+      followupDesk.close()
       if (disposed) return
       const message = describeError(`dsh 已退出（${code ?? signal}）`, stderrTail)
       if (onExit) onExit({ code, signal, message })
@@ -486,6 +491,7 @@ export function createAcpBridge({
     disposed = true
     broker.cancelAll()
     steering.closeAll()
+    followupDesk.close()
     if (!child || !isRunning(child)) return Promise.resolve()
     const target = child
     const exited = new Promise((resolve) => target.once('exit', resolve))
@@ -495,8 +501,20 @@ export function createAcpBridge({
     return exited
   }
 
+  /** Background tasks working right now: a turn running, not waiting on the user's permission. */
+  const workingTasks = (): number => {
+    const waiting = broker.waitingSessions()
+    return [...running].filter((id): id is string => isTask(id) && !waiting.has(id as string)).length
+  }
+
+  /** Background preparation: one model call with no tools, from the followups plugin; nothing while dsh is down. */
+  function prepareText(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
+    if (!child?.connected) return Promise.resolve({ ok: false, problem: '助手还没准备好' })
+    return followupDesk.prepare(call, signal)
+  }
+
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, dispose, pid }
+  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, dispose, pid }
 }

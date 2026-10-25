@@ -3,6 +3,7 @@ import { h, keepingInput, label } from './dom.ts'
 import { extensionsSection } from './extensions.ts'
 import { modelsSection } from './models.ts'
 import { sourcesSection } from './sources.ts'
+import { prepareSection } from './prepare-settings.ts'
 
 /**
  * The 设置 page's part of the state (state.ts), with what only comes once the settings are read (settings:get):
@@ -144,7 +145,7 @@ function imagesSection(settings: Settings, handlers: Handlers) {
  * Re-rendered only when its slices change, and typed text survives a re-render.
  */
 export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], extensions: State['extensions'], sources: State['sources'],
-  handlers: Handlers, { connected }: { connected: boolean }) {
+  followups: State['followups'], handlers: Handlers, { connected }: { connected: boolean }) {
   if (!settings.open) {
     container.replaceChildren()
     return
@@ -165,6 +166,7 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       modelsSection(models, handlers),
       deskSection(settings, handlers),
       imagesSection(settings, handlers),
+      prepareSection(followups, handlers),
       sourcesSection(sources, handlers),
       extensionsSection(extensions, handlers, { connected }))))
   if (isFirstShow && !input.disabled) input.focus()

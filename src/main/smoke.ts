@@ -9,6 +9,7 @@ import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, 
 import { checkMemory } from './smoke-memory.ts'
 import { checkResume } from './smoke-tasks.ts'
 import { checkSources } from './smoke-sources.ts'
+import { checkFollowups } from './smoke-followups.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -518,7 +519,7 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
       problems.push(...await checkTopics(win, outDir))
       problems.push(...await checkPermission(win, outDir))
     }
-    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
+    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {

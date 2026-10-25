@@ -128,6 +128,16 @@ export const IPC_ARGS = Object.freeze({
   'sources:cancel-install': none,
   'sources:remove': z.tuple([id]),
 
+  'followups:get': none,
+  'followups:accept': z.tuple([record]),
+  'followups:decline': z.tuple([record]),
+  'followups:dismiss': z.tuple([id]),
+  'followups:continue': z.tuple([id]),
+  'followups:prepare-now': z.tuple([id]),
+  'followups:wake': none,
+  'followups:set-schedule': z.tuple([record]),
+  'followups:pause': z.tuple([count]),
+
   'island:view': z.tuple([record]),
   'island:act': z.tuple([record]),
   'island:files': z.tuple([z.array(path).max(MAX_LIST)]),

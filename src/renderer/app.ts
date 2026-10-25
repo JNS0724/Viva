@@ -6,6 +6,7 @@ import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
 import { createSourceActions } from './source-actions.ts'
+import { createFollowupActions } from './followup-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
 import { createMemoryActions } from './memory-actions.ts'
@@ -379,6 +380,17 @@ const timelineActions = createTimelineActions({ api, getState: () => state, disp
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
+const followupActions = createFollowupActions({
+  api, getState: () => state, dispatch, errorMessage,
+  // 接着做: the draft in the input, the conversation in front; the user reads it and sends it.
+  fillComposer: (text) => {
+    dispatch({ type: 'hub_close' })
+    dom.input.value = text
+    dom.input.dispatchEvent(new Event('input'))
+    dom.input.focus()
+  },
+  startTask: (text) => taskActions.startTask(text),
+})
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
@@ -407,6 +419,7 @@ const handlers = {
   ...memoryActions,
   ...extensionActions,
   ...sourceActions,
+  ...followupActions,
   ...modelActions,
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
@@ -552,6 +565,7 @@ const handlers = {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
     sourceActions.loadSources()
+    followupActions.loadFollowups()
     modelActions.loadModels()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })
@@ -566,7 +580,10 @@ const handlers = {
   /** ← 返回, Esc, or the 关于你 icon again: back to the conversation. */
   closeHub: () => dispatch({ type: 'hub_close' }),
   /** The 后台 page, on `taskId` or the one it was on (view/tasks-page.js). */
-  openTasks: (taskId: string | null = null) => dispatch({ type: 'tasks_page_open', taskId }),
+  openTasks: (taskId: string | null = null) => {
+    dispatch({ type: 'tasks_page_open', taskId })
+    followupActions.loadFollowups()
+  },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   /**
@@ -685,6 +702,10 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   error: (event) => ({ type: 'error', message: event.message }),
   /** The conversation goes on in another working directory (work-dir-ipc.js): a new part of the timeline. */
   workdir: (event) => ({ type: 'workdir_switched', info: event.info }),
+  /** The model proposed a follow-up: a card under the conversation, for the user to decide on. */
+  followup_propose: (event) => ({ type: 'followup_proposed', proposalId: event.proposalId, proposal: event.proposal }),
+  /** How background preparation goes (prepare-scheduler.ts). */
+  prepare_state: (event) => ({ type: 'prepare_state', prepare: event.state }),
 }
 
 function wireComposer() {
@@ -859,6 +880,8 @@ function handleEvent(event: AgentEvent) {
     filesActions.filesAfterTurn()
   }
   if (event?.type === 'error') afterTurn = []
+  // A batch ended: drafts are ready, or the list changed.
+  if (event?.type === 'prepare_state' && !event.state?.running) followupActions.loadFollowups()
 }
 
 async function boot() {
@@ -877,7 +900,7 @@ async function boot() {
     if (taskActions.hold(event)) return undefined
     return handleEvent(event)
   })
-  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings()])
+  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])
   // What the last launch left going in the background, offered to take up or let go.
   await taskActions.loadUnfinished()
   await timelineActions.loadEarlier()

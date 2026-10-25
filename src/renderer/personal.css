@@ -151,3 +151,6 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .source-folder { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .source-folder > .help { flex: 1; min-width: 0; }
 .source-pending { padding: 16px; border-radius: 16px; border: 1px solid var(--accent); }
+
+/* 后台准备 in settings (view/prepare-settings.ts). */
+.prepare-form { display: flex; flex-direction: column; gap: 10px; }

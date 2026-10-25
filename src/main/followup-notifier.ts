@@ -56,6 +56,11 @@ export function createFollowupNotifier(deps: NotifierDeps) {
       const due = new Map(followups.map((f) => [f.id, f.remindAt]))
       notice.followupIds.forEach((id) => store.markReminded(id, due.get(id) ?? at))
     }
+    if (notice.kind === 'reminder' || notice.kind === 'missed') {
+      // Due and still not prepared: counted, so settings can show how often the windows came too late.
+      followups.filter((f) => notice.followupIds.includes(f.id) && f.prepareBy !== null && (f.status === 'scheduled' || f.status === 'preparing'))
+        .forEach((f) => store.logEvent('prepare_late', { id: f.id }))
+    }
     store.logNotice(notice.kind, notice.followupIds, notice.interrupts)
     store.logEvent('notice', { kind: notice.kind, count: notice.followupIds.length, system: notice.system, day: dayOf(at) })
   }

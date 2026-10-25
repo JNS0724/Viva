@@ -129,6 +129,16 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   installSource: () => ipcRenderer.invoke('sources:install'),
   cancelSourceInstall: () => ipcRenderer.invoke('sources:cancel-install'),
   removeSource: (id) => ipcRenderer.invoke('sources:remove', id),
+  getFollowups: () => ipcRenderer.invoke('followups:get'),
+  /** 跟进 on a card: { title, ask, remindAt, prepareBy, files, conversationId }. */
+  acceptFollowup: (proposal) => ipcRenderer.invoke('followups:accept', proposal),
+  declineFollowup: (proposal) => ipcRenderer.invoke('followups:decline', proposal),
+  dismissFollowup: (id) => ipcRenderer.invoke('followups:dismiss', id),
+  continueFollowup: (id) => ipcRenderer.invoke('followups:continue', id),
+  prepareFollowupNow: (id) => ipcRenderer.invoke('followups:prepare-now', id),
+  wakePreparation: () => ipcRenderer.invoke('followups:wake'),
+  setPrepareSchedule: (schedule) => ipcRenderer.invoke('followups:set-schedule', schedule),
+  pausePreparation: (minutes) => ipcRenderer.invoke('followups:pause', minutes),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   /** The shortcut, pressed with the window in front: its own input takes the keyboard. */

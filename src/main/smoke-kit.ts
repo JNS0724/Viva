@@ -46,13 +46,16 @@ export async function until(win: SmokeWindow, code: string, what: string, timeou
   throw new Error(`${what} never happened`)
 }
 
-/** Waits for the turn to end and be fully typed out, allowing any permission card on the way. @returns cards allowed */
+/**
+ * Waits for the turn to end and be fully typed out, allowing any permission card on the way (not a question, nor a
+ * follow-up's proposal, which are the user's to decide). @returns cards allowed
+ */
 export async function finishTurn(win: SmokeWindow): Promise<number> {
   const deadline = Date.now() + TURN_TIMEOUT_MS
   let allowed = 0
   while (Date.now() < deadline) {
     const seen = await run(win, `(() => {
-      const card = document.querySelector('.confirm:not(.ask) .btn-primary')
+      const card = document.querySelector('.confirm:not(.ask):not(.fu-card) .btn-primary')
       if (card) card.click()
       const send = document.getElementById('send-btn')
       return { card: Boolean(card), idle: send.dataset.busy === 'false' && !send.disabled && !document.querySelector('.caret') }

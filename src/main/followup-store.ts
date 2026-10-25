@@ -26,6 +26,8 @@ export interface Followup {
   createdAt: number
   remindAt: number | null
   prepareBy: number | null
+  /** Files the user named, read when preparing (absolute paths). */
+  files: string[]
   /** A file whose change starts a preparation (step 6), or null. */
   watchPath: string | null
   status: FollowupStatus
@@ -39,7 +41,7 @@ export interface Followup {
   cue: string | null
 }
 
-export type NewFollowup = Pick<Followup, 'title' | 'ask' | 'origin'> & Partial<Pick<Followup, 'remindAt' | 'prepareBy' | 'watchPath' | 'cue'>>
+export type NewFollowup = Pick<Followup, 'title' | 'ask' | 'origin'> & Partial<Pick<Followup, 'remindAt' | 'prepareBy' | 'files' | 'watchPath' | 'cue'>>
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS followups (
@@ -50,6 +52,7 @@ const SCHEMA = `
     created_at INTEGER NOT NULL,
     remind_at INTEGER,
     prepare_by INTEGER,
+    files TEXT,
     watch_path TEXT,
     status TEXT NOT NULL,
     draft TEXT,
@@ -105,6 +108,7 @@ function followupOf(row: Row): Followup {
     createdAt: Number(row.created_at),
     remindAt: numberOrNull(row.remind_at),
     prepareBy: numberOrNull(row.prepare_by),
+    files: parseJson<string[]>(row.files, []),
     watchPath: textOrNull(row.watch_path),
     status: (FOLLOWUP_STATUSES as readonly string[]).includes(String(row.status)) ? row.status as FollowupStatus : 'scheduled',
     draft: textOrNull(row.draft),
@@ -145,9 +149,10 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
   function add(input: NewFollowup): Followup {
     const { title, ask } = checkNew(input)
     const id = randomUUID()
-    db.prepare(`INSERT INTO followups (id, title, ask, origin, created_at, remind_at, prepare_by, watch_path, status, cue)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`)
-      .run(id, title, ask, JSON.stringify(input.origin), now(), input.remindAt ?? null, input.prepareBy ?? null, input.watchPath ?? null, input.cue ?? null)
+    db.prepare(`INSERT INTO followups (id, title, ask, origin, created_at, remind_at, prepare_by, files, watch_path, status, cue)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`)
+      .run(id, title, ask, JSON.stringify(input.origin), now(), input.remindAt ?? null, input.prepareBy ?? null,
+        JSON.stringify(input.files ?? []), input.watchPath ?? null, input.cue ?? null)
     return get(id) as Followup
   }
 
@@ -219,12 +224,21 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     db.prepare('INSERT INTO events (kind, at, data) VALUES (?, ?, ?)').run(kind, now(), JSON.stringify(data))
   }
 
+  /** The titles of suggestions the user turned down since `since` (not proposed again meanwhile). */
+  function declinedSince(since: number): string[] {
+    const rows = db.prepare(`SELECT data FROM events WHERE kind = 'suggest_declined' AND at >= ?`).all(since) as Row[]
+    return rows.flatMap((row) => {
+      const title = parseJson<{ title?: unknown }>(row.data, {}).title
+      return typeof title === 'string' ? [title] : []
+    })
+  }
+
   /** How many events of `kind` since `since`. */
   function countEvents(kind: string, since: number): number {
     return Number((db.prepare('SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?').get(kind, since) as Row).n)
   }
 
-  return { add, get, list, setStatus, saveDraft, markReminded, reschedule, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, logEvent, countEvents, close: () => db.close() }
+  return { add, get, list, setStatus, saveDraft, markReminded, reschedule, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, logEvent, declinedSince, countEvents, close: () => db.close() }
 }
 
 export type FollowupStore = ReturnType<typeof openFollowupStore>

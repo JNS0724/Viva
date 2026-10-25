@@ -38,10 +38,14 @@ export function createPermissionBroker() {
     }
   }
 
+  /** The sessions waiting on the user's answer to a permission request. */
+  const waitingSessions = (): Set<string> => new Set([...pending.values()].flatMap((entry) => (entry.params.sessionId ? [entry.params.sessionId] : [])))
+
   return {
     create,
     resolve,
     cancelAll,
+    waitingSessions,
     get size() {
       return pending.size
     },

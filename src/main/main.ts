@@ -43,6 +43,7 @@ import { createSettingsStore, keyHint } from './settings-store.ts'
 import { openSources } from './sources-main.ts'
 import { openFollowups, type Followups } from './followups-main.ts'
 import type { Notice } from './notice-plan.ts'
+import type { ProposalView } from './followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
 import { runSmoke } from './smoke.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
@@ -80,6 +81,8 @@ let memoryDb!: ReturnType<typeof openMemoryDb>
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
 let traceDb: ReturnType<typeof openTraceDb> | null = null
 let sources: ReturnType<typeof openSources> | null = null
+/** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
+let taskStore: ReturnType<typeof createTaskStore> | null = null
 /** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
 let followups: Followups | null = null
 /** Ready follow-ups, for the tray, which may be made after the count changed. */
@@ -325,9 +328,15 @@ function createBridge(config: Config, cwd: string) {
     configActions: configActions(config),
     emit: (event) => {
       if (generation !== bridgeGeneration) return
+      if (event.type === 'followup_propose') {
+        // The same suggestion turned down lately is not shown again.
+        const proposal = followups?.admitProposal(event.proposal as ProposalView)
+        if (proposal) emitToRenderer({ ...event, proposal })
+        return
+      }
       emitToRenderer(event)
       // A turn of the user's, or a task of theirs, just ended: a gap, where what is ready may be told.
-      if (event.type === 'turn_end' || event.type === 'task_end') followups?.notifier.gap()
+      if (event.type === 'turn_end' || event.type === 'task_end') followups?.gap()
       if (event.type === 'turn_end' || event.type === 'error') reportTurnMemories()
       if (event.type === 'turn_end' && mcpReloadDue) reloadMcpAfterTurn()
     },
@@ -496,6 +505,8 @@ function registerAgentIpc() {
       console.error('[memory] could not update the habits:', err.message)
     }
     turn = { active: true, startedAt: Date.now() }
+    // The user's turn comes first: background preparation stops after the item at hand.
+    followups?.scheduler.yieldToUser()
     return agent.prompt(question, pictures)
   })
   /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
@@ -811,6 +822,7 @@ function openPersonal(config: Config) {
   registerPersonalIpc(config, mcpStore)
   followups = openFollowups({
     userData,
+    ipcMain,
     notify: showNotice,
     windowInFront,
     onPending: (count) => {
@@ -818,6 +830,24 @@ function openPersonal(config: Config) {
       tray?.setPending(count)
     },
     idleSeconds: () => powerMonitor.getSystemIdleTime(),
+    loadSchedule: () => preferences.get().prepareSchedule,
+    storeSchedule: (schedule) => preferences.set('prepareSchedule', schedule),
+    userBusy: () => (turn.active ? '你正在对话' : bridge?.workingTasks() ? '你的后台任务在跑' : null),
+    prepareText: (call, signal) => {
+      // The model the conversation is on, else the one new conversations start on.
+      const route = parseModelValue(String(lastInfo.modelValue ?? '')) ?? profileModels(config).defaultModel
+      if (!route) return Promise.resolve({ ok: false as const, problem: '还没有可用的模型' })
+      return bridge ? bridge.prepareText({ ...route, ...call }, signal) : Promise.resolve({ ok: false as const, problem: '助手还没准备好' })
+    },
+    takenUp: (conversationId, since) => (taskStore?.list() ?? []).some((task) => (task.startedAt ?? 0) >= since
+      && (task.segmentId === conversationId || historyDb.get(task.segmentId)?.conversation.parentId === conversationId)),
+    materials: {
+      conversation: (id) => historyDb.get(id)?.messages.map((m) => ({ role: m.role, text: m.text })) ?? null,
+      profile: () => memoryDb.latestSynthesis()?.text ?? null,
+    },
+    workDir: () => workDirNow() ?? config.cwd,
+    conversationExists: (id) => Boolean(historyDb.get(id)),
+    onState: (state) => emitToRenderer({ type: 'prepare_state', state }),
   })
   sources = openSources({
     userData,
@@ -866,7 +896,7 @@ function openHistory(config: Config) {
   registerTaskIpc(ipcMain, {
     db: historyDb,
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).
-    store: createTaskStore({ file: path.join(userData, 'background-tasks.json'), onError: (err) => console.error('[tasks]', err.message) }),
+    store: taskStore = createTaskStore({ file: path.join(userData, 'background-tasks.json'), onError: (err) => console.error('[tasks]', err.message) }),
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
     isBusy: () => turn.active,
@@ -890,7 +920,10 @@ const taskAgent = {
   steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
   resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
   startTask: (request: Parameters<Bridge['startTask']>[0]) => (bridge ? bridge.startTask(request) : { ok: false, reason: 'unavailable' }),
-  promptTask: (taskId: string, text: string) => bridge?.promptTask(taskId, text),
+  promptTask: (taskId: string, text: string) => {
+    followups?.scheduler.yieldToUser()
+    return bridge?.promptTask(taskId, text)
+  },
 }
 
 /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
@@ -935,7 +968,7 @@ function createWindow(config: Config) {
     desk?.setAway(true)
   })
   // Coming back to the window is one of the user's gaps.
-  created.on('focus', () => followups?.notifier.gap())
+  created.on('focus', () => followups?.gap())
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -954,6 +987,7 @@ function createWindow(config: Config) {
         agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
         fixtures: process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures'),
         pickSourceFolder: (dir: string) => { smokeSourcePick = dir },
+        openTasksPage,
       })
     }
   })

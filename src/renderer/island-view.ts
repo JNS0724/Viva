@@ -33,6 +33,8 @@ export type IslandView = {
   permission?: IslandPermission,
   question?: IslandQuestion,
   background?: IslandBackground,
+  /** Background preparation: going now, and how many follow-ups are ready (view/island-tasks.ts tailCell). */
+  prepare?: { running: boolean, ready: number },
 }
 type IslandBase = Pick<IslandView, 'mood' | 'recent'>
 
@@ -108,9 +110,18 @@ function backgroundOf(state: State): IslandBackground | null {
 
 const TASK_ENDED: Readonly<Record<string, readonly [said: string, tone: string]>> = { done: ['做完了', 'done'], stopped: ['停下了', 'idle'], error: ['出错了', 'error'] }
 
+/** Follow-ups ready and preparation going, when there is either; nothing otherwise, so the island stays as it was. */
+function prepareOf(state: State): IslandView['prepare'] | undefined {
+  const ready = state.followups.followups.filter((followup: { status: string }) => followup.status === 'ready').length
+  const running = Boolean(state.followups.state?.running)
+  return ready || running ? { running, ready } : undefined
+}
+
 export function islandView(state: State): IslandView {
+  const prepare = prepareOf(state)
+  const withPrepare = (view: IslandView): IslandView => (prepare ? { ...view, prepare } : view)
   const background = backgroundOf(state)
-  const view = mainView(state, background)
+  const view = withPrepare(mainView(state, background))
   if (!background) return view
   // Tasks that wait on the user beyond the one the island shows: said at its tail, so none is missed.
   const asks = view.form === 'waiting' || view.form === 'asking'

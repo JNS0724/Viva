@@ -24,7 +24,7 @@ function setup(t) {
 
 const chat = { kind: 'chat', conversationId: 'c1' }
 const followup = (extra = {}) => ({
-  id: 'f1', title: '周报', ask: '起草周报', origin: chat, createdAt: 0, remindAt: null, prepareBy: null, watchPath: null,
+  id: 'f1', title: '周报', ask: '起草周报', origin: chat, createdAt: 0, remindAt: null, prepareBy: null, files: [], watchPath: null,
   status: 'scheduled', draft: null, draftAt: null, readFiles: [], remindedAt: null, lateFrom: null, cue: null, ...extra,
 })
 const plan = (followups, extra = {}) => planNotices({ now: NOON, followups, interruptionsToday: 0, atGap: false, windowInFront: false, toldReady: new Set(), ...extra })

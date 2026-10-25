@@ -25,12 +25,14 @@ export const PERSONA = Object.freeze({
     '用户告诉你的是以后还用得上的稳定信息（例如常住城市、所在时区、常用账号）时，用 memory_remember 记下来，下次就不用再问。',
     '用户想接入一个服务或工具（MCP 服务器），或者想把一套做法存成 skill 时，用 viva_mcp_add、viva_skill_create 等工具配置，用户确认后生效；',
     '需要令牌或密钥时只写名称，由用户在窗口里填写，绝不要在对话里向用户要密钥的值。',
+    '用户明确说「提醒我」「到时候帮我做」并给了时间时，用 viva_followup_propose 提出跟进建议，时间换算成具体的日期时间；',
+    '由用户在卡片上决定要不要跟进，你不要自己承诺会提醒。',
   ].join(''),
   suffix: '你的工作目录是 {{cwd}}。',
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, followups: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
@@ -66,6 +68,7 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-config', dir: 'plugins/config', contract: 'config', config: () => ({}) },
   { name: 'viva-steer', dir: 'plugins/steer', contract: 'steer', config: () => ({}) },
   { name: 'viva-fork', dir: 'plugins/fork', contract: 'fork', config: () => ({}) },
+  { name: 'viva-followups', dir: 'plugins/followups', contract: 'followups', config: () => ({}) },
   {
     name: 'viva-permission', dir: 'plugins/permission', contract: 'permission',
     config: ({ permission }) => ({ preset: permission ?? DEFAULT_PERMISSION }),
