@@ -137,6 +137,7 @@ export const IPC_ARGS = Object.freeze({
   'followups:wake': none,
   'followups:set-schedule': z.tuple([record]),
   'followups:pause': z.tuple([count]),
+  'followups:suggestion': z.tuple([id, z.enum(['accept', 'decline', 'never'])]),
 
   'island:view': z.tuple([record]),
   'island:act': z.tuple([record]),

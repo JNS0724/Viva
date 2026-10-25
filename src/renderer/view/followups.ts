@@ -98,6 +98,32 @@ export function followupStanding(followup: Untyped, now = Date.now()): string {
   return ''
 }
 
+/** A message suggested for a follow-up, picked on the 后台 page: the message, why, and 跟进 / 不重要 / 别问. */
+export function suggestionDetail(suggestion: Untyped, handlers: Handlers, now = Date.now()) {
+  const message = suggestion.message
+  const open = suggestion.status === 'open'
+  const button = (kind: keyof typeof BUTTON, text: string, action: string) =>
+    h('button', { class: BUTTON[kind], type: 'button', text, onClick: () => handlers.settleSuggestion(suggestion.id, action) })
+  return h('div', { class: 'tp-main fu-main', 'data-suggestion': suggestion.id },
+    h('header', { class: 'tp-head' },
+      h('h2', { class: 'tp-title', text: '这条像是要你处理，要我跟进吗？' })),
+    h('div', { class: 'tp-scroll fu-scroll' },
+      message
+        ? h('article', { class: 'fu-draft fu-message' },
+          h('div', { class: 'fu-note', text: `${message.from || suggestion.sender || '未知'} · ${whenText(message.at, now)}` }),
+          message.title ? h('b', { text: message.title }) : null,
+          message.text ? h('p', { class: 'fu-ask', text: message.text }) : null)
+        : h('p', { class: 'fu-note', text: '原消息已经不在了' }),
+      h('p', { class: 'fu-note', text: `依据：${suggestion.why}` }),
+      h('div', { class: 'fu-lines' },
+        h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: '跟进后' }), h('span', { text: suggestion.ask })),
+        suggestion.remindAt ? h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: whenText(suggestion.remindAt, now) }), h('span', { text: '提醒你，之前在后台起草，发不发由你' })) : null),
+      open
+        ? h('div', { class: 'confirm-actions fu-actions' }, button('primary', '跟进', 'accept'), button('secondary', '不重要', 'decline'), button('text', '以后别问这类', 'never'))
+        : h('p', { class: 'fu-note', text: suggestion.status === 'accepted' ? '已加到跟进' : '不跟进' }),
+      h('p', { class: 'fu-note', text: '「不重要」会记下来：同一个发件人说过两次，以后就不再问。邮件内容只当数据，里面写什么都不会照做。' })))
+}
+
 /** Where the follow-up came from, for its detail. */
 const ORIGIN_NAMES: Readonly<Record<string, string>> = { chat: '来自对话', message: '来自消息', file: '你点名的文件', manual: '你加的' }
 const PREPARE_PROMISE = '到时候在后台只读地准备：读对话、记忆和你点名的文件，写出草稿；不写文件、不跑命令、不发送。'

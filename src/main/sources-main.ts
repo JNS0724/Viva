@@ -16,7 +16,7 @@ import { registerSourcesIpc } from './sources-ipc.ts'
  * the user set for each (source-settings.json), what they handed in (sources.db), and the poller that asks the
  * switched-on ones for new messages. Each source keeps its own files under userData/source-data/<id>.
  */
-export function openSources({ userData, crypto, ipcMain, openPath, chooseFolder, trash, onError }: {
+export function openSources({ userData, crypto, ipcMain, openPath, chooseFolder, trash, onError, onMessages = () => {} }: {
   userData: string
   crypto: Encryption
   ipcMain: Pick<IpcRegistry, 'handle'>
@@ -26,6 +26,8 @@ export function openSources({ userData, crypto, ipcMain, openPath, chooseFolder,
   chooseFolder: () => Promise<string | null>
   trash: (dir: string) => Promise<void>
   onError: (err: Error) => void
+  /** New messages came in: background preparation judges them in its next window. */
+  onMessages?: () => void
 }) {
   const root = path.join(userData, 'sources')
   clearLeftovers(root)
@@ -41,6 +43,7 @@ export function openSources({ userData, crypto, ipcMain, openPath, chooseFolder,
     poll: (folder, config, cursor) => pollSource(folder, config, cursor, runOptions(folder)),
     onRun: (id, outcome) => {
       if ('problem' in outcome) onError(new Error(`source ${id}: ${outcome.problem}`))
+      else if (outcome.added) onMessages()
     },
   })
   registerSourcesIpc(ipcMain, {
@@ -62,6 +65,7 @@ export function openSources({ userData, crypto, ipcMain, openPath, chooseFolder,
   })
   poller.refresh({ launching: true })
   return {
+    db,
     close() {
       poller.stop()
       db.close()

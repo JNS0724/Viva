@@ -139,6 +139,8 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   wakePreparation: () => ipcRenderer.invoke('followups:wake'),
   setPrepareSchedule: (schedule) => ipcRenderer.invoke('followups:set-schedule', schedule),
   pausePreparation: (minutes) => ipcRenderer.invoke('followups:pause', minutes),
+  /** A message suggested for a follow-up: 'accept' (跟进), 'decline' (不重要) or 'never' (以后别问这类). */
+  settleSuggestion: (id, action) => ipcRenderer.invoke('followups:suggestion', id, action),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   /** The shortcut, pressed with the window in front: its own input takes the keyboard. */

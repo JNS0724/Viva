@@ -84,6 +84,9 @@ export function createFollowupActions({ api, getState, dispatch, errorMessage, f
     prepareFollowupNow: (id: string) => change(() => api.prepareFollowupNow(id), '马上在后台准备'),
     wakePreparation: () => change(() => api.wakePreparation(), '叫醒了，过一会儿再准备'),
     savePrepareSchedule: (schedule: Record<string, unknown>) => change(() => api.setPrepareSchedule(schedule), '已保存，下一个时段起按新的时段准备'),
+    /** A message suggested for a follow-up: 跟进, 不重要 (learnt), 以后别问这类. */
+    settleSuggestion: (id: string, action: 'accept' | 'decline' | 'never') => change(() => api.settleSuggestion(id, action),
+      action === 'accept' ? '已加到跟进，会在后台起草' : action === 'never' ? '好，这个发件人以后不再问' : '好，记下了：这类不重要'),
     pausePreparation: (minutes: number) => change(() => api.pausePreparation(minutes), minutes ? `后台准备暂停 ${minutes / 60} 小时` : '后台准备继续'),
   }
 }

@@ -6,6 +6,8 @@
 export const initialFollowups = Object.freeze({
   loaded: false,
   followups: [] as Untyped[],
+  /** Messages suggested for a follow-up (message-judge.ts), the open ones first. */
+  suggestions: [] as Untyped[],
   schedule: null as Untyped,
   nextWindow: null as number | null,
   /** How preparation goes now (prepare-scheduler.ts PrepareState). */

@@ -898,3 +898,5 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
 .fu-state { margin: 4px 12px 0; font-size: 12px; line-height: 1.5; color: var(--ink-3); }
 .fu-state[data-on="true"] { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .fu-card .pulse-dot { animation: none; } }
+.fu-message { display: flex; flex-direction: column; gap: 6px; }
+.fu-row[data-status="suggested"] .tp-meta { color: var(--accent); }

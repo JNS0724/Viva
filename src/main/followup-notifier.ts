@@ -19,11 +19,11 @@ const IDLE_POLL_MS = MINUTE_MS
 type Timer = ReturnType<typeof setTimeout>
 
 export interface NotifierDeps {
-  store: Pick<FollowupStore, 'list' | 'markReminded' | 'logNotice' | 'interruptionsOn' | 'lastToldAt' | 'logEvent'>
+  store: Pick<FollowupStore, 'list' | 'markReminded' | 'logNotice' | 'interruptionsOn' | 'lastToldAt' | 'logEvent' | 'listSuggestions'>
   /** Shows a system notification. */
   notify: (notice: Notice) => void
   windowInFront: () => boolean
-  /** How many follow-ups wait for the user (ready, not looked at), for the tray and the island. */
+  /** How many wait for the user (follow-ups ready, messages suggested), for the tray. */
   onPending?: (count: number) => void
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => Timer
@@ -47,6 +47,7 @@ export function createFollowupNotifier(deps: NotifierDeps) {
   let stopped = false
 
   const open = () => store.list().filter((f) => !ENDED.has(f.status))
+  const openSuggestions = () => store.listSuggestions().filter((s) => s.status === 'open')
 
   function send(notice: Notice, followups: readonly Followup[]) {
     const at = now()
@@ -76,6 +77,7 @@ export function createFollowupNotifier(deps: NotifierDeps) {
       atGap,
       windowInFront: windowInFront(),
       toldReady: toldSet(followups, store.lastToldAt),
+      suggestions: openSuggestions().filter((s) => store.lastToldAt(s.id) === null),
     })
     notices.forEach((notice) => send(notice, followups))
     refresh()
@@ -86,7 +88,7 @@ export function createFollowupNotifier(deps: NotifierDeps) {
   function refresh() {
     if (stopped) return
     const followups = open()
-    onPending(followups.filter((f) => f.status === 'ready').length)
+    onPending(followups.filter((f) => f.status === 'ready').length + openSuggestions().length)
     if (timer) clearTimer(timer)
     timer = null
     const next = nextReminderAt(followups, now())

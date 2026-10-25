@@ -1,5 +1,5 @@
 import path from 'node:path'
-import type { Followup, FollowupStore } from './followup-store.ts'
+import type { Followup, FollowupStore, Suggestion } from './followup-store.ts'
 import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
 import { changedSince } from './prepare-materials.ts'
 import { checkSchedule, nextWindow, type PrepareSchedule } from './prepare-schedule.ts'
@@ -8,7 +8,8 @@ import type { PrepareScheduler } from './prepare-scheduler.ts'
 /**
  * IPC for follow-ups: the card's 跟进 / 不用 (a follow-up is made only here, on the user's yes, with the times
  * checked and shown), the 后台 page's follow-ups (接着做 hands the draft to the conversation, 不用了 lets it go,
- * 现在就准备 does not wait for a window, 叫醒它 stops a preparation), and the 后台准备 settings.
+ * 现在就准备 does not wait for a window, 叫醒它 stops a preparation), messages suggested for a follow-up (跟进 makes
+ * one from the message; 不重要 and 以后别问这类 are learnt), and the 后台准备 settings.
  */
 const MINUTE_MS = 60_000
 const WEEK_MS = 7 * 24 * 60 * MINUTE_MS
@@ -20,6 +21,10 @@ const MAX_TITLE_CHARS = 60
 const MAX_TIME_CHARS = 60
 const MAX_PATH_CHARS = 1000
 const MAX_FILES = 5
+/** A message followed up on without a time of its own is prepared at the next quiet moment. */
+const SOON_MS = 60 * MINUTE_MS
+const PREVIEW_CHARS = 400
+const SUGGESTION_ACTIONS = new Set(['accept', 'decline', 'never'])
 
 export interface FollowupsIpcDeps {
   store: FollowupStore
@@ -31,6 +36,8 @@ export interface FollowupsIpcDeps {
   /** The conversation's folder, against which files named without a full path are read. */
   workDir: () => string
   conversationExists: (id: string) => boolean
+  /** The message a suggestion is about, from the sources; null once gone. */
+  message?: (source: string, id: string) => { from?: string, title?: string, text?: string, at: number } | null
   now?: () => number
 }
 
@@ -66,6 +73,22 @@ function followupView(followup: Followup) {
   }
 }
 
+/** A suggestion as the 后台 page shows it: the message it is about, why, and what following up would do. */
+function suggestionView(suggestion: Suggestion, message: FollowupsIpcDeps['message']) {
+  const found = message?.(suggestion.source, suggestion.messageId) ?? null
+  return {
+    id: suggestion.id,
+    title: suggestion.title,
+    ask: suggestion.ask,
+    why: suggestion.why,
+    remindAt: suggestion.remindAt,
+    status: suggestion.status,
+    createdAt: suggestion.createdAt,
+    sender: suggestion.sender,
+    message: found ? { from: found.from ?? '', title: found.title ?? '', text: (found.text ?? '').slice(0, PREVIEW_CHARS), at: found.at } : null,
+  }
+}
+
 /** What 接着做 puts in the input: the follow-up and its draft, and the files changed since, to be read again. */
 function continueText(followup: Followup): string {
   const changed = changedSince(followup.readFiles)
@@ -85,6 +108,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
     const plan = deps.schedule()
     return {
       followups: deps.store.list().map(followupView),
+      suggestions: deps.store.listSuggestions().map((suggestion) => suggestionView(suggestion, deps.message)),
       schedule: plan,
       nextWindow: nextWindow(at, plan),
       state: deps.scheduler.state(),
@@ -157,6 +181,31 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
   handle('followups:set-schedule', (input) => {
     deps.saveSchedule(checkSchedule({ ...deps.schedule(), ...input, chosen: true }))
     return afterChange()
+  })
+
+  /**
+   * A message suggested for a follow-up: 跟进 makes one (prepared before its time, or soon when it has none);
+   * 不重要 counts against its sender (twice, and they are not suggested again); 以后别问这类 mutes them at once.
+   */
+  handle('followups:suggestion', (id, action) => {
+    const suggestion = deps.store.getSuggestion(id)
+    if (!suggestion || suggestion.status !== 'open') throw new Error('这条建议已经处理过了')
+    if (!SUGGESTION_ACTIONS.has(action)) throw new Error('不认识的操作')
+    if (action !== 'accept') {
+      deps.store.settleSuggestion(id, action === 'never' ? 'never' : 'declined')
+      deps.store.logEvent('suggest_declined', { from: 'message', never: action === 'never' })
+      return afterChange()
+    }
+    const followup = deps.store.add({
+      title: suggestion.title,
+      ask: suggestion.ask,
+      origin: { kind: 'message', sourceId: suggestion.source, messageId: suggestion.messageId },
+      remindAt: suggestion.remindAt,
+      prepareBy: suggestion.remindAt ?? now() + SOON_MS,
+    })
+    deps.store.settleSuggestion(id, 'accepted', followup.id)
+    deps.store.logEvent('suggest_accepted', { id: followup.id, from: 'message' })
+    return { ...afterChange(), accepted: followupView(followup), chooseWindows: !deps.schedule().chosen }
   })
 
   /** From the tray or settings: no preparation for a while (0: go on). */

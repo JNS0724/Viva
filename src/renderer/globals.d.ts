@@ -253,6 +253,7 @@ interface AgentApi {
   wakePreparation: Invoke<'followups:wake'>
   setPrepareSchedule: Invoke<'followups:set-schedule'>
   pausePreparation: Invoke<'followups:pause'>
+  settleSuggestion: Invoke<'followups:suggestion'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (...args: Args<'island:view'>) => void
   onFocusComposer: (callback: () => void) => Unlisten

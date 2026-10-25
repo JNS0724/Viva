@@ -16,6 +16,8 @@
  * - 「…到时候帮我…」 → proposes a follow-up with viva_followup_propose (FOLLOWUP below);
  * - a background preparation (the system prompt says 后台准备) → a draft that quotes the first line it was given,
  *   and whether it was offered any tools (it must not be);
+ * - the judging of new messages (the system prompt says 消息判断) → the fixed JSON shape, a message important when
+ *   it says 到期, 截止 or 故障;
  * - anything else → 「收到：…」, prefixed with what background it was given;
  * - the memory plugin's background extractor gets the answers of `extract` below.
  */
@@ -39,6 +41,18 @@ export const followupProposal = (now = Date.now()) => ({
 })
 /** What the app's background preparation says in its system prompt (followup-prepare.ts PREPARE_MARK). */
 const PREPARER = '后台准备'
+/** What the judging of new messages says in its system prompt (message-judge.ts JUDGE_MARK). */
+const JUDGER = '消息判断'
+const URGENT = /到期|截止|故障/
+
+/** Verdicts for the messages listed as `[source/id] 来自：…` in the input, one block each. */
+function judge(request) {
+  const input = JSON.stringify(request.messages).replace(/\\n/g, '\n')
+  const items = [...input.matchAll(/\[([^\]\s]+\/[^\]\s]+)\] 来自：([^\n]*)\n([^[]*)/g)].map(([, id, , body]) => ({
+    id, important: URGENT.test(body), why: URGENT.test(body) ? '有截止时间' : '', title: body.split('\n')[0].replace('标题：', '').slice(0, 20), ask: '起草回复',
+  }))
+  return { text: JSON.stringify({ items }) }
+}
 /** What the fake asks to set up: a local server whose key the user types in the window. */
 export const DEMO_SERVER = Object.freeze({ name: 'demo', command: 'node', args: ['demo-mcp.js'], secrets: ['DEMO_TOKEN'] })
 export const CITY_QUESTION = Object.freeze({
@@ -175,6 +189,7 @@ export function decide(request) {
   if (JSON.stringify(request.messages).includes(REVIEWER) || systemText(request).includes(REVIEWER)) return review(request)
   if (systemText(request).includes(EXTRACTOR)) return extract(request)
   if (systemText(request).includes(SYNTHESIZER)) return synthesize(request)
+  if (systemText(request).includes(JUDGER)) return judge(request)
   if (systemText(request).includes(PREPARER)) {
     const first = JSON.stringify(request.messages).match(/"text":"([^"\\]*)/)?.[1] ?? ''
     return { text: `草稿（工具 ${(request.tools ?? []).length} 个）：${first}` }

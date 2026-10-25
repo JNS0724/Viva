@@ -4,7 +4,7 @@ import { h, keepingInput } from './dom.ts'
 import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
-import { followupDetail, followupStanding, whenText } from './followups.ts'
+import { followupDetail, followupStanding, suggestionDetail, whenText } from './followups.ts'
 
 /**
  * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
@@ -17,7 +17,24 @@ const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你确认',
 const LIVE = new Set(['running', 'waiting'])
 /** Follow-ups on the page are picked by this prefix, beside the tasks' ids. */
 export const FOLLOWUP_KEY = 'followup:'
+/** And the messages suggested for one by this. */
+export const SUGGESTION_KEY = 'suggestion:'
 const FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', '待你看的'], ['preparing', '在准备'], ['scheduled', '已安排']]
+
+/** Messages that may need the user, first: they wait on a decision. */
+function suggestionGroup(state: State, selected: string | null, handlers: Handlers) {
+  const open: Untyped[] = state.followups.suggestions.filter((suggestion: Untyped) => suggestion.status === 'open')
+  if (!open.length) return []
+  return [
+    h('div', { class: 'tp-group', text: `要我跟进吗 · ${open.length}` }),
+    ...open.map((suggestion) => h('button', {
+      class: 'tp-row fu-row', type: 'button', 'data-status': 'suggested', 'aria-current': `${SUGGESTION_KEY}${suggestion.id}` === selected ? 'page' : null,
+      onClick: () => handlers.selectTask(`${SUGGESTION_KEY}${suggestion.id}`),
+    },
+    h('span', { class: 'tp-name', text: suggestion.title }),
+    h('span', { class: 'tp-meta', text: `${suggestion.sender || '消息'} · ${suggestion.why}` }))),
+  ]
+}
 
 function followupGroups(state: State, selected: string | null, handlers: Handlers, now: number) {
   const list: readonly Untyped[] = state.followups.followups
@@ -51,6 +68,7 @@ function sideView(state: State, handlers: Handlers, now: number) {
     h('button', { class: 'hub-back', type: 'button', onClick: () => handlers.closeHub() },
       icon('back', 16), '返回', h('kbd', { text: 'Esc' })),
     prepareLine(state, now),
+    ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
     ...pageGroups(state).flatMap(({ key, tasks }) => [
       h('div', { class: 'tp-group', text: `${GROUP_NAMES[key]} · ${tasks.length}` }),
@@ -128,14 +146,20 @@ function pickedFollowup(state: State): Untyped | null {
   const list: readonly Untyped[] = state.followups.followups
   const selected = state.tasks.page.selected
   if (selected?.startsWith(FOLLOWUP_KEY)) return list.find((followup) => `${FOLLOWUP_KEY}${followup.id}` === selected) ?? null
+  if (selected?.startsWith(SUGGESTION_KEY)) return null
   if (selected || pageTask(state)) return null
   return list.find((followup) => followup.status === 'ready') ?? null
 }
 
 function mainView(state: State, handlers: Handlers, now: number) {
+  const selected = state.tasks.page.selected
+  if (selected?.startsWith(SUGGESTION_KEY)) {
+    const suggestion = state.followups.suggestions.find((item: Untyped) => `${SUGGESTION_KEY}${item.id}` === selected)
+    if (suggestion) return suggestionDetail(suggestion, handlers, now)
+  }
   const followup = pickedFollowup(state)
   if (followup) return followupDetail(followup, state.followups.state, handlers, now)
-  const task = state.tasks.page.selected?.startsWith(FOLLOWUP_KEY) ? null : pageTask(state)
+  const task = selected?.startsWith(FOLLOWUP_KEY) || selected?.startsWith(SUGGESTION_KEY) ? null : pageTask(state)
   if (!task) {
     return h('div', { class: 'tp-main tp-empty' },
       h('p', { class: 'help', text: '后台还没有事。在输入框里写好，点「后台做」交给后台；它做完会告诉你。' }))

@@ -1,5 +1,6 @@
 import type { Followup, FollowupStore, ReadFile } from './followup-store.ts'
-import { isActive, nextActive, slotFor, type PrepareSchedule } from './prepare-schedule.ts'
+import type { MessageJudge } from './message-judge.ts'
+import { isActive, nextActive, nextWindow, slotFor, type PrepareSchedule } from './prepare-schedule.ts'
 
 /**
  * Background preparation in batches: at the windows the user picked, everything due is prepared one after the
@@ -7,8 +8,11 @@ import { isActive, nextActive, slotFor, type PrepareSchedule } from './prepare-s
  * the user's is: no turn running, no task of theirs going (waiting on the user does not count), inside the
  * active hours, under the day's calls; otherwise it waits and looks again. It yields: once the user starts
  * something, it stops after the item at hand, and what is left waits for the next quiet moment. 叫醒它 stops even
- * that. What was halfway when Viva quit is prepared again, never left 'preparing'.
+ * that. What was halfway when Viva quit is prepared again, never left 'preparing'. New messages from the sources
+ * wait for the next window too, and are judged first in its batch (message-judge.ts).
  */
+/** What the batch says it is doing while it judges new messages. */
+const JUDGING = '看新消息'
 const MINUTE_MS = 60_000
 const DAY_MS = 24 * 60 * MINUTE_MS
 /** Waiting on the user to be done, it looks again this often. */
@@ -43,6 +47,8 @@ export interface SchedulerDeps {
   onState?: (state: PrepareState) => void
   /** Something was made ready: the notifier may tell it in the user's next gap. */
   onReady?: () => void
+  /** New messages to judge in the batches (message sources); none without sources. */
+  judge?: Pick<MessageJudge, 'run' | 'pendingSince'>
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
@@ -51,7 +57,7 @@ export interface SchedulerDeps {
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
 
 export function createPrepareScheduler(deps: SchedulerDeps) {
-  const { store, schedule, busy, prepare, onState = () => {}, onReady = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
+  const { store, schedule, busy, prepare, judge, onState = () => {}, onReady = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
   let timer: ReturnType<typeof setTimeout> | null = null
   let running: AbortController | null = null
   let yielding = false
@@ -61,6 +67,7 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
   /** Asked for now (现在就准备): no window waited for. */
   const asap = new Set<string>()
   const retryAfter = new Map<string, number>()
+  let judgeRetryAfter = 0
   let lastState: PrepareState = { running: false, current: null, queued: 0, nextAt: null, waiting: null }
 
   /** When `followup` is due to be prepared; null when it needs no preparation (any more). */
@@ -71,6 +78,14 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
     if (asap.has(followup.id)) return Math.max(followup.createdAt, retry)
     if (followup.prepareBy === null) return null
     return Math.max(slotFor(followup.prepareBy, followup.createdAt, plan), retry)
+  }
+
+  /** When new messages are judged: the first window after the oldest arrived; null when none waits. */
+  function judgeDueAt(plan: PrepareSchedule): number | null {
+    const since = judge?.pendingSince() ?? null
+    if (since === null) return null
+    const window = nextWindow(since - 1, plan)
+    return window === null ? null : Math.max(window, judgeRetryAfter)
   }
 
   function report(state: Partial<PrepareState>) {
@@ -109,8 +124,11 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
       return due === null ? [] : [{ f, due }]
     })
     const due = pending.filter((item) => item.due <= at).map((item) => item.f).sort((a, b) => (a.prepareBy ?? 0) - (b.prepareBy ?? 0))
-    if (!due.length) {
-      const next = pending.length ? Math.min(...pending.map((item) => item.due)) : null
+    const judgeDue = judgeDueAt(plan)
+    const judgeNow = judgeDue !== null && judgeDue <= at
+    if (!due.length && !judgeNow) {
+      const times = [...pending.map((item) => item.due), ...(judgeDue === null ? [] : [judgeDue])]
+      const next = times.length ? Math.min(...times) : null
       report({ running: false, current: null, queued: 0, nextAt: next, waiting: null })
       if (next !== null) wake(next)
       return
@@ -121,7 +139,20 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
       wake(wait.until)
       return
     }
-    void runBatch(due)
+    void runBatch(due, judgeNow)
+  }
+
+  /** New messages first: suggestions for what needs the user; failed, tried again no sooner than a while. */
+  async function judgeMessages(controller: AbortController) {
+    if (!judge) return
+    report({ running: true, current: JUDGING, waiting: null })
+    try {
+      const result = await judge.run(controller.signal)
+      if (!result.ok && !controller.signal.aborted) judgeRetryAfter = now() + FAILED_RETRY_MS
+      if (result.suggested) onReady()
+    } catch {
+      if (!controller.signal.aborted) judgeRetryAfter = now() + FAILED_RETRY_MS
+    }
   }
 
   async function prepareOne(followup: Followup, controller: AbortController) {
@@ -150,11 +181,12 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
   }
 
   /** One after the other, stopping after the item at hand once the user starts something. */
-  async function runBatch(due: readonly Followup[]) {
+  async function runBatch(due: readonly Followup[], judgeNow: boolean) {
     const controller = new AbortController()
     running = controller
     yielding = false
     try {
+      if (judgeNow) await judgeMessages(controller)
       for (const [index, item] of due.entries()) {
         if (yielding || controller.signal.aborted || stopped) break
         const followup = store.get(item.id)

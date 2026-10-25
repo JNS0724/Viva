@@ -820,6 +820,17 @@ function openPersonal(config: Config) {
   })
   personal = createPersonal({ memoryDb, historyDb, mcpStore })
   registerPersonalIpc(config, mcpStore)
+  sources = openSources({
+    userData,
+    crypto: safeStorage,
+    ipcMain,
+    openPath: (dir) => shell.openPath(dir),
+    chooseFolder: chooseSourceFolder,
+    trash: (dir) => shell.trashItem(dir),
+    onError: (err) => console.error('[sources]', err.message),
+    onMessages: () => followups?.scheduler.refresh(),
+  })
+  const sourcesDb = sources.db
   followups = openFollowups({
     userData,
     ipcMain,
@@ -848,15 +859,12 @@ function openPersonal(config: Config) {
     workDir: () => workDirNow() ?? config.cwd,
     conversationExists: (id) => Boolean(historyDb.get(id)),
     onState: (state) => emitToRenderer({ type: 'prepare_state', state }),
-  })
-  sources = openSources({
-    userData,
-    crypto: safeStorage,
-    ipcMain,
-    openPath: (dir) => shell.openPath(dir),
-    chooseFolder: chooseSourceFolder,
-    trash: (dir) => shell.trashItem(dir),
-    onError: (err) => console.error('[sources]', err.message),
+    messages: {
+      unjudged: (limit) => sourcesDb.unjudged(limit),
+      oldestUnjudgedAt: () => sourcesDb.oldestUnjudgedAt(),
+      markJudged: (items) => sourcesDb.markJudged(items),
+      message: (source, id) => sourcesDb.message(source, id),
+    },
   })
 }
 
@@ -988,6 +996,13 @@ function createWindow(config: Config) {
         fixtures: process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures'),
         pickSourceFolder: (dir: string) => { smokeSourcePick = dir },
         openTasksPage,
+        // A message the judge found urgent, as if a window had passed (judging waits for one).
+        seedSuggestion: () => {
+          sources?.db.save('smoke-mail', [{ id: 'm1', at: Date.now(), from: '[发件人]', title: '合同明天到期', text: '请今天内回复确认是否续签' }], 'c1')
+          sources?.db.markJudged([{ source: 'smoke-mail', id: 'm1' }])
+          followups?.store.addSuggestion({ source: 'smoke-mail', messageId: 'm1', sender: '[发件人]', title: '合同续签', ask: '起草回复，确认续签', why: '明天到期', remindAt: null })
+          followups?.notifier.refresh()
+        },
       })
     }
   })

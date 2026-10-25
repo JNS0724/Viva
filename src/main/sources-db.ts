@@ -40,6 +40,11 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS messages_latest ON messages (source, at DESC);
 `
+/**
+ * Columns added since the first schema; a file from before gets them on opening. judged_at: when the message was
+ * looked at for whether it needs the user (message-judge.ts), null while it waits for the next window.
+ */
+const ADDED_COLUMNS = Object.freeze([['messages', 'judged_at', 'INTEGER']])
 
 /** A message as kept, with which source it came from and when it arrived. */
 export interface StoredMessage extends SourceMessage { source: string, receivedAt: number }
@@ -83,6 +88,10 @@ export function openSourcesDb({ file, keep = KEEP_PER_SOURCE, now = Date.now }: 
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
   db.exec(SCHEMA)
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    const has = (db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).some((info) => info.name === column)
+    if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  }
 
   const ensure = db.prepare('INSERT OR IGNORE INTO sources (id) VALUES (?)')
   const insert = db.prepare(`INSERT OR IGNORE INTO messages (source, id, at, sender, title, text, link, level, thread, received_at)
@@ -156,6 +165,29 @@ export function openSourcesDb({ file, keep = KEEP_PER_SOURCE, now = Date.now }: 
     return rows.map(messageOf)
   }
 
+  /** One message, for the materials of a follow-up made from it; null once it is gone. */
+  function message(source: string, id: string): StoredMessage | null {
+    const row = db.prepare('SELECT * FROM messages WHERE source = ? AND id = ?').get(source, id) as Row | undefined
+    return row ? messageOf(row) : null
+  }
+
+  /** Messages not looked at yet, oldest first: what the next window judges. */
+  function unjudged(limit = LATEST_LIMIT): StoredMessage[] {
+    const rows = db.prepare('SELECT * FROM messages WHERE judged_at IS NULL ORDER BY received_at, rowid LIMIT ?').all(limit) as Row[]
+    return rows.map(messageOf)
+  }
+
+  /** When the oldest message not looked at arrived, or null when none waits. */
+  function oldestUnjudgedAt(): number | null {
+    const row = db.prepare('SELECT MIN(received_at) AS at FROM messages WHERE judged_at IS NULL').get() as Row
+    return numberOrNull(row.at)
+  }
+
+  function markJudged(items: ReadonlyArray<{ source: string, id: string }>): void {
+    const at = now()
+    transaction(() => items.forEach((item) => db.prepare('UPDATE messages SET judged_at = ? WHERE source = ? AND id = ?').run(at, item.source, item.id)))
+  }
+
   /** Everything about `source`, when it is removed. */
   function forget(source: string): void {
     transaction(() => {
@@ -164,7 +196,7 @@ export function openSourcesDb({ file, keep = KEEP_PER_SOURCE, now = Date.now }: 
     })
   }
 
-  return { save, fail, cursorOf, health, latest, forget, close: () => db.close() }
+  return { save, fail, cursorOf, health, latest, message, unjudged, oldestUnjudgedAt, markJudged, forget, close: () => db.close() }
 }
 
 export type SourcesDb = ReturnType<typeof openSourcesDb>
