@@ -98,23 +98,25 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 293 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 574 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
-npm run smoke       # 真的启动 Electron，分四次：
+npm run smoke       # 真的启动 Electron，分五次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
+                    #     再走一遍消息源：选文件夹安装 → 测试连接（错的令牌、对的令牌）→ 打开 → 收到消息 → 移除；
                     #   walkthrough：等待确认卡片时的状态胶囊浮层和标题栏布局（macOS 和模拟的 Windows，各在正常宽度和最窄
-                    #     880px 下检查胶囊居中、不和按钮重叠，窄窗口抽屉浮层），长任务时过程抽屉和对话的滚动；
+                    #     880px 下检查胶囊居中、不和按钮重叠，窄窗口抽屉浮层），长任务时过程抽屉和对话的滚动，文件页的预览；
                     #   relaunch：同一份数据再启动，检查上次的对话完整回来、助手接回会话，再走一遍历史面板
                     #     （⌘K、第二段对话、搜索高亮、打开旧对话、重命名、删除和撤销），最后检查 Markdown 渲染
-                    #     和其中不该生效的脚本、链接、图片，以及页面不能跳转；
+                    #     和其中不该生效的脚本、链接、图片，以及页面不能跳转；再看桌面岛上提问、发图片、新话题和换权限；
                     #   memory：真实的 dsh 加记忆插件，配假模型：引导、「记住」、关于你页面里的关键词、
                     #     提到名称时带上记忆、「过程」里的「带上记忆」，助手反问城市（卡片、点选回答、回答记进记忆），
-                    #     设置页的插件状态，
+                    #     设置页的插件状态，在对话里接入 MCP；
+                    #     主动跟进：建议卡片 → 跟进 → 选时段 → 现在就准备 → 草稿 → 接着做，以及消息建议 → 跟进；
                     #     再在设置里添加一个模型提供方，从模型菜单选中它并对话（当前对话保留）；
-                    #     最后直接杀掉 dsh，检查提示重连、自动重启并接回同一段对话
+                    #   resume：直接杀掉 dsh，检查提示重连、自动重启并接回同一段对话
 ```
 
-- **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和四个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。
+- **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和五个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。
 - **GitHub 上的自动检查**（`.github/workflows/`）：每个 PR 都在 macOS 和 Windows 上各跑一遍类型检查、构建、单元测试和全部 smoke 阶段（`check.yml`）；改到构建或打包相关的文件时（也可在 Actions 页面手动运行），再在两个平台上打出安装包、装到仓库之外、对装好的应用跑 memory 阶段，Windows 上最后卸载（`package.yml`）。
 - **什么时候在真机上测**：GitHub 的机器是虚拟机，看不到真实屏幕上的样子。
   - macOS：每次改动，提交前在真机上跑完类型检查、单元测试和全部 smoke。
@@ -124,6 +126,33 @@ npm run smoke       # 真的启动 Electron，分四次：
 - **假模型**：记忆相关的测试和 smoke 用真实的 dsh，把 `DEEPSEEK_BASE_URL` 指向 `test/fixtures/fake-llm.js`。它记录 dsh 发给模型的每个请求，并按固定规则回复（「记住：…」会调用 `memory_remember`），不需要 key。
 - **假 dsh**：其余 smoke 和集成测试里的 dsh 换成 `test/fixtures/fake-dsh.js`。它讲真实的 ACP 协议，按固定剧本回复：提问里带「长任务」会连续调用 16 次工具，再输出长回复。这样走的是和真实使用完全相同的代码路径，只是不调用模型。应用里没有演示模式。
 
+## README 的图和宣传片
+
+README 和这份文档里的截图、动图，都是应用自己拍的，不是手工截图：
+
+```bash
+npm run showcase    # 需要 ffmpeg
+```
+
+- 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `src/main/smoke-showcase.ts` 的剧本走一遍：首页的「今天」、对话、跟进卡片、后台准备、消息建议、确认卡片、消息源、后台准备时段、文件、桌面岛。数据目录是 `smoke/showcase/userData-showcase`，不碰你自己的数据。
+- 跟进的全过程按每秒 10 帧录下来，ffmpeg 做成 `docs/images/demo.gif`；截图缩到 1600px 宽放进 `docs/images/`。
+- 同一份录像和截图复制到 `promo/public/`，录像的长度写进 `promo/src/demo-meta.json`。
+
+改了界面以后重跑一次，再看一遍 `docs/images/` 里的图。
+
+宣传片在 `promo/`，是一个独立的 [Remotion](https://www.remotion.dev/) 项目，有自己的依赖，不进安装包：
+
+素材（`promo/public/`）由 `npm run showcase` 生成，不进仓库，先在仓库根目录跑一次：
+
+```bash
+cd promo
+npm install
+npm run studio      # 在浏览器里预览、逐帧看
+npm run render      # 出 promo/out/viva-promo.mp4（1920×1080，30fps）
+```
+
+场景在 `promo/src/scenes/`，每个场景的长度在 `promo/src/timeline.ts`，颜色和字体在 `promo/src/theme.ts`。
+
 ## 已知限制
 
 - `@deepseek-ai/dsh` 还是 0.2.0-rc，官方说明会有不兼容改动；ACP profile 是「自动化」定位，不提供 plan、todo 等 DSH 专有界面数据。
@@ -132,5 +161,5 @@ npm run smoke       # 真的启动 Electron，分四次：
 - 测试必须用 Electron 自带的 Node：系统 Node 24.14 的 zstd 只能解开多帧文件的第一帧，而 dsh 的日志正是多帧的。
 - 记忆插件依赖 dsh 的插件接口，插件声明的 dsh 版本是精确的 `0.2.0-rc.2`，升级 dsh 时要同步更新 `plugins/memory/package.json`，否则 dsh 会拒绝加载插件（对话不受影响，只是没有记忆）。
 - 对话压缩后重新带上画像的逻辑有单元测试，但还没在真实 dsh 里触发过压缩来验证。
-- Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（profile 写入、插件加载）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
+- Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和当时四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（profile 写入、插件加载）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
 - 字体从 Google Fonts 加载，离线时回退到系统字体。
