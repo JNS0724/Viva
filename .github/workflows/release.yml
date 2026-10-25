@@ -1,0 +1,58 @@
+# A release, made by pushing its tag (v0.4.0-beta.1): the version in package.json checked against the tag, the
+# installers built and smoked on both systems (package.yml, the same checks as before a release by hand), then the
+# GitHub release made from them, the notes from docs/releases/<tag>.md. A version with a dash (a beta) is marked
+# as a pre-release. Nothing is published when a step before it fails.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: The tag names the version in package.json, and its notes are written
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::package.json says $version but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if [ ! -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
+            echo "::error::docs/releases/$GITHUB_REF_NAME.md is missing: the release notes"
+            exit 1
+          fi
+
+  package:
+    needs: version
+    uses: ./.github/workflows/package.yml
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-installer'
+          merge-multiple: true
+          path: assets
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          # v0.4.0-beta.1 → "Viva 0.4.0 beta 1", as the releases before were named.
+          title="Viva $(echo "${tag#v}" | sed -E 's/-([a-z]+)\.([0-9]+)$/ \1 \2/')"
+          prerelease=()
+          if [[ "$tag" == *-* ]]; then prerelease=(--prerelease); fi
+          ls -l assets
+          gh release create "$tag" assets/* --verify-tag --title "$title" --notes-file "docs/releases/$tag.md" "${prerelease[@]}"

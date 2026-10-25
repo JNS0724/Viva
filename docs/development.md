@@ -54,6 +54,16 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 - **第三方许可证**：`THIRD_PARTY_NOTICES.txt` 由 `scripts/third-party-notices.cjs` 在打包时按实际打进去的依赖生成（各平台的依赖不完全相同），发布时随 Release 附上两个平台的版本。
 - **还没做**：代码签名和公证、自动更新、Intel Mac 和 Windows ARM 的包。
 
+## 发布
+
+推送版本标签就会发布，安装包不经过本地：
+
+1. 把 `package.json` 的版本改成新版本（`npm version 0.4.1-beta.1 --no-git-tag-version`，`package-lock.json` 一起改）。
+2. 在 `docs/releases/v<版本>.md` 写这一版的发布说明（格式照上一版：下载、首次打开、这一版的变化、测试情况）。
+3. 这两处改动走 PR 合进 main，再在 main 上打标签推上去：`git tag v0.4.1-beta.1 && git push origin v0.4.1-beta.1`。
+
+`.github/workflows/release.yml` 接着做：先查标签和 `package.json` 的版本对得上、发布说明写了；再跑一遍 `package.yml`，在 macOS 和 Windows 上打安装包、对装好的应用跑冒烟测试；都通过了才建 GitHub Release，挂上两个安装包和两份 `THIRD_PARTY_NOTICES`。版本号里带 `-`（beta、rc）的标成测试版。任何一步失败都不会发布；修好后删掉标签（`git push origin :refs/tags/v<版本>`）再打一次。
+
 ## macOS 与 Windows
 
 两端用同一套界面，只有标题栏两侧给系统窗口按钮的留白不同：
