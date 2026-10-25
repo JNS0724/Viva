@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "id": "my-source",
+  "name": "我的消息源",
+  "kind": "other",
+  "run": ["node", "index.mjs"],
+  "reads": "TODO：写清会读什么，例如「发件人、标题、正文前 2000 字」",
+  "everyMinutes": 5,
+  "config": {
+    "account": { "type": "string", "title": "账号", "default": "demo" },
+    "token": { "type": "secret", "title": "访问令牌", "help": "加密保存在用户的电脑上" }
+  }
+}

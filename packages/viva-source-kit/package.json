@@ -1,0 +1,33 @@
+{
+  "name": "viva-source-kit",
+  "version": "0.1.0",
+  "description": "写 Viva 消息源用的小工具：defineSource 运行时、viva-source 检查工具和模板",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "bin": {
+    "viva-source": "bin/viva-source.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bin",
+    "dist",
+    "templates",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/build-source-kit.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}

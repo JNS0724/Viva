@@ -5,6 +5,7 @@ import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
+import { createSourceActions } from './source-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
 import { createMemoryActions } from './memory-actions.ts'
@@ -377,6 +378,7 @@ const taskActions = createTaskActions({
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
+const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
@@ -404,6 +406,7 @@ const handlers = {
   ...historyActions,
   ...memoryActions,
   ...extensionActions,
+  ...sourceActions,
   ...modelActions,
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
@@ -548,6 +551,7 @@ const handlers = {
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
+    sourceActions.loadSources()
     modelActions.loadModels()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })

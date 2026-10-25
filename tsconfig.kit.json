@@ -1,0 +1,13 @@
+// The checker inside packages/viva-source-kit: the app's own source-check.ts and what it imports, written out as
+// JavaScript into the kit's dist/ (scripts/build-source-kit.mjs), so `viva-source test` checks as the app does.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "packages/viva-source-kit/dist",
+    "rootDir": "src/main",
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "files": ["src/main/source-check.ts"]
+}

@@ -87,6 +87,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | **工具策略下沉** | 已完成一条规则：MCP 工具名里含有 send、reply、forward、post、publish、deliver、broadcast 等词的（下划线和驼峰写法都识别），一律在执行前拒绝，并告诉模型「只起草，由用户自己发送」。**实测发现 dsh 对 MCP 工具完全不弹授权**，所以这个插件是「不代为发送」唯一的硬保障 |
 | **用 ACP 扩展通知代替轮询** | **当前做不到。** dsh 0.2.0-rc.2 的 ACP 实现只会向客户端发 `session/update` 和授权请求，没有给插件开放发送自定义通知的接口。app 继续在每轮结束后的 30 秒内每 2 秒查一次 `memory.db` |
 | **其他模型和协议** | 已完成，复用 dsh 自带的 `llm-pi-ai`（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种协议），不写新插件。实测：配置的路由出现在 ACP 的模型选项里、按提供方分组，选中后请求发到它的 baseURL 并带上 key，记忆插件照常注入；默认模型由 `acp` 一项的配置决定，`agent-default-model` 对 ACP 会话不起作用 |
+| **消息源** | **不做成 dsh 插件**：dsh 插件要写死精确的 dsh 版本，dsh 一升级第三方插件就失效；插件能给模型加工具、改上下文；装插件、改配置都要重启 dsh。消息源只往外拉消息、不需要介入 agent，按第 1 节的标准属于 app：app 按次启动一个短命进程（`src/main/source-run.ts`），消息校验后存进 `sources.db`，模型碰不到它。给开发者的 kit 在 `packages/viva-source-kit`，其中的检查工具由 app 的源码编译（`scripts/build-source-kit.mjs`）。见 [sources.md](sources.md) |
 | **顺带修复** | 记忆插件取助手回答的路径写错了（`assistant/message` 的正文在 `data.message` 下面），后台提取之前一直看不到助手的回答，已修复并加了测试；画像类记忆失效时立即重新整理画像，不再等 24 小时 |
 
 ## 7. 测试

@@ -40,6 +40,7 @@ import { createPreferences } from './preferences.ts'
 import { removeTree } from './remove-tree.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
+import { openSources } from './sources-main.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
 import { runSmoke } from './smoke.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
@@ -76,6 +77,7 @@ let mcpReloadDue = false
 let memoryDb!: ReturnType<typeof openMemoryDb>
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
 let traceDb: ReturnType<typeof openTraceDb> | null = null
+let sources: ReturnType<typeof openSources> | null = null
 /** Plugins left out of the profile at the last launch, and why; shown in settings. */
 let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
 /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.js. */
@@ -706,6 +708,16 @@ async function chooseDshDir(): Promise<string | null> {
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
+/** A smoke run cannot click through the folder dialog; it says here which folder the user would pick. */
+let smokeSourcePick: string | null = null
+
+/** 安装消息源: a folder with a viva-source.json in it. */
+async function chooseSourceFolder(): Promise<string | null> {
+  if (smokeSourcePick) return smokeSourcePick
+  const result = await dialog.showOpenDialog(mainWindow(), { title: '选择消息源文件夹（里面有 viva-source.json）', properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0] ?? null
+}
+
 function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createMcpConfigStore>) {
   registerMemoryIpc(ipcMain, {
     db: memoryDb,
@@ -743,6 +755,15 @@ function openPersonal(config: Config) {
   })
   personal = createPersonal({ memoryDb, historyDb, mcpStore })
   registerPersonalIpc(config, mcpStore)
+  sources = openSources({
+    userData,
+    crypto: safeStorage,
+    ipcMain,
+    openPath: (dir) => shell.openPath(dir),
+    chooseFolder: chooseSourceFolder,
+    trash: (dir) => shell.trashItem(dir),
+    onError: (err) => console.error('[sources]', err.message),
+  })
 }
 
 /** Opens the database, imports the old JSON history once, and drops conversations whose undo window has passed. */
@@ -860,6 +881,8 @@ function createWindow(config: Config) {
       }
       runSmoke(created, config, quitSmoke, {
         agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
+        fixtures: process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures'),
+        pickSourceFolder: (dir: string) => { smokeSourcePick = dir },
       })
     }
   })
@@ -997,6 +1020,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   tray?.destroy()
   clearInterval(lateMemoryTimer)
+  sources?.close()
   historyDb?.close()
   memoryDb?.close()
   traceDb?.close()

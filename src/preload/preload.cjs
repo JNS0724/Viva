@@ -116,6 +116,18 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   updateMcpServer: (name, changes) => ipcRenderer.invoke('ext:update-mcp', name, changes),
   importDsh: (from) => ipcRenderer.invoke('ext:import-dsh', from),
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),
+  getSources: () => ipcRenderer.invoke('sources:get'),
+  /** changes: { enabled?, everyMinutes?, values? }; a secret left blank keeps the saved one. */
+  saveSource: (id, changes) => ipcRenderer.invoke('sources:save', id, changes),
+  /** Tests the form's values (saved ones where left blank) without saving them. */
+  checkSource: (id, changes) => ipcRenderer.invoke('sources:check', id, changes),
+  pollSourceNow: (id) => ipcRenderer.invoke('sources:poll-now', id),
+  openSourcesFolder: () => ipcRenderer.invoke('sources:open-folder'),
+  /** The folder dialog, then what the chosen folder is, to confirm; the path itself stays in the main process. */
+  chooseSource: () => ipcRenderer.invoke('sources:choose'),
+  installSource: () => ipcRenderer.invoke('sources:install'),
+  cancelSourceInstall: () => ipcRenderer.invoke('sources:cancel-install'),
+  removeSource: (id) => ipcRenderer.invoke('sources:remove', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   /** The shortcut, pressed with the window in front: its own input takes the keyboard. */
