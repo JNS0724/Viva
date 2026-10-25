@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { BrowserWindow } from 'electron'
 import { capture, finishTurn, newTopic, report, run, UI_WAIT_MS, until, wait, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { composeDesk, deskInput, deskWaiting } from './smoke-showcase-desk.ts'
 
 /**
  * The README's pictures and demo (npm run showcase, scripts/showcase.mjs), made by the app itself on the real dsh
@@ -133,7 +134,7 @@ async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   await run(win, setInput(''))
 }
 
-async function chatScenes(win: SmokeWindow, outDir: string) {
+async function chatScenes(win: SmokeWindow, outDir: string, desk: any) {
   await newTopic(win)
   await wait(UI_WAIT_MS)
   await run(win, setInput(PROMPTS.report))
@@ -165,6 +166,8 @@ async function chatScenes(win: SmokeWindow, outDir: string) {
   await run(win, `${q(card)}.scrollIntoView({ block: 'center' })`)
   await wait(PAUSE_MS)
   await capture(win, outDir, 'approval')
+  // The same step, asked on the desktop island.
+  await deskWaiting(outDir, desk)
   await finishTurn(win)
 }
 
@@ -213,23 +216,6 @@ async function filesScene(win: SmokeWindow, outDir: string) {
   await capture(win, outDir, 'files')
 }
 
-/** The island on the desktop, its input open, as after ⌘⇧Space. */
-async function deskScene(outDir: string, desk: any) {
-  if (!desk) return
-  desk.force(true)
-  try {
-    if (!desk.openInput()) return
-    const page = { webContents: desk.webContents() }
-    await until(page, `['TEXTAREA', 'INPUT'].includes(document.activeElement?.tagName)`, 'the desk input')
-    await run(page, `(() => { const field = document.activeElement; field.value = '把桌面上这份合同的要点列一下'; field.dispatchEvent(new Event('input', { bubbles: true })) })()`)
-    await wait(UI_WAIT_MS)
-    await capture(page, outDir, 'desk-island')
-  } finally {
-    desk.closeInput()
-    desk.force(false)
-  }
-}
-
 /** Every scene, in an order where each leaves what the next needs. */
 export async function runShowcase(win: BrowserWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
   win.setSize(WIDTH, HEIGHT)
@@ -243,10 +229,11 @@ export async function runShowcase(win: BrowserWindow, outDir: string, hooks: Smo
   await capture(win, outDir, 'home')
   await demo(win, outDir, hooks)
   await closeHub(win)
-  await chatScenes(win, outDir)
+  await chatScenes(win, outDir, hooks.desk?.())
   await suggestionScene(win, outDir, hooks)
   await settingsScenes(win, outDir, hooks)
   await filesScene(win, outDir)
-  await deskScene(outDir, hooks.desk?.())
+  await deskInput(outDir, hooks.desk?.())
+  await composeDesk(outDir)
   return []
 }
