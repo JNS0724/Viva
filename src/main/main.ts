@@ -845,6 +845,8 @@ function openPersonal(config: Config) {
     onPending: (count) => {
       pendingFollowups = count
       tray?.setPending(count)
+      // Something changed in the main process (a suggestion, a draft, a reminder): the window shows it as it is now.
+      emitToRenderer({ type: 'followups_changed' })
     },
     idleSeconds: () => powerMonitor.getSystemIdleTime(),
     loadSchedule: () => preferences.get().prepareSchedule,
@@ -1010,6 +1012,19 @@ function createWindow(config: Config) {
           followups?.store.addSuggestion({ source: 'smoke-mail', messageId: 'm1', sender: '[发件人]', title: '合同续签', ask: '起草回复，确认续签', why: '明天到期', remindAt: null })
           followups?.notifier.refresh()
         },
+        // The showcase stages what was there before its scenes: follow-ups, and mail the judge found urgent.
+        followups: () => followups,
+        seedMail: () => {
+          const now = Date.now()
+          const mails = [
+            { id: 'm1', at: now - 17 * 60_000, from: '法务部', title: '服务合同明天到期，请确认是否续签', text: '您好，贵司与供应商的年度服务合同将于明天到期。如需续签，请在今天下班前回复确认，并附上采购部的审批单。' },
+            { id: 'm2', at: now - 34 * 60_000, from: '王五', title: '周会纪要（10/24）', text: '本周对账系统按计划推进，退款回归测试由李四负责，周三前补齐。' },
+          ]
+          sources?.db.save('company-mail', mails, '2')
+          sources?.db.markJudged(mails.map((mail) => ({ source: 'company-mail', id: mail.id })))
+          followups?.store.addSuggestion({ source: 'company-mail', messageId: 'm1', sender: '法务部', title: '合同续签', ask: '起草续签确认的回复，发不发由你', why: '明天到期，要你回复确认', remindAt: new Date(now).setHours(24 + 10, 0, 0, 0) }) // tomorrow 10:00
+          followups?.notifier.refresh()
+        },
       })
     }
   })
@@ -1036,8 +1051,12 @@ async function startSmokeModel() {
   // The installed app has no test folder; SMOKE_FIXTURES points a smoke run of it at the repository's.
   const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
   const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
+  // The showcase (README pictures and demo) gets answers that read like real use.
+  const decideFirst = currentConfig().smokePhase === 'showcase'
+    ? (await import(pathToFileURL(path.join(fixtures, 'showcase-llm.js')).href)).showcaseDecide
+    : null
   // `resume` reopens the profile `memory` left, whose models point at the stand-in: the same port both times.
-  const model = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0 })
+  const model = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0, decideFirst })
   smokeModel = model
   process.env.DEEPSEEK_BASE_URL = model.url
 }
@@ -1118,7 +1137,7 @@ app.whenReady().then(async () => {
     switchTo: switchWorkDir,
     reveal: (dir) => shell.openPath(dir),
   })
-  if (config.smokePhase === 'memory' || config.smokePhase === 'resume') await startSmokeModel()
+  if (config.smokePhase === 'memory' || config.smokePhase === 'resume' || config.smokePhase === 'showcase') await startSmokeModel()
   if (!config.smoke) {
     bringLegacyData()
     bringDshData(config)

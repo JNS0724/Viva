@@ -27,6 +27,7 @@
     "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
     "smoke:resume": "cross-env SMOKE_PHASE=resume DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
+    "showcase": "npm run build && node scripts/showcase.mjs",
     "predist:mac": "npm run build",
     "dist:mac": "electron-builder --mac dmg",
     "predist:win": "npm run build",

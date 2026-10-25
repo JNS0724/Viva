@@ -26,7 +26,7 @@ const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs'])
  * `memory` runs the real dsh with the memory plugin against a fake model, and `resume` reopens what it left
  * (a task still going in the background when it quit).
  */
-const SMOKE_PHASES = new Set(['walkthrough', 'relaunch', 'setup', 'memory', 'resume'])
+const SMOKE_PHASES = new Set(['walkthrough', 'relaunch', 'setup', 'memory', 'resume', 'showcase'])
 
 /** The app's own dsh profile: the ACP template plus the memory plugin; see dsh-profile.js. */
 export const DSH_PROFILE = 'viva'

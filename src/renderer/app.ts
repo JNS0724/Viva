@@ -881,7 +881,7 @@ function handleEvent(event: AgentEvent) {
   }
   if (event?.type === 'error') afterTurn = []
   // A batch ended: drafts are ready, or the list changed.
-  if (event?.type === 'prepare_state' && !event.state?.running) followupActions.loadFollowups()
+  if ((event?.type === 'prepare_state' && !event.state?.running) || event?.type === 'followups_changed') followupActions.loadFollowups()
 }
 
 async function boot() {

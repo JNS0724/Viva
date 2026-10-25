@@ -86,10 +86,10 @@ function trailingUserTexts(messages) {
  * The user's words: the first text of the turn's user messages that is not the memory block. What dsh and the
  * plugins add (the block, notices) comes after them, in the same message or, in a forked session, in others.
  */
-const questionOf = (messages) => trailingUserTexts(messages).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? ''
+export const questionOf = (messages) => trailingUserTexts(messages).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? ''
 
 /** After a tool result the turn's last user message is that result: the words the user said come before it. */
-const lastWords = (messages) => messages
+export const lastWords = (messages) => messages
   .filter((message) => message.role === 'user')
   .flatMap(textParts)
   .filter((text) => !text.startsWith(CONTEXT_OPEN))
@@ -224,9 +224,15 @@ export function decide(request) {
   return { text: `${backgroundOf(texts)}收到：「${question}」` }
 }
 
-function stream(res, request, index) {
+function stream(res, request, index, decideFirst) {
   const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
-  const answer = decide(request)
+  const answer = decideFirst?.(request) ?? decide(request)
+  // An answer may take a while (the showcase shows preparation at work).
+  if (answer.delayMs) return setTimeout(() => streamAnswer(res, request, index, answer, send), answer.delayMs)
+  return streamAnswer(res, request, index, answer, send)
+}
+
+function streamAnswer(res, request, index, answer, send) {
   res.writeHead(200, { 'content-type': 'text/event-stream' })
   send('message_start', {
     message: { id: `msg_${index}`, type: 'message', role: 'assistant', model: request.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } },
@@ -245,10 +251,12 @@ function stream(res, request, index) {
 }
 
 /**
- * @param {{ port?: number }} [options] a fixed port, for smoke phases that share a profile (its models keep the URL)
+ * @param {{ port?: number, decideFirst?: (request: object) => object | null }} [options] a fixed port, for smoke
+ *   phases that share a profile (its models keep the URL); decideFirst, answers tried before the rules above
+ *   (showcase-llm.js), null to fall back to them
  * @returns {Promise<{ url: string, requests: object[], close: () => Promise<void> }>}
  */
-export function startFakeLlm({ port = 0 } = {}) {
+export function startFakeLlm({ port = 0, decideFirst = null } = {}) {
   const requests = []
   const server = http.createServer((req, res) => {
     let body = ''
@@ -262,7 +270,7 @@ export function startFakeLlm({ port = 0 } = {}) {
       try {
         const request = JSON.parse(body)
         requests.push(request)
-        stream(res, request, requests.length)
+        stream(res, request, requests.length, decideFirst)
       } catch (err) {
         res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: err.message } }))
       }
