@@ -113,13 +113,14 @@ export function createMessageJudge(deps: JudgeDeps) {
   /** One batch: muted senders let go, the rest judged together; suggestions made for the important ones. */
   async function run(signal: AbortSignal): Promise<{ ok: boolean, suggested: number }> {
     const batch = sources.unjudged(JUDGE_BATCH)
-    const muted = batch.filter((m) => store.mutedSenders(m.source).has(m.from ?? ''))
+    const muted = batch.filter((m) => Boolean(m.from) && store.mutedSenders(m.source).has(m.from as string))
     if (muted.length) sources.markJudged(muted)
     const asked = batch.filter((m) => !muted.includes(m))
     if (!asked.length) return { ok: true, suggested: 0 }
     const input = judgeInput(asked, { profile: profile(), decisions: store.recentDecisions(), now: now() })
     const result = await prepareText({ system: JUDGE_SYSTEM, input, maxTokens: JUDGE_MAX_TOKENS }, signal)
-    store.logEvent('prepare_call', { kind: 'judge', ok: result.ok, messages: asked.length })
+    // Only a call the model was asked counts against the day's calls.
+    if (result.ok || result.called !== false) store.logEvent('prepare_call', { kind: 'judge', ok: result.ok, messages: asked.length })
     if (!result.ok) return { ok: false, suggested: 0 }
     const byKey = new Map(asked.map((m) => [keyOf(m), m]))
     let suggested = 0

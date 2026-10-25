@@ -509,7 +509,7 @@ export function createAcpBridge({
 
   /** Background preparation: one model call with no tools, from the followups plugin; nothing while dsh is down. */
   function prepareText(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
-    if (!child?.connected) return Promise.resolve({ ok: false, problem: '助手还没准备好' })
+    if (!child?.connected) return Promise.resolve({ ok: false, problem: '助手还没准备好', called: false })
     return followupDesk.prepare(call, signal)
   }
 

@@ -127,8 +127,10 @@ export function nextWindow(now: number, schedule: PrepareSchedule): number | nul
 export function slotFor(deadline: number, since: number, schedule: PrepareSchedule): number {
   const latest = deadline - LEAD_MS
   if (latest <= since) return since
-  const days = Math.min(Math.ceil((latest - since) / DAY_MS) + 1, MAX_SLOT_DAYS)
-  return windowsFrom(since, schedule, days).filter((at) => at <= latest).at(-1) ?? since
+  // Far off, only the days before it are looked at: prepared near the time, not two months early.
+  const from = Math.max(since, latest - (MAX_SLOT_DAYS - 1) * DAY_MS)
+  const days = Math.ceil((latest - from) / DAY_MS) + 1
+  return windowsFrom(from, schedule, days).filter((at) => at <= latest).at(-1) ?? since
 }
 
 /** Inside the active hours of `now`'s day. */

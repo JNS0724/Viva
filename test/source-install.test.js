@@ -41,30 +41,30 @@ test('a folder is checked before it is offered: a valid source, not one already 
   assert.match(inspectFolder(path.join(root, 'x'), root).problem, /已经在消息源文件夹里/)
 })
 
-test('installing copies the folder in as its id, without .git, and replacing swaps the whole folder', (t) => {
+test('installing copies the folder in as its id, without .git, and replacing swaps the whole folder', async (t) => {
   const base = tempDir(t)
   const root = path.join(base, 'sources')
   const from = writeSource(path.join(base, 'acme-src'))
-  const target = installFolder(inspectFolder(from, root), root)
+  const target = await installFolder(inspectFolder(from, root), root)
   assert.equal(target, path.join(root, 'acme'))
   assert.deepEqual(fs.readdirSync(target).sort(), ['index.js', 'viva-source.json'])
 
   fs.writeFileSync(path.join(from, 'index.js'), '// v2')
   fs.writeFileSync(path.join(target, 'stale.txt'), 'left from v1')
-  installFolder(inspectFolder(from, root), root)
+  await installFolder(inspectFolder(from, root), root)
   assert.deepEqual(fs.readdirSync(target).sort(), ['index.js', 'viva-source.json'])
   assert.equal(fs.readFileSync(path.join(target, 'index.js'), 'utf8'), '// v2')
   assert.deepEqual(fs.readdirSync(root), ['acme'], 'nothing left over beside it')
 })
 
-test('a folder that changed after it was shown is not installed, and the old one stays', (t) => {
+test('a folder that changed after it was shown is not installed, and the old one stays', async (t) => {
   const base = tempDir(t)
   const root = path.join(base, 'sources')
   const from = writeSource(path.join(base, 'acme-src'))
-  installFolder(inspectFolder(from, root), root)
+  await installFolder(inspectFolder(from, root), root)
   const shown = inspectFolder(from, root)
   writeSource(from, { id: 'other' })
-  assert.throws(() => installFolder(shown, root), /确认之后变了/)
+  await assert.rejects(installFolder(shown, root), /确认之后变了/)
   assert.deepEqual(fs.readdirSync(root), ['acme'])
 })
 
@@ -74,8 +74,11 @@ test('leftovers of an install cut short are cleared, and only folders inside the
   fs.mkdirSync(path.join(root, '.installing-1'), { recursive: true })
   fs.mkdirSync(path.join(root, '.old-2'), { recursive: true })
   fs.mkdirSync(path.join(root, 'kept'), { recursive: true })
+  // The only copy of a source, left when both renames of an update failed: put back, not lost.
+  writeSource(path.join(root, '.old-3'))
   clearLeftovers(root)
-  assert.deepEqual(fs.readdirSync(root), ['kept'])
+  assert.deepEqual(fs.readdirSync(root).sort(), ['acme', 'kept'])
+  fs.rmSync(path.join(root, 'acme'), { recursive: true })
   const trashed = []
   const trash = async (dir) => { trashed.push(dir) }
   assert.equal(await removeFolder({ dir: path.join(root, 'kept'), manifest: {} }, root, trash), 'trashed')

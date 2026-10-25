@@ -16,8 +16,11 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024
 const STDERR_TAIL_CHARS = 300
 /** The variables a source may see from the app's environment (Windows needs its own few to run anything); anything else is left out. */
 const PASSED_ENV = Object.freeze([
-  'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TEMP', 'TMP',
-  'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
+  'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TEMP', 'TMP',
+  'USERPROFILE', 'USERNAME', 'HOMEDRIVE', 'HOMEPATH', 'SYSTEMDRIVE', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
+  // Behind a company proxy a CLI needs these to reach anything; they name a proxy or a certificate, not the user's keys.
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE',
 ])
 /** Arguments a .cmd or .bat may be given: cmd.exe reads its line itself, so only plain words pass, nothing it would act on. */
 const PLAIN_ARG = /^[\w./\\:=@+,-]+$/
@@ -63,11 +66,32 @@ export function commandFor(folder: SourceFolder, options: RunOptions): Ran<{ com
   base.VIVA_SOURCE_DATA = options.dataDir
   base.VIVA_SOURCE_CONTRACT = String(SOURCE_CONTRACT)
   if (first === 'node') return { ok: true, value: { command: execPath, args, env: { ...base, ELECTRON_RUN_AS_NODE: '1' } } }
-  const local = /[\\/]/.test(first) ? path.resolve(folder.dir, first) : null
-  const command = local ? (fs.existsSync(local) ? local : null) : resolveCommand(first, { env: { PATH: base.PATH, PATHEXT: base.PATHEXT }, platform })
+  const command = findProgram(first, folder.dir, base, platform)
   if (!command) return { ok: false, problem: `找不到要运行的程序：${first}` }
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(command)) return viaCmd(command, args, base)
   return { ok: true, value: { command, args, env: base } }
+}
+
+/** Extensions Windows runs, in its order; none elsewhere. */
+const runnableExtensions = (base: Record<string, string>, platform: string) =>
+  (platform === 'win32' ? String(base.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((ext) => ext.toLowerCase()) : [])
+
+/**
+ * Where `name` is: in the source's folder when it is a path, else on PATH. On Windows a name without an extension
+ * is looked for with each runnable extension first: npm puts a sh script `tool` beside the `tool.cmd` that runs.
+ */
+function findProgram(name: string, dir: string, base: Record<string, string>, platform: string): string | null {
+  const extensions = path.extname(name) ? [] : runnableExtensions(base, platform)
+  if (/[\\/]/.test(name)) {
+    const local = path.resolve(dir, name)
+    return [...extensions.map((ext) => local + ext), local].find((file) => fs.existsSync(file)) ?? null
+  }
+  for (const ext of extensions) {
+    // An empty PATHEXT: only the name as given, with this extension.
+    const found = resolveCommand(name + ext, { env: { PATH: base.PATH, PATHEXT: '' }, platform })
+    if (found) return found
+  }
+  return resolveCommand(name, { env: { PATH: base.PATH, PATHEXT: base.PATHEXT }, platform })
 }
 
 /**
@@ -120,6 +144,7 @@ export function runSource(folder: SourceFolder, request: SourceRequest, options:
   const { command, args, env, verbatim = false } = prepared.value
   return new Promise((resolve) => {
     let settled = false
+    let ended = false
     let out = ''
     let outBytes = 0
     let err = ''
@@ -132,25 +157,34 @@ export function runSource(folder: SourceFolder, request: SourceRequest, options:
       clearTimeout(timer)
       resolve(result)
     }
-    const timer = setTimeout(() => {
+    const stop = () => {
+      if (ended) return
+      ended = true
       endTree(child, platform, spawn)
+    }
+    const timer = setTimeout(() => {
+      stop()
       finish({ ok: false, problem: `超过 ${Math.round(timeoutMs / 1000)} 秒没有结果，已停止` })
     }, timeoutMs)
     child.on('error', (error) => finish({ ok: false, problem: `启动失败：${error.message}` }))
-    child.stdout?.on('data', (chunk: Buffer) => {
-      outBytes += chunk.length
+    // Decoded as a stream, so a character split between two chunks stays whole.
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      if (settled) return
+      outBytes += Buffer.byteLength(chunk)
       if (outBytes > maxOutputBytes) {
-        endTree(child, platform, spawn)
+        stop()
         finish({ ok: false, problem: `输出超过 ${Math.round(maxOutputBytes / 1024)} KB，已停止` })
         return
       }
-      out += chunk.toString('utf8')
+      out += chunk
     })
-    child.stderr?.on('data', (chunk: Buffer) => {
-      err = (err + chunk.toString('utf8')).slice(-STDERR_TAIL_CHARS * 4)
+    child.stderr?.on('data', (chunk: string) => {
+      err = (err + chunk).slice(-STDERR_TAIL_CHARS * 4)
     })
-    child.on('close', (code) => {
-      if (code !== 0) return finish({ ok: false, problem: tail(err) || `程序退出，代码 ${code}` })
+    child.on('close', (code, signal) => {
+      if (code !== 0) return finish({ ok: false, problem: tail(err) || (code === null ? `程序被结束了（${signal}）` : `程序退出，代码 ${code}`) })
       const parsed = lastJsonLine(out)
       finish(parsed ? { ok: true, value: parsed.value } : { ok: false, problem: '没有输出 JSON 结果' })
     })

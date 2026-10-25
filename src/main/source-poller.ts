@@ -42,6 +42,8 @@ export function retryDelayMs(failures: number, everyMinutes: number): number {
 export function createSourcePoller(deps: PollerDeps) {
   const { folders, settings, db, poll, onRun = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
   const slots = new Map<string, Slot>()
+  /** Sources reading right now, apart from their slots: switched off and on again meanwhile, one is not run twice. */
+  const inFlight = new Set<string>()
   let stopped = false
 
   const folderOf = (id: string) => folders().find((folder) => folder.manifest.id === id)
@@ -57,7 +59,12 @@ export function createSourcePoller(deps: PollerDeps) {
   }
 
   function failed(id: string, slot: Slot, problem: string) {
-    const failures = db.fail(id, problem)
+    let failures = 1
+    try {
+      failures = db.fail(id, problem)
+    } catch {
+      // The store could not note it; the source is still asked again later.
+    }
     onRun(id, { problem })
     schedule(id, retryDelayMs(failures, slot.everyMinutes))
   }
@@ -65,12 +72,14 @@ export function createSourcePoller(deps: PollerDeps) {
   /** One poll of `id` with its settings as they are now; schedules the next. */
   async function runOnce(id: string): Promise<void> {
     const slot = slots.get(id)
+    if (!slot || slot.running || inFlight.has(id)) return
     const folder = folderOf(id)
-    if (!slot || !folder || slot.running) return
+    // Its folder unreadable for now (its manifest being edited): looked at again after an interval.
+    if (!folder || !settings.get(folder.manifest).enabled) return schedule(id, slot.everyMinutes * MINUTE)
     const current = settings.get(folder.manifest)
-    if (!current.enabled) return
     slot.running = true
     slot.lastRunAt = now()
+    inFlight.add(id)
     try {
       const ran = await poll(folder, current.values, db.cursorOf(id))
       // Switched off or removed while it ran: what it read is let go.
@@ -83,6 +92,7 @@ export function createSourcePoller(deps: PollerDeps) {
       if (slots.has(id)) failed(id, slot, err instanceof Error ? err.message : String(err))
     } finally {
       slot.running = false
+      inFlight.delete(id)
     }
   }
 
@@ -110,10 +120,22 @@ export function createSourcePoller(deps: PollerDeps) {
         else void runOnce(id)
         return
       }
-      if (slot.everyMinutes === everyMinutes) return
+      if (slot.running) {
+        slot.everyMinutes = everyMinutes
+        return
+      }
+      // A slot left without a timer (a run skipped) is put back; a new interval counts from the last run.
+      if (slot.everyMinutes === everyMinutes && slot.timer) return
       slot.everyMinutes = everyMinutes
-      if (!slot.running) schedule(id, slot.lastRunAt === null ? 0 : slot.lastRunAt + everyMinutes * MINUTE - now())
+      schedule(id, slot.lastRunAt === null ? 0 : slot.lastRunAt + everyMinutes * MINUTE - now())
     })
+  }
+
+  /** The computer woke: timers slept with it, so each is set again from its last run. */
+  function wakeUp() {
+    for (const [id, slot] of slots) {
+      if (!slot.running) schedule(id, slot.lastRunAt === null ? 0 : slot.lastRunAt + slot.everyMinutes * MINUTE - now())
+    }
   }
 
   /** 现在拉一次: runs now unless it is already running; the regular schedule goes on from this run. */
@@ -130,7 +152,7 @@ export function createSourcePoller(deps: PollerDeps) {
     for (const id of [...slots.keys()]) drop(id)
   }
 
-  return { refresh, pollNow, stop, isRunning: (id: string) => slots.get(id)?.running === true }
+  return { refresh, pollNow, wakeUp, stop, isRunning: (id: string) => inFlight.has(id) }
 }
 
 export type SourcePoller = ReturnType<typeof createSourcePoller>

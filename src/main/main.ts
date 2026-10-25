@@ -89,6 +89,8 @@ let followups: Followups | null = null
 let pendingFollowups = 0
 /** Notifications shown and not yet clicked or closed: kept, or they may be collected before a click reaches them. */
 const shownNotices = new Set<Notification>()
+/** How long a shown notification is kept for its click. */
+const NOTICE_KEEP_MS = 60 * 60 * 1000
 /** Started with the computer (开机启动): the window stays hidden, Viva in the tray. */
 const startedHidden = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
 /** Plugins left out of the profile at the last launch, and why; shown in settings. */
@@ -772,6 +774,8 @@ function showNotice(notice: Notice) {
     openTasksPage()
   })
   shown.on('close', done)
+  // Some systems never say a notification closed: let it go after a while.
+  setTimeout(done, NOTICE_KEEP_MS).unref?.()
   shown.show()
 }
 
@@ -849,8 +853,8 @@ function openPersonal(config: Config) {
     prepareText: (call, signal) => {
       // The model the conversation is on, else the one new conversations start on.
       const route = parseModelValue(String(lastInfo.modelValue ?? '')) ?? profileModels(config).defaultModel
-      if (!route) return Promise.resolve({ ok: false as const, problem: '还没有可用的模型' })
-      return bridge ? bridge.prepareText({ ...route, ...call }, signal) : Promise.resolve({ ok: false as const, problem: '助手还没准备好' })
+      if (!route) return Promise.resolve({ ok: false as const, problem: '还没有可用的模型', called: false as const })
+      return bridge ? bridge.prepareText({ ...route, ...call }, signal) : Promise.resolve({ ok: false as const, problem: '助手还没准备好', called: false as const })
     },
     takenUp: (conversationId, since) => (taskStore?.list() ?? []).some((task) => (task.startedAt ?? 0) >= since
       && (task.segmentId === conversationId || historyDb.get(task.segmentId)?.conversation.parentId === conversationId)),
@@ -861,6 +865,7 @@ function openPersonal(config: Config) {
     workDir: () => workDirNow() ?? config.cwd,
     conversationExists: (id) => Boolean(historyDb.get(id)),
     onState: (state) => emitToRenderer({ type: 'prepare_state', state }),
+    onError: (err) => console.error('[followups]', err instanceof Error ? err.message : String(err)),
     messages: {
       unjudged: (limit) => sourcesDb.unjudged(limit),
       oldestUnjudgedAt: () => sourcesDb.oldestUnjudgedAt(),
@@ -1121,8 +1126,14 @@ app.whenReady().then(async () => {
   openHistory(config)
   openPersonal(config)
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
-  powerMonitor.on('resume', () => followups?.notifier.wake())
-  powerMonitor.on('unlock-screen', () => followups?.notifier.wake())
+  // Timers slept with the computer: preparation and the sources look again from now.
+  const woke = () => {
+    followups?.notifier.wake()
+    followups?.scheduler.refresh()
+    sources?.wakeUp()
+  }
+  powerMonitor.on('resume', woke)
+  powerMonitor.on('unlock-screen', woke)
   createWindow(config)
   registerShortcut(config)
 }).catch((err) => {

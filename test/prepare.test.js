@@ -291,3 +291,36 @@ test('IPC: a follow-up is made only on 跟进, with times checked; 接着做 han
   assert.equal(saved.pausedUntil, clock.now + 60 * MINUTE)
   await assert.rejects(call('followups:dismiss', 'nope'), /已经不在了/)
 })
+
+test('dismissed while being prepared, a follow-up does not come back; a call never made costs nothing', async (t) => {
+  let release
+  const { store, scheduler, add, soon, settle } = setup(t, {
+    prepare: (f, signal) => new Promise((resolve) => {
+      release = resolve
+      signal.addEventListener('abort', () => resolve({ ok: false, problem: '先停下了' }))
+    }),
+  })
+  const due = add(soon())
+  scheduler.start()
+  await settle()
+  assert.equal(store.get(due.id).status, 'preparing')
+  store.setStatus(due.id, 'dismissed')
+  release({ ok: true, draft: '草稿', readFiles: [] })
+  await settle()
+  assert.deepEqual([store.get(due.id).status, store.get(due.id).draft], ['dismissed', null], 'its draft is let go')
+
+  const second = add({ title: '二', ...soon(40) })
+  scheduler.refresh()
+  await settle()
+  release({ ok: false, problem: '助手还没准备好', called: false })
+  await settle()
+  assert.equal(store.get(second.id).status, 'scheduled')
+  assert.equal(store.countEvents('prepare_call', 0), 1, 'only the call that was made counts')
+})
+
+test('a deadline months away is prepared in the days before it, not two months early', () => {
+  const agreed = at(MONDAY, 9)
+  const far = at(MONDAY, 17) + 120 * 24 * 60 * MINUTE
+  const slot = slotFor(far, agreed, three)
+  assert.ok(far - slot < 24 * 60 * MINUTE, `prepared the day of it: ${new Date(slot).toString()}`)
+})

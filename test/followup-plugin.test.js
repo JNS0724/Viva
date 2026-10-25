@@ -40,7 +40,7 @@ test('background preparation is one model call with no tools at all, whatever th
   assert.equal((request.tools ?? []).length, 0, 'the model was offered no tools')
 
   await agent.dispose()
-  assert.deepEqual(await agent.prepareText({ ...DEEPSEEK_DEFAULT, system: 'x', input: 'y', maxTokens: 10 }), { ok: false, problem: '助手还没准备好' })
+  assert.deepEqual(await agent.prepareText({ ...DEEPSEEK_DEFAULT, system: 'x', input: 'y', maxTokens: 10 }), { ok: false, problem: '助手还没准备好', called: false })
 })
 
 test('new messages are judged in one tool-less call; only the urgent one becomes a suggestion', { timeout: DSH_TIMEOUT_MS }, async (t) => {

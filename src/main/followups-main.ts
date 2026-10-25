@@ -44,11 +44,13 @@ export interface FollowupsDeps {
   conversationExists: (id: string) => boolean
   /** How preparation is going, for the island and the 后台 page. */
   onState: (state: PrepareState) => void
+  /** What went wrong in the background (a timer, a batch), for the log. */
+  onError: (err: unknown) => void
 }
 
 export function openFollowups(deps: FollowupsDeps) {
   const store = openFollowupStore({ file: path.join(deps.userData, 'followups.db') })
-  const notifier = createFollowupNotifier({ store, notify: deps.notify, windowInFront: deps.windowInFront, onPending: deps.onPending })
+  const notifier = createFollowupNotifier({ store, notify: deps.notify, windowInFront: deps.windowInFront, onPending: deps.onPending, onError: deps.onError })
   const schedule = () => scheduleOf(deps.loadSchedule())
 
   async function prepare(followup: Followup, signal: AbortSignal): Promise<Prepared> {
@@ -58,7 +60,7 @@ export function openFollowups(deps: FollowupsDeps) {
     }
     const { input, readFiles } = materialsFor(followup, { ...deps.materials, message: deps.messages?.message })
     const result = await deps.prepareText({ system: PREPARE_SYSTEM, input, maxTokens: PREPARE_MAX_TOKENS }, signal)
-    return result.ok ? { ok: true, draft: result.text, readFiles } : { ok: false, problem: result.problem }
+    return result.ok ? { ok: true, draft: result.text, readFiles } : { ok: false, problem: result.problem, ...(result.called === false ? { called: false } : {}) }
   }
 
   const judge = deps.messages
@@ -72,14 +74,16 @@ export function openFollowups(deps: FollowupsDeps) {
     judge,
     onState: deps.onState,
     onReady: () => notifier.refresh(),
+    onError: deps.onError,
   })
-  const watch = createGapWatch({ idleSeconds: deps.idleSeconds, onGap: notifier.gap })
+  const watch = createGapWatch({ idleSeconds: deps.idleSeconds, onGap: notifier.gap, onError: deps.onError })
   // A file the user named changed and settled: prepared again in the next window.
   const files = createFileWatch({
     store,
+    onError: deps.onError,
     onChanged: (followup) => {
       const at = Date.now()
-      store.rearm(followup.id, (nextWindow(at, schedule()) ?? at) + LEAD_MS)
+      store.rearm(followup.id, (nextWindow(at, schedule()) ?? at) + LEAD_MS, at)
       store.logEvent('file_changed', { id: followup.id })
       scheduler.refresh()
       notifier.refresh()

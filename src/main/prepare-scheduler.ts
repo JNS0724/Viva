@@ -24,7 +24,8 @@ export const WOKEN_REST_MS = 30 * MINUTE_MS
 /** setTimeout holds at most about 24.8 days. */
 const MAX_TIMER_MS = DAY_MS
 
-export type Prepared = { ok: true, draft: string, readFiles: ReadFile[] } | { ok: false, problem: string } | { skip: string }
+/** `called: false` on a failure: no model was asked, so it costs none of the day's calls. */
+export type Prepared = { ok: true, draft: string, readFiles: ReadFile[] } | { ok: false, problem: string, called?: false } | { skip: string }
 
 export interface PrepareState {
   running: boolean
@@ -39,7 +40,7 @@ export interface PrepareState {
 }
 
 export interface SchedulerDeps {
-  store: Pick<FollowupStore, 'list' | 'get' | 'setStatus' | 'saveDraft' | 'logEvent' | 'countEvents'>
+  store: Pick<FollowupStore, 'list' | 'get' | 'setStatus' | 'finishPreparing' | 'moveStatus' | 'logEvent' | 'countEvents'>
   schedule: () => PrepareSchedule
   /** Why preparation must wait now (a turn or task of the user's going), or null when it may run. */
   busy: () => string | null
@@ -49,6 +50,8 @@ export interface SchedulerDeps {
   onReady?: () => void
   /** New messages to judge in the batches (message sources); none without sources. */
   judge?: Pick<MessageJudge, 'run' | 'pendingSince'>
+  /** What went wrong in a batch, for the log; the batch is tried again later. */
+  onError?: (err: unknown) => void
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
@@ -57,9 +60,13 @@ export interface SchedulerDeps {
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
 
 export function createPrepareScheduler(deps: SchedulerDeps) {
-  const { store, schedule, busy, prepare, judge, onState = () => {}, onReady = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
+  const { store, schedule, busy, prepare, judge, onState = () => {}, onReady = () => {}, onError = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
   let timer: ReturnType<typeof setTimeout> | null = null
   let running: AbortController | null = null
+  /** The follow-up being prepared now. */
+  let current: string | null = null
+  /** A batch went wrong (the store failing): nothing runs before then. */
+  let brokenUntil = 0
   let yielding = false
   let stopped = false
   /** Until when it rests after being woken. */
@@ -107,6 +114,7 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
     const asked = due.some((f) => asap.has(f.id))
     if (plan.pausedUntil !== null && plan.pausedUntil > at) return { why: '暂停中', until: plan.pausedUntil }
     if (!asked && restUntil > at) return { why: '刚叫醒，过一会儿再准备', until: restUntil }
+    if (brokenUntil > at) return { why: '上次准备出错了，过一会儿再试', until: brokenUntil }
     if (!asked && !isActive(at, plan)) return { why: '不在活跃时间段', until: nextActive(at, plan) }
     if (store.countEvents('prepare_call', startOfDay(at)) >= plan.dailyCalls) return { why: '今天的调用用完了', until: nextActive(startOfDay(at) + DAY_MS, plan) }
     const userBusy = busy()
@@ -156,31 +164,40 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
   }
 
   async function prepareOne(followup: Followup, controller: AbortController) {
-    store.setStatus(followup.id, 'preparing')
+    if (!store.moveStatus(followup.id, 'scheduled', 'preparing')) return
+    current = followup.id
     let result: Prepared
     try {
       result = await prepare(followup, controller.signal)
     } catch (err) {
       result = { ok: false, problem: err instanceof Error ? err.message : String(err) }
+    } finally {
+      current = null
     }
+    // Stopped meanwhile (quitting): the store may be closing; the item is prepared again at the next launch.
+    if (stopped) return
     asap.delete(followup.id)
     if ('skip' in result) {
-      store.saveDraft(followup.id, result.skip, [])
+      if (store.finishPreparing(followup.id, result.skip, [])) onReady()
       store.logEvent('prepare_skipped', { id: followup.id })
-      onReady()
       return
     }
-    store.logEvent('prepare_call', result.ok ? { id: followup.id, ok: true } : { id: followup.id, ok: false, problem: result.problem })
+    if (result.ok || result.called !== false) {
+      store.logEvent('prepare_call', result.ok ? { id: followup.id, ok: true } : { id: followup.id, ok: false, problem: result.problem })
+    }
+    // Kept only if still being prepared: dismissed or done meanwhile, it does not come back.
     if (result.ok) {
-      store.saveDraft(followup.id, result.draft, result.readFiles)
-      onReady()
+      if (store.finishPreparing(followup.id, result.draft, result.readFiles)) onReady()
       return
     }
-    store.setStatus(followup.id, 'scheduled')
+    store.moveStatus(followup.id, 'preparing', 'scheduled')
     if (!controller.signal.aborted) retryAfter.set(followup.id, now() + FAILED_RETRY_MS)
   }
 
-  /** One after the other, stopping after the item at hand once the user starts something. */
+  /**
+   * One after the other, stopping after the item at hand once the user starts something, or once the gate shuts
+   * (paused, the day's calls used, the user busy). Anything that breaks the batch is logged and it is tried later.
+   */
   async function runBatch(due: readonly Followup[], judgeNow: boolean) {
     const controller = new AbortController()
     running = controller
@@ -189,15 +206,19 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
       if (judgeNow) await judgeMessages(controller)
       for (const [index, item] of due.entries()) {
         if (yielding || controller.signal.aborted || stopped) break
+        if (index > 0 && gate(schedule(), due.slice(index))) break
         const followup = store.get(item.id)
         if (!followup || followup.status !== 'scheduled') continue
         report({ running: true, current: followup.title, queued: due.length - index - 1, waiting: null })
         await prepareOne(followup, controller)
       }
+    } catch (err) {
+      onError(err)
+      brokenUntil = now() + FAILED_RETRY_MS
     } finally {
       running = null
       yielding = false
-      tick()
+      if (!stopped) tick()
     }
   }
 
@@ -218,6 +239,10 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
       restUntil = now() + WOKEN_REST_MS
       running?.abort()
       yielding = true
+    },
+    /** Dismissed or done while being prepared: stop preparing it now. */
+    abandon(id: string) {
+      if (current === id) running?.abort()
     },
     /** 现在就准备: no window waited for, nor the active hours. */
     prepareNow(id: string) {

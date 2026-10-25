@@ -191,3 +191,10 @@ test('a sources.db from before learns which messages were judged, and keeps its 
   assert.deepEqual(db.unjudged(), [])
   assert.equal(db.message('mail', 'm1').title, 't')
 })
+
+test('messages with no sender are never muted together', (t) => {
+  const { store } = setup(t)
+  for (const id of ['a', 'b']) store.addSuggestion({ source: 'mail', messageId: id, sender: '', title: 't', ask: 'a', why: 'w', remindAt: null })
+  store.listSuggestions().forEach((s) => store.settleSuggestion(s.id, 'declined'))
+  assert.deepEqual([...store.mutedSenders('mail')], [])
+})

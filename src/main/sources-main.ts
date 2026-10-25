@@ -66,6 +66,8 @@ export function openSources({ userData, crypto, ipcMain, openPath, chooseFolder,
   poller.refresh({ launching: true })
   return {
     db,
+    /** The computer woke: the sources' timers slept with it. */
+    wakeUp: () => poller.wakeUp(),
     close() {
       poller.stop()
       db.close()

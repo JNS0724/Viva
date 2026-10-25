@@ -73,12 +73,13 @@ export function inspectFolder(dir: string, root: string): Inspected | { problem:
 }
 
 /** Copies an inspected folder into `root` as its id, replacing what was there; returns where it went. */
-export function installFolder(inspected: Inspected, root: string): string {
+export async function installFolder(inspected: Inspected, root: string): Promise<string> {
   fs.mkdirSync(root, { recursive: true })
   const target = path.join(root, inspected.manifest.id)
   const staging = path.join(root, `${STAGING_PREFIX}${randomUUID()}`)
   try {
-    fs.cpSync(inspected.dir, staging, { recursive: true, dereference: true, filter: (from) => !SKIPPED.has(path.basename(from)) })
+    // Copied without holding up the window: a source may bring thousands of files.
+    await fs.promises.cp(inspected.dir, staging, { recursive: true, dereference: true, filter: (from) => !SKIPPED.has(path.basename(from)) })
     // The copy must still be the source that was shown: the folder may have changed since.
     const copied = readManifest(staging)
     if ('problem' in copied || copied.manifest.id !== inspected.manifest.id) throw new Error('文件夹在确认之后变了，请重新选择')
@@ -94,7 +95,12 @@ export function installFolder(inspected: Inspected, root: string): string {
       fs.renameSync(old, target)
       throw err
     }
-    fs.rmSync(old, { recursive: true, force: true })
+    // The new one is in place; an old copy that will not go (a virus scanner holding it) goes at the next launch.
+    try {
+      fs.rmSync(old, { recursive: true, force: true })
+    } catch {
+      // clearLeftovers takes it.
+    }
     return target
   } finally {
     fs.rmSync(staging, { recursive: true, force: true })
@@ -110,7 +116,21 @@ export function clearLeftovers(root: string): void {
     return
   }
   for (const name of names) {
-    if (name.startsWith(STAGING_PREFIX) || name.startsWith(OLD_PREFIX)) fs.rmSync(path.join(root, name), { recursive: true, force: true })
+    const dir = path.join(root, name)
+    if (name.startsWith(OLD_PREFIX)) {
+      // Left when putting the new one in place failed and so did putting it back: the only copy, restored.
+      const read = readManifest(dir)
+      const target = 'manifest' in read ? path.join(root, read.manifest.id) : null
+      if (target && !fs.existsSync(target)) {
+        try {
+          fs.renameSync(dir, target)
+        } catch {
+          // Left for the next launch.
+        }
+        continue
+      }
+    }
+    if (name.startsWith(STAGING_PREFIX) || name.startsWith(OLD_PREFIX)) fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 

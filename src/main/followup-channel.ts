@@ -18,7 +18,8 @@ export const PREPARE_TIMEOUT_MS = 4 * 60 * 1000
 /** What the model proposed, as the card shows it; times as the model wrote them, checked when accepted. */
 export interface ProposalView { title: string, ask: string, remindAt: string | null, prepareBy: string | null, files: string[], watchFile: string | null }
 export interface PrepareCall { provider: string, model: string, system: string, input: string, maxTokens: number }
-export type Prepared = { ok: true, text: string } | { ok: false, problem: string }
+/** `called: false`: no model was asked (the agent down, no model, stopped before sending); it costs no call. */
+export type Prepared = { ok: true, text: string } | { ok: false, problem: string, called?: false }
 
 const text = (value: unknown, max: number): string | null => (typeof value === 'string' && value.trim() && value.length <= max ? value.trim() : null)
 
@@ -74,7 +75,7 @@ export function createFollowupDesk({ send, emit, setTimer = setTimeout, clearTim
   function prepare(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
     const id = `prep${++seq}-${Date.now().toString(36)}`
     return new Promise<Prepared>((resolve) => {
-      if (signal?.aborted) return resolve({ ok: false, problem: '先停下了' })
+      if (signal?.aborted) return resolve({ ok: false, problem: '先停下了', called: false })
       const stop = (problem: string) => {
         send({ type: 'prepare_cancel', id })
         settle(id, { ok: false, problem })

@@ -79,6 +79,8 @@ export function registerSourcesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: S
   const handle = handlerOf(ipcMain)
   /** The folder chosen and checked, waiting for the user's yes. */
   let pending: Inspected | null = null
+  /** Sources being tested (测试连接) right now: their folder is in use, as when they poll. */
+  const checking = new Set<string>()
 
   /** What the confirmation shows: who the source is, what it will run and read, and whether it replaces one. */
   const pendingView = (inspected: Inspected, installed: readonly SourceFolder[]) => ({
@@ -106,7 +108,7 @@ export function registerSourcesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: S
 
   /** Replacing or removing a source while it runs would pull its folder from under it (Windows refuses outright). */
   function idle(id: string) {
-    if (deps.poller.isRunning(id)) throw new Error('它正在拉取，等一会儿再试')
+    if (deps.poller.isRunning(id) || checking.has(id)) throw new Error('它正在拉取，等一会儿再试')
   }
 
   function folderOf(id: string): SourceFolder {
@@ -132,7 +134,13 @@ export function registerSourcesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: S
     const folder = folderOf(id)
     const typed = formChange(input ?? {}).values ?? {}
     const values = valuesToTest(folder.manifest, deps.settings.get(folder.manifest).values, typed)
-    const ran = await deps.check(folder, values)
+    checking.add(id)
+    let ran: Ran<CheckResult>
+    try {
+      ran = await deps.check(folder, values)
+    } finally {
+      checking.delete(id)
+    }
     if (!ran.ok) return { ok: false, problem: ran.problem }
     return ran.value.ok ? { ok: true } : { ok: false, problem: ran.value.problem }
   })
@@ -154,12 +162,12 @@ export function registerSourcesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: S
     return view()
   })
 
-  handle('sources:install', () => {
+  handle('sources:install', async () => {
     if (!pending) throw new Error('先选择要安装的文件夹')
     const inspected = pending
     idle(inspected.manifest.id)
-    installFolder(inspected, deps.root)
     pending = null
+    await installFolder(inspected, deps.root)
     deps.poller.refresh()
     return { ...view(), installed: inspected.manifest.name }
   })

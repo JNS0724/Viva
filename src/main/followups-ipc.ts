@@ -30,7 +30,7 @@ const SUGGESTION_ACTIONS = new Set(['accept', 'decline', 'never'])
 
 export interface FollowupsIpcDeps {
   store: FollowupStore
-  scheduler: Pick<PrepareScheduler, 'refresh' | 'prepareNow' | 'wakeUp' | 'state'>
+  scheduler: Pick<PrepareScheduler, 'refresh' | 'prepareNow' | 'wakeUp' | 'state'> & Partial<Pick<PrepareScheduler, 'abandon'>>
   /** After a change: the timer for reminders, the tray's count. */
   changed: () => void
   schedule: () => PrepareSchedule
@@ -163,6 +163,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
   handle('followups:dismiss', (id) => {
     existing(id)
     deps.store.setStatus(id, 'dismissed')
+    deps.scheduler.abandon?.(id)
     deps.store.logEvent('followup_dismissed', { id })
     return afterChange()
   })
@@ -173,6 +174,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
    */
   handle('followups:continue', (id) => {
     const followup = existing(id)
+    deps.scheduler.abandon?.(id)
     if (followup.watchPath) {
       deps.store.reschedule(id, { prepareBy: null })
       deps.store.setStatus(id, 'scheduled')

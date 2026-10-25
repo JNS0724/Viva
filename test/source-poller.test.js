@@ -168,3 +168,43 @@ test('settings IPC: the form saves and applies, tests without saving, and never 
   await assert.rejects(handlers.get('sources:save')('gone', {}), /已经不在了/)
   await assert.rejects(handlers.get('sources:save')('acme', { enabled: 'yes' }), /invalid enabled/)
 })
+
+test('a source skipped while its folder could not be read is asked again after an interval', async (t) => {
+  const { settings } = setup(t)
+  let readable = true
+  let clock = 0
+  const timers = []
+  const calls = []
+  const poller = createSourcePoller({
+    folders: () => (readable ? [folder] : []),
+    settings,
+    db: { save: () => 0, fail: () => 1, cursorOf: () => null },
+    poll: async () => (calls.push(clock), { ok: true, value: { cursor: 'c', messages: [], dropped: [] } }),
+    now: () => clock,
+    setTimer: (fn, ms) => {
+      const timer = { fn, at: clock + ms, done: false }
+      timers.push(timer)
+      return timer
+    },
+    clearTimer: (timer) => { timer.done = true },
+  })
+  const fire = async (until) => {
+    clock = until
+    for (const timer of timers) {
+      if (!timer.done && timer.at <= until) {
+        timer.done = true
+        timer.fn()
+      }
+    }
+    for (let i = 0; i < 20; i += 1) await Promise.resolve()
+  }
+  settings.save(manifest, { enabled: true, values: { token: 'tok' } })
+  poller.refresh({ launching: true })
+  readable = false
+  await fire(10_000)
+  assert.deepEqual(calls, [], 'its manifest mid-edit: skipped')
+  readable = true
+  await fire(10_000 + 5 * MINUTE)
+  assert.deepEqual(calls, [10_000 + 5 * MINUTE], 'asked again an interval later')
+  poller.stop()
+})

@@ -19,6 +19,8 @@ export interface FileWatchDeps {
   onChanged: (followup: Followup) => void
   /** The file's change time, or null when it cannot be read (moved, deleted, offline). */
   mtimeOf?: (file: string) => number | null
+  /** What went wrong in a look, for the log; the next look comes a minute later all the same. */
+  onError?: (err: unknown) => void
   now?: () => number
   setRepeat?: (fn: () => void, ms: number) => Repeat
   clearRepeat?: (handle: Repeat) => void
@@ -33,7 +35,7 @@ const statMtime = (file: string): number | null => {
 }
 
 export function createFileWatch(deps: FileWatchDeps) {
-  const { store, onChanged, mtimeOf = statMtime, now = Date.now, setRepeat = setInterval, clearRepeat = clearInterval } = deps
+  const { store, onChanged, mtimeOf = statMtime, onError = () => {}, now = Date.now, setRepeat = setInterval, clearRepeat = clearInterval } = deps
   /** Changes seen and not settled yet: the change time seen, and since when it has stayed so. */
   const settling = new Map<string, { mtime: number, since: number }>()
 
@@ -65,6 +67,12 @@ export function createFileWatch(deps: FileWatchDeps) {
     }
   }
 
-  const handle = setRepeat(check, POLL_MS)
+  const handle = setRepeat(() => {
+    try {
+      check()
+    } catch (err) {
+      onError(err)
+    }
+  }, POLL_MS)
   return { check, stop: () => clearRepeat(handle) }
 }

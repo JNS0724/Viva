@@ -87,3 +87,33 @@ test('a platform of its own may run the source otherwise, and Windows variables 
   const elsewhere = commandFor({ ...fake, manifest }, { dataDir: 'D', platform: 'linux', env: { PATH: '' } })
   assert.match(elsewhere.problem, /找不到要运行的程序：python3/)
 })
+
+test('Windows: a name without an extension finds the runnable one first, as npm leaves a sh script beside its .cmd', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'source-win-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(dir, 'mail-cli'), '#!/bin/sh')
+  fs.writeFileSync(path.join(dir, 'mail-cli.cmd'), '@echo off')
+  const env = { PATH: dir, PATHEXT: '.COM;.EXE;.BAT;.CMD', ComSpec: 'cmd.exe' }
+  const found = commandFor({ ...fake, manifest: { ...fake.manifest, run: ['mail-cli', 'list'] } }, { dataDir: 'D', platform: 'win32', env })
+  assert.equal(found.value.command, 'cmd.exe')
+  assert.match(found.value.args.at(-1), /mail-cli\.cmd" list"$/)
+  fs.mkdirSync(path.join(dir, 'bin'))
+  fs.writeFileSync(path.join(dir, 'bin', 'tool.cmd'), '')
+  const local = commandFor({ dir, manifest: { ...fake.manifest, run: ['./bin/tool'] } }, { dataDir: 'D', platform: 'win32', env })
+  assert.match(local.value.args.at(-1), /tool\.cmd"/)
+})
+
+test('output is read as UTF-8 across chunks: a long Chinese answer arrives whole', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'source-utf8-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  // About 200 KB of three-byte characters: many pipe chunks, some cut through a character.
+  fs.writeFileSync(path.join(dir, 'big.js'), `process.stdin.resume()
+process.stdin.on('end', () => {
+  const text = '告'.repeat(7000)
+  process.stdout.write(JSON.stringify({ cursor: 'c', messages: Array.from({ length: 10 }, (_, i) => ({ id: 'm' + i, at: 1, text })) }) + '\\n')
+})`)
+  const ran = await pollSource({ dir, manifest: { ...fake.manifest, run: ['node', 'big.js'] } }, {}, null, options(t))
+  assert.equal(ran.ok, true, ran.problem)
+  assert.equal(ran.value.messages.length, 10)
+  assert.ok(ran.value.messages.every((m) => m.text === '告'.repeat(7000)))
+})

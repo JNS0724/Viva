@@ -25,6 +25,8 @@ export interface NotifierDeps {
   windowInFront: () => boolean
   /** How many wait for the user (follow-ups ready, messages suggested), for the tray. */
   onPending?: (count: number) => void
+  /** What went wrong deciding or sending, for the log. */
+  onError?: (err: unknown) => void
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => Timer
   clearTimer?: (timer: Timer) => void
@@ -42,7 +44,7 @@ function toldSet(followups: readonly Followup[], lastToldAt: (id: string) => num
 }
 
 export function createFollowupNotifier(deps: NotifierDeps) {
-  const { store, notify, windowInFront, onPending = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
+  const { store, notify, windowInFront, onPending = () => {}, onError = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
   let timer: Timer | null = null
   let stopped = false
 
@@ -96,7 +98,13 @@ export function createFollowupNotifier(deps: NotifierDeps) {
     if (next === null) return
     timer = setTimer(() => {
       timer = null
-      check({ atGap: false })
+      try {
+        check({ atGap: false })
+      } catch (err) {
+        onError(err)
+        // Looked at again in a minute, so one failure does not end the reminders.
+        timer = setTimer(() => refresh(), MINUTE_MS)
+      }
     }, Math.min(Math.max(0, next - now()), MAX_TIMER_MS))
   }
 
@@ -117,17 +125,22 @@ export function createFollowupNotifier(deps: NotifierDeps) {
 export type FollowupNotifier = ReturnType<typeof createFollowupNotifier>
 
 /** Back at the computer after being away 15 minutes, asked of the system's idle time once a minute. */
-export function createGapWatch({ idleSeconds, onGap, setRepeat = setInterval, clearRepeat = clearInterval }: {
+export function createGapWatch({ idleSeconds, onGap, onError = () => {}, setRepeat = setInterval, clearRepeat = clearInterval }: {
   idleSeconds: () => number
   onGap: () => void
+  onError?: (err: unknown) => void
   setRepeat?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>
   clearRepeat?: (handle: ReturnType<typeof setInterval>) => void
 }) {
   let away = false
   const handle = setRepeat(() => {
-    const idle = idleSeconds()
-    if (away && idle < IDLE_POLL_MS / 1000) onGap()
-    away = idle >= AWAY_SECONDS
+    try {
+      const idle = idleSeconds()
+      if (away && idle < IDLE_POLL_MS / 1000) onGap()
+      away = idle >= AWAY_SECONDS
+    } catch (err) {
+      onError(err)
+    }
   }, IDLE_POLL_MS)
   return { stop: () => clearRepeat(handle) }
 }

@@ -242,6 +242,21 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     return get(id)
   }
 
+  /**
+   * A preparation's outcome, kept only while the follow-up is still being prepared: dismissed, done or rescheduled
+   * meanwhile, what came back is let go. Returns whether it was kept.
+   */
+  function finishPreparing(id: string, draft: string, readFiles: readonly ReadFile[]): boolean {
+    const result = db.prepare(`UPDATE followups SET draft = ?, draft_at = ?, read_files = ?, status = 'ready' WHERE id = ? AND status = 'preparing'`)
+      .run(draft.slice(0, MAX_DRAFT_CHARS), now(), JSON.stringify(readFiles), id)
+    return Number(result.changes) > 0
+  }
+
+  /** Moves a follow-up from `from` to `to` only if it is still at `from`. Returns whether it moved. */
+  function moveStatus(id: string, from: FollowupStatus, to: FollowupStatus): boolean {
+    return Number(db.prepare('UPDATE followups SET status = ? WHERE id = ? AND status = ?').run(to, id, from).changes) > 0
+  }
+
   /** Reminded: once only; `lateFrom` when it went out after its time. */
   function markReminded(id: string, lateFrom: number | null = null): void {
     db.prepare('UPDATE followups SET reminded_at = ?, late_from = ? WHERE id = ?').run(now(), lateFrom, id)
@@ -261,8 +276,9 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
   }
 
   /** A watched file changed: the follow-up is to be prepared again by `prepareBy`, whatever it was at. */
-  function rearm(id: string, prepareBy: number): Followup | null {
-    db.prepare(`UPDATE followups SET status = 'scheduled', prepare_by = ?, reminded_at = NULL, late_from = NULL WHERE id = ?`).run(prepareBy, id)
+  function rearm(id: string, prepareBy: number, from = now()): Followup | null {
+    // Counted from now (created_at is what windows are reckoned from), so a long-watched file is not prepared in a window long past.
+    db.prepare(`UPDATE followups SET status = 'scheduled', prepare_by = ?, created_at = ?, reminded_at = NULL, late_from = NULL WHERE id = ?`).run(prepareBy, from, id)
     return get(id)
   }
 
@@ -323,7 +339,7 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
   /** Senders of `source` the user does not want suggestions about: 以后别问这类 once, or 不重要 twice. */
   function mutedSenders(source: string): Set<string> {
     const rows = db.prepare(`SELECT sender, SUM(status = 'declined') AS declined, SUM(status = 'never') AS never FROM suggestions
-      WHERE source = ? GROUP BY sender`).all(source) as Row[]
+      WHERE source = ? AND sender != '' GROUP BY sender`).all(source) as Row[]
     return new Set(rows.filter((row) => Number(row.never) > 0 || Number(row.declined) >= DECLINES_TO_MUTE).map((row) => String(row.sender)))
   }
 
@@ -358,7 +374,7 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     return Number((db.prepare('SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?').get(kind, since) as Row).n)
   }
 
-  return { add, get, list, setStatus, saveDraft, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, addSuggestion, getSuggestion, listSuggestions, settleSuggestion, mutedSenders, recentDecisions, logEvent, declinedSince, eventsSince, countEvents, close: () => db.close() }
+  return { add, get, list, setStatus, saveDraft, finishPreparing, moveStatus, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, addSuggestion, getSuggestion, listSuggestions, settleSuggestion, mutedSenders, recentDecisions, logEvent, declinedSince, eventsSince, countEvents, close: () => db.close() }
 }
 
 export type FollowupStore = ReturnType<typeof openFollowupStore>
