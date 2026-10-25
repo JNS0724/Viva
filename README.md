@@ -16,11 +16,15 @@
 
 <img src="docs/images/demo.gif" width="880" alt="跟进的全过程：说「周五下班前要交周报」，出现「要我跟进吗」卡片，点跟进、选时段，后台准备出草稿，点「接着做」草稿进输入框">
 
-<sub>真实应用的录屏：说一句 → 它提议跟进 → 你点头 → 空闲时后台起草 → 「接着做」。<a href="docs/media/viva-promo.mp4">▶ 看 40 秒宣传片</a></sub>
+<sub>真实应用的录屏：说一句 → 它提议跟进 → 你点头 → 空闲时后台起草 → 「接着做」。<a href="#40-秒看懂-viva">▶ 看 40 秒宣传片</a></sub>
 
 </div>
 
 > Viva 是个人项目，不是 DeepSeek 的官方产品。它基于 DeepSeek 开源的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh），可以连接 DeepSeek，也可以连接兼容 OpenAI 或 Anthropic 接口的其他模型。
+
+## 40 秒看懂 Viva
+
+https://github.com/user-attachments/assets/14a56fd5-5b57-40f5-b02c-e2868b5dbf91
 
 ## 为什么是 Viva
 
