@@ -41,6 +41,7 @@ import { removeTree } from './remove-tree.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
 import { openSources } from './sources-main.ts'
+import { NO_SOURCES } from './message-reader.ts'
 import { openFollowups, type Followups } from './followups-main.ts'
 import type { Notice } from './notice-plan.ts'
 import type { ProposalView } from './followup-channel.ts'
@@ -328,6 +329,7 @@ function createBridge(config: Config, cwd: string) {
     env: dshEnv({ base: process.env, dshHome: dshHomeOf(config), runtime: config.runtime, settings: dshSettings(config) }),
     mcpServers: () => personal.mcpServers(),
     configActions: configActions(config),
+    messageActions: { read: (request) => (sources ? sources.read(request) : Promise.resolve(NO_SOURCES)) },
     emit: (event) => {
       if (generation !== bridgeGeneration) return
       if (event.type === 'followup_propose') {

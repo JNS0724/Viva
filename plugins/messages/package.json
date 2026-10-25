@@ -1,0 +1,22 @@
+{
+  "name": "viva-messages",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Viva 的消息查看：对话里只读地查看消息源（邮箱、告警、通讯工具）收进来的消息，先拉取最新的",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "viva": {
+    "contract": {
+      "messages": 1
+    }
+  }
+}

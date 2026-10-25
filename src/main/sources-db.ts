@@ -49,6 +49,9 @@ const ADDED_COLUMNS = Object.freeze([['messages', 'judged_at', 'INTEGER']])
 /** A message as kept, with which source it came from and when it arrived. */
 export interface StoredMessage extends SourceMessage { source: string, receivedAt: number }
 
+/** What the conversation looks for (viva_messages_read): which sources, which words, since when, how many. */
+export interface MessageSearch { sources: readonly string[], words: readonly string[], since: number, limit: number }
+
 /** How a source has been doing, for settings and for backing off after failures. */
 export interface SourceHealth {
   id: string
@@ -66,6 +69,8 @@ export interface SourceHealth {
 type Row = Record<string, unknown>
 const text = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined)
 const numberOrNull = (value: unknown): number | null => (value == null ? null : Number(value))
+/** A word as a LIKE pattern matches it literally: % and _ in it are not wildcards. */
+const likeOf = (word: string) => `%${word.replace(/[\\%_]/g, (char) => `\\${char}`)}%`
 
 function messageOf(row: Row): StoredMessage {
   const optional = { from: text(row.sender), title: text(row.title), text: text(row.text), link: text(row.link), level: text(row.level), thread: text(row.thread) }
@@ -171,6 +176,16 @@ export function openSourcesDb({ file, keep = KEEP_PER_SOURCE, now = Date.now }: 
     return row ? messageOf(row) : null
   }
 
+  /** Messages of `sources` since `since` holding every one of `words` (in the title, sender or text), newest first. */
+  function search({ sources, words, since, limit }: MessageSearch): StoredMessage[] {
+    if (!sources.length) return []
+    const matches = words.map(() => "(COALESCE(title, '') || ' ' || COALESCE(sender, '') || ' ' || COALESCE(text, '')) LIKE ? ESCAPE '\\'")
+    const where = [`source IN (${sources.map(() => '?').join(', ')})`, 'at >= ?', ...matches].join(' AND ')
+    const rows = db.prepare(`SELECT * FROM messages WHERE ${where} ORDER BY at DESC, rowid DESC LIMIT ?`)
+      .all(...sources, since, ...words.map(likeOf), limit) as Row[]
+    return rows.map(messageOf)
+  }
+
   /** Messages not looked at yet, oldest first: what the next window judges. */
   function unjudged(limit = LATEST_LIMIT): StoredMessage[] {
     const rows = db.prepare('SELECT * FROM messages WHERE judged_at IS NULL ORDER BY received_at, rowid LIMIT ?').all(limit) as Row[]
@@ -196,7 +211,7 @@ export function openSourcesDb({ file, keep = KEEP_PER_SOURCE, now = Date.now }: 
     })
   }
 
-  return { save, fail, cursorOf, health, latest, message, unjudged, oldestUnjudgedAt, markJudged, forget, close: () => db.close() }
+  return { save, fail, cursorOf, health, latest, message, search, unjudged, oldestUnjudgedAt, markJudged, forget, close: () => db.close() }
 }
 
 export type SourcesDb = ReturnType<typeof openSourcesDb>

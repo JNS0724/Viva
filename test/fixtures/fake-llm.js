@@ -14,6 +14,7 @@
  * - asked by dsh's Auto review about a step → allows it, unless it removes something;
  * - after a tool result → says what the tool did;
  * - 「…到时候帮我…」 → proposes a follow-up with viva_followup_propose (FOLLOWUP below);
+ * - 「看看邮件」 → reads the message sources with viva_messages_read; 「看看邮件里的 X」 looks for X;
  * - a background preparation (the system prompt says 后台准备) → a draft that quotes the first line it was given,
  *   and whether it was offered any tools (it must not be);
  * - the judging of new messages (the system prompt says 消息判断) → the fixed JSON shape, a message important when
@@ -33,6 +34,7 @@ const THEN_ASK = /再问我城市/
 /** 「把全部…」: a job that will take long, which the fake offers the background first (viva_offer_background). */
 const BIG_JOB = /^把全部/
 const FOLLOW = /到时候帮我/
+const MESSAGES = /^看看邮件(?:里的)?\s*(.*)$/s
 /** What the fake proposes to follow up on when asked 「…到时候帮我…」: two days from now, so never in the past. */
 export const FOLLOWUP = Object.freeze({ title: '周报', ask: '按上周的模板起草周报' })
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -210,6 +212,8 @@ export function decide(request) {
   if (BIG_JOB.test(question)) return { tool: { name: 'viva_offer_background', input: { why: '要逐个读完所有文档' } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   if (FOLLOW.test(question)) return { tool: { name: 'viva_followup_propose', input: followupProposal() } }
+  const reading = MESSAGES.exec(question)
+  if (reading) return { tool: { name: 'viva_messages_read', input: reading[1].trim() ? { query: reading[1].trim() } : {} } }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }
   const removal = DELETE.exec(question)

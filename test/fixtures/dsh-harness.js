@@ -31,7 +31,7 @@ export const DSH_TIMEOUT_MS = 60_000
  *   models: the profile's model section (see dsh-profile.js), given the fake Messages endpoint; env: added to dsh's
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  */
-export async function startHarness(t, { memoryFile, mcpServers = [], allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission } = {}) {
+export async function startHarness(t, { memoryFile, mcpServers = [], allow = false, models, env: extraEnv = {}, configActions = null, messageActions = null, imagesDir, permission } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
@@ -65,6 +65,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], allow = fal
       env: dshEnv({ base: process.env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, ...extraEnv } }),
       mcpServers: () => mcpServers,
       configActions,
+      messageActions,
       emit: (event) => {
         events.push(event)
         if (allow && event.type === 'permission') setImmediate(() => created.respondPermission(event.requestId, 'allow-once'))

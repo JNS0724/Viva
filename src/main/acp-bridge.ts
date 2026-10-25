@@ -11,6 +11,8 @@ import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk } from './steer-channel.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
+import { createMessagesDesk } from './messages-channel.ts'
+import type { ReadRequest } from './message-reader.ts'
 import { createQuestionDesk } from './question-channel.ts'
 import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
@@ -74,11 +76,14 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
+  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null,
 }: {
   dshBin: string, nodeBin?: string, profile: string, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
   onExit?: ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
+  /** What the message sources brought in, for viva_messages_read; null leaves the tool saying there are none. */
+  messageActions?: { read: (request: ReadRequest) => Promise<string> } | null,
 }) {
   const broker = createPermissionBroker()
   let mcp: { active: string[], dropped: Array<{ name: string, reason: string }> } = { active: [], dropped: [] }
@@ -113,6 +118,8 @@ export function createAcpBridge({
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
   // Follow-ups proposed in a conversation, and background preparation's tool-less model calls (viva-followups).
   const followupDesk = createFollowupDesk({ send: toPlugins, emit })
+  // The messages the sources brought in, read from the conversation (viva-messages).
+  const messagesDesk = createMessagesDesk({ send: toPlugins, read: messageActions?.read ?? null })
 
   /** The model options of the session in use, kept so a task taken back to the main conversation keeps its own. */
   let configNow: ConfigOption[] | null = null
@@ -150,6 +157,7 @@ export function createAcpBridge({
       steering.receive(message)
       forking.receive(message)
       followupDesk.receive(message)
+      messagesDesk.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
