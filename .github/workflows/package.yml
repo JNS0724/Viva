@@ -1,7 +1,8 @@
 # The app as users get it: the installer built, the app run from outside the repository (where a missing package
 # would show instead of being found in the repo's node_modules), through the memory smoke phase with dsh, its
 # plugins and the fake model. Slower than `check`, so only for changes to how the app is built or packaged, and
-# by hand (Actions > package > Run workflow), before a release for instance.
+# by hand (Actions > package > Run workflow), before a release for instance. A release (release.yml) runs it too
+# and publishes the installers it uploads.
 name: package
 
 on:
@@ -11,10 +12,12 @@ on:
       - package-lock.json
       - scripts/**
       - tsconfig*.json
-      - src/main/config.js
-      - src/main/app-plugins.js
+      - src/main/config.ts
+      - src/main/app-plugins.ts
       - .github/workflows/package.yml
+      - .github/workflows/release.yml
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -24,7 +27,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Unsigned builds, as released; no publishing from CI.
+  # Unsigned builds, as released. Publishing is release.yml's, not this workflow's.
   CSC_IDENTITY_AUTO_DISCOVERY: false
 
 jobs:
