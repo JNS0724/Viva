@@ -20,6 +20,28 @@ export const FOLLOWUP_KEY = 'followup:'
 /** And the messages suggested for one by this. */
 export const SUGGESTION_KEY = 'suggestion:'
 const FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', '待你看的'], ['preparing', '在准备'], ['scheduled', '已安排']]
+const LISTED_STATUSES = new Set(FOLLOWUP_GROUPS.map(([status]) => status))
+
+/** The keys on the list at the left, in its order: messages to decide on, follow-ups by group, then the tasks. */
+function listedKeys(state: State): string[] {
+  const suggestions = state.followups.suggestions.filter((item: Untyped) => item.status === 'open').map((item: Untyped) => `${SUGGESTION_KEY}${item.id}`)
+  const followups = FOLLOWUP_GROUPS.flatMap(([status]) => state.followups.followups
+    .filter((item: Untyped) => item.status === status && LISTED_STATUSES.has(item.status))
+    .map((item: Untyped) => `${FOLLOWUP_KEY}${item.id}`))
+  const tasks = pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
+  return [...suggestions, ...followups, ...tasks]
+}
+
+/**
+ * The page as it is drawn: what was picked, while it is still on the list; once it is gone from there (deleted,
+ * answered, taken up), the first one on the list, so the right never shows what the left no longer has.
+ */
+export function onPage(state: State): State {
+  const keys = listedKeys(state)
+  const selected = state.tasks.page.selected
+  const picked = selected && keys.includes(selected) ? selected : keys[0] ?? null
+  return picked === selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
+}
 
 /** Messages that may need the user, first: they wait on a decision. */
 function suggestionGroup(state: State, selected: string | null, handlers: Handlers) {
@@ -179,12 +201,13 @@ function mainView(state: State, handlers: Handlers, now: number) {
 }
 
 /** Rebuilt as the tasks change; what was typed and where it was scrolled to stay. */
-export function renderTasksPage(container: HTMLElement, state: State, handlers: Handlers, now = Date.now()) {
-  container.dataset.open = String(state.tasks.page.open)
-  if (!state.tasks.page.open) {
+export function renderTasksPage(container: HTMLElement, shown: State, handlers: Handlers, now = Date.now()) {
+  container.dataset.open = String(shown.tasks.page.open)
+  if (!shown.tasks.page.open) {
     container.replaceChildren()
     return
   }
+  const state = onPage(shown)
   const scroller = container.querySelector('.tp-scroll')
   const sameTask = container.querySelector<HTMLElement>('.tp-main')?.dataset.task === state.tasks.page.selected
   const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
