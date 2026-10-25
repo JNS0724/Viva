@@ -85,7 +85,9 @@ function busyOf(view: { form: string }) {
 function shownView() {
   const view = payload?.view ?? IDLE_VIEW
   if (dropping) return { form: 'drop', tone: 'done', mood: 'idle', label: '交给 Viva', recent: [], count: dropping }
-  if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle', dragging: true }
+  // Dragged, it is the cat alone, the size of the window that follows the pointer (desk-place.ts DRAG_SIZE): the
+  // tail of tasks and preparation would make it wider and be cut off on both sides.
+  if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle', dragging: true, background: null, prepare: null }
   // While the agent waits on the user the input steps aside: what it waits on comes first.
   if (payload?.form === 'input' && view.form !== 'waiting' && view.form !== 'asking') {
     // While the agent works, what is asked goes into the turn it is on.
