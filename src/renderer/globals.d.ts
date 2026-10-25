@@ -65,6 +65,8 @@ interface ThreadMessage {
   /** The agent's question it answers. */
   asked?: string
   taskId?: string
+  /** Background tasks whose cards go under this message: started while it was the last one (tasks-state.ts withCardAfter). */
+  cardsAfter?: readonly string[]
   [field: string]: any
 }
 /** A message of an earlier segment, as the history keeps it: `seq` counts the segment's saved messages. */

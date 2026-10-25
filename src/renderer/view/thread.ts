@@ -301,19 +301,24 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
   const plain = state.messages.map((message) => markMessage(MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null, message.id))
-  // A background task's card goes under the words that started it (后台做); one moved there mid-turn, at the end.
+  // A background task's card goes under the words that started it (后台做), or under the message that was last when
+  // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
   const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id, taskCard(task, report, handlers, now)]))
   const views = messageEntries(state, plain, handlers).map((entries, i) => {
-    const card = cards.get(state.messages[i].taskId ?? '')
-    if (!card) return entries
-    cards.delete(state.messages[i].taskId ?? '')
-    return [...entries, card]
+    const hosted = [state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? [])].flatMap((id) => {
+      const card = id ? cards.get(id) : undefined
+      if (!card || !id) return []
+      cards.delete(id)
+      return [card]
+    })
+    return hosted.length ? [...entries, ...hosted] : entries
   })
   const focus = editorFocus()
   container.replaceChildren(
     ...(note ? views.toSpliced(state.restored.count, 0, [historyDivider(note)]) : views).flat().filter(isContent),
     ...state.tasks.unfinished.map((task) => unfinishedCard(task, handlers, state.info.mode === 'live')),
-    ...cards.values(),
+    // A conversation whose only turn moved to the background has no message to hang the card under.
+    ...(state.messages.length ? [] : cards.values()),
     // The follow-ups the model proposed in this conversation, each to be decided on (view/followups.ts).
     ...state.proposals.map((card: Untyped) => proposalCard(card, handlers, now)),
     offerRow(state, handlers),
