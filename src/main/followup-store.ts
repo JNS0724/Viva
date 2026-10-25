@@ -348,11 +348,17 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
   }
 
   /** How many events of `kind` since `since`. */
+  /** Every event since `since`, oldest first, for the week's figures (followup-stats.ts). */
+  function eventsSince(since: number): Array<{ kind: string, at: number, data: Record<string, unknown> }> {
+    const rows = db.prepare('SELECT kind, at, data FROM events WHERE at >= ? ORDER BY at, id').all(since) as Row[]
+    return rows.map((row) => ({ kind: String(row.kind), at: Number(row.at), data: parseJson<Record<string, unknown>>(row.data, {}) }))
+  }
+
   function countEvents(kind: string, since: number): number {
     return Number((db.prepare('SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?').get(kind, since) as Row).n)
   }
 
-  return { add, get, list, setStatus, saveDraft, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, addSuggestion, getSuggestion, listSuggestions, settleSuggestion, mutedSenders, recentDecisions, logEvent, declinedSince, countEvents, close: () => db.close() }
+  return { add, get, list, setStatus, saveDraft, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, addSuggestion, getSuggestion, listSuggestions, settleSuggestion, mutedSenders, recentDecisions, logEvent, declinedSince, eventsSince, countEvents, close: () => db.close() }
 }
 
 export type FollowupStore = ReturnType<typeof openFollowupStore>

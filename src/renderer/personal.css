@@ -154,3 +154,5 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 
 /* 后台准备 in settings (view/prepare-settings.ts). */
 .prepare-form { display: flex; flex-direction: column; gap: 10px; }
+.prepare-week ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.prepare-week summary { cursor: pointer; }

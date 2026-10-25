@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Followup, FollowupStore, Suggestion } from './followup-store.ts'
+import { weekStats } from './followup-stats.ts'
 import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
 import { changedSince } from './prepare-materials.ts'
 import { checkSchedule, nextWindow, type PrepareSchedule } from './prepare-schedule.ts'
@@ -116,6 +117,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
       state: deps.scheduler.state(),
       callsToday: deps.store.countEvents('prepare_call', new Date(at).setHours(0, 0, 0, 0)),
       lateThisWeek: deps.store.countEvents('prepare_late', at - WEEK_MS),
+      week: weekStats(deps.store.eventsSince(at - WEEK_MS), at),
     }
   }
 

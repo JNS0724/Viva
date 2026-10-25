@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createFollowupNotifier, createGapWatch } from '../src/main/followup-notifier.ts'
 import { dayOf, openFollowupStore } from '../src/main/followup-store.ts'
+import { weekStats } from '../src/main/followup-stats.ts'
 import { clock as hhmm, DAILY_CAP, LATE_MS, nextReminderAt, planNotices } from '../src/main/notice-plan.ts'
 
 const MINUTE = 60_000
@@ -166,4 +167,22 @@ test('今天: the day\'s first gap with something says it all at once, once; a d
   assert.deepEqual(planNotices({ ...base, followups: [] }), [], 'nothing to say: no 今天')
   assert.deepEqual(planNotices({ ...base, followups: [later], todayTold: true }), [], 'once a day')
   assert.deepEqual(planNotices({ ...base, followups: [later], atGap: false }), [], 'only in a gap')
+})
+
+test('the week in figures: suggestions taken, notices opened and how soon, calls per day and per useful one', () => {
+  const day = 24 * 60 * MINUTE
+  const event = (kind, at, data = {}) => ({ kind, at, data })
+  const stats = weekStats([
+    event('suggest_shown', NOON - day), event('suggest_shown', NOON - day), event('suggest_shown', NOON),
+    event('suggest_accepted', NOON - day), event('suggest_declined', NOON), event('suggest_declined', NOON, { never: true }),
+    event('notice', NOON, { system: true }), event('notice', NOON, { system: false }),
+    event('notice_opened', NOON, { afterMs: 4 * MINUTE }), event('notice_opened', NOON, { afterMs: 10 * MINUTE }),
+    event('prepare_call', NOON - day), event('prepare_call', NOON), event('prepare_call', NOON),
+    event('prepare_late', NOON), event('followup_continued', NOON), event('followup_dismissed', NOON),
+  ], NOON)
+  assert.deepEqual(stats.suggestions, { shown: 3, accepted: 1, declined: 1, never: 1, acceptRate: 0.33 })
+  assert.deepEqual(stats.notices, { sent: 1, opened: 2, medianOpenMinutes: 7 })
+  assert.deepEqual(stats.calls, { total: 3, perDay: [0, 0, 0, 0, 0, 1, 2], perAccepted: 3 })
+  assert.deepEqual([stats.late, stats.continued, stats.dismissed], [1, 1, 1])
+  assert.deepEqual(weekStats([], NOON).suggestions.acceptRate, null)
 })

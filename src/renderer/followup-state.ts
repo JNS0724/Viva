@@ -14,6 +14,8 @@ export const initialFollowups = Object.freeze({
   state: Object.freeze({ running: false, current: null, queued: 0, nextAt: null, waiting: null }) as Untyped,
   callsToday: 0,
   lateThisWeek: 0,
+  /** The week of self-use in figures (followup-stats.ts). */
+  week: null as Untyped,
   busy: false,
   error: null as string | null,
   notice: null as string | null,

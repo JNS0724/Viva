@@ -762,11 +762,13 @@ function openTasksPage() {
 function showNotice(notice: Notice) {
   if (!Notification.isSupported()) return
   const shown = new Notification({ title: notice.title, body: notice.body })
+  const shownAt = Date.now()
   shownNotices.add(shown)
   const done = () => shownNotices.delete(shown)
   shown.on('click', () => {
     done()
-    followups?.store.logEvent('notice_opened', { kind: notice.kind })
+    // How long it took the user to open it: the week of self-use asks whether notices come at the right time.
+    followups?.store.logEvent('notice_opened', { kind: notice.kind, afterMs: Date.now() - shownAt })
     openTasksPage()
   })
   shown.on('close', done)

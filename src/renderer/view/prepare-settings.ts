@@ -38,6 +38,21 @@ function statusLine(followups: State['followups'], now: number) {
   return h('span', { class: 'help', text: parts.join(' · ') })
 }
 
+/** 最近一周: the figures the week of self-use is judged by (followup-stats.ts), when there are any. */
+function weekBlock(week: Untyped) {
+  if (!week || (!week.suggestions.shown && !week.calls.total && !week.notices.sent)) return null
+  const percent = (value: number | null) => (value === null ? '—' : `${Math.round(value * 100)}%`)
+  const lines = [
+    `建议 ${week.suggestions.shown} 条：跟进 ${week.suggestions.accepted}，不用 ${week.suggestions.declined}，别问 ${week.suggestions.never}（接受率 ${percent(week.suggestions.acceptRate)}）`,
+    `通知 ${week.notices.sent} 条，点开 ${week.notices.opened} 条${week.notices.medianOpenMinutes === null ? '' : `，一般 ${week.notices.medianOpenMinutes} 分钟后点开`}`,
+    `调用模型 ${week.calls.total} 次（每天 ${week.calls.perDay.join(' / ')}）${week.calls.perAccepted === null ? '' : `，每条跟进的建议约 ${week.calls.perAccepted} 次`}`,
+    `准备好的：接着做 ${week.continued}，不用了 ${week.dismissed}；来不及准备 ${week.late} 次`,
+  ]
+  return h('details', { class: 'prepare-week' },
+    h('summary', { class: 'help', text: '最近一周的情况' }),
+    h('ul', { class: 'help' }, lines.map((line) => h('li', { text: line }))))
+}
+
 const row = (title: string, ...fields: unknown[]) => h('div', { class: 'ext-edit-row' }, label(title), h('div', { class: 'source-field' }, ...fields))
 
 /** The 后台准备 part of settings. */
@@ -70,6 +85,7 @@ export function prepareSection(followups: State['followups'], handlers: Handlers
       h('span', { class: 'help', text: TRADE_OFF }),
       paused ? h('span', { class: 'help', text: `暂停到 ${whenText(plan.pausedUntil, now)}` }) : statusLine(followups, now)),
     form,
+    weekBlock(followups.week),
     followups.error ? h('p', { class: 'form-error', role: 'alert', text: followups.error }) : null,
     followups.notice ? h('p', { class: 'form-notice', role: 'status', text: followups.notice }) : null)
 }
