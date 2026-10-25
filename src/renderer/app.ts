@@ -652,6 +652,8 @@ const handlers = {
 /** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */
 const HUB_OPENERS: Readonly<Record<string, () => unknown>> = {
   search: () => handlers.openSearch(),
+  // Background tasks and follow-ups: a page of its own in the same place (view/tasks-page.js).
+  tasks: () => handlers.openTasks(),
   profile: () => handlers.openProfile(),
   settings: () => handlers.openSettings(),
 }
