@@ -900,3 +900,9 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
 @media (prefers-reduced-motion: reduce) { .fu-card .pulse-dot { animation: none; } }
 .fu-message { display: flex; flex-direction: column; gap: 6px; }
 .fu-row[data-status="suggested"] .tp-meta { color: var(--accent); }
+/* Asleep while background preparation goes on (view/cat.ts): the cat breathes, its bubble dreams slowly. */
+.cat[data-mood="sleeping"] .cat-art { animation: cat-sleep 4.2s ease-in-out infinite; transform-origin: 50% 90%; }
+.cat-dream .cat-dot { animation-duration: 2.8s; }
+@keyframes cat-sleep { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+@media (prefers-reduced-motion: reduce) { .cat[data-mood="sleeping"] .cat-art { animation: none; } }
+.home-today { border-color: var(--accent); }

@@ -28,8 +28,10 @@ export interface Followup {
   prepareBy: number | null
   /** Files the user named, read when preparing (absolute paths). */
   files: string[]
-  /** A file whose change starts a preparation (step 6), or null. */
+  /** A file whose change starts a preparation, or null. */
   watchPath: string | null
+  /** When the watched file was last changed as far as Viva knows: its next change starts a preparation. */
+  watchMtime: number | null
   status: FollowupStatus
   draft: string | null
   draftAt: number | null
@@ -111,6 +113,8 @@ const SCHEMA = `
     data TEXT
   );
 `
+/** Columns added since the first schema; a file from before gets them on opening. */
+const ADDED_COLUMNS = Object.freeze([['followups', 'watch_mtime', 'INTEGER']])
 /** Ended follow-ups are kept this long (the 后台 page's 记录), then let go. */
 const KEEP_ENDED_MS = 30 * 24 * 60 * 60 * 1000
 const MAX_TITLE_CHARS = 60
@@ -142,6 +146,7 @@ function followupOf(row: Row): Followup {
     prepareBy: numberOrNull(row.prepare_by),
     files: parseJson<string[]>(row.files, []),
     watchPath: textOrNull(row.watch_path),
+    watchMtime: numberOrNull(row.watch_mtime),
     status: (FOLLOWUP_STATUSES as readonly string[]).includes(String(row.status)) ? row.status as FollowupStatus : 'scheduled',
     draft: textOrNull(row.draft),
     draftAt: numberOrNull(row.draft_at),
@@ -194,6 +199,10 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
   db.exec(SCHEMA)
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    const has = (db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).some((info) => info.name === column)
+    if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  }
 
   const get = (id: string): Followup | null => {
     const row = db.prepare('SELECT * FROM followups WHERE id = ?').get(id) as Row | undefined
@@ -243,6 +252,17 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     if (!current) return null
     db.prepare('UPDATE followups SET remind_at = ?, prepare_by = ?, reminded_at = NULL, late_from = NULL WHERE id = ?')
       .run(changes.remindAt === undefined ? current.remindAt : changes.remindAt, changes.prepareBy === undefined ? current.prepareBy : changes.prepareBy, id)
+    return get(id)
+  }
+
+  /** What the watched file's change time is now known to be. */
+  function setWatchMtime(id: string, mtimeMs: number): void {
+    db.prepare('UPDATE followups SET watch_mtime = ? WHERE id = ?').run(mtimeMs, id)
+  }
+
+  /** A watched file changed: the follow-up is to be prepared again by `prepareBy`, whatever it was at. */
+  function rearm(id: string, prepareBy: number): Followup | null {
+    db.prepare(`UPDATE followups SET status = 'scheduled', prepare_by = ?, reminded_at = NULL, late_from = NULL WHERE id = ?`).run(prepareBy, id)
     return get(id)
   }
 
@@ -332,7 +352,7 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     return Number((db.prepare('SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?').get(kind, since) as Row).n)
   }
 
-  return { add, get, list, setStatus, saveDraft, markReminded, reschedule, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, addSuggestion, getSuggestion, listSuggestions, settleSuggestion, mutedSenders, recentDecisions, logEvent, declinedSince, countEvents, close: () => db.close() }
+  return { add, get, list, setStatus, saveDraft, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, addSuggestion, getSuggestion, listSuggestions, settleSuggestion, mutedSenders, recentDecisions, logEvent, declinedSince, countEvents, close: () => db.close() }
 }
 
 export type FollowupStore = ReturnType<typeof openFollowupStore>

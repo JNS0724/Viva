@@ -80,7 +80,8 @@ export function materialsFor(followup: Followup, sources: MaterialSources): { in
     followup.remindAt !== null ? `提醒用户：${stamp(followup.remindAt)}` : null,
     followup.prepareBy !== null ? `要准备好：${stamp(followup.prepareBy)}` : null,
   ].filter(Boolean).join('；')
-  const files = followup.files.map(filePart)
+  // The watched file is read too: what changed in it is usually the point.
+  const files = [...new Set([...followup.files, ...(followup.watchPath ? [followup.watchPath] : [])])].map(filePart)
   const profile = sources.profile()
   const parts = [
     `现在是 ${stamp(now)}。`,

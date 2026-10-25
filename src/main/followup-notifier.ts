@@ -19,7 +19,7 @@ const IDLE_POLL_MS = MINUTE_MS
 type Timer = ReturnType<typeof setTimeout>
 
 export interface NotifierDeps {
-  store: Pick<FollowupStore, 'list' | 'markReminded' | 'logNotice' | 'interruptionsOn' | 'lastToldAt' | 'logEvent' | 'listSuggestions'>
+  store: Pick<FollowupStore, 'list' | 'markReminded' | 'logNotice' | 'interruptionsOn' | 'lastToldAt' | 'logEvent' | 'listSuggestions' | 'noticedOn'>
   /** Shows a system notification. */
   notify: (notice: Notice) => void
   windowInFront: () => boolean
@@ -78,6 +78,7 @@ export function createFollowupNotifier(deps: NotifierDeps) {
       windowInFront: windowInFront(),
       toldReady: toldSet(followups, store.lastToldAt),
       suggestions: openSuggestions().filter((s) => store.lastToldAt(s.id) === null),
+      todayTold: store.noticedOn('today'),
     })
     notices.forEach((notice) => send(notice, followups))
     refresh()

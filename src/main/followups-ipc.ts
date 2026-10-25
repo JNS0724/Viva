@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import type { Followup, FollowupStore, Suggestion } from './followup-store.ts'
 import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
@@ -66,6 +67,7 @@ function followupView(followup: Followup) {
     remindAt: followup.remindAt,
     prepareBy: followup.prepareBy,
     files: followup.files.map((file) => path.basename(file)),
+    watching: followup.watchPath ? path.basename(followup.watchPath) : null,
     draft: followup.draft,
     draftAt: followup.draftAt,
     lateFrom: followup.lateFrom,
@@ -140,8 +142,12 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
     const prepareBy = timeOf(input.prepareBy, '准备时间', at)
     const named = Array.isArray(input.files) ? input.files.slice(0, MAX_FILES) : []
     const files = named.map((file: unknown) => path.resolve(deps.workDir(), text(file, '文件', MAX_PATH_CHARS)))
+    const watchPath = input.watchFile ? path.resolve(deps.workDir(), text(input.watchFile, '要看的文件', MAX_PATH_CHARS)) : null
+    if (watchPath && !fs.existsSync(watchPath)) throw new Error(`找不到要看的文件：${watchPath}`)
     const conversationId = typeof input.conversationId === 'string' && deps.conversationExists(input.conversationId) ? input.conversationId : undefined
-    const followup = deps.store.add({ title, ask, origin: { kind: 'chat', ...(conversationId ? { conversationId } : {}) }, remindAt, prepareBy, files })
+    const followup = deps.store.add({ title, ask, origin: { kind: 'chat', ...(conversationId ? { conversationId } : {}) }, remindAt, prepareBy, files, watchPath })
+    // Its change time as it is now: what changes from here starts a preparation.
+    if (watchPath) deps.store.setWatchMtime(followup.id, fs.statSync(watchPath).mtimeMs)
     deps.store.logEvent('suggest_accepted', { id: followup.id })
     return { ...afterChange(), accepted: followupView(followup), chooseWindows: prepareBy !== null && !deps.schedule().chosen }
   })
@@ -159,10 +165,16 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
     return afterChange()
   })
 
-  /** 接着做: what to put in the input; the follow-up is done once handed over. */
+  /**
+   * 接着做: what to put in the input; the follow-up is done once handed over, or, watching a file, waits for its
+   * next change.
+   */
   handle('followups:continue', (id) => {
     const followup = existing(id)
-    deps.store.setStatus(id, 'done')
+    if (followup.watchPath) {
+      deps.store.reschedule(id, { prepareBy: null })
+      deps.store.setStatus(id, 'scheduled')
+    } else deps.store.setStatus(id, 'done')
     deps.store.logEvent('followup_continued', { id, prepared: followup.draft !== null })
     return { ...afterChange(), text: continueText(followup) }
   })

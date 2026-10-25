@@ -79,13 +79,14 @@ const proposalOf = (args: Record<string, any>): Proposal => ({
   ...(args.remind_at ? { remindAt: String(args.remind_at) } : {}),
   ...(args.prepare_by ? { prepareBy: String(args.prepare_by) } : {}),
   ...(Array.isArray(args.files) ? { files: args.files.slice(0, MAX_FILES).map(String) } : {}),
+  ...(args.watch_file ? { watchFile: String(args.watch_file) } : {}),
 })
 
 function registerPropose(ctx: Context, port: Port) {
   let seq = 0
   ctx.tools.register(defineTool({
     name: 'viva_followup_propose',
-    description: '用户明确说「提醒我」「到时候帮我做」并且给了时间时，提出一条跟进建议。用户会在窗口里的卡片上看到它，点「跟进」才会生效；'
+    description: '用户明确说「提醒我」「到时候帮我做」并且给了时间，或说「这个文件变了就帮我……」时，提出一条跟进建议。用户会在窗口里的卡片上看到它，点「跟进」才会生效；'
       + '你不能自己建立、修改或删除跟进，也不要在回答里承诺你一定会提醒。闲聊里随口提到的事、没有时间的事，不要提。'
       + '时间一律写成带时区的具体日期时间（ISO 8601，例如 2026-10-30T17:00:00+08:00），「周五下班前」这类说法要换算成具体时间，用户会在卡片上确认。',
     parameters: {
@@ -94,6 +95,7 @@ function registerPropose(ctx: Context, port: Port) {
       remind_at: { type: 'string', description: '什么时候提醒用户（ISO 8601）' },
       prepare_by: { type: 'string', description: '要在什么时候之前在后台准备好草稿（ISO 8601）；只提醒、不用准备就不写' },
       files: { type: 'array', items: { type: 'string' }, description: '准备时要读的文件（用户点名的），最多 5 个；没有就不写' },
+      watch_file: { type: 'string', description: '用户说「这个文件变了就帮我……」时，要盯着的那个文件；这时可以不写时间' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },

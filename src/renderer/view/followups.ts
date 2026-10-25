@@ -39,6 +39,7 @@ function proposalLines(proposal: Untyped, now: number) {
     Number.isFinite(prepareBy) ? line(`${whenText(prepareBy, now)} 前`, '在后台准备草稿，只读、不发送') : null,
     Number.isFinite(remindAt) ? line(whenText(remindAt, now), '提醒你看') : null,
     proposal.files?.length ? line('会读', proposal.files.join('、')) : null,
+    proposal.watchFile ? line('盯着', `${proposal.watchFile} 一改（停 10 分钟后），就在下一个时段准备`) : null,
   ]
 }
 
@@ -93,6 +94,7 @@ export function proposalCard(card: ProposalCard, handlers: Handlers, now = Date.
 export function followupStanding(followup: Untyped, now = Date.now()): string {
   if (followup.status === 'ready') return followup.draftAt ? `${formatHM(new Date(followup.draftAt))} 准备好` : '准备好了'
   if (followup.status === 'preparing') return '正在准备'
+  if (followup.watching && !followup.prepareBy) return `盯着 ${followup.watching}`
   if (followup.prepareBy) return `${whenText(followup.prepareBy, now)} 前准备`
   if (followup.remindAt) return `${whenText(followup.remindAt, now)} 提醒`
   return ''
@@ -153,6 +155,7 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
     followup.prepareBy ? `${whenText(followup.prepareBy, now)} 前准备好` : null,
     followup.remindAt ? `${whenText(followup.remindAt, now)} 提醒` : null,
     followup.files?.length ? `会读 ${followup.files.join('、')}` : null,
+    followup.watching ? `盯着 ${followup.watching}，一改就准备` : null,
   ].filter(Boolean).join(' · ')
   const waiting = followup.status === 'preparing' ? `正在后台准备${prepare?.queued ? `，后面还有 ${prepare.queued} 件` : ''}` : PREPARE_PROMISE
   return h('div', { class: 'tp-main fu-main', 'data-followup': followup.id },

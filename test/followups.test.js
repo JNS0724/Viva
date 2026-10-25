@@ -24,7 +24,7 @@ function setup(t) {
 
 const chat = { kind: 'chat', conversationId: 'c1' }
 const followup = (extra = {}) => ({
-  id: 'f1', title: '周报', ask: '起草周报', origin: chat, createdAt: 0, remindAt: null, prepareBy: null, files: [], watchPath: null,
+  id: 'f1', title: '周报', ask: '起草周报', origin: chat, createdAt: 0, remindAt: null, prepareBy: null, files: [], watchPath: null, watchMtime: null,
   status: 'scheduled', draft: null, draftAt: null, readFiles: [], remindedAt: null, lateFrom: null, cue: null, ...extra,
 })
 const plan = (followups, extra = {}) => planNotices({ now: NOON, followups, interruptionsToday: 0, atGap: false, windowInFront: false, toldReady: new Set(), ...extra })
@@ -131,13 +131,13 @@ test('the notifier sends at a reminder\'s time and in gaps, marks what it told, 
   notifier.refresh()
   assert.equal(pending.at(-1), 1)
   notifier.gap()
-  assert.deepEqual(sent.map((n) => n.kind), ['ready'])
+  assert.deepEqual(sent.map((n) => [n.kind, n.title, n.body]), [['today', '今天', '准备好 1 件：周报']], 'the day\'s first gap: 今天')
   notifier.gap()
   assert.equal(sent.length, 1, 'told once')
 
   clock.now = NOON + 30 * MINUTE
   timers.find((item) => !item.done).fn()
-  assert.deepEqual(sent.map((n) => [n.kind, n.body]), [['ready', '周报 · 都还没动，等你点头'], ['reminder', '准备好了，点开看']])
+  assert.deepEqual(sent.map((n) => [n.kind, n.body]), [['today', '准备好 1 件：周报'], ['reminder', '准备好了，点开看']])
   assert.equal(store.get(report.id).remindedAt, NOON + 30 * MINUTE)
   assert.equal(store.interruptionsOn(), 1, 'the reminder did not count')
 
@@ -156,4 +156,14 @@ test('back at the computer after 15 minutes away is a gap; a short pause is not'
   for (let i = 0; i < 5; i += 1) tick()
   assert.deepEqual(gaps, ['back'])
   watch.stop()
+})
+
+test('今天: the day\'s first gap with something says it all at once, once; a day with nothing says nothing', () => {
+  const base = { now: NOON, interruptionsToday: 0, atGap: true, windowInFront: false, toldReady: new Set(), todayTold: false }
+  const later = followup({ id: 'b', title: '合同', remindAt: NOON + 60 * MINUTE })
+  const [today] = planNotices({ ...base, followups: [followup({ id: 'a', status: 'ready' }), later], suggestions: [{ id: 's', title: '续签' }] })
+  assert.deepEqual([today.kind, today.body, today.followupIds], ['today', '准备好 1 件 · 1 条消息要你看看 · 今天要提醒 1 件：周报、续签、合同', ['a', 's']])
+  assert.deepEqual(planNotices({ ...base, followups: [] }), [], 'nothing to say: no 今天')
+  assert.deepEqual(planNotices({ ...base, followups: [later], todayTold: true }), [], 'once a day')
+  assert.deepEqual(planNotices({ ...base, followups: [later], atGap: false }), [], 'only in a gap')
 })

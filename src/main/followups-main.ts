@@ -1,5 +1,6 @@
 import path from 'node:path'
 import type { PrepareCall, Prepared as PreparedText, ProposalView } from './followup-channel.ts'
+import { createFileWatch } from './file-watch.ts'
 import { createFollowupNotifier, createGapWatch } from './followup-notifier.ts'
 import { openFollowupStore, type Followup } from './followup-store.ts'
 import { registerFollowupsIpc } from './followups-ipc.ts'
@@ -7,7 +8,7 @@ import type { IpcRegistry } from './ipc-contract.ts'
 import { createMessageJudge, type JudgeDeps } from './message-judge.ts'
 import type { Notice } from './notice-plan.ts'
 import { materialsFor, PREPARE_MAX_TOKENS, PREPARE_SYSTEM, type MaterialSources } from './prepare-materials.ts'
-import { scheduleOf, type PrepareSchedule } from './prepare-schedule.ts'
+import { LEAD_MS, nextWindow, scheduleOf, type PrepareSchedule } from './prepare-schedule.ts'
 import { createPrepareScheduler, type Prepared, type PrepareState } from './prepare-scheduler.ts'
 
 /**
@@ -73,6 +74,17 @@ export function openFollowups(deps: FollowupsDeps) {
     onReady: () => notifier.refresh(),
   })
   const watch = createGapWatch({ idleSeconds: deps.idleSeconds, onGap: notifier.gap })
+  // A file the user named changed and settled: prepared again in the next window.
+  const files = createFileWatch({
+    store,
+    onChanged: (followup) => {
+      const at = Date.now()
+      store.rearm(followup.id, (nextWindow(at, schedule()) ?? at) + LEAD_MS)
+      store.logEvent('file_changed', { id: followup.id })
+      scheduler.refresh()
+      notifier.refresh()
+    },
+  })
   registerFollowupsIpc(deps.ipcMain, {
     store,
     scheduler,
@@ -109,6 +121,7 @@ export function openFollowups(deps: FollowupsDeps) {
       scheduler.refresh()
     },
     close() {
+      files.stop()
       watch.stop()
       scheduler.stop()
       notifier.stop()

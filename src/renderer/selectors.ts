@@ -187,13 +187,15 @@ function workingEvent(state: State, now: number) {
 
 /** What the cat (view/cat.js) is doing: thinking, typing (a tool runs or the answer is being written), holding
  * up a ! or ? sign while it waits on the user, pleased once a turn is done, worried after an error. */
-export type CatMood = 'idle' | 'thinking' | 'typing' | 'confirm' | 'ask' | 'done' | 'error'
+export type CatMood = 'idle' | 'thinking' | 'typing' | 'confirm' | 'ask' | 'done' | 'error' | 'sleeping'
 
 export function catMood(state: State): CatMood {
   if (state.phase === 'waiting') return 'confirm'
   if (state.phase === 'asking') return 'ask'
   if (state.phase === 'error') return 'error'
   if (state.phase === 'working') return latestActiveTool(state) || state.messages.at(-1)?.open ? 'typing' : 'thinking'
+  // Nothing of the user's going, and background preparation at work: the cat sleeps on it.
+  if (state.followups?.state?.running) return 'sleeping'
   if (state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled') return 'done'
   return 'idle'
 }

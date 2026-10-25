@@ -19,7 +19,7 @@ test('asked to help at a time, the model can only propose: the window gets a car
   await agent.prompt('周五下班前要交周报，到时候帮我弄一下')
   const card = await eventually(() => events.find((event) => event.type === 'followup_propose'))
   const { remindAt, prepareBy, ...rest } = card.proposal
-  assert.deepEqual(rest, { title: FOLLOWUP.title, ask: FOLLOWUP.ask, files: [] })
+  assert.deepEqual(rest, { title: FOLLOWUP.title, ask: FOLLOWUP.ask, files: [], watchFile: null })
   assert.ok(Date.parse(prepareBy) < Date.parse(remindAt) && Date.parse(prepareBy) > Date.now(), 'times as the model wrote them, ahead')
   assert.equal(typeof card.proposalId, 'string')
   assert.equal(events.some((event) => event.type === 'permission'), false, 'proposing changes nothing, so it asks nothing')

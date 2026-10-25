@@ -9,13 +9,15 @@ import type { Followup } from './followup-store.ts'
  *   ends, the user is back at the computer), once each, all together in one notice, and only while the day's
  *   interruptions are under the cap; past it, they wait for the next day's first gap. With the window in front,
  *   the window shows them instead of a notification.
+ * - 今天: the day's first gap with something to say gathers it all in one notice (ready, suggested, to be reminded
+ *   of today), once a day, under the cap; a day with nothing says nothing.
  * Nothing else is ever a reason to speak: no time passing, no launch by itself, no model deciding.
  */
 export const DAILY_CAP = 3
 /** A reminder more than this late (the computer was asleep) is a missed one: told as such, with the others. */
 export const LATE_MS = 10 * 60 * 1000
 
-export type NoticeKind = 'reminder' | 'missed' | 'ready'
+export type NoticeKind = 'reminder' | 'missed' | 'ready' | 'today'
 export interface Notice {
   kind: NoticeKind
   followupIds: string[]
@@ -40,6 +42,8 @@ export interface PlanInput {
   toldReady: ReadonlySet<string>
   /** Messages suggested for a follow-up, open and not told of yet. */
   suggestions?: ReadonlyArray<{ id: string, title: string }>
+  /** 今天 went out already today. */
+  todayTold?: boolean
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -65,7 +69,26 @@ function reminderBody(followup: Followup): string {
 }
 
 /** The notices to send now. */
-export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CAP, atGap, windowInFront, toldReady, suggestions = [] }: PlanInput): Notice[] {
+const endOfDay = (ts: number) => new Date(ts).setHours(23, 59, 59, 999)
+
+/** 今天: what waits for the user and what will be reminded of before the day ends, in one line. */
+function todayNotice(ready: readonly Followup[], suggestions: ReadonlyArray<{ id: string, title: string }>, later: readonly Followup[], windowInFront: boolean): Notice {
+  const parts = [
+    ready.length ? `准备好 ${ready.length} 件` : null,
+    suggestions.length ? `${suggestions.length} 条消息要你看看` : null,
+    later.length ? `今天要提醒 ${later.length} 件` : null,
+  ].filter(Boolean)
+  return {
+    kind: 'today',
+    followupIds: [...ready.map((f) => f.id), ...suggestions.map((s) => s.id)],
+    title: '今天',
+    body: `${parts.join(' · ')}：${titles([...ready, ...suggestions, ...later])}`,
+    interrupts: !windowInFront,
+    system: !windowInFront,
+  }
+}
+
+export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CAP, atGap, windowInFront, toldReady, suggestions = [], todayTold = true }: PlanInput): Notice[] {
   const open = followups.filter((f) => OPEN.has(f.status))
   const due = open.filter((f) => f.remindAt !== null && f.remindAt <= now && f.remindedAt === null)
   const onTime = due.filter((f) => now - (f.remindAt as number) <= LATE_MS)
@@ -84,7 +107,14 @@ export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CA
   }
   const reminding = new Set(due.map((f) => f.id))
   const ready = open.filter((f) => f.status === 'ready' && !toldReady.has(f.id) && !reminding.has(f.id))
-  if ((ready.length || suggestions.length) && atGap && (windowInFront || interruptionsToday < cap)) {
+  const mayTell = atGap && (windowInFront || interruptionsToday < cap)
+  const readyIds = new Set(ready.map((f) => f.id))
+  const later = open.filter((f) => !readyIds.has(f.id) && f.remindAt !== null && f.remindAt > now && f.remindAt <= endOfDay(now) && f.remindedAt === null)
+  if (mayTell && !todayTold && (ready.length || suggestions.length || later.length)) {
+    notices.push(todayNotice(ready, suggestions, later, windowInFront))
+    return notices
+  }
+  if ((ready.length || suggestions.length) && mayTell) {
     const both = ready.length && suggestions.length
     notices.push({
       kind: 'ready',

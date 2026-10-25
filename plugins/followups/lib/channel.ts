@@ -17,7 +17,7 @@ const MAX_ID_CHARS = 100
 const MAX_ROUTE_CHARS = 200
 
 /** A follow-up as the model proposes it: the app checks every field again before showing the card. */
-export interface Proposal { title: string, ask: string, remindAt?: string, prepareBy?: string, files?: string[] }
+export interface Proposal { title: string, ask: string, remindAt?: string, prepareBy?: string, files?: string[], watchFile?: string }
 
 export interface PrepareRequest { id: string, provider: string, model: string, system: string, input: string, maxTokens: number }
 
