@@ -4,20 +4,72 @@ import { h, keepingInput } from './dom.ts'
 import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
+import { followupDetail, followupStanding, suggestionDetail, whenText } from './followups.ts'
 
 /**
- * The 后台 page: every background task on the left, grouped by where it stands; on the right the one picked,
- * its whole conversation as the thread shows one, its steps folded under it, and its own input: words into
- * its turn while it works, its next question once it has ended. Same place as 搜索 · 关于你 · 设置.
+ * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
+ * (待你看的 first: drafts prepared in the background; then what is being prepared, then what is scheduled); on
+ * the right the one picked, its whole conversation as the thread shows one, its steps folded under it, and its
+ * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
+ * draft and what can be done with it. Same place as 搜索 · 关于你 · 设置.
  */
 const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你确认', running: '在做', ended: '做完了' }
 const LIVE = new Set(['running', 'waiting'])
+/** Follow-ups on the page are picked by this prefix, beside the tasks' ids. */
+export const FOLLOWUP_KEY = 'followup:'
+/** And the messages suggested for one by this. */
+export const SUGGESTION_KEY = 'suggestion:'
+const FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', '待你看的'], ['preparing', '在准备'], ['scheduled', '已安排']]
+
+/** Messages that may need the user, first: they wait on a decision. */
+function suggestionGroup(state: State, selected: string | null, handlers: Handlers) {
+  const open: Untyped[] = state.followups.suggestions.filter((suggestion: Untyped) => suggestion.status === 'open')
+  if (!open.length) return []
+  return [
+    h('div', { class: 'tp-group', text: `要我跟进吗 · ${open.length}` }),
+    ...open.map((suggestion) => h('button', {
+      class: 'tp-row fu-row', type: 'button', 'data-status': 'suggested', 'aria-current': `${SUGGESTION_KEY}${suggestion.id}` === selected ? 'page' : null,
+      onClick: () => handlers.selectTask(`${SUGGESTION_KEY}${suggestion.id}`),
+    },
+    h('span', { class: 'tp-name', text: suggestion.title }),
+    h('span', { class: 'tp-meta', text: `${suggestion.sender || '消息'} · ${suggestion.why}` }))),
+  ]
+}
+
+function followupGroups(state: State, selected: string | null, handlers: Handlers, now: number) {
+  const list: readonly Untyped[] = state.followups.followups
+  return FOLLOWUP_GROUPS.flatMap(([status, name]) => {
+    const group = list.filter((followup) => followup.status === status)
+    if (!group.length) return []
+    return [
+      h('div', { class: 'tp-group', text: `${name} · ${group.length}` }),
+      ...group.map((followup) => h('button', {
+        class: 'tp-row fu-row', type: 'button', 'data-status': status, 'aria-current': `${FOLLOWUP_KEY}${followup.id}` === selected ? 'page' : null,
+        onClick: () => handlers.selectTask(`${FOLLOWUP_KEY}${followup.id}`),
+      },
+      h('span', { class: 'tp-name', text: followup.title }),
+      h('span', { class: 'tp-meta', text: followupStanding(followup, now) }))),
+    ]
+  })
+}
+
+/** One line on background preparation: preparing now, waiting on the user, or when it looks next. */
+function prepareLine(state: State, now: number) {
+  const prepare = state.followups.state
+  if (prepare?.running) return h('p', { class: 'fu-state', 'data-on': 'true', text: `后台准备中 · ${prepare.current}` })
+  if (prepare?.waiting) return h('p', { class: 'fu-state', text: `等一会儿再准备：${prepare.waiting}` })
+  if (prepare?.nextAt) return h('p', { class: 'fu-state', text: `下次后台准备 ${whenText(prepare.nextAt, now)}` })
+  return null
+}
 
 function sideView(state: State, handlers: Handlers, now: number) {
   const selected = state.tasks.page.selected
   return h('nav', { class: 'hub-side tp-side', 'aria-label': '后台任务' },
     h('button', { class: 'hub-back', type: 'button', onClick: () => handlers.closeHub() },
       icon('back', 16), '返回', h('kbd', { text: 'Esc' })),
+    prepareLine(state, now),
+    ...suggestionGroup(state, selected, handlers),
+    ...followupGroups(state, selected, handlers, now),
     ...pageGroups(state).flatMap(({ key, tasks }) => [
       h('div', { class: 'tp-group', text: `${GROUP_NAMES[key]} · ${tasks.length}` }),
       ...tasks.map((task) => h('button', {
@@ -38,6 +90,7 @@ function threadState(state: State, task: BackgroundTask): State {
     conversationId: null,
     restored: null,
     folds: [],
+    proposals: [],
     tasks: { ...state.tasks, list: [], reports: [], unfinished: [] },
   }
 }
@@ -88,8 +141,25 @@ function inputView(task: BackgroundTask, handlers: Handlers) {
     h('button', { class: 'send-btn', type: 'submit', 'aria-label': live ? '插话' : '接着问' }, icon('send', 20)))
 }
 
+/** The follow-up picked, or, with nothing picked and no task, the first that waits for the user. */
+function pickedFollowup(state: State): Untyped | null {
+  const list: readonly Untyped[] = state.followups.followups
+  const selected = state.tasks.page.selected
+  if (selected?.startsWith(FOLLOWUP_KEY)) return list.find((followup) => `${FOLLOWUP_KEY}${followup.id}` === selected) ?? null
+  if (selected?.startsWith(SUGGESTION_KEY)) return null
+  if (selected || pageTask(state)) return null
+  return list.find((followup) => followup.status === 'ready') ?? null
+}
+
 function mainView(state: State, handlers: Handlers, now: number) {
-  const task = pageTask(state)
+  const selected = state.tasks.page.selected
+  if (selected?.startsWith(SUGGESTION_KEY)) {
+    const suggestion = state.followups.suggestions.find((item: Untyped) => `${SUGGESTION_KEY}${item.id}` === selected)
+    if (suggestion) return suggestionDetail(suggestion, handlers, now)
+  }
+  const followup = pickedFollowup(state)
+  if (followup) return followupDetail(followup, state.followups.state, handlers, now)
+  const task = selected?.startsWith(FOLLOWUP_KEY) || selected?.startsWith(SUGGESTION_KEY) ? null : pageTask(state)
   if (!task) {
     return h('div', { class: 'tp-main tp-empty' },
       h('p', { class: 'help', text: '后台还没有事。在输入框里写好，点「后台做」交给后台；它做完会告诉你。' }))

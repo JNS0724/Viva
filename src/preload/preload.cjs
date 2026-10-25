@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   saveApiKey: (key) => ipcRenderer.invoke('settings:save-key', key),
   clearApiKey: () => ipcRenderer.invoke('settings:clear-key'),
   setDeskIsland: (on) => ipcRenderer.invoke('settings:set-desk-island', on),
+  setOpenAtLogin: (on) => ipcRenderer.invoke('settings:set-open-at-login', on),
   resetDeskPlace: () => ipcRenderer.invoke('settings:reset-desk-place'),
   getModels: () => ipcRenderer.invoke('models:get'),
   addModelProvider: (input) => ipcRenderer.invoke('models:add', input),
@@ -116,6 +117,30 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   updateMcpServer: (name, changes) => ipcRenderer.invoke('ext:update-mcp', name, changes),
   importDsh: (from) => ipcRenderer.invoke('ext:import-dsh', from),
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),
+  getSources: () => ipcRenderer.invoke('sources:get'),
+  /** changes: { enabled?, everyMinutes?, values? }; a secret left blank keeps the saved one. */
+  saveSource: (id, changes) => ipcRenderer.invoke('sources:save', id, changes),
+  /** Tests the form's values (saved ones where left blank) without saving them. */
+  checkSource: (id, changes) => ipcRenderer.invoke('sources:check', id, changes),
+  pollSourceNow: (id) => ipcRenderer.invoke('sources:poll-now', id),
+  openSourcesFolder: () => ipcRenderer.invoke('sources:open-folder'),
+  /** The folder dialog, then what the chosen folder is, to confirm; the path itself stays in the main process. */
+  chooseSource: () => ipcRenderer.invoke('sources:choose'),
+  installSource: () => ipcRenderer.invoke('sources:install'),
+  cancelSourceInstall: () => ipcRenderer.invoke('sources:cancel-install'),
+  removeSource: (id) => ipcRenderer.invoke('sources:remove', id),
+  getFollowups: () => ipcRenderer.invoke('followups:get'),
+  /** 跟进 on a card: { title, ask, remindAt, prepareBy, files, conversationId }. */
+  acceptFollowup: (proposal) => ipcRenderer.invoke('followups:accept', proposal),
+  declineFollowup: (proposal) => ipcRenderer.invoke('followups:decline', proposal),
+  dismissFollowup: (id) => ipcRenderer.invoke('followups:dismiss', id),
+  continueFollowup: (id) => ipcRenderer.invoke('followups:continue', id),
+  prepareFollowupNow: (id) => ipcRenderer.invoke('followups:prepare-now', id),
+  wakePreparation: () => ipcRenderer.invoke('followups:wake'),
+  setPrepareSchedule: (schedule) => ipcRenderer.invoke('followups:set-schedule', schedule),
+  pausePreparation: (minutes) => ipcRenderer.invoke('followups:pause', minutes),
+  /** A message suggested for a follow-up: 'accept' (跟进), 'decline' (不重要) or 'never' (以后别问这类). */
+  settleSuggestion: (id, action) => ipcRenderer.invoke('followups:suggestion', id, action),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   /** The shortcut, pressed with the window in front: its own input takes the keyboard. */

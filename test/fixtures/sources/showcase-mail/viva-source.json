@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "id": "company-mail",
+  "name": "公司邮箱",
+  "kind": "mail",
+  "run": ["node", "index.js"],
+  "reads": "发件人、标题、正文前 2000 字",
+  "everyMinutes": 5,
+  "config": {
+    "account": { "type": "string", "title": "账号", "default": "me@example.com" },
+    "token": { "type": "secret", "title": "访问令牌", "required": true, "help": "在邮箱的「第三方应用」里生成" }
+  }
+}

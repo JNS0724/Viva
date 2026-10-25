@@ -208,3 +208,13 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 @media (prefers-reduced-motion: reduce) {
   .isl, .isl * { transition: none !important; animation: none !important; }
 }
+
+/* Follow-ups at the tail (view/island-tasks.ts prepareCell): ready ones in blue; preparation, a breathing light. */
+.isl-bg-ready b, .isl-bg-ready span { color: var(--accent); }
+.isl-bg-prep { color: var(--accent); }
+.isl-breath { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: isl-breathe 3.2s ease-in-out infinite; }
+@keyframes isl-breathe {
+  0%, 100% { opacity: .25; box-shadow: 0 0 0 0 rgba(90, 169, 255, 0); }
+  50% { opacity: 1; box-shadow: 0 0 10px 3px rgba(90, 169, 255, .8); }
+}
+@media (prefers-reduced-motion: reduce) { .isl-breath { animation: none; opacity: .8; } }

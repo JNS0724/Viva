@@ -873,3 +873,36 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
     box-shadow: -24px 0 60px rgba(0, 0, 0, .45);
   }
 }
+
+/* Follow-ups (view/followups.ts): a proposal is a suggestion, not a request waiting on the user, so blue, not orange. */
+.fu-card { border-color: var(--accent); display: flex; flex-direction: column; gap: 12px; }
+.fu-card .confirm-head { color: var(--accent); }
+.fu-card .pulse-dot { background: var(--accent); }
+.fu-card .btn-primary, .fu-main .btn-primary { background: var(--accent); }
+.fu-card .confirm-title { font-size: 20px; }
+.fu-done { border-width: 1px; border-color: var(--line-2); padding: 14px 18px; }
+.fu-ask { margin: 0; font-size: 15px; line-height: 1.6; color: var(--ink); white-space: pre-wrap; }
+.fu-lines { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.fu-line { display: flex; gap: 12px; }
+.fu-when { flex: none; min-width: 116px; color: var(--accent); }
+.fu-note { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ink-2); }
+.fu-choose { display: flex; flex-direction: column; gap: 8px; }
+.fu-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.fu-preset { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: auto; padding: 8px 14px; }
+.fu-preset .mono { font-size: 11px; opacity: .8; }
+.fu-late { align-self: flex-start; font-size: 12px; padding: 3px 10px; border-radius: 8px; background: rgba(255, 138, 61, .14); color: var(--orange); }
+.fu-scroll { display: flex; flex-direction: column; gap: 12px; padding: 16px 32px 32px; }
+.fu-draft { padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); }
+.fu-actions { margin-top: 4px; }
+.fu-row[data-status="ready"] .tp-meta { color: var(--accent); }
+.fu-state { margin: 4px 12px 0; font-size: 12px; line-height: 1.5; color: var(--ink-3); }
+.fu-state[data-on="true"] { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .fu-card .pulse-dot { animation: none; } }
+.fu-message { display: flex; flex-direction: column; gap: 6px; }
+.fu-row[data-status="suggested"] .tp-meta { color: var(--accent); }
+/* Asleep while background preparation goes on (view/cat.ts): the cat breathes, its bubble dreams slowly. */
+.cat[data-mood="sleeping"] .cat-art { animation: cat-sleep 4.2s ease-in-out infinite; transform-origin: 50% 90%; }
+.cat-dream .cat-dot { animation-duration: 2.8s; }
+@keyframes cat-sleep { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+@media (prefers-reduced-motion: reduce) { .cat[data-mood="sleeping"] .cat-art { animation: none; } }
+.home-today { border-color: var(--accent); }

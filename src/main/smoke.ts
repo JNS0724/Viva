@@ -8,6 +8,9 @@ import { checkPermission } from './smoke-permission.ts'
 import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { checkMemory } from './smoke-memory.ts'
 import { checkResume } from './smoke-tasks.ts'
+import { checkSources } from './smoke-sources.ts'
+import { checkFollowups } from './smoke-followups.ts'
+import { runShowcase } from './smoke-showcase.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -504,7 +507,11 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
   try {
     await fs.mkdir(outDir, { recursive: true })
     await wait(BOOT_WAIT_MS)
-    if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
+    if (smokePhase === 'setup') {
+      problems.push(...await checkSetup(win, outDir))
+      // On the settings page checkSetup leaves open.
+      problems.push(...await checkSources(win, outDir, { userData: hooks.userData, fixtures: hooks.fixtures, pick: hooks.pickSourceFolder }))
+    }
     else if (smokePhase === 'relaunch') {
       problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
       // Last on this profile: they add questions to the conversation the checks above look at.
@@ -513,7 +520,8 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
       problems.push(...await checkTopics(win, outDir))
       problems.push(...await checkPermission(win, outDir))
     }
-    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks))
+    else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
+    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
@@ -40,6 +40,10 @@ import { createPreferences } from './preferences.ts'
 import { removeTree } from './remove-tree.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
+import { openSources } from './sources-main.ts'
+import { openFollowups, type Followups } from './followups-main.ts'
+import type { Notice } from './notice-plan.ts'
+import type { ProposalView } from './followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
 import { runSmoke } from './smoke.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
@@ -76,6 +80,19 @@ let mcpReloadDue = false
 let memoryDb!: ReturnType<typeof openMemoryDb>
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
 let traceDb: ReturnType<typeof openTraceDb> | null = null
+let sources: ReturnType<typeof openSources> | null = null
+/** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
+let taskStore: ReturnType<typeof createTaskStore> | null = null
+/** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
+let followups: Followups | null = null
+/** Ready follow-ups, for the tray, which may be made after the count changed. */
+let pendingFollowups = 0
+/** Notifications shown and not yet clicked or closed: kept, or they may be collected before a click reaches them. */
+const shownNotices = new Set<Notification>()
+/** How long a shown notification is kept for its click. */
+const NOTICE_KEEP_MS = 60 * 60 * 1000
+/** Started with the computer (开机启动): the window stays hidden, Viva in the tray. */
+const startedHidden = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
 /** Plugins left out of the profile at the last launch, and why; shown in settings. */
 let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
 /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.js. */
@@ -313,7 +330,15 @@ function createBridge(config: Config, cwd: string) {
     configActions: configActions(config),
     emit: (event) => {
       if (generation !== bridgeGeneration) return
+      if (event.type === 'followup_propose') {
+        // The same suggestion turned down lately is not shown again.
+        const proposal = followups?.admitProposal(event.proposal as ProposalView)
+        if (proposal) emitToRenderer({ ...event, proposal })
+        return
+      }
       emitToRenderer(event)
+      // A turn of the user's, or a task of theirs, just ended: a gap, where what is ready may be told.
+      if (event.type === 'turn_end' || event.type === 'task_end') followups?.gap()
       if (event.type === 'turn_end' || event.type === 'error') reportTurnMemories()
       if (event.type === 'turn_end' && mcpReloadDue) reloadMcpAfterTurn()
     },
@@ -434,7 +459,18 @@ function settingsView() {
     shortcut: shortcutHeld === null ? null : { keys: ASK_SHORTCUT, held: shortcutHeld },
     images: imageStore.usage(),
     permission: permissionNow(),
+    openAtLogin: { on: preferences.get().openAtLogin, available: canOpenAtLogin() },
   }
+}
+
+/** Only the installed app may start with the computer: in development it would register Electron itself. */
+const canOpenAtLogin = () => app.isPackaged && !currentConfig().smoke
+
+/** 开机启动: off unless the user turns it on; started so, Viva stays in the tray (startedHidden). */
+function setOpenAtLogin(on: boolean) {
+  if (!canOpenAtLogin()) throw new Error('只有安装好的 Viva 能开机启动')
+  app.setLoginItemSettings({ openAtLogin: on, ...(process.platform === 'win32' ? { args: ['--hidden'] } : {}) })
+  preferences.set('openAtLogin', on)
 }
 
 /** The permission level picked; one no longer offered (an older or edited file) reads as the default. */
@@ -471,6 +507,8 @@ function registerAgentIpc() {
       console.error('[memory] could not update the habits:', err.message)
     }
     turn = { active: true, startedAt: Date.now() }
+    // The user's turn comes first: background preparation stops after the item at hand.
+    followups?.scheduler.yieldToUser()
     return agent.prompt(question, pictures)
   })
   /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
@@ -550,14 +588,20 @@ function closeToTray() {
 
 function hideToTray() {
   mainWindow().hide()
+  showTray()
+  desk?.setAway(true)
+}
+
+function showTray() {
   tray ??= createTray({
     Tray, Menu, nativeImage,
     iconDir: path.join(CODE_ROOT, 'src', 'assets', 'tray'),
     platform: process.platform,
     onOpen: showWindow,
     onQuit: () => app.quit(),
+    onPending: openTasksPage,
+    pending: pendingFollowups,
   })
-  desk?.setAway(true)
 }
 
 /**
@@ -613,6 +657,10 @@ function registerSettingsIpc() {
     return settingsView()
   })
   ipcMain.handle('settings:set-permission', (_event, level) => setPermission(level))
+  ipcMain.handle('settings:set-open-at-login', (_event, on) => {
+    setOpenAtLogin(on)
+    return settingsView()
+  })
   ipcMain.handle('settings:reset-desk-place', () => {
     desk?.resetPlace()
     if (!desk) preferences.set('deskPlaces', { last: null, places: {} })
@@ -706,6 +754,41 @@ async function chooseDshDir(): Promise<string | null> {
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
+/** The 后台 page, from a notification or the tray: the window in front, on that page. */
+function openTasksPage() {
+  showWindow()
+  if (win && !win.isDestroyed()) win.webContents.send('island:action', { kind: 'tasks' })
+}
+
+/** A follow-up's notice as a system notification; clicked, it opens the 后台 page. */
+function showNotice(notice: Notice) {
+  if (!Notification.isSupported()) return
+  const shown = new Notification({ title: notice.title, body: notice.body })
+  const shownAt = Date.now()
+  shownNotices.add(shown)
+  const done = () => shownNotices.delete(shown)
+  shown.on('click', () => {
+    done()
+    // How long it took the user to open it: the week of self-use asks whether notices come at the right time.
+    followups?.store.logEvent('notice_opened', { kind: notice.kind, afterMs: Date.now() - shownAt })
+    openTasksPage()
+  })
+  shown.on('close', done)
+  // Some systems never say a notification closed: let it go after a while.
+  setTimeout(done, NOTICE_KEEP_MS).unref?.()
+  shown.show()
+}
+
+/** A smoke run cannot click through the folder dialog; it says here which folder the user would pick. */
+let smokeSourcePick: string | null = null
+
+/** 安装消息源: a folder with a viva-source.json in it. */
+async function chooseSourceFolder(): Promise<string | null> {
+  if (smokeSourcePick) return smokeSourcePick
+  const result = await dialog.showOpenDialog(mainWindow(), { title: '选择消息源文件夹（里面有 viva-source.json）', properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0] ?? null
+}
+
 function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createMcpConfigStore>) {
   registerMemoryIpc(ipcMain, {
     db: memoryDb,
@@ -743,6 +826,55 @@ function openPersonal(config: Config) {
   })
   personal = createPersonal({ memoryDb, historyDb, mcpStore })
   registerPersonalIpc(config, mcpStore)
+  sources = openSources({
+    userData,
+    crypto: safeStorage,
+    ipcMain,
+    openPath: (dir) => shell.openPath(dir),
+    chooseFolder: chooseSourceFolder,
+    trash: (dir) => shell.trashItem(dir),
+    onError: (err) => console.error('[sources]', err.message),
+    onMessages: () => followups?.scheduler.refresh(),
+  })
+  const sourcesDb = sources.db
+  followups = openFollowups({
+    userData,
+    ipcMain,
+    notify: showNotice,
+    windowInFront,
+    onPending: (count) => {
+      pendingFollowups = count
+      tray?.setPending(count)
+      // Something changed in the main process (a suggestion, a draft, a reminder): the window shows it as it is now.
+      emitToRenderer({ type: 'followups_changed' })
+    },
+    idleSeconds: () => powerMonitor.getSystemIdleTime(),
+    loadSchedule: () => preferences.get().prepareSchedule,
+    storeSchedule: (schedule) => preferences.set('prepareSchedule', schedule),
+    userBusy: () => (turn.active ? '你正在对话' : bridge?.workingTasks() ? '你的后台任务在跑' : null),
+    prepareText: (call, signal) => {
+      // The model the conversation is on, else the one new conversations start on.
+      const route = parseModelValue(String(lastInfo.modelValue ?? '')) ?? profileModels(config).defaultModel
+      if (!route) return Promise.resolve({ ok: false as const, problem: '还没有可用的模型', called: false as const })
+      return bridge ? bridge.prepareText({ ...route, ...call }, signal) : Promise.resolve({ ok: false as const, problem: '助手还没准备好', called: false as const })
+    },
+    takenUp: (conversationId, since) => (taskStore?.list() ?? []).some((task) => (task.startedAt ?? 0) >= since
+      && (task.segmentId === conversationId || historyDb.get(task.segmentId)?.conversation.parentId === conversationId)),
+    materials: {
+      conversation: (id) => historyDb.get(id)?.messages.map((m) => ({ role: m.role, text: m.text })) ?? null,
+      profile: () => memoryDb.latestSynthesis()?.text ?? null,
+    },
+    workDir: () => workDirNow() ?? config.cwd,
+    conversationExists: (id) => Boolean(historyDb.get(id)),
+    onState: (state) => emitToRenderer({ type: 'prepare_state', state }),
+    onError: (err) => console.error('[followups]', err instanceof Error ? err.message : String(err)),
+    messages: {
+      unjudged: (limit) => sourcesDb.unjudged(limit),
+      oldestUnjudgedAt: () => sourcesDb.oldestUnjudgedAt(),
+      markJudged: (items) => sourcesDb.markJudged(items),
+      message: (source, id) => sourcesDb.message(source, id),
+    },
+  })
 }
 
 /** Opens the database, imports the old JSON history once, and drops conversations whose undo window has passed. */
@@ -781,7 +913,7 @@ function openHistory(config: Config) {
   registerTaskIpc(ipcMain, {
     db: historyDb,
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).
-    store: createTaskStore({ file: path.join(userData, 'background-tasks.json'), onError: (err) => console.error('[tasks]', err.message) }),
+    store: taskStore = createTaskStore({ file: path.join(userData, 'background-tasks.json'), onError: (err) => console.error('[tasks]', err.message) }),
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
     isBusy: () => turn.active,
@@ -805,7 +937,10 @@ const taskAgent = {
   steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
   resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
   startTask: (request: Parameters<Bridge['startTask']>[0]) => (bridge ? bridge.startTask(request) : { ok: false, reason: 'unavailable' }),
-  promptTask: (taskId: string, text: string) => bridge?.promptTask(taskId, text),
+  promptTask: (taskId: string, text: string) => {
+    followups?.scheduler.yieldToUser()
+    return bridge?.promptTask(taskId, text)
+  },
 }
 
 /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
@@ -843,7 +978,14 @@ function createWindow(config: Config) {
   })
   win = created
   attachDeskIsland(config, created)
-  created.once('ready-to-show', () => created.show())
+  created.once('ready-to-show', () => {
+    if (!startedHidden || config.smoke) return created.show()
+    // Started with the computer: in the tray, the island on the desktop, until the user opens it.
+    showTray()
+    desk?.setAway(true)
+  })
+  // Coming back to the window is one of the user's gaps.
+  created.on('focus', () => followups?.gap())
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -860,6 +1002,29 @@ function createWindow(config: Config) {
       }
       runSmoke(created, config, quitSmoke, {
         agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
+        fixtures: process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures'),
+        pickSourceFolder: (dir: string) => { smokeSourcePick = dir },
+        openTasksPage,
+        // A message the judge found urgent, as if a window had passed (judging waits for one).
+        seedSuggestion: () => {
+          sources?.db.save('smoke-mail', [{ id: 'm1', at: Date.now(), from: '[发件人]', title: '合同明天到期', text: '请今天内回复确认是否续签' }], 'c1')
+          sources?.db.markJudged([{ source: 'smoke-mail', id: 'm1' }])
+          followups?.store.addSuggestion({ source: 'smoke-mail', messageId: 'm1', sender: '[发件人]', title: '合同续签', ask: '起草回复，确认续签', why: '明天到期', remindAt: null })
+          followups?.notifier.refresh()
+        },
+        // The showcase stages what was there before its scenes: follow-ups, and mail the judge found urgent.
+        followups: () => followups,
+        seedMail: () => {
+          const now = Date.now()
+          const mails = [
+            { id: 'm1', at: now - 17 * 60_000, from: '法务部', title: '服务合同明天到期，请确认是否续签', text: '您好，贵司与供应商的年度服务合同将于明天到期。如需续签，请在今天下班前回复确认，并附上采购部的审批单。' },
+            { id: 'm2', at: now - 34 * 60_000, from: '王五', title: '周会纪要（10/24）', text: '本周对账系统按计划推进，退款回归测试由李四负责，周三前补齐。' },
+          ]
+          sources?.db.save('company-mail', mails, '2')
+          sources?.db.markJudged(mails.map((mail) => ({ source: 'company-mail', id: mail.id })))
+          followups?.store.addSuggestion({ source: 'company-mail', messageId: 'm1', sender: '法务部', title: '合同续签', ask: '起草续签确认的回复，发不发由你', why: '明天到期，要你回复确认', remindAt: new Date(now).setHours(24 + 10, 0, 0, 0) }) // tomorrow 10:00
+          followups?.notifier.refresh()
+        },
       })
     }
   })
@@ -867,6 +1032,8 @@ function createWindow(config: Config) {
 }
 
 isolateSmokeUserData()
+// Windows shows a notification only for the app its Start menu shortcut names (the installer's, electron-builder appId).
+if (process.platform === 'win32') app.setAppUserModelId('app.viva.desktop')
 // Before the app is ready: the pages load pasted pictures by name from viva-image:// (image-protocol.js).
 protocol.registerSchemesAsPrivileged([IMAGE_SCHEME_PRIVILEGES])
 // dsh's home is the app's own now, so a second copy of the app would share it: hand over to the first.
@@ -884,8 +1051,12 @@ async function startSmokeModel() {
   // The installed app has no test folder; SMOKE_FIXTURES points a smoke run of it at the repository's.
   const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
   const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
+  // The showcase (README pictures and demo) gets answers that read like real use.
+  const decideFirst = currentConfig().smokePhase === 'showcase'
+    ? (await import(pathToFileURL(path.join(fixtures, 'showcase-llm.js')).href)).showcaseDecide
+    : null
   // `resume` reopens the profile `memory` left, whose models point at the stand-in: the same port both times.
-  const model = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0 })
+  const model = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0, decideFirst })
   smokeModel = model
   process.env.DEEPSEEK_BASE_URL = model.url
 }
@@ -966,13 +1137,22 @@ app.whenReady().then(async () => {
     switchTo: switchWorkDir,
     reveal: (dir) => shell.openPath(dir),
   })
-  if (config.smokePhase === 'memory' || config.smokePhase === 'resume') await startSmokeModel()
+  if (config.smokePhase === 'memory' || config.smokePhase === 'resume' || config.smokePhase === 'showcase') await startSmokeModel()
   if (!config.smoke) {
     bringLegacyData()
     bringDshData(config)
   }
   openHistory(config)
   openPersonal(config)
+  // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
+  // Timers slept with the computer: preparation and the sources look again from now.
+  const woke = () => {
+    followups?.notifier.wake()
+    followups?.scheduler.refresh()
+    sources?.wakeUp()
+  }
+  powerMonitor.on('resume', woke)
+  powerMonitor.on('unlock-screen', woke)
   createWindow(config)
   registerShortcut(config)
 }).catch((err) => {
@@ -997,6 +1177,8 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   tray?.destroy()
   clearInterval(lateMemoryTimer)
+  sources?.close()
+  followups?.close()
   historyDb?.close()
   memoryDb?.close()
   traceDb?.close()

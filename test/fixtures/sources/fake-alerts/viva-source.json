@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "id": "fake-alerts",
+  "name": "假告警",
+  "kind": "alert",
+  "run": ["node", "index.js"],
+  "reads": "告警名、级别、时间",
+  "everyMinutes": 5,
+  "config": {
+    "token": { "type": "secret", "title": "访问令牌", "required": true },
+    "mode": { "type": "enum", "title": "行为", "values": ["ok", "fail", "slow", "garbage", "flood", "bad-message", "env"], "default": "ok" },
+    "total": { "type": "number", "title": "一共几条", "default": 3 }
+  }
+}

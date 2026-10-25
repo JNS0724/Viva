@@ -10,9 +10,25 @@ const MAX_DOTS = 3
 const QUIET = new Set(['idle', 'done'])
 
 /**
+ * With no task to speak of, the follow-ups: how many are ready (✓ N 准备好), or, the conversation quiet, that
+ * preparation goes on in the background, breathing. Tasks and the conversation come first.
+ */
+function prepareCell(view: IslandShown): HTMLElement | null {
+  const prepare = view.prepare
+  if (!prepare) return null
+  if (prepare.ready) {
+    return h('span', { class: 'isl-bg isl-bg-ready', title: `准备好 ${prepare.ready} 件，等你看` },
+      h('b', { text: `✓ ${prepare.ready}` }), QUIET.has(view.form) ? h('span', { text: '准备好' }) : null)
+  }
+  if (!prepare.running || !QUIET.has(view.form)) return null
+  return h('span', { class: 'isl-bg isl-bg-prep', title: '在后台准备，你一开始用就停' }, h('i', { class: 'isl-breath', 'aria-hidden': 'true' }), h('span', { text: '后台准备中' }))
+}
+
+/**
  * The cell at the island's tail, the way to the 后台 page: how many go on; or, when the island shows what
- * the conversation waits on and tasks wait too, that they do (+N 等你); or, all ended, how many (✓ N).
- * @returns nothing with no task at all
+ * the conversation waits on and tasks wait too, that they do (+N 等你); or, all ended, how many (✓ N); with no
+ * task, the follow-ups (prepareCell).
+ * @returns nothing with no task and no follow-up to speak of
  */
 export function tailCell(view: IslandShown): HTMLElement | null {
   const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
@@ -24,7 +40,7 @@ export function tailCell(view: IslandShown): HTMLElement | null {
     return h('span', { class: 'isl-bg isl-bg-done', title: `${done} 件做完了` },
       h('b', { text: `✓ ${done}` }), QUIET.has(view.form) ? h('span', { text: '做完' }) : null)
   }
-  if (!count) return null
+  if (!count) return prepareCell(view)
   const dots = view.form === 'waiting' ? [] : Array.from({ length: Math.min(count, MAX_DOTS) }, () => h('i'))
   return h('span', { class: 'isl-bg', title: `${count} 件在后台` },
     h('b', { text: String(count) }),

@@ -9,7 +9,7 @@
  * Views are rebuilt often (every frame while an answer streams, every second for the clock), so a cat is kept
  * per slot and reused while its look stays the same: a rebuilt node would restart its animations.
  */
-export const CAT_MOODS = Object.freeze(['idle', 'thinking', 'typing', 'confirm', 'ask', 'done', 'error'])
+export const CAT_MOODS = Object.freeze(['idle', 'thinking', 'typing', 'confirm', 'ask', 'done', 'error', 'sleeping'])
 
 /** At this size and below the head close-up is drawn instead of the half-body. */
 const HEAD_MAX_PX = 48
@@ -67,8 +67,9 @@ function sparkle() {
 
 /** What is laid over the picture: the thought dots, ! or ?, the sparkles; error's sweat drop is in its picture. */
 function signal(mood: string): Element | null {
-  if (mood === 'thinking') {
-    const bubble = box('cat-signal cat-thought')
+  // Asleep while background preparation goes on: the same bubble, dreaming of what it looks through.
+  if (mood === 'thinking' || mood === 'sleeping') {
+    const bubble = box(mood === 'sleeping' ? 'cat-signal cat-thought cat-dream' : 'cat-signal cat-thought')
     bubble.append(box('cat-dot'), box('cat-dot'), box('cat-dot'))
     return bubble
   }

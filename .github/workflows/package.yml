@@ -46,6 +46,14 @@ jobs:
           trap 'hdiutil detach "$volume" || true' EXIT
           SMOKE_PHASE=memory SMOKE_OUT="$RUNNER_TEMP/viva-smoke" SMOKE_FIXTURES="$PWD/test/fixtures" DEEPSEEK_API_KEY=smoke-fake-key \
             "$volume/Viva.app/Contents/MacOS/Viva"
+      # What a release attaches: the installer and the notices for what it carries.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-installer
+          path: |
+            dist/*.dmg
+            dist/THIRD_PARTY_NOTICES-darwin.txt
+          retention-days: 14
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -64,6 +72,13 @@ jobs:
       - run: npm ci
       - name: Build the installer, install it silently, smoke it, uninstall
         run: powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -PackageOnly
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/*-setup.exe
+            dist/THIRD_PARTY_NOTICES-win32.txt
+          retention-days: 14
       - if: always()
         uses: actions/upload-artifact@v4
         with:

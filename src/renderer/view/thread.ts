@@ -11,6 +11,7 @@ import { offeredBackground } from '../tasks-state.ts'
 import { cardedTasks, taskCard } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
+import { proposalCard } from './followups.ts'
 
 const AVATAR_CAT_PX = 36
 const avatarCats = new Map<string, { key: string, el: HTMLElement }>()
@@ -313,6 +314,8 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
     ...(note ? views.toSpliced(state.restored.count, 0, [historyDivider(note)]) : views).flat().filter(isContent),
     ...state.tasks.unfinished.map((task) => unfinishedCard(task, handlers, state.info.mode === 'live')),
     ...cards.values(),
+    // The follow-ups the model proposed in this conversation, each to be decided on (view/followups.ts).
+    ...state.proposals.map((card: Untyped) => proposalCard(card, handlers, now)),
     offerRow(state, handlers),
     state.permission ? permissionCard(state.permission, handlers) : '',
     state.question ? questionCard(state.question, handlers) : '',

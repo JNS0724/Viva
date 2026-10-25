@@ -1,0 +1,146 @@
+import { dayOf, type Followup, type FollowupStore } from './followup-store.ts'
+import { nextReminderAt, planNotices, type Notice } from './notice-plan.ts'
+
+/**
+ * Sends what notice-plan.ts decides, when it is worth deciding: at a reminder's time (a timer for the next one),
+ * in the user's gaps, and on waking (launch, the computer back from sleep), which is also when missed reminders
+ * are caught up, merged into one. The tray shows how many are ready.
+ *
+ * Gaps: the window coming back to the front and a turn of the user's ending (main.ts reports those), and the
+ * user back at the computer after 15 minutes away (createGapWatch). Nothing else counts as one.
+ */
+const MINUTE_MS = 60_000
+/** setTimeout holds at most about 24.8 days; a reminder further off is looked at again in a day. */
+const MAX_TIMER_MS = 24 * 60 * MINUTE_MS
+/** Away this long, the user's return is a gap. */
+export const AWAY_SECONDS = 15 * 60
+const IDLE_POLL_MS = MINUTE_MS
+
+type Timer = ReturnType<typeof setTimeout>
+
+export interface NotifierDeps {
+  store: Pick<FollowupStore, 'list' | 'markReminded' | 'logNotice' | 'interruptionsOn' | 'lastToldAt' | 'logEvent' | 'listSuggestions' | 'noticedOn'>
+  /** Shows a system notification. */
+  notify: (notice: Notice) => void
+  windowInFront: () => boolean
+  /** How many wait for the user (follow-ups ready, messages suggested), for the tray. */
+  onPending?: (count: number) => void
+  /** What went wrong deciding or sending, for the log. */
+  onError?: (err: unknown) => void
+  now?: () => number
+  setTimer?: (fn: () => void, ms: number) => Timer
+  clearTimer?: (timer: Timer) => void
+}
+
+const ENDED = new Set(['done', 'dismissed'])
+
+/** The ready follow-ups the user was told of since their drafts were made. */
+function toldSet(followups: readonly Followup[], lastToldAt: (id: string) => number | null): Set<string> {
+  return new Set(followups.filter((f) => {
+    if (f.status !== 'ready') return false
+    const told = lastToldAt(f.id)
+    return told !== null && told >= (f.draftAt ?? 0)
+  }).map((f) => f.id))
+}
+
+export function createFollowupNotifier(deps: NotifierDeps) {
+  const { store, notify, windowInFront, onPending = () => {}, onError = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
+  let timer: Timer | null = null
+  let stopped = false
+
+  const open = () => store.list().filter((f) => !ENDED.has(f.status))
+  const openSuggestions = () => store.listSuggestions().filter((s) => s.status === 'open')
+
+  function send(notice: Notice, followups: readonly Followup[]) {
+    const at = now()
+    if (notice.system) notify(notice)
+    if (notice.kind === 'reminder') notice.followupIds.forEach((id) => store.markReminded(id))
+    if (notice.kind === 'missed') {
+      const due = new Map(followups.map((f) => [f.id, f.remindAt]))
+      notice.followupIds.forEach((id) => store.markReminded(id, due.get(id) ?? at))
+    }
+    if (notice.kind === 'reminder' || notice.kind === 'missed') {
+      // Due and still not prepared: counted, so settings can show how often the windows came too late.
+      followups.filter((f) => notice.followupIds.includes(f.id) && f.prepareBy !== null && (f.status === 'scheduled' || f.status === 'preparing'))
+        .forEach((f) => store.logEvent('prepare_late', { id: f.id }))
+    }
+    store.logNotice(notice.kind, notice.followupIds, notice.interrupts)
+    store.logEvent('notice', { kind: notice.kind, count: notice.followupIds.length, system: notice.system, day: dayOf(at) })
+  }
+
+  /** Decides and sends; then waits for the next reminder. */
+  function check({ atGap }: { atGap: boolean }): Notice[] {
+    if (stopped) return []
+    const followups = open()
+    const notices = planNotices({
+      now: now(),
+      followups,
+      interruptionsToday: store.interruptionsOn(),
+      atGap,
+      windowInFront: windowInFront(),
+      toldReady: toldSet(followups, store.lastToldAt),
+      suggestions: openSuggestions().filter((s) => store.lastToldAt(s.id) === null),
+      todayTold: store.noticedOn('today'),
+    })
+    notices.forEach((notice) => send(notice, followups))
+    refresh()
+    return notices
+  }
+
+  /** Brings the timer and the count in line with the follow-ups as they are now (after any change to them). */
+  function refresh() {
+    if (stopped) return
+    const followups = open()
+    onPending(followups.filter((f) => f.status === 'ready').length + openSuggestions().length)
+    if (timer) clearTimer(timer)
+    timer = null
+    const next = nextReminderAt(followups, now())
+    if (next === null) return
+    timer = setTimer(() => {
+      timer = null
+      try {
+        check({ atGap: false })
+      } catch (err) {
+        onError(err)
+        // Looked at again in a minute, so one failure does not end the reminders.
+        timer = setTimer(() => refresh(), MINUTE_MS)
+      }
+    }, Math.min(Math.max(0, next - now()), MAX_TIMER_MS))
+  }
+
+  return {
+    /** The user is in a gap: what is ready may be told. */
+    gap: () => check({ atGap: true }),
+    /** Launched, or the computer is back from sleep: reminders missed meanwhile go out, merged. */
+    wake: () => check({ atGap: false }),
+    refresh,
+    stop() {
+      stopped = true
+      if (timer) clearTimer(timer)
+      timer = null
+    },
+  }
+}
+
+export type FollowupNotifier = ReturnType<typeof createFollowupNotifier>
+
+/** Back at the computer after being away 15 minutes, asked of the system's idle time once a minute. */
+export function createGapWatch({ idleSeconds, onGap, onError = () => {}, setRepeat = setInterval, clearRepeat = clearInterval }: {
+  idleSeconds: () => number
+  onGap: () => void
+  onError?: (err: unknown) => void
+  setRepeat?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>
+  clearRepeat?: (handle: ReturnType<typeof setInterval>) => void
+}) {
+  let away = false
+  const handle = setRepeat(() => {
+    try {
+      const idle = idleSeconds()
+      if (away && idle < IDLE_POLL_MS / 1000) onGap()
+      away = idle >= AWAY_SECONDS
+    } catch (err) {
+      onError(err)
+    }
+  }, IDLE_POLL_MS)
+  return { stop: () => clearRepeat(handle) }
+}

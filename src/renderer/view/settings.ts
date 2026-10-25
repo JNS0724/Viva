@@ -2,12 +2,14 @@ import { formatSize } from '../selectors.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { extensionsSection } from './extensions.ts'
 import { modelsSection } from './models.ts'
+import { sourcesSection } from './sources.ts'
+import { prepareSection } from './prepare-settings.ts'
 
 /**
  * The 设置 page's part of the state (state.ts), with what only comes once the settings are read (settings:get):
  * whether the desktop island is on, and whether the ask shortcut is held.
  */
-type Settings = State['settings'] & { deskIsland?: boolean, shortcut?: { held: boolean } | null }
+type Settings = State['settings'] & { deskIsland?: boolean, shortcut?: { held: boolean } | null, openAtLogin?: { on: boolean, available: boolean } }
 
 const SOURCE_COPY: Readonly<Record<string, string>> = { saved: '已保存在本机', env: '来自环境变量 DEEPSEEK_API_KEY' }
 
@@ -92,7 +94,25 @@ function deskSection(settings: Settings, handlers: Handlers) {
         type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': '桌面岛',
         onChange: (event: Event) => handlers.setDeskIsland((event.target as HTMLInputElement).checked),
       })),
-    h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: '放回顶部正中', onClick: () => handlers.resetDeskPlace() }))
+    h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: '放回顶部正中', onClick: () => handlers.resetDeskPlace() }),
+    openAtLoginRow(settings, handlers))
+}
+
+/** 开机启动: off by default; started so, Viva waits in the tray, so reminders reach the user without opening it. */
+function openAtLoginRow(settings: Settings, handlers: Handlers) {
+  const login = settings.openAtLogin
+  if (!login) return null
+  return h('label', { class: 'pref-row' },
+    h('span', { class: 'pref-copy' },
+      h('span', { class: 'profile-heading', text: '开机启动' }),
+      h('span', { class: 'help', text: login.available
+        ? '开机后 Viva 留在托盘里，不打开窗口；这样电脑开着时，跟进的提醒都能送到。'
+        : '安装好的 Viva 才能开机启动。' })),
+    h('input', {
+      type: 'checkbox', class: 'switch', name: 'open-at-login', checked: login.on, disabled: !login.available, 'aria-label': '开机启动',
+      'data-version': String(login.on),
+      onChange: (event: Event) => handlers.setOpenAtLogin((event.target as HTMLInputElement).checked),
+    }))
 }
 
 const CLEAR_WARNING = '清空后，以前对话里的图片会显示成「图已清理」，回到那些话题时助手也看不到那些图了。'
@@ -121,10 +141,11 @@ function imagesSection(settings: Settings, handlers: Handlers) {
 }
 
 /**
- * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, then MCP servers and skills.
+ * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, message sources, then MCP servers and skills.
  * Re-rendered only when its slices change, and typed text survives a re-render.
  */
-export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], extensions: State['extensions'], handlers: Handlers, { connected }: { connected: boolean }) {
+export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], extensions: State['extensions'], sources: State['sources'],
+  followups: State['followups'], handlers: Handlers, { connected }: { connected: boolean }) {
   if (!settings.open) {
     container.replaceChildren()
     return
@@ -145,6 +166,8 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       modelsSection(models, handlers),
       deskSection(settings, handlers),
       imagesSection(settings, handlers),
+      prepareSection(followups, handlers),
+      sourcesSection(sources, handlers),
       extensionsSection(extensions, handlers, { connected }))))
   if (isFirstShow && !input.disabled) input.focus()
 }
