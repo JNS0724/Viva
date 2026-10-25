@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
@@ -41,6 +41,8 @@ import { removeTree } from './remove-tree.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
 import { openSources } from './sources-main.ts'
+import { openFollowups, type Followups } from './followups-main.ts'
+import type { Notice } from './notice-plan.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
 import { runSmoke } from './smoke.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
@@ -78,6 +80,14 @@ let memoryDb!: ReturnType<typeof openMemoryDb>
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
 let traceDb: ReturnType<typeof openTraceDb> | null = null
 let sources: ReturnType<typeof openSources> | null = null
+/** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
+let followups: Followups | null = null
+/** Ready follow-ups, for the tray, which may be made after the count changed. */
+let pendingFollowups = 0
+/** Notifications shown and not yet clicked or closed: kept, or they may be collected before a click reaches them. */
+const shownNotices = new Set<Notification>()
+/** Started with the computer (开机启动): the window stays hidden, Viva in the tray. */
+const startedHidden = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
 /** Plugins left out of the profile at the last launch, and why; shown in settings. */
 let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
 /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.js. */
@@ -316,6 +326,8 @@ function createBridge(config: Config, cwd: string) {
     emit: (event) => {
       if (generation !== bridgeGeneration) return
       emitToRenderer(event)
+      // A turn of the user's, or a task of theirs, just ended: a gap, where what is ready may be told.
+      if (event.type === 'turn_end' || event.type === 'task_end') followups?.notifier.gap()
       if (event.type === 'turn_end' || event.type === 'error') reportTurnMemories()
       if (event.type === 'turn_end' && mcpReloadDue) reloadMcpAfterTurn()
     },
@@ -436,7 +448,18 @@ function settingsView() {
     shortcut: shortcutHeld === null ? null : { keys: ASK_SHORTCUT, held: shortcutHeld },
     images: imageStore.usage(),
     permission: permissionNow(),
+    openAtLogin: { on: preferences.get().openAtLogin, available: canOpenAtLogin() },
   }
+}
+
+/** Only the installed app may start with the computer: in development it would register Electron itself. */
+const canOpenAtLogin = () => app.isPackaged && !currentConfig().smoke
+
+/** 开机启动: off unless the user turns it on; started so, Viva stays in the tray (startedHidden). */
+function setOpenAtLogin(on: boolean) {
+  if (!canOpenAtLogin()) throw new Error('只有安装好的 Viva 能开机启动')
+  app.setLoginItemSettings({ openAtLogin: on, ...(process.platform === 'win32' ? { args: ['--hidden'] } : {}) })
+  preferences.set('openAtLogin', on)
 }
 
 /** The permission level picked; one no longer offered (an older or edited file) reads as the default. */
@@ -552,14 +575,20 @@ function closeToTray() {
 
 function hideToTray() {
   mainWindow().hide()
+  showTray()
+  desk?.setAway(true)
+}
+
+function showTray() {
   tray ??= createTray({
     Tray, Menu, nativeImage,
     iconDir: path.join(CODE_ROOT, 'src', 'assets', 'tray'),
     platform: process.platform,
     onOpen: showWindow,
     onQuit: () => app.quit(),
+    onPending: openTasksPage,
+    pending: pendingFollowups,
   })
-  desk?.setAway(true)
 }
 
 /**
@@ -615,6 +644,10 @@ function registerSettingsIpc() {
     return settingsView()
   })
   ipcMain.handle('settings:set-permission', (_event, level) => setPermission(level))
+  ipcMain.handle('settings:set-open-at-login', (_event, on) => {
+    setOpenAtLogin(on)
+    return settingsView()
+  })
   ipcMain.handle('settings:reset-desk-place', () => {
     desk?.resetPlace()
     if (!desk) preferences.set('deskPlaces', { last: null, places: {} })
@@ -708,6 +741,27 @@ async function chooseDshDir(): Promise<string | null> {
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
+/** The 后台 page, from a notification or the tray: the window in front, on that page. */
+function openTasksPage() {
+  showWindow()
+  if (win && !win.isDestroyed()) win.webContents.send('island:action', { kind: 'tasks' })
+}
+
+/** A follow-up's notice as a system notification; clicked, it opens the 后台 page. */
+function showNotice(notice: Notice) {
+  if (!Notification.isSupported()) return
+  const shown = new Notification({ title: notice.title, body: notice.body })
+  shownNotices.add(shown)
+  const done = () => shownNotices.delete(shown)
+  shown.on('click', () => {
+    done()
+    followups?.store.logEvent('notice_opened', { kind: notice.kind })
+    openTasksPage()
+  })
+  shown.on('close', done)
+  shown.show()
+}
+
 /** A smoke run cannot click through the folder dialog; it says here which folder the user would pick. */
 let smokeSourcePick: string | null = null
 
@@ -755,6 +809,16 @@ function openPersonal(config: Config) {
   })
   personal = createPersonal({ memoryDb, historyDb, mcpStore })
   registerPersonalIpc(config, mcpStore)
+  followups = openFollowups({
+    userData,
+    notify: showNotice,
+    windowInFront,
+    onPending: (count) => {
+      pendingFollowups = count
+      tray?.setPending(count)
+    },
+    idleSeconds: () => powerMonitor.getSystemIdleTime(),
+  })
   sources = openSources({
     userData,
     crypto: safeStorage,
@@ -864,7 +928,14 @@ function createWindow(config: Config) {
   })
   win = created
   attachDeskIsland(config, created)
-  created.once('ready-to-show', () => created.show())
+  created.once('ready-to-show', () => {
+    if (!startedHidden || config.smoke) return created.show()
+    // Started with the computer: in the tray, the island on the desktop, until the user opens it.
+    showTray()
+    desk?.setAway(true)
+  })
+  // Coming back to the window is one of the user's gaps.
+  created.on('focus', () => followups?.notifier.gap())
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -890,6 +961,8 @@ function createWindow(config: Config) {
 }
 
 isolateSmokeUserData()
+// Windows shows a notification only for the app its Start menu shortcut names (the installer's, electron-builder appId).
+if (process.platform === 'win32') app.setAppUserModelId('app.viva.desktop')
 // Before the app is ready: the pages load pasted pictures by name from viva-image:// (image-protocol.js).
 protocol.registerSchemesAsPrivileged([IMAGE_SCHEME_PRIVILEGES])
 // dsh's home is the app's own now, so a second copy of the app would share it: hand over to the first.
@@ -996,6 +1069,9 @@ app.whenReady().then(async () => {
   }
   openHistory(config)
   openPersonal(config)
+  // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
+  powerMonitor.on('resume', () => followups?.notifier.wake())
+  powerMonitor.on('unlock-screen', () => followups?.notifier.wake())
   createWindow(config)
   registerShortcut(config)
 }).catch((err) => {
@@ -1021,6 +1097,7 @@ app.on('will-quit', () => {
   tray?.destroy()
   clearInterval(lateMemoryTimer)
   sources?.close()
+  followups?.close()
   historyDb?.close()
   memoryDb?.close()
   traceDb?.close()

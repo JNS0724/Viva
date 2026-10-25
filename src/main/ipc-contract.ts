@@ -40,6 +40,7 @@ export const IPC_ARGS = Object.freeze({
   'settings:clear-key': none,
   'settings:set-desk-island': z.tuple([z.boolean()]),
   'settings:set-permission': z.tuple([id]),
+  'settings:set-open-at-login': z.tuple([z.boolean()]),
   'settings:reset-desk-place': none,
 
   'images:keep': z.tuple([bytes]),

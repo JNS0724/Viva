@@ -588,6 +588,13 @@ const handlers = {
       dispatch({ type: 'settings_failed', message: errorMessage(err) })
     }
   },
+  async setOpenAtLogin(on: boolean) {
+    try {
+      dispatch({ type: 'settings_loaded', view: await api.setOpenAtLogin(on) })
+    } catch (err) {
+      dispatch({ type: 'settings_failed', message: errorMessage(err) })
+    }
+  },
   async resetDeskPlace() {
     try {
       dispatch({ type: 'settings_loaded', view: await api.resetDeskPlace() })
