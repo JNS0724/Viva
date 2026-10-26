@@ -142,6 +142,7 @@ function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
 }
 
 function inputView(task: BackgroundTask, handlers: Handlers) {
+  if (task.status === 'interrupted') return h('button', { class: 'btn btn-secondary', type: 'button', text: '接着做', onClick: () => handlers.resumeUnfinished(task.id) })
   const live = LIVE.has(task.status)
   const field = h('textarea', {
     class: 'tp-input', name: `task-input-${task.id}`, rows: 2, 'aria-label': live ? '插话' : '接着问',

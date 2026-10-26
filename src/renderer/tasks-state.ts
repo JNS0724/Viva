@@ -227,6 +227,10 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     },
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
+    task_snapshot: (state, { snapshot }) => withTasks(state, { list: state.tasks.list.map(task => task.id !== snapshot.taskId ? task : {
+      ...task, status: snapshot.status, now: snapshot.currentAction, updatedAt: snapshot.updatedAt,
+      endedAt: snapshot.endedAt, waitingFor: snapshot.waitingFor, revision: snapshot.revision,
+    }) }),
 
     task_end: (state, { taskId, stopReason, message = null, at }) => {
       const task = state.tasks.list.find((entry) => entry.id === taskId)

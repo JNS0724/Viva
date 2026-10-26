@@ -25,6 +25,7 @@ import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
 import { createTaskStore } from './task-store.ts'
+import { createTaskRegistry } from './task-registry.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { migrateLegacyHistory } from './history-migrate.ts'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.ts'
@@ -85,6 +86,13 @@ let traceDb: ReturnType<typeof openTraceDb> | null = null
 let sources: ReturnType<typeof openSources> | null = null
 /** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
 let taskStore: ReturnType<typeof createTaskStore> | null = null
+const taskRegistry = createTaskRegistry({ changed: snapshot => {
+  emitToRenderer({ type: 'task_snapshot', taskId: snapshot.taskId, snapshot })
+  if (snapshot.endedAt !== null) {
+    const stored = taskStore?.list().find(task => task.id === snapshot.taskId)
+    if (stored) taskStore?.add({ ...stored, status: snapshot.status, endedAt: snapshot.endedAt, resultPreview: snapshot.resultPreview })
+  }
+} })
 /** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
 let followups: Followups | null = null
 /** Ready follow-ups, for the tray, which may be made after the count changed. */
@@ -334,6 +342,7 @@ function createBridge(config: Config, cwd: string) {
     mcpServers: () => personal.mcpServers(),
     configActions: configActions(config),
     messageActions: { read: (request) => (sources ? sources.read(request) : Promise.resolve(NO_SOURCES)) },
+    taskRead: (request, sessionId) => taskRegistry.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
     emit: (event) => {
       if (generation !== bridgeGeneration) return
       if (event.type === 'followup_propose') {
@@ -343,6 +352,7 @@ function createBridge(config: Config, cwd: string) {
         return
       }
       emitToRenderer(event)
+      taskRegistry.receive(event)
       // A turn of the user's, or a task of theirs, just ended: a gap, where what is ready may be told.
       if (event.type === 'turn_end' || event.type === 'task_end') followups?.gap()
       if (event.type === 'turn_end' || event.type === 'error') reportTurnMemories()
@@ -365,6 +375,7 @@ function dshSettings(config: Config) {
 
 /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
 function recoverFromCrash({ message }: { message: string }) {
+  taskRegistry.interrupt()
   console.error('[dsh] exited unexpectedly:', message)
   bridge = null
   turn = { active: false, startedAt: 0 }
@@ -385,6 +396,7 @@ function recoverFromCrash({ message }: { message: string }) {
 
 /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
 async function stopBridge() {
+  taskRegistry.interrupt()
   clearTimeout(restartTimer)
   const running = bridge
   bridge = null
@@ -926,6 +938,7 @@ function openHistory(config: Config) {
     traceDb: () => traceDb,
   })
   registerTaskIpc(ipcMain, {
+    registry: taskRegistry,
     db: historyDb,
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).
     store: taskStore = createTaskStore({ file: path.join(userData, 'background-tasks.json'), onError: (err) => console.error('[tasks]', err.message) }),

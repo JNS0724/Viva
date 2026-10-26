@@ -1,0 +1,10 @@
+{
+  "name": "viva-tasks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js", "./package.json": "./package.json" },
+  "peerDependencies": { "@deepseek-ai/cordis": "~4.0.4", "@deepseek-ai/dsh-tools": "0.2.0-rc.2", "@deepseek-ai/schemastery": "~3.18.4" },
+  "viva": { "contract": { "tasks": 1 } }
+}

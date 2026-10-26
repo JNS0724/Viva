@@ -46,6 +46,7 @@ export function createPermissionBroker() {
     resolve,
     cancelAll,
     waitingSessions,
+    pendingFor: (sessionId: string) => [...pending].filter(([, entry]) => entry.params.sessionId === sessionId).map(([requestId]) => requestId),
     get size() {
       return pending.size
     },

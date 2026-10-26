@@ -9,7 +9,7 @@ import { h } from './dom.ts'
  * 接着问 / ×). One quiet look for every state: the words say where it stands, and the only colour is the
  * button that answers it. 详情 → is the 后台 page, on this task (view/tasks-page.js).
  */
-const SAID: Readonly<Record<string, string>> = { running: '后台在做', done: '做完了', stopped: '停下了', error: '出错了' }
+const SAID: Readonly<Record<string, string>> = { running: '后台在做', done: '做完了', stopped: '停下了', error: '出错了', interrupted: '已中断' }
 const LIVE = new Set(['running', 'waiting'])
 const MINUTE_MS = 60_000
 
@@ -53,6 +53,7 @@ function waitingParts(task: BackgroundTask, handlers: Handlers): CardParts {
 }
 
 function partsOf(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): CardParts {
+  if (task.status === 'interrupted') return { said: '已中断', line: '助手断开，任务尚未恢复', actions: [button('接着做', () => handlers.resumeUnfinished(task.id))] }
   if (task.status === 'waiting') return waitingParts(task, handlers)
   if (task.status === 'running') {
     const line = [task.now, `已 ${minutesSince(task.startedAt, now)}`].filter(Boolean).join(' · ')
@@ -82,7 +83,7 @@ export function cardedTasks(state: State): Array<{ task: BackgroundTask, report:
   const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])])])
   return state.tasks.list.flatMap((task): Array<{ task: BackgroundTask, report: TaskReport | null }> => {
     if (!hosted.has(task.id)) return []
-    if (LIVE.has(task.status)) return [{ task, report: null }]
+    if (LIVE.has(task.status) || task.status === 'interrupted') return [{ task, report: null }]
     const report = state.tasks.reports.find((entry) => entry.taskId === task.id && entry.shown)
     return report ? [{ task, report }] : []
   })
