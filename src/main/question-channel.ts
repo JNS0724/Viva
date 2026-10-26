@@ -115,6 +115,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
     const checked = checkAnswers(entry.question.questions, answers)
     pending.delete(questionId)
     send({ type: 'answer', id: questionId, answers: checked })
+    closed(questionId, entry.taskId)
     return true
   }
 

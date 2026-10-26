@@ -1,6 +1,7 @@
 import type { Conversation } from './history-db.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
+import type { TaskRegistry } from './task-registry.ts'
 
 /**
  * Background tasks from the window (phase 3). While a turn runs, words about something else move it to the
@@ -50,6 +51,7 @@ function checked(request: { words?: unknown, keep?: unknown, text?: unknown } | 
 
 /** What the background tasks need from the app: the history, the task store, the conversation on screen, the agent. */
 interface TaskIpcDeps {
+  registry?: TaskRegistry
   db: ReturnType<typeof import('./history-db.ts').openHistoryDb>
   store?: TaskStore
   current: () => Conversation
@@ -60,7 +62,10 @@ interface TaskIpcDeps {
   agent: Record<'spinOff' | 'mergeBack' | 'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>
 }
 
-export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, current, setCurrent, isBusy, setBusy, agentInfo, agent }: TaskIpcDeps) {
+export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, setCurrent, isBusy, setBusy, agentInfo, agent }: TaskIpcDeps) {
+  for (const task of store.list()) registry?.put({ ...task,
+    resultPreview: task.resultPreview ?? db.get(task.segmentId)?.messages.slice(task.keep ?? 0).filter(message => message.role === 'assistant').at(-1)?.text ?? '',
+  }, true)
   /** taskId → { id, segmentId, title, words, keep, next } (next: the segment the conversation went on in) */
   const tasks = new Map<string, StoredTask>()
   /** Tasks whose dsh session this launch holds: moved here, or taken up again. Others must be taken up first. */
@@ -94,6 +99,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     attached = new Set([...attached, task.id])
     // Kept on disk while it goes on: should Viva quit first, the next launch offers it again.
     store.add({ ...task, keep, next: next.id, cwd: previous.cwd ?? '', startedAt: Date.now() })
+    registry?.put({ ...task, cwd: previous.cwd ?? '' })
     return { ok: true, task, info: spun.info, conversation: { id: next.id, messages: kept }, folds: db.foldsOf(next.id) }
   }
 
@@ -117,6 +123,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     tasks.set(task.id, { ...task, keep: 0, next: main.id })
     attached = new Set([...attached, task.id])
     store.add({ ...task, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: Date.now() })
+    registry?.put({ ...task, cwd: main.cwd ?? '' })
     agent.promptTask(task.id, text)
     return { ok: true, task }
   }
@@ -138,7 +145,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const entry = store.list().find((item) => item.id === task.id) ?? task
     store.add({ ...entry, endedAt: Date.now(), status: ENDED_STATUSES.has(status) ? status : 'done' })
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED)
-      .forEach((old) => store.remove(old.id))
+      .forEach((old) => { store.remove(old.id); registry?.remove(old.id) })
   }
 
   async function undo(taskId: string) {
@@ -148,6 +155,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     tasks.delete(taskId)
     detach(taskId)
     store.remove(taskId)
+    registry?.remove(taskId)
     db.unfold(task.segmentId)
     db.softDelete(task.next)
     const found = db.get(task.segmentId)
@@ -162,6 +170,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     tasks.delete(taskId)
     detach(taskId)
     store.remove(taskId)
+    registry?.remove(taskId)
     await agent.closeTask(taskId)
   }
 
@@ -202,6 +211,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const { endedAt: _endedAt, status: _status, ...going } = kept
     store.add(going)
     tasks.set(taskId, going)
+    registry?.restart(taskId)
     agent.promptTask(taskId, text)
     return { ok: true }
   }
@@ -217,6 +227,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     if (!taken.ok) return { ok: false, problem: TASK_PROBLEMS.lost }
     tasks.set(taskId, kept)
     attached = new Set([...attached, taskId])
+    registry?.restart(taskId)
     agent.promptTask(taskId, GO_ON)
     const said = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     return { ok: true, task: summaryOf(kept), messages: said }
@@ -229,7 +240,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   ipcMain.handle('task:finished', () => finished())
   ipcMain.handle('task:ask', (_event, taskId, text) => ask(taskId, text))
   ipcMain.handle('task:resume', (_event, taskId) => resume(taskId))
-  ipcMain.handle('task:forget', (_event, taskId) => store.remove(taskId))
+  ipcMain.handle('task:forget', (_event, taskId) => { store.remove(taskId); registry?.remove(taskId) })
   ipcMain.handle('task:undo', (_event, taskId) => undo(taskId))
   ipcMain.handle('task:close', (_event, taskId) => close(taskId))
   ipcMain.handle('task:stop', (_event, taskId) => agent.cancelTask(taskById(taskId).id))

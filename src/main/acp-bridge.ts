@@ -12,6 +12,8 @@ import { createSteerDesk } from './steer-channel.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createMessagesDesk } from './messages-channel.ts'
+import { createTasksDesk } from './tasks-channel.ts'
+import type { TaskRead } from './tasks-channel.ts'
 import type { ReadRequest } from './message-reader.ts'
 import { createQuestionDesk } from './question-channel.ts'
 import { stopInTime } from './stop-in-time.ts'
@@ -83,7 +85,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, prewarmSessions = false, onTiming,
+  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, taskRead = null, prewarmSessions = false, onTiming,
 }: {
   dshBin: string, nodeBin?: string, profile: string, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
@@ -91,6 +93,7 @@ export function createAcpBridge({
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
   /** What the message sources brought in, for viva_messages_read; null leaves the tool saying there are none. */
   messageActions?: { read: (request: ReadRequest) => Promise<string> } | null,
+  taskRead?: TaskRead | null,
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
 }) {
@@ -137,6 +140,7 @@ export function createAcpBridge({
   } })
   // The messages the sources brought in, read from the conversation (viva-messages).
   const messagesDesk = createMessagesDesk({ send: toPlugins, read: messageActions?.read ?? null })
+  const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, authorized: id => id === sessionId || tasks.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
     if (!running.has(id) || running.get(id)?.released) return
     if (tasks.has(id)) emit({ type: 'task_update', taskId: id, update })
@@ -168,7 +172,10 @@ export function createAcpBridge({
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
       emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
-      return promise
+      return promise.finally(() => {
+        const currentTask = taskOf(params.sessionId)
+        if (currentTask) emit({ type: 'task_permission_closed', taskId: currentTask, requestId })
+      })
     },
   }
 
@@ -183,6 +190,7 @@ export function createAcpBridge({
       forking.receive(message)
       followupDesk.receive(message)
       messagesDesk.receive(message)
+      tasksDesk.receive(message)
       streams.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
@@ -455,6 +463,7 @@ export function createAcpBridge({
     const forked = await forking.fork({ words, occurrence: 0 })
     if (!forked.ok) return forked
     tasks.set(taskId, { cwd: sessionCwd, config: configNow })
+    for (const requestId of broker.pendingFor(taskId)) emit({ type: 'task_permission_waiting', taskId, requestId })
     questions.moveToTask(taskId, taskId)
     try {
       return { ok: true, taskId, info: await resumeOrOpen(forked.sessionId, sessionCwd) }
