@@ -77,7 +77,21 @@ async function checkOffer(win: SmokeWindow, outDir: string) {
 }
 
 /** Long run: the reader parks the trace mid-way, then a long answer streams in. Returns failed expectations. */
-async function checkLongTask(win: SmokeWindow, outDir: string) {
+async function checkLongTask(win: BrowserWindow, outDir: string) {
+  const size = win.getSize()
+  // A tall desktop hides anchoring regressions because the preceding turn does not need to scroll.
+  // Exercise the short CI/laptop viewport on every machine, without changing the 0–80px expectation.
+  win.setSize(Math.min(size[0], 921), Math.min(size[1], 648))
+  try {
+    await wait(UI_WAIT_MS)
+    return await longTaskAtCurrentSize(win, outDir)
+  } finally {
+    win.setSize(size[0], size[1])
+    await wait(UI_WAIT_MS)
+  }
+}
+
+async function longTaskAtCurrentSize(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   await click(win, 'toggle-drawer')
   await submit(win, LONG_PROMPT)
