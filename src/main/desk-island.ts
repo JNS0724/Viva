@@ -242,11 +242,20 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (view?.form === 'done' && !input && !held && sinceDone < DESK_TIMES.done + DESK_TIMES.mini) timer = setTimeout(refresh, untilNextForm(sinceDone))
   }
 
+  /**
+   * Whether the window takes the keyboard. On Windows changing it loses the window its place on top of the
+   * others (the next window clicked covered the island, found by DeepSeek), so the place is taken again.
+   */
+  function setFocusable(shown: Win, value: boolean) {
+    shown.setFocusable(value)
+    shown.setAlwaysOnTop(true, 'floating')
+  }
+
   /** A window focused before its page has loaded loses the focus again as it loads; so only once it has. */
   function takeKeyboard() {
     const shown = live()
     if (!shown || !loaded) return
-    shown.setFocusable(true)
+    setFocusable(shown, true)
     shown.focus()
   }
 
@@ -258,7 +267,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     const shown = live()
     if (shown) {
       if (shown.isFocused()) shown.blur()
-      shown.setFocusable(false)
+      setFocusable(shown, false)
     }
     refresh()
   }

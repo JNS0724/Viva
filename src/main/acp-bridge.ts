@@ -14,6 +14,7 @@ import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-
 import { createMessagesDesk } from './messages-channel.ts'
 import type { ReadRequest } from './message-reader.ts'
 import { createQuestionDesk } from './question-channel.ts'
+import { stopInTime } from './stop-in-time.ts'
 import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
@@ -25,6 +26,8 @@ const CLIENT_INFO = { name: 'viva', version: pkg.version }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
 /** dsh decides at launch, from the model it starts on, whether its prompts take pictures. */
 const NO_IMAGES = '这个模型看不了图片（DeepSeek 里只有 V41-Flash 能看），图片没有发出去'
+/** A task let go when it would not stop (cancelTask): what dsh started for it may still be running. */
+const STOPPED_ANYWAY = '已停下。它之前开始的命令没有响应停止，可能还在电脑上运行；需要的话在任务管理器（活动监视器）里结束它。'
 const NO_MCP = (): AcpServer[] => []
 type PromptBlocks = Parameters<ClientSideConnection['prompt']>[0]['prompt']
 /** One of a session's choices (model, effort), as dsh lists them; only these fields are read here. */
@@ -107,6 +110,8 @@ export function createAcpBridge({
   const tasks = new Map<string, TaskSession>()
   /** Sessions with a turn running (a prompt not yet answered). */
   const running = new Set<string | null>()
+  /** Tasks whose turn did not stop when asked and was let go (stop-in-time.ts): its late end is not told again. */
+  const letGo = new Set<string>()
   const taskOf = (id: string) => (tasks.has(id) ? id : null)
   const isTask = (id: string | null) => id !== null && tasks.has(id)
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf })
@@ -260,22 +265,26 @@ export function createAcpBridge({
     }
     const asked = sessionId
     running.add(asked)
+    // Let go when stopped (cancelTask): it has ended on screen, and the task may be running a new turn by now.
+    let released = false
     try {
       const blocks: PromptBlocks = [
         ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
         ...(text ? [{ type: 'text' as const, text }] : []),
       ]
       const response = await live().prompt({ sessionId: opened(asked), prompt: blocks })
+      if ((released = wasLetGo(asked))) return
       if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
       else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason })
     } catch (err) {
+      if ((released = wasLetGo(asked))) return
       const message = describeError(err, stderrTail)
       // Viva quitting ends a task's turn too: it is not over, and the next launch offers it (task-store.js).
       if (isTask(asked)) {
         if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message })
       } else emit({ type: 'error', message })
     } finally {
-      running.delete(asked)
+      if (!released) running.delete(asked)
     }
   }
 
@@ -425,26 +434,43 @@ export function createAcpBridge({
   async function promptTask(taskId: string, text: string) {
     if (!tasks.has(taskId)) return
     running.add(taskId)
+    let released = false
     try {
       const response = await live().prompt({ sessionId: taskId, prompt: [{ type: 'text', text }] })
+      if ((released = wasLetGo(taskId))) return
       if (tasks.has(taskId)) emit({ type: 'task_end', taskId, stopReason: response.stopReason })
     } catch (err) {
+      if ((released = wasLetGo(taskId))) return
       // As in prompt(): ended because Viva is quitting, it is not over.
       if (tasks.has(taskId) && !disposed) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(err, stderrTail) })
     } finally {
-      running.delete(taskId)
+      if (!released) running.delete(taskId)
     }
   }
 
-  /** Stops what a task is doing; it stays, answered as cancelled (task_end). */
+  /** Whether `id`'s turn was let go when stopped (and so already ended on screen); forgets it either way. */
+  function wasLetGo(id: string | null) {
+    if (id === null || !letGo.has(id)) return false
+    letGo.delete(id)
+    return true
+  }
+
+  /**
+   * Stops what a task is doing; it stays, answered as cancelled (task_end). A turn that does not stop is let
+   * go after a while (stop-in-time.ts), so 停下 always ends it on screen; what dsh started may still be running.
+   */
   async function cancelTask(taskId: string) {
     if (!tasks.has(taskId)) return
     broker.cancelAll(taskId)
-    try {
-      await live().cancel({ sessionId: taskId })
-    } catch (err) {
-      console.error('[acp-bridge] cancelling a task failed:', describeError(err))
-    }
+    await stopInTime({
+      cancel: () => live().cancel({ sessionId: taskId }),
+      stillRunning: () => running.has(taskId) && !letGo.has(taskId) && !disposed,
+      giveUp: () => {
+        letGo.add(taskId)
+        running.delete(taskId)
+        emit({ type: 'task_end', taskId, stopReason: 'cancelled', message: STOPPED_ANYWAY })
+      },
+    })
   }
 
   /** The task is done with: its session closes, whatever it still asked goes unanswered. */

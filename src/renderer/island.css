@@ -41,8 +41,10 @@
   background: radial-gradient(circle, var(--ink-2) 1.3px, transparent 1.6px) 0 0 / 7px 6px repeat;
 }
 .isl[data-host="desk"] .isl-row:hover .isl-grip { opacity: .9; }
-.isl-ask { color: var(--ink-3); font-size: 14px; }
-.isl-head .isl-kbd { min-width: 0; font-size: 11px; }
+/* Too long for the island (Windows' Ctrl+Shift+Space, a wide system font), the words give way, never the tail
+   beside them: it ran into the tools (DeepSeek, 2026-10-26). */
+.isl-ask { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-3); font-size: 14px; }
+.isl-head .isl-kbd { flex: none; min-width: 0; font-size: 11px; }
 .isl-tips { margin: 2px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
 .isl-tips li { position: relative; padding-left: 14px; }
 .isl-tips li::before { content: ''; position: absolute; left: 0; top: calc(50% - 2.5px); width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
