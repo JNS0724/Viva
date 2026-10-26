@@ -60,7 +60,8 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 1. 把 `package.json` 的版本改成新版本（`npm version 0.4.1-beta.1 --no-git-tag-version`，`package-lock.json` 一起改）。
 2. 在 `docs/releases/v<版本>.md` 写这一版的发布说明（格式照上一版：下载、首次打开、这一版的变化、测试情况）。
-3. 这两处改动走 PR 合进 main，再在 main 上打标签推上去：`git tag v0.4.1-beta.1 && git push origin v0.4.1-beta.1`。
+3. 发版前跑一遍真模型验证（[live-check.md](live-check.md)）：beta 跑 `npm run live -- --set core`，正式版跑全部并过一遍人工检查。
+4. 这两处改动走 PR 合进 main，再在 main 上打标签推上去：`git tag v0.4.1-beta.1 && git push origin v0.4.1-beta.1`。
 
 `.github/workflows/release.yml` 接着做：先查标签和 `package.json` 的版本对得上、发布说明写了；再跑一遍 `package.yml`，在 macOS 和 Windows 上打安装包、对装好的应用跑冒烟测试；都通过了才建 GitHub Release，挂上两个安装包和两份 `THIRD_PARTY_NOTICES`。版本号里带 `-`（beta、rc）的标成测试版。任何一步失败都不会发布；修好后删掉标签（`git push origin :refs/tags/v<版本>`）再打一次。
 
@@ -108,7 +109,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 ## 测试
 
 ```bash
-npm test            # 574 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
+npm test            # 595 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
 npm run coverage    # 覆盖率
 npm run smoke       # 真的启动 Electron，分五次：
                     #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
@@ -126,6 +127,7 @@ npm run smoke       # 真的启动 Electron，分五次：
                     #   resume：直接杀掉 dsh，检查提示重连、自动重启并接回同一段对话
 ```
 
+- **真模型验证（发版前）**：`npm run live` 用真实的 DeepSeek 模型把 26 个取决于模型的场景各跑 3 次，`--set core` 只跑核心的；报告在 `smoke/live/report.md`。怎么跑、场景清单和自动化测不了的人工检查项见 [live-check.md](live-check.md)。
 - **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和五个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。
 - **GitHub 上的自动检查**（`.github/workflows/`）：每个 PR 都在 macOS 和 Windows 上各跑一遍类型检查、构建、单元测试和全部 smoke 阶段（`check.yml`）；改到构建或打包相关的文件时（也可在 Actions 页面手动运行），再在两个平台上打出安装包、装到仓库之外、对装好的应用跑 memory 阶段，Windows 上最后卸载（`package.yml`）。
 - **什么时候在真机上测**：GitHub 的机器是虚拟机，看不到真实屏幕上的样子。

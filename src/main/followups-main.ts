@@ -113,6 +113,8 @@ export function openFollowups(deps: FollowupsDeps) {
     store,
     notifier,
     scheduler,
+    /** Judges the messages not judged yet, as the next window would; none without sources. */
+    judge,
     /** A proposal from the model, to show on a card; null when the user turned the same down lately. */
     admitProposal(proposal: ProposalView): ProposalView | null {
       if (declined(proposal)) return null

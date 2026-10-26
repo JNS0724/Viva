@@ -134,10 +134,12 @@ let lastInfo: { mode: string, model: string, cwd: string, reason?: string, [fiel
 function isolateSmokeUserData() {
   const { smoke, smokePhase, smokeOut } = resolveConfig(process.env, fs.existsSync)
   if (!smoke) return
-  // `relaunch` reopens what `walkthrough` left, `resume` what `memory` left; the others start from nothing.
+  // `relaunch` reopens what `walkthrough` left, `resume` what `memory` left, `live-resume` what `live` left;
+  // the others start from nothing.
   const shared = smokePhase === 'walkthrough' || smokePhase === 'relaunch'
-  const dir = path.join(smokeOut, shared ? 'userData' : `userData-${smokePhase === 'resume' ? 'memory' : smokePhase}`)
-  if (smokePhase !== 'relaunch' && smokePhase !== 'resume') removeTree(dir)
+  const reopens: Record<string, string> = { resume: 'memory', 'live-resume': 'live' }
+  const dir = path.join(smokeOut, shared ? 'userData' : `userData-${reopens[smokePhase as string] ?? smokePhase}`)
+  if (smokePhase !== 'relaunch' && !reopens[smokePhase as string]) removeTree(dir)
   // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too; so is the workspace,
   // so a smoke run never writes into the developer's.
   app.setPath('userData', dir)
@@ -1014,6 +1016,8 @@ function createWindow(config: Config) {
           followups?.store.addSuggestion({ source: 'smoke-mail', messageId: 'm1', sender: '[发件人]', title: '合同续签', ask: '起草回复，确认续签', why: '明天到期', remindAt: null })
           followups?.notifier.refresh()
         },
+        // The live check judges the messages it brought in at once, as the next window would (live-scenarios-sources.ts).
+        judgeMessages: () => followups?.judge?.run(new AbortController().signal) ?? Promise.resolve(null),
         // The showcase stages what was there before its scenes: follow-ups, and mail the judge found urgent.
         followups: () => followups,
         seedMail: () => {
@@ -1139,7 +1143,9 @@ app.whenReady().then(async () => {
     switchTo: switchWorkDir,
     reveal: (dir) => shell.openPath(dir),
   })
-  if (config.smokePhase === 'memory' || config.smokePhase === 'resume' || config.smokePhase === 'showcase') await startSmokeModel()
+  // The live check talks to the real model; LIVE_DRY (scripts/live.mjs --dry) tries the check itself on the fake one.
+  const dryLive = config.smokePhase?.startsWith('live') && process.env.LIVE_DRY === '1'
+  if (config.smokePhase === 'memory' || config.smokePhase === 'resume' || config.smokePhase === 'showcase' || dryLive) await startSmokeModel()
   if (!config.smoke) {
     bringLegacyData()
     bringDshData(config)
