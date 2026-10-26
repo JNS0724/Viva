@@ -27,6 +27,9 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 }) {
   /** While a move is on its way: which events wait ({ keeps }), and those that came. */
   let holding: { keeps: (event: AgentEvent) => boolean, events: AgentEvent[] } | null = null
+  let submissionCounter = 0
+  let starting = 0
+  const earlyTasks = new Map<string, AgentEvent[]>()
 
   /** What the main process answered, or why it could not be asked. */
   async function call(request: () => Promise<any>): Promise<any> {
@@ -45,6 +48,10 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   /** @returns {boolean} whether the event waits for a move on its way */
   function hold(event: AgentEvent) {
+    if (starting && event.taskId && !getState().tasks.list.some(task => task.id === event.taskId)) {
+      earlyTasks.set(event.taskId, [...(earlyTasks.get(event.taskId) ?? []), event])
+      return true
+    }
     if (!holding?.keeps(event)) return false
     holding = { ...holding, events: [...holding.events, event] }
     return true
@@ -54,6 +61,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   async function move() {
     const target = spinOffTarget(getState())
     if (!target || holding) return { ok: false, reason: 'idle' }
+    dispatch({ type: 'task_moving', moving: true })
     holding = { keeps: ofTask, events: [] }
     const result = await call(() => api.spinOffTask(target))
     if (result.ok) {
@@ -62,6 +70,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       console.warn('[tasks] could not move the turn to the background:', result.problem ?? result.reason)
     }
     release().forEach(deliver)
+    dispatch({ type: 'task_moving', moving: false })
     return result
   }
 
@@ -70,14 +79,30 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * is); the conversation on screen goes on as it was.
    * @returns {Promise<boolean>} whether the task started
    */
-  async function startTask(text: string) {
-    const words = spinOffTarget(getState())?.words
-    const result = await call(() => api.startTask(words ? { text, words } : { text }))
-    if (!result.ok) {
-      showToast(result.problem ?? '没能交给后台')
+  async function startTask(text: string, retryId?: string) {
+    const origin = getState().info.sessionId ?? null
+    const previous = getState().tasks.submissions.find(item => item.id === retryId)
+    if (previous && previous.origin !== origin) {
+      showToast('请回到提交时的话题再重试，内容已保留')
       return false
     }
-    dispatch({ type: 'task_started', task: result.task, text, at: Date.now() })
+    const id = retryId ?? `submission-${Date.now()}-${++submissionCounter}`
+    const words = spinOffTarget(getState())?.words
+    dispatch({ type: 'task_submitting', submission: { id, text, origin, status: 'pending' } })
+    starting++
+    const result = await call(() => api.startTask(words ? { text, words } : { text }))
+    if (!result.ok) {
+      dispatch({ type: 'task_submit_failed', id, problem: result.problem ?? '没能交给后台' })
+      starting--
+      if (!starting) { const events = [...earlyTasks.values()].flat(); earlyTasks.clear(); events.forEach(deliver) }
+      return false
+    }
+    dispatch({ type: 'task_started', task: result.task, text, submissionId: id, origin, at: Date.now() })
+    const events = earlyTasks.get(result.task.id) ?? []
+    earlyTasks.delete(result.task.id)
+    starting--
+    events.forEach(deliver)
+    if (!starting) { const rest = [...earlyTasks.values()].flat(); earlyTasks.clear(); rest.forEach(deliver) }
     return true
   }
 

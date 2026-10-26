@@ -324,6 +324,7 @@ function reloadMcpAfterTurn() {
 function createBridge(config: Config, cwd: string) {
   const generation = ++bridgeGeneration
   return createAcpBridge({
+    prewarmSessions: true,
     dshBin: config.dshBin,
     nodeBin: config.nodeBin,
     profile: prepareProfile(config),

@@ -5,7 +5,8 @@ import type { Dom } from '../app.ts'
 import { mentionedTask, routeOf } from '../tasks-state.ts'
 import { h } from './dom.ts'
 import { renderDrawer } from './drawer.ts'
-import { renderEarlier } from './earlier.ts'
+import { renderEarlier, updateEarlierControls } from './earlier.ts'
+import { queueLayout } from './reconcile.ts'
 import { renderHistoryPanel, renderToast } from './history-panel.ts'
 import { renderHome } from './home.ts'
 import { renderHub } from './hub.ts'
@@ -33,8 +34,11 @@ let renderedToast: unknown = null
  * on screen changes (and with its first words, a new topic can no longer be undone).
  */
 function renderEarlierIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
-  const inputs = [state.earlier, state.info.cwd, state.topic.parentId, state.topic.startedAt, state.messages.length === 0, isBusy(state)]
-  if (inputs.every((value, i) => value === renderedEarlierInputs[i])) return
+  const inputs = [state.earlier, state.info.cwd, state.topic.parentId, state.topic.startedAt, state.messages.length === 0]
+  if (inputs.every((value, i) => value === renderedEarlierInputs[i])) {
+    updateEarlierControls(container, state)
+    return
+  }
   renderedEarlierInputs = inputs
   renderEarlier(container, state, handlers)
 }
@@ -78,15 +82,20 @@ function renderProfileIfChanged(container: HTMLElement, memory: State['memory'],
   renderProfilePanel(container, memory, handlers)
 }
 
-function latestQuestionTop(thread: HTMLElement) {
+function latestQuestionTop(thread: HTMLElement, scroll: HTMLElement) {
   const questions = thread.querySelectorAll<HTMLElement>('.msg-user')
-  return questions.length ? questions[questions.length - 1].offsetTop : null
+  // Bubbles may have positioned row wrappers. Measure in the scroll container's coordinates.
+  return questions.length ? questions[questions.length - 1].getBoundingClientRect().top
+    - scroll.getBoundingClientRect().top + scroll.scrollTop - scroll.clientTop : null
 }
 
 /** Re-render the thread, then let the follower decide whether (and how far) to scroll. */
 function renderThreadFollowing(dom: Dom, state: State, handlers: Handlers, now: number) {
-  renderThread(dom.thread, state, handlers, now)
-  dom.follower.afterRender({ anchorTop: latestQuestionTop(dom.thread) })
+  if (!renderThread(dom.thread, state, handlers, now)) return
+  queueLayout(dom.thread, () => {
+    if (!dom.thread.isConnected || dom.thread.hidden) return
+    return dom.follower.measureAfterRender(() => latestQuestionTop(dom.thread, dom.scroll))
+  })
 }
 
 /** The drawer only depends on these slices; skipping identical renders keeps its scroll and hover state intact. */
@@ -193,7 +202,7 @@ function renderComposer(dom: Dom, state: State, handlers: Handlers) {
 /** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */
 export function render(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
   // One timeline: the welcome is only for someone with nothing said yet, anywhere in it.
-  const isHome = state.messages.length === 0 && state.earlier.segments.length === 0
+  const isHome = state.messages.length === 0 && state.earlier.segments.length === 0 && state.tasks.submissions.length === 0
   if (isHome) dom.island.replaceChildren()
   else renderIsland(dom.island, state, handlers, now)
   dom.home.hidden = !isHome

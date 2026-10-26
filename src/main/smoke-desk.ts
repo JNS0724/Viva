@@ -53,7 +53,7 @@ const STEERING = `(() => {
 
 const STEERED_IN_THREAD = `(() => {
   const last = [...document.querySelectorAll('.msg-user')].at(-1)
-  const note = last?.nextElementSibling
+  const note = last?.closest('.msg-user-row')?.nextElementSibling ?? last?.nextElementSibling
   return Boolean(last?.textContent.includes(${JSON.stringify(STEER)}) && note?.textContent.includes('工作中插话') && !note.textContent.includes('没有送到'))
 })()`
 

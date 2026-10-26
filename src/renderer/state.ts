@@ -1,4 +1,5 @@
 import { approvalTitle, optionName } from './approval.ts'
+import { assistantStream } from './assistant-stream.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
 import { FILES_ACTIONS, initialFiles } from './files-state.ts'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.ts'
@@ -177,6 +178,7 @@ function onToolUpdate(state: State, update: AcpUpdate, at: number): State {
 }
 
 const UPDATE_HANDLERS: Readonly<Record<string, (state: State, update: AcpUpdate, at: number) => State>> = {
+  viva_stream: assistantStream,
   agent_message_chunk: onMessageChunk,
   agent_thought_chunk: onThoughtChunk,
   tool_call: onToolUpdate,

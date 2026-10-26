@@ -113,7 +113,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
       }
       windows.push(this)
     }
-    setAlwaysOnTop() {}
+    setAlwaysOnTop(value) { this.onTop = value }
     setVisibleOnAllWorkspaces() {}
     setContentProtection() {}
     setIgnoreMouseEvents(value) { this.ignoring.push(value) }
@@ -129,7 +129,11 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     hide() { this.visible = false }
     setBounds(bounds) { this.bounds = bounds }
     getBounds() { return this.bounds }
-    setFocusable(value) { this.focusable = value }
+    // As on Windows: changing whether the window takes the keyboard loses its place on top (DeepSeek, 2026-10-26).
+    setFocusable(value) {
+      this.focusable = value
+      this.onTop = false
+    }
     focus() { this.focused = this.focusable }
     isFocused() { return this.focused }
     blur() { this.focused = false }
@@ -168,6 +172,21 @@ test('the shortcut opens the input, which takes the keyboard until it is closed'
   assert.deepEqual([win.focusable, win.focused, win.visible, win.lastView().form], [false, false, true, 'working'], 'what was asked stays up while it runs')
   desk.setView(view('idle'))
   assert.equal(win.visible, false, 'switched off, it goes once that is over')
+  desk.destroy()
+})
+
+test('the island stays on top of other windows after its input opens and closes', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  desk.setView(view('working'))
+  const [win] = env.windows
+  assert.equal(win.onTop, true, 'shown on top')
+  desk.openInput()
+  win.handlers['did-finish-load']()
+  assert.deepEqual([win.focused, win.onTop], [true, true], 'taking the keyboard, still on top')
+  desk.closeInput()
+  assert.deepEqual([win.focusable, win.onTop], [false, true], 'giving the keyboard back, still on top')
   desk.destroy()
 })
 

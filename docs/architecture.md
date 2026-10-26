@@ -15,7 +15,7 @@
 - dsh 还是 0.2.0-rc，插件用到的都是它自己的接口；
 - 每多一个插件，app 就离「换成别的 ACP agent 也能用」更远一步。
 
-插件和 app **不互相调用**，只通过各自的数据约定（SQLite 文件）协作。
+插件和 app 通过版本化的数据约定协作：持久数据使用 SQLite；问题、配置和实时输出等瞬时事件使用独立 IPC 通道。
 
 ## 2. 组成
 
@@ -42,6 +42,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | `viva-followups`（`plugins/followups`） | `followups@1`：IPC 消息（见 `plugins/followups/lib/channel.ts`） | 模型提出的跟进建议；后台准备的不带工具的模型调用的结果 | 建议显示成卡片，用户点了才建跟进（`followups.db`）；按时段请它准备，只拿回草稿 |
 | `viva-messages`（`plugins/messages`） | `messages@1`：IPC 消息（见 `plugins/messages/lib/channel.ts`） | 模型要查看的消息（哪个消息源、关键词、多少小时、几条） | 校验后（`src/main/messages-channel.ts`）先把一分钟内没拉过的消息源拉一次（最多等 20 秒），再查 `sources.db`，按条列出、标明「只是数据」（`src/main/message-reader.ts`）；密钥和数据库都不交给 dsh |
 | `viva-config`（`plugins/config`） | `config@1`：IPC 消息（见 `plugins/config/lib/channel.js`） | 模型要接入或移除的 MCP 服务器、要新建或安装的 skill（审批卡片通过之后） | 校验后执行（`src/main/config-channel.js`），需要密钥时由窗口请用户填写，加密保存，不回传给 dsh |
+| `viva-stream`（`plugins/stream`） | `stream@1`：IPC 消息 | 真实文本/思考增量，以及最终提交的可见内容 | 每次调用先选择输出来源；按尝试替换、撤回和最终校准，ACP 继续承载工具、用量和授权 |
 
 人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/main/app-plugins.js` 的 `PERSONA`。
 
@@ -77,6 +78,11 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | policy | `tools/pre-execute`（先于授权执行，返回 `deny` 时附带给模型看的原因） |
 | followups | `tools.register`（`viva_followup_propose`，只把建议交给应用）、`llm.stream`（后台准备：不传 `tools`，模型只能写） |
 | messages | `tools.register`（`viva_messages_read`，只读，向应用要结果） |
+| stream | `agent/assistant-stream`（实时流帧）、`session/event`（最终内容）、`agent/disposed`（清理绑定） |
+
+`viva-stream` 依赖 dsh 内部事件结构，并非通用 ACP 扩展。当前固定为 dsh `0.2.0-rc.2`：该版本的 ACP 适配器只转发已提交的完整块，所以需要独立插件接收真实增量。升级 dsh 时须重跑 `test/stream-runtime.test.js`（实际 dsh + 延迟 SSE），确认首段早于响应结束、取消保留已提交前缀，并检查事件与内容块结构。插件不可用时使用 ACP；已选流式的调用若通道失效，先撤回该调用的临时内容，再恢复完整 ACP 输出，避免丢字或重复追加。
+
+新话题可以提前准备最多一个独立空会话，额外常驻一份该会话的 MCP 连接/进程。单实例服务器可能拒绝第二份连接：这类预热失败直接丢弃预热会话，不更新正式会话的 MCP 状态或 30 秒失败暂避记录。真正创建会话时重新尝试；不同会话不共用 MCP 客户端。
 
 每个插件出错都只记日志：注入失败就不带记忆，记录失败就没有「过程」，不会影响对话本身。插件加载失败时，dsh 会输出一条带插件名的警告，照常启动。
 

@@ -28,6 +28,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
   const { plugins, problems } = resolvePlugins({ codeRoot: ROOT, userData: '/data', dshVersion: installedDshVersion(ROOT) })
   assert.deepEqual(problems, [])
   assert.deepEqual(plugins.map((plugin) => [plugin.name, plugin.config]), [
+    ['viva-stream', {}],
     ['viva-memory', { file: path.join('/data', 'memory.db') }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
     ['viva-policy', {}],

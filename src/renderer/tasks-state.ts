@@ -7,6 +7,8 @@ import { currentAction } from './selectors.ts'
  * that view is the conversation on screen again. Pure and immutable like `state.js`, which merges these in.
  */
 export const initialTasks = Object.freeze({
+  submissions: [] as Array<{ id: string, text: string, origin: string | null, status: string, problem?: string }>,
+  moving: false,
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
   list: [] as BackgroundTask[],
   /** The move just made, while it can still be undone: { taskId, prefix, text }. */
@@ -197,6 +199,14 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
   const inView = (state: State, taskId: string, type: string, action: Action) => mapTask(state, taskId, (task) => ({ ...task, view: handlers[type](task.view, action) }))
 
   return {
+    task_moving: (state, { moving }) => withTasks(state, { moving }),
+    task_submitting: (state, { submission }) => withTasks(state, {
+      submissions: [...state.tasks.submissions.filter(item => item.id !== submission.id), submission],
+    }),
+    task_submit_failed: (state, { id, problem }) => withTasks(state, {
+      submissions: state.tasks.submissions.map(item => item.id === id ? { ...item, status: 'failed', problem } : item),
+    }),
+    task_submit_dismissed: (state, { id }) => withTasks(state, { submissions: state.tasks.submissions.filter(item => item.id !== id) }),
     route_toggle: (state) => withTasks(state, { flip: !state.tasks.flip }),
 
     /** The running turn went to the background: it takes its part of the conversation with it. */
@@ -258,11 +268,12 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
      * 后台做: the words went to a task of their own, started from the conversation so far. They stay in the
      * conversation, the task's card under them, unless a turn is running there (its answer is still coming).
      */
-    task_started: (state, { task, text, at }) => {
+    task_started: (state, { task, text, at, submissionId, origin }) => {
       const entry = settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView([{ role: 'user', text }], at) })
       const words = { id: `m${state.messages.length}`, role: 'user', text, open: false, receipt: null, taskId: task.id }
-      const messages = isBusy(state) ? withCardAfter(state.messages, task.id) : [...state.messages, words]
-      return { ...withTasks(state, { list: [...state.tasks.list, entry] }), messages }
+      const messages = origin !== undefined && origin !== (state.info.sessionId ?? null) ? state.messages
+        : isBusy(state) ? withCardAfter(state.messages, task.id) : [...state.messages, words]
+      return { ...withTasks(state, { list: [...state.tasks.list, entry], submissions: state.tasks.submissions.filter(item => item.id !== submissionId) }), messages }
     },
 
     /** The 后台 page, on the task asked for, else the one it was on, else the first in its list. */

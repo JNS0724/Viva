@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DSH_TIMEOUT_MS, eventually, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 
 /**
  * Background tasks inside the real dsh (phase 3): the turn that is running is spun off as a task and goes on
@@ -8,8 +8,8 @@ import { DSH_TIMEOUT_MS, eventually, startHarness as setup } from './fixtures/ds
  */
 
 const textOf = (events, pick) => events.filter(pick).map((e) => e.update.content.text).join('')
-const mainReplies = (events) => textOf(events, (e) => e.type === 'update' && e.update?.sessionUpdate === 'agent_message_chunk')
-const taskReplies = (events, taskId) => textOf(events, (e) => e.type === 'task_update' && e.taskId === taskId && e.update?.sessionUpdate === 'agent_message_chunk')
+const mainReplies = (events) => replies(events.filter(e => e.type === 'update')).join('')
+const taskReplies = (events, taskId) => replies(events.filter(e => e.type === 'task_update' && e.taskId === taskId)).join('')
 
 test('the running turn goes on as a task while the main conversation answers something else', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { events, llm, bridge } = await setup(t)

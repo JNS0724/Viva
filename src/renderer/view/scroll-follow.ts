@@ -27,6 +27,14 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
   let following = true
   let anchorSpent = false
   let lastWrite = Number.NaN
+  const readerAnchoring = scrollEl.style.overflowAnchor
+  // Only one controller owns anchoring at a time. Native scroll anchoring can move the offset after
+  // our DOM update, which would otherwise look like the reader scrolling away before the next frame.
+  const follow = (value: boolean) => {
+    following = value
+    scrollEl.style.overflowAnchor = value ? 'none' : readerAnchoring
+  }
+  follow(true)
 
   const updateJump = () => {
     jumpButton.hidden = following || distanceFromBottom(scrollEl) <= BOTTOM_SLACK_PX
@@ -38,7 +46,7 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
   }
 
   const yieldToReader = () => {
-    following = false
+    follow(false)
     anchorSpent = true
     updateJump()
   }
@@ -52,37 +60,42 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
   scrollEl.addEventListener('scroll', () => {
     if (Math.abs(scrollEl.scrollTop - lastWrite) < 1) return
     if (distanceFromBottom(scrollEl) <= BOTTOM_SLACK_PX) {
-      following = true
+      follow(true)
       updateJump()
     } else {
       yieldToReader()
     }
   }, { passive: true })
 
-  return {
-    /** Call after the thread re-renders. `anchorTop` is the latest user message's offset, or null. */
-    afterRender({ anchorTop }: { anchorTop: number | null }) {
-      if (following) {
-        const target = followTarget({
-          scrollHeight: scrollEl.scrollHeight,
-          clientHeight: scrollEl.clientHeight,
-          anchorTop: anchorSpent ? null : anchorTop,
-        })
+  function measureAfterRender(anchor: () => number | null) {
+    const target = following ? followTarget({
+      scrollHeight: scrollEl.scrollHeight,
+      clientHeight: scrollEl.clientHeight,
+      anchorTop: anchorSpent ? null : anchor(),
+    }) : null
+    const atBottom = distanceFromBottom(scrollEl) <= BOTTOM_SLACK_PX
+    return () => {
+      if (target && following) {
         write(target.scrollTop)
         if (target.capped) {
-          following = false
+          follow(false)
           anchorSpent = true
         }
       }
-      updateJump()
-    },
+      jumpButton.hidden = following || (target ? !target.capped : atBottom)
+    }
+  }
+
+  return {
+    measureAfterRender,
+    afterRender({ anchorTop }: { anchorTop: number | null }) { measureAfterRender(() => anchorTop)() },
     /** A new question: follow again, anchored on it. */
     resetForPrompt() {
-      following = true
+      follow(true)
       anchorSpent = false
     },
     jumpToLatest() {
-      following = true
+      follow(true)
       anchorSpent = true
       write(scrollEl.scrollHeight)
       updateJump()

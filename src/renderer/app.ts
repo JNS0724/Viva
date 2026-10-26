@@ -23,6 +23,7 @@ import { createTimelineActions } from './timeline-actions.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
+import { scheduleFrame } from './view/frame.ts'
 
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
@@ -93,14 +94,24 @@ export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
 
 let state: State = initialState
-let revealFrameId = 0
+let pendingReveal: (() => void) | null = null
 let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
 let historyReady = false
+let pendingRender: (() => void) | null = null
+const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
-  state = reduce(state, action)
-  render(dom, state, handlers)
+  const next = reduce(state, action)
+  if (next === state) return
+  state = next
+  if (['acp_update', 'task_update'].includes(action.type ?? '') && LIVE_TEXT_UPDATES.has(action.update?.sessionUpdate)) {
+    // State stays current for user actions, while a burst of model chunks paints once per frame.
+    pendingRender ??= scheduleFrame(() => { pendingRender = null; render(dom, state, handlers) })
+  } else {
+    if (pendingRender) { pendingRender(); pendingRender = null }
+    render(dom, state, handlers)
+  }
   startReveal()
   publishIsland()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
@@ -209,18 +220,18 @@ async function loadHistory() {
 
 /** Types out assistant text frame by frame; stops by itself once everything received is on screen. */
 function revealFrame(now: number) {
-  revealFrameId = 0
+  pendingReveal = null
   const dt = Math.min(now - lastFrameAt, MAX_FRAME_MS)
   lastFrameAt = now
   state = reduce(state, { type: 'reveal_tick', dt })
   renderStream(dom, state, handlers)
-  if (isRevealing(state)) revealFrameId = requestAnimationFrame(revealFrame)
+  if (isRevealing(state)) pendingReveal = scheduleFrame(revealFrame)
 }
 
 function startReveal() {
-  if (revealFrameId || !isRevealing(state)) return
+  if (pendingReveal || !isRevealing(state)) return
   lastFrameAt = performance.now()
-  revealFrameId = requestAnimationFrame(revealFrame)
+  pendingReveal = scheduleFrame(revealFrame)
 }
 
 /** IPC errors arrive as "Error invoking remote method 'x': Error: msg"; keep only the message. */
@@ -274,9 +285,9 @@ function ask(text: string, { via = null as string | null, images = [] as Array<{
     return true
   }
   // About something else while a turn runs: the words go to a task of their own, the turn stays in front;
-  // should the task not start, they go into the turn instead, so nothing typed is lost.
+  // A failed submission keeps its own text and retry action.
   if (isBusy(state) && routeOf(state, text) === 'other') {
-    taskActions.startTask(text).then((started) => started || steer(text, via))
+    void taskActions.startTask(text)
     return true
   }
   if (isBusy(state)) return steer(text, via)
@@ -415,6 +426,11 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
 }
 
 const handlers = {
+  retrySubmission: (id: string) => {
+    const item = state.tasks.submissions.find(item => item.id === id)
+    if (item?.status === 'failed') void taskActions.startTask(item.text, id)
+  },
+  dismissSubmission: (id: string) => dispatch({ type: 'task_submit_dismissed', id }),
   ...historyActions,
   ...memoryActions,
   ...extensionActions,
@@ -441,7 +457,7 @@ const handlers = {
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
     // Not started: the words come back, so nothing typed is lost.
-    if (!await taskActions.startTask(text)) dom.input.value = text
+    void taskActions.startTask(text)
     return undefined
   },
   /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. 「#name …」 still works too. */

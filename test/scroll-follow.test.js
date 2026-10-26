@@ -7,6 +7,7 @@ function fakeScroller({ scrollHeight, clientHeight = 600, scrollTop = 0 }) {
   const listeners = {}
   let top = scrollTop
   return {
+    style: { overflowAnchor: '' },
     scrollHeight,
     clientHeight,
     get scrollTop() {
@@ -28,6 +29,29 @@ const userScrollTo = (el, top) => {
   el.scrollTop = top
   el.fire('scroll')
 }
+
+test('automatic following owns anchoring; capped and reader-controlled scrolling restore native anchoring', () => {
+  const el = fakeScroller({ scrollHeight: 454, clientHeight: 356 })
+  el.style.overflowAnchor = 'auto'
+  const follower = createScrollFollower(el, { hidden: true })
+  follower.resetForPrompt()
+  follower.afterRender({ anchorTop: 289 })
+  assert.equal(el.scrollTop, 98)
+  assert.equal(el.style.overflowAnchor, 'none', 'native anchoring must not create an unmatched scroll during our deferred layout')
+  el.scrollHeight = 495
+  el.fire('scroll')
+  follower.afterRender({ anchorTop: 289 })
+  el.scrollHeight = 700
+  follower.afterRender({ anchorTop: 289 })
+  assert.equal(el.scrollTop, 265)
+  assert.equal(el.style.overflowAnchor, 'auto', 'the browser may keep the question anchored once automatic following stops')
+  follower.resetForPrompt()
+  assert.equal(el.style.overflowAnchor, 'none')
+  el.fire('wheel', { deltaY: -1 })
+  assert.equal(el.style.overflowAnchor, 'auto', 'reader control keeps normal native anchoring')
+  follower.jumpToLatest()
+  assert.equal(el.style.overflowAnchor, 'none')
+})
 
 test('followTarget goes to the bottom unless that would push the question off the top', () => {
   assert.deepEqual(followTarget({ scrollHeight: 1000, clientHeight: 600, anchorTop: null }), { scrollTop: 400, capped: false })
