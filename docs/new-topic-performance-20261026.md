@@ -40,3 +40,9 @@
 ## 尚未覆盖
 
 没有将候选 dsh 与本轮优化合并发布；没有更新用户安装版、生成本轮 NSIS 安装器或做其他机器/平台验收。单例 MCP 的冷创建仍可能等待，提前展示输入框不等于后端已就绪。更底层的 MCP 共享连接属于 P2，未实施。
+
+## PR 门禁跟进
+
+提交 `bf2b232` 的 Windows CI 通过；macOS 在 walkthrough 的首次提交后等待权限卡超时。作业截图 `home.png` 中模型仍显示“—”，测试此前仅依赖固定 1500 ms 启动等待。`smoke-kit.submit` 现在等待 agent 为 live、具有 sessionId 且输入和发送可用，再写入并提交，保留原 60 秒超时上限。
+
+新增 `test/smoke-kit.test.ts` 验证未就绪时不写入或发送。类型检查、构建和混合 JS/TS 入口完整测试 **641/641** 通过；Windows 实际将假 dsh 启动延迟 5000 ms 后，walkthrough 全流程通过。Mac 修复结果以新提交的远端 CI 为准。测试 TypeScript 迁移约定及 `tsconfig.test.json` 同批纳入。

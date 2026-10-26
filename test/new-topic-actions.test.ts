@@ -5,14 +5,16 @@ import { createNewTopicAction, isPreviousTopicEvent } from '../src/renderer/new-
 import { showsHome } from '../src/renderer/view/render.ts'
 
 test('new topic is visible and focused before runtime readiness; double clicks and retries keep one topic', async () => {
-  let state = { ...initialState, conversationId: 'old', info: { mode: 'live', cwd: '/w', sessionId: 'old' }, messages: [{ id: 'm1', role: 'user', text: 'old words' }] }
-  let finish, fail, calls = 0, focused = 0, jumped = 0
-  const timings = []
+  let state: State = { ...initialState, conversationId: 'old', info: { mode: 'live', model: '', cwd: '/w', sessionId: 'old' }, messages: [{ id: 'm1', role: 'user', text: 'old words' }] }
+  let finish!: (info: AgentInfo) => void
+  let fail!: (error: Error) => void
+  let calls = 0, focused = 0, jumped = 0
+  const timings: Array<{ stage: string, durationMs: number }> = []
   const action = createNewTopicAction({
     getState: () => state, dispatch: (action) => { state = reduce(state, action) },
-    open: () => { calls++; return new Promise((resolve, reject) => { finish = resolve; fail = reject }) },
+    open: () => { calls++; return new Promise<AgentInfo>((resolve, reject) => { finish = resolve; fail = reject }) },
     focus: () => { focused++ }, jump: () => { jumped++ }, toast: assert.fail,
-    errorMessage: (error) => error.message, measure: (timing) => timings.push(timing),
+    errorMessage: (error) => error instanceof Error ? error.message : String(error), measure: (timing) => timings.push(timing),
   })
   const pending = action()
   assert.equal(focused, 1)
@@ -36,7 +38,7 @@ test('new topic is visible and focused before runtime readiness; double clicks a
   const retry = action()
   assert.equal(state.earlier, earlier, 'retry does not archive the same history again')
   assert.equal(state.topic, topic, 'retry prepares the already displayed topic')
-  finish({ mode: 'live', cwd: '/w', sessionId: 'new' })
+  finish({ mode: 'live', model: '', cwd: '/w', sessionId: 'new' })
   await retry
   assert.equal(state.newTopicPending, false)
   assert.equal(state.switching, false)
