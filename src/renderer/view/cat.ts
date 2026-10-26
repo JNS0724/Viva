@@ -1,7 +1,7 @@
 /**
  * Viva's cat: a black kitten in a captain's cap (docs/cat-character.md). Every mood has two pictures in
- * src/assets/cat/bust: a half-body for the large sizes (the home page) and a head close-up for 48px and below
- * (the conversation, the title bar's and the desktop's islands). `typing` is drawn in layers: the body at its
+ * src/assets/cat/bust: a half-body for the large sizes and a head close-up for 48px and below (the conversation,
+ * the title bar's and the desktop's islands; the home page asks for the head at 64px). `typing` is drawn in layers: the body at its
  * keyboard and two paws that take turns striking it. What the picture cannot say (the thought dots, ! and ?,
  * the sparkles of a finished turn) is laid over it here and moved by CSS (styles.css, .cat-*), still when the
  * system asks for reduced motion.

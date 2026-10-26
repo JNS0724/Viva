@@ -3,12 +3,12 @@ import { catMood, greeting, setupView, statusView } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h } from './dom.ts'
 
-const HERO_CAT_PX = 230
+const HERO_CAT_PX = 64
 const heroCats = new Map<string, { key: string, el: HTMLElement }>()
 
-/** The half-body cat on its brand-blue disc (orange while it waits on the user). */
+/** The cat's head on its brand-blue disc (orange while it waits on the user), above the greeting. */
 const heroCat = (state: State, tone: string) => h('div', { class: 'cat-hero', 'data-tone': tone },
-  catFor(heroCats, 'hero', catMood(state), { size: HERO_CAT_PX, frame: true }))
+  catFor(heroCats, 'hero', catMood(state), { size: HERO_CAT_PX, frame: true, variant: 'head' }))
 
 /** What the greeting says under it: the setup, the background at work, or the usual question. */
 function subtitle(state: State) {

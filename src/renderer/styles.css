@@ -191,9 +191,9 @@ html:not([data-platform="darwin"]) {
 
 /* ---------- home: the cat, a greeting, and a card only when something needs doing ---------- */
 .home-simple { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 36px; }
-.home-hero { display: flex; align-items: center; gap: 36px; }
+.home-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 22px; }
 .hero-copy { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.greeting { margin: 0; font-size: 64px; font-weight: 700; line-height: 1; letter-spacing: -.01em; }
+.greeting { margin: 0; font-size: 48px; font-weight: 700; line-height: 1; letter-spacing: -.01em; }
 .greeting-sub { margin: 0; font-size: 22px; font-weight: 500; color: var(--ink-2); }
 .home-card {
   width: min(620px, 100%); box-sizing: border-box; display: flex; align-items: center; gap: 24px; padding: 22px 24px;
@@ -217,10 +217,8 @@ html:not([data-platform="darwin"]) {
 .cat-image { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
 /* Small cats are the head close-ups (view/cat.ts); both sets share one frame and the disc's round lower edge. */
 .cat-compact .cat-disc { box-shadow: none; }
-.cat-hero { position: relative; width: 245px; height: 300px; flex: none; }
-.cat-hero .cat { position: absolute; left: 15px; top: 70px; }
-.cat-hero .cat-disc { box-shadow: 0 0 90px rgba(90, 169, 255, .35); }
-.cat-hero[data-tone="waiting"] .cat-disc { background: var(--orange); box-shadow: 0 0 90px rgba(255, 138, 61, .35); }
+.cat-hero { position: relative; flex: none; }
+.cat-hero[data-tone="waiting"] .cat-disc { background: var(--orange); }
 .cat-hero[data-tone="error"] .cat-disc { background: var(--red); box-shadow: none; }
 .cat-hero[data-tone="pending"] .cat-disc { background: var(--mute); box-shadow: none; }
 .cat-avatar { flex: none; margin-top: 2px; }
