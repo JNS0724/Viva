@@ -41,7 +41,7 @@ const OPENS_ITSELF = new Set([...NEEDS_USER, 'coach'])
  * On the desktop, a pointer resting this long on the island shows what it can do; one passing by does not.
  * Once it leaves, the island waits a little before it shrinks, so a pointer slipping off the edge does not jolt it.
  */
-const HOVER_MS = 200
+const HOVER_MS = 320
 const LEAVE_MS = 400
 
 function ring() {
@@ -305,14 +305,36 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
    * resting on it shows its tools, one passing by on its way elsewhere does not.
    */
   let hoverTimer: ReturnType<typeof setTimeout> | undefined
+  let pointer = false
+  let pressed = false
   function setPointer(on: boolean) {
-    clearTimeout(hoverTimer)
-    hoverTimer = setTimeout(() => {
-      if (hovered === on) return
-      hovered = on
-      if (last) update(last.view, last)
-    }, on ? HOVER_MS : LEAVE_MS)
+    if (pointer === on) return
+    pointer = on
+    scheduleHover()
   }
+  function scheduleHover() {
+    clearTimeout(hoverTimer)
+    if (pressed || hovered === pointer) return
+    hoverTimer = setTimeout(() => {
+      hovered = pointer
+      if (last) update(last.view, last)
+    }, pointer ? HOVER_MS : LEAVE_MS)
+  }
+  // Keep the pressed button in place until release, including the pause before a drag starts.
+  const release = () => {
+    pressed = false
+    el.ownerDocument.removeEventListener('pointerup', release, true)
+    el.ownerDocument.removeEventListener('pointercancel', release, true)
+    el.ownerDocument.defaultView?.removeEventListener('blur', release)
+    scheduleHover()
+  }
+  el.addEventListener('pointerdown', () => {
+    pressed = true
+    clearTimeout(hoverTimer)
+    el.ownerDocument.addEventListener('pointerup', release, true)
+    el.ownerDocument.addEventListener('pointercancel', release, true)
+    el.ownerDocument.defaultView?.addEventListener('blur', release)
+  }, true)
 
   return { el, update, setPointer }
 }

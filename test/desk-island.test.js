@@ -114,6 +114,8 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
       windows.push(this)
     }
     setAlwaysOnTop(value) { this.onTop = value }
+    isAlwaysOnTop() { return Boolean(this.onTop) }
+    setShape(rects) { this.shape = rects }
     setVisibleOnAllWorkspaces() {}
     setContentProtection() {}
     setIgnoreMouseEvents(value) { this.ignoring.push(value) }
@@ -134,7 +136,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
       this.focusable = value
       this.onTop = false
     }
-    focus() { this.focused = this.focusable }
+    focus() { this.focused = this.focusable; this.onTop = false }
     isFocused() { return this.focused }
     blur() { this.focused = false }
     lastView() { return this.sent.filter(([channel]) => channel === 'island:view').at(-1)?.[1] }
@@ -169,7 +171,7 @@ test('the shortcut opens the input, which takes the keyboard until it is closed'
   assert.deepEqual([win.visible, win.focused, win.lastView().form], [true, true, 'input'], 'shown and focused, though switched off')
   desk.setView(view('working'))
   desk.closeInput({ sent: true })
-  assert.deepEqual([win.focusable, win.focused, win.visible, win.lastView().form], [false, false, true, 'working'], 'what was asked stays up while it runs')
+  assert.deepEqual([win.focusable, win.focused, win.visible, win.lastView().form], [process.platform === 'win32', false, true, 'working'], 'what was asked stays up while it runs')
   desk.setView(view('idle'))
   assert.equal(win.visible, false, 'switched off, it goes once that is over')
   desk.destroy()
@@ -186,7 +188,7 @@ test('the island stays on top of other windows after its input opens and closes'
   win.handlers['did-finish-load']()
   assert.deepEqual([win.focused, win.onTop], [true, true], 'taking the keyboard, still on top')
   desk.closeInput()
-  assert.deepEqual([win.focusable, win.onTop], [false, true], 'giving the keyboard back, still on top')
+  assert.deepEqual([win.focusable, win.onTop], [process.platform === 'win32', true], 'giving the keyboard back, still on top')
   desk.destroy()
 })
 
@@ -203,7 +205,7 @@ test('closed without asking, an island that is switched off goes at once; with t
   desk.destroy()
 })
 
-test('clicks reach the island only while the pointer is over it', (t) => {
+test('clicks reach only the island, without waiting for the pointer poll on Windows', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes({ cursor: { x: 700, y: 50 } })
   const desk = deskIsland(env)
@@ -213,8 +215,31 @@ test('clicks reach the island only while the pointer is over it', (t) => {
   assert.equal(win.ignoring.at(-1), false, 'the pointer is over the island (its window at x 420, y 31)')
   env.cursor.x = 100
   t.mock.timers.tick(60)
-  assert.equal(win.ignoring.at(-1), true)
+  if (process.platform === 'win32') {
+    assert.equal(win.ignoring.at(-1), false, 'native region stays interactive even while the cursor is outside')
+    assert.deepEqual(win.shape, [{ x: 146, y: 6, width: 308, height: 56 }])
+  } else assert.equal(win.ignoring.at(-1), true)
   desk.destroy()
+})
+
+test('native topmost loss after activation is repaired without taking focus', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  desk.openInput()
+  win.onTop = false
+  win.handlers.focus()
+  t.mock.timers.tick(1)
+  assert.equal(win.onTop, true)
+  win.focused = false
+  win.onTop = false
+  win.handlers.blur()
+  t.mock.timers.tick(1)
+  assert.deepEqual([win.onTop, win.focused, desk.inputOpen()], [true, false, false])
+  desk.destroy()
+  t.mock.timers.tick(100)
 })
 
 test('dragged, the island shrinks to the cat, follows the pointer at each frame, and is remembered where it is let go', (t) => {
