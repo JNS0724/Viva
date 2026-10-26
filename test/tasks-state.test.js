@@ -76,6 +76,22 @@ test('moved to the background: the conversation keeps what came before; the task
   assert.equal(state.tasks.undo.taskId, 's1', 'it can be undone')
 })
 
+test('a task with no words of its own on screen hangs its card under the message last when it started, and stays there', () => {
+  const state = spun(working())
+  assert.deepEqual(state.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']], 'under 「写好了」, where the turn left')
+  const later = run([
+    { type: 'user_prompt', text: '再帮我看下周会', at: 30 },
+    { type: 'acp_update', at: 31, update: chunk('周会在周三') },
+    { type: 'turn_end', at: 32, stopReason: 'end_turn' },
+  ], state)
+  assert.deepEqual(later.messages.map((m) => m.cardsAfter ?? []), [[], ['s1'], [], []], 'what is said later goes below the card, not above it')
+
+  // 后台做 while a turn runs: the words do not join the conversation, so the card goes under what is there now.
+  const busy = reduce(working(), { type: 'task_started', task: { id: 't2', segmentId: 'c-t2', title: '查日程', words: '查日程' }, text: '查日程', at: 15 })
+  assert.deepEqual(busy.messages.at(-1).cardsAfter, ['t2'])
+  assert.equal(busy.messages.at(-1).text, '先看提交…', 'on the answer being written')
+})
+
 test('what the task says and asks goes to the task; its end leaves the conversation alone', () => {
   const state = run([
     { type: 'task_update', taskId: 's1', update: chunk('三组改动。'), at: 30 },
@@ -196,6 +212,16 @@ test('tasks the last launch left going are offered; taken up, one goes on with w
   assert.deepEqual(reduce(taken, { type: 'task_forgotten', taskId: 's2' }).tasks.unfinished, [])
   const said = reduce(taken, { type: 'task_update', taskId: 's1', update: chunk('三组改动。'), at: 51 })
   assert.equal(taskMessages(liveTasks(said)[0]).at(-1).text, '三组改动。', 'what it says now follows')
+
+  // Taken up in a conversation on screen: its card goes under what is there now, and stays there.
+  const shown = run([
+    { type: 'history_loaded', conversationId: 'c9', messages: [{ role: 'user', text: '做周报', receipt: null }, { role: 'assistant', text: '写好了', receipt: null }], savedAt: 1 },
+    { type: 'tasks_unfinished', list: [{ id: 's1', title: '整理发布说明', segmentId: 'c1', startedAt: 5 }] },
+    { type: 'task_resumed', at: 50, task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' }, messages: [] },
+  ])
+  assert.deepEqual(shown.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']])
+  const askedAgain = reduce({ ...shown, tasks: { ...shown.tasks, list: shown.tasks.list.map((t) => ({ ...t, status: 'done' })) } }, { type: 'task_asked', taskId: 's1', text: '再补一句', at: 60 })
+  assert.deepEqual(askedAgain.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']], 'asked again, the card is where it was, not twice')
 })
 
 test('a task has its own tab in the drawer, showing what it did', () => {

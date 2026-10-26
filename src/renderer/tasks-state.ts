@@ -168,6 +168,23 @@ export function routeOf(state: State, text: string): 'other' | 'into' | null {
 }
 
 const withTasks = (state: State, changes: Partial<State['tasks']>): State => ({ ...state, tasks: { ...state.tasks, ...changes } })
+
+/**
+ * A task started with no words of its own on screen (moved there mid-turn, or 后台做 while a turn ran): its card
+ * goes under the message that was last when it started (view/thread.ts), so it stays where it happened as the
+ * conversation goes on, instead of below everything.
+ */
+export function withCardAfter(messages: readonly ThreadMessage[], taskId: string): ThreadMessage[] {
+  const last = messages.at(-1)
+  if (!last) return [...messages]
+  return [...messages.slice(0, -1), { ...last, cardsAfter: [...(last.cardsAfter ?? []), taskId] }]
+}
+
+/** A task going on again (taken up after a relaunch, asked again) keeps its card where it was, else gets one here. */
+function hostedOn(messages: readonly ThreadMessage[], taskId: string): ThreadMessage[] {
+  const hosted = messages.some((message) => message.taskId === taskId || message.cardsAfter?.includes(taskId))
+  return hosted ? [...messages] : withCardAfter(messages, taskId)
+}
 const mapTask = (state: State, taskId: string, change: (task: BackgroundTask) => BackgroundTask) => withTasks(state, {
   list: state.tasks.list.map((task) => (task.id === taskId ? settled(change(task)) : task)),
 })
@@ -194,7 +211,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       // Undone, the earlier turns' steps come back in front of the task's (task_undone).
       const earlier = state.timeline.filter((item) => item.at < startedAt)
       const undo = { taskId: task.id, prefix: going.messages, text, timeline: earlier }
-      return { ...going, tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo, flip: false } }
+      return { ...going, messages: withCardAfter(going.messages, task.id), tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo, flip: false } }
     },
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
@@ -216,7 +233,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),
     task_forgotten: (state, { taskId }) => withTasks(state, { unfinished: state.tasks.unfinished.filter((entry) => entry.id !== taskId) }),
     /** Taken up again after a relaunch: it goes on as a task in the background, with what it had said. */
-    task_resumed: (state, { task, messages, at }) => withTasks(state, {
+    task_resumed: (state, { task, messages, at }) => withTasks({ ...state, messages: hostedOn(state.messages, task.id) }, {
       unfinished: state.tasks.unfinished.filter((entry) => entry.id !== task.id),
       list: [...state.tasks.list.filter((entry) => entry.id !== task.id),
         settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView(messages, at) })],
@@ -231,7 +248,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
      * the background. Its card goes; a new one comes when it is done again.
      */
     task_asked: (state, { taskId, text, at }) => {
-      const asked = mapTask(state, taskId, (task) => ({ ...task, startedAt: at, endedAt: null, view: handlers.user_prompt(task.view, { text, at }) }))
+      const asked = mapTask({ ...state, messages: hostedOn(state.messages, taskId) }, taskId, (task) => ({ ...task, startedAt: at, endedAt: null, view: handlers.user_prompt(task.view, { text, at }) }))
       return withTasks(asked, {
         reports: asked.tasks.reports.filter((entry) => entry.taskId !== taskId),
         finished: asked.tasks.finished?.taskId === taskId ? null : asked.tasks.finished,
@@ -244,7 +261,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     task_started: (state, { task, text, at }) => {
       const entry = settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView([{ role: 'user', text }], at) })
       const words = { id: `m${state.messages.length}`, role: 'user', text, open: false, receipt: null, taskId: task.id }
-      const messages = isBusy(state) ? state.messages : [...state.messages, words]
+      const messages = isBusy(state) ? withCardAfter(state.messages, task.id) : [...state.messages, words]
       return { ...withTasks(state, { list: [...state.tasks.list, entry] }), messages }
     },
 

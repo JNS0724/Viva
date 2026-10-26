@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { shortPath } from './dsh-mcp-import.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
+import { readMessages, type ReadRequest } from './message-reader.ts'
 import type { Encryption } from './settings-store.ts'
 import { listSourceFolders, type SourceFolder } from './source-folders.ts'
 import { createSourcePoller } from './source-poller.ts'
@@ -66,6 +67,13 @@ export function openSources({ userData, crypto, ipcMain, openPath, chooseFolder,
   poller.refresh({ launching: true })
   return {
     db,
+    /** The conversation asks what came in (viva_messages_read): stale sources read again first, then the matches. */
+    read: (request: ReadRequest) => readMessages(request, {
+      enabled: () => list().sources.filter((folder) => settings.get(folder.manifest).enabled),
+      health: (id) => db.health(id),
+      search: (search) => db.search(search),
+      pollNow: (id) => poller.pollNow(id),
+    }),
     /** The computer woke: the sources' timers slept with it. */
     wakeUp: () => poller.wakeUp(),
     close() {

@@ -64,3 +64,23 @@ test('closing the task on show picks the next one; with none left the page says 
   assert.equal(pageTask(next)?.id, 's7')
   assert.equal(pageTask(reduce(next, { type: 'task_closed', taskId: 's7' })), null)
 })
+
+test('what the left no longer lists, the right no longer shows: a deleted follow-up gives way to the next on the list', async () => {
+  const { onPage } = await import('../src/renderer/view/tasks-page.ts')
+  const followup = (id, title, status) => ({ id, title, status, ask: title })
+  const view = (followups) => ({ followups, suggestions: [], state: null, schedule: null })
+  const opened = run([
+    started('s1', '整理发布说明', 10),
+    { type: 'followups_loaded', view: view([followup('f1', '起床', 'scheduled'), followup('f2', '周报', 'ready')]) },
+    { type: 'tasks_page_open', taskId: null },
+    { type: 'tasks_page_select', taskId: 'followup:f1' },
+  ])
+  assert.equal(onPage(opened).tasks.page.selected, 'followup:f1', 'picked and listed: as it is')
+
+  // 删掉: the app keeps it as dismissed, which the left does not list.
+  const deleted = reduce(opened, { type: 'followups_saved', view: view([followup('f1', '起床', 'dismissed'), followup('f2', '周报', 'ready')]) })
+  assert.equal(onPage(deleted).tasks.page.selected, 'followup:f2', 'the first on the list now: 待你看的')
+
+  const none = reduce(deleted, { type: 'followups_saved', view: view([]) })
+  assert.equal(onPage(none).tasks.page.selected, 's1', 'no follow-ups left: the task')
+})

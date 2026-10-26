@@ -40,6 +40,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | `viva-policy`（`plugins/policy`） | `policy@1`：无数据，只有行为 | — | — |
 | `viva-questions`（`plugins/questions`） | `questions@1`：IPC 消息（见 `plugins/questions/lib/channel.js`） | 模型的问题 | 显示提问卡片，回传回答；同时在 profile 里打开 dsh 的 `tool-ask-user` |
 | `viva-followups`（`plugins/followups`） | `followups@1`：IPC 消息（见 `plugins/followups/lib/channel.ts`） | 模型提出的跟进建议；后台准备的不带工具的模型调用的结果 | 建议显示成卡片，用户点了才建跟进（`followups.db`）；按时段请它准备，只拿回草稿 |
+| `viva-messages`（`plugins/messages`） | `messages@1`：IPC 消息（见 `plugins/messages/lib/channel.ts`） | 模型要查看的消息（哪个消息源、关键词、多少小时、几条） | 校验后（`src/main/messages-channel.ts`）先把一分钟内没拉过的消息源拉一次（最多等 20 秒），再查 `sources.db`，按条列出、标明「只是数据」（`src/main/message-reader.ts`）；密钥和数据库都不交给 dsh |
 | `viva-config`（`plugins/config`） | `config@1`：IPC 消息（见 `plugins/config/lib/channel.js`） | 模型要接入或移除的 MCP 服务器、要新建或安装的 skill（审批卡片通过之后） | 校验后执行（`src/main/config-channel.js`），需要密钥时由窗口请用户填写，加密保存，不回传给 dsh |
 
 人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/main/app-plugins.js` 的 `PERSONA`。
@@ -75,6 +76,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | trace | `agent/turn-stopping`，并读取 `session.eventAt` 拿到本轮事件 |
 | policy | `tools/pre-execute`（先于授权执行，返回 `deny` 时附带给模型看的原因） |
 | followups | `tools.register`（`viva_followup_propose`，只把建议交给应用）、`llm.stream`（后台准备：不传 `tools`，模型只能写） |
+| messages | `tools.register`（`viva_messages_read`，只读，向应用要结果） |
 
 每个插件出错都只记日志：注入失败就不带记忆，记录失败就没有「过程」，不会影响对话本身。插件加载失败时，dsh 会输出一条带插件名的警告，照常启动。
 
@@ -89,7 +91,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | **工具策略下沉** | 已完成一条规则：MCP 工具名里含有 send、reply、forward、post、publish、deliver、broadcast 等词的（下划线和驼峰写法都识别），一律在执行前拒绝，并告诉模型「只起草，由用户自己发送」。**实测发现 dsh 对 MCP 工具完全不弹授权**，所以这个插件是「不代为发送」唯一的硬保障 |
 | **用 ACP 扩展通知代替轮询** | **当前做不到。** dsh 0.2.0-rc.2 的 ACP 实现只会向客户端发 `session/update` 和授权请求，没有给插件开放发送自定义通知的接口。app 继续在每轮结束后的 30 秒内每 2 秒查一次 `memory.db` |
 | **其他模型和协议** | 已完成，复用 dsh 自带的 `llm-pi-ai`（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种协议），不写新插件。实测：配置的路由出现在 ACP 的模型选项里、按提供方分组，选中后请求发到它的 baseURL 并带上 key，记忆插件照常注入；默认模型由 `acp` 一项的配置决定，`agent-default-model` 对 ACP 会话不起作用 |
-| **消息源** | **不做成 dsh 插件**：dsh 插件要写死精确的 dsh 版本，dsh 一升级第三方插件就失效；插件能给模型加工具、改上下文；装插件、改配置都要重启 dsh。消息源只往外拉消息、不需要介入 agent，按第 1 节的标准属于 app：app 按次启动一个短命进程（`src/main/source-run.ts`），消息校验后存进 `sources.db`，模型碰不到它。给开发者的 kit 在 `packages/viva-source-kit`，其中的检查工具由 app 的源码编译（`scripts/build-source-kit.mjs`）。见 [sources.md](sources.md) |
+| **消息源** | **不做成 dsh 插件**：dsh 插件要写死精确的 dsh 版本，dsh 一升级第三方插件就失效；插件能给模型加工具、改上下文；装插件、改配置都要重启 dsh。消息源只往外拉消息、不需要介入 agent，按第 1 节的标准属于 app：app 按次启动一个短命进程（`src/main/source-run.ts`），消息校验后存进 `sources.db`。消息源程序碰不到模型；模型要看消息时，经 `viva-messages` 插件向 app 要，由 app 查库后只读地交回。给开发者的 kit 在 `packages/viva-source-kit`，其中的检查工具由 app 的源码编译（`scripts/build-source-kit.mjs`）。见 [sources.md](sources.md) |
 | **顺带修复** | 记忆插件取助手回答的路径写错了（`assistant/message` 的正文在 `data.message` 下面），后台提取之前一直看不到助手的回答，已修复并加了测试；画像类记忆失效时立即重新整理画像，不再等 24 小时 |
 
 ## 7. 测试
