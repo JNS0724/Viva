@@ -1,7 +1,7 @@
 {
   "name": "viva",
   "productName": "Viva",
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0-beta.3",
   "private": true,
   "description": "Viva：个人桌面助手，Electron 外壳 + DeepSeek Harness（ACP）",
   "license": "MIT",
@@ -29,9 +29,9 @@
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
     "showcase": "npm run build && node scripts/showcase.mjs",
     "predist:mac": "npm run build",
-    "dist:mac": "electron-builder --mac dmg",
+    "dist:mac": "electron-builder --mac dmg --publish never",
     "predist:win": "npm run build",
-    "dist:win": "electron-builder --win nsis"
+    "dist:win": "electron-builder --win nsis --publish never"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",

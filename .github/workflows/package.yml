@@ -41,7 +41,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run dist:mac -- --publish never
+      - run: npm run dist:mac
       - name: Smoke the app from the mounted dmg
         run: |
           dmg=$(ls dist/*.dmg | head -1)
