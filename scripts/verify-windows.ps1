@@ -3,13 +3,14 @@
 # misreads a UTF-8 script without a BOM.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1          # tests + smoke
-#   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Live    # also the real model
+#   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Live    # also the real model (live check: core)
+#   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Live -LiveSet full   # all 26 live scenarios
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -Package # also build the installer and smoke the built app
 #   powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -PackageOnly # only that, after npm ci (CI: .github/workflows/package.yml)
 #
 # -Live needs DEEPSEEK_API_KEY in the environment; the key is never written to the report.
 # Exits 1 when any step failed, so CI can tell.
-param([switch]$Live, [switch]$Package, [switch]$PackageOnly)
+param([switch]$Live, [ValidateSet('core', 'full')][string]$LiveSet = 'core', [switch]$Package, [switch]$PackageOnly)
 if ($PackageOnly) { $Package = $true }
 
 $ErrorActionPreference = 'Continue'
@@ -62,6 +63,11 @@ if ($Live) {
   } else {
     Step 'live-memory' { npm run live:memory }
     if (Test-Path 'smoke\live-memory.json') { Copy-Item 'smoke\live-memory.json' $report }
+    # The live check (docs/live-check.md): the core scenarios, or all 26 with -LiveSet full.
+    Step 'live' { npm run live -- --set $LiveSet }
+    foreach ($file in 'report.md', 'report.json') {
+      if (Test-Path "smoke\live\$file") { Copy-Item "smoke\live\$file" (Join-Path $report "live-$file") }
+    }
   }
 }
 
