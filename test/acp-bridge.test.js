@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
-import { createAcpBridge } from '../src/main/acp-bridge.ts'
+import { createAcpBridge, MCP_RETRY_MS } from '../src/main/acp-bridge.ts'
 import pkg from '../package.json' with { type: 'json' }
 
 const APP_VERSION = pkg.version
@@ -20,6 +20,27 @@ const modelOptions = (currentValue) => [{
   ] }],
 }]
 const MODEL_OPTIONS = modelOptions('v4-flash')
+
+test('a failing MCP configuration cools down across sessions, retries after expiry, and changed settings retry immediately', async t => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  let servers = [{ name: 'broken', command: 'missing', args: [], env: [] }]
+  let attempts = 0
+  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', mcpServers: () => servers, emit: () => {},
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async newSession(params) {
+        if (params.mcpServers.length) { attempts++; throw Error('mcp-client(broken): initial connection failed') }
+        return { sessionId: SESSION, configOptions: MODEL_OPTIONS }
+      },
+    })),
+  })
+  await bridge.start(); assert.equal(attempts, 1)
+  await bridge.newSession(); assert.equal(attempts, 1)
+  t.mock.timers.tick(MCP_RETRY_MS)
+  await bridge.newSession(); assert.equal(attempts, 2)
+  servers = [{ ...servers[0], command: 'changed' }]
+  await bridge.newSession(); assert.equal(attempts, 3)
+  bridge.dispose()
+})
 
 /** A fake `dsh --profile acp` child process whose stdio is served by a real ACP agent connection. */
 function fakeDsh(agentFactory) {

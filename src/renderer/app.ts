@@ -97,10 +97,20 @@ let revealFrameId = 0
 let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
 let historyReady = false
+let pendingRender = 0
+const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
-  state = reduce(state, action)
-  render(dom, state, handlers)
+  const next = reduce(state, action)
+  if (next === state) return
+  state = next
+  if (['acp_update', 'task_update'].includes(action.type ?? '') && LIVE_TEXT_UPDATES.has(action.update?.sessionUpdate)) {
+    // State stays current for user actions, while a burst of model chunks paints once per frame.
+    pendingRender ||= requestAnimationFrame(() => { pendingRender = 0; render(dom, state, handlers) })
+  } else {
+    if (pendingRender) { cancelAnimationFrame(pendingRender); pendingRender = 0 }
+    render(dom, state, handlers)
+  }
   startReveal()
   publishIsland()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
@@ -274,9 +284,9 @@ function ask(text: string, { via = null as string | null, images = [] as Array<{
     return true
   }
   // About something else while a turn runs: the words go to a task of their own, the turn stays in front;
-  // should the task not start, they go into the turn instead, so nothing typed is lost.
+  // A failed submission keeps its own text and retry action.
   if (isBusy(state) && routeOf(state, text) === 'other') {
-    taskActions.startTask(text).then((started) => started || steer(text, via))
+    void taskActions.startTask(text)
     return true
   }
   if (isBusy(state)) return steer(text, via)
@@ -415,6 +425,11 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
 }
 
 const handlers = {
+  retrySubmission: (id: string) => {
+    const item = state.tasks.submissions.find(item => item.id === id)
+    if (item?.status === 'failed') void taskActions.startTask(item.text, id)
+  },
+  dismissSubmission: (id: string) => dispatch({ type: 'task_submit_dismissed', id }),
   ...historyActions,
   ...memoryActions,
   ...extensionActions,
@@ -441,7 +456,7 @@ const handlers = {
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
     // Not started: the words come back, so nothing typed is lost.
-    if (!await taskActions.startTask(text)) dom.input.value = text
+    void taskActions.startTask(text)
     return undefined
   },
   /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. 「#name …」 still works too. */

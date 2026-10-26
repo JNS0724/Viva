@@ -20,6 +20,10 @@ export type Fold = { id: string, at: number, count: number, kind: string }
 /** Words that started a turn of their own: not said into a running one, not an answer, not left unsent. */
 const startsTurn = (message: ThreadMessage) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
 
+/** View eligibility is constant time; locating the turn is needed only when the user invokes it. */
+export const canRewindMessage = (state: State, message: ThreadMessage) => state.phase === 'idle'
+  && Boolean(state.conversationId) && !state.rewind.busy && startsTurn(message)
+
 /**
  * Where to go back to for the message `id`: its words, which such turn from the end (dsh finds the turn by them,
  * plugins/fork), and how many saved messages come before it (selectors.js historyMessages keeps the finished ones).

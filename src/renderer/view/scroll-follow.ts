@@ -59,23 +59,28 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
     }
   }, { passive: true })
 
-  return {
-    /** Call after the thread re-renders. `anchorTop` is the latest user message's offset, or null. */
-    afterRender({ anchorTop }: { anchorTop: number | null }) {
-      if (following) {
-        const target = followTarget({
-          scrollHeight: scrollEl.scrollHeight,
-          clientHeight: scrollEl.clientHeight,
-          anchorTop: anchorSpent ? null : anchorTop,
-        })
+  function measureAfterRender(anchor: () => number | null) {
+    const target = following ? followTarget({
+      scrollHeight: scrollEl.scrollHeight,
+      clientHeight: scrollEl.clientHeight,
+      anchorTop: anchorSpent ? null : anchor(),
+    }) : null
+    const atBottom = distanceFromBottom(scrollEl) <= BOTTOM_SLACK_PX
+    return () => {
+      if (target && following) {
         write(target.scrollTop)
         if (target.capped) {
           following = false
           anchorSpent = true
         }
       }
-      updateJump()
-    },
+      jumpButton.hidden = following || (target ? !target.capped : atBottom)
+    }
+  }
+
+  return {
+    measureAfterRender,
+    afterRender({ anchorTop }: { anchorTop: number | null }) { measureAfterRender(() => anchorTop)() },
     /** A new question: follow again, anchored on it. */
     resetForPrompt() {
       following = true

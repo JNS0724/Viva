@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DSH_TIMEOUT_MS, eventually, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 
 /** The steer plugin inside the real dsh: words sent mid-turn reach the model within that same turn. */
 
@@ -35,7 +35,7 @@ test('a job that will take long: the model can offer the background first, and g
   const call = events.find((event) => event.type === 'update' && event.update.sessionUpdate === 'tool_call')
   assert.ok(call, 'the window sees the offer as a tool call')
   assert.equal(events.some((event) => event.type === 'permission'), false, 'offering asks nothing of the user')
-  const answer = events.filter((event) => event.type === 'update' && event.update.sessionUpdate === 'agent_message_chunk').map((event) => event.update.content.text).join('')
+  const answer = replies(events.filter(event => event.type === 'update')).join('')
   assert.match(answer, /开始整理/, 'the model went on with the job')
 })
 

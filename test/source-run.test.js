@@ -50,7 +50,7 @@ test('a failing, silent, slow or flooding source comes back as a problem, never 
 test('the source sees the system basics and its own folder, not the app\'s keys', async (t) => {
   const run = options(t, { env: { ...process.env, DEEPSEEK_API_KEY: 'sk-should-not-pass', DSH_HOME: '/x', HOME: os.homedir() } })
   const ran = await pollSource(fake, { token: 'good', mode: 'env' }, null, run)
-  const names = ran.value.messages[0].title.split(',')
+  const names = ran.value.messages[0].text.split(',')
   assert.ok(names.includes('VIVA_SOURCE_DATA') && names.includes('PATH') && names.includes('HOME'))
   assert.ok(!names.includes('DEEPSEEK_API_KEY') && !names.includes('DSH_HOME'))
   assert.ok(fs.existsSync(run.dataDir))

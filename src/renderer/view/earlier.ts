@@ -3,6 +3,7 @@ import { isBusy } from '../state.ts'
 import { topicBlocks, topicStart } from '../topics.ts'
 import { h } from './dom.ts'
 import { markMessage, pastMessageView } from './thread.ts'
+import { reconcileChildren } from './reconcile.ts'
 
 /**
  * The earlier part of the one timeline, above the conversation on screen: a line for each day, a line where
@@ -65,20 +66,44 @@ function startLine(start: ReturnType<typeof topicStart>, handlers: Handlers, { n
  * @param state the renderer state (its `earlier` slice, the topic and the current directory)
  * @param handlers loadEarlier, and resumeTopic (segmentId)
  */
+const earlierViews = new WeakMap<HTMLElement, { inputs: unknown[], nodes: (Node | string)[] }>()
+
+export function updateEarlierControls(container: HTMLElement, state: State) {
+  const busy = isBusy(state)
+  for (const button of container.querySelectorAll<HTMLButtonElement>('.topic-back')) {
+    button.disabled = busy
+    button.title = busy ? '等这一轮结束再回去' : ''
+  }
+}
+
 export function renderEarlier(container: HTMLElement, state: State, handlers: Handlers, now = Date.now()) {
+  const inputs = [state.earlier, state.info.cwd, state.topic.parentId]
+  const cached = earlierViews.get(container)
+  if (cached && inputs.every((value, i) => cached.inputs[i] === value)) {
+    reconcileChildren(container, [...cached.nodes, ...startLine(topicStart(state), handlers, { now, busy: isBusy(state) })].filter((view): view is Node | string => Boolean(view)))
+    updateEarlierControls(container, state)
+    return
+  }
   const { earlier } = state
   const { parentId } = state.topic
   const last = earlier.segments.at(-1)
   const rows = earlierRows(earlier, { currentCwd: state.info.cwd || null, now, currentContinues: Boolean(last && parentId === last.id) })
   const blocks = topicBlocks(earlier.segments, parentId)
   const blockOf = new Map(blocks.flatMap((block, i) => block.segments.map((segment) => [segment.id, i])))
-  const grouped = blocks.map((_, i) => rows.filter((row) => row.segment !== null && blockOf.get(row.segment) === i))
-  const tail = rows.filter((row) => row.segment === null)
+  const grouped: EarlierRow[][] = blocks.map(() => [])
+  const tail: EarlierRow[] = []
+  for (const row of rows) {
+    const i = row.segment === null ? undefined : blockOf.get(row.segment)
+    if (i === undefined) tail.push(row)
+    else grouped[i].push(row)
+  }
   const options = { now, busy: isBusy(state) }
   const more = earlier.hasMore && earlier.segments.length > 0
     ? h('button', { class: 'timeline-more', type: 'button', disabled: earlier.loading, text: earlier.loading ? '正在读取…' : '更早的对话', onClick: () => handlers.loadEarlier() })
     : null
   const views = blocks.flatMap((block, i) => (block.remembered ? rowViews(grouped[i], handlers) : [oldTopic(block, grouped[i], handlers, options)]))
   container.hidden = rows.length === 0
-  container.replaceChildren(...[more, ...views, ...rowViews(tail, handlers), ...startLine(topicStart(state), handlers, options)].filter((view): view is Node | string => Boolean(view)))
+  const nodes = [more, ...views, ...rowViews(tail, handlers)].filter((view): view is Node | string => Boolean(view))
+  earlierViews.set(container, { inputs, nodes })
+  reconcileChildren(container, [...nodes, ...startLine(topicStart(state), handlers, options)].filter((view): view is Node | string => Boolean(view)))
 }

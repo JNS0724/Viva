@@ -6,7 +6,8 @@ import type { CatMood } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h, label } from './dom.ts'
 import { caretHost, renderMarkdown } from './markdown.ts'
-import { foldAfter, rewindTarget } from '../rewind-state.ts'
+import { canRewindMessage, foldAfter } from '../rewind-state.ts'
+import { reconcileChildren } from './reconcile.ts'
 import { offeredBackground } from '../tasks-state.ts'
 import { cardedTasks, taskCard } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
@@ -14,14 +15,15 @@ import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } f
 import { proposalCard } from './followups.ts'
 
 const AVATAR_CAT_PX = 36
-const avatarCats = new Map<string, { key: string, el: HTMLElement }>()
 
 /** Whether a message is the answer of the turn in progress or just finished, and what the cat is doing. */
-type Look = { latest: boolean, mood: CatMood | 'idle' }
+type CatSlots = Map<string, { key: string, el: HTMLElement }>
+type Look = { latest: boolean, mood: CatMood | 'idle', cats?: CatSlots }
+const containerCats = new WeakMap<HTMLElement, CatSlots>()
 
 /** A small cat on its disc beside each answer: the latest one shows what the agent does now, earlier ones rest. */
 const avatar = (message: ThreadMessage, look: Look) => h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
-  catFor(avatarCats, message.id, look.latest ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
+  catFor(look.cats ?? new Map(), message.id, look.latest ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
 
 /** Moods the cat leaves for `typing` while the answer is still being typed out, the agent's own turn over or not. */
 const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
@@ -46,18 +48,10 @@ function visibleText(text: string, shown: number | undefined) {
   return text.slice(0, code >= 0xD800 && code <= 0xDBFF ? end + 1 : end)
 }
 
-/**
- * The thread is rebuilt on every frame while an answer types out; each answer is parsed again only when
- * its visible text changed. The element is reused as is (its links keep their handlers).
- */
-const renderedAnswers = new Map<string, { text: string, el: HTMLElement }>()
-
+/** Row caching below owns nodes per container. The same message may be visible in several views. */
 function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
   const text = visibleText(message.text, message.shown)
-  const cached = renderedAnswers.get(message.id)
-  if (cached?.text === text) return cached.el
   const el = renderMarkdown(text, { openLink: handlers.openLink })
-  renderedAnswers.set(message.id, { text, el })
   return el
 }
 
@@ -260,11 +254,6 @@ function secretCard(secret: { requestId: string, server: string, names: readonly
 /** The elements of a view, one level down, without the empty parts. */
 const elementsOf = (view: View): Element[] => [view].flat().filter((el): el is Element => el instanceof Element)
 
-const dimmed = (view: View) => elementsOf(view).map((el) => {
-  el.classList.add('rewind-dim')
-  return el
-})
-
 /**
  * A message with what going back adds to it: over the user's words the bar to go back there (or the editor, in
  * place, with what would fold after it dimmed), and after it the paths folded where it went another way.
@@ -276,11 +265,10 @@ function messageEntries(state: State, views: readonly View[], handlers: Handlers
   return state.messages.map((message, i) => {
     let view = views[i]
     if (i === editing) view = markMessage(rewindEditor(message, handlers, later), message.id)
-    else if (editing >= 0 && i > editing) view = dimmed(view)
-    else if (message.role === 'user' && rewindTarget(state, message.id)) {
-      // The bar beside the bubble, not in it: the bubble's text and place stay what they were.
-      const [bubble, ...notes] = elementsOf(view)
-      view = markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
+    else {
+      for (const el of elementsOf(view)) el.classList.toggle('rewind-dim', editing >= 0 && i > editing)
+      const bar = elementsOf(view)[0]?.querySelector<HTMLElement>('.rewind-bar')
+      if (bar) bar.hidden = !canRewindMessage(state, message)
     }
     const strip = (fold: Untyped) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past: ThreadMessage) => pastMessageView(past, handlers), tasks: state.tasks })
     const strips = (folds[message.id] ?? []).flatMap(strip)
@@ -292,18 +280,61 @@ function messageEntries(state: State, views: readonly View[], handlers: Handlers
 /** What can go into an element: nodes and text; the empty parts of a view are left out. */
 const isContent = (part: unknown): part is Node | string => part instanceof Node || (typeof part === 'string' && part !== '')
 
+type CachedView = { inputs: readonly unknown[], view: View }
+const threadViews = new WeakMap<HTMLElement, Map<string, CachedView>>()
+const sameInputs = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => value === b[i])
+
+/** Cache each row independently, so a new prompt or a streamed chunk never detaches old messages. */
+function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View): View {
+  const previous = cache.get(key)
+  if (previous && sameInputs(previous.inputs, inputs)) return previous.view
+  const view = build()
+  cache.set(key, { inputs, view })
+  return view
+}
+
+function messageInputs(message: ThreadMessage, traceReady: boolean, look: Look) {
+  return [message.role, message.text, message.shown, message.open, message.receipt, message.images,
+    message.asked, message.steered, message.via, message.failed, message.restored,
+    message.role === 'assistant' && look.latest, message.role === 'assistant' && look.latest ? look.mood : null,
+    message.role === 'user' ? null : traceReady]
+}
+
+function messageView(message: ThreadMessage, handlers: Handlers, traceReady: boolean, look: Look): View {
+  const view = MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, look) ?? null
+  if (message.role !== 'user' || message.asked) return markMessage(view, message.id)
+  const [bubble, ...notes] = elementsOf(view)
+  // The tools never participate in bubble sizing; busy/idle changes only their visibility.
+  return markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
+}
+
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container: HTMLElement, state: State, handlers: Handlers, now: number) {
+  const cats = containerCats.get(container) ?? new Map()
+  containerCats.set(container, cats)
+  const messageIds = new Set(state.messages.map(message => message.id))
+  for (const id of cats.keys()) if (!messageIds.has(id)) cats.delete(id)
+  const previous = threadViews.get(container) ?? new Map<string, CachedView>()
+  const cache = new Map<string, CachedView>()
+  const part = (key: string, inputs: readonly unknown[], build: () => View) => {
+    const view = cachedView(previous, key, inputs, build)
+    cache.set(key, previous.get(key)!)
+    return view
+  }
   const last = state.messages[state.messages.length - 1]
   const note = restoredNote(state, now)
   const traceReady = state.restoredTrace === 'loaded'
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
-  const plain = state.messages.map((message) => markMessage(MESSAGE_VIEWS[message.role]?.(message, handlers, traceReady, { latest: message.id === latestAnswer, mood }) ?? null, message.id))
+  const plain = state.messages.map((message) => {
+    const look = { latest: message.id === latestAnswer, mood, cats }
+    return part(`message:${message.id}`, messageInputs(message, traceReady, look), () => messageView(message, handlers, traceReady, look))
+  })
   // A background task's card goes under the words that started it (后台做), or under the message that was last when
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
-  const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id, taskCard(task, report, handlers, now)]))
+  const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id,
+    part(`task:${task.id}`, [task, report, Math.floor(now / 60_000)], () => taskCard(task, report, handlers, now))]))
   const views = messageEntries(state, plain, handlers).map((entries, i) => {
     const hosted = [state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? [])].flatMap((id) => {
       const card = id ? cards.get(id) : undefined
@@ -314,19 +345,29 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
     return hosted.length ? [...entries, ...hosted] : entries
   })
   const focus = editorFocus()
-  container.replaceChildren(
-    ...(note ? views.toSpliced(state.restored.count, 0, [historyDivider(note)]) : views).flat().filter(isContent),
-    ...state.tasks.unfinished.map((task) => unfinishedCard(task, handlers, state.info.mode === 'live')),
+  const nodes = [
+    ...(note ? views.toSpliced(state.restored.count, 0, [part('divider', [note.when, note.memory], () => historyDivider(note))]) : views).flat().filter(isContent),
+    ...state.tasks.unfinished.map((task) => part(`unfinished:${task.id}`, [task, state.info.mode], () => unfinishedCard(task, handlers, state.info.mode === 'live'))),
     // A conversation whose only turn moved to the background has no message to hang the card under.
     ...(state.messages.length ? [] : cards.values()),
+    ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },
+      h('div', { class: 'msg-user', text: item.text }),
+      h('div', { class: 'task-submit-status', role: 'status', text: item.status === 'failed' ? `没有交给后台：${item.problem}` : '已收到，正在准备后台任务…' }),
+      item.status === 'failed' ? h('div', {},
+        h('button', { text: '重试', onClick: () => handlers.retrySubmission(item.id) }),
+        h('button', { text: '移除', onClick: () => handlers.dismissSubmission(item.id) })) : null))),
+    state.tasks.moving ? part('moving', [], () => h('div', { role: 'status', text: '正在放到后台…' })) : '',
     // The follow-ups the model proposed in this conversation, each to be decided on (view/followups.ts).
-    ...state.proposals.map((card: Untyped) => proposalCard(card, handlers, now)),
-    offerRow(state, handlers),
-    state.permission ? permissionCard(state.permission, handlers) : '',
-    state.question ? questionCard(state.question, handlers) : '',
+    ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
+    part('offer', [offeredBackground(state)?.why ?? null], () => offerRow(state, handlers)),
+    state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
+    state.question ? part('question', [state.question], () => questionCard(state.question, handlers)) : '',
     state.secret ? secretCard(state.secret, handlers) : '',
-    state.phase === 'working' && !last?.open ? workingRow(state) : '',
-    state.phase === 'error' ? errorRow(state.error) : '',
-  )
+    state.phase === 'working' && !last?.open ? part('working', [catMood(state), currentAction(state)], () => workingRow(state)) : '',
+    state.phase === 'error' ? part('error', [state.error], () => errorRow(state.error)) : '',
+  ].flat().filter(isContent)
+  const changed = reconcileChildren(container, nodes)
+  threadViews.set(container, cache)
   restoreEditorFocus(focus, state.rewind.editing)
+  return changed
 }

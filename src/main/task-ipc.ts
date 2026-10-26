@@ -107,10 +107,10 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   async function start(request: { text?: unknown, words?: unknown } | null | undefined) {
     const { text, words = null } = request ?? {}
     if (!isText(text) || (words !== null && !isText(words))) throw new Error('invalid task request')
-    const started = await agent.startTask(words === null ? {} : { words })
-    if (!started.ok) return { ok: false, problem: TASK_PROBLEMS[started.reason] ?? `没能交给后台（${started.reason}）` }
     const main = current()
     const { mode, model } = agentInfo()
+    const started = await agent.startTask(words === null ? {} : { words })
+    if (!started.ok) return { ok: false, problem: TASK_PROBLEMS[started.reason] ?? `没能交给后台（${started.reason}）` }
     const segment = db.save(db.create({ sessionId: started.taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
     db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
     const task = { id: started.taskId, segmentId: segment.id, title: titleOf(text), words: text }

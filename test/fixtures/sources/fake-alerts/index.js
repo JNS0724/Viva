@@ -14,7 +14,7 @@ process.stdin.on('end', () => {
   if (mode === 'slow') return setTimeout(() => say({ cursor: null, messages: [] }), 60_000)
   if (mode === 'garbage') return process.stdout.write('not json at all\n')
   if (mode === 'flood') return process.stdout.write('x'.repeat(2 * 1024 * 1024))
-  if (mode === 'env') return say({ cursor: 'env', messages: [{ id: 'env', at: 1, title: Object.keys(process.env).sort().join(',') }] })
+  if (mode === 'env') return say({ cursor: 'env', messages: [{ id: 'env', at: 1, title: 'Environment names', text: Object.keys(process.env).sort().join(',') }] })
   const from = Number(request.cursor ?? 0)
   const to = Math.min(from + 2, total)
   const messages = []

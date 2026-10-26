@@ -44,6 +44,34 @@ function deferred() {
   return { promise, resolve }
 }
 
+test('a background submission is visible before the slow session responds; switching topics cannot attach it to the new topic', async () => {
+  const reply = deferred()
+  const win = windowWith({ startTask: () => reply.promise })
+  const pending = win.actions.startTask('长文字'.repeat(5000))
+  assert.equal(win.state().tasks.submissions.length, 1)
+  assert.equal(win.state().tasks.submissions[0].text.length, 15000)
+  assert.equal(win.state().tasks.submissions[0].status, 'pending')
+  win.dispatch({ type: 'new_session', info: { sessionId: 'another' }, at: 100 })
+  reply.resolve({ ok: true, task: { id: 'background', title: '长文字', words: '长文字' } })
+  await pending
+  assert.equal(win.state().tasks.submissions.length, 0)
+  assert.equal(win.state().messages.length, 0)
+  assert.equal(win.state().tasks.list.length, 1)
+})
+
+test('failed background submissions retain text for retry, without duplicate tasks or silent foreground steering', async () => {
+  let calls = 0
+  const win = windowWith({ startTask: async () => ++calls === 1 ? { ok: false, problem: 'timeout' } : { ok: true, task: { id: 's9', title: 'words', words: 'words' } } })
+  assert.equal(await win.actions.startTask('words'), false)
+  const failed = win.state().tasks.submissions[0]
+  assert.equal(failed.text, 'words')
+  assert.equal(failed.status, 'failed')
+  assert.equal(await win.actions.startTask(failed.text, failed.id), true)
+  assert.equal(win.state().tasks.submissions.length, 0)
+  assert.equal(win.state().tasks.list.length, 1)
+  assert.deepEqual(win.said.steered, [])
+})
+
 const spunReply = {
   ok: true,
   task: { id: 's1', segmentId: 'c1', title: WORDS, words: WORDS },
@@ -275,7 +303,9 @@ test('后台做 while a turn runs: a task of its own, started from before that t
 
   const refused = windowWith({ startTask: async () => ({ ok: false, problem: '没能交给后台（invalid）' }) })
   await refused.actions.startTask('查天气')
-  assert.deepEqual([refused.said.toasts, liveTasks(refused.state())], [['没能交给后台（invalid）'], []])
+  assert.deepEqual(liveTasks(refused.state()), [])
+  assert.equal(refused.state().tasks.submissions[0].problem, '没能交给后台（invalid）')
+  assert.equal(refused.state().tasks.submissions[0].text, '查天气')
 })
 
 test('tasks that had ended by the last launch come back at the start, beside those left going', async () => {

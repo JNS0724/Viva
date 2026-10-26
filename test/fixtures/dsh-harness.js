@@ -96,8 +96,9 @@ async function removeEventually(dir) {
 
 /** The assistant's visible text, in order. */
 export const replies = (events) => events
-  .filter((e) => e.update?.sessionUpdate === 'agent_message_chunk')
-  .map((e) => e.update.content.text)
+  .flatMap((e) => e.update?.sessionUpdate === 'agent_message_chunk' ? [e.update.content.text]
+    : e.update?.sessionUpdate === 'viva_stream' && e.update.kind === 'settle'
+      ? e.update.blocks.filter(block => block.type === 'text').map(block => block.text) : [])
 
 /** The background pass writes after a turn; wait for what it writes. */
 export async function eventually(read, { timeoutMs = 15_000, intervalMs = 100 } = {}) {

@@ -1,6 +1,7 @@
 import { formatElapsed } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h } from './dom.ts'
+import { queueLayout } from './reconcile.ts'
 import { INPUT_FORMS } from './island-input.ts'
 import type { createIslandInput } from './island-input.ts'
 import { backgroundSection, tailCell, taskTag } from './island-tasks.ts'
@@ -231,20 +232,28 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
    * @param wide the input's forms, as wide as the input
    */
   function layout(open: boolean, wide: boolean) {
-    if (!el.isConnected) return
-    const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
     head.style.width = 'max-content'
-    const toolsWidth = Math.ceil(tools.getBoundingClientRect().width)
-    // With nothing beside the cat the island is a circle around it, not a capsule with an empty end.
-    const bare = !head.childElementCount && !toolsWidth
-    const contentWidth = bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth
-    const headWidth = Math.min(contentWidth, size.maxHead, room)
-    const opened = open ? Math.min(size.panel - BORDER, room) : headWidth
-    const inner = wide ? Math.min((size.input ?? size.panel) - BORDER, room) : opened
-    head.style.width = `${Math.max(inner - toolsWidth, 0)}px`
-    panel.style.width = `${inner}px`
-    el.style.width = `${inner + BORDER}px`
-    el.style.height = `${open ? size.head + panel.scrollHeight : size.head}px`
+    queueLayout(el, () => {
+      if (!el.isConnected) return
+      const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
+      const toolsWidth = Math.ceil(tools.getBoundingClientRect().width)
+      // With nothing beside the cat the island is a circle around it, not a capsule with an empty end.
+      const bare = !head.childElementCount && !toolsWidth
+      const contentWidth = bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth
+      const headWidth = Math.min(contentWidth, size.maxHead, room)
+      const opened = open ? Math.min(size.panel - BORDER, room) : headWidth
+      const inner = wide ? Math.min((size.input ?? size.panel) - BORDER, room) : opened
+      return () => {
+        head.style.width = `${Math.max(inner - toolsWidth, 0)}px`
+        panel.style.width = `${inner}px`
+        el.style.width = `${inner + BORDER}px`
+        if (!open) el.style.height = `${size.head}px`
+        else queueLayout(panel, () => {
+          const height = size.head + panel.scrollHeight
+          return () => { if (el.dataset.open === 'true') el.style.height = `${height}px` }
+        })
+      }
+    })
   }
 
   /**
