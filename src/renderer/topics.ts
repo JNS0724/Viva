@@ -22,15 +22,20 @@ type TopicBlock = { remembered: boolean, segments: readonly Segment[], at: numbe
 /** The earlier segments as topics, in order: a topic goes on while each segment continues the one before it. */
 export function topicBlocks(segments: readonly Segment[], parentId: string | null): TopicBlock[] {
   const remembered = rememberedIds(segments, parentId)
-  return segments.reduce((blocks: TopicBlock[], segment, i) => {
+  const blocks: TopicBlock[] = []
+  segments.forEach((segment, i) => {
     const keep = remembered.has(segment.id)
     const last = blocks.at(-1)
     const continues = i > 0 && segment.parentId === segments[i - 1].id
     if (last && continues && last.remembered === keep) {
-      return [...blocks.slice(0, -1), { ...last, segments: [...last.segments, segment], count: last.count + segment.messages.length }]
+      // These arrays were created in this call: append instead of copying the entire history per segment.
+      ;(last.segments as Segment[]).push(segment)
+      last.count += segment.messages.length
+    } else {
+      blocks.push({ remembered: keep, segments: [segment], at: segment.messages[0]?.at ?? segment.createdAt ?? null, count: segment.messages.length })
     }
-    return [...blocks, { remembered: keep, segments: [segment], at: segment.messages[0]?.at ?? segment.createdAt ?? null, count: segment.messages.length }]
-  }, [])
+  })
+  return blocks
 }
 
 /**

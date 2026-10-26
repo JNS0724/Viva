@@ -61,6 +61,8 @@ export const initialState = Object.freeze({
   topic: initialTopic,
   /** Turns that went on in the background, and the move that can still be undone (tasks-state.js). */
   tasks: initialTasks,
+  /** Task cards started before any foreground message, anchored at the start of this topic only. */
+  taskCards: [] as string[],
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
@@ -74,6 +76,8 @@ export const initialState = Object.freeze({
   toast: null as Untyped,
   /** A new or reopened conversation is on its way; sending now would land in the one being replaced. */
   switching: false,
+  /** The blank topic is visible, but it has no usable runtime session yet (also true after a failed attempt). */
+  newTopicPending: false,
   settings: {
     open: false,
     loaded: false,
@@ -200,8 +204,8 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ready: (state, { info }) => ({
     ...state,
     info,
-    phase: state.phase === 'error' ? 'idle' : state.phase,
-    error: state.phase === 'error' ? null : state.error,
+    phase: !state.newTopicPending && state.phase === 'error' ? 'idle' : state.phase,
+    error: !state.newTopicPending && state.phase === 'error' ? null : state.error,
   }),
 
   user_prompt: (state, { text, at, via = null, images = [] }) => {
@@ -304,7 +308,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
 
   error: (state, { message }) => ({
     ...closeStreams(state),
-    switching: false,
+    switching: state.newTopicPending && state.switching,
     phase: 'error',
     error: message || '未知错误',
     permission: null,
@@ -331,6 +335,13 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
 
   session_switching: (state) => ({ ...state, switching: true, picker: false }),
   session_switch_failed: (state) => ({ ...state, switching: false }),
+
+  new_session_pending: (state, { at }) => ({
+    ...(state.newTopicPending ? state : ACTION_HANDLERS.new_session(state, { at })),
+    switching: true, newTopicPending: true, phase: 'idle', error: null,
+  }),
+  new_session_ready: (state, { info }) => ({ ...state, info, switching: false, newTopicPending: false, phase: 'idle', error: null }),
+  new_session_failed: (state, { message }) => ({ ...state, switching: false, phase: 'error', error: `新话题准备失败：${message}。草稿已保留，请点击「重试新话题」。` }),
 
   /**
    * What the memory plugin put in front of the model this turn, reported when the turn ends. Each entry

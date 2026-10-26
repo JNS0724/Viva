@@ -346,12 +346,11 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   })
   const focus = editorFocus()
   const nodes = [
+    ...state.taskCards.flatMap(id => cards.get(id) ?? []),
     ...(note ? views.toSpliced(state.restored.count, 0, [part('divider', [note.when, note.memory], () => historyDivider(note))]) : views).flat().filter(isContent),
     ...state.tasks.unfinished.map((task) => part(`unfinished:${task.id}`, [task, state.info.mode], () => unfinishedCard(task, handlers, state.info.mode === 'live'))),
-    // A conversation whose only turn moved to the background has no message to hang the card under.
-    ...(state.messages.length ? [] : cards.values()),
     ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },
-      h('div', { class: 'msg-user', text: item.text }),
+      h('b', { class: 'task-name', text: item.text }),
       h('div', { class: 'task-submit-status', role: 'status', text: item.status === 'failed' ? `没有交给后台：${item.problem}` : '已收到，正在准备后台任务…' }),
       item.status === 'failed' ? h('div', {},
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '重试', onClick: () => handlers.retrySubmission(item.id) }),

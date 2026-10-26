@@ -16,7 +16,7 @@ const revealLabel = (platform: string) => (platform === 'darwin' ? '在访达中
 
 function renderChip(button: HTMLButtonElement, state: State) {
   const { workDir } = state
-  const busy = isBusy(state)
+  const busy = isBusy(state) || state.switching
   const name = workDir.isDefault ? DEFAULT_DIR_NAME : workspaceName(workDir.current || state.info.cwd)
   button.replaceChildren(
     h('span', { class: 'workdir-ico', 'aria-hidden': 'true', text: '📁' }),

@@ -28,6 +28,9 @@ const SHOWN = new Set(['working', 'waiting', 'asking', 'error'])
 const POINTER_MS = 50
 /** The island takes the pointer this far beyond its edge. */
 const POINTER_SLOP = 4
+// On Windows the floating level can be demoted during activation. The screen-saver
+// level keeps the native topmost band; macOS keeps its non-activating panel level.
+const TOP_LEVEL = process.platform === 'win32' ? 'screen-saver' : 'floating'
 
 /**
  * @param input away: the window was closed to the tray; summoned: called up with the shortcut while switched off
@@ -68,14 +71,16 @@ function openWindow({ BrowserWindow, preload, page }: { BrowserWindow: typeof Wi
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    focusable: false,
+    // Windows: keep the native activation style stable. showInactive() avoids stealing focus;
+    // toggling focusability on a transparent HWND can lose its topmost and input styles.
+    focusable: process.platform === 'win32',
     alwaysOnTop: true,
     // macOS: a non-activating panel takes the keyboard for the input without bringing the app forward,
     // so the app the user was in stays in front and gets the keyboard back when the input closes.
     ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   })
-  win.setAlwaysOnTop(true, 'floating')
+  win.setAlwaysOnTop(true, TOP_LEVEL)
   if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false })
   win.setContentProtection(true)
   // Without `forward`: on Windows it hooks every mouse move on the system (WH_MOUSE_LL) through this process.
@@ -122,11 +127,46 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   let islandRect: Rect | null = null
   let ignoring = true
   let pointerTimer: ReturnType<typeof setInterval> | undefined
+  let styleTimer: ReturnType<typeof setTimeout> | undefined
   /** While the island is dragged: where the pointer was, and the display and point it is over. */
   let drag: { cursor: Point | null, display: Display, point: Point | null } | null = null
 
   /** The island's window while it is there. */
   const live = (): Win | null => (win && !win.isDestroyed() ? win : null)
+
+  // Reapply the level if native activation changed the window's topmost state.
+  function restoreTopmost() {
+    const shown = live()
+    if (!shown || shown.isAlwaysOnTop()) return
+    shown.setAlwaysOnTop(false)
+    shown.setAlwaysOnTop(true, TOP_LEVEL)
+  }
+
+  function settleStyles() {
+    restoreTopmost()
+    clearTimeout(styleTimer)
+    styleTimer = setTimeout(() => {
+      restoreTopmost()
+      const shown = live()
+      if (shown) shown.setIgnoreMouseEvents(ignoring)
+    }, 0)
+  }
+
+  // Native hit testing has no pointer-polling gap: the first press inside the island reaches it,
+  // while the transparent area outside this region belongs to the window underneath.
+  function shape() {
+    const shown = live()
+    if (process.platform !== 'win32' || !shown || !islandRect) return
+    const bounds = shown.getBounds()
+    const rect = drag ? { x: 0, y: 0, width: bounds.width, height: bounds.height } : islandRect
+    const x = Math.max(0, Math.floor(rect.x - POINTER_SLOP))
+    const y = Math.max(0, Math.floor(rect.y - POINTER_SLOP))
+    const right = Math.min(bounds.width, Math.ceil(rect.x + rect.width + POINTER_SLOP))
+    const bottom = Math.min(bounds.height, Math.ceil(rect.y + rect.height + POINTER_SLOP))
+    if (right <= x || bottom <= y) return
+    shown.setShape([{ x, y, width: right - x, height: bottom - y }])
+    setIgnoring(false)
+  }
 
   function send() {
     const shown = live()
@@ -169,7 +209,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     const bounds = shown.getBounds()
     const cursor = screen.getCursorScreenPoint()
     const inside = within({ x: cursor.x - bounds.x, y: cursor.y - bounds.y }, islandRect)
-    setIgnoring(!inside)
+    if (process.platform !== 'win32') setIgnoring(!inside)
     return setHovering(inside)
   }
 
@@ -202,11 +242,16 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
         send()
         if (input) takeKeyboard()
       })
-      opened.on('blur', () => input && closeInput())
+      opened.on('focus', settleStyles)
+      opened.on('blur', () => {
+        if (input) closeInput()
+        settleStyles()
+      })
     }
     if (shown.isVisible()) return
     place(shown)
     shown.showInactive()
+    settleStyles()
     clearInterval(pointerTimer)
     pointerTimer = setInterval(checkPointer, POINTER_MS)
   }
@@ -218,6 +263,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
    */
   function hide() {
     clearInterval(pointerTimer)
+    clearTimeout(styleTimer)
     const shown = live()
     if (!shown) return
     shown.destroy()
@@ -243,12 +289,12 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   }
 
   /**
-   * Whether the window takes the keyboard. On Windows changing it loses the window its place on top of the
-   * others (the next window clicked covered the island, found by DeepSeek), so the place is taken again.
+   * Windows keeps its activation style stable; other platforms only take the keyboard for input.
+   * Reassert the native level after changing focusability.
    */
   function setFocusable(shown: Win, value: boolean) {
-    shown.setFocusable(value)
-    shown.setAlwaysOnTop(true, 'floating')
+    if (process.platform !== 'win32') shown.setFocusable(value)
+    settleStyles()
   }
 
   /** A window focused before its page has loaded loses the focus again as it loads; so only once it has. */
@@ -257,6 +303,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (!shown || !loaded) return
     setFocusable(shown, true)
     shown.focus()
+    settleStyles()
   }
 
   /** @param {{ sent?: boolean }} [options] sent: what was asked keeps the island up until it is done */
@@ -305,6 +352,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     /** Where the island is inside its window (the page reports it whenever its shape changes). */
     setIslandRect(rect: Rect) {
       islandRect = rect
+      shape()
       checkPointer()
     },
     /** The shortcut, or files dropped on the island: open the input and take the keyboard. */
@@ -326,6 +374,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       drag = { cursor: null, display: currentDisplay(), point: null }
       send()
       dragMove()
+      shape()
     },
     dragMove,
     endDrag() {
@@ -338,6 +387,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       }
       const shown = live()
       if (shown) place(shown)
+      shape()
       send()
     },
     /** Settings: back to the top centre, on every display. */
@@ -381,6 +431,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     destroy() {
       clearTimeout(timer)
       clearInterval(pointerTimer)
+      clearTimeout(styleTimer)
       drag = null
       live()?.destroy()
       win = null

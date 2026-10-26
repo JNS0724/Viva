@@ -1,0 +1,10 @@
+// Check migrated TypeScript tests; legacy JavaScript tests migrate incrementally.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "checkJs": false
+  },
+  "include": ["test/**/*.ts", "src/renderer/globals.d.ts"]
+}

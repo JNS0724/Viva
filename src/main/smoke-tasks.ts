@@ -257,20 +257,18 @@ async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expe
 const ON_ITS_OWN = '帮我列一下这周要交的东西'
 
 /**
- * 后台做: the words go to a task of their own, started from the conversation so far; they stay in the
- * conversation with the task's card under them, and the conversation on screen is not busy for it.
+ * 后台做: only the task card joins the main conversation; its original request remains in the details.
  */
 async function startSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await startInBackground(win, ON_ITS_OWN)
   const started = await until(win, `(() => {
     const card = ${cardState(ON_ITS_OWN)}
-    // The words sit in a row of their own (with the bar to go back there); the card comes right after it.
     const rows = [...document.querySelectorAll('#thread > *')]
     const words = rows.findIndex((el) => [...el.querySelectorAll('.msg-user'), el].some((bubble) => bubble.classList.contains('msg-user') && bubble.textContent === ${JSON.stringify(ON_ITS_OWN)}))
     const at = rows.findIndex((el) => el === ${cardOf(ON_ITS_OWN)})
-    return card && { card, under: words >= 0 && at === words + 1, busy: document.getElementById('send-btn').dataset.busy, input: document.getElementById('composer-input').value }
+    return card && { card, onlyCard: words === -1 && at >= 0, busy: document.getElementById('send-btn').dataset.busy, input: document.getElementById('composer-input').value }
   })()`, 'the task started on its own')
-  expect(started.under && started.input === '' && started.busy === 'false', '后台做 should leave the words with the task\'s card under them, and the conversation free', started)
+  expect(started.onlyCard && started.input === '' && started.busy === 'false', '后台做 should show only its task card and leave the conversation free', started)
   const done = await until(win, doneCard(ON_ITS_OWN), 'the task started on its own reporting back')
   expect(done.text.includes(`收到：「${ON_ITS_OWN}」`), 'the task should answer the words it was given', done)
   const answers = await run(win, `[...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent)`)
@@ -278,6 +276,10 @@ async function startSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `(${cardOf(ON_ITS_OWN)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-started')
+  await run(win, clickOnCard(ON_ITS_OWN, '详情 →'))
+  const details = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title === ${JSON.stringify(`#${ON_ITS_OWN}`)} && seen })()`, 'the original request in task details')
+  expect(details.said.includes(ON_ITS_OWN), 'task details should retain the original request', details)
+  await run(win, escape)
 }
 
 const LEFT_ASK = '帮我接入演示服务，留到下次'

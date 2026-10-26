@@ -20,10 +20,19 @@ export const run = (win: SmokeWindow, code: string): Promise<any> => win.webCont
 export const click = (win: SmokeWindow, id: string) => run(win, `document.getElementById(${JSON.stringify(id)}).click()`)
 /** ⌘N / Ctrl+N: a new topic, the timeline kept above it (there is no button for it). */
 export const newTopic = (win: SmokeWindow) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, bubbles: true }))`)
-export const submit = (win: SmokeWindow, text: string) => run(win, `(() => {
+/** Runtime startup and topic switches are asynchronous; a fixed boot delay is not a readiness signal. */
+export async function submit(win: SmokeWindow, text: string) {
+  await until(win, `(async () => {
+    const info = await window.agent.getInfo()
+    const input = document.getElementById('composer-input')
+    const send = document.getElementById('send-btn')
+    return info.mode === 'live' && Boolean(info.sessionId) && input && !input.disabled && send && !send.disabled
+  })()`, 'the composer and agent session ready for submission')
+  return run(win, `(() => {
   document.getElementById('composer-input').value = ${JSON.stringify(text)}
   document.getElementById('composer').requestSubmit()
 })()`)
+}
 
 export function report(line: string) {
   process.stdout.write(`[smoke] ${line}\n`)

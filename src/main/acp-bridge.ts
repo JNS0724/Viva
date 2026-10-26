@@ -17,6 +17,7 @@ import { createQuestionDesk } from './question-channel.ts'
 import { stopInTime } from './stop-in-time.ts'
 import { createAssistantStream } from './assistant-stream.ts'
 import { createFreshSessions } from './fresh-sessions.ts'
+import { sessionTiming, type SessionTiming } from './session-timing.ts'
 import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
@@ -82,7 +83,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, prewarmSessions = false,
+  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, prewarmSessions = false, onTiming,
 }: {
   dshBin: string, nodeBin?: string, profile: string, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
@@ -91,6 +92,7 @@ export function createAcpBridge({
   /** What the message sources brought in, for viva_messages_read; null leaves the tool saying there are none. */
   messageActions?: { read: (request: ReadRequest) => Promise<string> } | null,
   prewarmSessions?: boolean,
+  onTiming?: (sample: SessionTiming) => void,
 }) {
   const broker = createPermissionBroker()
   let mcp: { active: string[], dropped: Array<{ name: string, reason: string }> } = { active: [], dropped: [] }
@@ -105,6 +107,9 @@ export function createAcpBridge({
   let seesImages = false
   let stderrTail = ''
   let disposed = false
+  let switching = false
+  const closing = new Map<string, Promise<unknown>>()
+  const failedCloses = new Set<string>()
   const toPlugins = (message: object) => {
     if (child?.connected) child.send(message)
   }
@@ -126,7 +131,10 @@ export function createAcpBridge({
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
   // Follow-ups proposed in a conversation, and background preparation's tool-less model calls (viva-followups).
-  const followupDesk = createFollowupDesk({ send: toPlugins, emit })
+  const followupDesk = createFollowupDesk({ send: toPlugins, emit: event => {
+    if (event.type === 'followup_propose' && event.sessionId !== sessionId && !tasks.has(String(event.sessionId))) return
+    emit(event)
+  } })
   // The messages the sources brought in, read from the conversation (viva-messages).
   const messagesDesk = createMessagesDesk({ send: toPlugins, read: messageActions?.read ?? null })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
@@ -156,6 +164,7 @@ export function createAcpBridge({
       emit({ type: 'update', sessionId: params.sessionId, update: params.update })
     },
     async requestPermission(params: RequestPermissionRequest) {
+      if (params.sessionId !== sessionId && !tasks.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
       emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
@@ -200,7 +209,7 @@ export function createAcpBridge({
   }
 
   /** Sends `request` with the MCP servers, leaving out each one dsh reports as failing until the rest work. */
-  async function withMcpServers<R>(request: (servers: McpServer[]) => Promise<R>, speculative = false): Promise<R> {
+  async function withMcpServers<R>(request: (servers: McpServer[]) => Promise<R>, speculative = false, status?: (value: typeof mcp) => void): Promise<R> {
     // Built as ACP's session/new takes them (mcp-config.ts toAcpServers).
     const configured = mcpServers() as McpServer[]
     const keys = new Set(configured.map(server => JSON.stringify(server)))
@@ -217,6 +226,7 @@ export function createAcpBridge({
     for (;;) {
       try {
         const response = await request(servers)
+        status?.({ active: servers.map(server => server.name), dropped })
         if (!speculative) mcp = { active: servers.map((server) => server.name), dropped }
         return response
       } catch (err) {
@@ -235,18 +245,30 @@ export function createAcpBridge({
   }
 
   const fresh = createFreshSessions({
-    open: (targetCwd: string, speculative: boolean) => withMcpServers(servers => live().newSession({ cwd: targetCwd, mcpServers: servers }), speculative),
-    close: response => live().closeSession({ sessionId: response.sessionId }),
+    open: async (targetCwd: string, speculative: boolean) => {
+      let status = mcp
+      const response = await sessionTiming(onTiming)('session.create-and-mcp', () => withMcpServers(
+        servers => live().newSession({ cwd: targetCwd, mcpServers: servers }), speculative, value => { status = value },
+      ), speculative ? 'speculative' : 'requested')
+      return { response, status }
+    },
+    close: entry => live().closeSession({ sessionId: entry.response.sessionId }),
   })
   // The fingerprint stays in memory; changing a server/secret or directory discards the untouched spare.
   const freshKey = (targetCwd: string) => JSON.stringify([targetCwd, mcpServers(), [...failedMcp].filter(([, failure]) => failure.until > Date.now()).map(([key, failure]) => [key, failure.until])])
   const prepareFresh = () => {
-    if (prewarmSessions && !disposed && mcpServers().length) fresh.prepare(freshKey(sessionCwd), sessionCwd)
+    if (prewarmSessions && !disposed && !closing.size && !failedCloses.size) fresh.prepare(freshKey(sessionCwd), sessionCwd)
     else fresh.clear()
   }
 
-  async function openSession() {
-    const response = await fresh.take(freshKey(sessionCwd), sessionCwd)
+  async function openSession(beforeOpen?: () => Promise<unknown>) {
+    const measure = sessionTiming(onTiming)
+    let source = 'cold'
+    const { response, status } = await measure('session.acquire', () => fresh.take(freshKey(sessionCwd), sessionCwd, {
+      beforeOpen, onUse: value => { source = value },
+    }))
+    await measure('session.source', async () => {}, source)
+    mcp = status
     sessionId = response.sessionId
     prepareFresh()
     return { ...infoFrom(response.configOptions), resumed: false }
@@ -273,7 +295,9 @@ export function createAcpBridge({
   /** Changes the model or reasoning effort; dsh applies it from the next turn. */
   async function setConfig(configId: string, value: string) {
     try {
-      const response = await live().setSessionConfigOption({ sessionId: opened(sessionId), configId, value })
+      const id = opened(sessionId)
+      if (configNow?.find(option => option.id === configId)?.currentValue === value) return infoFrom(configNow)
+      const response = await sessionTiming(onTiming)('session.set-config', () => live().setSessionConfigOption({ sessionId: id, configId, value }), configId)
       return infoFrom(response.configOptions)
     } catch (err) {
       throw new Error(describeError(err, stderrTail))
@@ -331,7 +355,7 @@ export function createAcpBridge({
       // Viva quitting ends a task's turn too: it is not over, and the next launch offers it (task-store.js).
       if (isTask(asked)) {
         if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message })
-      } else emit({ type: 'error', message })
+      } else if (asked === sessionId) emit({ type: 'error', message })
     } finally {
       if (running.get(asked) === operation) running.delete(asked)
     }
@@ -347,26 +371,63 @@ export function createAcpBridge({
     }
   }
 
+  function retire(id: string, measure: ReturnType<typeof sessionTiming>) {
+    if (closing.has(id)) return
+    const cleanup = (async () => {
+      if (running.has(id)) {
+        try { await measure('session.cancel', () => live().cancel({ sessionId: id })) }
+        catch (err) { console.error('[acp-bridge] cancel failed; still closing session:', describeError(err)) }
+      }
+      await measure('session.close', () => live().closeSession({ sessionId: id }))
+    })()
+    closing.set(id, cleanup)
+    void cleanup.then(() => {
+      closing.delete(id)
+      failedCloses.delete(id)
+      if (!switching && sessionId) prepareFresh()
+    }, err => {
+      closing.delete(id)
+      failedCloses.add(id)
+      console.error('[acp-bridge] session cleanup failed; will retry before another cold session:', describeError(err))
+    })
+  }
+
   /**
    * Leaves the current session for `targetSessionId` (a reopened conversation), or for a fresh one when null.
    * @param targetCwd its directory, when not the current one
    */
   async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd) {
-    await cancel()
-    questions.declineAll()
-    config?.closeAll()
-    steering.closeAll()
-    forking.closeAll()
+    if (switching) throw Error('会话正在准备，请稍候')
+    switching = true
+    const measure = sessionTiming(onTiming)
     try {
-      await live().closeSession({ sessionId: opened(sessionId) })
-    } catch (err) {
-      console.error('[acp-bridge] closeSession failed, switching anyway:', describeError(err))
-    }
-    try {
-      return await resumeOrOpen(targetSessionId, targetCwd)
+      return await measure('session.switch', async () => {
+        const leaving = sessionId
+        questions.declineAll()
+        config?.closeAll()
+        steering.closeAll()
+        forking.closeAll()
+        if (leaving) broker.cancelAll(leaving)
+        // Detach immediately: a closing session must never update the new topic or ask for permission.
+        sessionId = null
+        configNow = null
+        for (const id of failedCloses) retire(id, measure)
+        if (leaving) retire(leaving, measure)
+        const barriers = [...closing.values()]
+        const released = () => measure('session.wait-for-close', () => Promise.all(barriers))
+        if (targetSessionId) {
+          await released()
+          return resumeOrOpen(targetSessionId, targetCwd)
+        }
+        sessionCwd = targetCwd
+        // One old foreground session may drain in parallel, never an unbounded pile after rapid clicks.
+        if (closing.size > 1) await released()
+        // A prepared session already acquired its MCP resources. A cold MCP start must wait for old ones.
+        return openSession(mcpServers().length ? released : undefined)
+      })
     } catch (err) {
       throw new Error(describeError(err, stderrTail))
-    }
+    } finally { switching = false; if (sessionId) prepareFresh() }
   }
 
   /**
@@ -470,7 +531,7 @@ export function createAcpBridge({
       return { ok: true, taskId: forked.sessionId }
     }
     try {
-      const response = await fresh.take(freshKey(originCwd), originCwd)
+      const { response } = await fresh.take(freshKey(originCwd), originCwd)
       prepareFresh()
       tasks.set(response.sessionId, { cwd: originCwd, config: response.configOptions ?? originConfig })
       // A fresh session starts on the profile's defaults: the model picked here may be another (or the only one with a key).
@@ -543,7 +604,7 @@ export function createAcpBridge({
 
   const newSession = () => switchSession(null)
   /** Reattaches the current session, so a changed list of MCP servers takes effect without losing context. */
-  const reloadSession = () => { failedMcp.clear(); fresh.clear(); return switchSession(sessionId) }
+  const reloadSession = () => { failedMcp.clear(); fresh.reset(); return switchSession(sessionId) }
 
   /**
    * Hands `text` to the turn that is running. Not ok with reason 'idle' when the turn has just ended (the

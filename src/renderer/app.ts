@@ -11,6 +11,8 @@ import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
+import { createNewTopicAction, isPreviousTopicEvent } from './new-topic-actions.ts'
+import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
 import { answersFrom, type QuestionAnswer } from './question-state.ts'
 import { hubPage } from './hub-state.ts'
@@ -102,7 +104,9 @@ let pendingRender: (() => void) | null = null
 const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
+  const timing = action.type === 'new_session_pending' ? performance.now() : null
   const next = reduce(state, action)
+  if (timing !== null) recordRendererTiming('history-state', performance.now() - timing)
   if (next === state) return
   state = next
   if (['acp_update', 'task_update'].includes(action.type ?? '') && LIVE_TEXT_UPDATES.has(action.update?.sessionUpdate)) {
@@ -110,7 +114,9 @@ function dispatch(action: Action) {
     pendingRender ??= scheduleFrame(() => { pendingRender = null; render(dom, state, handlers) })
   } else {
     if (pendingRender) { pendingRender(); pendingRender = null }
+    const started = timing === null ? null : performance.now()
     render(dom, state, handlers)
+    if (started !== null) recordRendererTiming('new-topic-render', performance.now() - started)
   }
   startReveal()
   publishIsland()
@@ -184,9 +190,13 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
 
 function saveHistory() {
   if (!historyReady || state.messages.length === 0) return
+  const sessionId = state.info.sessionId
+  const topicStartedAt = state.topic.startedAt
   api.saveHistory(historyMessages(state))
     .then((summary) => {
-      dispatch({ type: 'conversation_saved', id: summary.id })
+      // A save from the topic just left must not attach its id to the new blank topic.
+      if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
+      else dispatch({ type: 'archived_conversation_saved', sessionId, id: summary.id })
       historyActions.refreshIfOpen()
     })
     .catch((err) => console.error('[history] could not save the conversation:', errorMessage(err)))
@@ -272,7 +282,7 @@ function revealMessage(msgId: string) {
  * @returns {boolean} false when the agent can't take it now
  */
 function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
-  if ((!text && !images.length) || setupView(state.info) || state.switching) return false
+  if ((!text && !images.length) || setupView(state.info) || state.switching || state.newTopicPending) return false
   if (images.length) return askWithImages(text, images, via)
   // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
   // into its turn while it goes on, as its next question once it has ended.
@@ -452,7 +462,7 @@ const handlers = {
   /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
   async startInBackground() {
     const text = dom.input.value.trim()
-    if (!text || setupView(state.info) || state.switching) return dom.input.focus()
+    if (!text || setupView(state.info) || state.switching || state.newTopicPending) return dom.input.focus()
     dom.input.value = ''
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
@@ -529,22 +539,13 @@ const handlers = {
     api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   },
   /** ⌘N, or 开新话题 in the label's menu: the assistant starts afresh; what was said stays above, dimmed. */
-  async newSession() {
-    if (state.switching) return
-    dispatch({ type: 'topic_menu', open: false })
-    if (isBusy(state)) return historyActions.showToast('先停止当前任务，再开新话题')
-    dispatch({ type: 'session_switching' })
-    try {
-      dispatch({ type: 'new_session', info: await api.newSession(), at: Date.now() })
-      // Where the new topic starts is at the bottom: shown at once, before anything is said.
-      dom.follower.jumpToLatest()
-      dom.input.focus()
-    } catch (err) {
-      dispatch({ type: 'session_switch_failed' })
-      dispatch({ type: 'error', message: errorMessage(err) })
-    }
-    return undefined
-  },
+  newSession: createNewTopicAction({
+    getState: () => state, dispatch, open: () => api.newSession(),
+    jump: () => dom.follower.jumpToLatest(), focus: () => dom.input.focus(),
+    toast: (message) => historyActions.showToast(message), errorMessage,
+    frame: (callback) => { requestAnimationFrame(callback) },
+    measure: ({ stage, durationMs }) => recordRendererTiming(stage, durationMs),
+  }),
   /** 回到这个话题 on an earlier topic, and 撤销 on a new one: the agent goes on from that segment. */
   async resumeTopic(segmentId: string) {
     if (state.switching) return undefined
@@ -565,6 +566,7 @@ const handlers = {
   /** The permission picker by the input (view/permission-picker.js): another level restarts dsh on this conversation. */
   togglePermissionMenu: () => dispatch({ type: 'permission_menu', open: !state.settings.permissionMenu }),
   async setPermission(level: string) {
+    if (state.switching || state.newTopicPending) return
     if (level === state.settings.permission) return dispatch({ type: 'permission_menu', open: false })
     dispatch({ type: 'permission_busy' })
     try {
@@ -640,6 +642,7 @@ const handlers = {
   clearKey: () => applySettingsChange(() => api.clearApiKey(), () => '已清除保存的 key'),
   togglePicker: () => dispatch({ type: 'picker_toggle' }),
   async setConfig(configId: string, value: string) {
+    if (state.switching || state.newTopicPending) return
     try {
       dispatch({ type: 'config_applied', info: await api.setConfig(configId, value) })
     } catch (err) {
@@ -655,9 +658,9 @@ const handlers = {
   /** The earlier part of the timeline, a page more (the button at its top). */
   loadEarlier: () => timelineActions.loadEarlier(),
   /** The working directory: the chip under the input, its menu, and the question the first time (view/workdir.js). */
-  pickWorkDir: (dir: string) => workDirActions.switchTo(dir),
-  chooseWorkDir: () => workDirActions.choose(),
-  confirmWorkDir: () => workDirActions.confirm(),
+  pickWorkDir: (dir: string) => state.switching ? undefined : workDirActions.switchTo(dir),
+  chooseWorkDir: () => state.switching ? undefined : workDirActions.choose(),
+  confirmWorkDir: () => state.switching ? undefined : workDirActions.confirm(),
   cancelWorkDir: () => workDirActions.cancelConfirm(),
   closeWorkDirMenu: () => workDirActions.closeMenu(),
   revealWorkDir: () => workDirActions.reveal(),
@@ -685,7 +688,7 @@ async function applySettingsChange(
   request: () => Promise<{ settings: unknown, info?: AgentInfo | null }>,
   noticeFor: (info: AgentInfo | null | undefined) => string,
 ) {
-  if (state.settings.busy) return
+  if (state.settings.busy || state.switching) return
   dispatch({ type: 'settings_busy' })
   try {
     const { settings, info } = await request()
@@ -820,7 +823,7 @@ function wireDismissal() {
     } else if (isShortcut(event, 'o')) {
       // ⌘O / Ctrl+O: the system's folder dialog, as in any desktop app.
       event.preventDefault()
-      if (!isBusy(state) && !state.workDir.switching) workDirActions.choose()
+      if (!isBusy(state) && !state.switching && !state.workDir.switching) workDirActions.choose()
     } else if (event.key === 'Escape') {
       closeTopmost()
     }
@@ -864,7 +867,7 @@ function wireFolderDrop() {
     }
     const files = Array.from(event.dataTransfer.files)
     if (files.length !== 1) return historyActions.showToast('一次拖一个文件夹进来')
-    if (isBusy(state) || state.workDir.switching) return historyActions.showToast('助手正在工作，等这一轮结束再换工作目录')
+    if (isBusy(state) || state.switching || state.workDir.switching) return historyActions.showToast('助手正在工作或准备话题，请稍后再换工作目录')
     const dir = api.pathForFile(files[0])
     return dir ? workDirActions.switchTo(dir) : historyActions.showToast('这不是电脑上的文件夹')
   })
@@ -884,6 +887,7 @@ function reportMcpProblems(info: AgentInfo | undefined) {
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
 function handleEvent(event: AgentEvent) {
+  if (state.newTopicPending && isPreviousTopicEvent(event)) return
   const toAction = EVENT_ACTIONS[event?.type ?? '']
   if (toAction) dispatch(toAction(event))
   if (event?.type === 'ready') reportMcpProblems(event.info)

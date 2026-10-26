@@ -21,6 +21,130 @@ const modelOptions = (currentValue) => [{
 }]
 const MODEL_OPTIONS = modelOptions('v4-flash')
 
+test('a new topic without MCP does not wait for old cleanup; late updates and permissions stay detached', { timeout: 5000 }, async t => {
+  let releaseClose, serverConnection, runtime, created = 0, cancelled = 0
+  const events = [], timings = []
+  const closeGate = new Promise(resolve => { releaseClose = resolve })
+  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: e => events.push(e), onTiming: s => timings.push(s),
+    spawnFn: () => runtime = fakeDsh(conn => {
+      serverConnection = conn
+      return { ...scriptedAgent([])(conn),
+        async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
+        async closeSession() { await closeGate; return {} },
+        async cancel() { cancelled++ },
+      }
+    }),
+  })
+  t.after(() => { releaseClose(); bridge.dispose() })
+  const old = await bridge.start()
+  const next = await bridge.newSession()
+  assert.notEqual(old.sessionId, next.sessionId)
+  assert.equal(cancelled, 0, 'idle sessions need no redundant cancellation notification')
+  await serverConnection.sessionUpdate({ sessionId: old.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } } })
+  const decision = await serverConnection.requestPermission({ sessionId: old.sessionId, toolCall: { toolCallId: 'old', title: 'old' }, options: [] })
+  assert.equal(decision.outcome.outcome, 'cancelled')
+  const proposal = { title: 'later', ask: 'prepare a draft', remindAt: 'tomorrow' }
+  runtime.emit('message', { type: 'followup_propose', id: 'stale', sessionId: old.sessionId, proposal })
+  assert.equal(events.length, 0)
+  runtime.emit('message', { type: 'followup_propose', id: 'current', sessionId: next.sessionId, proposal })
+  assert.equal(events[0]?.proposalId, 'current')
+  assert.ok(timings.some(s => s.stage === 'session.switch' && s.ok))
+  assert.equal(timings.some(s => s.stage === 'session.close'), false, 'switch finished before cleanup')
+})
+
+test('cold MCP topics wait for old resources and reject overlapping switches', { timeout: 5000 }, async t => {
+  let created = 0, releaseClose
+  const closeGate = new Promise(resolve => { releaseClose = resolve })
+  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+    mcpServers: () => [{ name: 'exclusive', command: 'exclusive', args: [], env: [] }],
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
+      async closeSession() { await closeGate; return {} },
+    })),
+  })
+  t.after(() => { releaseClose(); bridge.dispose() })
+  await bridge.start()
+  const switching = bridge.newSession()
+  await assert.rejects(bridge.newSession(), /正在准备/)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(created, 1)
+  releaseClose()
+  assert.equal((await switching).sessionId, 'topic-2')
+})
+
+test('a ready spare bypasses a slow old close while preserving MCP status', { timeout: 5000 }, async t => {
+  let created = 0, releaseClose, prepared
+  const closeGate = new Promise(resolve => { releaseClose = resolve })
+  const ready = new Promise(resolve => { prepared = resolve })
+  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: () => {}, prewarmSessions: true,
+    mcpServers: () => [{ name: 'safe', command: 'safe', args: [], env: [] }],
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async newSession() { const sessionId = `topic-${++created}`; if (created === 2) prepared(); return { sessionId, configOptions: MODEL_OPTIONS } },
+      async closeSession() { await closeGate; return {} },
+    })),
+  })
+  t.after(() => { releaseClose(); bridge.dispose() })
+  await bridge.start(); await ready; await new Promise(resolve => setImmediate(resolve))
+  const next = await bridge.newSession()
+  assert.equal(next.sessionId, 'topic-2')
+  assert.deepEqual(next.mcp, { active: ['safe'], dropped: [] })
+  assert.equal(created, 2, 'do not accumulate new spares while old cleanup is outstanding')
+})
+
+test('setting an already selected model does not make a protocol call', async t => {
+  const { bridge, log } = bridgeWith(l => scriptedAgent(l))
+  t.after(() => { bridge.dispose() })
+  await bridge.start()
+  assert.equal((await bridge.setConfig('model', 'v4-flash')).modelValue, 'v4-flash')
+  assert.equal(log.some(entry => entry[0] === 'setConfig'), false)
+})
+
+test('a failed old close blocks cold MCP initialization once and can be retried', async t => {
+  let closes = 0, created = 0
+  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+    mcpServers: () => [{ name: 'exclusive', command: 'exclusive', args: [], env: [] }],
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
+      async closeSession() { if (++closes === 1) throw Error('temporary close failure'); return {} },
+    })),
+  })
+  t.after(() => { bridge.dispose() })
+  await bridge.start()
+  await assert.rejects(bridge.newSession(), /temporary close failure/)
+  assert.equal(created, 1, 'never silently drop the exclusive MCP while the old session might still own it')
+  assert.equal((await bridge.newSession()).sessionId, 'topic-2')
+  assert.equal(closes, 2)
+})
+
+test('retrying a failed topic switch does not cancel a background task permission', async t => {
+  let conn, closes = 0, created = 0
+  const events = []
+  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: event => events.push(event),
+    mcpServers: () => [{ name: 'safe', command: 'safe', args: [], env: [] }],
+    spawnFn: () => fakeDsh(connection => {
+      conn = connection
+      return { ...scriptedAgent([])(connection),
+        async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
+        async closeSession() { if (++closes === 1) throw Error('retry close'); return {} },
+      }
+    }),
+  })
+  t.after(() => { bridge.dispose() })
+  await bridge.start()
+  assert.equal((await bridge.resumeTask({ taskId: OLDER_SESSION })).ok, true)
+  let answered = false
+  const permission = conn.requestPermission({ sessionId: OLDER_SESSION, toolCall: { toolCallId: 'background', title: 'Background tool' },
+    options: [{ optionId: 'yes', name: 'Allow', kind: 'allow_once' }],
+  }).then(result => { answered = true; return result })
+  await new Promise(resolve => setImmediate(resolve))
+  const request = events.find(event => event.type === 'permission')
+  await assert.rejects(bridge.newSession(), /retry close/)
+  await bridge.newSession()
+  assert.equal(answered, false)
+  assert.equal(bridge.respondPermission(request.requestId, 'yes'), true)
+  assert.equal((await permission).outcome.outcome, 'selected')
+})
+
 test('a singleton MCP refusing a speculative second instance does not poison the next real session or its status', async () => {
   const server = { name: 'singleton', command: 'singleton', args: [], env: [] }
   const opened = new Set(), requests = []

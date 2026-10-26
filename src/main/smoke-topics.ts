@@ -1,4 +1,4 @@
-import { capture, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeWindow } from './smoke-kit.ts'
+import { capture, finishTurn, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeWindow } from './smoke-kit.ts'
 // newTopic: ⌘N, the first time; ＋ 新话题 above the input, the second.
 
 /**
@@ -24,8 +24,27 @@ export async function checkTopics(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`topics: ${message}: ${JSON.stringify(seen)}`) }
 
-  await newTopic(win)
+  const immediate = await run(win, `(() => {
+    const input = document.getElementById('composer-input')
+    input.value = '新话题准备期间保留的草稿'
+    window.topicProbeStart = performance.now()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', metaKey: true, bubbles: true }))
+    return { disabled: document.getElementById('send-btn').disabled, editable: !input.disabled,
+      focused: document.activeElement === input, draft: input.value,
+      handlerMs: performance.now() - window.topicProbeStart,
+      label: document.querySelector('#ctx-area .ctx-new')?.textContent }
+  })()`)
+  expect(immediate.disabled && immediate.editable && immediate.focused, 'new topic should focus an editable draft immediately, before sending is ready', immediate)
+  expect(immediate.label?.includes('准备'), 'preparation should be visible immediately', immediate)
   const fresh = await timelineWhen(win, 'seen.undo && !seen.switching', 'a new topic shown where it starts')
+  const ready = await run(win, `(() => {
+    const input = document.getElementById('composer-input')
+    const result = { draft: input.value, observedReadyMs: performance.now() - window.topicProbeStart }
+    input.value = ''
+    return result
+  })()`)
+  expect(ready.draft === immediate.draft, 'runtime readiness must preserve the draft', ready)
+  report('new-topic responsiveness: ' + JSON.stringify({ immediate, ready }))
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'topic-new')
   expect(fresh.start?.includes('新话题'), 'the new topic should say where it starts', fresh)
