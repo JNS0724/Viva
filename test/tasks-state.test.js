@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks, mentionedTask, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.ts'
 import { traceItems } from '../src/renderer/selectors.ts'
+import { showsHome } from '../src/renderer/view/render.ts'
+import { cardedTasks } from '../src/renderer/view/task-card.ts'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 const run = (actions, start = initialState) => actions.reduce((state, action) => reduce(state, action), start)
@@ -57,6 +59,37 @@ test('a task\'s steps are its own turn\'s, not those of the turns before it', ()
 })
 
 const WORDS_LATER = '整理发布说明'
+
+test('a background request while idle adds only its card; the original words stay in task details', () => {
+  const idle = run([{ type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'assistant', text: '有什么可以帮你？' }], savedAt: 1 }])
+  const state = reduce(idle, { type: 'task_started', task: { id: 'bg', segmentId: 'bg-c', title: '查天气', words: '查天气' }, text: '查天气', at: 2 })
+  assert.deepEqual(state.messages.map(message => message.text), ['有什么可以帮你？'])
+  assert.deepEqual(state.messages[0].cardsAfter, ['bg'])
+  assert.deepEqual(taskMessages(state.tasks.list[0]).map(message => message.text), ['查天气'])
+  const empty = reduce(initialState, { type: 'task_started', task: { id: 'bg', title: '查天气' }, text: '查天气', at: 2 })
+  assert.deepEqual(empty.messages, [], 'even an empty conversation must not acquire a user bubble')
+  assert.equal(showsHome(empty), false, 'the welcome screen must not hide the standalone background card')
+  assert.deepEqual(cardedTasks(empty).map(({ task }) => task.id), ['bg'])
+  assert.equal(showsHome(initialState), true)
+  const speaking = reduce(empty, { type: 'user_prompt', text: '这里继续聊', at: 3 })
+  assert.deepEqual(speaking.taskCards, ['bg'], 'the standalone card remains before the first foreground message')
+  assert.deepEqual(cardedTasks(speaking).map(({ task }) => task.id), ['bg'])
+  const fresh = reduce(speaking, { type: 'new_session' })
+  assert.deepEqual(fresh.taskCards, [])
+  assert.deepEqual(cardedTasks(fresh), [], 'another topic must not acquire a stale unhosted card')
+  const closed = reduce(empty, { type: 'task_closed', taskId: 'bg' })
+  assert.deepEqual(closed.taskCards, [])
+  assert.equal(showsHome(closed), true, 'closing the only card leaves no ghost conversation')
+  const failed = run([{ type: 'task_end', taskId: 'bg', stopReason: 'error', message: 'offline', at: 4 }, { type: 'task_report_shown', taskId: 'bg' }], empty)
+  assert.equal(cardedTasks(failed).length, 1, 'a failure is visible on the same card')
+  assert.equal(cardedTasks(reduce(failed, { type: 'task_report_dismissed', taskId: 'bg' })).length, 0)
+  const late = reduce(reduce(initialState, { type: 'new_session_pending', at: 1 }), {
+    type: 'task_started', task: { id: 'late', title: '旧话题的任务' }, text: '旧请求', origin: null, at: 2,
+  })
+  assert.deepEqual(late.taskCards, [], 'an old pending submission cannot attach to the new topic before its session id changes')
+  const restored = reduce(initialState, { type: 'task_resumed', task: { id: 'resumed', title: '恢复任务' }, messages: [{ role: 'user', text: '原始请求' }], at: 4 })
+  assert.deepEqual(restored.taskCards, ['resumed'], 'resuming persisted task data restores its standalone card')
+})
 
 test('what moves to the background: the words that started the turn and where they are among what is saved', () => {
   assert.deepEqual(spinOffTarget(working()), { words: '整理这周的提交，写成发布说明', keep: 2 })

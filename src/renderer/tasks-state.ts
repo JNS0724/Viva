@@ -183,9 +183,11 @@ export function withCardAfter(messages: readonly ThreadMessage[], taskId: string
 }
 
 /** A task going on again (taken up after a relaunch, asked again) keeps its card where it was, else gets one here. */
-function hostedOn(messages: readonly ThreadMessage[], taskId: string): ThreadMessage[] {
-  const hosted = messages.some((message) => message.taskId === taskId || message.cardsAfter?.includes(taskId))
-  return hosted ? [...messages] : withCardAfter(messages, taskId)
+function hostTask(state: State, taskId: string): Pick<State, 'messages' | 'taskCards'> {
+  const hosted = state.taskCards.includes(taskId) || state.messages.some((message) => message.taskId === taskId || message.cardsAfter?.includes(taskId))
+  if (hosted) return { messages: state.messages, taskCards: state.taskCards }
+  return state.messages.length ? { messages: withCardAfter(state.messages, taskId), taskCards: state.taskCards }
+    : { messages: state.messages, taskCards: [...state.taskCards, taskId] }
 }
 const mapTask = (state: State, taskId: string, change: (task: BackgroundTask) => BackgroundTask) => withTasks(state, {
   list: state.tasks.list.map((task) => (task.id === taskId ? settled(change(task)) : task)),
@@ -221,7 +223,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       // Undone, the earlier turns' steps come back in front of the task's (task_undone).
       const earlier = state.timeline.filter((item) => item.at < startedAt)
       const undo = { taskId: task.id, prefix: going.messages, text, timeline: earlier }
-      return { ...going, messages: withCardAfter(going.messages, task.id), tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo, flip: false } }
+      return { ...going, ...hostTask({ ...going, taskCards: state.taskCards }, task.id), tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo, flip: false } }
     },
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
@@ -243,7 +245,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),
     task_forgotten: (state, { taskId }) => withTasks(state, { unfinished: state.tasks.unfinished.filter((entry) => entry.id !== taskId) }),
     /** Taken up again after a relaunch: it goes on as a task in the background, with what it had said. */
-    task_resumed: (state, { task, messages, at }) => withTasks({ ...state, messages: hostedOn(state.messages, task.id) }, {
+    task_resumed: (state, { task, messages, at }) => withTasks({ ...state, ...hostTask(state, task.id) }, {
       unfinished: state.tasks.unfinished.filter((entry) => entry.id !== task.id),
       list: [...state.tasks.list.filter((entry) => entry.id !== task.id),
         settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView(messages, at) })],
@@ -258,22 +260,21 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
      * the background. Its card goes; a new one comes when it is done again.
      */
     task_asked: (state, { taskId, text, at }) => {
-      const asked = mapTask({ ...state, messages: hostedOn(state.messages, taskId) }, taskId, (task) => ({ ...task, startedAt: at, endedAt: null, view: handlers.user_prompt(task.view, { text, at }) }))
+      const asked = mapTask({ ...state, ...hostTask(state, taskId) }, taskId, (task) => ({ ...task, startedAt: at, endedAt: null, view: handlers.user_prompt(task.view, { text, at }) }))
       return withTasks(asked, {
         reports: asked.tasks.reports.filter((entry) => entry.taskId !== taskId),
         finished: asked.tasks.finished?.taskId === taskId ? null : asked.tasks.finished,
       })
     },
     /**
-     * 后台做: the words went to a task of their own, started from the conversation so far. They stay in the
-     * conversation, the task's card under them, unless a turn is running there (its answer is still coming).
+     * 后台做: the request belongs to the task's own conversation. Only its card joins the main thread,
+     * whether the foreground is idle or busy.
      */
     task_started: (state, { task, text, at, submissionId, origin }) => {
       const entry = settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView([{ role: 'user', text }], at) })
-      const words = { id: `m${state.messages.length}`, role: 'user', text, open: false, receipt: null, taskId: task.id }
-      const messages = origin !== undefined && origin !== (state.info.sessionId ?? null) ? state.messages
-        : isBusy(state) ? withCardAfter(state.messages, task.id) : [...state.messages, words]
-      return { ...withTasks(state, { list: [...state.tasks.list, entry], submissions: state.tasks.submissions.filter(item => item.id !== submissionId) }), messages }
+      const host = origin !== undefined && (state.newTopicPending || origin !== (state.info.sessionId ?? null))
+        ? { messages: state.messages, taskCards: state.taskCards } : hostTask(state, task.id)
+      return { ...withTasks(state, { list: [...state.tasks.list, entry], submissions: state.tasks.submissions.filter(item => item.id !== submissionId) }), ...host }
     },
 
     /** The 后台 page, on the task asked for, else the one it was on, else the first in its list. */
@@ -316,6 +317,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         conversationId,
         info: { ...state.info, ...info },
         folds: [],
+        taskCards: state.taskCards.filter(id => id !== taskId),
         tasks: { ...state.tasks, list: state.tasks.list.filter((entry) => entry.id !== taskId), undo: null, flip: false },
       }
     },
@@ -328,6 +330,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
           reports: state.tasks.reports.filter((entry) => entry.taskId !== taskId),
         }),
         drawer: state.drawer === taskTab(taskId) ? 'trace' : state.drawer,
+        taskCards: state.taskCards.filter(id => id !== taskId),
       }
       // The page goes on to the next task when the one it showed is closed.
       return state.tasks.page.selected === taskId ? withTasks(closed, { page: { ...closed.tasks.page, selected: firstOnPage(closed) } }) : closed

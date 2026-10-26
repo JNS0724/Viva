@@ -79,7 +79,9 @@ export function taskCard(task: BackgroundTask, report: TaskReport | null, handle
  * they came back with is still shown (until put away), each with that report.
  */
 export function cardedTasks(state: State): Array<{ task: BackgroundTask, report: TaskReport | null }> {
+  const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])])])
   return state.tasks.list.flatMap((task): Array<{ task: BackgroundTask, report: TaskReport | null }> => {
+    if (!hosted.has(task.id)) return []
     if (LIVE.has(task.status)) return [{ task, report: null }]
     const report = state.tasks.reports.find((entry) => entry.taskId === task.id && entry.shown)
     return report ? [{ task, report }] : []

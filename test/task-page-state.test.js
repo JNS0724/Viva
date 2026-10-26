@@ -16,11 +16,11 @@ const restored = (id, title, endedAt) => ({
 })
 const started = (id, text, at) => ({ type: 'task_started', task: { id, segmentId: `c-${id}`, title: text, words: text }, text, at })
 
-test('a task started on its own leaves the words in the conversation, with the task under them, at work', () => {
+test('a task started on its own leaves only its card in the conversation and keeps the request in task details', () => {
   const state = run([started('s7', '把这周的提交整理成发布说明', 10)])
 
-  const [words] = state.messages
-  assert.deepEqual([words.role, words.text, words.taskId], ['user', '把这周的提交整理成发布说明', 's7'])
+  assert.deepEqual(state.messages, [], 'a background request does not create a foreground user bubble')
+  assert.deepEqual(state.taskCards, ['s7'], 'the card is anchored even without a foreground message')
   assert.equal(state.phase, 'idle', 'the conversation on screen is not busy for it')
   const [task] = liveTasks(state)
   assert.deepEqual([task.id, task.status, task.startedAt], ['s7', 'running', 10])

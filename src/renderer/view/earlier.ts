@@ -36,7 +36,7 @@ const rowViews = (rows: readonly EarlierRow[], handlers: Handlers): View[] => ro
 const topicTime = (at: number | null, now: number) => (at ? formatListTime(at, now) : '')
 
 /** An earlier topic the assistant no longer has: quieter, and 回到这个话题 takes it up again from its last segment. */
-function oldTopic(block: TopicBlock, rows: readonly EarlierRow[], handlers: Handlers, { now, busy }: Options) {
+function oldTopic(block: TopicBlock, views: View[], handlers: Handlers, { now, busy }: Options) {
   return h('div', { class: 'topic-old' },
     h('div', { class: 'topic-head' },
       h('b', { text: `话题 · ${topicTime(block.at, now)}` }),
@@ -45,7 +45,7 @@ function oldTopic(block: TopicBlock, rows: readonly EarlierRow[], handlers: Hand
         class: 'topic-back', type: 'button', disabled: busy, title: busy ? '等这一轮结束再回去' : null, text: '回到这个话题',
         onClick: () => handlers.resumeTopic(block.segments.at(-1)?.id),
       })),
-    ...rowViews(rows, handlers))
+    ...views)
 }
 
 /** Where the topic on screen starts: a new one (undoable until something is said), or back to an earlier one. */
@@ -66,10 +66,11 @@ function startLine(start: ReturnType<typeof topicStart>, handlers: Handlers, { n
  * @param state the renderer state (its `earlier` slice, the topic and the current directory)
  * @param handlers loadEarlier, and resumeTopic (segmentId)
  */
-const earlierViews = new WeakMap<HTMLElement, { inputs: unknown[], nodes: (Node | string)[] }>()
+type BlockView = { inputs: unknown[], views: View[] }
+const earlierViews = new WeakMap<HTMLElement, { inputs: unknown[], nodes: (Node | string)[], blocks: Map<string, BlockView>, rows: WeakMap<EarlierRow, View> }>()
 
 export function updateEarlierControls(container: HTMLElement, state: State) {
-  const busy = isBusy(state)
+  const busy = isBusy(state) || state.switching
   for (const button of container.querySelectorAll<HTMLButtonElement>('.topic-back')) {
     button.disabled = busy
     button.title = busy ? '等这一轮结束再回去' : ''
@@ -80,7 +81,7 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
   const inputs = [state.earlier, state.info.cwd, state.topic.parentId]
   const cached = earlierViews.get(container)
   if (cached && inputs.every((value, i) => cached.inputs[i] === value)) {
-    reconcileChildren(container, [...cached.nodes, ...startLine(topicStart(state), handlers, { now, busy: isBusy(state) })].filter((view): view is Node | string => Boolean(view)))
+    reconcileChildren(container, [...cached.nodes, ...startLine(topicStart(state), handlers, { now, busy: isBusy(state) || state.switching })].filter((view): view is Node | string => Boolean(view)))
     updateEarlierControls(container, state)
     return
   }
@@ -97,13 +98,29 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
     if (i === undefined) tail.push(row)
     else grouped[i].push(row)
   }
-  const options = { now, busy: isBusy(state) }
+  const options = { now, busy: isBusy(state) || state.switching }
   const more = earlier.hasMore && earlier.segments.length > 0
     ? h('button', { class: 'timeline-more', type: 'button', disabled: earlier.loading, text: earlier.loading ? '正在读取…' : '更早的对话', onClick: () => handlers.loadEarlier() })
     : null
-  const views = blocks.flatMap((block, i) => (block.remembered ? rowViews(grouped[i], handlers) : [oldTopic(block, grouped[i], handlers, options)]))
+  const rowCache = cached?.rows ?? new WeakMap<EarlierRow, View>()
+  const cachedRows = (rows: readonly EarlierRow[]) => rows.flatMap((row) => {
+    if (!rowCache.has(row)) rowCache.set(row, rowView(row, handlers))
+    return rowCache.get(row)!
+  })
+  const blockCache = new Map<string, BlockView>()
+  const views = blocks.flatMap((block, i) => {
+    const key = String(block.segments[0].id)
+    // Segment identity covers message changes; boundary rows cover prepended history and directory dividers.
+    const inputs = [block.remembered, grouped[i][0], grouped[i].at(-1), grouped[i].length, formatListTime(block.at ?? 0, now), ...block.segments]
+    const previous = cached?.blocks.get(key)
+    const hit = previous && inputs.length === previous.inputs.length && inputs.every((input, j) => input === previous.inputs[j])
+    const views = hit ? previous.views : block.remembered ? cachedRows(grouped[i]) : [oldTopic(block, cachedRows(grouped[i]), handlers, options)]
+    blockCache.set(key, { inputs, views })
+    return views
+  })
   container.hidden = rows.length === 0
   const nodes = [more, ...views, ...rowViews(tail, handlers)].filter((view): view is Node | string => Boolean(view))
-  earlierViews.set(container, { inputs, nodes })
+  earlierViews.set(container, { inputs, nodes, blocks: blockCache, rows: rowCache })
   reconcileChildren(container, [...nodes, ...startLine(topicStart(state), handlers, options)].filter((view): view is Node | string => Boolean(view)))
+  updateEarlierControls(container, state)
 }

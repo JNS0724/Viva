@@ -10,6 +10,35 @@ const NOW = new Date(2026, 9, 21, 15, 0).getTime()
 const msg = (seq, role, text, at) => ({ seq, role, text, receipt: null, at })
 const segment = (id, cwd, messages) => ({ id, cwd, parentId: null, createdAt: messages[0]?.at ?? 0, messages })
 
+test('a late first save fills the archived id without attaching the old conversation to the blank draft', () => {
+  const old = { ...initialState, info: { ...initialState.info, sessionId: 'old-session' }, messages: [{ id: 'm1', role: 'user', text: 'old' }] }
+  const pending = reduce(old, { type: 'new_session_pending', at: 10 })
+  const saved = reduce(pending, { type: 'archived_conversation_saved', sessionId: 'old-session', id: 'persisted-old' })
+  assert.equal(saved.earlier.segments[0].id, 'persisted-old')
+  assert.equal(saved.conversationId, null)
+  assert.equal(saved.newTopicPending, true)
+  assert.equal(reduce(saved, { type: 'archived_conversation_saved', sessionId: 'elsewhere', id: 'wrong' }), saved)
+  const paged = reduce(saved, { type: 'earlier_loaded', segments: [{ ...saved.earlier.segments[0] }], hasMore: false })
+  assert.equal(paged.earlier.segments.length, 1, 'later history pages cannot duplicate the repaired segment')
+})
+
+test('appending topics reuses old rows; prepending history and crossing midnight rebuild affected boundaries', () => {
+  let reads = 0
+  const a = segment('a', '/w', [{ ...msg(0, 'user', 'old', NOW), get text() { reads++; return 'old' } }])
+  const first = earlierRows({ segments: [a] }, { now: NOW })
+  assert.equal(reads, 1)
+  const b = segment('b', '/w', [msg(0, 'assistant', 'new', NOW)])
+  const appended = earlierRows({ segments: [a, b] }, { now: NOW })
+  assert.equal(reads, 1, 'unchanged messages are not reconverted')
+  assert.equal(appended[0], first[0])
+  assert.equal(appended[1], first[1])
+  const before = segment('before', '/w', [msg(0, 'user', 'earlier today', NOW - 1000)])
+  const prepended = earlierRows({ segments: [before, a, b] }, { now: NOW })
+  assert.equal(prepended.filter(row => row.kind === 'day').length, 1, 'same-day prepend must remove the former leading divider')
+  const tomorrow = earlierRows({ segments: [a, b] }, { now: NOW + DAY })
+  assert.equal(tomorrow[0].label, '昨天', 'day cache cannot keep today after midnight')
+})
+
 test('earlier segments arrive in pages and go before those already shown, each once', () => {
   const loading = reduce(initialState, { type: 'earlier_loading' })
   assert.equal(loading.earlier.loading, true)

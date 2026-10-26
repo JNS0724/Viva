@@ -116,6 +116,9 @@ export type EarlierRow = { segment: string | null } & (
   | { kind: 'message', id: string, role: string, text: string, receipt: Receipt | null, images?: Array<{ id: string }> }
 )
 
+// Immutable segments keep their row objects across new topics; only a changed day/boundary is rebuilt.
+const segmentRows = new WeakMap<Segment, { day: number, beforeDay: string | null, beforeCwd: string | null, continues: boolean, rows: EarlierRow[], lastDay: string | null, lastCwd: string | null }>()
+
 /**
  * The earlier part of the one timeline as the window shows it, top to bottom: a line for each new day, a line
  * where the working directory changed (also before the current part, when it is in another one), and the messages.
@@ -129,19 +132,32 @@ export function earlierRows(earlier: State['earlier'], { currentCwd = null, now 
   const rows: EarlierRow[] = []
   let lastDay: string | null = null
   let lastCwd: string | null = null
+  const today = startOfDay(now)
   earlier.segments.forEach((segment, i) => {
     const continues = i > 0 && segment.parentId === earlier.segments[i - 1].id
-    if (segment.cwd && lastCwd && segment.cwd !== lastCwd) rows.push({ kind: 'workdir', cwd: segment.cwd, continues, segment: segment.id })
+    const cached = segmentRows.get(segment)
+    if (cached && cached.day === today && cached.beforeDay === lastDay && cached.beforeCwd === lastCwd && cached.continues === continues) {
+      for (const row of cached.rows) rows.push(row)
+      lastDay = cached.lastDay
+      lastCwd = cached.lastCwd
+      return
+    }
+    const beforeDay = lastDay
+    const beforeCwd = lastCwd
+    const own: EarlierRow[] = []
+    if (segment.cwd && lastCwd && segment.cwd !== lastCwd) own.push({ kind: 'workdir', cwd: segment.cwd, continues, segment: segment.id })
     lastCwd = segment.cwd ?? lastCwd
     for (const message of segment.messages) {
       const day = timelineDay(message.at, now)
-      if (day !== lastDay) rows.push({ kind: 'day', label: day, segment: segment.id })
+      if (day !== lastDay) own.push({ kind: 'day', label: day, segment: segment.id })
       lastDay = day
-      rows.push({
+      own.push({
         kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt,
         segment: segment.id, ...(message.images ? { images: message.images } : {}),
       })
     }
+    segmentRows.set(segment, { day: today, beforeDay, beforeCwd, continues, rows: own, lastDay, lastCwd })
+    for (const row of own) rows.push(row)
   })
   if (currentCwd && lastCwd && currentCwd !== lastCwd) rows.push({ kind: 'workdir', cwd: currentCwd, continues: currentContinues, segment: null })
   return rows

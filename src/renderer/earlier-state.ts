@@ -16,6 +16,7 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
   if (state.messages.length === 0) return state.earlier
   const kept: Segment = {
     id: state.conversationId ?? `unsaved-${at}`,
+    sourceSessionId: state.info.sessionId ?? null,
     cwd: state.info.cwd || null,
     // What it went on from, so the topic it belongs to still reads as one (topics.js).
     parentId: state.topic?.parentId ?? null,
@@ -28,6 +29,16 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
 }
 
 export const EARLIER_ACTIONS: Record<string, Reducer> = {
+  /** A first save may finish after its topic moved above the new draft; give that archived segment its real id. */
+  archived_conversation_saved: (state, { sessionId, id }) => {
+    if (!sessionId) return state
+    const pending = state.earlier.segments.find((segment: Segment) => segment.sourceSessionId === sessionId && String(segment.id).startsWith('unsaved-'))
+    if (!pending) return state
+    return withEarlier(state, { segments: state.earlier.segments.map((segment: Segment) => {
+      if (segment === pending) return { ...segment, id }
+      return segment.parentId === pending.id ? { ...segment, parentId: id } : segment
+    }) })
+  },
   earlier_loading: (state) => withEarlier(state, { loading: true }),
   /** A page of segments from before those shown; one already there is not shown twice. */
   earlier_loaded: (state, { segments, hasMore }) => {

@@ -39,6 +39,7 @@ import { createPersonal } from './personal.ts'
 import { createPreferences } from './preferences.ts'
 import { removeTree } from './remove-tree.ts'
 import { CONFIG_IDS } from './session-info.ts'
+import { sessionTiming } from './session-timing.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
 import { openSources } from './sources-main.ts'
 import { NO_SOURCES } from './message-reader.ts'
@@ -500,8 +501,10 @@ function assertText(value: unknown, name: string, maxLength: number): string {
 }
 
 function registerAgentIpc() {
+  let newSessionPending: Promise<typeof lastInfo> | null = null
   ipcMain.handle('agent:info', () => lastInfo)
   ipcMain.handle('agent:prompt', (_event, text, images = []) => {
+    if (newSessionPending) throw new Error('新话题正在准备，请稍候')
     // With pictures the words may be left out.
     const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
     const pictures = imagesForPrompt(imageStore, images)
@@ -523,15 +526,22 @@ function registerAgentIpc() {
     return requireBridge().steer(words)
   })
   ipcMain.handle('agent:cancel', () => bridge?.cancel())
-  ipcMain.handle('agent:new-session', async () => {
-    if (!bridge) {
-      conversation = historyDb.create({ cwd: workDirNow() })
-      return lastInfo
-    }
-    const info = { ...await withLastModel(await bridge.newSession()), remembersHistory: true }
-    conversation = historyDb.create({ sessionId: info.sessionId, cwd: workDirNow() })
-    lastInfo = info
-    return info
+  ipcMain.handle('agent:new-session', () => {
+    if (newSessionPending) return newSessionPending
+    if (turn.active) throw new Error('助手正在工作，等这一轮结束再开新话题')
+    const measure = sessionTiming()
+    newSessionPending = measure('new-topic.total', async () => {
+      if (!bridge) {
+        conversation = historyDb.create({ cwd: workDirNow() })
+        return lastInfo
+      }
+      const opened = await bridge.newSession()
+      const info = { ...await measure('new-topic.model', () => withLastModel(opened)), remembersHistory: true }
+      conversation = historyDb.create({ sessionId: info.sessionId, cwd: workDirNow() })
+      lastInfo = info
+      return info
+    }).finally(() => { newSessionPending = null })
+    return newSessionPending
   })
   ipcMain.handle('agent:set-config', async (_event, configId, value) => {
     if (!CONFIG_IDS.includes(configId)) throw new Error(`invalid config option: ${configId}`)

@@ -32,9 +32,11 @@ export function renderTopicLabel(area: HTMLElement, state: State, handlers: Hand
   percent === null ? null : h('span', { class: 'ctx-bar', 'aria-hidden': 'true' }, barFill(percent)),
   percent === null ? null : h('span', { class: 'ctx-pct', text: `${percent}%` }))
   const newTopic = h('button', {
-    class: 'ctx-new', type: 'button', disabled: busy, title: busy ? '先停止当前任务，再开新话题' : `开新话题（${NEW_TOPIC_KEY()}）`,
+    class: 'ctx-new', type: 'button', disabled: busy || state.switching,
+    'aria-busy': String(state.switching),
+    title: state.switching ? '可以先输入，准备好后即可发送' : state.newTopicPending ? '重试准备当前新话题，保留草稿' : busy ? '先停止当前任务，再开新话题' : `开新话题（${NEW_TOPIC_KEY()}）`,
     onClick: () => handlers.newSession(),
-  }, h('span', { 'aria-hidden': 'true', text: '＋' }), '新话题')
+  }, h('span', { 'aria-hidden': 'true', text: '＋' }), state.switching ? '准备中…' : state.newTopicPending ? '重试新话题' : '新话题')
   return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent) : null].filter((part) => part !== null))
 }
 

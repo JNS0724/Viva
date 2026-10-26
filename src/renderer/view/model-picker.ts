@@ -44,7 +44,7 @@ export function renderModelPicker(dom: { modelArea: HTMLElement, modelBtn: HTMLB
   // No agent yet (setup state): there is nothing to choose from, so the switcher is not shown at all.
   dom.modelArea.hidden = info.mode === 'setup'
   const hasChoices = (info.models?.length ?? 0) > 0
-  const disabled = !hasChoices || isBusy(state)
+  const disabled = !hasChoices || isBusy(state) || state.switching || state.newTopicPending
   const effort = effortName(info)
   dom.modelBtn.disabled = disabled
   dom.modelBtn.title = isBusy(state) ? '本轮结束后可以切换模型' : '切换模型与推理强度'
