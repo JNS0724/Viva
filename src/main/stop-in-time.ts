@@ -17,6 +17,7 @@ export async function stopInTime({ cancel, stillRunning, giveUp, graceMs = STOP_
     if (stillRunning()) giveUp()
   }, graceMs)
   timer.unref?.()
+  // Some adapters throw before returning a Promise; keep that separate from an asynchronous rejection.
   try {
     void cancel().catch(err => console.error('[stop] cancelling failed:', err instanceof Error ? err.message : String(err)))
   } catch (err) {

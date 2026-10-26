@@ -354,8 +354,8 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
       h('div', { class: 'msg-user', text: item.text }),
       h('div', { class: 'task-submit-status', role: 'status', text: item.status === 'failed' ? `没有交给后台：${item.problem}` : '已收到，正在准备后台任务…' }),
       item.status === 'failed' ? h('div', {},
-        h('button', { text: '重试', onClick: () => handlers.retrySubmission(item.id) }),
-        h('button', { text: '移除', onClick: () => handlers.dismissSubmission(item.id) })) : null))),
+        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '重试', onClick: () => handlers.retrySubmission(item.id) }),
+        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '移除', onClick: () => handlers.dismissSubmission(item.id) })) : null))),
     state.tasks.moving ? part('moving', [], () => h('div', { role: 'status', text: '正在放到后台…' })) : '',
     // The follow-ups the model proposed in this conversation, each to be decided on (view/followups.ts).
     ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),

@@ -19,8 +19,10 @@ test('prepared sessions are bounded and consumed once; a changed MCP fingerprint
 
 test('a failed speculative initialization is retried by an explicit request', async () => {
   let count = 0
-  const pool = createFreshSessions({ open: async () => { if (++count === 1) throw Error('offline'); return 'fresh' }, close: async () => {} })
+  const purposes = []
+  const pool = createFreshSessions({ open: async (_cwd, speculative) => { purposes.push(speculative); if (++count === 1) throw Error('offline'); return 'fresh' }, close: async () => {} })
   pool.prepare('k', '/a')
   assert.equal(await pool.take('k', '/a'), 'fresh')
   assert.equal(count, 2)
+  assert.deepEqual(purposes, [true, false])
 })

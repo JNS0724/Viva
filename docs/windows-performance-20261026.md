@@ -48,3 +48,11 @@ With 216k history characters, 120 programmatic window width changes had RAF p95 
 Machine-local logs, traces, scripts, comparison data, and final tested SHA are recorded in `E:\viva\performance-fix-20261026`. Earlier baseline evidence is in `E:\viva\qa-20261026`. QA uses a dedicated profile and synthetic prompts; the user's installed profile was not used.
 
 This change does not claim to fix the separate desktop-island topmost/environment issue, force a blocked shell command to exit, or verify an installer on the other machine. No installer, remote push, merge, or release was performed.
+
+## PR #46 review follow-up
+
+The initial CI run passed all 615 unit tests but failed the long-answer scroll check on both platforms (question top: macOS 142 px, Windows 184 px). Layout, streamed rendering, and typewriter updates now use one scheduler that races rAF with a 50 ms fallback, cancels the losing path, and ignores late callbacks. No smoke thresholds were relaxed. A real Electron walkthrough with all rAF callbacks disabled passes with the question at 24 px; deterministic tests cover timeout, cancellation, coalescing, and read-before-write ordering.
+
+Speculative session creation is now distinguished from an explicit request. A failed preparation is discarded without changing the active MCP report or its failure cooldown, and cannot become a spare that silently omitted the conflicting server. Both a simulated ACP test and an actual dsh test with an exclusive-port singleton MCP exercise rejection of the second process and successful creation of the next real session. The 30-second cooldown still applies to genuine requested-connection failures.
+
+Failed-submission buttons use the existing small outline style and explicit button type. `architecture.md` records the internal dsh stream-event dependency, fallback, upgrade test, and extra MCP resources. The synchronous cancellation-error guard is retained and explained. With these follow-ups, Windows typecheck/build and **620 tests** pass; cross-platform CI results are tracked on PR #46.

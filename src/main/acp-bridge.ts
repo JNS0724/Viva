@@ -200,22 +200,29 @@ export function createAcpBridge({
   }
 
   /** Sends `request` with the MCP servers, leaving out each one dsh reports as failing until the rest work. */
-  async function withMcpServers<R>(request: (servers: McpServer[]) => Promise<R>): Promise<R> {
+  async function withMcpServers<R>(request: (servers: McpServer[]) => Promise<R>, speculative = false): Promise<R> {
     // Built as ACP's session/new takes them (mcp-config.ts toAcpServers).
     const configured = mcpServers() as McpServer[]
     const keys = new Set(configured.map(server => JSON.stringify(server)))
-    for (const [key, failure] of failedMcp) if (!keys.has(key) || failure.until <= Date.now()) failedMcp.delete(key)
-    let servers = configured.filter(server => !failedMcp.has(JSON.stringify(server)))
-    const dropped = configured.flatMap(server => {
+    if (!speculative) for (const [key, failure] of failedMcp) if (!keys.has(key) || failure.until <= Date.now()) failedMcp.delete(key)
+    const failureOf = (server: McpServer) => {
       const failure = failedMcp.get(JSON.stringify(server))
+      return failure && failure.until > Date.now() ? failure : null
+    }
+    let servers = configured.filter(server => !failureOf(server))
+    const dropped = configured.flatMap(server => {
+      const failure = failureOf(server)
       return failure ? [{ name: server.name, reason: failure.reason }] : []
     })
     for (;;) {
       try {
         const response = await request(servers)
-        mcp = { active: servers.map((server) => server.name), dropped }
+        if (!speculative) mcp = { active: servers.map((server) => server.name), dropped }
         return response
       } catch (err) {
+        // A second MCP instance may conflict with the active one. Discard this spare, without treating
+        // its failure as evidence that the user's real connection is unavailable.
+        if (speculative) throw err
         const failing = failingMcpServer(err, servers)
         if (!failing) throw err
         console.error(`[acp-bridge] MCP server "${failing.name}" failed, retrying without it:`, describeError(err))
@@ -228,7 +235,7 @@ export function createAcpBridge({
   }
 
   const fresh = createFreshSessions({
-    open: (targetCwd: string) => withMcpServers(servers => live().newSession({ cwd: targetCwd, mcpServers: servers })),
+    open: (targetCwd: string, speculative: boolean) => withMcpServers(servers => live().newSession({ cwd: targetCwd, mcpServers: servers }), speculative),
     close: response => live().closeSession({ sessionId: response.sessionId }),
   })
   // The fingerprint stays in memory; changing a server/secret or directory discards the untouched spare.

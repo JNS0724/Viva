@@ -1,3 +1,5 @@
+import { scheduleFrame } from './frame.ts'
+
 /** Keep unchanged nodes attached: replacing a whole conversation invalidates every message's layout. */
 export function reconcileChildren(parent: HTMLElement, children: readonly (Node | string)[]): boolean {
   const nodes = children.map(child => typeof child === 'string' ? document.createTextNode(child) : child)
@@ -21,7 +23,7 @@ export function reconcileChildren(parent: HTMLElement, children: readonly (Node 
 }
 
 /** One layout read/write pass per frame, after all the regions have finished writing DOM. */
-export function createLayoutQueue(frame: (run: () => void) => unknown = run => requestAnimationFrame(run)) {
+export function createLayoutQueue(frame: (run: () => void) => unknown = scheduleFrame) {
   const pending = new Map<object, () => void | (() => void)>()
   let scheduled = false
   return (key: object, run: () => void | (() => void)) => {

@@ -21,6 +21,34 @@ const modelOptions = (currentValue) => [{
 }]
 const MODEL_OPTIONS = modelOptions('v4-flash')
 
+test('a singleton MCP refusing a speculative second instance does not poison the next real session or its status', async () => {
+  const server = { name: 'singleton', command: 'singleton', args: [], env: [] }
+  const opened = new Set(), requests = []
+  let created = 0, speculativeAttempt
+  const attempted = new Promise(resolve => { speculativeAttempt = resolve })
+  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', prewarmSessions: true, mcpServers: () => [server], emit: () => {},
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async newSession(params) {
+        requests.push(params.mcpServers.map(server => server.name))
+        if (opened.size && params.mcpServers.length) { speculativeAttempt(); throw Error('mcp-client(singleton): database is locked by the active instance') }
+        const sessionId = created++ ? `session-${created}` : SESSION
+        opened.add(sessionId)
+        return { sessionId, configOptions: MODEL_OPTIONS }
+      },
+      async closeSession({ sessionId }) { opened.delete(sessionId); return {} },
+    })),
+  })
+  try {
+    await bridge.start(); await attempted; await new Promise(resolve => setImmediate(resolve))
+    const before = await bridge.setConfig('model', 'v4-pro')
+    assert.deepEqual(before.mcp, { active: ['singleton'], dropped: [] })
+    const next = await bridge.newSession()
+    assert.deepEqual(next.mcp, { active: ['singleton'], dropped: [] })
+    assert.ok(requests.length >= 3)
+    assert.ok(requests.every(names => names.includes('singleton')), 'never cache or consume a spare that silently dropped the MCP')
+  } finally { bridge.dispose() }
+})
+
 test('a failing MCP configuration cools down across sessions, retries after expiry, and changed settings retry immediately', async t => {
   t.mock.timers.enable({ apis: ['Date'] })
   let servers = [{ name: 'broken', command: 'missing', args: [], env: [] }]
