@@ -12,7 +12,7 @@ type DeskView = { form: string, [field: string]: any }
  * the agent works, waits on the user, has just finished or failed, and otherwise as just the cat, which
  * the user may click, drop files on or call up with the shortcut to ask something. It shows what the window's island shows (island-view.js, sent over IPC) and
  * lets the user allow, reject, answer, stop or ask from there. It takes the keyboard only while its input
- * is open, stays out of screen recordings and lets clicks through except over the island itself.
+ * is open and lets clicks through except over the island itself.
  */
 export { DESK_SIZE }
 /**
@@ -82,7 +82,6 @@ function openWindow({ BrowserWindow, preload, page }: { BrowserWindow: typeof Wi
   })
   win.setAlwaysOnTop(true, TOP_LEVEL)
   if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: false })
-  win.setContentProtection(true)
   // Without `forward`: on Windows it hooks every mouse move on the system (WH_MOUSE_LL) through this process.
   // Where the pointer is comes from checkPointer instead.
   win.setIgnoreMouseEvents(true)
