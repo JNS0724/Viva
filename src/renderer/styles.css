@@ -89,16 +89,26 @@ html:not([data-platform="darwin"]) {
 .chip { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 8px; background: var(--raised); font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 
 .body { position: relative; display: flex; min-height: 0; }
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+.main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+/* The column's edges (view/column-resize.ts): invisible until the pointer is on one, then a thin line to drag. */
+.col-grip {
+  position: absolute; top: 0; bottom: 0; z-index: 6; width: 12px; cursor: col-resize;
+  --at: max(16px, calc(50% - var(--col, 760px) / 2 - 18px));
+}
+.col-grip-left { left: var(--at); }
+.col-grip-right { right: var(--at); }
+.col-grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; border-radius: 1px; background: var(--accent); opacity: 0; transition: opacity .15s; }
+.col-grip:hover::after, .col-resizing .col-grip::after { opacity: .5; }
+.col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
 .scroll { position: relative; flex: 1; width: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
 .jump-latest {
   position: sticky; bottom: 16px; z-index: 5; flex: none; height: 38px; padding: 0 18px; border: none; border-radius: 999px;
   background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
 }
 .home { width: 100%; max-width: 1240px; min-height: 100%; padding: 24px 0; box-sizing: border-box; }
-.thread { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
+.thread { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
 /* The earlier part of the one timeline, above the conversation on screen (view/earlier.js). */
-.earlier { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 0; }
+.earlier { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 0; }
 .earlier + .thread { padding-top: 28px; }
 .timeline-more {
   align-self: center; height: 34px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line-2); background: none;
@@ -135,7 +145,7 @@ html:not([data-platform="darwin"]) {
 .topic-note { align-self: center; margin-top: -16px; font-size: 12px; color: var(--ink-3); text-align: center; }
 
 /* Above the input: what the assistant has in mind now, and ＋ 新话题 (view/topic-label.js). */
-.ctx-area { position: relative; width: 100%; max-width: 760px; display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ctx-area { position: relative; width: 100%; max-width: var(--col, 760px); display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .ctx-new {
   display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2);
   background: none; color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
@@ -166,7 +176,7 @@ html:not([data-platform="darwin"]) {
 
 /* ---------- composer ---------- */
 .composer {
-  width: 100%; max-width: 760px; margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
+  width: 100%; max-width: var(--col, 760px); margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
   border-radius: 22px; padding: 16px 12px 12px 18px; box-shadow: 0 0 0 4px rgba(90, 169, 255, .08), 0 20px 50px rgba(0, 0, 0, .45);
 }
 .composer:focus-within { border-color: #3A4C72; }
@@ -341,6 +351,41 @@ html:not([data-platform="darwin"]) {
 .task-report-text { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-report-open { flex: none; height: 32px; padding: 0 14px; font-size: 13px; white-space: nowrap; }
 .task-report-x { flex: none; font-size: 18px; line-height: 1; }
+
+/* The dock (view/task-dock.ts): background tasks floating in the corner of the main area, over its empty side. */
+.task-dock {
+  position: absolute; right: 20px; bottom: 20px; z-index: 8; width: 300px; max-width: calc(100% - 40px);
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px; pointer-events: none;
+}
+.task-dock > * { pointer-events: auto; }
+/* Folded, the tag sits lower, beside the note under the input rather than against the input itself. */
+.task-dock[data-collapsed="true"] { width: auto; bottom: 8px; align-items: flex-end; }
+.dock-head { display: flex; align-items: center; gap: 6px; padding: 0 2px 0 6px; font-size: 12px; color: var(--ink-3); }
+.dock-title { flex: 1; font-weight: 700; letter-spacing: .04em; }
+.dock-fold { width: 26px; height: 26px; font-size: 16px; }
+.dock-tile {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: 14px;
+  background: var(--raised); box-shadow: 0 10px 30px rgba(0, 0, 0, .4); font-size: 13px;
+}
+.dock-tile[data-status="waiting"], .dock-tile[data-status="interrupted"] { border-color: var(--orange); }
+.dock-tile[data-status="done"], .dock-tile[data-status="stopped"], .dock-tile[data-status="error"] { opacity: .85; }
+.dock-tile-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; color: var(--ink); }
+.dock-tile-head .task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-hide { width: 22px; height: 22px; font-size: 15px; line-height: 1; }
+.dock-tile-said { color: var(--ink-2); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.dock-tile-line { color: var(--ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-tile-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dock-tile .task-report-open { height: 30px; padding: 0 12px; font-size: 12.5px; }
+.dock-open { height: 30px; font-size: 12.5px; }
+/* Folded: only a quiet tag, which comes forward under the pointer; its dot turns orange when a task waits on the user. */
+.dock-tag {
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-radius: 15px;
+  border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2); font-size: 12px; cursor: pointer;
+  opacity: .55; transition: opacity .15s;
+}
+.dock-tag:hover, .dock-tag:focus-visible, .dock-tag[data-waits="true"] { opacity: 1; }
+.dock-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.dock-tag[data-waits="true"] .dock-dot { background: var(--orange); }
 /* A background task's card (view/task-card.js): one quiet look whatever it is doing; the words say where it stands. */
 .task-card, .task-card[data-status] { border: 1px solid var(--line-2); }
 .task-card .task-report-head { display: flex; align-items: center; gap: 8px; min-width: 0; }

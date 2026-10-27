@@ -1,4 +1,5 @@
 import { capture, run, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { dockSteps } from './smoke-dock.ts'
 
 /**
  * Background tasks on the real dsh (phase 3): while a turn waits on an approval, words about something else
@@ -296,6 +297,7 @@ export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect
   await offerSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)
   await startSteps(win, outDir, expect)
+  await dockSteps(win, outDir, expect)
   await leaveRunning(win)
 }
 

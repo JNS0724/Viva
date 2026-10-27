@@ -76,6 +76,23 @@ export function taskCard(task: BackgroundTask, report: TaskReport | null, handle
 }
 
 /**
+ * The same task in the dock (view/task-dock.ts): its name and where it stands over the line and the buttons that
+ * answer it, stacked to fit a narrow card. Ended, × puts it away from the dock only; its card in the conversation stays.
+ */
+export function taskTile(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): HTMLElement {
+  const parts = partsOf(task, report, handlers, now)
+  const ended = !LIVE.has(task.status) && task.status !== 'interrupted'
+  const open = h('button', { class: 'btn btn-text dock-open', type: 'button', text: '详情', onClick: () => handlers.openTasks(task.id) })
+  return h('div', { class: 'dock-tile', role: 'status', 'data-status': task.status, 'data-task': task.id },
+    h('div', { class: 'dock-tile-head' },
+      statusMark(task.status), h('span', { class: 'task-name', text: `#${task.title}` }),
+      ended ? h('button', { class: 'icon-btn dock-hide', type: 'button', 'aria-label': '从这里收起', text: '×', onClick: () => handlers.hideFromDock(task.id) }) : null),
+    h('span', { class: 'dock-tile-said', text: [parts.said, task.status === 'running' ? null : parts.line].filter(Boolean).join('：') }),
+    task.status === 'running' && parts.line ? h('span', { class: 'dock-tile-line', text: parts.line }) : null,
+    h('div', { class: 'dock-tile-acts' }, ...parts.actions, open))
+}
+
+/**
  * The tasks with a card in the conversation now: those at work or waiting, and those that ended while what
  * they came back with is still shown (until put away), each with that report.
  */

@@ -11,6 +11,7 @@ import { renderHistoryPanel, renderToast } from './history-panel.ts'
 import { renderHome } from './home.ts'
 import { renderHub } from './hub.ts'
 import { renderTasksPage } from './tasks-page.ts'
+import { renderTaskDock } from './task-dock.ts'
 import { icon } from './icons.ts'
 import { renderIsland } from './island.ts'
 import { renderModelPicker } from './model-picker.ts'
@@ -217,6 +218,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   else renderThreadFollowing(dom, state, handlers, now)
   renderEarlierIfChanged(dom.earlier, state, handlers)
   renderDrawerIfChanged(dom.drawer, state, handlers)
+  renderTaskDock(dom.taskDock, state, handlers, now)
   renderComposer(dom, state, handlers)
   renderSettingsIfChanged(dom.settings, state, handlers)
   renderProfileIfChanged(dom.profile, state.memory, handlers)
