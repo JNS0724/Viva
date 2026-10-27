@@ -4,7 +4,9 @@
  * The topic on screen is the conversation now and, back along what each continued, the segments before it;
  * everything else above is still there to read, but the assistant no longer has it.
  */
-export const initialTopic = Object.freeze({ parentId: null, startedAt: null, menu: false })
+import { splitFiles } from '../shared/attachments.ts'
+
+export const initialTopic =Object.freeze({ parentId: null, startedAt: null, menu: false })
 /** From this share of the context on, the label by the input suggests a new topic. */
 export const NEAR_FULL = 0.8
 
@@ -62,6 +64,19 @@ export function topicCount(state: State) {
   const earlier = segments.filter((segment) => remembered.has(segment.id)).reduce((sum, segment) => sum + segment.messages.length, 0)
   return earlier + state.messages.length
 }
+
+const TITLE_CHARS = 40
+
+/** A topic's name where it is folded or listed (view/earlier.ts, 回顾): its first question, on one line, without the files named after it. */
+export function topicTitle(messages: ReadonlyArray<{ role: string, text: string }>): string {
+  const first = messages.find((message) => message.role === 'user')
+  const line = splitFiles(first?.text ?? '').text.replace(/\s+/g, ' ').trim()
+  if (!line) return first ? '（图片或文件）' : '（没有提问）'
+  return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS)}…` : line
+}
+
+/** How many turns: the user's questions. */
+export const turnsOf = (messages: ReadonlyArray<{ role: string }>) => messages.filter((message) => message.role === 'user').length
 
 /** The share of the context used, 0–1, once the agent has said. */
 export const contextShare = (usage: { used: number, size: number } | null | undefined): number | null => (usage?.size ? Math.min(1, usage.used / usage.size) : null)

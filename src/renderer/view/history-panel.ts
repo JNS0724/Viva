@@ -1,5 +1,6 @@
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h, label } from './dom.ts'
+import { reviewView } from './review.ts'
 
 /** The words found, with a little of what is around them. */
 type Snippet = { before: string, hit: string, after: string }
@@ -39,7 +40,8 @@ const empty = (text: string) => h('div', { class: 'empty', text })
 
 function searchView(state: State, handlers: Handlers, now: number): View[] {
   const { query, results } = state.history
-  if (!query.trim()) return [h('div', { class: 'history-hint', text: '输入几个字，找回之前说过的话' })]
+  // Nothing typed: 回顾, the timeline by day (view/review.ts).
+  if (!query.trim()) return reviewView(state, handlers, now)
   if (results === null) return [h('div', { class: 'history-hint', text: '搜索中…' })]
   if (results.length === 0) return [empty(`没有找到「${query.trim()}」`)]
   return [
@@ -48,7 +50,10 @@ function searchView(state: State, handlers: Handlers, now: number): View[] {
   ]
 }
 
-/** The 搜索 page (view/hub.js): search across the one timeline. Only the results re-render; the field is static markup so typing is never interrupted. */
+/**
+ * The 回顾 page (view/hub.js): search across the one timeline, or with nothing typed, the timeline by day. Only
+ * the results re-render; the field is static markup so typing is never interrupted.
+ */
 export function renderHistoryPanel(dom: { historyList: HTMLElement }, state: State, handlers: Handlers, now = Date.now()) {
   if (!state.history.open) return
   // replaceChildren would turn a null into the text "null", unlike h()

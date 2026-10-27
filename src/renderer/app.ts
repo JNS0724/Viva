@@ -22,10 +22,14 @@ import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
 import { liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
+import { timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
+import { attachStars } from './view/star-buttons.ts'
+import { createReviewActions } from './review-actions.ts'
+import { isStarred, placeOf } from './stars.ts'
 import { scheduleFrame } from './view/frame.ts'
 
 const TICK_MS = 1000
@@ -103,6 +107,8 @@ let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
 let historyReady = false
 let pendingRender: (() => void) | null = null
+/** What follows each render once the page is wired (the stars, below). */
+let afterRender: (() => void) | null = null
 const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
@@ -122,6 +128,7 @@ function dispatch(action: Action) {
   }
   startReveal()
   publishIsland()
+  afterRender?.()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
 }
 
@@ -257,6 +264,30 @@ const historyActions = createHistoryActions({
   errorMessage,
   jumpTo: (hit: Untyped) => timelineActions.jumpTo(hit),
 })
+/** 回顾 on the 搜索 page, and the stars on messages (review-actions.ts). */
+const reviewActions = createReviewActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage })
+
+/** The star by a message, in the timeline (the conversation, or an earlier row) and in a topic read in 回顾. */
+const starViews = [
+  attachStars(dom.scroll, {
+    placeOf: (el) => placeOf(state, el.dataset.msg ?? '', el.closest('#earlier') ? 'row' : 'thread'),
+    isStarred: (place) => isStarred(state, place),
+    toggle: (place, starred) => reviewActions.toggleStar(place, starred),
+  }),
+  attachStars(dom.historyList, {
+    placeOf: (el) => placeOf(state, el.dataset.msg ?? '', 'row'),
+    isStarred: (place) => isStarred(state, place),
+    toggle: (place, starred) => reviewActions.toggleStar(place, starred),
+  }),
+]
+let shownStars: unknown = null
+/** After each render: the stars of the segments on screen read back, and the stars shown in step with them. */
+afterRender = () => {
+  reviewActions.refreshStars([...state.earlier.segments.map((segment) => segment.id), String(state.conversationId ?? '')])
+  if (state.review.starKeys === shownStars) return
+  shownStars = state.review.starKeys
+  for (const view of starViews) view.sync()
+}
 
 const draftImages = createDraftImages({
   keep: (bytes: Uint8Array<ArrayBuffer>) => api.keepImage(bytes),
@@ -271,6 +302,9 @@ const FOUND_MS = 2400
 function revealMessage(msgId: string) {
   const row = dom.scroll.querySelector(`[data-msg="${CSS.escape(msgId)}"]`)
   if (!row) return
+  // In a folded earlier topic (view/earlier.ts): open it first, or there is nothing to scroll to.
+  const fold = row.closest('details')
+  if (fold) fold.open = true
   row.scrollIntoView({ block: 'center' })
   row.classList.add('msg-found')
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
@@ -444,6 +478,27 @@ const handlers = {
   },
   dismissSubmission: (id: string) => dispatch({ type: 'task_submit_dismissed', id }),
   ...historyActions,
+  ...reviewActions,
+  /** ⌘F and 回顾 in the sidebar: the field focused, and the timeline by day read again. */
+  openSearch() {
+    historyActions.openSearch()
+    reviewActions.refreshReview()
+  },
+  toggleHistory() {
+    historyActions.toggleHistory()
+    if (state.history.open) reviewActions.refreshReview()
+  },
+  /** 更早的记录在回顾里 at the top of the timeline: 回顾 with nothing typed, so it shows the days. */
+  openReview() {
+    dom.historySearch.value = ''
+    historyActions.searchHistory('')
+    handlers.openSearch()
+  },
+  /** 回到这个话题 on a topic read in 回顾: back to the conversation, going on from it. */
+  resumeFromReview(segmentId: string) {
+    dispatch({ type: 'history_close' })
+    return handlers.resumeTopic(segmentId)
+  },
   ...memoryActions,
   ...extensionActions,
   ...sourceActions,
@@ -666,8 +721,15 @@ const handlers = {
   cancelWorkDir: () => workDirActions.cancelConfirm(),
   closeWorkDirMenu: () => workDirActions.closeMenu(),
   revealWorkDir: () => workDirActions.reveal(),
-  /** A link in an answer opens in the browser (or mail app), never inside the window. */
-  openLink: (url: string) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
+  /**
+   * A link in an answer opens in the browser (or mail app), never inside the window; a viva://timeline link
+   * (search_conversations) goes to that message of the timeline instead.
+   */
+  openLink: (url: string) => {
+    const place = timelinePlace(url)
+    if (place) return historyActions.jumpToHit(place)
+    return api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` }))
+  },
 }
 
 /** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */

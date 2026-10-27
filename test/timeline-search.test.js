@@ -1,12 +1,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { hitTarget } from '../src/renderer/timeline-search.ts'
+import { hitTarget, timelinePlace } from '../src/renderer/timeline-search.ts'
 import { createTimelineActions } from '../src/renderer/timeline-actions.ts'
 
 const segment = (id, seqs) => ({ id, cwd: '/w', parentId: null, createdAt: 1, messages: seqs.map((seq) => ({ seq, role: 'user', text: `${id}-${seq}`, receipt: null, at: 1 })) })
 const hit = (segmentId, seq) => ({ segmentId, seq, role: 'user', at: 1, cwd: '/w', snippet: { before: '', hit: 'x', after: '' } })
 const withState = (changes) => ({ ...initialState, ...changes })
+
+test('a viva://timeline link names a message of the timeline; anything else is not one', () => {
+  assert.deepEqual(timelinePlace('viva://timeline/3f2a-bc/12'), { segmentId: '3f2a-bc', seq: 12 })
+  assert.equal(timelinePlace('viva://timeline/3f2a-bc'), null)
+  assert.equal(timelinePlace('viva://timeline/../etc/1'), null)
+  assert.equal(timelinePlace('https://example.com/timeline/a/1'), null)
+})
 
 test('a hit in the conversation on screen points at its message, counting only finished ones', () => {
   const state = withState({

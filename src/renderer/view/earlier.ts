@@ -1,6 +1,7 @@
+import { reachedRecentEnd } from '../earlier-state.ts'
 import { earlierRows, formatListTime, workspaceName, type EarlierRow } from '../selectors.ts'
 import { isBusy } from '../state.ts'
-import { topicBlocks, topicStart } from '../topics.ts'
+import { topicBlocks, topicStart, topicTitle, turnsOf } from '../topics.ts'
 import { h } from './dom.ts'
 import { markMessage, pastMessageView } from './thread.ts'
 import { reconcileChildren } from './reconcile.ts'
@@ -35,18 +36,35 @@ const rowView = (row: EarlierRow, handlers: Handlers) => (ROW_VIEWS[row.kind] as
 const rowViews = (rows: readonly EarlierRow[], handlers: Handlers): View[] => rows.flatMap((row) => rowView(row, handlers))
 const topicTime = (at: number | null, now: number) => (at ? formatListTime(at, now) : '')
 
-/** An earlier topic the assistant no longer has: quieter, and 回到这个话题 takes it up again from its last segment. */
+const messagesOf = (block: TopicBlock) => block.segments.flatMap((segment) => segment.messages)
+
+/**
+ * An earlier topic the assistant no longer has: folded to one line (its first question, how many turns, when),
+ * opened in place; 回到这个话题 takes it up again from its last segment. Folded, its messages are not drawn.
+ */
 function oldTopic(block: TopicBlock, views: View[], handlers: Handlers, { now, busy }: Options) {
-  return h('div', { class: 'topic-old' },
-    h('div', { class: 'topic-head' },
-      h('b', { text: `话题 · ${topicTime(block.at, now)}` }),
-      h('span', { text: `${block.count} 条 · 助手不记得这段` }),
+  const messages = messagesOf(block)
+  const title = topicTitle(messages)
+  const when = topicTime(block.at, now)
+  return h('details', { class: 'topic-old', 'data-title': `${when} · ${title}` },
+    h('summary', { class: 'topic-head', title: '助手不记得这段，点开看全文' },
+      h('b', { class: 'topic-title', text: title }),
+      // The day is on the line above it; the line itself says when in the day.
+      h('span', { class: 'topic-meta mono', text: `${turnsOf(messages)} 轮 · ${new Date(block.at ?? 0).toTimeString().slice(0, 5)}` }),
       h('button', {
         class: 'topic-back', type: 'button', disabled: busy, title: busy ? '等这一轮结束再回去' : null, text: '回到这个话题',
-        onClick: () => handlers.resumeTopic(block.segments.at(-1)?.id),
-      })),
-    ...views)
+        onClick: (event: MouseEvent) => {
+          // A button in the folded line: it takes the topic up, it does not open or close it.
+          event.preventDefault()
+          handlers.resumeTopic(block.segments.at(-1)?.id)
+        },
+      }),
+      h('span', { class: 'topic-chevron', 'aria-hidden': 'true' })),
+    h('div', { class: 'topic-body' }, ...views))
 }
+
+/** The day a folded topic began stays outside it, so the folded lines still read by day. */
+const leadingDay = (rows: readonly EarlierRow[]) => (rows[0]?.kind === 'day' ? 1 : 0)
 
 /** Where the topic on screen starts: a new one (undoable until something is said), or back to an earlier one. */
 function startLine(start: ReturnType<typeof topicStart>, handlers: Handlers, { now, busy }: Options): View[] {
@@ -99,9 +117,11 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
     else grouped[i].push(row)
   }
   const options = { now, busy: isBusy(state) || state.switching }
-  const more = earlier.hasMore && earlier.segments.length > 0
-    ? h('button', { class: 'timeline-more', type: 'button', disabled: earlier.loading, text: earlier.loading ? '正在读取…' : '更早的对话', onClick: () => handlers.loadEarlier() })
-    : null
+  // Scrolling up reads back the recent part only; what is older is read in 回顾 (view/review.ts), by day.
+  const more = !earlier.hasMore || earlier.segments.length === 0 ? null
+    : reachedRecentEnd(earlier, now)
+      ? h('button', { class: 'timeline-more', type: 'button', text: '更早的记录在回顾里 →', onClick: () => handlers.openReview() })
+      : h('button', { class: 'timeline-more', type: 'button', disabled: earlier.loading, text: earlier.loading ? '正在读取…' : '更早的对话', onClick: () => handlers.loadEarlier() })
   const rowCache = cached?.rows ?? new WeakMap<EarlierRow, View>()
   const cachedRows = (rows: readonly EarlierRow[]) => rows.flatMap((row) => {
     if (!rowCache.has(row)) rowCache.set(row, rowView(row, handlers))
@@ -114,7 +134,10 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
     const inputs = [block.remembered, grouped[i][0], grouped[i].at(-1), grouped[i].length, formatListTime(block.at ?? 0, now), ...block.segments]
     const previous = cached?.blocks.get(key)
     const hit = previous && inputs.length === previous.inputs.length && inputs.every((input, j) => input === previous.inputs[j])
-    const views = hit ? previous.views : block.remembered ? cachedRows(grouped[i]) : [oldTopic(block, cachedRows(grouped[i]), handlers, options)]
+    const day = leadingDay(grouped[i])
+    const views = hit ? previous.views : block.remembered
+      ? cachedRows(grouped[i])
+      : [...cachedRows(grouped[i].slice(0, day)), oldTopic(block, cachedRows(grouped[i].slice(day)), handlers, options)]
     blockCache.set(key, { inputs, views })
     return views
   })

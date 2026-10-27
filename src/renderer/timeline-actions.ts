@@ -3,6 +3,7 @@
  * the window opens and as the user scrolls up to the top. What the user was looking at stays where it was as
  * the page goes in above it.
  */
+import { reachedRecentEnd } from './earlier-state.ts'
 import { hitTarget } from './timeline-search.ts'
 
 const NEAR_TOP_PX = 160
@@ -31,9 +32,9 @@ export function createTimelineActions({ api, getState, dispatch, scroll, reveal 
     }
   }
 
-  /** Scrolled up to the top, the next page comes in by itself. */
+  /** Scrolled up to the top, the next page comes in by itself, as far back as the recent days (earlier-state.ts). */
   function onScroll() {
-    if (scroll.scrollTop < NEAR_TOP_PX) loadEarlier()
+    if (scroll.scrollTop < NEAR_TOP_PX && !reachedRecentEnd(getState().earlier)) loadEarlier()
   }
 
   /** A search hit: earlier pages come in until it is there, then it is scrolled to. False when it is nowhere. */

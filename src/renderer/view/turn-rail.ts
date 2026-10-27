@@ -1,22 +1,24 @@
 import { h } from './dom.ts'
 
 /**
- * 按轮次跳转: one mark per question down the right edge of the conversation. The turn being read is lit, a mark
- * shows its question on hover or focus, and a click (or Enter) scrolls to it; ↑/↓ move between marks. It reads the
- * page itself, the questions of the thread and of the earlier topics loaded above it, so it follows whatever they
- * draw, and stays away until a conversation is long enough to need it.
+ * 按轮次跳转: down the right edge of the conversation, a line per question of the topic on screen and, above them,
+ * a dot per earlier topic read back (folded, view/earlier.ts). The place being read is lit, a mark shows its question
+ * (or the topic's day and name) on hover or focus, and a click (or Enter) scrolls to it; ↑/↓ move between marks. It
+ * reads the page itself, so it follows whatever the thread and the earlier part draw, and stays away until there
+ * is enough to need it.
  */
 const MIN_TURNS = 3
 const PREVIEW_CHARS = 60
-/** Questions only: a reply to the assistant's own question is part of its turn. */
-const QUESTIONS = '.msg-user:not(.msg-answer)'
+/** Questions only (a reply to the assistant's own question is part of its turn), and the folded earlier topics. */
+const PLACES = '.topic-old, .msg-user:not(.msg-answer)'
+const FOLDED = '.topic-old'
 /** The turn being read is the one whose question has passed this far down the visible part. */
 const READING_LINE = 1 / 3
 /** Farther than this many screens away, a jump is instant rather than a long smooth scroll. */
 const SMOOTH_SCREENS = 3
 
 /**
- * Index of the last of `count` questions at or above the reading line; the first turn above them all. Tops are read
+ * Index of the last of `count` places at or above the reading line; the first turn above them all. Tops are read
  * only as the search needs them (a handful per frame, however long the conversation).
  */
 export function activeTurn(count: number, topOf: (index: number) => number, line: number): number {
@@ -47,13 +49,14 @@ const questionText = (bubble: Element) => [...bubble.childNodes]
 const sameList = (a: readonly Element[], b: readonly Element[]) => a.length === b.length && a.every((el, i) => el === b[i])
 
 export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
-  let questions: HTMLElement[] = []
+  let places: HTMLElement[] = []
   let marks: HTMLButtonElement[] = []
   let active = -1
   let frame = 0
 
   const jump = (index: number) => {
-    const target = questions[index]?.closest<HTMLElement>('.msg-user-row') ?? questions[index]
+    const place = places[index]
+    const target = place?.matches(FOLDED) ? place : place?.closest<HTMLElement>('.msg-user-row') ?? place
     if (!target) return
     const far = Math.abs(target.getBoundingClientRect().top - scroll.getBoundingClientRect().top) > scroll.clientHeight * SMOOTH_SCREENS
     target.scrollIntoView({ block: 'start', behavior: far ? 'instant' : 'smooth' })
@@ -70,24 +73,29 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
 
   const updateActive = () => {
     const box = scroll.getBoundingClientRect()
-    light(activeTurn(questions.length, (index) => questions[index].getBoundingClientRect().top, box.top + box.height * READING_LINE))
+    light(activeTurn(places.length, (index) => places[index].getBoundingClientRect().top, box.top + box.height * READING_LINE))
   }
 
   const rebuild = () => {
-    marks = questions.map((question, index) => {
-      const tip = `第 ${index + 1} 轮 · ${turnPreview(questionText(question))}`
-      return h('button', { class: 'turn-mark', type: 'button', tabindex: '-1', 'aria-label': tip, 'data-tip': tip, onclick: () => jump(index) })
+    let turn = 0
+    marks = places.map((place, index) => {
+      const folded = place.matches(FOLDED)
+      const tip = folded ? `话题 · ${place.dataset.title ?? ''}` : `第 ${turn += 1} 轮 · ${turnPreview(questionText(place))}`
+      return h('button', {
+        class: folded ? 'turn-mark turn-topic' : 'turn-mark', type: 'button', tabindex: '-1', 'aria-label': tip, 'data-tip': tip, onclick: () => jump(index),
+      })
     })
     active = -1
     rail.replaceChildren(...marks)
-    rail.hidden = questions.length < MIN_TURNS
+    rail.hidden = places.length < MIN_TURNS
   }
 
   const refresh = () => {
     frame = 0
-    const found = [...scroll.querySelectorAll<HTMLElement>(QUESTIONS)]
-    if (!sameList(found, questions)) {
-      questions = found
+    // A question inside a folded topic is that topic's dot, not a line of its own.
+    const found = [...scroll.querySelectorAll<HTMLElement>(PLACES)].filter((place) => place.matches(FOLDED) || !place.closest(FOLDED))
+    if (!sameList(found, places)) {
+      places = found
       rebuild()
     }
     if (!rail.hidden) updateActive()

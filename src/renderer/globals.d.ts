@@ -191,6 +191,11 @@ interface AgentApi {
   exportConversation: Invoke<'history:export'>
   earlierSegments: Invoke<'history:segments-before'>
   searchTimeline: Invoke<'history:search-messages'>
+  reviewTimeline: Invoke<'history:review'>
+  segmentMessages: Invoke<'history:segment'>
+  starMessage: Invoke<'history:star'>
+  starsIn: Invoke<'history:stars-in'>
+  starredMessages: Invoke<'history:starred'>
   rewind: Invoke<'timeline:rewind'>
   spinOffTask: Invoke<'task:spin-off'>
   startTask: Invoke<'task:start'>

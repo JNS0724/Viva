@@ -49,6 +49,7 @@ import type { Notice } from './notice-plan.ts'
 import type { ProposalView } from './followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
 import { runSmoke } from './smoke.ts'
+import { seedTimeline } from './smoke-timeline.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
 
 const MAX_PROMPT_CHARS = 20_000
@@ -149,6 +150,8 @@ function isolateSmokeUserData() {
   const reopens: Record<string, string> = { resume: 'memory', 'live-resume': 'live' }
   const dir = path.join(smokeOut, shared ? 'userData' : `userData-${reopens[smokePhase as string] ?? smokePhase}`)
   if (smokePhase !== 'relaunch' && !reopens[smokePhase as string]) removeTree(dir)
+  // `timeline` opens on a history weeks long, written before the app reads it.
+  if (smokePhase === 'timeline') seedTimeline(dir)
   // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too; so is the workspace,
   // so a smoke run never writes into the developer's.
   app.setPath('userData', dir)
@@ -342,6 +345,7 @@ function createBridge(config: Config, cwd: string) {
     mcpServers: () => personal.mcpServers(),
     configActions: configActions(config),
     messageActions: { read: (request) => (sources ? sources.read(request) : Promise.resolve(NO_SOURCES)) },
+    historySearch: (query) => historyDb?.searchMessages(query) ?? [],
     taskRead: (request, sessionId) => taskRegistry.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
     emit: (event) => {
       if (generation !== bridgeGeneration) return

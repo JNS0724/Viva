@@ -51,6 +51,12 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** The one timeline: the segments before `id`, oldest first; messages across all of it that contain `query`. */
   earlierSegments: (id, limit) => ipcRenderer.invoke('history:segments-before', id, limit),
   searchTimeline: (query) => ipcRenderer.invoke('history:search-messages', query),
+  /** 回顾: the timeline by time, newest first ({ segments, hasMore }); a segment's messages; starring a message. */
+  reviewTimeline: (before) => ipcRenderer.invoke('history:review', before),
+  segmentMessages: (id) => ipcRenderer.invoke('history:segment', id),
+  starMessage: (id, seq, starred) => ipcRenderer.invoke('history:star', id, seq, starred),
+  starsIn: (ids) => ipcRenderer.invoke('history:stars-in', ids),
+  starredMessages: () => ipcRenderer.invoke('history:starred'),
   /**
    * Back to something the user said ({ words, occurrence, keep }) and on with `text`:
    * { ok, info, conversation: { id, messages }, folds } | { ok: false, problem }.

@@ -3,6 +3,7 @@ import { assistantStream } from './assistant-stream.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
 import { FILES_ACTIONS, initialFiles } from './files-state.ts'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.ts'
+import { REVIEW_ACTIONS, initialReview } from './review-state.ts'
 import { closeHub, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
 import { QUESTION_ACTIONS } from './question-state.ts'
@@ -47,6 +48,8 @@ export const initialState = Object.freeze({
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null as 'loading' | 'loaded' | 'unavailable' | null,
   history: initialHistory,
+  /** 回顾 on the 搜索 page: the timeline by day, filtered, a topic read in place, the stars (review-state.ts). */
+  review: initialReview,
   /** 搜索, 关于你 and 设置 share one page over the conversation: the one it opens on next (hub-state.js). */
   hub: initialHub,
   /** The one timeline: the segments before the one on screen (earlier-state.js). */
@@ -440,6 +443,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   close_island: (state) => (state.island ? { ...state, island: false } : state),
   hub_close: (state) => closeHub(state, reduce),
   ...HISTORY_ACTIONS,
+  ...REVIEW_ACTIONS,
   ...EARLIER_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
   ...taskActions(HANDLERS),

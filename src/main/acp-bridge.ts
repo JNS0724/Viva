@@ -13,6 +13,7 @@ import { createForkDesk } from './fork-channel.ts'
 import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createMessagesDesk } from './messages-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
+import { createHistoryDesk, type HistorySearch } from './history-channel.ts'
 import type { TaskRead } from './tasks-channel.ts'
 import type { ReadRequest } from './message-reader.ts'
 import { createQuestionDesk } from './question-channel.ts'
@@ -85,7 +86,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, taskRead = null, prewarmSessions = false, onTiming,
+  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, taskRead = null, historySearch = null, prewarmSessions = false, onTiming,
 }: {
   dshBin: string, nodeBin?: string, profile: string, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
@@ -94,6 +95,8 @@ export function createAcpBridge({
   /** What the message sources brought in, for viva_messages_read; null leaves the tool saying there are none. */
   messageActions?: { read: (request: ReadRequest) => Promise<string> } | null,
   taskRead?: TaskRead | null,
+  /** What was said in the timeline before, for search_conversations (viva-history); null leaves it saying there is none. */
+  historySearch?: HistorySearch | null,
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
 }) {
@@ -141,6 +144,7 @@ export function createAcpBridge({
   // The messages the sources brought in, read from the conversation (viva-messages).
   const messagesDesk = createMessagesDesk({ send: toPlugins, read: messageActions?.read ?? null })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, authorized: id => id === sessionId || tasks.has(id) })
+  const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, authorized: id => id === sessionId || tasks.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
     if (!running.has(id) || running.get(id)?.released) return
     if (tasks.has(id)) emit({ type: 'task_update', taskId: id, update })
@@ -191,6 +195,7 @@ export function createAcpBridge({
       followupDesk.receive(message)
       messagesDesk.receive(message)
       tasksDesk.receive(message)
+      historyDesk.receive(message)
       streams.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {

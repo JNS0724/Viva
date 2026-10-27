@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { reviewQueries } from './history-review.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
 
 const PAGE_SIZE = 50
@@ -162,6 +163,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
   db.exec(SCHEMA)
   addMissingColumns(db)
+  const reviewing = reviewQueries(db, now)
 
   /** A row is a record of what its query selects; each function below says what it returns. */
   const sql: Record<string, Statement> = {
@@ -187,6 +189,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
+    // A message cut off (going back, a turn redone) takes its star along: the next one there is another message.
+    trimStars: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq >= ?'),
     update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ? WHERE conversation_id = ? AND seq = ?'),
     insert: db.prepare(`INSERT INTO messages (conversation_id, seq, role, text, receipt, images, session_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -224,6 +228,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
     const stored = sql.count.get(id).n
     const start = Math.max(0, Math.min(stored, messages.length) - 1)
     sql.trim.run(id, messages.length)
+    sql.trimStars.run(id, messages.length)
     for (let seq = start; seq < messages.length; seq += 1) {
       const { role, text, receipt, images } = messages[seq]
       const json = receipt ? JSON.stringify(receipt) : null
@@ -395,6 +400,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds,
-    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, close: () => db.close(),
+    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, ...reviewing, close: () => db.close(),
   }
 }

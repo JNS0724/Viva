@@ -8,6 +8,18 @@ export const initialEarlier = Object.freeze({ segments: [], hasMore: true, loadi
 
 const withEarlier = (state: State, changes: Partial<State['earlier']>): State => ({ ...state, earlier: { ...state.earlier, ...changes } })
 
+/** Scrolling up reads the timeline back this far by itself; what is older is read in 回顾 (view/review.ts). */
+export const RECENT_DAYS = 7
+const DAY_MS = 86_400_000
+
+/** Whether the oldest part read back is already older than the recent days: scrolling up stops there. */
+export function reachedRecentEnd(earlier: State['earlier'], now = Date.now()): boolean {
+  const oldest: Segment | undefined = earlier.segments[0]
+  if (!oldest) return false
+  const at = oldest.messages[0]?.at ?? oldest.createdAt
+  return typeof at === 'number' && at < now - RECENT_DAYS * DAY_MS
+}
+
 /**
  * The earlier segments with the messages on screen added as the latest one, when there are any. Their times
  * are when they were put away, close enough for the day they belong to.

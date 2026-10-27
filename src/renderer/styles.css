@@ -104,6 +104,12 @@ html:not([data-platform="darwin"]) {
 }
 .turn-mark:hover::before, .turn-mark:focus-visible::before { width: 14px; background: var(--ink-2); }
 .turn-mark[aria-current]::before { width: 14px; background: var(--accent); }
+/* An earlier topic: a dot, not a line. */
+.turn-topic::before { right: 6px; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: none; border: 1.5px solid var(--mute); }
+.turn-topic:hover::before, .turn-topic:focus-visible::before { width: 7px; background: none; border-color: var(--ink-2); }
+.turn-topic[aria-current]::before { width: 7px; background: var(--accent); border-color: var(--accent); }
+.turn-topic + .turn-mark:not(.turn-topic) { margin-top: 6px; }
+.topic-old { scroll-margin-top: 24px; }
 .turn-mark:focus-visible { outline: none; }
 .turn-mark::after {
   content: attr(data-tip); position: absolute; right: calc(100% + 6px); top: 50%; transform: translateY(-50%);
@@ -139,12 +145,24 @@ html:not([data-platform="darwin"]) {
 }
 .timeline-workdir b { color: var(--ink); }
 /* Topics (view/earlier.js): one the assistant no longer has is a step quieter, its head says so. */
-.topic-old { display: flex; flex-direction: column; gap: 28px; opacity: .5; transition: opacity .2s; }
-.topic-old:hover, .topic-old:focus-within { opacity: .8; }
-.topic-head { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-3); }
-.topic-head b { color: var(--ink-2); font-weight: 600; }
-.topic-head::after { content: ''; flex: 1; height: 1px; background: var(--line); order: 2; }
-.topic-head .topic-back { order: 3; }
+/* Folded to one line (its first question, turns, when); opened in place, its messages a step quieter. */
+.topic-old { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.topic-old[open] { border-color: var(--line-2); }
+.topic-head {
+  display: flex; align-items: center; gap: 14px; padding: 12px 16px; cursor: pointer; list-style: none;
+  font-size: 12px; color: var(--ink-3); border-radius: 14px;
+}
+.topic-head::-webkit-details-marker { display: none; }
+.topic-head:hover { background: var(--panel-2); }
+.topic-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.topic-old[open] > .topic-head { border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; }
+.topic-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topic-meta { flex: none; white-space: nowrap; }
+.topic-head .topic-back { flex: none; opacity: 0; }
+.topic-head:hover .topic-back, .topic-head .topic-back:focus-visible, .topic-old[open] .topic-back { opacity: 1; }
+.topic-chevron { flex: none; width: 8px; height: 8px; border-right: 1.5px solid var(--ink-3); border-bottom: 1.5px solid var(--ink-3); transform: rotate(45deg) translateY(-2px); transition: transform .15s; }
+.topic-old[open] .topic-chevron { transform: rotate(225deg) translateY(-2px); }
+.topic-body { display: flex; flex-direction: column; gap: 28px; padding: 20px 18px; opacity: .75; }
 .topic-back {
   height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel);
   color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
@@ -874,6 +892,52 @@ body.drop-images::after { content: '松开，把图片放进输入框'; }
 /* The message search jumped to, marked for a moment (app.js revealMessage). */
 .msg-found { outline: 2px solid rgba(90, 169, 255, .7); outline-offset: 4px; border-radius: 12px; transition: outline-color .6s; }
 .history-hint { padding: 12px; color: var(--ink-3); font-size: 13px; }
+
+/* ---------- 回顾 (view/review.js): the timeline by month and day, a topic a line ---------- */
+.review-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.review-filter {
+  height: 30px; padding: 0 14px; border-radius: 15px; border: 1px solid var(--line-2); background: none;
+  color: var(--ink-2); font: 500 13px var(--font-sans); cursor: pointer;
+}
+.review-filter:hover { color: var(--ink); border-color: var(--ink-3); }
+.review-filter[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 700; }
+.review-month { display: flex; flex-direction: column; gap: 14px; margin-bottom: 26px; }
+.review-month-head { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
+.review-day { display: flex; flex-direction: column; gap: 8px; }
+.review-day-head { font-size: 12px; color: var(--ink-3); letter-spacing: .04em; }
+.review-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.review-topic { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.review-topic[data-open="true"] { border-color: var(--line-2); }
+.review-row {
+  width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: none; border-radius: 14px;
+  background: none; color: var(--ink); text-align: left; cursor: pointer; font-family: var(--font-sans);
+}
+.review-row:hover { background: var(--panel-2); }
+.review-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.review-kind { flex: none; padding: 2px 8px; border-radius: 6px; background: var(--raised); color: var(--accent); font-size: 11px; font-weight: 700; }
+.review-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.review-marks { flex: none; font-size: 12px; color: var(--orange); }
+.review-meta { flex: none; font-size: 12px; color: var(--ink-3); }
+.review-reader { display: flex; flex-direction: column; gap: 20px; padding: 18px 20px; border-top: 1px solid var(--line); }
+.review-reader .msg-user, .review-reader .msg-text { font-size: 14px; }
+.review-reader-actions { display: flex; justify-content: flex-end; }
+.review-star { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); }
+.review-star-text { font-size: 14px; line-height: 1.6; color: var(--ink); }
+.review-star-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* The star by a message (view/star-buttons.js): on hover, and always once starred. */
+[data-msg].msg-agent, [data-msg].msg-user { position: relative; }
+.star-btn {
+  position: absolute; top: 4px; right: -38px; width: 28px; height: 28px; border: none; border-radius: 8px; background: none;
+  color: var(--ink-3); font-size: 16px; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .12s;
+}
+[data-msg]:hover > .star-btn, .star-btn:focus-visible { opacity: 1; }
+.star-btn:hover { color: var(--ink); background: var(--raised); }
+.star-btn[aria-pressed="true"] { opacity: 1; color: var(--orange); }
+/* In 回顾 the reader has no gutter beside it: the star sits inside, room kept for it. */
+.review-reader [data-msg].msg-agent { padding-right: 34px; }
+.review-reader .star-btn { right: 0; top: 0; }
+.review-reader [data-msg].msg-user > .star-btn { right: auto; left: -36px; }
 
 /* ---------- toast ---------- */
 .toast-root { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 60; }

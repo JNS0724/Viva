@@ -109,7 +109,7 @@ function renderDrawerIfChanged(container: HTMLElement, state: State, handlers: H
 
 /** The panel only depends on its own slice; skipping identical renders keeps hover and focus in the list. */
 function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
-  const inputs = [state.history]
+  const inputs = [state.history, state.review]
   if (inputs.every((value, i) => value === renderedHistoryInputs[i])) return
   renderedHistoryInputs = inputs
   renderHistoryPanel(dom, state, handlers)

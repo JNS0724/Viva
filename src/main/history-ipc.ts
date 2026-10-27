@@ -66,6 +66,12 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   /** The one timeline: the segments before `id` (the window scrolls up into them), and search across all of it. */
   handle('history:segments-before', (id, limit) => db.segmentsBefore(assertId(id), { limit: Number(limit) || undefined }))
   handle('history:search-messages', (query) => db.searchMessages(assertQuery(query)))
+  /** 回顾: the timeline by time, newest first, a page before `before` (ms); one segment's messages to read; the stars. */
+  handle('history:review', (before) => db.review({ before: typeof before === 'number' ? before : undefined }))
+  handle('history:segment', (id) => ({ messages: db.timelineOf(assertId(id)) }))
+  handle('history:star', (id, seq, starred) => db.setStar(id, seq, starred === true))
+  handle('history:stars-in', (ids) => db.starsIn(ids))
+  handle('history:starred', () => db.starredMessages())
 
   /** Shows an older conversation and reattaches the agent to its dsh session when it still can. */
   handle('history:open', async (id) => {
