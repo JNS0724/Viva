@@ -67,7 +67,7 @@ export const IPC_ARGS = Object.freeze({
   'history:export': z.tuple([id]),
   'history:segments-before': z.tuple([id, count.optional()]),
   'history:search-messages': z.tuple([text]),
-  'history:review': z.tuple([z.number().optional()]),
+  'history:review': z.tuple([id.optional()]),
   'history:segment': z.tuple([id]),
   'history:star': z.tuple([id, count, z.boolean()]),
   'history:stars-in': z.tuple([z.array(id).max(MAX_LIST)]),

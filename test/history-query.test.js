@@ -1,6 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { openHistoryDb } from '../src/main/history-db.ts'
 import { createHistoryDesk, historyAnswer } from '../src/main/history-channel.ts'
 import { createHistoryChannel } from '../plugins/history/lib/channel.ts'
 
@@ -37,6 +41,17 @@ test('the plugin asks the app over the process channel and gets the answer back'
   const text = await channel.request({ query: '报销' }, 'main')
   assert.deepEqual(asked, ['报销'])
   assert.match(text, /viva:\/\/timeline\/seg-1\/3/)
+})
+
+test('the keywords the tool suggests, apart, find what a real history has, through the plugin channel', async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-query-')), 'history.db')
+  const db = openHistoryDb({ file })
+  db.save(db.create({}), [{ role: 'user', text: '报销模板放哪里', receipt: null }, { role: 'assistant', text: '报销模板在行政共享盘', receipt: null }])
+  const port = new EventEmitter()
+  const desk = createHistoryDesk({ send: (message) => port.emit('message', message), search: (query) => db.searchMessages(query), authorized: () => true })
+  const channel = createHistoryChannel({ send: (message) => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
+  const text = await channel.request({ query: '报销 模板' }, 'main')
+  assert.match(text, /找到 2 条/)
 })
 
 test('a session the app does not know, or an empty query, is refused', async () => {

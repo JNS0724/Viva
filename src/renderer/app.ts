@@ -265,7 +265,17 @@ const historyActions = createHistoryActions({
   jumpTo: (hit: Untyped) => timelineActions.jumpTo(hit),
 })
 /** 回顾 on the 搜索 page, and the stars on messages (review-actions.ts). */
-const reviewActions = createReviewActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage })
+const reviewActions = createReviewActions({
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage,
+  reveal: (msgId: string) => {
+    const row = dom.historyList.querySelector(`.review-reader [data-msg="${CSS.escape(msgId)}"]`)
+    if (!row) return false
+    row.scrollIntoView({ block: 'center' })
+    row.classList.add('msg-found')
+    setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
+    return true
+  },
+})
 
 /** The star by a message, in the timeline (the conversation, or an earlier row) and in a topic read in 回顾. */
 const starViews = [
@@ -283,7 +293,11 @@ const starViews = [
 let shownStars: unknown = null
 /** After each render: the stars of the segments on screen read back, and the stars shown in step with them. */
 afterRender = () => {
-  reviewActions.refreshStars([...state.earlier.segments.map((segment) => segment.id), String(state.conversationId ?? '')])
+  reviewActions.refreshStars([
+    ...state.earlier.segments.map((segment) => segment.id), String(state.conversationId ?? ''),
+    // A topic read in 回顾 only, never read back into the timeline.
+    ...(state.review.reading?.messages ?? []).map((message: { segmentId: string }) => message.segmentId),
+  ])
   if (state.review.starKeys === shownStars) return
   shownStars = state.review.starKeys
   for (const view of starViews) view.sync()

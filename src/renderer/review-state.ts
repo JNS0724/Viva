@@ -120,10 +120,13 @@ export const REVIEW_ACTIONS: Record<string, Reducer> = {
     const keys = new Set([...state.review.starKeys, ...(places ?? []).map(starKey)])
     return keys.size === state.review.starKeys.length ? state : withReview(state, { starKeys: [...keys] })
   },
-  /** A star put on or taken off (in the timeline or here): the message, its topic's count, and the 收藏 list. */
-  star_changed: (state, { segmentId, seq, starred }) => withReview(state, {
+  /**
+   * A star put on or taken off (in the timeline or here): the message, its topic's count, and the 收藏 list. The
+   * count moves only when the star did (`changed`: the history says whether it was there already).
+   */
+  star_changed: (state, { segmentId, seq, starred, changed = true }) => withReview(state, {
     starKeys: [...state.review.starKeys.filter((key: string) => key !== starKey({ segmentId, seq })), ...(starred ? [starKey({ segmentId, seq })] : [])],
-    segments: state.review.segments.map((segment: ReviewSegment) => (segment.id === segmentId
+    segments: state.review.segments.map((segment: ReviewSegment) => (segment.id === segmentId && changed
       ? { ...segment, stars: Math.max(0, segment.stars + (starred ? 1 : -1)) }
       : segment)),
     starred: starred || !state.review.starred ? state.review.starred

@@ -93,10 +93,12 @@ html:not([data-platform="darwin"]) {
 /* 按轮次跳转 (view/turn-rail.js): in the gutter right of the conversation, one mark per question, packed tighter as turns add up. */
 .turn-rail {
   position: absolute; right: 4px; top: 50%; transform: translateY(-50%); z-index: 6; max-height: 56%;
-  display: flex; flex-direction: column; gap: 3px; padding: 6px 0;
+  display: flex; flex-direction: column; padding: 6px 0;
 }
+/* 12px each while they fit; past that they shrink together (no gap, no least height), so however many there are,
+   every one stays inside the rail and can be pointed at. */
 .turn-mark {
-  position: relative; flex: 0 1 9px; min-height: 3px; width: 22px; padding: 0; border: none; background: none; cursor: pointer;
+  position: relative; flex: 0 1 12px; min-height: 0; width: 22px; padding: 0; border: none; background: none; cursor: pointer;
 }
 .turn-mark::before {
   content: ''; position: absolute; right: 5px; top: 50%; width: 9px; height: 2px; margin-top: -1px; border-radius: 1px;

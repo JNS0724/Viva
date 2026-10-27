@@ -65,3 +65,10 @@ test('a star changed anywhere is counted on its topic and leaves the 收藏 list
   assert.equal(state.review.segments[0].stars, 0)
   assert.deepEqual(state.review.starred, [])
 })
+
+test('a star the history already had marks the message but does not count twice', () => {
+  let state = reduce(initialState, { type: 'review_loaded', segments: [seg('a', { stars: 1 })], hasMore: false, fresh: true })
+  state = reduce(state, { type: 'star_changed', segmentId: 'a', seq: 1, starred: true, changed: false })
+  assert.equal(state.review.segments[0].stars, 1)
+  assert.equal(state.review.starKeys.includes('a:1'), true)
+})

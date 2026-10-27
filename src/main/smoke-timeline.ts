@@ -16,17 +16,19 @@ type Seed = { daysAgo: number, hour: number, talk: string[], files?: string[], s
 
 /** Oldest first; the last is the conversation on screen. A task hangs off the topic before it. */
 const SEEDS: readonly Seed[] = [
-  { daysAgo: 35, hour: 10.5, talk: ['季度目标对齐会的纪要帮我理一下', '三条结论：一、Q4 先做对账重构；二、客服工单系统延后；三、每周五同步进度。', '把第二条展开写写', '工单系统延后到明年一月，原因是人手：两位后端在对账重构上。'] },
+  { daysAgo: 35, hour: 10.5, talk: ['季度目标对齐会的纪要帮我理一下', '三条结论：一、Q4 先做对账重构；二、客服工单系统延后；三、每周五同步进度。', '把第二条展开写写', '工单系统延后到明年一月，原因是人手：两位后端在对账重构上。'], star: 1 },
   { daysAgo: 20, hour: 15, talk: ['帮我比较一下两家云服务的报价', '按一年 8 台 4 核 16G 算，A 家 6.2 万，B 家 5.4 万；B 家带宽另算。'] },
   { daysAgo: 12, hour: 9.6, talk: ['把这几张发票按公司模板整理成报销单', '整理好了：3 张发票，合计 1,286 元，报销单在 Viva 的文件/报销单-10月.xlsx。'], files: ['/Users/me/Downloads/发票-滴滴.pdf', '/Users/me/Downloads/发票-酒店.pdf'] },
   { daysAgo: 9, hour: 16.1, talk: ['帮我写一下 beta.4 的更新说明，口语一点', '这一版主要是 Windows 上的修复：岛一直在最上层，长标题末尾省略，停止更及时。', '再短一点', 'Windows 上更稳了：岛不再被挡住，停下更快。'] },
   { daysAgo: 8, hour: 11, talk: ['周会的会议室改到几楼了', '改到 3 楼大会议室了，周三 14:00。'] },
   { daysAgo: 3, hour: 14.3, talk: ['把这周的进展整理一下，发给组里', '本周三件事：对账系统重构按计划推进；接口联调还差一步；上线改到周五。周报模板在 共享盘/行政/周报模板.docx。', '先别发，加上下周计划', '加好了：下周完成联调，周五上线。'], star: 1 },
-  { daysAgo: 3, hour: 15.2, talk: ['整理 notes 文件夹里的会议纪要', '整理好了，共 6 份，按日期合成了一份 会议纪要-10月.md。'], task: true },
+  { daysAgo: 3, hour: 15.2, talk: ['整理 notes 文件夹里的会议纪要', '整理好了，共 6 份，按日期合成了一份 会议纪要-10月.md。'], task: true, star: 1 },
   { daysAgo: 2, hour: 20.5, talk: ['杭州周边有什么两天一夜的地方', '莫干山、千岛湖、桐庐都合适；开车两小时内，莫干山最近。', '莫干山住哪儿好', '想安静住庾村附近的民宿，想看山住半山腰的。'] },
   { daysAgo: 1, hour: 11, talk: ['下周三的会议定在哪个会议室？', '下周三 14:00 的项目例会在 3 楼大会议室。'] },
   { daysAgo: 0, hour: -0.5, talk: ['帮我列一下季度复盘 PPT 的大纲', '一共六页：目标回顾、完成情况、问题、原因、下季度计划、需要的支持。', '第三页写什么', '列三个最大的问题，每个一句现象一句影响。', '下季度计划要几条', '三到五条，每条带负责人和时间。', '最后一页呢', '写需要哪些支持：人手、预算、跨组配合。'] },
 ]
+
+const SEEDED_STARS = SEEDS.filter((seed) => seed.star !== undefined).length
 
 const messagesOf = (seed: Seed) => seed.talk.map((text, i) => (i % 2
   ? { role: 'assistant', text, receipt: { ms: 4200, tools: 1, thoughts: 1, stopReason: 'end_turn' } }
@@ -84,12 +86,39 @@ const hoverMiddleDot = async (win: BrowserWindow) => {
   win.webContents.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y })
 }
 
+/** How many questions a long topic is given to see that every mark of the rail stays in the window. */
+const MANY_QUESTIONS = 150
+
+/**
+ * A topic far longer than the window: questions added to the thread for a moment (no render happens meanwhile), and
+ * every mark of the rail inside the window, the last one the element found where it is drawn.
+ */
+const MANY_MARKS = `(async () => {
+  const thread = document.getElementById('thread')
+  const added = Array.from({ length: ${MANY_QUESTIONS} }, (_, i) => {
+    const el = document.createElement('div')
+    el.className = 'msg-user'
+    el.textContent = '第 ' + (i + 1) + ' 个问题'
+    return thread.appendChild(el)
+  })
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  const marks = [...document.querySelectorAll('#turn-rail .turn-mark')]
+  const outside = marks.filter((mark) => { const box = mark.getBoundingClientRect(); return box.top < 0 || box.bottom > innerHeight })
+  const last = marks.at(-1).getBoundingClientRect()
+  const reachable = document.elementFromPoint(last.left + last.width / 2, last.top + last.height / 2) === marks.at(-1)
+  for (const el of added) el.remove()
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  return { marks: marks.length, outside: outside.length, reachable, lastBottom: Math.round(last.bottom), height: innerHeight }
+})()`
+
 /** Scrolling up, folded topics and the rail; one opened; a star put on a message of the conversation on screen. */
 async function checkFolded(win: BrowserWindow, outDir: string, expect: Expect) {
   const seen = await until(win, `(() => { const seen = ${TIMELINE}; return seen.folded >= 5 && seen })()`, 'the earlier topics folded above the conversation')
   expect(seen.open === 0 && seen.titles.some((title: string) => title.includes('把这周的进展整理一下')), 'earlier topics should be folded to a line named by their first question', seen)
   expect(seen.more?.includes('回顾'), 'past the recent days, the top should point to 回顾 instead of reading further back', seen)
   expect(seen.dots === seen.folded && seen.lines === 4, 'the rail: a dot per earlier topic, a line per question of this one', seen)
+  const many = await run(win, MANY_MARKS)
+  expect(many.marks >= MANY_QUESTIONS && many.outside === 0 && many.reachable, 'with many questions every mark of the rail should stay in the window, the last one reachable', many)
   await run(win, `document.getElementById('scroll').scrollTop = 0`)
   await wait(UI_WAIT_MS)
   await hoverMiddleDot(win)
@@ -108,7 +137,7 @@ async function checkFolded(win: BrowserWindow, outDir: string, expect: Expect) {
     answer.querySelector('.star-btn').click()
     return true
   })()`)
-  const kept = await until(win, `window.agent.starredMessages().then((items) => items.length === 2 && items)`, 'the star put on the latest answer kept')
+  const kept = await until(win, `window.agent.starredMessages().then((items) => items.length === ${SEEDED_STARS + 1} && items)`, 'the star put on the latest answer kept')
   expect(star && kept[0].text.includes('人手'), 'a star put on in the conversation should be kept, newest first', kept)
 }
 
@@ -132,11 +161,24 @@ async function checkReview(win: BrowserWindow, outDir: string, expect: Expect) {
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'review-open')
 
+  // A topic too old for the timeline, read only here: its star is read back for it.
+  await run(win, `[...document.querySelectorAll('#history-list .review-row')].find((el) => el.textContent.includes('季度目标对齐会')).click()`)
+  const oldStar = await until(win, `document.querySelector('#history-list .review-reader .star-btn[aria-pressed="true"]') && true`, 'the star of a topic read only in 回顾')
+  expect(oldStar, 'a topic read only in 回顾 should show the star it has', oldStar)
+
   await run(win, `[...document.querySelectorAll('#history-list .review-filter')].find((el) => el.textContent === '收藏').click()`)
   const stars = await until(win, `document.querySelectorAll('#history-list .review-star').length`, 'the 收藏 list')
-  expect(stars === 2, 'the 收藏 list should show both starred messages', stars)
+  expect(stars === SEEDED_STARS + 1, 'the 收藏 list should show every starred message', stars)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'review-stars')
+
+  // 详情 on a background task's message: the timeline has no background tasks, 回顾 opens it at the message.
+  await run(win, `[...document.querySelectorAll('#history-list .review-star')].find((el) => el.textContent.includes('会议纪要-10月')).querySelector('.btn-outline').click()`)
+  const found = await until(win, `(() => {
+    const row = document.querySelector('#history-list .review-reader .msg-found')
+    return row && { text: row.textContent, filter: document.querySelector('#history-list .review-filter[aria-pressed="true"]')?.textContent }
+  })()`, '详情 on a message of a background task opening it in 回顾')
+  expect(found.text.includes('会议纪要-10月') && found.filter === '全部', '详情 should open the task in 回顾 at that message', found)
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 }
 

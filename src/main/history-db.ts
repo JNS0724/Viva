@@ -10,6 +10,8 @@ const MAX_PAGE_SIZE = 200
 const SEARCH_LIMIT = 30
 const SEARCH_SCAN_LIMIT = 300
 const MAX_QUERY_CHARS = 100
+/** Words apart in a search (「报销 模板」): each must be in the message; past this many the rest are left out. */
+const MAX_QUERY_TERMS = 5
 /** The trigram index needs three characters; shorter queries fall back to LIKE. */
 const TRIGRAM_MIN_CHARS = 3
 const SNIPPET_BEFORE = 20
@@ -144,6 +146,9 @@ function snippetOf(text: string, query: string) {
     after: `${text.slice(end, to)}${to < text.length ? '…' : ''}`,
   }
 }
+
+/** The word of a search the snippet is cut around: the first of them the text has. */
+const firstTermIn = (text: string, terms: readonly string[]) => terms.find((term) => text.toLowerCase().includes(term.toLowerCase())) ?? terms[0]
 
 /** A message next to a search hit, cut short; null when there is none. */
 function contextOf(row: Row | undefined) {
@@ -337,17 +342,35 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
   }
 
   /**
-   * Messages of the whole timeline that contain `input`, newest first, with where each is, its directory,
-   * and the messages right before and after it in its segment.
+   * Messages that have every one of several words (「报销 模板」): the words of three characters or more through the
+   * trigram index, the shorter ones by LIKE, in one query.
+   */
+  function allTermsHits(terms: readonly string[]) {
+    const long = terms.filter((term) => [...term].length >= TRIGRAM_MIN_CHARS)
+    const short = terms.filter((term) => [...term].length < TRIGRAM_MIN_CHARS)
+    const likes = short.map(() => `m.text LIKE ? ESCAPE '\\'`)
+    const from = long.length
+      ? `messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id WHERE messages_fts MATCH ?`
+      : `messages m JOIN conversations c ON c.id = m.conversation_id WHERE 1`
+    const params = [...(long.length ? [long.map(ftsPhrase).join(' AND ')] : []), ...short.map((term) => `%${escapeLike(term)}%`)]
+    return db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM ${from}
+      ${likes.map((like) => `AND ${like}`).join(' ')} AND c.deleted_at IS NULL AND c.folded_into IS NULL
+      ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`).all(...params) as Row[]
+  }
+
+  /**
+   * Messages of the whole timeline that contain `input` (or, its words apart, every one of them), newest first,
+   * with where each is, its directory, and the messages right before and after it in its segment.
    */
   function searchMessages(input: unknown) {
     const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
     if (!query) return []
-    const rows = [...query].length >= TRIGRAM_MIN_CHARS
-      ? sql.ftsMessageHits.all(ftsPhrase(query))
-      : sql.likeMessageHits.all(`%${escapeLike(query)}%`)
+    const terms = [...new Set(query.split(/\s+/).filter(Boolean))].slice(0, MAX_QUERY_TERMS)
+    const rows = terms.length === 1
+      ? ([...query].length >= TRIGRAM_MIN_CHARS ? sql.ftsMessageHits.all(ftsPhrase(query)) : sql.likeMessageHits.all(`%${escapeLike(query)}%`))
+      : allTermsHits(terms)
     return rows.map((row) => ({
-      segmentId: row.segment_id, seq: row.seq, role: row.role, at: row.created_at, cwd: row.cwd ?? null, snippet: snippetOf(row.text, query),
+      segmentId: row.segment_id, seq: row.seq, role: row.role, at: row.created_at, cwd: row.cwd ?? null, snippet: snippetOf(row.text, firstTermIn(row.text, terms)),
       before: contextOf(sql.neighbour.get(row.segment_id, row.seq - 1)),
       after: contextOf(sql.neighbour.get(row.segment_id, row.seq + 1)),
     }))

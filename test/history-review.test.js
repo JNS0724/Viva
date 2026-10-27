@@ -46,9 +46,53 @@ test('review comes in pages before a time; a background task is listed as one, a
   const first = db.review({ limit: 2 })
   assert.deepEqual(first.segments.map((s) => [s.id, s.kind]), [[b.id, 'talk'], [task.id, 'task']])
   assert.equal(first.hasMore, true)
-  const next = db.review({ before: first.segments.at(-1).createdAt, limit: 2 })
+  const next = db.review({ after: first.segments.at(-1).id, limit: 2 })
   assert.deepEqual(next.segments.map((s) => s.id), [a.id])
   assert.equal(next.hasMore, false)
+})
+
+test('a page ending among segments written at the same moment goes on with the rest of them', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-review-')), 'history.db')
+  let seq = 0
+  const db = openHistoryDb({ file, now: () => 5_000, newId: () => `s${++seq}` })
+  for (let i = 0; i < 5; i += 1) segment(db, [user(`同一刻 ${i}`)])
+
+  const first = db.review({ limit: 3 })
+  const rest = db.review({ after: first.segments.at(-1).id, limit: 3 })
+  assert.equal(first.hasMore, true)
+  assert.deepEqual([...first.segments, ...rest.segments].map((s) => s.id).toSorted(), ['s1', 's2', 's3', 's4', 's5'])
+  assert.equal(rest.hasMore, false)
+})
+
+test('a turn moved to the background is counted, named and read from its own question on, not the talk before it', () => {
+  const { db } = freshDb()
+  const moved = segment(db, [user('报销模板放哪了'), answer('在共享盘'), user('生成一份周报'), answer('在写')])
+  const next = segment(db, [user('报销模板放哪了'), answer('在共享盘')])
+  db.fold(moved.id, { into: next.id, at: 2, kind: 'task' })
+
+  const listed = db.review().segments.find((s) => s.id === moved.id)
+  assert.deepEqual([listed.kind, listed.title, listed.turns], ['task', '生成一份周报', 1])
+  assert.deepEqual(db.segmentMessages(moved.id).map((m) => [m.seq, m.text]), [[2, '生成一份周报'], [3, '在写']])
+  assert.deepEqual(db.segmentMessages(next.id).map((m) => m.seq), [0, 1])
+})
+
+test('starring a message already starred changes nothing, and says so', () => {
+  const { db } = freshDb()
+  const a = segment(db, [user('一'), answer('答')])
+  assert.equal(db.setStar(a.id, 1, true), true)
+  assert.equal(db.setStar(a.id, 1, true), false)
+  assert.equal(db.setStar(a.id, 1, false), true)
+  assert.equal(db.setStar(a.id, 1, false), false)
+})
+
+test('words apart in the search are each looked for: a message has them all, long or short', () => {
+  const { db } = freshDb()
+  segment(db, [user('报销模板放哪里'), answer('报销用的模板在行政共享盘'), user('周报模板呢')])
+  const texts = (query) => db.searchMessages(query).map((hit) => `${hit.snippet.before}${hit.snippet.hit}${hit.snippet.after}`)
+  assert.equal(texts('报销 模板').length, 2)
+  assert.equal(texts('行政共享盘 报销').length, 1)
+  assert.equal(texts('模板   周报').length, 1)
+  assert.deepEqual(texts('报销 不存在的词'), [])
 })
 
 test('a star is kept per message, counted per segment, and listed with the message it marks', () => {

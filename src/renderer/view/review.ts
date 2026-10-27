@@ -63,7 +63,7 @@ function topicList(review: State['review'], handlers: Handlers, now: number): Vi
   return [...(months.length ? months : [hint(EMPTY[review.filter] ?? EMPTY.all)]), more]
 }
 
-/** The starred messages, newest star first: who said it, when, in which topic; 详情 goes to it in the timeline. */
+/** The starred messages, newest star first: who said it, when, in which topic; 详情 opens its topic here at it. */
 function starredList(review: State['review'], handlers: Handlers, now: number): View[] {
   if (review.starred === null) return [hint('正在读取…')]
   if (!review.starred.length) return [hint('还没有收藏。把鼠标移到一条消息上，点旁边的 ☆。')]
@@ -73,7 +73,7 @@ function starredList(review: State['review'], handlers: Handlers, now: number): 
       h('div', { class: 'review-star-text', text: item.text }),
       h('div', { class: 'review-star-actions' },
         h('button', { class: 'btn btn-text btn-small', type: 'button', text: '取消收藏', onClick: () => handlers.toggleStar({ segmentId: item.segmentId, seq: item.seq }, false) }),
-        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '详情 →', onClick: () => handlers.jumpToHit({ segmentId: item.segmentId, seq: item.seq }) })))))]
+        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '详情 →', onClick: () => handlers.openStarred({ segmentId: item.segmentId, seq: item.seq }) })))))]
 }
 
 export function reviewView(state: State, handlers: Handlers, now = Date.now()): View[] {
