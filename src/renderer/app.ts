@@ -25,6 +25,7 @@ import { createTimelineActions } from './timeline-actions.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
+import { attachTurnRail } from './view/turn-rail.ts'
 import { scheduleFrame } from './view/frame.ts'
 
 const TICK_MS = 1000
@@ -94,6 +95,7 @@ const dom = { ...elements, follower: createScrollFollower(elements.scroll, eleme
 /** The page's elements, as the views draw into them. */
 export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
+attachTurnRail(dom.scroll, byId('turn-rail'))
 
 let state: State = initialState
 let pendingReveal: (() => void) | null = null

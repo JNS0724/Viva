@@ -26,6 +26,7 @@
     "smoke:relaunch": "cross-env SMOKE_PHASE=relaunch DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
     "smoke:resume": "cross-env SMOKE_PHASE=resume DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
+    "smoke:scroll": "cross-env SMOKE_PHASE=scroll DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
     "prelive": "npm run build",
     "live": "node scripts/live.mjs",

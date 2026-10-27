@@ -11,6 +11,7 @@ import { checkResume } from './smoke-tasks.ts'
 import { checkSources } from './smoke-sources.ts'
 import { checkFollowups } from './smoke-followups.ts'
 import { runLive } from './live.ts'
+import { checkScroll } from './smoke-scroll.ts'
 import { runShowcase } from './smoke-showcase.ts'
 
 const BOOT_WAIT_MS = 1500
@@ -539,6 +540,7 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else if (smokePhase === 'live' || smokePhase === 'live-resume') problems.push(...await runLive(win, outDir, smokePhase, hooks))
+    else if (smokePhase === 'scroll') problems.push(...await checkScroll(win, outDir))
     else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)
