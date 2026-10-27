@@ -58,10 +58,32 @@ export async function dockSteps(win: SmokeWindow, outDir: string, expect: Expect
     const back = await run(win, LAYOUT)
     expect(back.composer.width === before, 'a double-click should put the column back', { before, after: back.composer.width })
 
+    // The keyboard reaches the grips too: an arrow outwards widens the column, Home puts it back.
+    await run(win, `(() => { const grip = document.getElementById('col-grip-right'); grip.focus(); grip.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })()`)
+    await wait(UI_WAIT_MS)
+    const keyed = (await run(win, LAYOUT)).composer.width
+    await run(win, `document.getElementById('col-grip-right').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))`)
+    await wait(UI_WAIT_MS)
+    const homed = (await run(win, LAYOUT)).composer.width
+    expect(keyed > before && homed === before, 'an arrow key should widen the column and Home put it back', { before, keyed, homed })
+
     await run(win, `document.getElementById('toggle-drawer').click()`)
     const folded = await until(win, `(() => { const seen = ${LAYOUT}; return seen.folded === 'true' && seen })()`, 'the dock folding with the drawer open', 5_000)
       .catch(async () => run(win, LAYOUT))
     expect(folded.folded === 'true' && folded.tiles === 0 && folded.tag, 'with no room beside the column the dock should fold to its tag', folded)
+    // Peeked at, it opens above the input, not over it; typing puts it away again.
+    await run(win, `document.querySelector('#task-dock .dock-tag').click()`)
+    await wait(UI_WAIT_MS)
+    const peek = await run(win, `(() => ({
+      tiles: document.querySelectorAll('#task-dock .dock-tile').length,
+      dockBottom: Math.round(document.getElementById('task-dock').getBoundingClientRect().bottom),
+      composerTop: Math.round(document.getElementById('composer').getBoundingClientRect().top),
+    }))()`)
+    expect(peek.tiles > 0 && peek.dockBottom <= peek.composerTop, 'peeked at, the dock should sit above the input', peek)
+    await capture(win, outDir, 'tasks-dock-peek')
+    await run(win, `(() => { const input = document.getElementById('composer-input'); input.value = '在'; input.dispatchEvent(new Event('input', { bubbles: true })); input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+    await wait(UI_WAIT_MS)
+    expect((await run(win, LAYOUT)).folded === 'true', 'typing should put the peeked dock away')
     await run(win, `document.getElementById('toggle-drawer').click()`)
   } finally {
     win.setSize(width, height)

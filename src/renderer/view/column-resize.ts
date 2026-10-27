@@ -28,10 +28,14 @@ function keep(width: number | null) {
   }
 }
 
+/** How far one arrow key moves a grip. */
+const KEY_STEP_PX = 40
+
 /**
- * Wires the two grips at the column's edges inside `area` (the main area the column is centred in).
+ * Wires the two grips at the column's edges inside `area` (the main area the column is centred in). Each grip takes
+ * the pointer (drag; double-click for the default) and the keyboard (arrows widen or narrow it, Home for the default).
  * @param onWidth told the width in use after every change, with the area's width (what is left beside the column)
- * @returns re-applies the width, for when the area itself changes size
+ * @returns fit: re-applies the width, for when the area itself changes size; reset: back to the default
  */
 export function attachColumnResize(area: HTMLElement, grips: readonly HTMLElement[], onWidth: (column: number, area: number) => void = () => {}) {
   const root = document.documentElement
@@ -39,7 +43,13 @@ export function attachColumnResize(area: HTMLElement, grips: readonly HTMLElemen
   const apply = () => {
     const column = clampColumn(width, area.clientWidth)
     root.style.setProperty('--col', `${column}px`)
+    for (const grip of grips) grip.setAttribute('aria-valuenow', String(column))
     onWidth(column, area.clientWidth)
+  }
+  const reset = () => {
+    width = COLUMN.default
+    apply()
+    keep(null)
   }
   apply()
 
@@ -67,11 +77,18 @@ export function attachColumnResize(area: HTMLElement, grips: readonly HTMLElemen
       grip.addEventListener('pointerup', end, { once: true })
       grip.addEventListener('pointercancel', end, { once: true })
     })
-    grip.addEventListener('dblclick', () => {
-      width = COLUMN.default
+    grip.addEventListener('dblclick', reset)
+    // The left grip widens the column to the left, the right one to the right; either way the column grows on both sides.
+    const outward = grip.dataset.side === 'left' ? 'ArrowLeft' : 'ArrowRight'
+    const inward = grip.dataset.side === 'left' ? 'ArrowRight' : 'ArrowLeft'
+    grip.addEventListener('keydown', (event) => {
+      if (event.key === 'Home') return reset()
+      if (event.key !== outward && event.key !== inward) return
+      event.preventDefault()
+      width = clampColumn(clampColumn(width, area.clientWidth) + (event.key === outward ? 2 : -2) * KEY_STEP_PX, area.clientWidth)
       apply()
-      keep(null)
+      keep(width)
     })
   }
-  return apply
+  return { fit: apply, reset }
 }

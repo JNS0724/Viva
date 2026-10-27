@@ -85,15 +85,24 @@ export function dockTasks(state: State): Array<{ task: BackgroundTask, report: T
   }).toSorted((a, b) => (DOCK_ORDER[a.task.status] ?? 2) - (DOCK_ORDER[b.task.status] ?? 2))
 }
 
-/** What the folded dock says: how many go on, how many of those wait on the user, how many ended. */
-export function dockSummary(state: State): { live: number, waiting: number, ended: number } {
+/** What the folded dock says: how many go on, how many of those wait on the user, how many ended, how many of those failed. */
+export function dockSummary(state: State): { live: number, waiting: number, ended: number, failed: number } {
   const shown = dockTasks(state)
   return {
     live: shown.filter(({ task }) => task.status in DOCK_ORDER).length,
     waiting: shown.filter(({ task }) => DOCK_ORDER[task.status] === 0).length,
     ended: shown.filter(({ task }) => !(task.status in DOCK_ORDER)).length,
+    failed: shown.filter(({ task }) => task.status === 'error').length,
   }
 }
+
+/**
+ * Room the dock needs beside the column to unfold (open), and below which it folds again (fold): the gap
+ * between them keeps a window resized right at the edge from folding and unfolding it over and over.
+ */
+export const DOCK_SPACE = Object.freeze({ open: 340, fold: 300 })
+/** Whether the dock has room, given the space beside the column and whether it had room until now. */
+export const hasDockRoom = (side: number, had: boolean): boolean => side >= (had ? DOCK_SPACE.fold : DOCK_SPACE.open)
 export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 
 /** The 后台 page's list: those waiting on the user, then those at work, then those that ended, latest first. */
@@ -287,7 +296,9 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
       const report = { taskId, title: task.title, status, preview: previewOf(view), shown: false }
       const reports = [...state.tasks.reports.filter((entry) => entry.taskId !== taskId), report]
-      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports })
+      // Something new came back: in the dock again, even if what it said before was put away there.
+      const dockHidden = state.tasks.dockHidden.filter((id) => id !== taskId)
+      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports, dockHidden })
     },
 
     tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),

@@ -83,13 +83,21 @@ export function taskTile(task: BackgroundTask, report: TaskReport | null, handle
   const parts = partsOf(task, report, handlers, now)
   const ended = !LIVE.has(task.status) && task.status !== 'interrupted'
   const open = h('button', { class: 'btn btn-text dock-open', type: 'button', text: '详情', onClick: () => handlers.openTasks(task.id) })
-  return h('div', { class: 'dock-tile', role: 'status', 'data-status': task.status, 'data-task': task.id },
+  const tile = h('div', { class: 'dock-tile', role: 'status', 'data-status': task.status, 'data-task': task.id },
     h('div', { class: 'dock-tile-head' },
       statusMark(task.status), h('span', { class: 'task-name', text: `#${task.title}` }),
       ended ? h('button', { class: 'icon-btn dock-hide', type: 'button', 'aria-label': '从这里收起', text: '×', onClick: () => handlers.hideFromDock(task.id) }) : null),
     h('span', { class: 'dock-tile-said', text: [parts.said, task.status === 'running' ? null : parts.line].filter(Boolean).join('：') }),
     task.status === 'running' && parts.line ? h('span', { class: 'dock-tile-line', text: parts.line }) : null,
     h('div', { class: 'dock-tile-acts' }, ...parts.actions, open))
+  // An ended task opened from here (详情, 接着问) has been seen: it leaves the dock; a new result brings it back.
+  if (ended) {
+    tile.addEventListener('click', (event) => {
+      const button = (event.target as Element).closest('button')
+      if (button && !button.classList.contains('dock-hide')) handlers.hideFromDock(task.id)
+    })
+  }
+  return tile
 }
 
 /**

@@ -20,7 +20,7 @@ import { historyMessages, setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
 import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
-import { liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
+import { hasDockRoom, liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
@@ -99,8 +99,6 @@ const dom = { ...elements, follower: createScrollFollower(elements.scroll, eleme
 export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
 
-/** What the dock needs beside the column (its width and its margin from the edge), or it folds to its tag. */
-const DOCK_SPACE_PX = 340
 const DOCK_KEY = 'viva:dock-collapsed'
 /** Whether the dock was left folded, for the next launch; storage refused, it starts unfolded. */
 function dockFolded(): boolean {
@@ -117,13 +115,17 @@ let state: State = reduce(initialState, { type: 'task_dock_toggled', collapsed: 
 // whatever is left beside it says whether the dock has room there.
 // The first call comes at once, before the handlers a render needs exist: that one only sets the state.
 let columnWired = false
-const fitColumn = attachColumnResize(dom.main, [byId('col-grip-left'), byId('col-grip-right')], (column, area) => {
-  const action = { type: 'task_dock_room', room: (area - column) / 2 >= DOCK_SPACE_PX }
+const column = attachColumnResize(dom.main, [byId('col-grip-left'), byId('col-grip-right')], (width, area) => {
+  const action = { type: 'task_dock_room', room: hasDockRoom((area - width) / 2, state.tasks.dockRoom) }
   if (columnWired) dispatch(action)
   else state = reduce(state, action)
 })
 columnWired = true
-new ResizeObserver(fitColumn).observe(dom.main)
+new ResizeObserver(column.fit).observe(dom.main)
+// The dock peeked at sits above the input and its label: their top, measured from the main area's bottom.
+new ResizeObserver(() => {
+  dom.main.style.setProperty('--composer-lift', `${dom.main.clientHeight - dom.composer.offsetTop + 56}px`)
+}).observe(dom.composer)
 let pendingReveal: (() => void) | null = null
 let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
@@ -498,6 +500,8 @@ const handlers = {
   },
   /** No room beside the column: the folded dock shown over the conversation for now, or put back. */
   peekDock: (peek: boolean) => dispatch({ type: 'task_dock_peek', peek }),
+  /** 恢复默认宽度 in the topic label's menu: the conversation column back to its default width. */
+  resetColumn: () => column.reset(),
   /** An ended task put away from the dock; its card in the conversation stays as the history. */
   hideFromDock: (taskId: string) => dispatch({ type: 'task_dock_hidden', taskId }),
   /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
@@ -781,6 +785,8 @@ function wireComposer() {
   dom.input.addEventListener('input', () => {
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
+    // Typing puts away a dock that was only peeked at: the input is where the user is now.
+    if (state.tasks.dockPeek) handlers.peekDock(false)
   })
   // Pictures go above the words; words that came only as formatted text are put in by hand (paste.js).
   dom.input.addEventListener('paste', (event) => {

@@ -98,7 +98,8 @@ html:not([data-platform="darwin"]) {
 .col-grip-left { left: var(--at); }
 .col-grip-right { right: var(--at); }
 .col-grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; border-radius: 1px; background: var(--accent); opacity: 0; transition: opacity .15s; }
-.col-grip:hover::after, .col-resizing .col-grip::after { opacity: .5; }
+.col-grip:hover::after, .col-resizing .col-grip::after, .col-grip:focus-visible::after { opacity: .5; }
+.col-grip:focus-visible { outline: none; }
 .col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
 .scroll { position: relative; flex: 1; width: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
 .jump-latest {
@@ -368,7 +369,8 @@ html:not([data-platform="darwin"]) {
   background: var(--raised); box-shadow: 0 10px 30px rgba(0, 0, 0, .4); font-size: 13px;
 }
 .dock-tile[data-status="waiting"], .dock-tile[data-status="interrupted"] { border-color: var(--orange); }
-.dock-tile[data-status="done"], .dock-tile[data-status="stopped"], .dock-tile[data-status="error"] { opacity: .85; }
+/* Ended: quieter words, never see-through (peeked at, the cards float over the conversation). */
+.dock-tile[data-status="done"] .dock-tile-head, .dock-tile[data-status="stopped"] .dock-tile-head { color: var(--ink-2); }
 .dock-tile-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; color: var(--ink); }
 .dock-tile-head .task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock-hide { width: 22px; height: 22px; font-size: 15px; line-height: 1; }
@@ -383,9 +385,15 @@ html:not([data-platform="darwin"]) {
   border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2); font-size: 12px; cursor: pointer;
   opacity: .55; transition: opacity .15s;
 }
-.dock-tag:hover, .dock-tag:focus-visible, .dock-tag[data-waits="true"] { opacity: 1; }
+.dock-tag:hover, .dock-tag:focus-visible, .dock-tag:not([data-tone="quiet"]) { opacity: 1; }
 .dock-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-.dock-tag[data-waits="true"] .dock-dot { background: var(--orange); }
+.dock-tag[data-tone="waits"] .dock-dot { background: var(--orange); }
+.dock-tag[data-tone="error"] .dock-dot { background: var(--red); }
+.dock-tag[data-tone="error"] { border-color: var(--red); color: var(--ink); }
+/* Peeked at without room beside the column: above the input (main sets --composer-lift), never over it. */
+.task-dock[data-peek="true"] { bottom: var(--composer-lift, 200px); }
+.task-dock[data-peek="true"] .dock-head { padding: 4px 4px 4px 10px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--raised); }
+.dock-tile[data-status="error"] { border-color: var(--red); }
 /* A background task's card (view/task-card.js): one quiet look whatever it is doing; the words say where it stands. */
 .task-card, .task-card[data-status] { border: 1px solid var(--line-2); }
 .task-card .task-report-head { display: flex; align-items: center; gap: 8px; min-width: 0; }

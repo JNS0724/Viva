@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { dockFolded, dockSummary, dockTasks } from '../src/renderer/tasks-state.ts'
+import { DOCK_SPACE, dockFolded, dockSummary, dockTasks, hasDockRoom } from '../src/renderer/tasks-state.ts'
 import { cardedTasks } from '../src/renderer/view/task-card.ts'
 import { clampColumn, COLUMN } from '../src/renderer/view/column-resize.ts'
 
@@ -25,9 +25,35 @@ test('the dock lists what waits on the user first, then what works, then what en
   const state = three()
   assert.deepEqual(dockTasks(state).map(({ task }) => task.id), ['asks', 'busy', 'done'])
   assert.equal(dockTasks(state).find(({ task }) => task.id === 'done').report?.taskId, 'done', 'an ended task comes with what it came back with')
-  assert.deepEqual(dockSummary(state), { live: 2, waiting: 1, ended: 1 })
+  assert.deepEqual(dockSummary(state), { live: 2, waiting: 1, ended: 1, failed: 0 })
   assert.deepEqual(dockTasks(initialState), [])
-  assert.deepEqual(dockSummary(initialState), { live: 0, waiting: 0, ended: 0 })
+  assert.deepEqual(dockSummary(initialState), { live: 0, waiting: 0, ended: 0, failed: 0 })
+})
+
+test('a task that failed is counted on its own, not as done', () => {
+  const state = run([
+    { type: 'task_end', taskId: 'busy', stopReason: 'error', message: 'offline', at: 7 },
+    { type: 'task_report_shown', taskId: 'busy' },
+  ], three())
+  assert.deepEqual(dockSummary(state), { live: 1, waiting: 1, ended: 2, failed: 1 })
+})
+
+test('put away from the dock, a task comes back when it ends again with something new', () => {
+  const hidden = reduce(three(), { type: 'task_dock_hidden', taskId: 'done' })
+  const askedAgain = run([
+    { type: 'task_asked', taskId: 'done', text: '再补一条', at: 8 },
+    { type: 'task_end', taskId: 'done', stopReason: 'end_turn', at: 9 },
+  ], hidden)
+  assert.equal(askedAgain.tasks.dockHidden.includes('done'), false)
+  assert.ok(dockTasks(askedAgain).some(({ task }) => task.id === 'done'))
+})
+
+test('the dock unfolds with clear room and folds only when it is clearly gone, so a window at the edge does not flicker', () => {
+  assert.equal(hasDockRoom(DOCK_SPACE.open, false), true)
+  assert.equal(hasDockRoom(DOCK_SPACE.open - 1, false), false, 'not yet room enough to unfold')
+  assert.equal(hasDockRoom(DOCK_SPACE.fold, true), true, 'between the two, it stays as it was')
+  assert.equal(hasDockRoom(DOCK_SPACE.fold - 1, true), false)
+  assert.ok(DOCK_SPACE.open > DOCK_SPACE.fold)
 })
 
 test('put away from the dock, an ended task stays in the conversation as its history', () => {
