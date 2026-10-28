@@ -949,13 +949,15 @@ function wireComposer() {
     if (images.length) draftImages.add(images)
   })
   dom.input.addEventListener('keydown', (event) => {
+    // Some IMEs report the confirming key as 229 after isComposing has already cleared.
+    if (event.isComposing || event.keyCode === 229) return
     // Tab, while the line over the input says where the words would go: the other way.
-    if (event.key === 'Tab' && !event.shiftKey && !event.isComposing && routeOf(state, dom.input.value)) {
+    if (event.key === 'Tab' && !event.shiftKey && routeOf(state, dom.input.value)) {
       event.preventDefault()
       taskActions.toggleRoute()
       return
     }
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+    if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     handlers.send()
   })
@@ -1009,6 +1011,7 @@ function wireDismissal() {
     if (state.files.menu && !event.composedPath().some((el) => el instanceof Element && el.classList.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
   })
   document.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return
     if (isHistoryShortcut(event)) {
       event.preventDefault()
       handlers.toggleHistory()
