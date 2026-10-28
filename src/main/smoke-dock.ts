@@ -64,8 +64,9 @@ async function manySteps(win: Sized, outDir: string, expect: Expect, start: (tex
     await start(text)
     await wait(UI_WAIT_MS)
   }
-  // The ones added answer at once; settled, the screenshot shows them as they stay.
-  await until(win, `!document.querySelector('#task-dock .dock-tile[data-status="running"]')`, 'the tasks added settling', SETTLE_MS).catch(() => null)
+  // The ones added answer at once; settled (every task card in the conversation, not only the rows shown), the
+  // screenshot shows them as they stay.
+  await until(win, `!document.querySelector('.task-card[data-status="running"]')`, 'every task added settling', SETTLE_MS)
   const many = await until(win, `(() => { const seen = ${LAYOUT}; return seen.more && seen })()`, 'the dock with more tasks than it shows')
   expect(many.tiles === 3 && /^还有 \d+ 件 · 全部 →$/.test(many.more), 'past three rows the dock should say how many more', many)
   expect(many.rail && many.rail.right <= many.composer.left && many.dock.left >= many.composer.right,
@@ -161,6 +162,10 @@ export async function dockPendingSteps(win: SmokeWindow, outDir: string, expect:
     expect(wide.tiles > 0, 'the waiting task should be in the dock', wide)
     await capture(win, outDir, 'dock-waiting')
 
+    // Folded by the user first: pressed by the column, its tag still opens it (a peek outranks the user's fold).
+    await run(win, `document.querySelector('#task-dock .dock-fold').click()`)
+    await wait(UI_WAIT_MS)
+    expect((await run(win, LAYOUT)).folded === 'true', 'the dock\'s – should fold it')
     await run(win, toggleDrawer)
     const pending = await until(win, `(() => { const seen = ${LAYOUT}; return seen.folded === 'true' && !seen.hidden && seen })()`, 'the pending tag with the drawer open', 5_000)
       .catch(async () => run(win, LAYOUT))
@@ -180,6 +185,11 @@ export async function dockPendingSteps(win: SmokeWindow, outDir: string, expect:
     await wait(UI_WAIT_MS)
     expect((await run(win, LAYOUT)).folded === 'true', 'typing should put the peeked dock away')
     await run(win, toggleDrawer)
+    // Room again: the user's fold is kept until the tag unfolds it.
+    await wait(UI_WAIT_MS)
+    expect((await run(win, LAYOUT)).folded === 'true', 'with room again the user\'s fold should be kept')
+    await run(win, `document.querySelector('#task-dock .dock-tag').click()`)
+    await until(win, `(${LAYOUT}).tiles > 0`, 'the dock unfolded again by its tag', 5_000)
 
     // A narrow window: the same clear tag in the corner, the conversation first.
     win.setSize(...NARROW)

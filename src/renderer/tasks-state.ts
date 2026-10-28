@@ -34,8 +34,11 @@ export const initialTasks = Object.freeze({
   dockPeek: false,
 })
 
-/** Whether the dock shows only its tag: folded by the user, or no room beside the column and not peeked at. */
-export const dockFolded = (state: State): boolean => state.tasks.dockCollapsed || (!state.tasks.dockRoom && !state.tasks.dockPeek)
+/**
+ * Whether the dock shows only its tag: folded by the user, or no room beside the column. Peeked at (its tag clicked
+ * without room) it shows either way; the user's own fold is kept for when the peek ends.
+ */
+export const dockFolded = (state: State): boolean => !state.tasks.dockPeek && (state.tasks.dockCollapsed || !state.tasks.dockRoom)
 
 /**
  * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
@@ -111,7 +114,11 @@ export function dockAway(state: State): boolean {
  * Room the dock needs beside the column to unfold (open), and below which it folds again (fold): the gap
  * between them keeps a window resized right at the edge from folding and unfolding it over and over.
  */
-export const DOCK_SPACE = Object.freeze({ open: 340, fold: 300 })
+/** styles.css .task-dock: its width, its inset from the right edge, and the least gap kept from the column. */
+const DOCK_PANEL = Object.freeze({ width: 300, inset: 20, gap: 12 })
+const DOCK_FOLD_PX = DOCK_PANEL.width + DOCK_PANEL.inset + DOCK_PANEL.gap
+const DOCK_HYSTERESIS_PX = 40
+export const DOCK_SPACE = Object.freeze({ open: DOCK_FOLD_PX + DOCK_HYSTERESIS_PX, fold: DOCK_FOLD_PX })
 /** Whether the dock has room, given the space beside the column and whether it had room until now. */
 export const hasDockRoom = (side: number, had: boolean): boolean => side >= (had ? DOCK_SPACE.fold : DOCK_SPACE.open)
 export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))

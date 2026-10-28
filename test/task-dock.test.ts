@@ -61,9 +61,22 @@ test('the dock unfolds with clear room and folds only when it is clearly gone, s
 
 test('the turn rail is on the left, so all the room right of the column is the dock\'s', () => {
   assert.equal(sideBeside(760, 1600), (1600 - 760) / 2)
-  // 1440 wide with the default column: 340 beside it, room enough to unfold; 1300 leaves 270, not enough.
-  assert.equal(hasDockRoom(sideBeside(COLUMN.default, 1440), false), true)
-  assert.equal(hasDockRoom(sideBeside(COLUMN.default, 1300), false), false)
+  // 1600 wide with the default column: 420 beside it, room to unfold; 1440 leaves 340, not enough to unfold.
+  assert.equal(hasDockRoom(sideBeside(COLUMN.default, 1600), false), true)
+  assert.equal(hasDockRoom(sideBeside(COLUMN.default, 1440), false), false)
+})
+
+test('the dock stays unfolded only while the panel (300 wide, 20 in from the edge) clears the column', () => {
+  assert.ok(DOCK_SPACE.fold >= 300 + 20, 'folds before the panel reaches over the column')
+})
+
+test('a tag clicked without room opens the dock even when the user had folded it, and the fold is kept', () => {
+  const cramped = run([{ type: 'task_dock_toggled', collapsed: true }, { type: 'task_dock_room', room: false }], three())
+  assert.equal(dockFolded(cramped), true)
+  const peeking = reduce(cramped, { type: 'task_dock_peek', peek: true })
+  assert.equal(dockFolded(peeking), false, 'peeked at, it shows')
+  assert.equal(peeking.tasks.dockCollapsed, true, 'the user\'s fold stays for when the peek ends')
+  assert.equal(dockFolded(reduce(peeking, { type: 'task_dock_peek', peek: false })), true)
 })
 
 test('pressed by the column, the dock steps away unless something waits on the user or failed', () => {

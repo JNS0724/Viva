@@ -64,7 +64,7 @@ export function renderTaskDock(container: HTMLElement, state: State, handlers: H
   const collapsed = dockFolded(state)
   const away = dockAway(state)
   const signature = JSON.stringify([collapsed, away, state.tasks.dockRoom, state.tasks.dockPeek, Math.floor(now / MINUTE_MS), shown.map(({ task, report }) =>
-    [task.id, task.status, task.now, task.title, task.permission?.requestId ?? null, task.question?.requestId ?? null, report?.preview ?? null])])
+    [task.id, task.status, task.now, task.title, task.permission?.requestId ?? null, task.question?.questionId ?? null, report?.preview ?? null])])
   if (rendered.get(container) === signature) return
   rendered.set(container, signature)
   container.hidden = shown.length === 0 || away
