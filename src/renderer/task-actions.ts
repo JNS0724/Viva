@@ -208,12 +208,13 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    */
   async function askTask(taskId: string, text: string) {
     const before = taskById(taskId)
-    if (!before) return
+    if (!before) return false
     dispatch({ type: 'task_asked', taskId, text, at: Date.now() })
     const result = await call(() => api.askTask(taskId, text))
-    if (result?.ok) return
+    if (result?.ok) return true
     dispatch({ type: 'task_ask_failed', task: before })
     showToast(result?.problem ?? '没能接着问')
+    return false
   }
 
   /** 接着做: it goes on in the background, from what it had said. */

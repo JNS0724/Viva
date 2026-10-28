@@ -1,5 +1,6 @@
 import { withFiles } from '../shared/attachments.ts'
 import { IMAGE_TYPES } from '../shared/images.ts'
+import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
 import { createDraftImages } from './draft-images.ts'
 import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
@@ -439,6 +440,10 @@ function revealRow(row: HTMLElement) {
  * @returns {boolean} false when the agent can't take it now
  */
 function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
+  if (text.length > MAX_MESSAGE_CHARS) {
+    historyActions.showToast(MESSAGE_TOO_LONG)
+    return false
+  }
   if ((!text && !images.length) || setupView(state.info) || state.switching || state.newTopicPending) return false
   if (images.length) return askWithImages(text, images, via)
   // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
@@ -665,6 +670,7 @@ const handlers = {
   /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
   async startInBackground() {
     const text = dom.input.value.trim()
+    if (text.length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     if (!text || setupView(state.info) || state.switching || state.newTopicPending) return dom.input.focus()
     dom.input.value = ''
     renderSendButton(dom, state)
@@ -685,6 +691,7 @@ const handlers = {
   skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
     if (setupView(state.info)) return handlers.openSettings()
+    if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     // 「#name 」 with no words yet (接着问 just wrote it): nothing to send, to the task or anywhere else.
     if (!state.question && mentionedTask(state, dom.input.value)?.text === '') return undefined
     const text = dom.input.value.trim()
@@ -800,11 +807,12 @@ const handlers = {
    */
   sendToTask(taskId: string, text: string) {
     const task = state.tasks.list.find((entry) => entry.id === taskId)
-    if (!task) return
-    if (task.question) taskActions.typeTaskAnswer(taskId, text)
-    else if (task.endedAt === null) taskActions.steerTask(taskId, text)
-    else taskActions.askTask(taskId, text)
+    if (!task) return false
+    if (task.question) return taskActions.typeTaskAnswer(taskId, text)
+    if (task.endedAt === null) return taskActions.steerTask(taskId, text)
+    return taskActions.askTask(taskId, text)
   },
+  inputProblem: (message: string) => historyActions.showToast(message),
   toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
   async setDeskIsland(on: boolean) {
     try {

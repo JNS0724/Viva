@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
@@ -55,7 +56,6 @@ import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
 
-const MAX_PROMPT_CHARS = 20_000
 const MAX_KEY_CHARS = 1_000
 /** dsh's stock ACP profile: used, without memory, when the app's own profile can't be written. */
 const FALLBACK_PROFILE = 'acp'

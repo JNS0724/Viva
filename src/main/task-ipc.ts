@@ -2,6 +2,7 @@ import type { Conversation } from './history-db.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import type { TaskRegistry } from './task-registry.ts'
+import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
 /**
  * Background tasks from the window (phase 3). While a turn runs, words about something else move it to the
@@ -9,7 +10,6 @@ import type { TaskRegistry } from './task-registry.ts'
  * folds there as a task, and the conversation goes on in a new segment with what came before it and the new
  * words. Undone, it all goes back as it was. The window keeps what the task says and saves it here.
  */
-const MAX_TEXT_CHARS = 20_000
 const MAX_TITLE_CHARS = 40
 
 export const TASK_PROBLEMS: Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } = Object.freeze({

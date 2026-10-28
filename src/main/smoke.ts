@@ -15,6 +15,7 @@ import { checkTimeline } from './smoke-timeline.ts'
 import { checkPerf } from './smoke-perf.ts'
 import { runShowcase } from './smoke-showcase.ts'
 import { checkComposition } from './smoke-composition.ts'
+import { checkInputBoundaries } from './smoke-input-boundaries.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -547,6 +548,7 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
       problems.push(...await checkTopics(win, outDir))
       problems.push(...await checkPermission(win, outDir))
       problems.push(...await checkComposition(win))
+      problems.push(...await checkInputBoundaries(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))
