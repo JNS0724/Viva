@@ -26,7 +26,8 @@ const cardState = (title: string) => `(() => {
 })()`
 /** The card once its task has ended, else nothing yet. */
 const doneCard = (title: string) => `(() => { const card = ${cardState(title)}; return card?.status === 'done' && card })()`
-const clickOnCard = (title: string, label: string) => `[...(${cardOf(title)}).querySelectorAll('button')].find((el) => el.textContent === ${JSON.stringify(label)}).click()`
+/** A button on the task's view of the 后台 page, by what it says (an approval's, a question's choice). */
+const pageButton = (label: string) => `[...document.querySelectorAll('#tasks-page .tp-main button')].find((el) => el.textContent.trim().startsWith(${JSON.stringify(label)}))`
 const pageState = `(() => {
   const page = document.getElementById('tasks-page')
   return {
@@ -38,6 +39,20 @@ const pageState = `(() => {
   }
 })()`
 const escape = `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`
+
+/** A task's line in the conversation has no buttons of its own: a click opens the task on the 后台 page. */
+async function openFromLine(win: SmokeWindow, title: string) {
+  await run(win, `(${cardOf(title)}).click()`)
+  return until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title === ${JSON.stringify(`#${title}`)} && seen })()`, `#${title} on the 后台 page`)
+}
+
+/** What a task waits on, answered where it is answered when the dock is not shown: its page, opened from its line. */
+async function answerOnPage(win: SmokeWindow, title: string, label: string) {
+  await openFromLine(win, title)
+  await until(win, `Boolean(${pageButton(label)})`, `「${label}」 on #${title}'s page`)
+  await run(win, `${pageButton(label)}.click()`)
+  await run(win, escape)
+}
 
 /** 后台做: the words typed go to a task of their own (the button beside 发送). */
 const startInBackground = (win: SmokeWindow, text: string) => run(win, `(() => {
@@ -119,6 +134,26 @@ async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   expect(page.title === `#${OTHER_ASK}` && page.rows.includes(OTHER_ASK) && page.act === '关掉这件' && page.said.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
     'the tail should open the 后台 page, the task shown whole', page)
   await capture(win, outDir, 'tasks-page')
+  // Its list folds to a narrow strip (« at its head) and unfolds from there (»); the task shown stays.
+  await run(win, `document.querySelector('#tasks-page .tp-side .tp-fold').click()`)
+  const folded = await until(win, `(() => {
+    const side = document.querySelector('#tasks-page .tp-side')
+    return side?.classList.contains('tp-side-folded') && { width: Math.round(side.getBoundingClientRect().width), rows: side.querySelectorAll('.tp-row').length, title: ${pageState}.title }
+  })()`, 'the list folded to its strip')
+  expect(folded.width <= 40 && folded.rows === 0 && folded.title === `#${OTHER_ASK}`, 'folded, the list should be a narrow strip and the task stay shown', folded)
+  await capture(win, outDir, 'tasks-list-folded')
+  await run(win, `document.querySelector('#tasks-page .tp-side .tp-fold').click()`)
+  await until(win, `(${pageState}).rows.length > 0`, 'the list unfolded again')
+  // One of the hub's pages: its sidebar stays, so 关于你 is a click away and 后台 a click back.
+  await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
+  const profile = await until(win, `(() => {
+    const hub = document.getElementById('hub')
+    const shown = document.querySelector('.hub-page[data-page="profile"]')
+    return hub.dataset.open === 'true' && shown && !shown.hidden && document.getElementById('tasks-page').hidden && { hub: hub.dataset.open }
+  })()`, '关于你 from the 后台 page, within the hub')
+  expect(profile, 'from the 后台 page, 关于你 should open in the same place')
+  await run(win, `document.querySelector('.hub-nav[data-page="tasks"]').click()`)
+  await until(win, `(() => { const seen = ${pageState}; return seen.open && !document.getElementById('tasks-page').hidden && seen })()`, 'back on the 后台 page')
   await run(win, escape)
   await wait(UI_WAIT_MS)
   const closed = await run(win, `({ open: document.getElementById('tasks-page').dataset.open, tabs: document.querySelectorAll('#drawer .tab-task').length })`)
@@ -157,8 +192,8 @@ async function offerSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   })`)
   expect(after.busy === 'false' && !after.asked.includes(BIG_ASK) && after.count === '1' && after.card?.status === 'waiting',
     'taken, the turn should go on in the background, its card asking, and the conversation be free', after)
-  // Done with: its approval declined on its card, the task ends.
-  await run(win, clickOnCard(BIG_ASK, '拒绝'))
+  // Done with: its approval declined (on its page, opened from its line), the task ends.
+  await answerOnPage(win, BIG_ASK, '拒绝')
   await until(win, `(${cardOf(BIG_ASK)})?.dataset.status === 'done'`, 'the task ending')
   await reportSteps(win, outDir, expect)
 }
@@ -166,16 +201,12 @@ async function offerSteps(win: SmokeWindow, outDir: string, expect: Expect) {
 const FOLLOW_UP = '刚才那件做得怎么样了'
 
 /**
- * 接着问 on an ended task's card: its page, the cursor in its input; sent, the task works again in its own
- * session and reports back once more, the conversation on screen left alone.
+ * An ended task asked again from its page (opened from its line): sent, the task works again in its own session
+ * and reports back once more, the conversation on screen left alone.
  */
 async function followUpSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  await run(win, clickOnCard(BIG_ASK, '接着问'))
-  const opened = await until(win, `(() => {
-    const seen = ${pageState}
-    return seen.open && seen.title && { ...seen, focused: document.activeElement?.classList.contains('tp-input') ?? false }
-  })()`, 'the task\'s page')
-  expect(opened.title === `#${BIG_ASK}` && opened.focused && opened.act === '关掉这件', '接着问 should open the task\'s page with the cursor in its input', opened)
+  const opened = await openFromLine(win, BIG_ASK)
+  expect(opened.act === '关掉这件', 'an ended task\'s page should offer to close it', opened)
   await run(win, `(() => {
     const field = document.querySelector('#tasks-page .tp-input')
     field.value = ${JSON.stringify(FOLLOW_UP)}
@@ -189,23 +220,35 @@ async function followUpSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-follow-up')
   await run(win, escape)
-  const card = await until(win, `(() => { const card = ${cardState(BIG_ASK)}; return card?.status === 'done' && card.text.includes(${JSON.stringify(FOLLOW_UP)}) && card })()`, 'the card after the follow-up')
-  expect(card.buttons.includes('接着问'), 'asked again, the task should report back once more on its card', card)
+  const card = await until(win, `(() => { const card = ${cardState(BIG_ASK)}; return card?.status === 'done' && card.text.includes(${JSON.stringify(FOLLOW_UP)}) && card })()`, 'the line after the follow-up')
+  expect(card.text.includes('看结果 →'), 'asked again, the task should report back once more on its line', card)
   const asked = await run(win, userTexts)
   expect(!asked.some((text: string) => text.includes(FOLLOW_UP)), 'the follow-up should not land in the conversation on screen', asked)
 }
 
-/** An ended task reports back on its card; 接着问 asks it again; 详情 → opens its page, and 关掉这件 puts it away. */
+/**
+ * An ended task reports back on its line, one quiet row with no buttons of its own; asked again from its page;
+ * opened from its line once more, 关掉这件 puts it away.
+ */
 async function reportSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   const report = await until(win, doneCard(BIG_ASK), 'the task\'s report')
-  expect(report.text.includes('做完了') && report.buttons.join() === '详情 →,接着问,×', 'the ended task\'s card should say so, with what to do next', report)
+  expect(report.text.includes('做完了') && report.text.includes('看结果 →') && report.buttons.length === 0,
+    'the ended task\'s line should say so and lead to its result, with no buttons of its own', report)
   await run(win, `(${cardOf(BIG_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-report')
+  // The island's tail (✓ N 做完了) stays inside it, a long task name giving way (…) instead.
+  const tail = await run(win, `(() => {
+    const island = document.querySelector('#island .isl')?.getBoundingClientRect()
+    const cell = document.querySelector('#island .isl-bg')?.getBoundingClientRect()
+    return island && cell ? { islandRight: Math.round(island.right), tailRight: Math.round(cell.right), text: document.querySelector('#island .isl-bg').textContent } : null
+  })()`)
+  expect(!tail || tail.tailRight <= tail.islandRight, 'the island\'s tail should stay inside the island', tail)
   await followUpSteps(win, outDir, expect)
-  await run(win, clickOnCard(BIG_ASK, '详情 →'))
-  const page = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title && seen })()`, 'the task\'s page')
-  expect(page.title === `#${BIG_ASK}` && page.act === '关掉这件', '详情 → should open the task\'s page', page)
+  const page = await openFromLine(win, BIG_ASK)
+  expect(page.act === '关掉这件', 'its line should open the task\'s page', page)
+  expect(await run(win, `document.getElementById('hub').dataset.open === 'true' && document.querySelector('.hub-nav[data-page="tasks"]')?.getAttribute('aria-current') === 'page'`),
+    'the 后台 page should be one of the hub\'s, its sidebar there with 后台 marked')
   await capture(win, outDir, 'tasks-closing')
   await run(win, `document.querySelector('#tasks-page .tp-act').click()`)
   const after = await until(win, `(() => {
@@ -219,16 +262,19 @@ async function reportSteps(win: SmokeWindow, outDir: string, expect: Expect) {
 const ASKS_LATER = '接入演示服务，再问我城市'
 
 /**
- * A task asks something after it went to the background: its card asks it, named, and is answered there;
- * the task carries on to its end and reports back.
+ * A task asks something after it went to the background: its line says it waits and leads to its page, where
+ * it is answered; the task carries on to its end and reports back.
  */
 async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await startInBackground(win, ASKS_LATER)
-  const asking = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card })()`, 'the task\'s approval on its card')
-  expect(asking.buttons.includes('允许') && asking.buttons.includes('拒绝') && asking.text.includes('等你确认'), 'the task\'s approval should be asked on its card', asking)
-  // Its page has the approval too, and its steps unfold there.
-  await run(win, clickOnCard(ASKS_LATER, '详情 →'))
-  await until(win, `(${pageState}).title === ${JSON.stringify(`#${ASKS_LATER}`)}`, 'the waiting task\'s page')
+  const asking = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card })()`, 'the task waiting on its approval')
+  expect(asking.text.includes('等你处理') && asking.text.includes('去处理 →') && asking.buttons.length === 0,
+    'the task\'s line should say it waits and lead to where it is answered, with no buttons of its own', asking)
+  await run(win, `(${cardOf(ASKS_LATER)}).scrollIntoView({ block: 'center' })`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'tasks-line-waiting')
+  // Its page has the approval, and its steps unfold there.
+  await openFromLine(win, ASKS_LATER)
   await run(win, `document.querySelector('#tasks-page .tp-toggle')?.click()`)
   await wait(UI_WAIT_MS)
   const onPage = await run(win, `({
@@ -239,16 +285,19 @@ async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expe
   expect(onPage.asks && onPage.act === '停下' && onPage.steps.some((title: string) => title.includes('viva_mcp_add') || title.includes('请求你确认')),
     'a waiting task\'s page should show its approval and unfold its steps', onPage)
   await capture(win, outDir, 'tasks-page-waiting')
+  // Declined there, the task goes on to ask which city.
+  await run(win, `${pageButton('拒绝')}.click()`)
   await run(win, escape)
-  // Declined on its card, the task goes on to ask which city.
-  await run(win, clickOnCard(ASKS_LATER, '拒绝'))
-  // Its name says 城市 too: wait for the question itself, with its choices on the card.
+  // Its name says 城市 too: wait for the question itself on its line, its choices on its page.
   const card = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card.text.includes('哪个城市') && card })()`, "the task's question")
-  expect(card.status === 'waiting' && card.buttons.includes('上海') && card.buttons.includes('北京'), "the task's question should be asked on its card, named", card)
-  await run(win, `(${cardOf(ASKS_LATER)}).scrollIntoView({ block: 'center' })`)
+  expect(card.text.includes('去处理 →'), "the task's question should be said on its line", card)
+  await openFromLine(win, ASKS_LATER)
+  const choices = await until(win, `Boolean(${pageButton('上海')}) && Boolean(${pageButton('北京')})`, "the question's choices on its page")
+  expect(choices, "the task's question should be answered on its page")
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-question')
-  await run(win, clickOnCard(ASKS_LATER, '上海'))
+  await run(win, `${pageButton('上海')}.click()`)
+  await run(win, escape)
   const report = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'done' && card.text })()`, "the task's report after the answer")
   expect(report.includes('按上海来看'), 'answered, the task should carry on and report what it said', report)
   const asked = await run(win, userTexts)
@@ -277,8 +326,7 @@ async function startSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `(${cardOf(ON_ITS_OWN)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-started')
-  await run(win, clickOnCard(ON_ITS_OWN, '详情 →'))
-  const details = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title === ${JSON.stringify(`#${ON_ITS_OWN}`)} && seen })()`, 'the original request in task details')
+  const details = await openFromLine(win, ON_ITS_OWN)
   expect(details.said.includes(ON_ITS_OWN), 'task details should retain the original request', details)
   await run(win, escape)
 }
@@ -341,7 +389,10 @@ const RESTORED_ASK = '后来呢'
  * asked again there, a task's session is taken up first, and it answers on its page.
  */
 async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  await run(win, `document.querySelector('#island .isl-bg').click()`)
+  // Seen last time, they are not reminded of at the island's tail any more: the 后台 page from the hub's sidebar.
+  await run(win, `document.getElementById('open-profile').click()`)
+  await until(win, `document.getElementById('hub').dataset.open === 'true'`, 'the hub')
+  await run(win, `document.querySelector('.hub-nav[data-page="tasks"]').click()`)
   const page = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.rows.length && seen })()`, 'the 后台 page after the relaunch')
   expect(page.rows.includes(ASKS_LATER) && page.rows.includes(ON_ITS_OWN), 'tasks that ended last time should be back on the 后台 page', page.rows)
   await run(win, `[...document.querySelectorAll('#tasks-page .tp-row')].find((el) => el.querySelector('.tp-name').textContent === ${JSON.stringify(ASKS_LATER)}).click()`)
@@ -352,6 +403,12 @@ async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     field.closest('form').requestSubmit()
   })()`)
   await until(win, `(${pageState}).said.some((text) => text.includes('收到：「${RESTORED_ASK}」'))`, 'the task from last time answering')
+    .catch(async (err) => {
+      // Where the page stood instead, and a picture of it.
+      await capture(win, outDir, 'tasks-restored-stuck')
+      const toast = await run(win, `document.getElementById('toast')?.textContent ?? ''`)
+      throw new Error(`${err.message}: ${JSON.stringify({ page: await run(win, pageState), toast })}`)
+    })
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-restored')
   await run(win, escape)

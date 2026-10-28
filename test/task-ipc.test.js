@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openHistoryDb } from '../src/main/history-db.ts'
-import { registerTaskIpc } from '../src/main/task-ipc.ts'
+import { KEEP_ENDED, registerTaskIpc } from '../src/main/task-ipc.ts'
 
 /**
  * Background tasks from the window (phase 3): while a turn runs, words about something else move that turn to
@@ -181,14 +181,18 @@ test('at the next launch tasks that had ended come back with what they said; ask
 
 test('a task that ended and cannot be taken up says so; only the latest few ended tasks are kept', async () => {
   const old = (i) => ({ id: `old${i}`, segmentId: 'c1', title: `旧的 ${i}`, words: `旧的 ${i}`, keep: 0, next: 'c1', cwd: '/w', startedAt: i, endedAt: i, status: 'done' })
-  const { call, relaunch, kept } = setup({ resumable: { ok: false, reason: 'missing' }, stored: [1, 2, 3, 4, 5].map(old) })
+  const olds = Array.from({ length: KEEP_ENDED }, (_, i) => old(i + 1))
+  const { call, relaunch, kept } = setup({ resumable: { ok: false, reason: 'missing' }, stored: olds })
   const { task } = await call('task:spin-off', { words: '整理发布说明', keep: 2, text: '周会几点' })
   await call('task:save', task.id, [user('整理发布说明'), answer('写好了')], { ended: true, status: 'done' })
-  assert.deepEqual(kept().map((entry) => entry.id).sort(), ['old2', 'old3', 'old4', 'old5', task.id].sort(), 'the oldest is let go')
+  assert.deepEqual(kept().map((entry) => entry.id).sort(), [...olds.slice(1).map((entry) => entry.id), task.id].sort(), 'the oldest is let go')
 
-  const refused = await relaunch().call('task:ask', 'old5', '再说说')
+  const refused = await relaunch().call('task:ask', `old${KEEP_ENDED}`, '再说说')
   assert.equal(refused.ok, false)
   assert.match(refused.problem, /接不上/)
+  // One let go while the window still listed it: said the same way, not thrown.
+  const letGo = await relaunch().call('task:ask', 'old1', '再说说')
+  assert.deepEqual([letGo.ok, /接不上/.test(letGo.problem)], [false, true])
 })
 
 test('a task let go is not offered again; one dsh cannot take up is said so', async () => {

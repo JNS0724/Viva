@@ -19,7 +19,7 @@ export function dockTagWords(summary: ReturnType<typeof dockSummary>): string {
   if (summary.waiting || summary.failed) {
     return [
       summary.waiting ? `${summary.waiting} 件等你处理` : null,
-      summary.failed ? `${summary.failed} 件出错` : null,
+      summary.failed ? `${summary.failed} 件出错了` : null,
       working ? `${working} 在后台` : null,
     ].filter(Boolean).join(' · ')
   }

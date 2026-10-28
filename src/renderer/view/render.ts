@@ -121,7 +121,7 @@ let renderedTasksPage: unknown[] = []
 
 /** The 后台 page depends on the tasks, the follow-ups and on itself; a task at work changes it as it goes. */
 function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
-  const inputs = [state.tasks.list, state.tasks.page, state.followups]
+  const inputs = [state.tasks.list, state.tasks.page, state.followups, state.tasks.listFolded]
   if (inputs.every((value, i) => value === renderedTasksPage[i])) return
   renderedTasksPage = inputs
   renderTasksPage(container, state, handlers, now)

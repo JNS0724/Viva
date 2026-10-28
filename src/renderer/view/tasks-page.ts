@@ -1,5 +1,5 @@
 import { traceItems } from '../selectors.ts'
-import { pageGroups, pageTask } from '../tasks-state.ts'
+import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage, SUGGESTION_KEY } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
 import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
@@ -11,36 +11,20 @@ import { followupDetail, followupStanding, suggestionDetail, whenText } from './
  * (待你看的 first: drafts prepared in the background; then what is being prepared, then what is scheduled); on
  * the right the one picked, its whole conversation as the thread shows one, its steps folded under it, and its
  * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
- * draft and what can be done with it. Same place as 搜索 · 关于你 · 设置.
+ * draft and what can be done with it. One of the hub's pages, beside 回顾 · 关于你 · 设置.
  */
-const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你确认', running: '在做', ended: '做完了' }
+const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你处理', running: '在后台', ended: '做完了' }
 const LIVE = new Set(['running', 'waiting'])
-/** Follow-ups on the page are picked by this prefix, beside the tasks' ids. */
-export const FOLLOWUP_KEY = 'followup:'
-/** And the messages suggested for one by this. */
-export const SUGGESTION_KEY = 'suggestion:'
+export { FOLLOWUP_KEY, SUGGESTION_KEY }
 const FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', '待你看的'], ['preparing', '在准备'], ['scheduled', '已安排']]
-const LISTED_STATUSES = new Set(FOLLOWUP_GROUPS.map(([status]) => status))
-
-/** The keys on the list at the left, in its order: messages to decide on, follow-ups by group, then the tasks. */
-function listedKeys(state: State): string[] {
-  const suggestions = state.followups.suggestions.filter((item: Untyped) => item.status === 'open').map((item: Untyped) => `${SUGGESTION_KEY}${item.id}`)
-  const followups = FOLLOWUP_GROUPS.flatMap(([status]) => state.followups.followups
-    .filter((item: Untyped) => item.status === status && LISTED_STATUSES.has(item.status))
-    .map((item: Untyped) => `${FOLLOWUP_KEY}${item.id}`))
-  const tasks = pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
-  return [...suggestions, ...followups, ...tasks]
-}
 
 /**
  * The page as it is drawn: what was picked, while it is still on the list; once it is gone from there (deleted,
  * answered, taken up), the first one on the list, so the right never shows what the left no longer has.
  */
 export function onPage(state: State): State {
-  const keys = listedKeys(state)
-  const selected = state.tasks.page.selected
-  const picked = selected && keys.includes(selected) ? selected : keys[0] ?? null
-  return picked === selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
+  const picked = shownOnPage(state)
+  return picked === state.tasks.page.selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
 }
 
 /** Messages that may need the user, first: they wait on a decision. */
@@ -84,11 +68,34 @@ function prepareLine(state: State, now: number) {
   return null
 }
 
+/**
+ * Folded by the user: a narrow strip where the list was, » to unfold it, and how many wait on the user so none
+ * is missed while it is folded.
+ */
+function foldedSide(state: State, handlers: Handlers) {
+  const waiting = state.tasks.list.filter((task) => task.status === 'waiting').length
+  return h('nav', { class: 'tp-side tp-side-folded', 'aria-label': '后台任务' },
+    h('button', {
+      class: 'icon-btn tp-fold', type: 'button', title: '展开后台任务', 'aria-label': '展开后台任务', 'aria-expanded': 'false',
+      onClick: () => handlers.foldTaskList(false),
+    }, h('span', { text: '»', 'aria-hidden': 'true' })),
+    waiting ? h('span', { class: 'tp-count', title: `${waiting} 件等你处理`, text: String(waiting) }) : null)
+}
+
+/**
+ * The list beside the hub's own sidebar (返回 and the other pages stay there, as on every page of the hub), « at
+ * its head to fold it to a strip; the user's choice, kept, for the list is not looked at often.
+ */
 function sideView(state: State, handlers: Handlers, now: number) {
+  if (state.tasks.listFolded) return foldedSide(state, handlers)
   const selected = state.tasks.page.selected
-  return h('nav', { class: 'hub-side tp-side', 'aria-label': '后台任务' },
-    h('button', { class: 'hub-back', type: 'button', onClick: () => handlers.closeHub() },
-      icon('back', 16), '返回', h('kbd', { text: 'Esc' })),
+  return h('nav', { class: 'tp-side', 'aria-label': '后台任务' },
+    h('div', { class: 'tp-side-head' },
+      h('span', { class: 'tp-side-title', text: '后台任务' }),
+      h('button', {
+        class: 'icon-btn tp-fold', type: 'button', title: '收起列表', 'aria-label': '收起列表', 'aria-expanded': 'true',
+        onClick: () => handlers.foldTaskList(true),
+      }, h('span', { text: '«', 'aria-hidden': 'true' }))),
     prepareLine(state, now),
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),

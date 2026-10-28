@@ -4,12 +4,14 @@ import { formatListTime } from '../selectors.ts'
 import { h } from './dom.ts'
 
 /**
- * One card a background task in the conversation, under the words that started it, changing in place as it
- * goes: at work (停下 / 详情 →), waiting on the user (answered right there when it can be), ended (详情 → /
- * 接着问 / ×). One quiet look for every state: the words say where it stands, and the only colour is the
- * button that answers it. 详情 → is the 后台 page, on this task (view/tasks-page.js).
+ * A background task, said the same way everywhere (its line in the conversation, its row in the dock, the 后台
+ * page): 在后台, 等你处理, 做完了, 出错了, 停下了, 已中断. It is answered in one place, the dock (or, the
+ * dock not shown, the 后台 page); the conversation keeps one quiet line per task, under the words that started
+ * it, which leads to its page (view/tasks-page.ts).
  */
-const SAID: Readonly<Record<string, string>> = { running: '后台在做', done: '做完了', stopped: '停下了', error: '出错了', interrupted: '已中断' }
+export const SAID: Readonly<Record<string, string>> = {
+  running: '在后台', waiting: '等你处理', done: '做完了', stopped: '停下了', error: '出错了', interrupted: '已中断',
+}
 const LIVE = new Set(['running', 'waiting'])
 const MINUTE_MS = 60_000
 
@@ -18,9 +20,9 @@ const minutesSince = (at: number | undefined, now: number) => {
   return minutes < 1 ? '刚开始' : `${minutes} 分钟`
 }
 
-/** Where a task stands, in a few words: its line on the 后台 page, the head of its page, its card. */
+/** Where a task stands, in a few words: its line on the 后台 page, the head of its page. */
 export function standing(task: BackgroundTask, now: number): string {
-  if (task.status === 'waiting') return task.question ? '等你回答' : '等你确认'
+  if (task.status === 'waiting') return SAID.waiting
   if (task.status === 'running') return [task.now, minutesSince(task.startedAt, now)].filter(Boolean).join(' · ')
   return `${SAID[task.status] ?? SAID.done} · ${formatListTime(task.endedAt ?? now, now)}`
 }
@@ -30,15 +32,15 @@ export const statusMark = (status: string) => h('span', { class: 'task-mark', 'd
 
 const button = (text: string, onClick: () => void, kind = 'secondary') => h('button', { class: `btn btn-${kind} task-report-open`, type: 'button', text, onClick })
 
-/** What the card says of where a task stands, its line, and the buttons that answer it. */
+/** What a task's row says of where it stands, its line, and the buttons that answer it. */
 type CardParts = { said: string, line: string, actions: HTMLButtonElement[] }
 
 /** What it waits on, and the buttons that answer it here; a question with more than one choice is answered on its page. */
 function waitingParts(task: BackgroundTask, handlers: Handlers): CardParts {
   if (task.permission) {
     return {
-      said: '等你确认',
-      line: permissionCard(task.permission).title,
+      said: SAID.waiting,
+      line: `确认${permissionCard(task.permission).title}`,
       actions: promptButtons(task.permission.options).map((option) => button(optionName(option),
         () => handlers.respond(task.permission.requestId, option.optionId), option.role === 'primary' ? 'primary' : 'secondary')),
     }
@@ -46,14 +48,14 @@ function waitingParts(task: BackgroundTask, handlers: Handlers): CardParts {
   const [first]: QuestionItem[] = task.question?.questions ?? []
   const single = task.question?.questions.length === 1 && !first.multiSelect
   return {
-    said: '等你回答',
+    said: SAID.waiting,
     line: first?.question ?? '',
     actions: single ? first.options.map((option) => button(option.label, () => handlers.pickTaskOption(task.id, first.id, option.label))) : [],
   }
 }
 
 function partsOf(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): CardParts {
-  if (task.status === 'interrupted') return { said: '已中断', line: '助手断开，任务尚未恢复', actions: [button('接着做', () => handlers.resumeUnfinished(task.id))] }
+  if (task.status === 'interrupted') return { said: SAID.interrupted, line: '助手断开，任务尚未恢复', actions: [button('接着做', () => handlers.resumeUnfinished(task.id))] }
   if (task.status === 'waiting') return waitingParts(task, handlers)
   if (task.status === 'running') {
     const line = [task.now, `已 ${minutesSince(task.startedAt, now)}`].filter(Boolean).join(' · ')
@@ -62,47 +64,49 @@ function partsOf(task: BackgroundTask, report: TaskReport | null, handlers: Hand
   return { said: SAID[task.status] ?? SAID.done, line: report?.preview ?? '', actions: [button('接着问', () => handlers.followUpTask(task.id))] }
 }
 
-/** @param report what it came back with, once it ended */
+/** Where the line in the conversation leads: to answer it, to see how it goes, to read what it came back with. */
+const LEADS: Readonly<Record<string, string>> = { waiting: '去处理 →', interrupted: '去处理 →', running: '看看 →' }
+
+/**
+ * A task's line in the conversation, under the words that started it, changing in place as it goes: where it
+ * stands and one line of it. No buttons of its own: a click opens its page, where it is answered, followed up
+ * or closed. Waiting on the user, it stands out (the dock, or its tag, has the buttons).
+ * @param report what it came back with, once it ended
+ */
 export function taskCard(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): HTMLElement {
-  const open = button('详情 →', () => handlers.openTasks(task.id))
   const parts = partsOf(task, report, handlers, now)
-  const ended = !LIVE.has(task.status)
-  return h('div', { class: 'task-report task-card', role: 'status', 'data-status': task.status, 'data-task': task.id },
-    h('div', { class: 'task-report-main' },
-      h('b', { class: 'task-report-head' }, statusMark(task.status), h('span', { class: 'task-name', text: `#${task.title}` }), h('span', { class: 'task-state', text: parts.said })),
-      parts.line ? h('span', { class: 'task-report-text', text: parts.line }) : null),
-    ...(ended ? [open, ...parts.actions] : [...parts.actions, open]),
-    ended ? h('button', { class: 'icon-btn task-report-x', type: 'button', 'aria-label': '收起', text: '×', onClick: () => handlers.dismissReport(task.id) }) : null)
+  return h('button', {
+    class: 'task-line task-card', type: 'button', 'data-status': task.status, 'data-task': task.id,
+    title: '在后台页打开', onClick: () => handlers.openTasks(task.id),
+  },
+  statusMark(task.status),
+  h('span', { class: 'task-name', text: `#${task.title}` }),
+  h('span', { class: 'task-state', text: parts.said }),
+  parts.line ? h('span', { class: 'task-line-text', text: parts.line }) : null,
+  h('span', { class: 'task-line-go', text: LEADS[task.status] ?? '看结果 →' }))
 }
 
 /**
- * The same task in the dock (view/task-dock.ts): its name and where it stands over the line and the buttons that
- * answer it, stacked to fit a narrow card. Ended, × puts it away from the dock only; its card in the conversation stays.
+ * The same task in the dock (view/task-dock.ts), where it is answered: its name and where it stands over the
+ * line and the buttons that answer it, stacked to fit a narrow panel. Ended, it leaves the dock once seen (opened
+ * on the 后台 page, by 详情 or 接着问 or anywhere else; the page covers the dock meanwhile, so it is gone by the time
+ * the user is back) or put away unseen by 知道了; its line in the conversation stays as the history.
  */
 export function taskTile(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): HTMLElement {
   const parts = partsOf(task, report, handlers, now)
   const ended = !LIVE.has(task.status) && task.status !== 'interrupted'
   const open = h('button', { class: 'btn btn-text dock-open', type: 'button', text: '详情', onClick: () => handlers.openTasks(task.id) })
-  const tile = h('div', { class: 'dock-tile', role: 'status', 'data-status': task.status, 'data-task': task.id },
-    h('div', { class: 'dock-tile-head' },
-      statusMark(task.status), h('span', { class: 'task-name', text: `#${task.title}` }),
-      ended ? h('button', { class: 'icon-btn dock-hide', type: 'button', 'aria-label': '从这里收起', text: '×', onClick: () => handlers.hideFromDock(task.id) }) : null),
+  const seen = ended ? h('button', { class: 'btn btn-text dock-seen', type: 'button', text: '知道了', onClick: () => handlers.hideFromDock(task.id) }) : null
+  return h('div', { class: 'dock-tile', role: 'status', 'data-status': task.status, 'data-task': task.id },
+    h('div', { class: 'dock-tile-head' }, statusMark(task.status), h('span', { class: 'task-name', text: `#${task.title}` })),
     h('span', { class: 'dock-tile-said', text: [parts.said, task.status === 'running' ? null : parts.line].filter(Boolean).join('：') }),
     task.status === 'running' && parts.line ? h('span', { class: 'dock-tile-line', text: parts.line }) : null,
-    h('div', { class: 'dock-tile-acts' }, ...parts.actions, open))
-  // An ended task opened from here (详情, 接着问) has been seen: it leaves the dock; a new result brings it back.
-  if (ended) {
-    tile.addEventListener('click', (event) => {
-      const button = (event.target as Element).closest('button')
-      if (button && !button.classList.contains('dock-hide')) handlers.hideFromDock(task.id)
-    })
-  }
-  return tile
+    h('div', { class: 'dock-tile-acts' }, ...parts.actions, open, seen))
 }
 
 /**
- * The tasks with a card in the conversation now: those at work or waiting, and those that ended while what
- * they came back with is still shown (until put away), each with that report.
+ * The tasks with a line in the conversation now: those at work or waiting, and those that ended while what
+ * they came back with is still shown, each with that report.
  */
 export function cardedTasks(state: State): Array<{ task: BackgroundTask, report: TaskReport | null }> {
   const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])])])

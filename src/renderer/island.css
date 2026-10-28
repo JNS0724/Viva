@@ -57,7 +57,8 @@
 .isl-head:disabled { cursor: default; }
 /* Ending in the progress ring, the ring sits in the right end the way the cat sits in the left. */
 .isl-head:has(> .isl-ring:last-child) { padding-right: calc((var(--isl-head) - 3px - 16px) / 2); }
-.isl-label { flex: none; font-size: 14px; font-weight: 700; }
+/* The label gives way (…) before the tail does: a long task name never pushes 「✓ 4 做完了」 out of the island. */
+.isl-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 700; }
 .isl[data-host="desk"] .isl-label { font-size: 15px; }
 .isl[data-tone="waiting"] .isl-label { color: var(--orange); }
 .isl[data-tone="error"] .isl-label { color: var(--red); }
@@ -108,7 +109,7 @@
 
 /* Tasks in the background (view/island-tasks.js): a cell at the tail, a dot a task; opened, a line each. */
 .isl-bg {
-  flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 2px; padding-left: 10px;
+  flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 2px; padding-left: 10px; white-space: nowrap;
   border-left: 1px solid var(--line-2); font-size: 12px; color: var(--ink-2);
 }
 .isl-bg b { font: 700 13px var(--font-mono); color: var(--ink); }
@@ -117,8 +118,12 @@
 /* All ended: quieter; tasks waiting beside what the island shows: the one colour that asks for the user. */
 .isl-bg-done b { color: var(--ink-2); }
 .isl-bg-waits b, .isl-bg-waits span { color: var(--orange); }
-.isl-dots { display: inline-flex; gap: 3px; }
-.isl-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+/* At work in the background: a small turning ring before how many (the same sign as a task's own, view/task-card). */
+.isl-bg-ring {
+  flex: none; width: 10px; height: 10px; box-sizing: border-box; border-radius: 50%;
+  border: 1.5px solid var(--accent); border-top-color: transparent; animation: isl-spin 1.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .isl-bg-ring { animation: none; } }
 .isl-task { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--orange); font-size: 12px; font-weight: 600; }
 .isl-panel .isl-task { align-self: flex-start; }
 .isl-bg-list { display: flex; flex-direction: column; gap: 8px; }

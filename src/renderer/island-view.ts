@@ -1,7 +1,7 @@
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
 import { catMood, currentAction, traceItems, truncate } from './selectors.ts'
-import { liveTasks, offeredBackground, spinOffTarget } from './tasks-state.ts'
+import { liveTasks, offeredBackground, spinOffTarget, unseenEnded } from './tasks-state.ts'
 
 /**
  * What the Viva island shows, for both of its hosts: the capsule in the window's title bar (view/island.js)
@@ -104,7 +104,8 @@ function backgroundOf(state: State): IslandBackground | null {
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),
       ...(task.question ? { question: questionView(task.question) } : {}),
     }))
-  const done = state.tasks.list.length - live.length
+  // Ended and not yet seen: once opened on the 后台 page (or put away), no longer counted.
+  const done = unseenEnded(state).length
   return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, done, items }
 }
 

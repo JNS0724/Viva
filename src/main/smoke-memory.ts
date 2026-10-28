@@ -61,7 +61,10 @@ async function questionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await wait(UI_WAIT_MS)
   const thread = await run(win, `({
     asked: [...document.querySelectorAll('.msg-answer .msg-asked')].at(-1)?.textContent ?? '',
-    answer: [...document.querySelectorAll('.msg-answer')].at(-1)?.lastChild?.textContent ?? '',
+    // The answer's own text: not the question above it, nor the star a message gets once drawn (view/star-buttons).
+    answer: [...([...document.querySelectorAll('.msg-answer')].at(-1)?.childNodes ?? [])]
+      .filter((node) => !node.classList?.contains('msg-asked') && !node.classList?.contains('star-btn'))
+      .map((node) => node.textContent).join('').trim(),
     reply: [...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? '',
     card: Boolean(document.querySelector('.ask')),
   })`)
