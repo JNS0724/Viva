@@ -29,18 +29,28 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
 }) {
   const report = (what: string) => (err: unknown) => showToast(`${what}：${errorMessage(err)}`)
   let starsAsked = ''
+  /** Counts the lists asked for: an answer to any but the latest is out of date (another filter, the page opened again). */
+  let asked = 0
 
+  /**
+   * A page of topics for the filter shown. A first page is always asked for, even while another answer is on its
+   * way, and only the latest one asked for is kept: switching 全部 → 带文件 quickly never shows the 全部 list under
+   * 带文件, nor goes on from its last topic. A next page waits for the one on its way.
+   */
   async function loadReview(fresh: boolean) {
     const { review } = getState()
-    if (review.loading || (!fresh && !review.hasMore)) return
+    if (!fresh && (review.loading || !review.hasMore)) return
+    const mine = ++asked
     dispatch({ type: 'review_loading' })
     try {
       // The next page goes on after the last topic listed: its time and id, as others may share that moment.
       const last = fresh ? undefined : review.topics.at(-1)
       const filter = review.filter === 'tasks' || review.filter === 'files' ? review.filter : 'all'
       const page = await api.reviewTimeline(last ? { lastAt: last.lastAt, topicId: last.id } : null, filter)
+      if (mine !== asked) return
       dispatch({ type: 'review_loaded', topics: page.topics, hasMore: page.hasMore, fresh })
     } catch (err) {
+      if (mine !== asked) return
       dispatch({ type: 'review_failed' })
       report('回顾读取失败')(err)
     }

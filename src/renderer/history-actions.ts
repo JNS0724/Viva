@@ -1,11 +1,15 @@
+import type { VerifiedMessage } from './timeline-search.ts'
+
 const SEARCH_DEBOUNCE_MS = 200
 const TOAST_MS = 3000
 
 /** The 搜索 page (⌘F; view/hub.js), the toasts, and the trace of a restored conversation. */
-export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, revealOnScreen, openInReview }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
+export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, locate, revealOnScreen, openInReview }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
   searchField: HTMLInputElement,
-  /** When the message is on screen in the timeline (timeline-search.ts hitTarget): what scrolls to it; else null. */
-  revealOnScreen: (hit: SearchHit) => (() => void) | null,
+  /** Where the message named is now (history-db.ts locate). */
+  locate: (hit: SearchHit) => Promise<{ status: string, segmentId: string, seq?: number | null, messageId?: number }>,
+  /** When a message the history found is on screen in the timeline (timeline-search.ts hitTarget): what scrolls to it. */
+  revealOnScreen: (found: VerifiedMessage) => (() => void) | null,
   /** Reads the message in 回顾 where it is kept (review-actions.ts openRef). */
   openInReview: (hit: SearchHit) => Promise<void>,
 }) {
@@ -19,6 +23,21 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
     setTimeout(() => dispatch({ type: 'toast_hide', key }), ms)
   }
   const report = (what: string) => (err: unknown) => showToast(`${what}：${errorMessage(err)}`)
+
+  /**
+   * What scrolls to the message on screen, only once the history has found that very message where it is now (by
+   * its id): a place alone may hold another message by now. Anything else (missing, deleted, not on screen, the
+   * history not answering) is left to 回顾, which says which it is.
+   */
+  async function onScreen(hit: SearchHit) {
+    try {
+      const located = await locate(hit)
+      if (located.status !== 'found' || typeof located.seq !== 'number' || typeof located.messageId !== 'number') return null
+      return revealOnScreen({ segmentId: located.segmentId, seq: located.seq, messageId: located.messageId })
+    } catch {
+      return null
+    }
+  }
 
   /** Searching finds messages anywhere in the one timeline (history-db.js searchMessages). */
   async function runSearch(query: string) {
@@ -68,7 +87,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
      * anything else is read in 回顾 where it is kept, however far back, without reading the timeline back for it.
      */
     async jumpToHit(hit: SearchHit) {
-      const reveal = revealOnScreen(hit)
+      const reveal = await onScreen(hit)
       if (reveal) {
         dispatch({ type: 'history_close' })
         return reveal()

@@ -78,6 +78,26 @@ test('a star on the talk a moved turn shares is found by reading that segment wh
   assert.deepEqual(revealed, ['moved-0'])
 })
 
+test('switching filters while a list is on its way shows only the list for the filter chosen last', async () => {
+  const answers: Array<{ filter: string, answer: (page: { topics: unknown[], hasMore: boolean }) => void }> = []
+  const { actions, state } = setup({
+    reviewTimeline: (_after, filter) => new Promise((resolve) => { answers.push({ filter: String(filter), answer: resolve }) }),
+  })
+  const topic = (id: string) => ({ id, title: id, startedAt: 1, lastAt: 1, turns: 1, hasFiles: false, stars: 0, cwds: [], segments: [id], head: id, tasks: [] })
+
+  actions.refreshReview()
+  actions.reviewFilter('files')
+  assert.deepEqual(answers.map((a) => a.filter), ['all', 'files'], 'the filter chosen is asked for even while 全部 is on its way')
+  answers[1].answer({ topics: [topic('with-file')], hasMore: false })
+  await new Promise((resolve) => setImmediate(resolve))
+  answers[0].answer({ topics: [topic('everything'), topic('else')], hasMore: true })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(state().review.filter, 'files')
+  assert.deepEqual(state().review.topics.map((t) => t.id), ['with-file'], 'the late 全部 answer is dropped')
+  assert.deepEqual([state().review.hasMore, state().review.loading], [false, false])
+})
+
 test('another filter reads the topics again for it; 收藏 reads the stars', async () => {
   const filters: unknown[] = []
   let starred = 0

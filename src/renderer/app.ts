@@ -262,8 +262,10 @@ const historyActions = createHistoryActions({
   dispatch,
   searchField: dom.historySearch,
   errorMessage,
-  revealOnScreen: (hit: SearchHit) => {
-    const target = hitTarget(state, hit)
+  locate: (hit: SearchHit) => api.locateMessage(hit.messageId === undefined
+    ? { segmentId: hit.segmentId, seq: hit.seq } : { segmentId: hit.segmentId, seq: hit.seq, messageId: hit.messageId }),
+  revealOnScreen: (found) => {
+    const target = hitTarget(state, found)
     return target ? () => revealMessage(target.msgId) : null
   },
   openInReview: (hit: SearchHit) => reviewActions.openRef(hit),
