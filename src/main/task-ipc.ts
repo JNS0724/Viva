@@ -27,7 +27,11 @@ const GO_ON = '刚才 Viva 关掉了，请接着做没做完的事。'
 /** Without a store (tests that do not need one), nothing is kept between launches. */
 const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remove: () => {} })
 /** Tasks that ended stay to be asked again (接着问), across launches too: the latest few, until closed. */
-const KEEP_ENDED = 5
+/**
+ * Ended tasks kept to be asked again, the latest so many: the user no longer closes each one once read (a task
+ * seen stops reminding), so enough are kept that the 后台 page's 做完了 rarely offers one already let go.
+ */
+export const KEEP_ENDED = 30
 const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
@@ -202,7 +206,8 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   async function ask(taskId: string, text: unknown) {
     if (!isText(text)) throw new Error('invalid task request')
     const kept = store.list().find((entry) => entry.id === taskId)
-    if (!kept) throw new Error('no such task')
+    // Let go since the window listed it (beyond the latest kept): said plainly, not as an error.
+    if (!kept) return { ok: false, problem: TASK_PROBLEMS.gone }
     if (!isEnded(kept)) return { ok: false, problem: TASK_PROBLEMS.going }
     if (!attached.has(taskId)) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })

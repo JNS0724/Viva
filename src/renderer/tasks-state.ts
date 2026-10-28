@@ -158,6 +158,29 @@ export function pageGroups(state: State): Array<{ key: string, tasks: Background
 export const pageTask = (state: State): BackgroundTask | null => state.tasks.list.find((task) => task.id === state.tasks.page.selected) ?? null
 const firstOnPage = (state: State): string | null => pageGroups(state)[0]?.tasks[0]?.id ?? null
 
+/** Follow-ups on the 后台 page are picked by this prefix, beside the tasks' ids. */
+export const FOLLOWUP_KEY = 'followup:'
+/** And the messages suggested for one by this. */
+export const SUGGESTION_KEY = 'suggestion:'
+const LISTED_FOLLOWUPS = ['ready', 'preparing', 'scheduled'] as const
+
+/** The keys on the page's list, in its order: messages to decide on, follow-ups by group, then the tasks. */
+function listedKeys(state: State): string[] {
+  const suggestions = state.followups.suggestions.filter((item: Untyped) => item.status === 'open').map((item: Untyped) => `${SUGGESTION_KEY}${item.id}`)
+  const followups = LISTED_FOLLOWUPS.flatMap((status) => state.followups.followups
+    .filter((item: Untyped) => item.status === status)
+    .map((item: Untyped) => `${FOLLOWUP_KEY}${item.id}`))
+  const tasks = pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
+  return [...suggestions, ...followups, ...tasks]
+}
+
+/** What the 后台 page shows: the one picked while it is still listed, else the first listed (view/tasks-page.ts onPage). */
+export function shownOnPage(state: State): string | null {
+  const keys = listedKeys(state)
+  const selected = state.tasks.page.selected
+  return selected && keys.includes(selected) ? selected : keys[0] ?? null
+}
+
 /** A task's tab in the drawer (view/drawer.js): what it did, as the 过程 tab shows the conversation's. */
 const TAB_PREFIX = 'task:'
 export const taskTab = (taskId: string) => `${TAB_PREFIX}${taskId}`
@@ -289,12 +312,11 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     task_dock_toggled: (state, { collapsed }) => withTasks(state, { dockCollapsed: Boolean(collapsed), dockPeek: false }),
     task_dock_room: (state, { room }) => (state.tasks.dockRoom === Boolean(room) ? state : withTasks(state, { dockRoom: Boolean(room), dockPeek: false })),
     task_dock_peek: (state, { peek }) => withTasks(state, { dockPeek: Boolean(peek) }),
-    /** Only an ended task is put away from the dock; one at work or waiting stays until it ends. */
-    task_dock_hidden: (state, { taskId }) => {
-      const task = state.tasks.list.find((entry) => entry.id === taskId)
-      if (!task || task.status in DOCK_ORDER || state.tasks.dockHidden.includes(taskId)) return state
-      return withTasks(state, { dockHidden: [...state.tasks.dockHidden, taskId] })
-    },
+    /**
+     * 知道了: an ended task put away unseen, as if seen: out of the dock, not counted, and the island no longer
+     * saying it ended. One at work or waiting stays until it ends.
+     */
+    task_dock_hidden: (state, { taskId }) => seen(state, taskId),
     task_submitting: (state, { submission }) => withTasks(state, {
       submissions: [...state.tasks.submissions.filter(item => item.id !== submission.id), submission],
     }),
@@ -383,7 +405,8 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       // Opened again, its steps start folded; the task shown, if ended, is seen.
       return seen(withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false } }), selected)
     },
-    tasks_page_close: (state) => withTasks(state, { page: { ...state.tasks.page, open: false } }),
+    /** Left, the task it showed has been seen, also when the page picked it by itself (shownOnPage). */
+    tasks_page_close: (state) => withTasks(seen(state, state.tasks.page.open ? shownOnPage(state) : null), { page: { ...state.tasks.page, open: false } }),
     tasks_page_select: (state, { taskId }) => seen(withTasks(state, { page: { ...state.tasks.page, selected: taskId } }), taskId),
     /** The tasks seen by the last launch, so a relaunch does not remind of them again. */
     tasks_seen_restored: (state, { ids }) => withTasks(state, {
@@ -435,8 +458,11 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         drawer: state.drawer === taskTab(taskId) ? 'trace' : state.drawer,
         taskCards: state.taskCards.filter(id => id !== taskId),
       }
-      // The page goes on to the next task when the one it showed is closed.
-      return state.tasks.page.selected === taskId ? withTasks(closed, { page: { ...closed.tasks.page, selected: firstOnPage(closed) } }) : closed
+      // The page goes on to the next task when the one it showed is closed; shown, that one is seen.
+      if (state.tasks.page.selected !== taskId) return closed
+      const next = firstOnPage(closed)
+      const moved = withTasks(closed, { page: { ...closed.tasks.page, selected: next } })
+      return closed.tasks.page.open ? seen(moved, next) : moved
     },
   }
 }

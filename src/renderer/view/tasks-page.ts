@@ -1,5 +1,5 @@
 import { traceItems } from '../selectors.ts'
-import { pageGroups, pageTask } from '../tasks-state.ts'
+import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage, SUGGESTION_KEY } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
 import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
@@ -15,32 +15,16 @@ import { followupDetail, followupStanding, suggestionDetail, whenText } from './
  */
 const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你处理', running: '在后台', ended: '做完了' }
 const LIVE = new Set(['running', 'waiting'])
-/** Follow-ups on the page are picked by this prefix, beside the tasks' ids. */
-export const FOLLOWUP_KEY = 'followup:'
-/** And the messages suggested for one by this. */
-export const SUGGESTION_KEY = 'suggestion:'
+export { FOLLOWUP_KEY, SUGGESTION_KEY }
 const FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', '待你看的'], ['preparing', '在准备'], ['scheduled', '已安排']]
-const LISTED_STATUSES = new Set(FOLLOWUP_GROUPS.map(([status]) => status))
-
-/** The keys on the list at the left, in its order: messages to decide on, follow-ups by group, then the tasks. */
-function listedKeys(state: State): string[] {
-  const suggestions = state.followups.suggestions.filter((item: Untyped) => item.status === 'open').map((item: Untyped) => `${SUGGESTION_KEY}${item.id}`)
-  const followups = FOLLOWUP_GROUPS.flatMap(([status]) => state.followups.followups
-    .filter((item: Untyped) => item.status === status && LISTED_STATUSES.has(item.status))
-    .map((item: Untyped) => `${FOLLOWUP_KEY}${item.id}`))
-  const tasks = pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
-  return [...suggestions, ...followups, ...tasks]
-}
 
 /**
  * The page as it is drawn: what was picked, while it is still on the list; once it is gone from there (deleted,
  * answered, taken up), the first one on the list, so the right never shows what the left no longer has.
  */
 export function onPage(state: State): State {
-  const keys = listedKeys(state)
-  const selected = state.tasks.page.selected
-  const picked = selected && keys.includes(selected) ? selected : keys[0] ?? null
-  return picked === selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
+  const picked = shownOnPage(state)
+  return picked === state.tasks.page.selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
 }
 
 /** Messages that may need the user, first: they wait on a decision. */

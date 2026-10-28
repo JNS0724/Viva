@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { dockTasks, unseenEnded } from '../src/renderer/tasks-state.ts'
+import { dockTasks, shownOnPage, unseenEnded } from '../src/renderer/tasks-state.ts'
 import { islandView } from '../src/renderer/island-view.ts'
 
 /** An ended task, once seen on the 后台 page, is no longer reminded of: not in the dock, not at the island's tail. */
@@ -55,6 +55,35 @@ test('something new from a seen task reminds again', () => {
     { type: 'task_end', taskId: 'a', stopReason: 'end_turn', at: 11 },
   ], seen)
   assert.equal(ids(unseenEnded(again)).includes('a'), true)
+})
+
+test('知道了 puts a task away as if seen: the island no longer says it ended either', () => {
+  const state = twoEnded()
+  assert.equal(state.tasks.finished?.taskId, 'b', 'the island is saying b ended')
+  const away = reduce(state, { type: 'task_dock_hidden', taskId: 'b' })
+  assert.deepEqual([away.tasks.finished, ids(unseenEnded(away))], [null, ['a']])
+  assert.equal(reduce(state, { type: 'task_dock_hidden', taskId: 'c' }), state, 'one at work stays')
+})
+
+/** All three ended: none at work, so whichever the page goes on to is an ended one. */
+const threeEnded = () => reduce(twoEnded(), { type: 'task_end', taskId: 'c', stopReason: 'end_turn', at: 7 })
+
+test('关掉这件 on the page: the next task it goes on to is shown, so seen', () => {
+  const closed = run([{ type: 'tasks_page_open', taskId: 'b' }, { type: 'task_closed', taskId: 'b' }], threeEnded())
+  const next = closed.tasks.page.selected
+  assert.ok(next && ['a', 'c'].includes(next))
+  assert.deepEqual(ids(unseenEnded(closed)), ['a', 'c'].filter((id) => id !== next), 'only the one not shown is still reminded of')
+})
+
+test('the page left, what it showed is seen, also when it picked it by itself', () => {
+  // Picked a task since gone (undone, say): the page shows the first listed, and leaving it, that one is seen.
+  const opened = reduce(threeEnded(), { type: 'tasks_page_open', taskId: 'a' })
+  const shownByItself = { ...opened, tasks: { ...opened.tasks, page: { ...opened.tasks.page, selected: 'gone' } } }
+  const shown = shownOnPage(shownByItself)
+  assert.ok(shown && shown !== 'gone', 'the page shows the first listed')
+  const left = reduce(shownByItself, { type: 'tasks_page_close' })
+  assert.equal(left.tasks.page.open, false)
+  assert.deepEqual(ids(unseenEnded(left)).toSorted(), ['b', 'c'].filter((id) => id !== shown), 'a (opened) and the one shown by itself are seen')
 })
 
 test('seen by the last launch, a task is not reminded of again; what was kept that is not an id is ignored', () => {

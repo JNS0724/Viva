@@ -403,6 +403,12 @@ async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     field.closest('form').requestSubmit()
   })()`)
   await until(win, `(${pageState}).said.some((text) => text.includes('收到：「${RESTORED_ASK}」'))`, 'the task from last time answering')
+    .catch(async (err) => {
+      // Where the page stood instead, and a picture of it.
+      await capture(win, outDir, 'tasks-restored-stuck')
+      const toast = await run(win, `document.getElementById('toast')?.textContent ?? ''`)
+      throw new Error(`${err.message}: ${JSON.stringify({ page: await run(win, pageState), toast })}`)
+    })
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-restored')
   await run(win, escape)
