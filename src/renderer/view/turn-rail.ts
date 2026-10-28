@@ -1,7 +1,7 @@
 import { h } from './dom.ts'
 
 /**
- * 按轮次跳转: down the right edge of the conversation, a line per question of the topic on screen and, above them,
+ * 按轮次跳转: down the left edge of the main area (the right is the dock's, view/task-dock.ts), a line per question of the topic on screen and, above them,
  * a dot per earlier topic read back (folded, view/earlier.ts). The place being read is lit, a mark shows its question
  * (or the topic's day and name) on hover or focus, and a click (or Enter) scrolls to it; ↑/↓ move between marks. It
  * reads the page itself, so it follows whatever the thread and the earlier part draw, and stays away until there

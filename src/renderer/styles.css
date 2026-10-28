@@ -89,10 +89,12 @@ html:not([data-platform="darwin"]) {
 .chip { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 8px; background: var(--raised); font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 
 .body { position: relative; display: flex; min-height: 0; }
-.main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
-/* 按轮次跳转 (view/turn-rail.js): in the gutter right of the conversation, one mark per question, packed tighter as turns add up. */
+/* --rail-lane: kept free of the column at each side, the turn rail's on the left (view/column-resize.ts RAIL_LANE). */
+.main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+/* 按轮次跳转 (view/turn-rail.ts): in its own lane at the main area's left edge (--rail-lane), one mark per question,
+   packed tighter as turns add up; the right side is the task dock's. A mark's tip opens rightwards, over the text. */
 .turn-rail {
-  position: absolute; right: 4px; top: 50%; transform: translateY(-50%); z-index: 6; max-height: 56%;
+  position: absolute; left: 4px; top: 50%; transform: translateY(-50%); z-index: 9; max-height: 56%;
   display: flex; flex-direction: column; padding: 6px 0;
 }
 /* 12px each while they fit; past that they shrink together (no gap, no least height), so however many there are,
@@ -101,35 +103,47 @@ html:not([data-platform="darwin"]) {
   position: relative; flex: 0 1 12px; min-height: 0; width: 22px; padding: 0; border: none; background: none; cursor: pointer;
 }
 .turn-mark::before {
-  content: ''; position: absolute; right: 5px; top: 50%; width: 9px; height: 2px; margin-top: -1px; border-radius: 1px;
+  content: ''; position: absolute; left: 5px; top: 50%; width: 9px; height: 2px; margin-top: -1px; border-radius: 1px;
   background: var(--mute); transition: width .12s, background .12s;
 }
 .turn-mark:hover::before, .turn-mark:focus-visible::before { width: 14px; background: var(--ink-2); }
 .turn-mark[aria-current]::before { width: 14px; background: var(--accent); }
 /* An earlier topic: a dot, not a line. */
-.turn-topic::before { right: 6px; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: none; border: 1.5px solid var(--mute); }
+.turn-topic::before { left: 6px; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: none; border: 1.5px solid var(--mute); }
 .turn-topic:hover::before, .turn-topic:focus-visible::before { width: 7px; background: none; border-color: var(--ink-2); }
 .turn-topic[aria-current]::before { width: 7px; background: var(--accent); border-color: var(--accent); }
 .turn-topic + .turn-mark:not(.turn-topic) { margin-top: 6px; }
 .topic-old { scroll-margin-top: 24px; }
 .turn-mark:focus-visible { outline: none; }
 .turn-mark::after {
-  content: attr(data-tip); position: absolute; right: calc(100% + 6px); top: 50%; transform: translateY(-50%);
+  content: attr(data-tip); position: absolute; left: calc(100% + 6px); top: 50%; transform: translateY(-50%);
   width: max-content; max-width: 280px; padding: 7px 11px; border-radius: 10px; border: 1px solid var(--line-2);
   background: var(--raised); color: var(--ink); font-size: 12.5px; line-height: 1.5; text-align: left;
   box-shadow: 0 10px 28px rgba(0, 0, 0, .45); opacity: 0; pointer-events: none; transition: opacity .1s;
 }
 .turn-mark:hover::after, .turn-mark:focus-visible::after { opacity: 1; }
 .msg-user-row, .msg-answer { scroll-margin-top: 24px; }
+/* The column's edges (view/column-resize.ts): invisible until the pointer is on one, then a thin line to drag; just
+   outside the column, never over the rail's marks (which end 26px in). */
+.col-grip {
+  position: absolute; top: 0; bottom: 0; z-index: 6; width: 12px; cursor: col-resize;
+  --at: max(28px, calc(50% - var(--col, 760px) / 2 - 12px));
+}
+.col-grip-left { left: var(--at); }
+.col-grip-right { right: var(--at); }
+.col-grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; border-radius: 1px; background: var(--accent); opacity: 0; transition: opacity .15s; }
+.col-grip:hover::after, .col-resizing .col-grip::after, .col-grip:focus-visible::after { opacity: .5; }
+.col-grip:focus-visible { outline: none; }
+.col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
 .scroll { position: relative; flex: 1; width: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
 .jump-latest {
   position: sticky; bottom: 16px; z-index: 5; flex: none; height: 38px; padding: 0 18px; border: none; border-radius: 999px;
   background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
 }
 .home { width: 100%; max-width: 1240px; min-height: 100%; padding: 24px 0; box-sizing: border-box; }
-.thread { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
+.thread { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
 /* The earlier part of the one timeline, above the conversation on screen (view/earlier.js). */
-.earlier { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 0; }
+.earlier { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 0; }
 .earlier + .thread { padding-top: 28px; }
 .timeline-more {
   align-self: center; height: 34px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line-2); background: none;
@@ -178,7 +192,7 @@ html:not([data-platform="darwin"]) {
 .topic-note { align-self: center; margin-top: -16px; font-size: 12px; color: var(--ink-3); text-align: center; }
 
 /* Above the input: what the assistant has in mind now, and ＋ 新话题 (view/topic-label.js). */
-.ctx-area { position: relative; width: 100%; max-width: 760px; display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ctx-area { position: relative; width: 100%; max-width: var(--col, 760px); display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .ctx-new {
   display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2);
   background: none; color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
@@ -209,7 +223,7 @@ html:not([data-platform="darwin"]) {
 
 /* ---------- composer ---------- */
 .composer {
-  width: 100%; max-width: 760px; margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
+  width: 100%; max-width: var(--col, 760px); margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
   border-radius: 22px; padding: 16px 12px 12px 18px; box-shadow: 0 0 0 4px rgba(90, 169, 255, .08), 0 20px 50px rgba(0, 0, 0, .45);
 }
 .composer:focus-within { border-color: #3A4C72; }
@@ -384,6 +398,75 @@ html:not([data-platform="darwin"]) {
 .task-report-text { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-report-open { flex: none; height: 32px; padding: 0 14px; font-size: 13px; white-space: nowrap; }
 .task-report-x { flex: none; font-size: 18px; line-height: 1; }
+
+/* The dock (view/task-dock.ts): one soft panel in the right corner of the main area, over its empty side (the turn
+   rail is on the left). Rows, not stacked cards: what waits on the user is tinted orange, what ended is quieter. */
+.task-dock {
+  position: absolute; right: 20px; bottom: 20px; z-index: 8; width: 300px; max-width: calc(100% - 40px); box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 8px;
+  border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); box-shadow: 0 16px 40px rgba(0, 0, 0, .45);
+}
+/* Folded, no panel: the tag alone sits lower, beside the note under the input rather than against the input itself. */
+.task-dock[data-collapsed="true"] {
+  width: auto; bottom: 8px; align-items: flex-end; padding: 0; border: none; background: none; box-shadow: none;
+}
+.dock-head { display: flex; align-items: center; gap: 6px; padding: 2px 2px 4px 8px; font-size: 12px; color: var(--ink-3); }
+.dock-title { flex: 1; font-weight: 700; letter-spacing: .04em; }
+.dock-all { height: 26px; padding: 0 6px; font-size: 12px; }
+.dock-fold { width: 26px; height: 26px; font-size: 16px; border: none; background: none; }
+.dock-tile {
+  position: relative; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; font-size: 13px;
+  transition: background .12s;
+}
+.dock-tile:hover, .dock-tile:focus-within { background: var(--raised); }
+.dock-tile + .dock-tile::before { content: ''; position: absolute; left: 12px; right: 12px; top: -2px; height: 1px; background: var(--line); }
+/* What waits on the user: a warm tint and an orange edge, the one thing in the dock that asks to be looked at. */
+.dock-tile[data-status="waiting"], .dock-tile[data-status="interrupted"] {
+  background: color-mix(in srgb, var(--orange) 10%, transparent); box-shadow: inset 3px 0 0 var(--orange);
+}
+.dock-tile[data-status="error"] { background: color-mix(in srgb, var(--red) 9%, transparent); box-shadow: inset 3px 0 0 var(--red); }
+.dock-tile[data-status="waiting"]::before, .dock-tile[data-status="interrupted"]::before, .dock-tile[data-status="error"]::before,
+.dock-tile[data-status="waiting"] + .dock-tile::before, .dock-tile[data-status="interrupted"] + .dock-tile::before { display: none; }
+.dock-tile-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; color: var(--ink); }
+/* Ended: quieter words. */
+.dock-tile[data-status="done"] .dock-tile-head, .dock-tile[data-status="stopped"] .dock-tile-head { color: var(--ink-2); font-weight: 600; }
+.dock-tile-head .task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-hide { width: 22px; height: 22px; font-size: 15px; line-height: 1; border: none; background: none; opacity: 0; transition: opacity .12s; }
+.dock-tile:hover .dock-hide, .dock-hide:focus-visible { opacity: 1; }
+.dock-tile-said { color: var(--ink-3); font-size: 12.5px; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.dock-tile[data-status="waiting"] .dock-tile-said, .dock-tile[data-status="interrupted"] .dock-tile-said { color: var(--ink-2); }
+.dock-tile-line { color: var(--ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-tile-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.dock-tile .task-report-open { height: 28px; padding: 0 12px; border-radius: 8px; font-size: 12.5px; }
+.dock-open { height: 28px; padding: 0 6px; font-size: 12.5px; }
+/* Past three rows: how many more, and the way to all of them, as the panel's last line. */
+.dock-more {
+  height: 30px; margin-top: 2px; border: none; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px;
+  background: none; color: var(--ink-3); font-size: 12px; cursor: pointer;
+}
+.dock-more:hover, .dock-more:focus-visible { color: var(--accent); }
+/* Folded: a quiet tag, which comes forward under the pointer. */
+.dock-tag {
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-radius: 15px;
+  border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2); font-size: 12px; cursor: pointer;
+  opacity: .55; transition: opacity .15s;
+}
+.dock-tag:hover, .dock-tag:focus-visible { opacity: 1; }
+.dock-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+/* Something waits on the user (or failed): the tag says so plainly, in colour, and does not fade. */
+.dock-tag:not([data-tone="quiet"]) {
+  height: 36px; padding: 0 16px; border-radius: 18px; opacity: 1; color: var(--ink); font-size: 13px; font-weight: 600;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
+}
+.dock-tag[data-tone="waits"] { border-color: var(--orange); background: color-mix(in srgb, var(--orange) 16%, var(--panel)); }
+.dock-tag[data-tone="error"] { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, var(--panel)); }
+.dock-tag[data-tone="waits"] .dock-dot { background: var(--orange); animation: dock-pulse 1.8s ease-out infinite; }
+.dock-tag[data-tone="error"] .dock-dot { background: var(--red); }
+.dock-tag-go { color: var(--ink-2); font-weight: 400; }
+@keyframes dock-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--orange) 60%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+@media (prefers-reduced-motion: reduce) { .dock-tag[data-tone="waits"] .dock-dot { animation: none; } }
+/* Peeked at without room beside the column: above the input (main sets --composer-lift), never over it. */
+.task-dock[data-peek="true"] { bottom: var(--composer-lift, 200px); }
 /* A background task's card (view/task-card.js): one quiet look whatever it is doing; the words say where it stands. */
 .task-card, .task-card[data-status] { border: 1px solid var(--line-2); }
 .task-card .task-report-head { display: flex; align-items: center; gap: 8px; min-width: 0; }

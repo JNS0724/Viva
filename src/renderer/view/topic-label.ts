@@ -37,14 +37,19 @@ export function renderTopicLabel(area: HTMLElement, state: State, handlers: Hand
     title: state.switching ? '可以先输入，准备好后即可发送' : state.newTopicPending ? '重试准备当前新话题，保留草稿' : busy ? '先停止当前任务，再开新话题' : `开新话题（${NEW_TOPIC_KEY()}）`,
     onClick: () => handlers.newSession(),
   }, h('span', { 'aria-hidden': 'true', text: '＋' }), state.switching ? '准备中…' : state.newTopicPending ? '重试新话题' : '新话题')
-  return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent) : null].filter((part) => part !== null))
+  return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent, handlers) : null].filter((part) => part !== null))
 }
 
-/** What the label means: how much is remembered, what happens when it is full. */
-function topicInfo(count: number, percent: number | null) {
+/**
+ * What the label means: how much is remembered, what happens when it is full; and the column's width back to
+ * its default, for whoever never finds the grips at its edges (view/column-resize.ts).
+ */
+function topicInfo(count: number, percent: number | null, handlers: Handlers) {
   const used = percent === null ? '还没算出用了多少' : `已用 ${percent}%`
   return h('div', { class: 'ctx-menu', role: 'dialog', 'aria-label': '本话题' },
     h('div', { class: 'ctx-menu-info' },
       h('b', { text: count ? `助手现在记得本话题的 ${count} 条` : '新话题：助手还什么都不记得' }),
-      h('span', { text: `${used}；满了以后，最早的部分会被自动压缩。关于你的记忆不占这里。想换个话题，点「＋ 新话题」或按 ${NEW_TOPIC_KEY()}。` })))
+      h('span', { text: `${used}；满了以后，最早的部分会被自动压缩。关于你的记忆不占这里。想换个话题，点「＋ 新话题」或按 ${NEW_TOPIC_KEY()}。` }),
+      h('span', { text: '对话宽度可以拖动两侧边缘调整。' })),
+    h('button', { class: 'ctx-item', type: 'button', text: '对话恢复默认宽度', onClick: () => handlers.resetColumn() }))
 }

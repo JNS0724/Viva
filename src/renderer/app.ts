@@ -20,7 +20,7 @@ import { historyMessages, setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
 import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
-import { liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
+import { hasDockRoom, liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
 import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
@@ -33,6 +33,7 @@ import { createResumeActions } from './resume-actions.ts'
 import { createReviewActions } from './review-actions.ts'
 import { isStarred, placeOf } from './stars.ts'
 import { scheduleFrame } from './view/frame.ts'
+import { attachColumnResize, sideBeside } from './view/column-resize.ts'
 
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
@@ -96,6 +97,9 @@ const elements = {
   hubSearchKey: byId('hub-search-key'),
   /** 后台: every background task and the one picked (view/tasks-page.js). */
   tasksPage: byId('tasks-page'),
+  /** The background tasks floating in the corner of the main area (view/task-dock.ts). */
+  taskDock: byId('task-dock'),
+  main: byId('main'),
 }
 /** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */
 const dom = { ...elements, follower: createScrollFollower(elements.scroll, elements.jumpLatest) }
@@ -104,7 +108,33 @@ export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
 attachTurnRail(dom.scroll, byId('turn-rail'))
 
-let state: State = initialState
+const DOCK_KEY = 'viva:dock-collapsed'
+/** Whether the dock was left folded, for the next launch; storage refused, it starts unfolded. */
+function dockFolded(): boolean {
+  try {
+    return localStorage.getItem(DOCK_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+let state: State = reduce(initialState, { type: 'task_dock_toggled', collapsed: dockFolded() })
+
+// The column's width as the user dragged it, kept within the main area as the window and the drawer change it;
+// whatever is left beside it says whether the dock has room there.
+// The first call comes at once, before the handlers a render needs exist: that one only sets the state.
+let columnWired = false
+const column = attachColumnResize(dom.main, [byId('col-grip-left'), byId('col-grip-right')], (width, area) => {
+  const action = { type: 'task_dock_room', room: hasDockRoom(sideBeside(width, area), state.tasks.dockRoom) }
+  if (columnWired) dispatch(action)
+  else state = reduce(state, action)
+})
+columnWired = true
+new ResizeObserver(column.fit).observe(dom.main)
+// The dock peeked at sits above the input and its label: their top, measured from the main area's bottom.
+new ResizeObserver(() => {
+  dom.main.style.setProperty('--composer-lift', `${dom.main.clientHeight - dom.composer.offsetTop + 56}px`)
+}).observe(dom.composer)
 let pendingReveal: (() => void) | null = null
 let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
@@ -585,6 +615,21 @@ const handlers = {
   pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),
   /** A task's report in the thread, put away (view/thread.js reportCard). */
   dismissReport: (taskId: string) => taskActions.dismissReport(taskId),
+  /** The dock in the corner: folded to its tag or unfolded, remembered for the next launch. */
+  toggleDock: (collapsed: boolean) => {
+    dispatch({ type: 'task_dock_toggled', collapsed })
+    try {
+      localStorage.setItem(DOCK_KEY, String(collapsed))
+    } catch {
+      // Storage refused: folded for this launch only.
+    }
+  },
+  /** No room beside the column: the folded dock shown over the conversation for now, or put back. */
+  peekDock: (peek: boolean) => dispatch({ type: 'task_dock_peek', peek }),
+  /** 恢复默认宽度 in the topic label's menu: the conversation column back to its default width. */
+  resetColumn: () => column.reset(),
+  /** An ended task put away from the dock; its card in the conversation stays as the history. */
+  hideFromDock: (taskId: string) => dispatch({ type: 'task_dock_hidden', taskId }),
   /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
   async startInBackground() {
     const text = dom.input.value.trim()
@@ -860,6 +905,8 @@ function wireComposer() {
   dom.input.addEventListener('input', () => {
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
+    // Typing puts away a dock that was only peeked at: the input is where the user is now.
+    if (state.tasks.dockPeek) handlers.peekDock(false)
   })
   // Pictures go above the words; words that came only as formatted text are put in by hand (paste.js).
   dom.input.addEventListener('paste', (event) => {

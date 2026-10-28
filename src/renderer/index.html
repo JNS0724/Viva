@@ -71,7 +71,14 @@
       <!-- 后台: every background task and the one picked, in the same place (view/tasks-page.js). -->
       <section class="hub tasks-page" id="tasks-page" data-open="false" aria-label="后台任务"></section>
 
-      <main class="main">
+      <main class="main" id="main">
+        <!-- The column's edges: dragged to make it wider or narrower, double-clicked back (view/column-resize.ts). -->
+        <div class="col-grip col-grip-left" id="col-grip-left" data-side="left" tabindex="0" role="separator" aria-orientation="vertical"
+          aria-label="对话宽度：方向键调整，Home 恢复" aria-valuemin="560" title="拖动调整对话宽度，双击恢复"></div>
+        <div class="col-grip col-grip-right" id="col-grip-right" data-side="right" tabindex="0" role="separator" aria-orientation="vertical"
+          aria-label="对话宽度：方向键调整，Home 恢复" aria-valuemin="560" title="拖动调整对话宽度，双击恢复"></div>
+        <!-- Background tasks in the corner, folded to a quiet tag when the user wants (view/task-dock.ts). -->
+        <aside class="task-dock" id="task-dock" aria-label="后台任务" hidden></aside>
         <section class="scroll" id="scroll" aria-live="polite">
           <div class="home" id="home"></div>
           <div class="earlier" id="earlier" hidden></div>
