@@ -59,6 +59,8 @@ export const IPC_ARGS = Object.freeze({
   'history:search': z.tuple([text]),
   'history:open': z.tuple([id]),
   'history:resume-topic': z.tuple([id]),
+  'history:resume-check': z.tuple([id]),
+  'history:continue-from-records': z.tuple([id, path]),
   'history:trace': z.tuple([id, z.number().optional()]),
   'history:rename': z.tuple([id, text]),
   'history:pin': z.tuple([id, z.boolean()]),

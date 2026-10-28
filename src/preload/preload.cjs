@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   openConversation: (id) => ipcRenderer.invoke('history:open', id),
   /** 回到这个话题 / 撤销 a new topic: { info, parentId } (history-ipc.js). */
   resumeTopic: (id) => ipcRenderer.invoke('history:resume-topic', id),
+  /** Before 继续这个话题: its directory, whether it is there, whether it is the one in use. */
+  resumeCheck: (id) => ipcRenderer.invoke('history:resume-check', id),
+  /** Its own session gone: a new conversation in `dir` going on from its saved records. */
+  continueFromRecords: (id, dir) => ipcRenderer.invoke('history:continue-from-records', id, dir),
   loadTrace: (id, until) => ipcRenderer.invoke('history:trace', id, until),
   renameConversation: (id, title) => ipcRenderer.invoke('history:rename', id, title),
   pinConversation: (id, pinned) => ipcRenderer.invoke('history:pin', id, pinned),

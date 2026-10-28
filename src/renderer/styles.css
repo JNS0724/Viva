@@ -933,6 +933,8 @@ body.drop-images::after { content: '松开，把图片放进输入框'; }
 .review-focus-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; }
 .review-notice { margin: 0 16px 12px; padding: 8px 12px; border-radius: 10px; background: var(--raised); color: var(--orange); font-size: 13px; }
 .review-star[data-deleted="true"] { opacity: .55; }
+/* 继续这个话题 asking first (view/resume-dialog.ts): the folder it goes on in. */
+.resume-dir { display: block; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: var(--raised); color: var(--ink); font-size: 13px; word-break: break-all; }
 .review-star { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); }
 .review-star-text { font-size: 14px; line-height: 1.6; color: var(--ink); }
 .review-star-actions { display: flex; justify-content: flex-end; gap: 8px; }

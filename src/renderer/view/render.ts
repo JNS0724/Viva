@@ -16,6 +16,7 @@ import { renderIsland } from './island.ts'
 import { renderModelPicker } from './model-picker.ts'
 import { renderProfilePanel } from './profile-panel.ts'
 import { renderRewindConfirm } from './rewind.ts'
+import { renderResumeDialog } from './resume-dialog.ts'
 import { renderSettings } from './settings.ts'
 import { renderThread } from './thread.ts'
 import { renderTopicLabel } from './topic-label.ts'
@@ -225,6 +226,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)
+  renderResumeDialog(dom.resumeDialog, state.resume, handlers)
 }
 
 /** Per-frame update while text is being typed out: only the thread and the status island. */

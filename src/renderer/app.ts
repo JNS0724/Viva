@@ -29,6 +29,7 @@ import { createScrollFollower } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
 import { openEarlierRow } from './view/earlier.ts'
+import { createResumeActions } from './resume-actions.ts'
 import { createReviewActions } from './review-actions.ts'
 import { isStarred, placeOf } from './stars.ts'
 import { scheduleFrame } from './view/frame.ts'
@@ -75,6 +76,7 @@ const elements = {
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
   rewindConfirm: byId('rewind-confirm-root'),
+  resumeDialog: byId('resume-root'),
   toggleDrawer: byId('toggle-drawer'),
   settings: byId('settings-root'),
   modelArea: byId('model-area'),
@@ -492,6 +494,13 @@ const taskActions = createTaskActions({
   isTyping: () => Boolean(dom.input.value.trim()),
 })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
+const resumeActions = createResumeActions({
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, busy: () => isBusy(state),
+  afterResume: () => {
+    dom.follower.jumpToLatest()
+    dom.input.focus()
+  },
+})
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
@@ -528,6 +537,7 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
   'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
   'open-settings': () => handlers.openSettings(),
   'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
+  'resume-topic': (toast) => resumeActions.retryResume(toast.action.payload),
 }
 
 const handlers = {
@@ -663,21 +673,8 @@ const handlers = {
     measure: ({ stage, durationMs }) => recordRendererTiming(stage, durationMs),
   }),
   /** 回到这个话题 on an earlier topic, and 撤销 on a new one: the agent goes on from that segment. */
-  async resumeTopic(segmentId: string) {
-    if (state.switching) return undefined
-    if (isBusy(state)) return historyActions.showToast('助手正在工作，等这一轮结束再回到那个话题')
-    dispatch({ type: 'session_switching' })
-    try {
-      const { info, parentId } = await api.resumeTopic(segmentId)
-      dispatch({ type: 'topic_resumed', info, parentId, at: Date.now() })
-      dom.follower.jumpToLatest()
-      dom.input.focus()
-    } catch (err) {
-      dispatch({ type: 'session_switch_failed' })
-      historyActions.showToast(errorMessage(err))
-    }
-    return undefined
-  },
+  /** 继续这个话题, 回到这个话题, 撤销 a new topic (resume-actions.ts): its own session, the directory said first. */
+  ...resumeActions,
   toggleTopicMenu: () => dispatch({ type: 'topic_menu', open: !state.topic.menu }),
   /** The permission picker by the input (view/permission-picker.js): another level restarts dsh on this conversation. */
   togglePermissionMenu: () => dispatch({ type: 'permission_menu', open: !state.settings.permissionMenu }),

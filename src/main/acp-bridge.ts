@@ -13,10 +13,11 @@ import { createForkDesk } from './fork-channel.ts'
 import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createMessagesDesk } from './messages-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
-import { createHistoryDesk, type HistorySearch } from './history-channel.ts'
+import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
 import type { TaskRead } from './tasks-channel.ts'
 import type { ReadRequest } from './message-reader.ts'
 import { createQuestionDesk } from './question-channel.ts'
+import { ResumeError, resumeReason } from './resume-failure.ts'
 import { stopInTime } from './stop-in-time.ts'
 import { createAssistantStream } from './assistant-stream.ts'
 import { createFreshSessions } from './fresh-sessions.ts'
@@ -86,7 +87,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, taskRead = null, historySearch = null, prewarmSessions = false, onTiming,
+  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, taskRead = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming,
 }: {
   dshBin: string, nodeBin?: string, profile: string, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
@@ -97,6 +98,8 @@ export function createAcpBridge({
   taskRead?: TaskRead | null,
   /** What was said in the timeline before, for search_conversations (viva-history); null leaves it saying there is none. */
   historySearch?: HistorySearch | null,
+  /** The messages around one found, for read_conversation (viva-history). */
+  historyRead?: HistoryRead | null,
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
 }) {
@@ -144,7 +147,7 @@ export function createAcpBridge({
   // The messages the sources brought in, read from the conversation (viva-messages).
   const messagesDesk = createMessagesDesk({ send: toPlugins, read: messageActions?.read ?? null })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, authorized: id => id === sessionId || tasks.has(id) })
-  const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, authorized: id => id === sessionId || tasks.has(id) })
+  const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || tasks.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
     if (!running.has(id) || running.get(id)?.released) return
     if (tasks.has(id)) emit({ type: 'task_update', taskId: id, update })
@@ -305,6 +308,19 @@ export function createAcpBridge({
     }
   }
 
+  /**
+   * Reattaches exactly that session, in its own directory, or throws why not (resume-failure.ts): unlike
+   * resumeOrOpen, it never opens another session in its place.
+   */
+  async function resumeExactly(resumeSessionId: string, targetCwd: string) {
+    if (!canResume) throw new ResumeError('gone', '这个版本的助手接不回以前的会话')
+    sessionCwd = targetCwd
+    const response = await withMcpServers((servers) => live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: servers }))
+    sessionId = resumeSessionId
+    prepareFresh()
+    return { ...infoFrom(response.configOptions), resumed: true }
+  }
+
   /** Changes the model or reasoning effort; dsh applies it from the next turn. */
   async function setConfig(configId: string, value: string) {
     try {
@@ -408,14 +424,17 @@ export function createAcpBridge({
   /**
    * Leaves the current session for `targetSessionId` (a reopened conversation), or for a fresh one when null.
    * @param targetCwd its directory, when not the current one
+   * @param exactly that session or none (继续这个话题): when it cannot be resumed, the agent goes back to the
+   *   session it left (nothing is lost by trying) and a ResumeError says why, with where the agent is now
    */
-  async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd) {
+  async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd, { exactly = false } = {}) {
     if (switching) throw Error('会话正在准备，请稍候')
     switching = true
     const measure = sessionTiming(onTiming)
     try {
       return await measure('session.switch', async () => {
         const leaving = sessionId
+        const leavingCwd = sessionCwd
         questions.declineAll()
         config?.closeAll()
         steering.closeAll()
@@ -428,6 +447,18 @@ export function createAcpBridge({
         if (leaving) retire(leaving, measure)
         const barriers = [...closing.values()]
         const released = () => measure('session.wait-for-close', () => Promise.all(barriers))
+        if (targetSessionId && exactly) {
+          await released()
+          try {
+            return await resumeExactly(targetSessionId, targetCwd)
+          } catch (err) {
+            const reason = err instanceof ResumeError ? err.reason : resumeReason(err)
+            console.error('[acp-bridge] could not resume the topic\'s session, going back:', describeError(err))
+            // Back to where the agent was: resumed, or (if that cannot be either) a new session.
+            const back = await resumeOrOpen(leaving, leavingCwd)
+            throw new ResumeError(reason, describeError(err, stderrTail), { ...back, sessionId })
+          }
+        }
         if (targetSessionId) {
           await released()
           return resumeOrOpen(targetSessionId, targetCwd)
@@ -439,6 +470,7 @@ export function createAcpBridge({
         return openSession(mcpServers().length ? released : undefined)
       })
     } catch (err) {
+      if (err instanceof ResumeError) throw err
       throw new Error(describeError(err, stderrTail))
     } finally { switching = false; if (sessionId) prepareFresh() }
   }
