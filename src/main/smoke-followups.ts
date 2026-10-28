@@ -10,6 +10,8 @@ import { capture, finishTurn, report, run, submit, UI_WAIT_MS, until, wait, type
  */
 const CARD = '#thread .fu-card'
 const PAGE = '#tasks-page'
+/** The 后台 page's list: under 后台 in the hub's sidebar. */
+const LIST = '#hub-tasks-list'
 const PREPARE_TIMEOUT_MS = 90_000
 const q = (selector: string) => `document.querySelector(${JSON.stringify(selector)})`
 const clickText = (scope: string, text: string) =>
@@ -33,8 +35,8 @@ export async function checkFollowups(win: SmokeWindow, outDir: string, hooks: Sm
   await until(win, anyText(`${CARD} .fu-note`, '每天三次'), 'the windows chosen')
 
   hooks.openTasksPage()
-  await until(win, q(`${PAGE} .fu-row[data-status="scheduled"]`), 'the follow-up on the 后台 page, scheduled')
-  await run(win, `${q(`${PAGE} .fu-row[data-status="scheduled"]`)}.click()`)
+  await until(win, q(`${LIST} .fu-row[data-status="scheduled"]`), 'the follow-up on the 后台 page, scheduled')
+  await run(win, `${q(`${LIST} .fu-row[data-status="scheduled"]`)}.click()`)
   await until(win, q(`${PAGE} .fu-main`), 'its detail')
   await run(win, clickText(`${PAGE} .fu-main`, '现在就准备'))
   await until(win, q(`${PAGE} .fu-draft`), 'the draft prepared in the background', PREPARE_TIMEOUT_MS)
@@ -55,15 +57,15 @@ async function checkSuggestion(win: SmokeWindow, outDir: string, hooks: SmokeHoo
   const failures: string[] = []
   hooks.seedSuggestion()
   hooks.openTasksPage()
-  await until(win, q(`${PAGE} .fu-row[data-status="suggested"]`), 'the suggested message on the 后台 page')
-  await run(win, `${q(`${PAGE} .fu-row[data-status="suggested"]`)}.click()`)
+  await until(win, q(`${LIST} .fu-row[data-status="suggested"]`), 'the suggested message on the 后台 page')
+  await run(win, `${q(`${LIST} .fu-row[data-status="suggested"]`)}.click()`)
   await until(win, q(`${PAGE} .fu-message`), 'the message and why')
   const shown = String(await run(win, `${q(`${PAGE} .fu-main`)}.textContent`))
   if (!shown.includes('合同明天到期') || !shown.includes('依据：明天到期')) failures.push(`the suggestion should show the message and why: ${shown.slice(0, 160)}`)
   await capture(win, outDir, 'followup-suggestion')
   await run(win, clickText(`${PAGE} .fu-main`, '跟进'))
   // With no time of its own it is prepared at once (the fake model is quick), so it may be in any group by now.
-  await until(win, `!${q(`${PAGE} .fu-row[data-status="suggested"]`)} && ${anyText(`${PAGE} .fu-row:not([data-status="suggested"]) .tp-name`, '合同续签')}`,
+  await until(win, `!${q(`${LIST} .fu-row[data-status="suggested"]`)} && ${anyText(`${LIST} .fu-row:not([data-status="suggested"]) .tp-name`, '合同续签')}`,
     '跟进 makes a follow-up of the message')
   return failures
 }

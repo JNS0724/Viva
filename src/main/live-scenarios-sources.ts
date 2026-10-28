@@ -113,7 +113,7 @@ async function suggestedRows(ctx: LiveContext): Promise<string[]> {
   ctx.hooks.openTasksPage()
   await until(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`, 'the 后台 page')
   await wait(UI_WAIT_MS)
-  return run(ctx.win, `[...document.querySelectorAll('#tasks-page .fu-row[data-status="suggested"]')].map((row) => row.textContent)`)
+  return run(ctx.win, `[...document.querySelectorAll('#hub-tasks-list .fu-row[data-status="suggested"]')].map((row) => row.textContent)`)
 }
 
 const count = (rows: readonly string[], pattern: RegExp) => rows.filter((row) => pattern.test(row)).length

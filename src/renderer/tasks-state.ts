@@ -25,7 +25,8 @@ export const initialTasks = Object.freeze({
   /** Tasks the last launch left going (task-store.js), offered to take up or let go: { id, title, segmentId, startedAt }. */
   unfinished: [] as Untyped[],
   /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
-  page: Object.freeze({ open: false, selected: null as string | null, steps: false }),
+  /** The 后台 page: open, the one picked, its steps unfolded, and its list unfolded under 后台 in the hub's sidebar. */
+  page: Object.freeze({ open: false, selected: null as string | null, steps: false, list: true }),
   /** The dock in the corner (view/task-dock.ts): folded to its tag, and the ended tasks put away from it. */
   dockCollapsed: false,
   dockHidden: [] as string[],
@@ -358,9 +359,11 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     tasks_page_open: (state, { taskId = null }) => {
       const known = (id: string | null) => state.tasks.list.some((task) => task.id === id)
       const selected = [taskId, state.tasks.page.selected].find((id) => id && known(id)) ?? firstOnPage(state)
-      // Opened again, its steps start folded.
-      return withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false } })
+      // Opened again, its steps start folded and its list unfolded.
+      return withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false, list: true } })
     },
+    /** 后台 clicked while its page is shown: its list under it in the sidebar folds, or unfolds again. */
+    tasks_page_list: (state) => withTasks(state, { page: { ...state.tasks.page, list: !state.tasks.page.list } }),
     tasks_page_close: (state) => withTasks(state, { page: { ...state.tasks.page, open: false } }),
     tasks_page_select: (state, { taskId }) => withTasks(state, { page: { ...state.tasks.page, selected: taskId } }),
     tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps } }),

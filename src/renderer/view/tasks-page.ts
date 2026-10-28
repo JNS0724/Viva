@@ -84,10 +84,10 @@ function prepareLine(state: State, now: number) {
   return null
 }
 
-/** The list beside the hub's own sidebar (返回 and the other pages stay there, as on every page of the hub). */
-function sideView(state: State, handlers: Handlers, now: number) {
+/** The list, under 后台 in the hub's own sidebar: a second level of it, folded and unfolded there. */
+function listItems(state: State, handlers: Handlers, now: number): Array<HTMLElement | null> {
   const selected = state.tasks.page.selected
-  return h('nav', { class: 'tp-side', 'aria-label': '后台任务' },
+  return [
     prepareLine(state, now),
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
@@ -99,7 +99,23 @@ function sideView(state: State, handlers: Handlers, now: number) {
       },
       h('span', { class: 'tp-name', text: task.title }),
       h('span', { class: 'tp-meta' }, statusMark(task.status), standing(task, now)))),
-    ]))
+    ]),
+  ]
+}
+
+/**
+ * 后台 in the hub's sidebar: its list unfolded under it while its page is shown and not folded; folded, only the
+ * entry, with how many wait on the user so none is missed.
+ */
+function renderList(nav: HTMLElement, list: HTMLElement, state: State, handlers: Handlers, now: number) {
+  const unfolded = state.tasks.page.open && state.tasks.page.list
+  nav.setAttribute('aria-expanded', String(unfolded))
+  const count = nav.querySelector('.hub-count')
+  const waiting = state.tasks.list.filter((task) => task.status === 'waiting').length
+  if (count) count.textContent = waiting ? String(waiting) : ''
+  list.hidden = !unfolded
+  if (!unfolded) return list.replaceChildren()
+  keepingInput(list, () => list.replaceChildren(...listItems(state, handlers, now).filter((item): item is HTMLElement => item !== null)))
 }
 
 /** The task's view as the thread draws one: all of what it said shown, nothing to go back to, no tasks of its own. */
@@ -200,19 +216,23 @@ function mainView(state: State, handlers: Handlers, now: number) {
     inputView(task, handlers))
 }
 
-/** Rebuilt as the tasks change; what was typed and where it was scrolled to stay. */
-export function renderTasksPage(container: HTMLElement, shown: State, handlers: Handlers, now = Date.now()) {
+/**
+ * Rebuilt as the tasks change; what was typed and where it was scrolled to stay.
+ * @param side 后台 in the hub's sidebar (nav) and, under it, where the page's list unfolds (list)
+ */
+export function renderTasksPage(container: HTMLElement, side: { nav: HTMLElement, list: HTMLElement }, shown: State, handlers: Handlers, now = Date.now()) {
   container.dataset.open = String(shown.tasks.page.open)
+  const state = onPage(shown)
+  renderList(side.nav, side.list, state, handlers, now)
   if (!shown.tasks.page.open) {
     container.replaceChildren()
     return
   }
-  const state = onPage(shown)
   const scroller = container.querySelector('.tp-scroll')
   const sameTask = container.querySelector<HTMLElement>('.tp-main')?.dataset.task === state.tasks.page.selected
   const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
   const top = scroller?.scrollTop ?? 0
-  keepingInput(container, () => container.replaceChildren(sideView(state, handlers, now), mainView(state, handlers, now)))
+  keepingInput(container, () => container.replaceChildren(mainView(state, handlers, now)))
   const next = container.querySelector('.tp-scroll')
   if (next) next.scrollTop = sameTask && !atBottom ? top : next.scrollHeight
 }

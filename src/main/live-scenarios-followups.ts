@@ -34,14 +34,14 @@ async function followupRows(ctx: LiveContext): Promise<string[]> {
   ctx.hooks.openTasksPage()
   await until(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`, 'the 后台 page')
   await wait(UI_WAIT_MS)
-  return run(ctx.win, `[...document.querySelectorAll('${PAGE} .fu-row')].map((row) => row.textContent)`)
+  return run(ctx.win, `[...document.querySelectorAll('#hub-tasks-list .fu-row')].map((row) => row.textContent)`)
 }
 
 /** On the 后台 page: the scheduled follow-up whose row mentions one of `words`, opened. False when there is none. */
 async function openScheduled(ctx: LiveContext, words: readonly string[]): Promise<boolean> {
   await followupRows(ctx)
   const found = await run(ctx.win, `(() => {
-    const row = [...document.querySelectorAll('${PAGE} .fu-row[data-status="scheduled"]')].find((el) => ${JSON.stringify(words)}.some((w) => el.textContent.includes(w)))
+    const row = [...document.querySelectorAll('#hub-tasks-list .fu-row[data-status="scheduled"]')].find((el) => ${JSON.stringify(words)}.some((w) => el.textContent.includes(w)))
     row?.click()
     return Boolean(row)
   })()`)
