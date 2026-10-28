@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream, RequestError } from '@agentclientprotocol/sdk'
-import { createAcpBridge } from '../src/main/acp-bridge.ts'
+import { createAcpBridge, SWITCHING } from '../src/main/acp-bridge.ts'
 import { ResumeError } from '../src/main/resume-failure.ts'
 
 /**
@@ -24,7 +24,7 @@ function fakeDsh(agent: object) {
   return child
 }
 
-function bridgeWith({ failClose = false } = {}) {
+function bridgeWith({ failClose = false, slow = null as Promise<void> | null } = {}) {
   const log: string[][] = []
   const agent = {
     async initialize(params: { protocolVersion: number }) {
@@ -36,6 +36,7 @@ function bridgeWith({ failClose = false } = {}) {
       // As dsh-acp says it: Invalid params, the reason in data.
       if (params.sessionId === 'gone') throw RequestError.invalidParams({ details: `session is not resumable: ${params.sessionId}` })
       if (params.sessionId === 'flaky') throw new Error('read ECONNRESET')
+      if (slow) await slow
       return { configOptions: OPTIONS }
     },
     async closeSession(params: { sessionId: string }) {
@@ -45,7 +46,7 @@ function bridgeWith({ failClose = false } = {}) {
     },
     async cancel() {},
     async authenticate() { return {} },
-    async prompt() { return { stopReason: 'end_turn' } },
+    async prompt(params: { sessionId: string }) { log.push(['prompt', params.sessionId]); return { stopReason: 'end_turn' } },
   }
   const bridge = createAcpBridge({ dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', spawnFn: (() => fakeDsh(agent)) as never, emit: () => {} })
   return { log, bridge }
@@ -86,6 +87,35 @@ test('while a topic is taken up the bridge says it is switching, so no question 
   assert.equal(bridge.isSwitching(), false)
   await assert.rejects(bridge.switchSession('gone', '/work', { exactly: true }))
   assert.equal(bridge.isSwitching(), false, 'and after a failure too')
+  bridge.dispose()
+})
+
+test('a question while a topic is being taken up is refused; none reaches the session being left', async () => {
+  let release!: () => void
+  const { log, bridge } = bridgeWith({ slow: new Promise<void>((resolve) => { release = resolve }) })
+  await bridge.start()
+  const going = bridge.switchSession(OLDER, '/work', { exactly: true })
+  await assert.rejects(bridge.prompt('趁切换的时候问一句'), new RegExp(SWITCHING))
+  release()
+  await going
+  assert.equal(log.some(([kind]) => kind === 'prompt'), false, 'no turn was started')
+  bridge.dispose()
+})
+
+test('a question while going back is prepared (the session still being forked) is refused too', async (t) => {
+  const { log, bridge } = bridgeWith()
+  await bridge.start()
+  // No fork plugin answers here: the fork waits for its time to run out, as a slow one would.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const going = bridge.fork({ before: 0 })
+  assert.equal(bridge.isSwitching(), true, 'from the moment going back starts, before the switch itself')
+  await assert.rejects(bridge.prompt('趁回退的时候问一句'), new RegExp(SWITCHING))
+  t.mock.timers.tick(60_000)
+  const result = await going
+  t.mock.timers.reset()
+  assert.equal(result.ok, false)
+  assert.equal(bridge.isSwitching(), false, 'and let go when it is over')
+  assert.equal(log.some(([kind]) => kind === 'prompt'), false, 'no turn was started')
   bridge.dispose()
 })
 

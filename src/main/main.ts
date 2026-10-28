@@ -7,7 +7,7 @@ import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
 import { APP_ROOT, CODE_ROOT, DSH_PROFILE, resolveConfig } from './config.ts'
-import { createAcpBridge } from './acp-bridge.ts'
+import { createAcpBridge, SWITCHING } from './acp-bridge.ts'
 import { createDeskIsland } from './desk-island.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.ts'
@@ -535,7 +535,7 @@ function registerAgentIpc() {
     const agent = requireBridge()
     // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
     // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
-    if (agent.isSwitching()) throw new Error('正在切换会话，等切换完成再发')
+    if (agent.isSwitching()) throw new Error(SWITCHING)
     try {
       personal.habits()
     } catch (err: any) {

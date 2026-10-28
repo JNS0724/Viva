@@ -26,6 +26,7 @@ import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
 const STDERR_TAIL_LIMIT = 4000
+export const SWITCHING = '正在切换会话，等切换完成再发'
 /** dsh gets this long to finish after its input closes, then its process tree is ended; then killed outright. */
 const SHUTDOWN_GRACE_MS = 1500
 // The version the app was built as, so it cannot fall behind a release (package.json ships in the app).
@@ -376,6 +377,8 @@ export function createAcpBridge({
    * @param images pictures pasted with it, base64
    */
   async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = []) {
+    // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
+    if (isSwitching()) throw new Error(SWITCHING)
     if (images.length && !seesImages) {
       emit({ type: 'error', message: NO_IMAGES })
       return
@@ -492,9 +495,25 @@ export function createAcpBridge({
   async function fork({ before, words, occurrence, cwd: targetCwd }: { before?: number, words?: string, occurrence?: number, cwd?: string } = {}): Promise<
     { ok: false, reason: string } | { ok: true, info: Awaited<ReturnType<typeof switchSession>> }
   > {
-    const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
-    if (!result.ok) return result
-    return { ok: true, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
+    return preparingSwitch(async () => {
+      const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
+      if (!result.ok) return result
+      return { ok: true as const, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
+    })
+  }
+
+  /**
+   * How many switches are being prepared (a session forked before switching to it): from the start, as the switch
+   * itself, no question goes in (isSwitching), else it would go to the session about to be left.
+   */
+  let preparing = 0
+  async function preparingSwitch<T>(work: () => Promise<T>): Promise<T> {
+    preparing += 1
+    try {
+      return await work()
+    } finally {
+      preparing -= 1
+    }
   }
 
   /**
@@ -502,7 +521,8 @@ export function createAcpBridge({
    * nothing stops); the main conversation goes on from before that turn, in a session forked there, found by
    * the words that started it (the viva-fork plugin).
    */
-  async function spinOff({ words }: { words: string }) {
+  const spinOff = ({ words }: { words: string }) => preparingSwitch(() => spinningOff({ words }))
+  async function spinningOff({ words }: { words: string }) {
     const taskId = sessionId
     if (!taskId || !running.has(taskId)) return { ok: false, reason: 'idle' }
     const forked = await forking.fork({ words, occurrence: 0 })
@@ -720,6 +740,6 @@ export function createAcpBridge({
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
-  const isSwitching = () => switching
+  const isSwitching = () => switching || preparing > 0
   return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, isSwitching, dispose, pid }
 }
