@@ -26,7 +26,16 @@ export const initialTasks = Object.freeze({
   unfinished: [] as Untyped[],
   /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
   page: Object.freeze({ open: false, selected: null as string | null, steps: false }),
+  /** The dock in the corner (view/task-dock.ts): folded to its tag, and the ended tasks put away from it. */
+  dockCollapsed: false,
+  dockHidden: [] as string[],
+  /** Whether the main area has room for the dock beside the column; without it the dock folds unless peeked at. */
+  dockRoom: true,
+  dockPeek: false,
 })
+
+/** Whether the dock shows only its tag: folded by the user, or no room beside the column and not peeked at. */
+export const dockFolded = (state: State): boolean => state.tasks.dockCollapsed || (!state.tasks.dockRoom && !state.tasks.dockPeek)
 
 /**
  * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
@@ -59,6 +68,52 @@ function settled(task: BackgroundTask): BackgroundTask {
 }
 
 export const liveTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => LIVE.has(task.status))
+
+/** Order in the dock: what waits on the user, what works, what ended. */
+const DOCK_ORDER: Readonly<Record<string, number>> = { waiting: 0, interrupted: 0, running: 1 }
+
+/**
+ * The tasks in the dock (view/task-dock.ts): every one at work or waiting, and those that ended while what they
+ * came back with is still there, until put away from the dock. Putting one away there leaves its card in the
+ * conversation, which stays as its history.
+ */
+export function dockTasks(state: State): Array<{ task: BackgroundTask, report: TaskReport | null }> {
+  return state.tasks.list.flatMap((task): Array<{ task: BackgroundTask, report: TaskReport | null }> => {
+    if (task.status in DOCK_ORDER) return [{ task, report: null }]
+    const report = state.tasks.reports.find((entry) => entry.taskId === task.id) ?? null
+    return report && !state.tasks.dockHidden.includes(task.id) ? [{ task, report }] : []
+  }).toSorted((a, b) => (DOCK_ORDER[a.task.status] ?? 2) - (DOCK_ORDER[b.task.status] ?? 2))
+}
+
+/** What the folded dock says: how many go on, how many of those wait on the user, how many ended, how many of those failed. */
+export function dockSummary(state: State): { live: number, waiting: number, ended: number, failed: number } {
+  const shown = dockTasks(state)
+  return {
+    live: shown.filter(({ task }) => task.status in DOCK_ORDER).length,
+    waiting: shown.filter(({ task }) => DOCK_ORDER[task.status] === 0).length,
+    ended: shown.filter(({ task }) => !(task.status in DOCK_ORDER)).length,
+    failed: shown.filter(({ task }) => task.status === 'error').length,
+  }
+}
+
+/**
+ * Pressed by the column (no room beside it) with nothing waiting on the user or failed: the dock steps away
+ * altogether, the conversation first; the island in the title bar still counts the tasks. What needs the user keeps
+ * a clear tag in the corner.
+ */
+export function dockAway(state: State): boolean {
+  if (state.tasks.dockRoom || !dockFolded(state)) return false
+  const { waiting, failed } = dockSummary(state)
+  return !waiting && !failed
+}
+
+/**
+ * Room the dock needs beside the column to unfold (open), and below which it folds again (fold): the gap
+ * between them keeps a window resized right at the edge from folding and unfolding it over and over.
+ */
+export const DOCK_SPACE = Object.freeze({ open: 340, fold: 300 })
+/** Whether the dock has room, given the space beside the column and whether it had room until now. */
+export const hasDockRoom = (side: number, had: boolean): boolean => side >= (had ? DOCK_SPACE.fold : DOCK_SPACE.open)
 export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 
 /** The 后台 page's list: those waiting on the user, then those at work, then those that ended, latest first. */
@@ -202,6 +257,15 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
 
   return {
     task_moving: (state, { moving }) => withTasks(state, { moving }),
+    task_dock_toggled: (state, { collapsed }) => withTasks(state, { dockCollapsed: Boolean(collapsed), dockPeek: false }),
+    task_dock_room: (state, { room }) => (state.tasks.dockRoom === Boolean(room) ? state : withTasks(state, { dockRoom: Boolean(room), dockPeek: false })),
+    task_dock_peek: (state, { peek }) => withTasks(state, { dockPeek: Boolean(peek) }),
+    /** Only an ended task is put away from the dock; one at work or waiting stays until it ends. */
+    task_dock_hidden: (state, { taskId }) => {
+      const task = state.tasks.list.find((entry) => entry.id === taskId)
+      if (!task || task.status in DOCK_ORDER || state.tasks.dockHidden.includes(taskId)) return state
+      return withTasks(state, { dockHidden: [...state.tasks.dockHidden, taskId] })
+    },
     task_submitting: (state, { submission }) => withTasks(state, {
       submissions: [...state.tasks.submissions.filter(item => item.id !== submission.id), submission],
     }),
@@ -243,7 +307,9 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
       const report = { taskId, title: task.title, status, preview: previewOf(view), shown: false }
       const reports = [...state.tasks.reports.filter((entry) => entry.taskId !== taskId), report]
-      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports })
+      // Something new came back: in the dock again, even if what it said before was put away there.
+      const dockHidden = state.tasks.dockHidden.filter((id) => id !== taskId)
+      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports, dockHidden })
     },
 
     tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),
