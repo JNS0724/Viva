@@ -67,11 +67,19 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:segments-before', (id, limit) => db.segmentsBefore(assertId(id), { limit: Number(limit) || undefined }))
   handle('history:search-messages', (query) => db.searchMessages(assertQuery(query)))
   /**
-   * 回顾: the timeline by time, newest first, a page after the segment named last; one segment's own messages to
-   * read (a moved turn's from where it began); the stars, putting one on saying whether it changed anything.
+   * 回顾: the topics, the one last talked in first, a page after the topic named last; a topic's messages to read,
+   * or one segment's (a moved turn's from where it began, or `whole`); the stars, putting one on saying whether it
+   * changed anything. Reading never touches the agent: it stays on the conversation it is on, in its directory.
    */
-  handle('history:review', (after) => db.review({ after: after ?? undefined }))
-  handle('history:segment', (id) => ({ messages: db.segmentMessages(id) }))
+  handle('history:review', (after, filter) => db.review({ after: after ?? null, filter: filter ?? 'all' }))
+  handle('history:topic', (topicId) => db.topicMessages(topicId))
+  handle('history:segment', (id, whole) => ({ messages: db.segmentMessages(id, whole === true) }))
+  /** A link, search hit or star: where the message is now, and where 回顾 reads it (history-db.ts locate). */
+  handle('history:locate', (ref) => {
+    const located = db.locate(ref)
+    const reader = located.status === 'deleted' ? null : db.readerOf(located.segmentId)
+    return reader ? { ...located, reader } : { status: 'deleted' as const, segmentId: located.segmentId, reader: null }
+  })
   handle('history:star', (id, seq, starred) => db.setStar(id, seq, starred === true))
   handle('history:stars-in', (ids) => db.starsIn(ids))
   handle('history:starred', () => db.starredMessages())

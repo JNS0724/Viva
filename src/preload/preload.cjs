@@ -51,9 +51,14 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** The one timeline: the segments before `id`, oldest first; messages across all of it that contain `query`. */
   earlierSegments: (id, limit) => ipcRenderer.invoke('history:segments-before', id, limit),
   searchTimeline: (query) => ipcRenderer.invoke('history:search-messages', query),
-  /** 回顾: the timeline by time, newest first ({ segments, hasMore }); a segment's messages; starring a message. */
-  reviewTimeline: (after) => ipcRenderer.invoke('history:review', after),
-  segmentMessages: (id) => ipcRenderer.invoke('history:segment', id),
+  /**
+   * 回顾: the topics, the one last talked in first ({ topics, hasMore }); a topic's messages; a segment's; where a
+   * message named by a link, hit or star is now; starring a message.
+   */
+  reviewTimeline: (after, filter) => ipcRenderer.invoke('history:review', after, filter),
+  topicMessages: (topicId) => ipcRenderer.invoke('history:topic', topicId),
+  segmentMessages: (id, whole) => ipcRenderer.invoke('history:segment', id, whole),
+  locateMessage: (ref) => ipcRenderer.invoke('history:locate', ref),
   starMessage: (id, seq, starred) => ipcRenderer.invoke('history:star', id, seq, starred),
   starsIn: (ids) => ipcRenderer.invoke('history:stars-in', ids),
   starredMessages: () => ipcRenderer.invoke('history:starred'),

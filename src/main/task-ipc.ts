@@ -89,7 +89,8 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const kept = stored.messages.slice(0, keep)
     const { mode, model } = { ...agentInfo(), ...spun.info }
     const next = db.save(
-      db.create({ sessionId: spun.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId }),
+      // The conversation goes on in the same topic, the moved turn hanging off it as one of its tasks.
+      db.create({ sessionId: spun.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) }),
       text === null ? kept : [...kept, { role: 'user', text, receipt: null }],
     )
     db.fold(previous.id, { into: next.id, at: keep, kind: 'task' })

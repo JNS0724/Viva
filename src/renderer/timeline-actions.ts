@@ -4,14 +4,11 @@
  * the page goes in above it.
  */
 import { reachedRecentEnd } from './earlier-state.ts'
-import { hitTarget } from './timeline-search.ts'
 
 const NEAR_TOP_PX = 160
-/** A hit further back than this many pages is not worth the wait; the search says where it is instead. */
-const MAX_JUMP_PAGES = 40
 
-export function createTimelineActions({ api, getState, dispatch, scroll, reveal }: Pick<ActionDeps, 'getState' | 'dispatch'> & {
-  api: Pick<AgentApi, 'earlierSegments'>, scroll: HTMLElement, reveal: (msgId: string) => void,
+export function createTimelineActions({ api, getState, dispatch, scroll }: Pick<ActionDeps, 'getState' | 'dispatch'> & {
+  api: Pick<AgentApi, 'earlierSegments'>, scroll: HTMLElement,
 }) {
   /** Segments are read before the oldest shown; at first, before the one on screen (or all, for a new one). */
   const anchor = () => getState().earlier.segments[0]?.id ?? getState().conversationId ?? 'current'
@@ -37,21 +34,5 @@ export function createTimelineActions({ api, getState, dispatch, scroll, reveal 
     if (scroll.scrollTop < NEAR_TOP_PX && !reachedRecentEnd(getState().earlier)) loadEarlier()
   }
 
-  /** A search hit: earlier pages come in until it is there, then it is scrolled to. False when it is nowhere. */
-  async function jumpTo(hit: SearchHit) {
-    for (let page = 0; page <= MAX_JUMP_PAGES; page += 1) {
-      const target = hitTarget(getState(), hit)
-      if (!target) return false
-      if ('msgId' in target) {
-        reveal(target.msgId)
-        return true
-      }
-      const before = getState().earlier.segments.length
-      await loadEarlier()
-      if (getState().earlier.segments.length === before) return false
-    }
-    return false
-  }
-
-  return { loadEarlier, onScroll, jumpTo }
+  return { loadEarlier, onScroll }
 }

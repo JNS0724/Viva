@@ -1,17 +1,30 @@
-import { reviewTopics } from './review-state.ts'
+import type { ReaderMessage } from './review-state.ts'
 import type { MessagePlace } from './stars.ts'
 
 /**
- * 回顾 (review-state.ts, view/review.ts): reading the timeline back by time, a page at a time; a topic read in
- * place; the 收藏 list; and stars put on or taken off anywhere, with the stars of what is on screen read back.
+ * 回顾 (review-state.ts, view/review.ts): the topics a page at a time; a topic or a task read in place; a message
+ * named by a search hit, a link or a star read where it is kept (history-db.ts locate: straight there, however far
+ * back); the 收藏 list; and stars put on or taken off anywhere, with the stars of what is on screen read back.
+ * Reading never touches the agent: the conversation and its directory stay as they are.
  */
-/** How many more pages 详情 reads back looking for a starred message's topic before it says where it is not. */
-const MAX_FIND_PAGES = 20
+const NOTICE_MISSING = '原文已经不在了（可能被重新生成或撤回），下面是附近的记录'
+const NOTICE_EMPTY = '原文已经不在了，这段记录里也没有别的内容'
+const RETRY_MS = 8000
+const TITLE_CHARS = 40
+
+/** A message named by a hit, a link or a star. */
+export type MessageRef = MessagePlace & { messageId?: number }
+type Read = { title: string, at: number | null, head: string | null, messages: ReaderMessage[] }
+
+const titleFrom = (messages: readonly ReaderMessage[]) => {
+  const first = messages.find((message) => message.role === 'user')?.text.replace(/\s+/g, ' ').trim() ?? ''
+  return first.length > TITLE_CHARS ? `${first.slice(0, TITLE_CHARS)}…` : first
+}
 
 export function createReviewActions({ api, getState, dispatch, showToast, errorMessage, reveal }: Pick<ActionDeps, 'getState' | 'dispatch' | 'errorMessage'> & {
-  api: Pick<AgentApi, 'reviewTimeline' | 'segmentMessages' | 'starMessage' | 'starsIn' | 'starredMessages'>,
-  showToast: (text: string) => void,
-  /** Scrolls to a message of the topic read in 回顾 (its `data-msg`) and marks it a moment. */
+  api: Pick<AgentApi, 'reviewTimeline' | 'topicMessages' | 'segmentMessages' | 'locateMessage' | 'starMessage' | 'starsIn' | 'starredMessages'>,
+  showToast: (text: string, options?: { action?: ToastAction | null, ms?: number }) => void,
+  /** Scrolls to a message read in 回顾 (its `data-msg`). False when it is not there. */
   reveal: (msgId: string) => boolean,
 }) {
   const report = (what: string) => (err: unknown) => showToast(`${what}：${errorMessage(err)}`)
@@ -22,10 +35,11 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     if (review.loading || (!fresh && !review.hasMore)) return
     dispatch({ type: 'review_loading' })
     try {
-      // The next page goes on after the last segment listed, not after its time: others may share that moment.
-      const after = fresh ? undefined : review.segments.at(-1)?.id
-      const page = await api.reviewTimeline(after)
-      dispatch({ type: 'review_loaded', segments: page.segments, hasMore: page.hasMore, fresh })
+      // The next page goes on after the last topic listed: its time and id, as others may share that moment.
+      const last = fresh ? undefined : review.topics.at(-1)
+      const filter = review.filter === 'tasks' || review.filter === 'files' ? review.filter : 'all'
+      const page = await api.reviewTimeline(last ? { lastAt: last.lastAt, topicId: last.id } : null, filter)
+      dispatch({ type: 'review_loaded', topics: page.topics, hasMore: page.hasMore, fresh })
     } catch (err) {
       dispatch({ type: 'review_failed' })
       report('回顾读取失败')(err)
@@ -40,19 +54,56 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     }
   }
 
-  /** The messages of a topic opened to read, its segments one after another, each message with where it is kept. */
-  async function readTopic(key: string) {
-    const topic = reviewTopics(getState().review.segments).find((item) => item.key === key)
-    if (!topic) return
-    try {
-      const parts = await Promise.all(topic.segments.map(async (segment) => {
-        const { messages } = await api.segmentMessages(segment.id)
-        return messages.map((message: SegmentMessage) => ({ ...message, segmentId: segment.id }))
-      }))
-      dispatch({ type: 'review_read', key, messages: parts.flat() })
-    } catch (err) {
-      report('这个话题读不出来')(err)
+  /** What `key` holds to read: a topic's conversation, or a segment on its own (`whole`, with the talk it shares). */
+  async function fetchRead(key: string, whole = false): Promise<Read | null> {
+    if (key.startsWith('t:')) {
+      const found = await api.topicMessages(key.slice(2))
+      return found && { title: found.topic.title, at: found.topic.startedAt, head: found.topic.head, messages: found.messages }
     }
+    const segmentId = key.slice(2)
+    const { messages } = await api.segmentMessages(segmentId, whole)
+    const read = messages.map((message: SegmentMessage) => ({ ...message, segmentId }))
+    return { title: titleFrom(read), at: read[0]?.at ?? null, head: null, messages: read }
+  }
+
+  async function readKey(key: string) {
+    try {
+      const read = await fetchRead(key)
+      if (!read) return showToast('这段记录已经删除了')
+      dispatch({ type: 'review_read', key, messages: read.messages })
+    } catch (err) {
+      report('这段记录读不出来')(err)
+    }
+    return undefined
+  }
+
+  /**
+   * A message named by a search hit, a link or a star, read in 回顾 at the top: its topic (or its task) read
+   * straight from where it is kept, and the message marked. Not there any more: the messages near where it was,
+   * said so, none marked; its segment deleted: said so. A read that failed says that, apart, with 重试.
+   */
+  async function openRef(ref: MessageRef) {
+    try {
+      const located = await api.locateMessage(ref.messageId === undefined
+        ? { segmentId: ref.segmentId, seq: ref.seq } : { segmentId: ref.segmentId, seq: ref.seq, messageId: ref.messageId })
+      if (located.status === 'deleted') return showToast('这条记录已经删除了')
+      const { key } = located.reader
+      let read = await fetchRead(key)
+      // A star or link on the talk a moved turn shares with the conversation: read that segment whole.
+      if (read && located.status === 'found' && !read.messages.some((m) => m.segmentId === located.segmentId && m.seq === located.seq)) {
+        read = await fetchRead(key, true)
+      }
+      if (!read) return showToast('这条记录已经删除了')
+      const notice = located.status === 'found' ? null : located.seq === null ? NOTICE_EMPTY : NOTICE_MISSING
+      const msgId = located.seq === null ? null : `${located.segmentId}-${located.seq}`
+      const found = located.status === 'found' ? msgId : null
+      dispatch({ type: 'review_focus', key, title: read.title, at: read.at, head: read.head, found, notice })
+      dispatch({ type: 'review_read', key, messages: read.messages })
+      if (msgId !== null && !reveal(msgId) && found) showToast('这条消息找到了，但没能显示出来')
+    } catch (err) {
+      showToast(`读取失败：${errorMessage(err)}`, { action: { label: '重试', kind: 'open-ref', payload: ref }, ms: RETRY_MS })
+    }
+    return undefined
   }
 
   return {
@@ -63,32 +114,21 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     },
     reviewMore: () => loadReview(false),
     reviewFilter(filter: string) {
+      const before = getState().review.filter
       dispatch({ type: 'review_filter', filter })
       if (filter === 'stars') loadStarred()
+      else if (getState().review.filter !== before) loadReview(true)
     },
+    /** A topic of the list or one of its tasks (review-state.ts topicKey, segmentKey) opened to read, or closed. */
     reviewOpen(key: string) {
-      const opening = getState().review.open !== key
+      const { open, focus } = getState().review
       dispatch({ type: 'review_open', key })
-      if (opening) readTopic(key)
+      if (open !== key || focus !== null) readKey(key)
     },
-    /**
-     * 详情 on a starred message: its topic opened in 回顾 and the message marked. Read here rather than in the
-     * timeline, which has neither background tasks nor what is older than a few pages.
-     */
-    async openStarred(place: MessagePlace) {
-      dispatch({ type: 'review_filter', filter: 'all' })
-      if (!getState().review.loaded) await loadReview(true)
-      const topicOf = () => reviewTopics(getState().review.segments).find((topic) => topic.segments.some((segment) => segment.id === place.segmentId))
-      for (let page = 0; !topicOf() && getState().review.hasMore && page < MAX_FIND_PAGES; page += 1) await loadReview(false)
-      const topic = topicOf()
-      if (!topic) return showToast('这条消息已经不在回顾里了')
-      if (getState().review.open !== topic.key) {
-        dispatch({ type: 'review_open', key: topic.key })
-        await readTopic(topic.key)
-      }
-      if (!reveal(`${place.segmentId}-${place.seq}`)) showToast('这条消息已经不在这个话题里了')
-      return undefined
-    },
+    reviewCloseFocus: () => dispatch({ type: 'review_unfocus' }),
+    openRef,
+    /** 详情 on a starred message: read where it is kept, marked (a star names its place; its id says it is still it). */
+    openStarred: (place: MessageRef) => openRef(place),
     async toggleStar(place: MessagePlace, starred: boolean) {
       try {
         const changed = await api.starMessage(place.segmentId, place.seq, starred)

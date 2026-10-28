@@ -2,8 +2,12 @@ const SEARCH_DEBOUNCE_MS = 200
 const TOAST_MS = 3000
 
 /** The 搜索 page (⌘F; view/hub.js), the toasts, and the trace of a restored conversation. */
-export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, jumpTo }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
-  searchField: HTMLInputElement, jumpTo: (hit: SearchHit) => Promise<boolean>,
+export function createHistoryActions({ api, getState, dispatch, searchField, errorMessage, revealOnScreen, openInReview }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
+  searchField: HTMLInputElement,
+  /** When the message is on screen in the timeline (timeline-search.ts hitTarget): what scrolls to it; else null. */
+  revealOnScreen: (hit: SearchHit) => (() => void) | null,
+  /** Reads the message in 回顾 where it is kept (review-actions.ts openRef). */
+  openInReview: (hit: SearchHit) => Promise<void>,
 }) {
   let toastKey = 0
   let searchTimer: ReturnType<typeof setTimeout> | undefined
@@ -59,13 +63,18 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
       if (!getState().history.open) dispatch({ type: 'history_open' })
       focusField()
     },
+    /**
+     * 详情 on a search hit, or a link to a message in an answer: the timeline scrolls to it when it is on screen;
+     * anything else is read in 回顾 where it is kept, however far back, without reading the timeline back for it.
+     */
     async jumpToHit(hit: SearchHit) {
-      dispatch({ type: 'history_close' })
-      try {
-        if (!await jumpTo(hit)) showToast('这条消息已经不在时间线上了')
-      } catch (err) {
-        report('跳转失败')(err)
+      const reveal = revealOnScreen(hit)
+      if (reveal) {
+        dispatch({ type: 'history_close' })
+        return reveal()
       }
+      if (!getState().history.open) dispatch({ type: 'history_open' })
+      return openInReview(hit)
     },
 
     searchHistory(query: string) {

@@ -8,7 +8,7 @@ const MAX_HITS = 10
 
 type Nearby = { role: string, text: string } | null | undefined
 export type HistoryHit = {
-  segmentId: string, seq: number, role: string, at: number, cwd: string | null,
+  messageId?: number, segmentId: string, seq: number, role: string, at: number, cwd: string | null,
   snippet: { before: string, hit: string, after: string }, before?: Nearby, after?: Nearby,
 }
 export type HistorySearch = (query: string) => readonly HistoryHit[]
@@ -19,6 +19,8 @@ function when(at: number) {
   const date = new Date(at)
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
+/** viva://timeline/<segment>/<seq>/<message id>: the id says it is still that message; the place finds what is near. */
+const linkTo = (hit: HistoryHit) => `viva://timeline/${hit.segmentId}/${hit.seq}${hit.messageId === undefined ? '' : `/${hit.messageId}`}`
 const nearby = (label: string, message: Nearby) => (message ? `   ${label}（${SPEAKERS[message.role] ?? '记录'}）：${message.text}` : null)
 
 /** What the model reads back: the hits, newest first, or a plain "nothing" so it does not make something up. */
@@ -29,7 +31,7 @@ export function historyAnswer(query: string, hits: readonly HistoryHit[]): strin
     `${i + 1}. ${when(hit.at)} · ${SPEAKERS[hit.role] ?? '记录'}：${hit.snippet.before}${hit.snippet.hit}${hit.snippet.after}`,
     nearby('前一句', hit.before),
     nearby('后一句', hit.after),
-    `   原文：viva://timeline/${hit.segmentId}/${hit.seq}`,
+    `   原文：${linkTo(hit)}`,
   ].filter((line): line is string => line !== null))
   const more = hits.length > shown.length ? `（还有 ${hits.length - shown.length} 条更早的，没有列出）` : ''
   return [`找到 ${hits.length} 条（最新的在前）${more}：`, ...lines,
