@@ -108,6 +108,8 @@ interface QuestionItem {
 interface BackgroundTask {
   id: string
   title: string
+  /** Persisted original position of a standalone background task's history row. */
+  host?: { conversationId: string, at: number, order: number }
   /** running, waiting (on the user), done, stopped, error. */
   status: string
   /** What it is doing now, in a few words. */

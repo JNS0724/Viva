@@ -311,11 +311,11 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
   /** The topic a stored segment is part of, or null when there is no such segment. */
   const topicOf = (id: unknown): string | null => sql.topicOf.get(assertId(id))?.topic_id ?? null
 
-  /** @returns the conversation as stored (or as given, while it is still empty) */
-  function save<C extends Partial<Conversation> & { id: string }>(conversation: C, input: unknown): C | Conversation {
+  /** keepEmpty retains the identity of a conversation hosting standalone background tasks. */
+  function save<C extends Partial<Conversation> & { id: string }>(conversation: C, input: unknown, { keepEmpty = false }: { keepEmpty?: boolean } = {}): C | Conversation {
     const id = assertId(conversation.id)
     const messages = normalizeMessages(input)
-    if (messages.length === 0) return conversation
+    if (messages.length === 0 && !keepEmpty) return conversation
     const at = now()
     return transaction(() => {
       const existing = sql.anyConversation.get(id)
@@ -478,6 +478,16 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
     .filter((row) => row.fold_kind !== 'side')
     .map((row) => ({ id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at), kind: row.fold_kind ?? 'path' }))
 
+  /** A retained 后台做 task's original card position; deleted parents/segments must not resurrect a card. */
+  function sideTaskHost(id: unknown): { conversationId: string, at: number, order: number } | null {
+    const row = db.prepare(`SELECT c.folded_into, c.folded_at, c.rowid AS position FROM conversations c
+      JOIN conversations p ON p.id = c.folded_into WHERE c.id = ? AND c.fold_kind = 'side'
+      AND c.deleted_at IS NULL AND p.deleted_at IS NULL`).get(assertId(id))
+    if (!row || typeof row.folded_into !== 'string' || typeof row.folded_at !== 'number'
+      || !Number.isSafeInteger(row.folded_at) || row.folded_at < 0 || typeof row.position !== 'number') return null
+    return { conversationId: row.folded_into, at: row.folded_at, order: row.position }
+  }
+
   const rename = (id: unknown, title: unknown) => changeOne(
     db.prepare('UPDATE conversations SET title = ?, title_custom = 1 WHERE id = ? AND deleted_at IS NULL'), normalizeTitle(title), assertId(id))
   const setPinned = (id: unknown, pinned: boolean) => changeOne(
@@ -501,6 +511,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
-    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, ...reviewing, ...reading, close: () => db.close(),
+    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading, close: () => db.close(),
   }
 }

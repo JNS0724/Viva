@@ -10,7 +10,7 @@ import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { offeredBackground } from '../tasks-state.ts'
-import { cardedTasks, taskCard } from './task-card.ts'
+import { cardedTasks, restoredTaskAnchors, taskCard } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
 import { proposalCard } from './followups.ts'
@@ -366,12 +366,15 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
   const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id,
     part(`task:${task.id}`, [task, report, Math.floor(now / 60_000)], () => taskCard(task, report, handlers, now))]))
-  const hostedBy = (i: number) => [state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? [])].flatMap((id) => {
+  const anchors = restoredTaskAnchors(state)
+  const takeCards = (ids: readonly (string | undefined)[]) => ids.flatMap((id) => {
     const card = id ? cards.get(id) : undefined
     if (!card || !id) return []
     cards.delete(id)
     return [card]
   })
+  const hostedBy = (i: number) => takeCards([state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? []),
+    ...anchors.filter(anchor => anchor.at === i + 1).map(anchor => anchor.taskId)])
   // The cards of messages not drawn stay in sight, at the top of what is.
   const earlierCards = state.messages.slice(0, start).flatMap((_, i) => hostedBy(i))
   const views = messageEntries(state, plain, handlers, start).slice(start).map((entries, i) => {
@@ -385,7 +388,7 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   const nodes = [
     start > 0 ? part('thread-rest', [start, state.conversationId], () => restLine(state, start, handlers)) : '',
     ...earlierCards,
-    ...state.taskCards.flatMap(id => cards.get(id) ?? []),
+    ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),
     ...divided.flat().filter(isContent),
     ...state.tasks.unfinished.map((task) => part(`unfinished:${task.id}`, [task, state.info.mode], () => unfinishedCard(task, handlers, state.info.mode === 'live'))),
     ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },

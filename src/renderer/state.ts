@@ -45,7 +45,7 @@ export const initialState = Object.freeze({
   /** Set when the thread opened with saved messages: how many there are and when they were saved. */
   restored: null as Untyped,
   /** Id of the conversation on screen once it is in the history (null for a new, unsaved one). */
-  conversationId: null as number | null,
+  conversationId: null as string | null,
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null as 'loading' | 'loaded' | 'unavailable' | null,
   history: initialHistory,
@@ -325,17 +325,17 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
   history_loaded: (state, { conversationId = null, messages, savedAt, folds = [], parentId = null, createdAt = null }) => {
-    if (state.messages.length > 0 || !messages?.length) return state
+    if (state.messages.length > 0 || state.newTopicPending || !Array.isArray(messages) || (!messages.length && !conversationId)) return state
     return {
       ...state,
       conversationId,
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
-      restoredTrace: 'loading',
+      restoredTrace: messages.length ? 'loading' : null,
       messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
       })),
-      restored: { count: messages.length, savedAt },
+      restored: messages.length ? { count: messages.length, savedAt } : null,
     }
   },
 
