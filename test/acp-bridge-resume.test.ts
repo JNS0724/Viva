@@ -76,6 +76,19 @@ test('a fault on the way may work when tried again: unavailable, and the agent s
   bridge.dispose()
 })
 
+test('while a topic is taken up the bridge says it is switching, so no question goes to the session being left', async () => {
+  const { bridge } = bridgeWith()
+  await bridge.start()
+  assert.equal(bridge.isSwitching(), false)
+  const going = bridge.switchSession(OLDER, '/work', { exactly: true })
+  assert.equal(bridge.isSwitching(), true, 'from the moment it starts')
+  await going
+  assert.equal(bridge.isSwitching(), false)
+  await assert.rejects(bridge.switchSession('gone', '/work', { exactly: true }))
+  assert.equal(bridge.isSwitching(), false, 'and after a failure too')
+  bridge.dispose()
+})
+
 test('the session left failing to close does not undo going over: the agent is on the one resumed', async () => {
   const { bridge } = bridgeWith({ failClose: true })
   await bridge.start()

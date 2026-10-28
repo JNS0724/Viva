@@ -719,5 +719,7 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, dispose, pid }
+  /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
+  const isSwitching = () => switching
+  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, isSwitching, dispose, pid }
 }

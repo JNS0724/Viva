@@ -533,6 +533,9 @@ function registerAgentIpc() {
     const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
     const pictures = imagesForPrompt(imageStore, images)
     const agent = requireBridge()
+    // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
+    // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
+    if (agent.isSwitching()) throw new Error('正在切换会话，等切换完成再发')
     try {
       personal.habits()
     } catch (err: any) {
