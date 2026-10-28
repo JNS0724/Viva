@@ -52,12 +52,11 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   earlierSegments: (id, limit) => ipcRenderer.invoke('history:segments-before', id, limit),
   searchTimeline: (query) => ipcRenderer.invoke('history:search-messages', query),
   /**
-   * 回顾: the topics, the one last talked in first ({ topics, hasMore }); a topic's messages; a segment's; where a
-   * message named by a link, hit or star is now; starring a message.
+   * 回顾: the topics, the one last talked in first ({ topics, hasMore }); a part of a topic or a segment to read
+   * ({ topic, total, from, messages }); where a message named by a link, hit or star is now; starring a message.
    */
   reviewTimeline: (after, filter) => ipcRenderer.invoke('history:review', after, filter),
-  topicMessages: (topicId) => ipcRenderer.invoke('history:topic', topicId),
-  segmentMessages: (id, whole) => ipcRenderer.invoke('history:segment', id, whole),
+  readHistory: (key, request) => ipcRenderer.invoke('history:read', key, request),
   locateMessage: (ref) => ipcRenderer.invoke('history:locate', ref),
   starMessage: (id, seq, starred) => ipcRenderer.invoke('history:star', id, seq, starred),
   starsIn: (ids) => ipcRenderer.invoke('history:stars-in', ids),

@@ -1,6 +1,7 @@
 import { reachedRecentEnd } from '../earlier-state.ts'
 import { earlierRows, formatListTime, workspaceName, type EarlierRow } from '../selectors.ts'
 import { isBusy } from '../state.ts'
+import { rowPlace } from '../stars.ts'
 import { topicBlocks, topicStart, topicTitle, turnsOf } from '../topics.ts'
 import { h } from './dom.ts'
 import { markMessage, pastMessageView } from './thread.ts'
@@ -39,14 +40,51 @@ const topicTime = (at: number | null, now: number) => (at ? formatListTime(at, n
 const messagesOf = (block: TopicBlock) => block.segments.flatMap((segment) => segment.messages)
 
 /**
- * An earlier topic the assistant no longer has: folded to one line (its first question, how many turns, when),
- * opened in place; 回到这个话题 takes it up again from its last segment. Folded, its messages are not drawn.
+ * How many messages an earlier topic opened in place draws at most: its latest. The rest of a long one is read in
+ * 回顾, a part at a time.
  */
-function oldTopic(block: TopicBlock, views: View[], handlers: Handlers, { now, busy }: Options) {
+export const OPENED_TOPIC_MAX = 100
+
+/** What a folded topic draws once opened, kept by its element: it is drawn then, not before (see oldTopic). */
+const fillers = new WeakMap<HTMLDetailsElement, () => void>()
+
+/** The rows an opened topic draws: its latest OPENED_TOPIC_MAX messages, with a line to read the rest in 回顾. */
+function openedRows(rows: readonly EarlierRow[], handlers: Handlers, cachedRows: (rows: readonly EarlierRow[]) => View[]): View[] {
+  const messages = rows.filter((row): row is RowOf<'message'> => row.kind === 'message')
+  if (messages.length <= OPENED_TOPIC_MAX) return cachedRows(rows)
+  const first = messages[messages.length - OPENED_TOPIC_MAX]
+  const hidden = messages.length - OPENED_TOPIC_MAX
+  // Read in 回顾 from the last one not drawn here, so reading on there goes on from where this part starts.
+  const place = rowPlace(messages[hidden - 1].id)
+  return [
+    h('button', {
+      class: 'timeline-more topic-rest', type: 'button', text: `这个话题前面还有 ${hidden} 条，在回顾里看 →`,
+      onClick: () => place && handlers.jumpToHit(place),
+    }),
+    ...cachedRows(rows.slice(rows.indexOf(first))),
+  ]
+}
+
+/**
+ * An earlier topic the assistant no longer has: folded to one line (its first question, how many turns, when),
+ * opened in place; 回到这个话题 takes it up again from its last segment. Folded, its messages are not drawn: they are
+ * drawn when it is first opened (by hand, or by openEarlierRow to show a message in it).
+ */
+function oldTopic(block: TopicBlock, build: () => View[], handlers: Handlers, { now, busy }: Options) {
   const messages = messagesOf(block)
   const title = topicTitle(messages)
   const when = topicTime(block.at, now)
-  return h('details', { class: 'topic-old', 'data-title': `${when} · ${title}` },
+  const body = h('div', { class: 'topic-body' })
+  let drawn = false
+  const fill = () => {
+    if (drawn) return
+    drawn = true
+    body.replaceChildren(...[build()].flat(2).filter((view): view is Node | string => Boolean(view)))
+  }
+  const fold = h('details', {
+    class: 'topic-old', 'data-title': `${when} · ${title}`, 'data-segments': block.segments.map((segment) => segment.id).join(' '),
+    onToggle: (event: Event) => { if ((event.currentTarget as HTMLDetailsElement).open) fill() },
+  },
     h('summary', { class: 'topic-head', title: '助手不记得这段，点开看全文' },
       h('b', { class: 'topic-title', text: title }),
       // The day is on the line above it; the line itself says when in the day.
@@ -60,7 +98,31 @@ function oldTopic(block: TopicBlock, views: View[], handlers: Handlers, { now, b
         },
       }),
       h('span', { class: 'topic-chevron', 'aria-hidden': 'true' })),
-    h('div', { class: 'topic-body' }, ...views))
+    body) as HTMLDetailsElement
+  fillers.set(fold, fill)
+  return fold
+}
+
+/**
+ * The row of a message in the earlier part (its `data-msg`, `<segment>-<seq>`), the folded topic it is in opened
+ * and drawn first; null when it is not drawn there (not read back, or past the part an opened topic draws).
+ */
+export function openEarlierRow(container: HTMLElement, msgId: string): HTMLElement | null {
+  const selector = `[data-msg="${CSS.escape(msgId)}"]`
+  const drawn = container.querySelector<HTMLElement>(selector)
+  if (drawn) {
+    // Drawn in a topic opened before and closed again: open it, or the row is there but not seen.
+    const fold = drawn.closest<HTMLDetailsElement>('details.topic-old')
+    if (fold) fold.open = true
+    return drawn
+  }
+  const segmentId = msgId.slice(0, msgId.lastIndexOf('-'))
+  const fold = [...container.querySelectorAll<HTMLDetailsElement>('details.topic-old')]
+    .find((el) => (el.dataset.segments ?? '').split(' ').includes(segmentId))
+  if (!fold) return null
+  fillers.get(fold)?.()
+  fold.open = true
+  return container.querySelector<HTMLElement>(selector)
 }
 
 /** The day a folded topic began stays outside it, so the folded lines still read by day. */
@@ -137,7 +199,7 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
     const day = leadingDay(grouped[i])
     const views = hit ? previous.views : block.remembered
       ? cachedRows(grouped[i])
-      : [...cachedRows(grouped[i].slice(0, day)), oldTopic(block, cachedRows(grouped[i].slice(day)), handlers, options)]
+      : [...cachedRows(grouped[i].slice(0, day)), oldTopic(block, () => openedRows(grouped[i].slice(day), handlers, cachedRows), handlers, options)]
     blockCache.set(key, { inputs, views })
     return views
   })

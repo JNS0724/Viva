@@ -1,6 +1,6 @@
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h, label } from './dom.ts'
-import { focusView, reviewView } from './review.ts'
+import { focusView, patchReader, reviewView } from './review.ts'
 
 /** The words found, with a little of what is around them. */
 type Snippet = { before: string, hit: string, after: string }
@@ -59,9 +59,20 @@ function searchView(state: State, handlers: Handlers, now: number): View[] {
  */
 export function renderHistoryPanel(dom: { historyList: HTMLElement }, state: State, handlers: Handlers, now = Date.now()) {
   if (!state.history.open) return
+  const before = drawn
+  drawn = { history: state.history, review: state.review }
+  // Only the part read changed (read on at an end, or the stars of what is shown): the reader takes it in place.
+  if (before && before.history === state.history && onlyReadingChanged(before.review, state.review) && patchReader(dom.historyList, state, handlers)) return
   // replaceChildren would turn a null into the text "null", unlike h()
   dom.historyList.replaceChildren(...searchView(state, handlers, now).filter((view): view is Node | string => Boolean(view)))
 }
+
+/** What the page was last drawn from. */
+let drawn: { history: State['history'], review: State['review'] } | null = null
+/** What changes as a long topic is read on, without anything else on the page changing (view/review.ts patchReader). */
+const READING_ONLY = new Set(['reading', 'starKeys'])
+const onlyReadingChanged = (before: State['review'], after: State['review']) =>
+  (Object.keys(after) as Array<keyof State['review']>).every((key) => READING_ONLY.has(key) || before[key] === after[key])
 
 /** Bottom toast, e.g. "已删除这条记忆 · 撤销". */
 export function renderToast(container: HTMLElement, toast: { text: string, action?: ToastAction | null } | null, handlers: Handlers) {

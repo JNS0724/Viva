@@ -12,6 +12,7 @@ import { checkSources } from './smoke-sources.ts'
 import { checkFollowups } from './smoke-followups.ts'
 import { runLive } from './live.ts'
 import { checkTimeline } from './smoke-timeline.ts'
+import { checkPerf } from './smoke-perf.ts'
 import { runShowcase } from './smoke-showcase.ts'
 
 const BOOT_WAIT_MS = 1500
@@ -470,9 +471,10 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
   await finishTurn(win)
   await submit(win, SECOND_PROMPT)
   await finishTurn(win)
-  // One timeline: what was said before the new session stays above it, under its day.
+  // One timeline: what was said before the new session stays above it, under its day (folded, it is named by its
+  // first question; its messages are drawn when it is opened).
   const timeline = await run(win, `({
-    earlier: [...document.querySelectorAll('#earlier .msg-user')].map((el) => el.textContent),
+    earlier: [...document.querySelectorAll('#earlier .msg-user, #earlier .topic-title')].map((el) => el.textContent),
     days: [...document.querySelectorAll('#earlier .timeline-day')].map((el) => el.textContent),
     shown: !document.getElementById('earlier').hidden,
   })`)
@@ -541,6 +543,7 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else if (smokePhase === 'live' || smokePhase === 'live-resume') problems.push(...await runLive(win, outDir, smokePhase, hooks))
     else if (smokePhase === 'timeline') problems.push(...await checkTimeline(win, outDir))
+    else if (smokePhase === 'perf') problems.push(...await checkPerf(win, outDir))
     else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)

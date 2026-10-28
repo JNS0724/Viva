@@ -1,7 +1,8 @@
-import { REVIEW_FILTERS, begunEarlier, dayLabel, reviewDays, segmentKey, topicKey, type ReaderMessage, type ReviewTask, type ReviewTopic } from '../review-state.ts'
+import { REVIEW_FILTERS, begunEarlier, dayLabel, reviewDays, segmentKey, topicKey, type ReaderEdge, type ReaderMessage, type ReviewTask, type ReviewTopic } from '../review-state.ts'
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h } from './dom.ts'
 import { markMessage, pastMessageView } from './thread.ts'
+import { reconcileChildren } from './reconcile.ts'
 
 /**
  * 回顾: the 搜索 page with nothing typed (view/history-panel.ts). The topics by month and day of when each was last
@@ -29,28 +30,76 @@ function filterBar(filter: string, handlers: Handlers) {
     })))
 }
 
+/**
+ * Each message read, drawn once: reading on at one end keeps the messages already read (review-state.ts readOn),
+ * so their views are kept with them and only the new ones are built (a long Markdown answer is not drawn again).
+ */
+const readViews = new WeakMap<ReaderMessage, View>()
+
 /** A message read, marked with where it is kept; `found`, the one a hit, link or star named. */
 function readMessage(message: ReaderMessage, found: string | null, handlers: Handlers): View {
   const msgId = `${message.segmentId}-${message.seq}`
-  const view = markMessage(pastMessageView(message as unknown as ThreadMessage, handlers), msgId)
+  let view = readViews.get(message)
+  if (view === undefined) {
+    view = markMessage(pastMessageView(message as unknown as ThreadMessage, handlers), msgId)
+    readViews.set(message, view)
+  }
   const first = Array.isArray(view) ? view[0] : view
-  if (msgId === found && first instanceof Element) first.classList.add('msg-found')
+  if (first instanceof Element) first.classList.toggle('msg-found', msgId === found)
   return view
 }
 
-/** What is open read: its messages as they were, each with its star; or that it is being read. */
-function readerBody(key: string, review: State['review'], handlers: Handlers, found: string | null = null): View {
-  const messages = review.reading?.key === key ? review.reading.messages : null
-  return messages === null ? hint('正在读取…') : messages.map((message: ReaderMessage) => readMessage(message, found, handlers))
+/**
+ * The end of the part read where more is: it reads on by itself as it comes into view (app.ts watches
+ * `.reader-edge`), or when pressed.
+ */
+function readerEdge(edge: ReaderEdge, count: number, handlers: Handlers) {
+  return h('button', {
+    class: 'reader-edge timeline-more', type: 'button', 'data-edge': edge,
+    text: edge === 'before' ? `更早的 ${count} 条` : `后面还有 ${count} 条`,
+    onClick: () => handlers.readerMore(edge),
+  })
 }
 
-/** A topic read: 继续这个话题 goes on from its newest segment, the only thing here that changes the conversation. */
-function reader(key: string, head: string | null, review: State['review'], handlers: Handlers, found: string | null = null) {
-  return h('div', { class: 'review-reader' },
-    readerBody(key, review, handlers, found),
+/** What is open read: the part of its messages drawn, each with its star, and where more is; or that it is being read. */
+function readerBody(key: string, review: State['review'], handlers: Handlers, found: string | null): View[] {
+  const reading = review.reading?.key === key ? review.reading : null
+  if (reading === null) return [hint('正在读取…')]
+  const after = reading.total - reading.from - reading.messages.length
+  return [
+    reading.from > 0 ? readerEdge('before', reading.from, handlers) : null,
+    ...reading.messages.map((message: ReaderMessage) => readMessage(message, found, handlers)),
+    after > 0 ? readerEdge('after', after, handlers) : null,
+  ]
+}
+
+/** What a reader holds: the part read, and for a topic 继续这个话题 (the only thing here that changes the conversation). */
+function readerParts(key: string, head: string | null, review: State['review'], handlers: Handlers, found: string | null): Array<Node | string> {
+  return [
+    ...readerBody(key, review, handlers, found),
     head ? h('div', { class: 'review-reader-actions' },
       h('span', { class: 'review-reader-note', text: '这段记录没有带进当前对话；助手需要时可以查。' }),
-      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '继续这个话题', onClick: () => handlers.resumeFromReview(head) })) : null)
+      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '继续这个话题', onClick: () => handlers.resumeFromReview(head) })) : null,
+  ].flat(2).filter((part): part is Node | string => part instanceof Node || (typeof part === 'string' && part !== ''))
+}
+
+/** The reader of `key`; it says what it reads, so a part read on is put into it in place (patchReader). */
+function reader(key: string, head: string | null, review: State['review'], handlers: Handlers, found: string | null = null) {
+  return h('div', { class: 'review-reader', 'data-key': key, 'data-head': head ?? '' }, ...readerParts(key, head, review, handlers, found))
+}
+
+/**
+ * A part read on (or a star changed) and nothing else on the page: the reader on screen takes it in place, the
+ * messages it had kept where they are rather than drawn again (a long topic reads on without the page being redrawn).
+ * @returns false when there is no such reader on screen, and the page is drawn again instead
+ */
+export function patchReader(list: HTMLElement, state: State, handlers: Handlers): boolean {
+  const key = state.review.open
+  const el = key ? list.querySelector<HTMLElement>(`.review-reader[data-key="${CSS.escape(key)}"]`) : null
+  if (!el || !key) return false
+  const found = state.review.focus?.key === key ? state.review.focus.found : null
+  reconcileChildren(el, readerParts(key, el.dataset.head || null, state.review, handlers, found))
+  return true
 }
 
 /** A message opened from a search hit, a link or a star: its topic or task, read at the top, until closed. */
@@ -64,7 +113,7 @@ export function focusView(state: State, handlers: Handlers, now = Date.now()): V
       h('span', { class: 'review-kind', text: isTopic ? '记录' : '后台' }),
       h('b', { class: 'review-title', text: focus.title || '（没有提问）' }),
       when ? h('span', { class: 'review-meta mono', text: when }) : null,
-      h('button', { class: 'btn btn-text btn-small', type: 'button', text: '关闭', onClick: () => handlers.reviewCloseFocus() })),
+      h('button', { class: 'btn btn-text btn-small review-focus-close', type: 'button', text: '关闭', onClick: () => handlers.reviewCloseFocus() })),
     focus.notice ? h('div', { class: 'review-notice', role: 'status', text: focus.notice }) : null,
     reader(focus.key, focus.head, state.review, handlers, focus.found))
 }
@@ -79,7 +128,7 @@ function taskItem(task: ReviewTask, review: State['review'], handlers: Handlers)
       h('span', { class: 'review-title', text: task.title || '（没有提问）' }),
       marks ? h('span', { class: 'review-marks', text: marks }) : null,
       h('span', { class: 'review-meta mono', text: `${task.turns} 轮 · ${clock(task.createdAt)}` })),
-    open ? h('div', { class: 'review-reader' }, readerBody(key, review, handlers)) : null)
+    open ? reader(key, null, review, handlers) : null)
 }
 
 function topicItem(topic: ReviewTopic, review: State['review'], handlers: Handlers, now: number) {
