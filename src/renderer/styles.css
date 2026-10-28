@@ -922,7 +922,17 @@ body.drop-images::after { content: '松开，把图片放进输入框'; }
 .review-meta { flex: none; font-size: 12px; color: var(--ink-3); }
 .review-reader { display: flex; flex-direction: column; gap: 20px; padding: 18px 20px; border-top: 1px solid var(--line); }
 .review-reader .msg-user, .review-reader .msg-text { font-size: 14px; }
-.review-reader-actions { display: flex; justify-content: flex-end; }
+.review-reader-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
+.review-reader-note { flex: 1; font-size: 12px; color: var(--ink-3); }
+/* A topic's background tasks, a line each under it. */
+.review-tasks { list-style: none; margin: 0; padding: 0 0 8px 28px; display: flex; flex-direction: column; gap: 2px; border-top: 1px dashed var(--line); }
+.review-task-row { padding-top: 8px; padding-bottom: 8px; }
+.review-task-row .review-title { font-weight: 500; color: var(--ink-2); }
+/* A message opened from a search hit, a link or a star: read at the top until closed. */
+.review-focus { margin-bottom: 18px; border: 1px solid var(--accent); border-radius: 14px; background: var(--panel); }
+.review-focus-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; }
+.review-notice { margin: 0 16px 12px; padding: 8px 12px; border-radius: 10px; background: var(--raised); color: var(--orange); font-size: 13px; }
+.review-star[data-deleted="true"] { opacity: .55; }
 .review-star { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); }
 .review-star-text { font-size: 14px; line-height: 1.6; color: var(--ink); }
 .review-star-actions { display: flex; justify-content: flex-end; gap: 8px; }

@@ -404,7 +404,13 @@ test('acp bridge switches to an older session for a reopened conversation, or to
   bridge.dispose()
 })
 
-test('acp bridge explains a launch failure: missing Node.js versus a missing working directory', () => {
+/** Waits until `check` holds, looking again every few ms, or gives up after `ms` (a slow machine takes longer). */
+async function eventually(check, { ms = 2000, every = 5 } = {}) {
+  const until = Date.now() + ms
+  while (!check() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, every))
+}
+
+test('acp bridge explains a launch failure: missing Node.js versus a missing working directory', async () => {
   const messages = []
   const failingSpawn = () => {
     const child = fakeDsh(scriptedAgent([]))
@@ -416,8 +422,10 @@ test('acp bridge explains a launch failure: missing Node.js versus a missing wor
   launch(process.cwd()).start().catch(() => {})
   launch('/definitely/not/here').start().catch(() => {})
 
-  return new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
-    assert.ok(messages.some((m) => /找不到 Node\.js/.test(m)))
-    assert.ok(messages.some((m) => m === '工作目录不存在：/definitely/not/here'))
-  })
+  const missingNode = () => messages.some((m) => /找不到 Node\.js/.test(m))
+  const missingDir = () => messages.some((m) => m === '工作目录不存在：/definitely/not/here')
+  // Both failures are reported asynchronously; wait for them rather than for a fixed time.
+  await eventually(() => missingNode() && missingDir())
+  assert.ok(missingNode(), JSON.stringify(messages))
+  assert.ok(missingDir(), JSON.stringify(messages))
 })

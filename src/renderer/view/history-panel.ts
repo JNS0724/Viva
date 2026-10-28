@@ -1,6 +1,6 @@
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h, label } from './dom.ts'
-import { reviewView } from './review.ts'
+import { focusView, reviewView } from './review.ts'
 
 /** The words found, with a little of what is around them. */
 type Snippet = { before: string, hit: string, after: string }
@@ -20,8 +20,8 @@ const contextLine = (message: Nearby) => (message
   : null)
 
 /**
- * One message that has the words, between what was said before and after it;
- * 详情 closes the page and scrolls the timeline to it (timeline-search.js).
+ * One message that has the words, between what was said before and after it; 详情 scrolls the timeline to it when
+ * it is on screen, else reads it here where it is kept (review-actions.ts openRef).
  */
 function hitView(hit: SearchHit, handlers: Handlers, now: number) {
   const who = SPEAKERS[hit.role] ?? '记录'
@@ -42,9 +42,12 @@ function searchView(state: State, handlers: Handlers, now: number): View[] {
   const { query, results } = state.history
   // Nothing typed: 回顾, the timeline by day (view/review.ts).
   if (!query.trim()) return reviewView(state, handlers, now)
-  if (results === null) return [h('div', { class: 'history-hint', text: '搜索中…' })]
-  if (results.length === 0) return [empty(`没有找到「${query.trim()}」`)]
+  // A hit opened (详情): read at the top, the results kept below it.
+  const focus = focusView(state, handlers, now)
+  if (results === null) return [focus, h('div', { class: 'history-hint', text: '搜索中…' })]
+  if (results.length === 0) return [focus, empty(`没有找到「${query.trim()}」`)]
   return [
+    focus,
     label(`${results.length} 条消息`),
     h('ul', { class: 'history-items' }, results.map((hit: SearchHit) => hitView(hit, handlers, now))),
   ]

@@ -22,7 +22,7 @@ import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
 import { liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
-import { timelinePlace } from './timeline-search.ts'
+import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
@@ -262,17 +262,22 @@ const historyActions = createHistoryActions({
   dispatch,
   searchField: dom.historySearch,
   errorMessage,
-  jumpTo: (hit: Untyped) => timelineActions.jumpTo(hit),
+  locate: (hit: SearchHit) => api.locateMessage(hit.messageId === undefined
+    ? { segmentId: hit.segmentId, seq: hit.seq } : { segmentId: hit.segmentId, seq: hit.seq, messageId: hit.messageId }),
+  revealOnScreen: (found) => {
+    const target = hitTarget(state, found)
+    return target ? () => revealMessage(target.msgId) : null
+  },
+  openInReview: (hit: SearchHit) => reviewActions.openRef(hit),
 })
 /** 回顾 on the 搜索 page, and the stars on messages (review-actions.ts). */
 const reviewActions = createReviewActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage,
+  // The message found stays marked while it is read (view/review.ts); here it is only scrolled to.
   reveal: (msgId: string) => {
-    const row = dom.historyList.querySelector(`.review-reader [data-msg="${CSS.escape(msgId)}"]`)
+    const row = dom.historyList.querySelector(`.review-focus [data-msg="${CSS.escape(msgId)}"]`)
     if (!row) return false
     row.scrollIntoView({ block: 'center' })
-    row.classList.add('msg-found')
-    setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
     return true
   },
 })
@@ -447,7 +452,7 @@ const taskActions = createTaskActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
   isTyping: () => Boolean(dom.input.value.trim()),
 })
-const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
+const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
@@ -483,6 +488,7 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
   'open-profile': () => memoryActions.openProfile(),
   'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
   'open-settings': () => handlers.openSettings(),
+  'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
 }
 
 const handlers = {
