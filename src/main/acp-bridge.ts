@@ -309,14 +309,34 @@ export function createAcpBridge({
   }
 
   /**
-   * Reattaches exactly that session, in its own directory, or throws why not (resume-failure.ts): unlike
-   * resumeOrOpen, it never opens another session in its place.
+   * Goes over to exactly that session, in its own directory, or throws why not (resume-failure.ts), the agent left
+   * as it was: the session is resumed first, beside the one in use (dsh holds several, as it does tasks), and only
+   * then is the one in use left. So a failure, or a session that will not close, never leaves the conversation on
+   * screen without its session, nor puts a new one in its place.
    */
-  async function resumeExactly(resumeSessionId: string, targetCwd: string) {
+  async function switchExactly(targetSessionId: string, targetCwd: string, measure: ReturnType<typeof sessionTiming>) {
+    const leaving = sessionId
+    if (targetSessionId === leaving) return { ...infoFrom(configNow ?? undefined), resumed: true }
     if (!canResume) throw new ResumeError('gone', '这个版本的助手接不回以前的会话')
+    let response
+    try {
+      // Closed earlier (撤销 a new topic goes back to the session just left): that close finishes first.
+      await closing.get(targetSessionId)?.catch(() => {})
+      response = await withMcpServers((servers) => live().resumeSession({ sessionId: targetSessionId, cwd: targetCwd, mcpServers: servers }))
+    } catch (err) {
+      console.error('[acp-bridge] could not resume the topic\'s session; staying where it was:', describeError(err))
+      throw new ResumeError(resumeReason(err), describeError(err, stderrTail))
+    }
+    questions.declineAll()
+    config?.closeAll()
+    steering.closeAll()
+    forking.closeAll()
+    if (leaving) {
+      broker.cancelAll(leaving)
+      retire(leaving, measure)
+    }
+    sessionId = targetSessionId
     sessionCwd = targetCwd
-    const response = await withMcpServers((servers) => live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: servers }))
-    sessionId = resumeSessionId
     prepareFresh()
     return { ...infoFrom(response.configOptions), resumed: true }
   }
@@ -424,17 +444,17 @@ export function createAcpBridge({
   /**
    * Leaves the current session for `targetSessionId` (a reopened conversation), or for a fresh one when null.
    * @param targetCwd its directory, when not the current one
-   * @param exactly that session or none (继续这个话题): when it cannot be resumed, the agent goes back to the
-   *   session it left (nothing is lost by trying) and a ResumeError says why, with where the agent is now
+   * @param exactly that session or none (继续这个话题, switchExactly): when it cannot be resumed, the agent stays
+   *   on the session it is on (nothing is lost by trying) and a ResumeError says why
    */
   async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd, { exactly = false } = {}) {
     if (switching) throw Error('会话正在准备，请稍候')
     switching = true
     const measure = sessionTiming(onTiming)
     try {
+      if (targetSessionId && exactly) return await measure('session.switch', () => switchExactly(targetSessionId, targetCwd, measure))
       return await measure('session.switch', async () => {
         const leaving = sessionId
-        const leavingCwd = sessionCwd
         questions.declineAll()
         config?.closeAll()
         steering.closeAll()
@@ -447,18 +467,6 @@ export function createAcpBridge({
         if (leaving) retire(leaving, measure)
         const barriers = [...closing.values()]
         const released = () => measure('session.wait-for-close', () => Promise.all(barriers))
-        if (targetSessionId && exactly) {
-          await released()
-          try {
-            return await resumeExactly(targetSessionId, targetCwd)
-          } catch (err) {
-            const reason = err instanceof ResumeError ? err.reason : resumeReason(err)
-            console.error('[acp-bridge] could not resume the topic\'s session, going back:', describeError(err))
-            // Back to where the agent was: resumed, or (if that cannot be either) a new session.
-            const back = await resumeOrOpen(leaving, leavingCwd)
-            throw new ResumeError(reason, describeError(err, stderrTail), { ...back, sessionId })
-          }
-        }
         if (targetSessionId) {
           await released()
           return resumeOrOpen(targetSessionId, targetCwd)

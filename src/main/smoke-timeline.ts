@@ -295,6 +295,9 @@ async function checkResume(win: BrowserWindow, outDir: string, expect: Expect) {
   const note = await until(win, `[...document.querySelectorAll('#earlier .topic-note')].map((el) => el.textContent).find((text) => text.includes('仅供助手参考'))`, 'the new conversation saying what it carries')
   const after = await run(win, AGENT)
   expect(note.includes('轮记录') && after.sessionId !== agent.sessionId, 'going on from the records should be a new conversation saying so', { note, agent, after })
+  // The dialog gone and the page drawn again before the picture (else it may show the frame before).
+  await until(win, `!document.querySelector('#resume-root .resume-sheet')`, 'the dialog closed')
+  await wait(UI_WAIT_MS)
   await capture(win, outDir, 'resume-carried')
 }
 

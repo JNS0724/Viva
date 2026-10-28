@@ -11,6 +11,8 @@ test('only what says the session is not there means gone; anything else may work
   assert.equal(resumeReason(new Error('connect ECONNRESET')), 'unavailable')
   assert.equal(resumeReason(new Error('401 Unauthorized')), 'unavailable')
   assert.equal(resumeReason('something else'), 'unavailable')
+  // An ACP error as dsh-acp sends it: the reason in data, the message only "Invalid params".
+  assert.equal(resumeReason(Object.assign(new Error('Invalid params'), { code: -32602, data: { details: 'session is not resumable: abc' } })), 'gone')
 })
 
 const turn = (i: number) => [{ role: 'user', text: `问题 ${i}` }, { role: 'assistant', text: `回答 ${i}` }]
