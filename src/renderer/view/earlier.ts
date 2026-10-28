@@ -110,7 +110,12 @@ function oldTopic(block: TopicBlock, build: () => View[], handlers: Handlers, { 
 export function openEarlierRow(container: HTMLElement, msgId: string): HTMLElement | null {
   const selector = `[data-msg="${CSS.escape(msgId)}"]`
   const drawn = container.querySelector<HTMLElement>(selector)
-  if (drawn) return drawn
+  if (drawn) {
+    // Drawn in a topic opened before and closed again: open it, or the row is there but not seen.
+    const fold = drawn.closest<HTMLDetailsElement>('details.topic-old')
+    if (fold) fold.open = true
+    return drawn
+  }
   const segmentId = msgId.slice(0, msgId.lastIndexOf('-'))
   const fold = [...container.querySelectorAll<HTMLDetailsElement>('details.topic-old')]
     .find((el) => (el.dataset.segments ?? '').split(' ').includes(segmentId))

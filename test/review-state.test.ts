@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { begunEarlier, reviewDays, topicKey, type ReviewTopic } from '../src/renderer/review-state.ts'
+import { begunEarlier, readOn, reviewDays, topicKey, type ReviewTopic } from '../src/renderer/review-state.ts'
 
 /** 回顾: the topics by day of when each was last talked in; filtered, read in place, opened from a link, starred. */
 
@@ -68,6 +68,15 @@ test('a star changed anywhere is counted on its topic and its task, and leaves t
   state = reduce(state, { type: 'star_changed', segmentId: 'a', seq: 1, starred: false })
   assert.equal(state.review.topics[0].stars, 1)
   assert.deepEqual(state.review.starred, [])
+})
+
+test('a part that does not join on at its end is not taken', () => {
+  const seqs = (from: number, count: number) => Array.from({ length: count }, (_, i) => ({ segmentId: 'a', seq: from + i, role: 'user', text: '' }))
+  const window = { key: 't:a', read: 1, whole: false, total: 2000, from: 1450, messages: seqs(1450, 100), loading: 'before' as const }
+  const stale = readOn(window, 'before', { total: 2000, from: 470, messages: seqs(470, 30) })
+  assert.deepEqual([stale.from, stale.messages.length, stale.loading], [1450, 100, null])
+  const joined = readOn(window, 'before', { total: 2000, from: 1420, messages: seqs(1420, 30) })
+  assert.deepEqual([joined.from, joined.messages[0].seq, joined.messages.length], [1420, 1420, 130])
 })
 
 test('a star the history already had marks the message but does not count twice', () => {

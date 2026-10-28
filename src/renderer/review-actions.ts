@@ -82,11 +82,14 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     return { ...named, total: part.total, from: part.from, messages }
   }
 
+  /** Counts the readings begun (opened, or opened again at a message): a part read on names the one it is for. */
+  let reads = 0
+
   async function readKey(key: string) {
     try {
       const read = await fetchRead(key, { from: 0 })
       if (!read) return showToast('这段记录已经删除了')
-      dispatch({ type: 'review_read', key, messages: read.messages, from: read.from, total: read.total })
+      dispatch({ type: 'review_read', key, read: ++reads, messages: read.messages, from: read.from, total: read.total })
     } catch (err) {
       report('这段记录读不出来')(err)
     }
@@ -104,12 +107,14 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     const from = edge === 'before' ? Math.max(0, reading.from - READ_ON) : end
     const count = edge === 'before' ? reading.from - from : Math.min(READ_ON, reading.total - end)
     if (count <= 0) return
-    dispatch({ type: 'review_read_loading', key: reading.key, edge })
+    const { read, whole } = reading
+    dispatch({ type: 'review_read_loading', read, edge })
     try {
-      const part = await api.readHistory(reading.key, { from, count })
-      keepPlace(() => dispatch({ type: 'review_read_more', key: reading.key, edge, part }))
+      // Read the way the reading began: a segment read whole goes on whole.
+      const part = await api.readHistory(reading.key, whole ? { from, count, whole } : { from, count })
+      keepPlace(() => dispatch({ type: 'review_read_more', read, edge, part }))
     } catch (err) {
-      dispatch({ type: 'review_read_more', key: reading.key, edge, part: null })
+      dispatch({ type: 'review_read_more', read, edge, part: null })
       report('这段记录读不出来')(err)
     }
   }
@@ -128,16 +133,18 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
       // The part around the message, however far into a long topic it is.
       const around = located.seq === null ? undefined : { segmentId: located.segmentId, seq: located.seq }
       let read = await fetchRead(key, around ? { around } : { from: 0 })
+      let whole = false
       // A star or link on the talk a moved turn shares with the conversation: read that segment whole.
       if (read && located.status === 'found' && !read.messages.some((m) => m.segmentId === located.segmentId && m.seq === located.seq)) {
         read = await fetchRead(key, { around, whole: true })
+        whole = true
       }
       if (!read) return showToast('这条记录已经删除了')
       const notice = located.status === 'found' ? null : located.seq === null ? NOTICE_EMPTY : NOTICE_MISSING
       const msgId = located.seq === null ? null : `${located.segmentId}-${located.seq}`
       const found = located.status === 'found' ? msgId : null
       dispatch({ type: 'review_focus', key, title: read.title, at: read.at, head: read.head, found, notice })
-      dispatch({ type: 'review_read', key, messages: read.messages, from: read.from, total: read.total })
+      dispatch({ type: 'review_read', key, read: ++reads, whole, messages: read.messages, from: read.from, total: read.total })
       if (msgId !== null && !reveal(msgId) && found) showToast('这条消息找到了，但没能显示出来')
     } catch (err) {
       showToast(`读取失败：${errorMessage(err)}`, { action: { label: '重试', kind: 'open-ref', payload: ref }, ms: RETRY_MS })

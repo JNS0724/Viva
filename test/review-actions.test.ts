@@ -106,6 +106,67 @@ test('a long topic is read on at either end as the user comes to it, the place l
   assert.equal(kept, 4)
 })
 
+/** A topic of `total` messages read from a fake history: parts by place or around a message, each answer held until let go. */
+function slowHistory(total: number) {
+  const pending: Array<{ request: Record<string, any>, answer: () => void }> = []
+  const part = (from: number, count: number) => ({ topic: topicRead.topic, total, from, messages: Array.from({ length: count }, (_, i) => message('a', from + i, `第 ${from + i} 条`)) })
+  const readHistory = (_key: string, request: Record<string, any> = {}) => new Promise((resolve) => {
+    const from = request.around ? Math.max(0, request.around.seq - 50) : request.from ?? 0
+    pending.push({ request, answer: () => resolve(part(from, Math.min(request.count ?? 100, total - from))) })
+  })
+  return { pending, readHistory }
+}
+
+test('a part asked for before the same topic was opened again at another message is not taken into the new reading', async () => {
+  const history = slowHistory(2000)
+  let at = 500
+  let state: State = initialState
+  const actions = createReviewActions({
+    api: { readHistory: history.readHistory, locateMessage: async () => ({ status: 'found', segmentId: 'a', seq: at, messageId: at + 1, reader: { key: 't:t1', topicId: 't1' } }) } as Partial<Api> as Api,
+    getState: () => state, dispatch: (action) => { state = reduce(state, action) }, errorMessage: String, showToast: () => {}, reveal: () => true,
+  })
+  const settle = () => new Promise((resolve) => setImmediate(resolve))
+  const opening = actions.openRef({ segmentId: 'a', seq: 500 })
+  await settle()
+  history.pending.shift()!.answer()
+  await opening
+  const stale = actions.readerMore('before')
+  await settle()
+  const old = history.pending.shift()!
+  at = 1500
+  const reopening = actions.openRef({ segmentId: 'a', seq: 1500 })
+  await settle()
+  history.pending.shift()!.answer()
+  await reopening
+  old.answer()
+  await stale
+
+  const reading = state.review.reading!
+  assert.deepEqual([reading.from, reading.messages[0].seq, reading.messages.length], [1450, 1450, 100], 'the late part of the old reading is dropped')
+})
+
+test('a segment read whole (a star on the talk a moved turn shares) goes on whole as it is read on', async () => {
+  const asked: Array<Record<string, any>> = []
+  let state: State = initialState
+  const whole = (from: number, count: number) => ({ topic: null, total: 400, from, messages: Array.from({ length: count }, (_, i) => message('moved', from + i, `第 ${from + i} 条`)) })
+  const actions = createReviewActions({
+    api: {
+      locateMessage: async () => ({ status: 'found', segmentId: 'moved', seq: 10, messageId: 11, reader: { key: 's:moved', topicId: 't1' } }),
+      readHistory: async (_key, request) => {
+        asked.push(request ?? {})
+        if (!request?.whole) return { topic: null, total: 200, from: 0, messages: [message('moved', 200, '周报')] }
+        return request.around ? whole(0, 100) : whole(request.from ?? 0, request.count ?? 100)
+      },
+    } as Partial<Api> as Api,
+    getState: () => state, dispatch: (action) => { state = reduce(state, action) }, errorMessage: String, showToast: () => {}, reveal: () => true,
+  })
+  await actions.openRef({ segmentId: 'moved', seq: 10 })
+  await actions.readerMore('after')
+  assert.deepEqual(asked.at(-1), { from: 100, count: 30, whole: true })
+  const reading = state.review.reading!
+  assert.deepEqual([reading.total, reading.messages.at(-1)!.seq, reading.messages.length], [400, 129, 130], 'goes on from 100, not from where the own part starts')
+})
+
 test('switching filters while a list is on its way shows only the list for the filter chosen last', async () => {
   const answers: Array<{ filter: string, answer: (page: { topics: unknown[], hasMore: boolean }) => void }> = []
   const { actions, state } = setup({

@@ -27,16 +27,29 @@ export type ReviewFocus = { key: string, title: string, at: number | null, head:
 /**
  * The part of what is read that is drawn: `messages` from place `from` of `total` (history-reader.ts), never more
  * than READER_MAX, so a topic of a thousand turns reads with no more on the page than a short one. Reading on at one
- * end lets go of as many at the other; `loading`, the end being read.
+ * end lets go of as many at the other; `loading`, the end being read. `read` names the reading it came from (a part
+ * asked for by an earlier one, opened before the topic was opened again elsewhere, is not taken); `whole`, a segment
+ * read with the talk it shares, as every part read on of it is too.
  */
-export type ReaderWindow = { key: string, total: number, from: number, messages: readonly ReaderMessage[], loading: 'before' | 'after' | null }
+export type ReaderWindow = {
+  key: string, read: number, whole: boolean, total: number, from: number, messages: readonly ReaderMessage[], loading: 'before' | 'after' | null,
+}
 export type ReaderEdge = 'before' | 'after'
 export const READER_MAX = 200
 /** A part read from the history: where it starts, what it holds. */
 export type ReadPart = { total: number, from: number, messages: readonly ReaderMessage[] }
 
-/** A window with a part read on at one end, what it no longer needs let go at the other. */
+/** Whether a part read on joins the window at that end: right before its first message, or right after its last. */
+const joins = (window: ReaderWindow, edge: ReaderEdge, part: ReadPart) => (edge === 'before'
+  ? part.from + part.messages.length === window.from
+  : part.from === window.from + window.messages.length)
+
+/**
+ * A window with a part read on at one end, what it no longer needs let go at the other. A part that does not join
+ * on there (the history changed under it) is not taken.
+ */
 export function readOn(window: ReaderWindow, edge: ReaderEdge, part: ReadPart): ReaderWindow {
+  if (!joins(window, edge, part)) return { ...window, loading: null }
   const end = window.from + window.messages.length
   if (edge === 'before') {
     const added = part.messages.slice(0, Math.max(0, window.from - part.from))
@@ -141,14 +154,17 @@ export const REVIEW_ACTIONS: Record<string, Reducer> = {
   }),
   review_unfocus: (state) => withReview(state, { open: null, reading: null, focus: null }),
   /** A part of what is open read afresh (opened, or opened at a message). */
-  review_read: (state, { key, messages, from = 0, total = messages.length }) => (state.review.open === key
-    ? withReview(state, { reading: { key, messages, from, total, loading: null } })
+  review_read: (state, { key, read = 0, whole = false, messages, from = 0, total = messages.length }) => (state.review.open === key
+    ? withReview(state, { reading: { key, read, whole, messages, from, total, loading: null } })
     : state),
-  review_read_loading: (state, { key, edge }) => (state.review.reading?.key === key
+  review_read_loading: (state, { read, edge }) => (state.review.reading?.read === read
     ? withReview(state, { reading: { ...state.review.reading, loading: edge } })
     : state),
-  /** More read at one end of what is open; as many let go at the other end past READER_MAX. */
-  review_read_more: (state, { key, edge, part }) => (state.review.reading?.key === key
+  /**
+   * More read at one end of what is open; as many let go at the other end past READER_MAX. Only for the reading it
+   * was asked for: one begun since (the same topic opened again at another message) is left as it is.
+   */
+  review_read_more: (state, { read, edge, part }) => (state.review.reading?.read === read
     ? withReview(state, { reading: part ? readOn(state.review.reading, edge, part) : { ...state.review.reading, loading: null } })
     : state),
   review_starred: (state, { items }) => withReview(state, { starred: items }),
