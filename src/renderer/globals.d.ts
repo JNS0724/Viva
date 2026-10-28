@@ -89,8 +89,11 @@ interface Segment {
   messages: ReadonlyArray<SegmentMessage>
   [field: string]: any
 }
-/** Where a search found the words (history-db.ts searchMessages): the segment, and the message's seq in it. */
-interface SearchHit { segmentId: string, seq: number, [field: string]: any }
+/**
+ * Where a search found the words (history-db.ts searchMessages), or a link or a star names a message: the segment,
+ * the message's seq in it, and its id when known (what stays the same while the message is there).
+ */
+interface SearchHit { segmentId: string, seq: number, messageId?: number, [field: string]: any }
 /** One answer dsh offers to an approval: allow once, always, reject. */
 interface PermissionOption { optionId: string, name: string, kind?: string }
 /** One question the agent asks, with its options. */
@@ -183,6 +186,8 @@ interface AgentApi {
   searchHistory: Invoke<'history:search'>
   openConversation: Invoke<'history:open'>
   resumeTopic: Invoke<'history:resume-topic'>
+  resumeCheck: Invoke<'history:resume-check'>
+  continueFromRecords: Invoke<'history:continue-from-records'>
   loadTrace: Invoke<'history:trace'>
   renameConversation: Invoke<'history:rename'>
   pinConversation: Invoke<'history:pin'>
@@ -191,6 +196,12 @@ interface AgentApi {
   exportConversation: Invoke<'history:export'>
   earlierSegments: Invoke<'history:segments-before'>
   searchTimeline: Invoke<'history:search-messages'>
+  reviewTimeline: Invoke<'history:review'>
+  readHistory: Invoke<'history:read'>
+  locateMessage: Invoke<'history:locate'>
+  starMessage: Invoke<'history:star'>
+  starsIn: Invoke<'history:stars-in'>
+  starredMessages: Invoke<'history:starred'>
   rewind: Invoke<'timeline:rewind'>
   spinOffTask: Invoke<'task:spin-off'>
   startTask: Invoke<'task:start'>

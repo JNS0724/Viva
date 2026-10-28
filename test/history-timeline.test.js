@@ -59,9 +59,10 @@ test('earlier segments come back oldest first, in pages, each message with its t
   assert.equal(page.hasMore, true)
   assert.deepEqual(page.segments[0], {
     id: b.id, cwd: '/w/b', parentId: null, createdAt: b.createdAt,
-    messages: [{ seq: 0, role: 'user', text: '二', receipt: null, at: page.segments[0].messages[0].at }],
+    messages: [{ id: page.segments[0].messages[0].id, seq: 0, role: 'user', text: '二', receipt: null, at: page.segments[0].messages[0].at }],
   })
   assert.ok(Number.isFinite(page.segments[0].messages[0].at))
+  assert.ok(Number.isInteger(page.segments[0].messages[0].id), 'each message with its id, what a link names')
 
   const rest = db.segmentsBefore(b.id, { limit: 2 })
   assert.deepEqual([rest.segments.map((s) => s.id), rest.hasMore], [[a.id], false])

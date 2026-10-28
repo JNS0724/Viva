@@ -59,6 +59,8 @@ export const IPC_ARGS = Object.freeze({
   'history:search': z.tuple([text]),
   'history:open': z.tuple([id]),
   'history:resume-topic': z.tuple([id]),
+  'history:resume-check': z.tuple([id]),
+  'history:continue-from-records': z.tuple([id, path]),
   'history:trace': z.tuple([id, z.number().optional()]),
   'history:rename': z.tuple([id, text]),
   'history:pin': z.tuple([id, z.boolean()]),
@@ -67,6 +69,14 @@ export const IPC_ARGS = Object.freeze({
   'history:export': z.tuple([id]),
   'history:segments-before': z.tuple([id, count.optional()]),
   'history:search-messages': z.tuple([text]),
+  'history:review': z.tuple([z.object({ lastAt: z.number(), topicId: id }).nullable().optional(), z.enum(['all', 'tasks', 'files']).optional()]),
+  'history:read': z.tuple([id, z.object({
+    from: count.optional(), around: z.object({ segmentId: id, seq: count }).optional(), count: count.optional(), whole: z.boolean().optional(),
+  }).optional()]),
+  'history:locate': z.tuple([z.object({ segmentId: id, seq: count, messageId: count.optional() })]),
+  'history:star': z.tuple([id, count, z.boolean()]),
+  'history:stars-in': z.tuple([z.array(id).max(MAX_LIST)]),
+  'history:starred': none,
 
   'timeline:rewind': z.tuple([record]),
   'timeline:rewind-effects': z.tuple([record]),

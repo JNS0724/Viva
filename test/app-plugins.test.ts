@@ -30,6 +30,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
   assert.deepEqual(problems, [])
   assert.deepEqual(plugins.map((plugin) => [plugin.name, plugin.config]), [
     ['viva-tasks', {}],
+    ['viva-history', {}],
     ['viva-stream', {}],
     ['viva-memory', { file: path.join('/data', 'memory.db') }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],

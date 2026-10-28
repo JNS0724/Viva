@@ -16,6 +16,7 @@ import { renderIsland } from './island.ts'
 import { renderModelPicker } from './model-picker.ts'
 import { renderProfilePanel } from './profile-panel.ts'
 import { renderRewindConfirm } from './rewind.ts'
+import { renderResumeDialog } from './resume-dialog.ts'
 import { renderSettings } from './settings.ts'
 import { renderThread } from './thread.ts'
 import { renderTopicLabel } from './topic-label.ts'
@@ -109,7 +110,7 @@ function renderDrawerIfChanged(container: HTMLElement, state: State, handlers: H
 
 /** The panel only depends on its own slice; skipping identical renders keeps hover and focus in the list. */
 function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
-  const inputs = [state.history]
+  const inputs = [state.history, state.review]
   if (inputs.every((value, i) => value === renderedHistoryInputs[i])) return
   renderedHistoryInputs = inputs
   renderHistoryPanel(dom, state, handlers)
@@ -225,6 +226,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)
+  renderResumeDialog(dom.resumeDialog, state.resume, handlers)
 }
 
 /** Per-frame update while text is being typed out: only the thread and the status island. */

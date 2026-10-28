@@ -22,9 +22,16 @@ import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
 import { liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
+import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
+import { attachTurnRail } from './view/turn-rail.ts'
+import { attachStars } from './view/star-buttons.ts'
+import { openEarlierRow } from './view/earlier.ts'
+import { createResumeActions } from './resume-actions.ts'
+import { createReviewActions } from './review-actions.ts'
+import { isStarred, placeOf } from './stars.ts'
 import { scheduleFrame } from './view/frame.ts'
 
 const TICK_MS = 1000
@@ -69,6 +76,7 @@ const elements = {
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
   rewindConfirm: byId('rewind-confirm-root'),
+  resumeDialog: byId('resume-root'),
   toggleDrawer: byId('toggle-drawer'),
   settings: byId('settings-root'),
   modelArea: byId('model-area'),
@@ -94,6 +102,7 @@ const dom = { ...elements, follower: createScrollFollower(elements.scroll, eleme
 /** The page's elements, as the views draw into them. */
 export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
+attachTurnRail(dom.scroll, byId('turn-rail'))
 
 let state: State = initialState
 let pendingReveal: (() => void) | null = null
@@ -101,6 +110,8 @@ let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
 let historyReady = false
 let pendingRender: (() => void) | null = null
+/** What follows each render once the page is wired (the stars, below). */
+let afterRender: (() => void) | null = null
 const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
@@ -120,6 +131,7 @@ function dispatch(action: Action) {
   }
   startReveal()
   publishIsland()
+  afterRender?.()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
 }
 
@@ -253,8 +265,88 @@ const historyActions = createHistoryActions({
   dispatch,
   searchField: dom.historySearch,
   errorMessage,
-  jumpTo: (hit: Untyped) => timelineActions.jumpTo(hit),
+  locate: (hit: SearchHit) => api.locateMessage(hit.messageId === undefined
+    ? { segmentId: hit.segmentId, seq: hit.seq } : { segmentId: hit.segmentId, seq: hit.seq, messageId: hit.messageId }),
+  // On screen means drawn: a message of a long conversation or topic past what is drawn is read in 回顾.
+  revealOnScreen: (found) => {
+    const target = hitTarget(state, found)
+    const row = target && timelineRow(target.msgId)
+    return row ? () => revealRow(row) : null
+  },
+  openInReview: (hit: SearchHit) => reviewActions.openRef(hit),
 })
+/** 回顾 on the 搜索 page, and the stars on messages (review-actions.ts). */
+const reviewActions = createReviewActions({
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage,
+  keepPlace: (change: () => void) => keepReaderPlace(change),
+  // The message found stays marked while it is read (view/review.ts); here it is only scrolled to.
+  reveal: (msgId: string) => {
+    const row = dom.historyList.querySelector(`.review-focus [data-msg="${CSS.escape(msgId)}"]`)
+    if (!row) return false
+    row.scrollIntoView({ block: 'center' })
+    return true
+  },
+})
+
+/** The star by a message, in the timeline (the conversation, or an earlier row) and in a topic read in 回顾. */
+const starViews = [
+  attachStars(dom.scroll, {
+    placeOf: (el) => placeOf(state, el.dataset.msg ?? '', el.closest('#earlier') ? 'row' : 'thread'),
+    isStarred: (place) => isStarred(state, place),
+    toggle: (place, starred) => reviewActions.toggleStar(place, starred),
+  }),
+  attachStars(dom.historyList, {
+    placeOf: (el) => placeOf(state, el.dataset.msg ?? '', 'row'),
+    isStarred: (place) => isStarred(state, place),
+    toggle: (place, starred) => reviewActions.toggleStar(place, starred),
+  }),
+]
+/**
+ * A part read on in 回顾 (review-actions.ts readMore): the message at the top of what is seen stays where it is
+ * on screen, though messages came in above it or went from above it.
+ */
+function keepReaderPlace(change: () => void) {
+  const pane = dom.historyList.closest<HTMLElement>('.hub-main')
+  const top = pane?.getBoundingClientRect().top ?? 0
+  const anchor = [...dom.historyList.querySelectorAll<HTMLElement>('.review-reader [data-msg]')].find((el) => el.getBoundingClientRect().bottom > top)
+  const msgId = anchor?.dataset.msg
+  const before = anchor?.getBoundingClientRect().top
+  change()
+  if (!pane || !msgId || before === undefined) return
+  const after = dom.historyList.querySelector(`.review-reader [data-msg="${CSS.escape(msgId)}"]`)?.getBoundingClientRect().top
+  if (after !== undefined) pane.scrollTop += after - before
+}
+
+/** Reads on by itself when the end of the part read in 回顾 comes near (view/review.ts readerEdge). */
+const READ_ON_MARGIN = '600px'
+const readerEdges = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    const edge = (entry.target as HTMLElement).dataset.edge
+    if (entry.isIntersecting && (edge === 'before' || edge === 'after')) void reviewActions.readerMore(edge)
+  }
+}, { rootMargin: READ_ON_MARGIN })
+let watchedEdges: Element[] = []
+function watchReaderEdges() {
+  const edges = [...dom.historyList.querySelectorAll('.reader-edge:not([disabled])')]
+  if (edges.length === watchedEdges.length && edges.every((edge, i) => edge === watchedEdges[i])) return
+  readerEdges.disconnect()
+  for (const edge of edges) readerEdges.observe(edge)
+  watchedEdges = edges
+}
+
+let shownStars: unknown = null
+/** After each render: the stars of the segments on screen read back, and the stars shown in step with them. */
+afterRender = () => {
+  watchReaderEdges()
+  reviewActions.refreshStars([
+    ...state.earlier.segments.map((segment) => segment.id), String(state.conversationId ?? ''),
+    // A topic read in 回顾 only, never read back into the timeline.
+    ...(state.review.reading?.messages ?? []).map((message: { segmentId: string }) => message.segmentId),
+  ])
+  if (state.review.starKeys === shownStars) return
+  shownStars = state.review.starKeys
+  for (const view of starViews) view.sync()
+}
 
 const draftImages = createDraftImages({
   keep: (bytes: Uint8Array<ArrayBuffer>) => api.keepImage(bytes),
@@ -265,10 +357,14 @@ const draftImages = createDraftImages({
 /** How long a message found by search stays marked after the timeline scrolls to it. */
 const FOUND_MS = 2400
 
-/** Scrolls a message of the timeline (its `data-msg`, view/thread.js markMessage) to the middle and marks it a moment. */
-function revealMessage(msgId: string) {
-  const row = dom.scroll.querySelector(`[data-msg="${CSS.escape(msgId)}"]`)
-  if (!row) return
+/**
+ * The row of a message of the timeline (its `data-msg`, view/thread.js markMessage) as drawn: in the conversation, or
+ * in the earlier part, a folded topic opened and drawn for it (view/earlier.ts). Null when it is not drawn there.
+ */
+const timelineRow = (msgId: string) => dom.thread.querySelector<HTMLElement>(`[data-msg="${CSS.escape(msgId)}"]`) ?? openEarlierRow(dom.earlier, msgId)
+
+/** Scrolls a row of the timeline to the middle and marks it a moment. */
+function revealRow(row: HTMLElement) {
   row.scrollIntoView({ block: 'center' })
   row.classList.add('msg-found')
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
@@ -397,7 +493,14 @@ const taskActions = createTaskActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
   isTyping: () => Boolean(dom.input.value.trim()),
 })
-const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
+const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
+const resumeActions = createResumeActions({
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, busy: () => isBusy(state),
+  afterResume: () => {
+    dom.follower.jumpToLatest()
+    dom.input.focus()
+  },
+})
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
@@ -433,6 +536,8 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
   'open-profile': () => memoryActions.openProfile(),
   'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
   'open-settings': () => handlers.openSettings(),
+  'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
+  'resume-topic': (toast) => resumeActions.retryResume(toast.action.payload),
 }
 
 const handlers = {
@@ -442,6 +547,27 @@ const handlers = {
   },
   dismissSubmission: (id: string) => dispatch({ type: 'task_submit_dismissed', id }),
   ...historyActions,
+  ...reviewActions,
+  /** ⌘F and 回顾 in the sidebar: the field focused, and the timeline by day read again. */
+  openSearch() {
+    historyActions.openSearch()
+    reviewActions.refreshReview()
+  },
+  toggleHistory() {
+    historyActions.toggleHistory()
+    if (state.history.open) reviewActions.refreshReview()
+  },
+  /** 更早的记录在回顾里 at the top of the timeline: 回顾 with nothing typed, so it shows the days. */
+  openReview() {
+    dom.historySearch.value = ''
+    historyActions.searchHistory('')
+    handlers.openSearch()
+  },
+  /** 回到这个话题 on a topic read in 回顾: back to the conversation, going on from it. */
+  resumeFromReview(segmentId: string) {
+    dispatch({ type: 'history_close' })
+    return handlers.resumeTopic(segmentId)
+  },
   ...memoryActions,
   ...extensionActions,
   ...sourceActions,
@@ -547,21 +673,8 @@ const handlers = {
     measure: ({ stage, durationMs }) => recordRendererTiming(stage, durationMs),
   }),
   /** 回到这个话题 on an earlier topic, and 撤销 on a new one: the agent goes on from that segment. */
-  async resumeTopic(segmentId: string) {
-    if (state.switching) return undefined
-    if (isBusy(state)) return historyActions.showToast('助手正在工作，等这一轮结束再回到那个话题')
-    dispatch({ type: 'session_switching' })
-    try {
-      const { info, parentId } = await api.resumeTopic(segmentId)
-      dispatch({ type: 'topic_resumed', info, parentId, at: Date.now() })
-      dom.follower.jumpToLatest()
-      dom.input.focus()
-    } catch (err) {
-      dispatch({ type: 'session_switch_failed' })
-      historyActions.showToast(errorMessage(err))
-    }
-    return undefined
-  },
+  /** 继续这个话题, 回到这个话题, 撤销 a new topic (resume-actions.ts): its own session, the directory said first. */
+  ...resumeActions,
   toggleTopicMenu: () => dispatch({ type: 'topic_menu', open: !state.topic.menu }),
   /** The permission picker by the input (view/permission-picker.js): another level restarts dsh on this conversation. */
   togglePermissionMenu: () => dispatch({ type: 'permission_menu', open: !state.settings.permissionMenu }),
@@ -664,8 +777,15 @@ const handlers = {
   cancelWorkDir: () => workDirActions.cancelConfirm(),
   closeWorkDirMenu: () => workDirActions.closeMenu(),
   revealWorkDir: () => workDirActions.reveal(),
-  /** A link in an answer opens in the browser (or mail app), never inside the window. */
-  openLink: (url: string) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` })),
+  /**
+   * A link in an answer opens in the browser (or mail app), never inside the window; a viva://timeline link
+   * (search_conversations) goes to that message of the timeline instead.
+   */
+  openLink: (url: string) => {
+    const place = timelinePlace(url)
+    if (place) return historyActions.jumpToHit(place)
+    return api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` }))
+  },
 }
 
 /** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */

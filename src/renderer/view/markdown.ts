@@ -13,9 +13,10 @@ type Context = { openLink: (url: string) => void, image: ((src: string, alt: str
 /**
  * Markdown in the agent's answers. marked only parses (its lexer, GitHub flavour); every element is built
  * here with `h`, so text stays text: raw HTML in an answer shows as written, images are not fetched, and a
- * link is a link only to http(s) or mailto, opened outside the app through `openLink`.
+ * link is a link only to http(s) or mailto, opened outside the app through `openLink`, or to viva:, a place in
+ * the app itself (viva://timeline/<segment>/<seq>, from search_conversations), which `openLink` goes to.
  */
-const LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
+const LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'viva:'])
 const HEADING_TAGS: Array<'h3' | 'h4' | 'h5'> = ['h3', 'h3', 'h4', 'h5', 'h5', 'h5']
 
 /** The address if it is one the app may open in the browser or mail app, else null. */

@@ -1,7 +1,27 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { contextShare, rememberedIds, topicBlocks, topicCount, topicStart } from '../src/renderer/topics.ts'
+import { contextShare, rememberedIds, topicBlocks, topicCount, topicStart, topicTitle, turnsOf } from '../src/renderer/topics.ts'
+import { reachedRecentEnd, RECENT_DAYS } from '../src/renderer/earlier-state.ts'
+
+test('a folded topic is named by its first question, on one line, without the files named after it', () => {
+  const ask = (text) => ({ role: 'user', text })
+  assert.equal(topicTitle([{ role: 'note', text: '换了目录' }, ask('  把这周的\n进展整理一下 '), ask('再加上计划')]), '把这周的 进展整理一下')
+  assert.equal(topicTitle([ask('看看这个\n\n附带的文件（本机路径）：\n- /tmp/a.pdf')]), '看看这个')
+  assert.equal(topicTitle([ask('')]), '（图片或文件）')
+  assert.equal(topicTitle([]), '（没有提问）')
+  assert.equal(topicTitle([ask('问'.repeat(50))]), `${'问'.repeat(40)}…`)
+  assert.equal(turnsOf([ask('一'), { role: 'assistant', text: '答' }, ask('二')]), 2)
+})
+
+test('scrolling up stops reading back once the oldest part read is older than the recent days', () => {
+  const now = Date.UTC(2026, 9, 27, 12)
+  const day = 86_400_000
+  const read = (at) => ({ segments: [{ id: 'a', createdAt: at, messages: [{ seq: 0, at }] }], hasMore: true, loading: false })
+  assert.equal(reachedRecentEnd({ segments: [], hasMore: true, loading: false }, now), false)
+  assert.equal(reachedRecentEnd(read(now - (RECENT_DAYS - 1) * day), now), false)
+  assert.equal(reachedRecentEnd(read(now - (RECENT_DAYS + 1) * day), now), true)
+})
 
 /** 话题: what the assistant has in mind, told apart from the rest of the one timeline. */
 
@@ -35,8 +55,13 @@ test('a new topic says where it starts, and can be undone until something is sai
 
 test('going on from the segment just above says nothing; going back to an older topic says which', () => {
   assert.equal(topicStart(withTimeline({ parentId: 'd' })), null)
-  assert.deepEqual(topicStart(withTimeline({ parentId: 'b' })), { kind: 'back', at: at(0) })
+  assert.deepEqual(topicStart(withTimeline({ parentId: 'b' })), { kind: 'back', at: at(0), carried: null })
   assert.equal(topicStart({ ...initialState }), null, 'nothing above: nothing to say')
+})
+
+test('a topic gone on from its saved records in a new session says so, even right under the segment it goes on from', () => {
+  const start = topicStart(withTimeline({ parentId: 'd', carried: 20 }))
+  assert.deepEqual([start?.kind, start?.carried], ['back', 20])
 })
 
 test('the label counts the topic\'s earlier messages and the ones on screen; the share once the agent said it', () => {

@@ -4,7 +4,10 @@
  * The topic on screen is the conversation now and, back along what each continued, the segments before it;
  * everything else above is still there to read, but the assistant no longer has it.
  */
-export const initialTopic = Object.freeze({ parentId: null, startedAt: null, menu: false })
+import { splitFiles } from '../shared/attachments.ts'
+
+/** `carried`: the topic goes on from that many turns of its saved records, in a new session (its own was gone). */
+export const initialTopic =Object.freeze({ parentId: null, startedAt: null, menu: false, carried: null as number | null })
 /** From this share of the context on, the label by the input suggests a new topic. */
 export const NEAR_FULL = 0.8
 
@@ -44,15 +47,16 @@ export function topicBlocks(segments: readonly Segment[], parentId: string | nul
  *   'back': it goes on from an earlier topic, not the segment just above (回到这个话题);
  *   null: it goes on from the segment just above, or there is nothing above.
  */
-export function topicStart(state: State): { kind: 'new', at: number | null, undo: string | null } | { kind: 'back', at: number | null } | null {
+export function topicStart(state: State): { kind: 'new', at: number | null, undo: string | null } | { kind: 'back', at: number | null, carried: number | null } | null {
   const segments: readonly Segment[] = state.earlier.segments
   const last = segments.at(-1)
   if (!last) return null
-  const { parentId, startedAt } = state.topic
+  const { parentId, startedAt, carried } = state.topic
   if (!parentId) return { kind: 'new', at: startedAt, undo: state.messages.length === 0 ? last.id : null }
-  if (parentId === last.id) return null
+  // Gone on from its records in a new session: said so even right under it (the session is not the one above).
+  if (parentId === last.id && carried === null) return null
   const block = topicBlocks(segments, parentId).find((item) => item.segments.some((segment) => segment.id === parentId))
-  return { kind: 'back', at: block?.at ?? null }
+  return { kind: 'back', at: block?.at ?? startedAt, carried }
 }
 
 /** How many messages the assistant has in mind now: the topic's earlier segments and the conversation on screen. */
@@ -62,6 +66,19 @@ export function topicCount(state: State) {
   const earlier = segments.filter((segment) => remembered.has(segment.id)).reduce((sum, segment) => sum + segment.messages.length, 0)
   return earlier + state.messages.length
 }
+
+const TITLE_CHARS = 40
+
+/** A topic's name where it is folded or listed (view/earlier.ts, 回顾): its first question, on one line, without the files named after it. */
+export function topicTitle(messages: ReadonlyArray<{ role: string, text: string }>): string {
+  const first = messages.find((message) => message.role === 'user')
+  const line = splitFiles(first?.text ?? '').text.replace(/\s+/g, ' ').trim()
+  if (!line) return first ? '（图片或文件）' : '（没有提问）'
+  return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS)}…` : line
+}
+
+/** How many turns: the user's questions. */
+export const turnsOf = (messages: ReadonlyArray<{ role: string }>) => messages.filter((message) => message.role === 'user').length
 
 /** The share of the context used, 0–1, once the agent has said. */
 export const contextShare = (usage: { used: number, size: number } | null | undefined): number | null => (usage?.size ? Math.min(1, usage.used / usage.size) : null)

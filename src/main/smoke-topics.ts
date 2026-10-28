@@ -4,14 +4,15 @@ import { capture, finishTurn, report, run, submit, UI_WAIT_MS, until, wait, type
 /**
  * Topics in the walkthrough smoke run (smoke.js): ⌘N shows at once where the new topic starts, the label by
  * the input goes back to nothing, and 撤销 takes the last topic up again; said something in a new topic, the
- * topic above is dimmed and says the assistant no longer has it, and 回到这个话题 takes it up again.
+ * topic above folds to a line that says the assistant no longer has it, and 回到这个话题 takes it up again.
  */
 const TIMELINE = `(() => ({
   start: document.querySelector('#earlier .topic-start')?.textContent ?? null,
   undo: Boolean(document.querySelector('#earlier .topic-start .topic-back')),
   note: document.querySelector('#earlier .topic-note')?.textContent ?? null,
   old: document.querySelectorAll('#earlier .topic-old').length,
-  oldHead: document.querySelector('#earlier .topic-old .topic-head')?.textContent ?? null,
+  // Folded to its line: what it is in the line, that the assistant no longer has it in its tooltip.
+  oldHead: ((head) => head && head.title + ' ' + head.textContent)(document.querySelector('#earlier .topic-old .topic-head')),
   label: document.querySelector('#ctx-area .ctx-chip')?.textContent ?? null,
   switching: document.getElementById('send-btn').disabled,
 }))()`

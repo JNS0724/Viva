@@ -48,7 +48,8 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, cu
     const kept = stored.messages.slice(0, keep)
     const { mode, model } = { ...agentInfo(), ...forked.info }
     const next = db.save(
-      db.create({ sessionId: forked.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId }),
+      // Going back stays in the topic, even from its first segment (which has no parent to take it from).
+      db.create({ sessionId: forked.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) }),
       [...kept, { role: 'user', text, receipt: null }],
     )
     db.fold(previous.id, { into: next.id, at: keep })
