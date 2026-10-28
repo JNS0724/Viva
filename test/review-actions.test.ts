@@ -145,6 +145,37 @@ test('a part asked for before the same topic was opened again at another message
   assert.deepEqual([reading.from, reading.messages[0].seq, reading.messages.length], [1450, 1450, 100], 'the late part of the old reading is dropped')
 })
 
+test('opened at one message and then another, the later shows, whichever answer comes back first', async () => {
+  const history = slowHistory(2000)
+  const located: Array<() => void> = []
+  let state: State = initialState
+  const revealed: string[] = []
+  const actions = createReviewActions({
+    api: {
+      readHistory: history.readHistory,
+      locateMessage: (ref) => new Promise((resolve) => {
+        located.push(() => resolve({ status: 'found', segmentId: 'a', seq: ref.seq, messageId: ref.seq + 1, reader: { key: 't:t1', topicId: 't1' } }))
+      }),
+    } as Partial<Api> as Api,
+    getState: () => state, dispatch: (action) => { state = reduce(state, action) }, errorMessage: String, showToast: () => {},
+    reveal: (msgId) => { revealed.push(msgId); return true },
+  })
+  const settle = () => new Promise((resolve) => setImmediate(resolve))
+  const first = actions.openRef({ segmentId: 'a', seq: 500 })
+  const second = actions.openRef({ segmentId: 'a', seq: 1500 })
+  located[1]()
+  await settle()
+  history.pending.shift()!.answer()
+  await second
+  located[0]()
+  await settle()
+  history.pending.shift()?.answer()
+  await first
+
+  assert.equal(state.review.focus?.found, 'a-1500')
+  assert.deepEqual([state.review.reading!.from, revealed], [1450, ['a-1500']], 'the earlier one, coming back last, shows nothing')
+})
+
 test('a segment read whole (a star on the talk a moved turn shares) goes on whole as it is read on', async () => {
   const asked: Array<Record<string, any>> = []
   let state: State = initialState

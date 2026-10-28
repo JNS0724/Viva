@@ -82,16 +82,22 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     return { ...named, total: part.total, from: part.from, messages }
   }
 
-  /** Counts the readings begun (opened, or opened again at a message): a part read on names the one it is for. */
+  /**
+   * Counts the readings begun (opened, or opened again at a message), counted as each begins: only the latest one
+   * shows what it read, whichever answer comes back first; a part read on names the one it is for.
+   */
   let reads = 0
+  const outdated = (read: number) => read !== reads
 
   async function readKey(key: string) {
+    const mine = ++reads
     try {
       const read = await fetchRead(key, { from: 0 })
+      if (outdated(mine)) return undefined
       if (!read) return showToast('这段记录已经删除了')
-      dispatch({ type: 'review_read', key, read: ++reads, messages: read.messages, from: read.from, total: read.total })
+      dispatch({ type: 'review_read', key, read: mine, messages: read.messages, from: read.from, total: read.total })
     } catch (err) {
-      report('这段记录读不出来')(err)
+      if (!outdated(mine)) report('这段记录读不出来')(err)
     }
     return undefined
   }
@@ -122,12 +128,15 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
   /**
    * A message named by a search hit, a link or a star, read in 回顾 at the top: its topic (or its task) read
    * straight from where it is kept, and the message marked. Not there any more: the messages near where it was,
-   * said so, none marked; its segment deleted: said so. A read that failed says that, apart, with 重试.
+   * said so, none marked; its segment deleted: said so. A read that failed says that, apart, with 重试. Opened
+   * again (another hit, link or star) before this one came back: this one shows nothing.
    */
   async function openRef(ref: MessageRef) {
+    const mine = ++reads
     try {
       const located = await api.locateMessage(ref.messageId === undefined
         ? { segmentId: ref.segmentId, seq: ref.seq } : { segmentId: ref.segmentId, seq: ref.seq, messageId: ref.messageId })
+      if (outdated(mine)) return undefined
       if (located.status === 'deleted') return showToast('这条记录已经删除了')
       const { key } = located.reader
       // The part around the message, however far into a long topic it is.
@@ -139,15 +148,16 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
         read = await fetchRead(key, { around, whole: true })
         whole = true
       }
+      if (outdated(mine)) return undefined
       if (!read) return showToast('这条记录已经删除了')
       const notice = located.status === 'found' ? null : located.seq === null ? NOTICE_EMPTY : NOTICE_MISSING
       const msgId = located.seq === null ? null : `${located.segmentId}-${located.seq}`
       const found = located.status === 'found' ? msgId : null
       dispatch({ type: 'review_focus', key, title: read.title, at: read.at, head: read.head, found, notice })
-      dispatch({ type: 'review_read', key, read: ++reads, whole, messages: read.messages, from: read.from, total: read.total })
+      dispatch({ type: 'review_read', key, read: mine, whole, messages: read.messages, from: read.from, total: read.total })
       if (msgId !== null && !reveal(msgId) && found) showToast('这条消息找到了，但没能显示出来')
     } catch (err) {
-      showToast(`读取失败：${errorMessage(err)}`, { action: { label: '重试', kind: 'open-ref', payload: ref }, ms: RETRY_MS })
+      if (!outdated(mine)) showToast(`读取失败：${errorMessage(err)}`, { action: { label: '重试', kind: 'open-ref', payload: ref }, ms: RETRY_MS })
     }
     return undefined
   }
