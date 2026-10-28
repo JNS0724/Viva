@@ -60,9 +60,9 @@ html:not([data-platform="darwin"]) {
   --reserve-left: 0px;
   --reserve-right: calc(100vw - env(titlebar-area-width, calc(100vw - 140px)));
 }
-.app { display: grid; grid-template-rows: var(--titlebar-h) minmax(0, 1fr); height: 100vh; }
+.app { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--titlebar-h) minmax(0, 1fr); height: 100vh; }
 .titlebar {
-  position: relative; display: flex; align-items: center; justify-content: space-between;
+  position: relative; min-width: 0; display: flex; align-items: center; justify-content: space-between;
   padding: 0 calc(var(--reserve-right) + var(--titlebar-gutter)) 0 calc(var(--reserve-left) + var(--titlebar-gutter));
   border-bottom: 1px solid var(--line); -webkit-app-region: drag; user-select: none;
   /* The island unfolds over the conversation below, which comes later in the page. */
@@ -88,7 +88,8 @@ html:not([data-platform="darwin"]) {
 
 .chip { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 8px; background: var(--raised); font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 
-.body { position: relative; display: flex; min-height: 0; }
+/* A zoomed minimum-size window must constrain the grid column instead of adopting its contents' min-width. */
+.body { position: relative; display: flex; min-width: 0; min-height: 0; }
 /* --rail-lane: kept free of the column at each side, the turn rail's on the left (view/column-resize.ts RAIL_LANE). */
 .main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
 /* 按轮次跳转 (view/turn-rail.ts): in its own lane at the main area's left edge (--rail-lane), one mark per question,
@@ -768,6 +769,9 @@ html:not([data-platform="darwin"]) {
   position: absolute; left: 0; bottom: calc(100% + 10px); width: 340px; z-index: 30; padding: 6px;
   background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 20px 50px rgba(0, 0, 0, .6);
   display: flex; flex-direction: column;
+}
+@media (max-width: 720px) {
+  .workdir-menu { left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); }
 }
 .workdir-head { padding: 8px 10px 4px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-3); }
 .workdir-item {

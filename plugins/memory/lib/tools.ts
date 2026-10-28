@@ -19,7 +19,7 @@ const listLine = (memory: Memory) => {
 }
 
 function assertQuery(query: unknown): string {
-  if (typeof query !== 'string' || !query.trim() || query.length > MAX_QUERY_CHARS) throw new Error('查询要写 2–4 个关键词')
+  if (typeof query !== 'string' || !query.trim() || query.length > MAX_QUERY_CHARS) throw new Error('查询要写具体关键词，最多 200 个字符')
   return query
 }
 
@@ -58,7 +58,7 @@ export function memoryTools(db: ReturnType<typeof import('./store.ts').openMemor
       name: 'memory_recall',
       description: '用关键词在用户的长期记忆里检索。只返回足够相关的条目，可能一条都没有。',
       parameters: {
-        query: { type: 'string', required: true, description: '2–4 个关键词，空格分开，例如「结算口径 财务」；不要照抄用户的整句话' },
+        query: { type: 'string', required: true, description: '具体关键词，空格分开；明确的对象可以只写一个，例如「常住」。多个词会提高相关性门槛，查不到时减少词再查，不要堆同义词或照抄整句话' },
       },
       run({ query }) {
         const found = recallMatches(db.allMemories(), assertQuery(query), RECALL_LIMIT)

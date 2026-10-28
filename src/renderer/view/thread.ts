@@ -14,6 +14,7 @@ import { cardedTasks, taskCard } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
 import { proposalCard } from './followups.ts'
+import { userError } from '../user-error.ts'
 
 const AVATAR_CAT_PX = 36
 
@@ -226,7 +227,7 @@ function workingRow(state: State) {
 function errorRow(message: string) {
   return h('div', { class: 'msg-error', role: 'alert' },
     label('出错了'),
-    h('div', { text: message }),
+    h('div', { text: userError(message) }),
     h('div', { class: 'muted', text: '检查模型的 key 和接口地址、网络，或查看终端日志。' }))
 }
 

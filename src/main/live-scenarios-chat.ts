@@ -162,6 +162,8 @@ const askRemembered: LiveScenario = {
   feature: '助手反问',
   async run(ctx) {
     const { win, expect } = ctx
+    // Previous model answers may have independently learned a paraphrase. Each repeat must stand alone.
+    await forgetMemories(win, '杭州')
     await run(win, `window.agent.addMemory('我常住杭州', 'fact')`)
     try {
       await fresh(win)
@@ -170,7 +172,7 @@ const askRemembered: LiveScenario = {
       expect(out.answer.includes('杭州'), 'the answer should be about the remembered city', clip(out.answer))
       await ctx.shot('ask-remembered')
     } finally {
-      await forgetMemories(win, '我常住杭州')
+      await forgetMemories(win, '杭州')
     }
   },
 }

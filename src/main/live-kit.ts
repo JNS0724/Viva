@@ -1,6 +1,8 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { mayAutoApprove } from './live-approval.ts'
 import { capture, newTopic, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 
 /**
@@ -85,6 +87,7 @@ const TURN_STATE = `(() => {
   const send = document.getElementById('send-btn')
   return {
     card: card ? (card.querySelector('.confirm-title')?.textContent || card.textContent.slice(0, 120)) : null,
+    cardText: card?.textContent ?? '',
     ask: ask ? { question: ask.querySelector('.ask-question')?.textContent ?? '', options: [...ask.querySelectorAll('.ask-option')].map((el) => el.textContent) } : null,
     secret: secret ? [...secret.querySelectorAll('input')].map((el) => el.getAttribute('aria-label') ?? '') : null,
     idle: send.dataset.busy === 'false' && !send.disabled && !document.querySelector('.caret'),
@@ -144,7 +147,12 @@ export async function settle(win: SmokeWindow, policy: TurnPolicy = {}): Promise
     const seen = await run(win, TURN_STATE)
     if (seen.card) {
       outcome.cards.push(seen.card)
-      await run(win, `(${PERMISSION_CARD}).querySelector(${JSON.stringify(policy.permission === 'allow' ? '.btn-primary' : '.btn-secondary')}).click()`)
+      const allowed = policy.permission === 'allow' && mayAutoApprove(seen.cardText)
+      if (policy.permission === 'allow' && !allowed) {
+        outcome.cards.push('验收脚本拒绝了超出范围的系统权限更改')
+        process.stdout.write('[live] denied out-of-scope ACL/security modification; fixture-only approval policy\n')
+      }
+      await run(win, `(${PERMISSION_CARD}).querySelector(${JSON.stringify(allowed ? '.btn-primary' : '.btn-secondary')}).click()`)
       await wait(UI_WAIT_MS)
       continue
     }
@@ -201,9 +209,19 @@ export async function traceTitles(win: SmokeWindow): Promise<string[]> {
   if (!wasOpen) await run(win, `document.getElementById('toggle-drawer').click()`)
   await run(win, `[...document.querySelectorAll('.drawer .tab')].find((el) => el.textContent === '过程')?.click()`)
   await wait(UI_WAIT_MS)
-  const titles = await run(win, `[...document.querySelectorAll('.trace-row')].map((row) => row.textContent)`)
+  const titles = await run(win, `[...document.querySelectorAll('.trace-row .trace-title')].map((row) => row.textContent)`)
   if (!wasOpen) await run(win, `document.getElementById('toggle-drawer').click()`)
   return titles
+}
+
+/** Actual current-session tool identities, not words merely mentioned in a thought or explanation. */
+export async function traceToolNames(ctx: LiveContext): Promise<string[]> {
+  const info = await run(ctx.win, 'window.agent.getInfo()')
+  const db = new DatabaseSync(path.join(ctx.userData, 'trace.db'), { readOnly: true })
+  try {
+    return db.prepare("SELECT name FROM steps WHERE kind = 'tool' AND session_id = ? ORDER BY seq")
+      .all(String(info.sessionId)).map(row => String(row.name ?? ''))
+  } finally { db.close() }
 }
 
 /** Writes a file into the workspace (folders made as needed) and returns its full path. */
