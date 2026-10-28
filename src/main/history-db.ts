@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { fillTopics } from './history-topics.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
@@ -196,6 +197,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
   db.exec(COUNT_MESSAGE_IDS)
   fillTopics(db)
   const reviewing = reviewQueries(db, now)
+  const reading = readerQueries(db, reviewing.reviewTopic)
 
   /** A row is a record of what its query selects; each function below says what it returns. */
   const sql: Record<string, Statement> = {
@@ -504,6 +506,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
-    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, ...reviewing, close: () => db.close(),
+    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, ...reviewing, ...reading, close: () => db.close(),
   }
 }

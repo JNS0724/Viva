@@ -50,6 +50,7 @@ import type { ProposalView } from './followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
 import { runSmoke } from './smoke.ts'
 import { seedTimeline } from './smoke-timeline.ts'
+import { seedPerf } from './smoke-perf.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
 
 const MAX_PROMPT_CHARS = 20_000
@@ -152,6 +153,8 @@ function isolateSmokeUserData() {
   if (smokePhase !== 'relaunch' && !reopens[smokePhase as string]) removeTree(dir)
   // `timeline` opens on a history weeks long, written before the app reads it.
   if (smokePhase === 'timeline') seedTimeline(dir)
+  // `perf` opens on one far longer than anyone's, to measure what reading it costs.
+  if (smokePhase === 'perf') seedPerf(dir)
   // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too; so is the workspace,
   // so a smoke run never writes into the developer's.
   app.setPath('userData', dir)

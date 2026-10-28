@@ -195,8 +195,7 @@ interface AgentApi {
   earlierSegments: Invoke<'history:segments-before'>
   searchTimeline: Invoke<'history:search-messages'>
   reviewTimeline: Invoke<'history:review'>
-  topicMessages: Invoke<'history:topic'>
-  segmentMessages: Invoke<'history:segment'>
+  readHistory: Invoke<'history:read'>
   locateMessage: Invoke<'history:locate'>
   starMessage: Invoke<'history:star'>
   starsIn: Invoke<'history:stars-in'>

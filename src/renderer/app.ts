@@ -28,6 +28,7 @@ import { render, renderRouteHint, renderSendButton, renderStream, renderTick } f
 import { createScrollFollower } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
+import { openEarlierRow } from './view/earlier.ts'
 import { createReviewActions } from './review-actions.ts'
 import { isStarred, placeOf } from './stars.ts'
 import { scheduleFrame } from './view/frame.ts'
@@ -264,15 +265,18 @@ const historyActions = createHistoryActions({
   errorMessage,
   locate: (hit: SearchHit) => api.locateMessage(hit.messageId === undefined
     ? { segmentId: hit.segmentId, seq: hit.seq } : { segmentId: hit.segmentId, seq: hit.seq, messageId: hit.messageId }),
+  // On screen means drawn: a message of a long conversation or topic past what is drawn is read in 回顾.
   revealOnScreen: (found) => {
     const target = hitTarget(state, found)
-    return target ? () => revealMessage(target.msgId) : null
+    const row = target && timelineRow(target.msgId)
+    return row ? () => revealRow(row) : null
   },
   openInReview: (hit: SearchHit) => reviewActions.openRef(hit),
 })
 /** 回顾 on the 搜索 page, and the stars on messages (review-actions.ts). */
 const reviewActions = createReviewActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage,
+  keepPlace: (change: () => void) => keepReaderPlace(change),
   // The message found stays marked while it is read (view/review.ts); here it is only scrolled to.
   reveal: (msgId: string) => {
     const row = dom.historyList.querySelector(`.review-focus [data-msg="${CSS.escape(msgId)}"]`)
@@ -295,9 +299,43 @@ const starViews = [
     toggle: (place, starred) => reviewActions.toggleStar(place, starred),
   }),
 ]
+/**
+ * A part read on in 回顾 (review-actions.ts readMore): the message at the top of what is seen stays where it is
+ * on screen, though messages came in above it or went from above it.
+ */
+function keepReaderPlace(change: () => void) {
+  const pane = dom.historyList.closest<HTMLElement>('.hub-main')
+  const top = pane?.getBoundingClientRect().top ?? 0
+  const anchor = [...dom.historyList.querySelectorAll<HTMLElement>('.review-reader [data-msg]')].find((el) => el.getBoundingClientRect().bottom > top)
+  const msgId = anchor?.dataset.msg
+  const before = anchor?.getBoundingClientRect().top
+  change()
+  if (!pane || !msgId || before === undefined) return
+  const after = dom.historyList.querySelector(`.review-reader [data-msg="${CSS.escape(msgId)}"]`)?.getBoundingClientRect().top
+  if (after !== undefined) pane.scrollTop += after - before
+}
+
+/** Reads on by itself when the end of the part read in 回顾 comes near (view/review.ts readerEdge). */
+const READ_ON_MARGIN = '600px'
+const readerEdges = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    const edge = (entry.target as HTMLElement).dataset.edge
+    if (entry.isIntersecting && (edge === 'before' || edge === 'after')) void reviewActions.readerMore(edge)
+  }
+}, { rootMargin: READ_ON_MARGIN })
+let watchedEdges: Element[] = []
+function watchReaderEdges() {
+  const edges = [...dom.historyList.querySelectorAll('.reader-edge:not([disabled])')]
+  if (edges.length === watchedEdges.length && edges.every((edge, i) => edge === watchedEdges[i])) return
+  readerEdges.disconnect()
+  for (const edge of edges) readerEdges.observe(edge)
+  watchedEdges = edges
+}
+
 let shownStars: unknown = null
 /** After each render: the stars of the segments on screen read back, and the stars shown in step with them. */
 afterRender = () => {
+  watchReaderEdges()
   reviewActions.refreshStars([
     ...state.earlier.segments.map((segment) => segment.id), String(state.conversationId ?? ''),
     // A topic read in 回顾 only, never read back into the timeline.
@@ -317,13 +355,14 @@ const draftImages = createDraftImages({
 /** How long a message found by search stays marked after the timeline scrolls to it. */
 const FOUND_MS = 2400
 
-/** Scrolls a message of the timeline (its `data-msg`, view/thread.js markMessage) to the middle and marks it a moment. */
-function revealMessage(msgId: string) {
-  const row = dom.scroll.querySelector(`[data-msg="${CSS.escape(msgId)}"]`)
-  if (!row) return
-  // In a folded earlier topic (view/earlier.ts): open it first, or there is nothing to scroll to.
-  const fold = row.closest('details')
-  if (fold) fold.open = true
+/**
+ * The row of a message of the timeline (its `data-msg`, view/thread.js markMessage) as drawn: in the conversation, or
+ * in the earlier part, a folded topic opened and drawn for it (view/earlier.ts). Null when it is not drawn there.
+ */
+const timelineRow = (msgId: string) => dom.thread.querySelector<HTMLElement>(`[data-msg="${CSS.escape(msgId)}"]`) ?? openEarlierRow(dom.earlier, msgId)
+
+/** Scrolls a row of the timeline to the middle and marks it a moment. */
+function revealRow(row: HTMLElement) {
   row.scrollIntoView({ block: 'center' })
   row.classList.add('msg-found')
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)

@@ -6,6 +6,7 @@ import type { CatMood } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h, label } from './dom.ts'
 import { caretHost, renderMarkdown } from './markdown.ts'
+import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { offeredBackground } from '../tasks-state.ts'
@@ -51,7 +52,14 @@ function visibleText(text: string, shown: number | undefined) {
 /** Row caching below owns nodes per container. The same message may be visible in several views. */
 function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
   const text = visibleText(message.text, message.shown)
-  const el = renderMarkdown(text, { openLink: handlers.openLink })
+  const finished = !message.open && text.length === message.text.length
+  if (!finished || text.length <= LONG_ANSWER_CHARS) return renderMarkdown(text, { openLink: handlers.openLink })
+  const start = answerStart(text)
+  const el = renderMarkdown(start, { openLink: handlers.openLink })
+  el.append(h('button', {
+    class: 'btn btn-outline btn-small answer-more', type: 'button', text: `展开全文（还有约 ${Math.round((text.length - start.length) / 1000)} 千字）`,
+    onClick: () => el.replaceChildren(...renderMarkdown(text, { openLink: handlers.openLink }).childNodes),
+  }))
   return el
 }
 
@@ -258,11 +266,12 @@ const elementsOf = (view: View): Element[] => [view].flat().filter((el): el is E
  * A message with what going back adds to it: over the user's words the bar to go back there (or the editor, in
  * place, with what would fold after it dimmed), and after it the paths folded where it went another way.
  */
-function messageEntries(state: State, views: readonly View[], handlers: Handlers): View[][] {
+function messageEntries(state: State, views: readonly View[], handlers: Handlers, start: number): View[][] {
   const editing = state.messages.findIndex((message) => message.id === state.rewind.editing)
   const later = editing < 0 ? 0 : state.messages.length - editing - 1
   const folds = foldAfter(state)
   return state.messages.map((message, i) => {
+    if (i < start) return []
     let view = views[i]
     if (i === editing) view = markMessage(rewindEditor(message, handlers, later), message.id)
     else {
@@ -272,7 +281,7 @@ function messageEntries(state: State, views: readonly View[], handlers: Handlers
     }
     const strip = (fold: Untyped) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past: ThreadMessage) => pastMessageView(past, handlers), tasks: state.tasks })
     const strips = (folds[message.id] ?? []).flatMap(strip)
-    const before = i === 0 ? (folds[''] ?? []).flatMap(strip) : []
+    const before = i === start ? (folds[''] ?? []).flatMap(strip) : []
     return [...before, ...[view].flat(), ...strips]
   })
 }
@@ -308,6 +317,24 @@ function messageView(message: ThreadMessage, handlers: Handlers, traceReady: boo
   return markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
 }
 
+/**
+ * How many of the conversation's messages are drawn at most: its latest. A topic a thousand turns long draws no
+ * more than a short one; what is before is read in 回顾 (the line at the top), a part at a time.
+ */
+export const THREAD_MAX = 200
+/** The first message of the conversation drawn (by its place in `state.messages`). */
+export const threadStart = (state: Pick<State, 'messages'>) => Math.max(0, state.messages.length - THREAD_MAX)
+
+/** The line above what is drawn of a long conversation: how many are before it, read in 回顾 from the last of them. */
+function restLine(state: State, start: number, handlers: Handlers) {
+  const seq = state.messages.slice(0, start).filter((message) => !message.open).length - 1
+  const segmentId = state.conversationId
+  return h('button', {
+    class: 'timeline-more thread-rest', type: 'button', text: `本话题前面还有 ${start} 条，在回顾里看 →`, disabled: !segmentId || seq < 0,
+    onClick: () => segmentId && handlers.jumpToHit({ segmentId: String(segmentId), seq }),
+  })
+}
+
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container: HTMLElement, state: State, handlers: Handlers, now: number) {
   const cats = containerCats.get(container) ?? new Map()
@@ -327,7 +354,10 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
-  const plain = state.messages.map((message) => {
+  const start = threadStart(state)
+  // Only what is drawn is built: the messages before `start` are neither drawn nor kept.
+  const plain = state.messages.map((message, i) => {
+    if (i < start) return null
     const look = { latest: message.id === latestAnswer, mood, cats }
     return part(`message:${message.id}`, messageInputs(message, traceReady, look), () => messageView(message, handlers, traceReady, look))
   })
@@ -335,19 +365,27 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
   const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id,
     part(`task:${task.id}`, [task, report, Math.floor(now / 60_000)], () => taskCard(task, report, handlers, now))]))
-  const views = messageEntries(state, plain, handlers).map((entries, i) => {
-    const hosted = [state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? [])].flatMap((id) => {
-      const card = id ? cards.get(id) : undefined
-      if (!card || !id) return []
-      cards.delete(id)
-      return [card]
-    })
+  const hostedBy = (i: number) => [state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? [])].flatMap((id) => {
+    const card = id ? cards.get(id) : undefined
+    if (!card || !id) return []
+    cards.delete(id)
+    return [card]
+  })
+  // The cards of messages not drawn stay in sight, at the top of what is.
+  const earlierCards = state.messages.slice(0, start).flatMap((_, i) => hostedBy(i))
+  const views = messageEntries(state, plain, handlers, start).slice(start).map((entries, i) => {
+    const hosted = hostedBy(start + i)
     return hosted.length ? [...entries, ...hosted] : entries
   })
+  const divided = note && state.restored.count >= start
+    ? views.toSpliced(state.restored.count - start, 0, [part('divider', [note.when, note.memory], () => historyDivider(note))])
+    : views
   const focus = editorFocus()
   const nodes = [
+    start > 0 ? part('thread-rest', [start, state.conversationId], () => restLine(state, start, handlers)) : '',
+    ...earlierCards,
     ...state.taskCards.flatMap(id => cards.get(id) ?? []),
-    ...(note ? views.toSpliced(state.restored.count, 0, [part('divider', [note.when, note.memory], () => historyDivider(note))]) : views).flat().filter(isContent),
+    ...divided.flat().filter(isContent),
     ...state.tasks.unfinished.map((task) => part(`unfinished:${task.id}`, [task, state.info.mode], () => unfinishedCard(task, handlers, state.info.mode === 'live'))),
     ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },
       h('b', { class: 'task-name', text: item.text }),
