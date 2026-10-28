@@ -38,7 +38,7 @@ export function tailCell(view: IslandShown): HTMLElement | null {
   }
   if (!count && done) {
     return h('span', { class: 'isl-bg isl-bg-done', title: `${done} 件做完了` },
-      h('b', { text: `✓ ${done}` }), QUIET.has(view.form) ? h('span', { text: '做完' }) : null)
+      h('b', { text: `✓ ${done}` }), QUIET.has(view.form) ? h('span', { text: '做完了' }) : null)
   }
   if (!count) return prepareCell(view)
   const dots = view.form === 'waiting' ? [] : Array.from({ length: Math.min(count, MAX_DOTS) }, () => h('i'))
@@ -85,6 +85,6 @@ export function backgroundSection(view: IslandShown, act: IslandAct, now = Date.
   const done = view.background.done ?? 0
   return h('section', { class: 'isl-bg-list', 'aria-label': '后台' },
     h('div', { class: 'isl-sect' }, h('span', { text: '后台 ' }), h('b', { text: String(items.length) }),
-      done ? h('span', { text: ` · 做完 ${done} 件` }) : null),
+      done ? h('span', { text: ` · 做完了 ${done} 件` }) : null),
     h('ol', {}, items.map((item) => itemLine(item, act, now))))
 }

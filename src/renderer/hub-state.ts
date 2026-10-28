@@ -5,8 +5,8 @@
  */
 export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks'] as const)
 type HubPage = typeof HUB_PAGES[number]
-/** The 后台 page shares the space but not the sidebar: the 关于你 icon never opens on it. */
-const REMEMBERED = new Set<string>(['search', 'profile', 'settings'])
+/** Every page, 后台 too, is one of the hub's: the 关于你 icon opens on whichever was shown last. */
+const REMEMBERED = new Set<string>(HUB_PAGES)
 
 export const initialHub = Object.freeze({
   /** The page it opens on when opened without naming one: the one last shown. */

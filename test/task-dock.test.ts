@@ -94,7 +94,7 @@ test('pressed by the column, the dock steps away unless something waits on the u
 
 test('the folded tag says first, in plain words, what needs the user', () => {
   assert.equal(dockTagWords({ live: 2, waiting: 1, ended: 1, failed: 0 }), '1 件等你处理 · 1 在后台')
-  assert.equal(dockTagWords({ live: 0, waiting: 0, ended: 2, failed: 1 }), '1 件出错')
+  assert.equal(dockTagWords({ live: 0, waiting: 0, ended: 2, failed: 1 }), '1 件出错了')
   assert.equal(dockTagWords({ live: 1, waiting: 0, ended: 3, failed: 0 }), '1 在后台')
   assert.equal(dockTagWords({ live: 0, waiting: 0, ended: 3, failed: 0 }), '✓ 3 做完了')
 })

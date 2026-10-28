@@ -431,8 +431,7 @@ html:not([data-platform="darwin"]) {
 /* Ended: quieter words. */
 .dock-tile[data-status="done"] .dock-tile-head, .dock-tile[data-status="stopped"] .dock-tile-head { color: var(--ink-2); font-weight: 600; }
 .dock-tile-head .task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dock-hide { width: 22px; height: 22px; font-size: 15px; line-height: 1; border: none; background: none; opacity: 0; transition: opacity .12s; }
-.dock-tile:hover .dock-hide, .dock-hide:focus-visible { opacity: 1; }
+.dock-seen { height: 28px; padding: 0 6px; margin-left: auto; font-size: 12.5px; color: var(--ink-3); }
 .dock-tile-said { color: var(--ink-3); font-size: 12.5px; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .dock-tile[data-status="waiting"] .dock-tile-said, .dock-tile[data-status="interrupted"] .dock-tile-said { color: var(--ink-2); }
 .dock-tile-line { color: var(--ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -468,11 +467,26 @@ html:not([data-platform="darwin"]) {
 /* Peeked at without room beside the column: above the input (main sets --composer-lift), never over it. */
 .task-dock[data-peek="true"] { bottom: var(--composer-lift, 200px); }
 /* A background task's card (view/task-card.js): one quiet look whatever it is doing; the words say where it stands. */
-.task-card, .task-card[data-status] { border: 1px solid var(--line-2); }
-.task-card .task-report-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* A background task's line in the conversation (view/task-card.ts taskCard): one quiet row that opens its page. */
+.task-line {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; height: 40px; padding: 0 14px; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--ink-2); font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer; transition: background .12s, border-color .12s;
+}
+.task-line:hover, .task-line:focus-visible { background: var(--panel); border-color: var(--line-2); outline: none; }
+.task-line .task-name { flex: none; max-width: 40%; font-weight: 700; color: var(--ink); }
+.task-line-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); }
+.task-line-go { flex: none; margin-left: auto; color: var(--ink-3); font-size: 12.5px; }
+.task-line:hover .task-line-go { color: var(--accent); }
+/* Waiting on the user: it stands out, and leads to where it is answered. */
+.task-line[data-status="waiting"], .task-line[data-status="interrupted"] {
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--line)); background: color-mix(in srgb, var(--orange) 8%, transparent);
+}
+.task-line[data-status="waiting"] .task-state, .task-line[data-status="interrupted"] .task-state,
+.task-line[data-status="waiting"] .task-line-go, .task-line[data-status="interrupted"] .task-line-go { color: var(--orange); font-weight: 600; }
+.task-line[data-status="error"] .task-state { color: var(--red); }
 .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-state { flex: none; font-size: 13px; font-weight: 400; color: var(--ink-3); }
-.task-card .task-report-text { color: var(--ink-3); }
 /* A task's drawer tab (view/drawer.js taskView): where it stands, then what it said, then what it did. */
 .task-tab-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 /* Where it stands on the left; its buttons (停下, or 接着问 and 关掉这件) together on the right. */
@@ -891,8 +905,15 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   .hub-page { padding: 20px 16px 40px; }
 }
 
-/* ---------- 后台 page (view/tasks-page.js) ---------- */
-.tasks-page .tp-side { width: 300px; gap: 2px; overflow-y: auto; }
+/* ---------- 后台 page (view/tasks-page.ts): one of the hub's pages, its list and the task picked side by side ---------- */
+.hub-page.hub-tasks { width: 100%; height: 100%; margin: 0; padding: 0; display: flex; min-height: 0; }
+.hub-page.hub-tasks[hidden] { display: none; }
+/* The page scrolls inside its own two columns, not as a whole. */
+.hub-main:has(> .hub-tasks:not([hidden])) { overflow: hidden; }
+.tp-side {
+  flex: none; width: 280px; display: flex; flex-direction: column; gap: 2px; padding: 14px 12px; overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
 .tp-group { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; color: var(--ink-3); padding: 12px 12px 4px; }
 .tp-row {
   position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: none; border-radius: 10px;
@@ -933,7 +954,7 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .task-mark[data-status="stopped"]::before { content: '■'; font-size: 9px; }
 .task-mark[data-status="error"]::before { content: '!'; font-weight: 700; }
 @media (max-width: 720px) {
-  .tasks-page .tp-side { width: 200px; }
+  .tp-side { width: 200px; }
   .tp-head, .tp-scroll { padding-left: 16px; padding-right: 16px; }
   .tp-composer { margin: 0 16px 16px; }
 }

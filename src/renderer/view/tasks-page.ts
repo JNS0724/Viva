@@ -11,9 +11,9 @@ import { followupDetail, followupStanding, suggestionDetail, whenText } from './
  * (待你看的 first: drafts prepared in the background; then what is being prepared, then what is scheduled); on
  * the right the one picked, its whole conversation as the thread shows one, its steps folded under it, and its
  * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
- * draft and what can be done with it. Same place as 搜索 · 关于你 · 设置.
+ * draft and what can be done with it. One of the hub's pages, beside 回顾 · 关于你 · 设置.
  */
-const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你确认', running: '在做', ended: '做完了' }
+const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你处理', running: '在后台', ended: '做完了' }
 const LIVE = new Set(['running', 'waiting'])
 /** Follow-ups on the page are picked by this prefix, beside the tasks' ids. */
 export const FOLLOWUP_KEY = 'followup:'
@@ -84,11 +84,10 @@ function prepareLine(state: State, now: number) {
   return null
 }
 
+/** The list beside the hub's own sidebar (返回 and the other pages stay there, as on every page of the hub). */
 function sideView(state: State, handlers: Handlers, now: number) {
   const selected = state.tasks.page.selected
-  return h('nav', { class: 'hub-side tp-side', 'aria-label': '后台任务' },
-    h('button', { class: 'hub-back', type: 'button', onClick: () => handlers.closeHub() },
-      icon('back', 16), '返回', h('kbd', { text: 'Esc' })),
+  return h('nav', { class: 'tp-side', 'aria-label': '后台任务' },
     prepareLine(state, now),
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
