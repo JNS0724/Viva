@@ -15,6 +15,8 @@ import { reconcileChildren } from './reconcile.ts'
  */
 const NEW_TOPIC_NOTE = '助手从这里重新开始，不带上面的内容；关于你的记忆照常'
 const BACK_NOTE = '助手接着那个话题的内容聊，中间的不记得'
+/** Its own session gone: a new conversation, the topic's latest turns going with the first question as records. */
+const carriedNote = (turns: number) => `原来的会话已经接不上，这是新对话；会带上这个话题最近 ${turns} 轮记录，仅供助手参考`
 
 type RowOf<K extends EarlierRow['kind']> = Extract<EarlierRow, { kind: K }>
 type TopicBlock = ReturnType<typeof topicBlocks>[number]
@@ -133,7 +135,8 @@ function startLine(start: ReturnType<typeof topicStart>, handlers: Handlers, { n
   if (!start) return []
   const when = topicTime(start.at, now)
   if (start.kind === 'back') {
-    return [h('div', { class: 'topic-start', role: 'separator' }, `回到 话题 · ${when}`), h('div', { class: 'topic-note', text: BACK_NOTE })]
+    const note = start.carried === null ? BACK_NOTE : carriedNote(start.carried)
+    return [h('div', { class: 'topic-start', role: 'separator' }, `回到 话题 · ${when}`), h('div', { class: 'topic-note', text: note })]
   }
   return [
     h('div', { class: 'topic-start', role: 'separator' }, '新话题', when ? h('time', { text: when }) : null,

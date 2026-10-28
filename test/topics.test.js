@@ -55,8 +55,13 @@ test('a new topic says where it starts, and can be undone until something is sai
 
 test('going on from the segment just above says nothing; going back to an older topic says which', () => {
   assert.equal(topicStart(withTimeline({ parentId: 'd' })), null)
-  assert.deepEqual(topicStart(withTimeline({ parentId: 'b' })), { kind: 'back', at: at(0) })
+  assert.deepEqual(topicStart(withTimeline({ parentId: 'b' })), { kind: 'back', at: at(0), carried: null })
   assert.equal(topicStart({ ...initialState }), null, 'nothing above: nothing to say')
+})
+
+test('a topic gone on from its saved records in a new session says so, even right under the segment it goes on from', () => {
+  const start = topicStart(withTimeline({ parentId: 'd', carried: 20 }))
+  assert.deepEqual([start?.kind, start?.carried], ['back', 20])
 })
 
 test('the label counts the topic\'s earlier messages and the ones on screen; the share once the agent said it', () => {

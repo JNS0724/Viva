@@ -223,12 +223,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
     timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
-    ftsMessageHits: db.prepare(`SELECT m.id AS message_id, m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages_fts
-      JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id
-      WHERE messages_fts MATCH ? AND c.deleted_at IS NULL AND c.folded_into IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
-    likeMessageHits: db.prepare(`SELECT m.id AS message_id, m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM messages m
-      JOIN conversations c ON c.id = m.conversation_id
-      WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL AND c.folded_into IS NULL ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`),
     messages: db.prepare('SELECT role, text, receipt, images FROM messages WHERE conversation_id = ? ORDER BY seq'),
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
@@ -410,30 +404,31 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
    * Messages that have every one of several words (「报销 模板」): the words of three characters or more through the
    * trigram index, the shorter ones by LIKE, in one query.
    */
-  function allTermsHits(terms: readonly string[]) {
+  function allTermsHits(terms: readonly string[], { since, until }: { since: number, until: number }) {
     const long = terms.filter((term) => [...term].length >= TRIGRAM_MIN_CHARS)
     const short = terms.filter((term) => [...term].length < TRIGRAM_MIN_CHARS)
     const likes = short.map(() => `m.text LIKE ? ESCAPE '\\'`)
     const from = long.length
       ? `messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id WHERE messages_fts MATCH ?`
       : `messages m JOIN conversations c ON c.id = m.conversation_id WHERE 1`
-    const params = [...(long.length ? [long.map(ftsPhrase).join(' AND ')] : []), ...short.map((term) => `%${escapeLike(term)}%`)]
+    const params = [...(long.length ? [long.map(ftsPhrase).join(' AND ')] : []), ...short.map((term) => `%${escapeLike(term)}%`), since, until]
     return db.prepare(`SELECT m.id AS message_id, m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM ${from}
       ${likes.map((like) => `AND ${like}`).join(' ')} AND c.deleted_at IS NULL AND c.folded_into IS NULL
+      AND m.created_at >= ? AND m.created_at < ?
       ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`).all(...params) as Row[]
   }
 
   /**
    * Messages of the whole timeline that contain `input` (or, its words apart, every one of them), newest first,
-   * with where each is, its directory, and the messages right before and after it in its segment.
+   * with where each is, its directory, and the messages right before and after it in its segment; `since` and
+   * `until` (ms), only those written from the one and before the other.
    */
-  function searchMessages(input: unknown) {
+  function searchMessages(input: unknown, { since = 0, until = Number.MAX_SAFE_INTEGER }: { since?: number, until?: number } = {}) {
     const query = typeof input === 'string' ? input.trim().slice(0, MAX_QUERY_CHARS) : ''
     if (!query) return []
     const terms = [...new Set(query.split(/\s+/).filter(Boolean))].slice(0, MAX_QUERY_TERMS)
-    const rows = terms.length === 1
-      ? ([...query].length >= TRIGRAM_MIN_CHARS ? sql.ftsMessageHits.all(ftsPhrase(query)) : sql.likeMessageHits.all(`%${escapeLike(query)}%`))
-      : allTermsHits(terms)
+    // One word goes the same way: through the trigram index when it is long enough, else by LIKE.
+    const rows = allTermsHits(terms.length === 1 ? [query] : terms, { since, until })
     return rows.map((row) => ({
       messageId: row.message_id, segmentId: row.segment_id, seq: row.seq, role: row.role, at: row.created_at, cwd: row.cwd ?? null, snippet: snippetOf(row.text, firstTermIn(row.text, terms)),
       before: contextOf(sql.neighbour.get(row.segment_id, row.seq - 1)),

@@ -186,6 +186,8 @@ interface AgentApi {
   searchHistory: Invoke<'history:search'>
   openConversation: Invoke<'history:open'>
   resumeTopic: Invoke<'history:resume-topic'>
+  resumeCheck: Invoke<'history:resume-check'>
+  continueFromRecords: Invoke<'history:continue-from-records'>
   loadTrace: Invoke<'history:trace'>
   renameConversation: Invoke<'history:rename'>
   pinConversation: Invoke<'history:pin'>

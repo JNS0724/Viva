@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import type { BrowserWindow } from 'electron'
 import { openHistoryDb } from './history-db.ts'
@@ -12,16 +13,21 @@ import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './sm
 const DAY_MS = 86_400_000
 const HOUR_MS = 3_600_000
 
-/** `continues`: the seed (by index) whose topic it goes on (继续这个话题, days later). */
-type Seed = { daysAgo: number, hour: number, talk: string[], files?: string[], star?: number, task?: boolean, continues?: number }
+/**
+ * `continues`: the seed (by index) whose topic it goes on (继续这个话题, days later). `cwd`: where it was talked in
+ * when not the workspace: another folder that is there ('other'), or one that is not any more ('gone').
+ */
+type Seed = { daysAgo: number, hour: number, talk: string[], files?: string[], star?: number, task?: boolean, continues?: number, cwd?: 'other' | 'gone' }
+/** The folders of the seeds talked in elsewhere, within the run's own userData. */
+export const seedDir = (userData: string, cwd: Seed['cwd']) => (cwd === 'other' ? path.join(userData, 'other-project') : cwd === 'gone' ? path.join(userData, 'deleted-project') : path.join(userData, 'workspace'))
 
 /** Oldest first; the last is the conversation on screen. A task hangs off the topic before it. */
 const SEEDS: readonly Seed[] = [
   { daysAgo: 35, hour: 10.5, talk: ['季度目标对齐会的纪要帮我理一下', '三条结论：一、Q4 先做对账重构；二、客服工单系统延后；三、每周五同步进度。', '把第二条展开写写', '工单系统延后到明年一月，原因是人手：两位后端在对账重构上。'], star: 1 },
   { daysAgo: 20, hour: 15, talk: ['帮我比较一下两家云服务的报价', '按一年 8 台 4 核 16G 算，A 家 6.2 万，B 家 5.4 万；B 家带宽另算。'] },
   { daysAgo: 12, hour: 9.6, talk: ['把这几张发票按公司模板整理成报销单', '整理好了：3 张发票，合计 1,286 元，报销单在 Viva 的文件/报销单-10月.xlsx。'], files: ['/Users/me/Downloads/发票-滴滴.pdf', '/Users/me/Downloads/发票-酒店.pdf'] },
-  { daysAgo: 9, hour: 16.1, talk: ['帮我写一下 beta.4 的更新说明，口语一点', '这一版主要是 Windows 上的修复：岛一直在最上层，长标题末尾省略，停止更及时。', '再短一点', 'Windows 上更稳了：岛不再被挡住，停下更快。'] },
-  { daysAgo: 8, hour: 11, talk: ['周会的会议室改到几楼了', '改到 3 楼大会议室了，周三 14:00。'] },
+  { daysAgo: 9, hour: 16.1, talk: ['帮我写一下 beta.4 的更新说明，口语一点', '这一版主要是 Windows 上的修复：岛一直在最上层，长标题末尾省略，停止更及时。', '再短一点', 'Windows 上更稳了：岛不再被挡住，停下更快。'], cwd: 'gone' },
+  { daysAgo: 8, hour: 11, talk: ['周会的会议室改到几楼了', '改到 3 楼大会议室了，周三 14:00。'], cwd: 'other' },
   { daysAgo: 3, hour: 14.3, talk: ['把这周的进展整理一下，发给组里', '本周三件事：对账系统重构按计划推进；接口联调还差一步；上线改到周五。周报模板在 共享盘/行政/周报模板.docx。', '先别发，加上下周计划', '加好了：下周完成联调，周五上线。'], star: 1 },
   { daysAgo: 3, hour: 15.2, talk: ['整理 notes 文件夹里的会议纪要', '整理好了，共 6 份，按日期合成了一份 会议纪要-10月.md。'], task: true, star: 1 },
   { daysAgo: 2, hour: 20.5, talk: ['杭州周边有什么两天一夜的地方', '莫干山、千岛湖、桐庐都合适；开车两小时内，莫干山最近。', '莫干山住哪儿好', '想安静住庾村附近的民宿，想看山住半山腰的。'] },
@@ -43,11 +49,12 @@ export function seedTimeline(userData: string, now = Date.now()) {
   const today = new Date(now).setHours(0, 0, 0, 0)
   let previous: string | null = null
   const ids: string[] = []
+  fs.mkdirSync(seedDir(userData, 'other'), { recursive: true })
   for (const seed of SEEDS) {
     clock = seed.hour < 0 ? now + seed.hour * HOUR_MS : today - seed.daysAgo * DAY_MS + seed.hour * HOUR_MS
     // A task is started from the conversation (task-ipc.ts start); a topic gone on goes on from its segment.
     const parentId: string | null = seed.task ? previous : seed.continues === undefined ? null : ids[seed.continues]
-    const saved: { id: string } = db.save(db.create({ cwd: path.join(userData, 'workspace'), parentId }), messagesOf(seed))
+    const saved: { id: string } = db.save(db.create({ cwd: seedDir(userData, seed.cwd), parentId }), messagesOf(seed))
     if (seed.task && previous) db.fold(saved.id, { into: previous, at: 0, kind: 'side' })
     if (seed.star !== undefined) db.setStar(saved.id, seed.star, true)
     if (!seed.task) previous = saved.id
@@ -236,6 +243,64 @@ async function checkFarHit(win: BrowserWindow, outDir: string, expect: Expect) {
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 }
 
+const RESUME_SHEET = `(() => {
+  const sheet = document.querySelector('#resume-root .resume-sheet')
+  return sheet && {
+    title: sheet.querySelector('.workdir-sheet-title')?.textContent ?? '', dir: sheet.querySelector('.resume-dir')?.textContent ?? null,
+    text: sheet.textContent, buttons: [...sheet.querySelectorAll('button')].map((button) => button.textContent),
+  }
+})()`
+
+/** 回顾 opened, a topic read, 继续这个话题 pressed: the dialog it brings up. */
+async function continueFromReview(win: BrowserWindow, words: string) {
+  // 回顾 is the page with nothing typed: what a search before left in the field is cleared.
+  await run(win, `(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))
+    const field = document.getElementById('history-search')
+    field.value = ''
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await until(win, `document.querySelector('#history-list .review-filter') && true`, '回顾 with its filters')
+  await run(win, clickFilter('全部'))
+  await until(win, `(() => { const seen = ${REVIEW}; return seen.topics.some((title) => title.includes(${JSON.stringify(words)})) })()`, `回顾 listing 「${words}」`)
+  await run(win, clickTopic(words))
+  await until(win, `document.querySelector('#history-list .review-reader-actions .btn') && true`, `「${words}」 read, with 继续这个话题`)
+  await run(win, `document.querySelector('#history-list .review-reader-actions .btn').click()`)
+  return until(win, RESUME_SHEET, `the dialog for 「${words}」`)
+}
+
+/**
+ * 继续这个话题 in the window: another folder said before switching (and nothing switched on 取消); a folder gone asks
+ * for another; a session gone (the seeds have none) goes on from the topic's records in a new conversation.
+ */
+async function checkResume(win: BrowserWindow, outDir: string, expect: Expect) {
+  const agent = await run(win, AGENT)
+  const other = await continueFromReview(win, '周会的会议室')
+  expect(other.title === '换到这个话题的目录接着聊' && other.dir?.endsWith('other-project'), 'another folder should be said before switching to it', other)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'resume-confirm-dir')
+  await run(win, `document.querySelector('#resume-root .btn-secondary').click()`)
+  expect(JSON.stringify(await run(win, AGENT)) === JSON.stringify(agent), '取消 should leave the agent where it was', agent)
+
+  const gone = await continueFromReview(win, 'beta.4')
+  expect(gone.title === '这个话题的目录不在了' && gone.text.includes('deleted-project') && gone.buttons.some((label: string) => label.includes('选个目录')),
+    'a folder gone should ask for another to go on from the records', gone)
+  await run(win, `document.querySelector('#resume-root .btn-secondary').click()`)
+
+  const lost = await continueFromReview(win, '把这周的进展')
+  expect(lost.title === '原来的会话已经接不上了' && lost.text.includes('最近 20 轮'), 'a session gone should offer to go on from the records', lost)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'resume-gone')
+  await run(win, `document.querySelector('#resume-root .resume-main').click()`)
+  const note = await until(win, `[...document.querySelectorAll('#earlier .topic-note')].map((el) => el.textContent).find((text) => text.includes('仅供助手参考'))`, 'the new conversation saying what it carries')
+  const after = await run(win, AGENT)
+  expect(note.includes('轮记录') && after.sessionId !== agent.sessionId, 'going on from the records should be a new conversation saying so', { note, agent, after })
+  // The dialog gone and the page drawn again before the picture (else it may show the frame before).
+  await until(win, `!document.querySelector('#resume-root .resume-sheet')`, 'the dialog closed')
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'resume-carried')
+}
+
 /** @returns failures */
 export async function checkTimeline(win: BrowserWindow, outDir: string): Promise<string[]> {
   const failures: string[] = []
@@ -243,6 +308,7 @@ export async function checkTimeline(win: BrowserWindow, outDir: string): Promise
   await checkFolded(win, outDir, expect)
   await checkReview(win, outDir, expect)
   await checkFarHit(win, outDir, expect)
+  await checkResume(win, outDir, expect)
   report(`timeline: ${failures.length ? 'problems' : 'folded topics, the rail, stars and 回顾 as expected'}`)
   return failures
 }

@@ -7,7 +7,7 @@ import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
 import { APP_ROOT, CODE_ROOT, DSH_PROFILE, resolveConfig } from './config.ts'
-import { createAcpBridge } from './acp-bridge.ts'
+import { createAcpBridge, SWITCHING } from './acp-bridge.ts'
 import { createDeskIsland } from './desk-island.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.ts'
@@ -51,6 +51,8 @@ import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from '.
 import { runSmoke } from './smoke.ts'
 import { seedTimeline } from './smoke-timeline.ts'
 import { seedPerf } from './smoke-perf.ts'
+import { ResumeError } from './resume-failure.ts'
+import { historyRecall } from './history-recall.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
 
 const MAX_PROMPT_CHARS = 20_000
@@ -116,6 +118,8 @@ let turn = { active: false, startedAt: 0 }
 let lateMemoryTimer: ReturnType<typeof setInterval> | undefined
 /** The conversation on screen: the latest one at launch, one picked from the history panel, or a fresh one. */
 let conversation!: ReturnType<HistoryDb['create']>
+/** Saved records a topic goes on from in a new session, to go with the first question asked in it (agent:prompt). */
+let carry: { conversationId: string, text: string } | null = null
 /**
  * The working directory the agent works in now: the current conversation's own, or the app's (config.cwd,
  * defaultWorkDir) when it has none or it is gone. The user switches it from the window (work-dir-ipc.js).
@@ -348,7 +352,8 @@ function createBridge(config: Config, cwd: string) {
     mcpServers: () => personal.mcpServers(),
     configActions: configActions(config),
     messageActions: { read: (request) => (sources ? sources.read(request) : Promise.resolve(NO_SOURCES)) },
-    historySearch: (query) => historyDb?.searchMessages(query) ?? [],
+    historySearch: (query, range) => (historyDb ? historyRecall(historyDb).search(query, range) : []),
+    historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
     taskRead: (request, sessionId) => taskRegistry.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
     emit: (event) => {
       if (generation !== bridgeGeneration) return
@@ -528,6 +533,9 @@ function registerAgentIpc() {
     const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
     const pictures = imagesForPrompt(imageStore, images)
     const agent = requireBridge()
+    // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
+    // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
+    if (agent.isSwitching()) throw new Error(SWITCHING)
     try {
       personal.habits()
     } catch (err: any) {
@@ -536,7 +544,11 @@ function registerAgentIpc() {
     turn = { active: true, startedAt: Date.now() }
     // The user's turn comes first: background preparation stops after the item at hand.
     followups?.scheduler.yieldToUser()
-    return agent.prompt(question, pictures)
+    // A topic gone on from its saved records (history-ipc.ts continue-from-records): they go with the first question,
+    // as background only; the window shows (and the history keeps) the question as it was typed.
+    const carried = carry && carry.conversationId === conversation.id ? carry.text : null
+    carry = null
+    return agent.prompt(carried ? `${carried}\n\n${question}` : question, pictures)
   })
   /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
   ipcMain.handle('agent:steer', (_event, text) => {
@@ -709,18 +721,31 @@ function registerSettingsIpc() {
 /**
  * Without an agent (setup state) an old conversation can still be read; it keeps its session for later.
  * A conversation goes on in its own directory while that is still there.
+ * `exactly` (继续这个话题): that session in its own directory or none; never another directory in its place,
+ * nor a new session (resume-failure.ts says why not, and the agent stays on the conversation it was on).
  */
-async function switchAgent(sessionId: string | null, cwd?: string | null) {
+async function switchAgent(sessionId: string | null, cwd?: string | null, { exactly = false } = {}) {
+  if (exactly && !(cwd && isFolder(cwd))) throw new ResumeError('missing-dir', `这个话题的工作目录不在了：${cwd ?? '（没有记下）'}`)
+  if (exactly && !bridge) throw new ResumeError('unavailable', '助手还没准备好')
   const target = cwd && isFolder(cwd) ? cwd : workDirNow()
   if (!bridge) {
     workDir = target
     return { ...lastInfo, sessionId, cwd: target, resumed: false }
   }
   // With a bridge the agent has started somewhere, so there is a folder in use.
-  const info = await bridge.switchSession(sessionId, target ?? undefined)
-  workDir = target
-  lastInfo = { ...info, remembersHistory: info.resumed }
-  return info
+  try {
+    const info = await bridge.switchSession(sessionId, target ?? undefined, { exactly })
+    workDir = target
+    lastInfo = { ...info, remembersHistory: info.resumed }
+    return info
+  } catch (err) {
+    // Back where it was, or on a new session where that was gone too: the conversation on screen follows.
+    if (err instanceof ResumeError && err.info) {
+      lastInfo = { ...lastInfo, ...err.info, remembersHistory: Boolean(err.info.resumed) }
+      if (err.info.sessionId && err.info.sessionId !== conversation.sessionId) conversation = { ...conversation, sessionId: err.info.sessionId }
+    }
+    throw err
+  }
 }
 
 const FORK_PROBLEMS: Readonly<Record<string, string>> = Object.freeze({
@@ -933,6 +958,9 @@ function openHistory(config: Config) {
     switchAgent,
     chooseExportPath,
     isBusy: () => turn.active,
+    folderExists: (dir) => isFolder(dir),
+    workDir: () => workDirNow() ?? null,
+    carryNext: (conversationId, text) => { carry = { conversationId, text } },
   })
   registerRewindIpc(ipcMain, {
     db: historyDb,
