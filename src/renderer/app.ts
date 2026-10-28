@@ -97,9 +97,6 @@ const elements = {
   hubSearchKey: byId('hub-search-key'),
   /** 后台: every background task and the one picked (view/tasks-page.js). */
   tasksPage: byId('tasks-page'),
-  /** 后台 in the hub's sidebar, and its list unfolded under it (view/tasks-page.ts). */
-  hubTasksNav: byId('hub-nav-tasks'),
-  hubTasksList: byId('hub-tasks-list'),
   /** The background tasks floating in the corner of the main area (view/task-dock.ts). */
   taskDock: byId('task-dock'),
   main: byId('main'),
@@ -944,9 +941,7 @@ function wireHub() {
   for (const nav of dom.hubNavs) {
     nav.addEventListener('click', () => {
       const page = nav.dataset.page ?? ''
-      // 后台 clicked on its own page: its list under it folds, or unfolds again.
-      if (hubPage(state) === page && page === 'tasks') dispatch({ type: 'tasks_page_list' })
-      else if (hubPage(state) !== page) handlers.openHubPage(page)
+      if (hubPage(state) !== page) handlers.openHubPage(page)
     })
   }
 }

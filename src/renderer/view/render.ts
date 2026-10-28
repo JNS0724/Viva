@@ -120,11 +120,11 @@ function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
 let renderedTasksPage: unknown[] = []
 
 /** The 后台 page depends on the tasks, the follow-ups and on itself; a task at work changes it as it goes. */
-function renderTasksPageIfChanged(dom: Dom, state: State, handlers: Handlers, now: number) {
+function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
   const inputs = [state.tasks.list, state.tasks.page, state.followups]
   if (inputs.every((value, i) => value === renderedTasksPage[i])) return
   renderedTasksPage = inputs
-  renderTasksPage(dom.tasksPage, { nav: dom.hubTasksNav, list: dom.hubTasksList }, state, handlers, now)
+  renderTasksPage(container, state, handlers, now)
 }
 
 function renderToastIfChanged(container: HTMLElement, toast: State['toast'], handlers: Handlers) {
@@ -224,7 +224,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderSettingsIfChanged(dom.settings, state, handlers)
   renderProfileIfChanged(dom.profile, state.memory, handlers)
   renderHub(dom, state)
-  renderTasksPageIfChanged(dom, state, handlers, now)
+  renderTasksPageIfChanged(dom.tasksPage, state, handlers, now)
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)

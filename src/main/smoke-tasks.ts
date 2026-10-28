@@ -33,7 +33,7 @@ const pageState = `(() => {
   return {
     open: page.dataset.open === 'true',
     title: page.querySelector('.tp-title')?.textContent ?? '',
-    rows: [...document.querySelectorAll('#hub-tasks-list .tp-row .tp-name')].map((el) => el.textContent),
+    rows: [...page.querySelectorAll('.tp-row .tp-name')].map((el) => el.textContent),
     said: [...page.querySelectorAll('.tp-thread .msg-text, .tp-thread .msg-user')].map((el) => el.textContent),
     act: page.querySelector('.tp-act')?.textContent ?? '',
   }
@@ -134,17 +134,6 @@ async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   expect(page.title === `#${OTHER_ASK}` && page.rows.includes(OTHER_ASK) && page.act === '关掉这件' && page.said.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
     'the tail should open the 后台 page, the task shown whole', page)
   await capture(win, outDir, 'tasks-page')
-  // Its list is a second level of the sidebar, under 后台: 后台 clicked on its page folds it and unfolds it again.
-  const listState = `({ hidden: document.getElementById('hub-tasks-list').hidden, expanded: document.getElementById('hub-nav-tasks').getAttribute('aria-expanded'), open: document.getElementById('tasks-page').dataset.open })`
-  const unfolded = await run(win, listState)
-  await run(win, `document.getElementById('hub-nav-tasks').click()`)
-  await wait(UI_WAIT_MS)
-  const folded = await run(win, listState)
-  expect(!unfolded.hidden && unfolded.expanded === 'true' && folded.hidden && folded.expanded === 'false' && folded.open === 'true',
-    '后台 clicked on its page should fold its list and keep the page', { unfolded, folded })
-  await capture(win, outDir, 'tasks-list-folded')
-  await run(win, `document.getElementById('hub-nav-tasks').click()`)
-  await until(win, `!document.getElementById('hub-tasks-list').hidden`, 'the list unfolded again')
   // One of the hub's pages: its sidebar stays, so 关于你 is a click away and 后台 a click back.
   await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
   const profile = await until(win, `(() => {
@@ -386,7 +375,7 @@ async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `document.querySelector('#island .isl-bg').click()`)
   const page = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.rows.length && seen })()`, 'the 后台 page after the relaunch')
   expect(page.rows.includes(ASKS_LATER) && page.rows.includes(ON_ITS_OWN), 'tasks that ended last time should be back on the 后台 page', page.rows)
-  await run(win, `[...document.querySelectorAll('#hub-tasks-list .tp-row')].find((el) => el.querySelector('.tp-name').textContent === ${JSON.stringify(ASKS_LATER)}).click()`)
+  await run(win, `[...document.querySelectorAll('#tasks-page .tp-row')].find((el) => el.querySelector('.tp-name').textContent === ${JSON.stringify(ASKS_LATER)}).click()`)
   await until(win, `(${pageState}).title === ${JSON.stringify(`#${ASKS_LATER}`)}`, 'the task from last time on show')
   await run(win, `(() => {
     const field = document.querySelector('#tasks-page .tp-input')
