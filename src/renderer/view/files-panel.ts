@@ -59,7 +59,14 @@ function localImage(preview: Preview, handlers: Handlers) {
   return (src: string, alt: string) => {
     if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('/')) return null
     const parts = [...base]
-    for (const part of decodeURI(src.split(/[?#]/)[0]).split('/')) {
+    let decoded: string
+    try {
+      decoded = decodeURI(src.split(/[?#]/)[0])
+    } catch {
+      // A malformed image address must not stop the rest of the document from rendering.
+      return null
+    }
+    for (const part of decoded.split('/')) {
       if (part === '..') {
         if (!parts.length) return null
         parts.pop()
