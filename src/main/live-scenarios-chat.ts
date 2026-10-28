@@ -34,7 +34,7 @@ const chat: LiveScenario = {
     expect(shown && /python/i.test(shown.lang) && /sum|range|for/.test(shown.code), 'the Python code should be a code block naming its language', shown && { lang: shown.lang, code: clip(shown.code, 80) })
     await ctx.shot('chat-markdown')
     const second = FRUITS.find((fruit) => shown?.rows[1]?.includes(fruit))
-    const follow = await ask(win, '表格里第二行是哪种水果？只回答水果名。')
+    const follow = await ask(win, '表头不算数据行。第二行数据是哪种水果？只回答水果名。')
     expect(Boolean(second) && follow.answer.includes(second as string), 'the follow-up should be answered from the table above', { rows: shown?.rows, answer: clip(follow.answer) })
   },
 }
