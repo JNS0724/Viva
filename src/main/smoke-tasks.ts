@@ -389,7 +389,10 @@ const RESTORED_ASK = '后来呢'
  * asked again there, a task's session is taken up first, and it answers on its page.
  */
 async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  await run(win, `document.querySelector('#island .isl-bg').click()`)
+  // Seen last time, they are not reminded of at the island's tail any more: the 后台 page from the hub's sidebar.
+  await run(win, `document.getElementById('open-profile').click()`)
+  await until(win, `document.getElementById('hub').dataset.open === 'true'`, 'the hub')
+  await run(win, `document.querySelector('.hub-nav[data-page="tasks"]').click()`)
   const page = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.rows.length && seen })()`, 'the 后台 page after the relaunch')
   expect(page.rows.includes(ASKS_LATER) && page.rows.includes(ON_ITS_OWN), 'tasks that ended last time should be back on the 后台 page', page.rows)
   await run(win, `[...document.querySelectorAll('#tasks-page .tp-row')].find((el) => el.querySelector('.tp-name').textContent === ${JSON.stringify(ASKS_LATER)}).click()`)

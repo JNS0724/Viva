@@ -88,8 +88,9 @@ export function taskCard(task: BackgroundTask, report: TaskReport | null, handle
 
 /**
  * The same task in the dock (view/task-dock.ts), where it is answered: its name and where it stands over the
- * line and the buttons that answer it, stacked to fit a narrow panel. Ended, 知道了 puts it away from the dock;
- * its line in the conversation stays as the history. Nothing else takes it away: 详情 and 接着问 leave it be.
+ * line and the buttons that answer it, stacked to fit a narrow panel. Ended, it leaves the dock once seen (opened
+ * on the 后台 page, by 详情 or 接着问 or anywhere else; the page covers the dock meanwhile, so it is gone by the time
+ * the user is back) or put away unseen by 知道了; its line in the conversation stays as the history.
  */
 export function taskTile(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): HTMLElement {
   const parts = partsOf(task, report, handlers, now)

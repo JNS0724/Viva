@@ -126,9 +126,28 @@ function storeFlag(key: string, value: boolean) {
   }
 }
 
+/** The ended tasks seen (tasks-state.ts dockHidden), a JSON list of ids: the latest so many, enough for any launch. */
+const SEEN_KEY = 'viva:tasks-seen'
+const SEEN_KEPT = 200
+function storedSeen(): unknown {
+  try {
+    return JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]')
+  } catch {
+    return []
+  }
+}
+function storeSeen(ids: readonly string[]) {
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(ids.slice(-SEEN_KEPT)))
+  } catch {
+    // Storage refused: seen for this launch only.
+  }
+}
+
 let state: State = [
   { type: 'task_dock_toggled', collapsed: storedFlag(DOCK_KEY) },
   { type: 'tasks_list_folded', folded: storedFlag(TASK_LIST_KEY) },
+  { type: 'tasks_seen_restored', ids: storedSeen() },
 ].reduce((before: State, action) => reduce(before, action), initialState)
 
 // The column's width as the user dragged it, kept within the main area as the window and the drawer change it;
@@ -160,6 +179,7 @@ function dispatch(action: Action) {
   const next = reduce(state, action)
   if (timing !== null) recordRendererTiming('history-state', performance.now() - timing)
   if (next === state) return
+  if (next.tasks.dockHidden !== state.tasks.dockHidden) storeSeen(next.tasks.dockHidden)
   state = next
   if (['acp_update', 'task_update'].includes(action.type ?? '') && LIVE_TEXT_UPDATES.has(action.update?.sessionUpdate)) {
     // State stays current for user actions, while a burst of model chunks paints once per frame.
