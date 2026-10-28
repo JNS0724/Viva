@@ -84,10 +84,34 @@ function prepareLine(state: State, now: number) {
   return null
 }
 
-/** The list beside the hub's own sidebar (返回 and the other pages stay there, as on every page of the hub). */
+/**
+ * Folded by the user: a narrow strip where the list was, » to unfold it, and how many wait on the user so none
+ * is missed while it is folded.
+ */
+function foldedSide(state: State, handlers: Handlers) {
+  const waiting = state.tasks.list.filter((task) => task.status === 'waiting').length
+  return h('nav', { class: 'tp-side tp-side-folded', 'aria-label': '后台任务' },
+    h('button', {
+      class: 'icon-btn tp-fold', type: 'button', title: '展开后台任务', 'aria-label': '展开后台任务', 'aria-expanded': 'false',
+      onClick: () => handlers.foldTaskList(false),
+    }, h('span', { text: '»', 'aria-hidden': 'true' })),
+    waiting ? h('span', { class: 'tp-count', title: `${waiting} 件等你处理`, text: String(waiting) }) : null)
+}
+
+/**
+ * The list beside the hub's own sidebar (返回 and the other pages stay there, as on every page of the hub), « at
+ * its head to fold it to a strip; the user's choice, kept, for the list is not looked at often.
+ */
 function sideView(state: State, handlers: Handlers, now: number) {
+  if (state.tasks.listFolded) return foldedSide(state, handlers)
   const selected = state.tasks.page.selected
   return h('nav', { class: 'tp-side', 'aria-label': '后台任务' },
+    h('div', { class: 'tp-side-head' },
+      h('span', { class: 'tp-side-title', text: '后台任务' }),
+      h('button', {
+        class: 'icon-btn tp-fold', type: 'button', title: '收起列表', 'aria-label': '收起列表', 'aria-expanded': 'true',
+        onClick: () => handlers.foldTaskList(true),
+      }, h('span', { text: '«', 'aria-hidden': 'true' }))),
     prepareLine(state, now),
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),

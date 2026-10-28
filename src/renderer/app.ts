@@ -109,16 +109,27 @@ new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
 attachTurnRail(dom.scroll, byId('turn-rail'))
 
 const DOCK_KEY = 'viva:dock-collapsed'
-/** Whether the dock was left folded, for the next launch; storage refused, it starts unfolded. */
-function dockFolded(): boolean {
+const TASK_LIST_KEY = 'viva:tasks-list-folded'
+/** A choice kept for the next launch (the dock, the 后台 page's list folded); storage refused, false. */
+function storedFlag(key: string): boolean {
   try {
-    return localStorage.getItem(DOCK_KEY) === 'true'
+    return localStorage.getItem(key) === 'true'
   } catch {
     return false
   }
 }
+function storeFlag(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, String(value))
+  } catch {
+    // Storage refused: kept for this launch only.
+  }
+}
 
-let state: State = reduce(initialState, { type: 'task_dock_toggled', collapsed: dockFolded() })
+let state: State = [
+  { type: 'task_dock_toggled', collapsed: storedFlag(DOCK_KEY) },
+  { type: 'tasks_list_folded', folded: storedFlag(TASK_LIST_KEY) },
+].reduce((before: State, action) => reduce(before, action), initialState)
 
 // The column's width as the user dragged it, kept within the main area as the window and the drawer change it;
 // whatever is left beside it says whether the dock has room there.
@@ -618,11 +629,12 @@ const handlers = {
   /** The dock in the corner: folded to its tag or unfolded, remembered for the next launch. */
   toggleDock: (collapsed: boolean) => {
     dispatch({ type: 'task_dock_toggled', collapsed })
-    try {
-      localStorage.setItem(DOCK_KEY, String(collapsed))
-    } catch {
-      // Storage refused: folded for this launch only.
-    }
+    storeFlag(DOCK_KEY, collapsed)
+  },
+  /** The 后台 page's list folded to its strip, or unfolded; kept for the next launch. */
+  foldTaskList: (folded: boolean) => {
+    dispatch({ type: 'tasks_list_folded', folded })
+    storeFlag(TASK_LIST_KEY, folded)
   },
   /** No room beside the column: the folded dock shown over the conversation for now, or put back. */
   peekDock: (peek: boolean) => dispatch({ type: 'task_dock_peek', peek }),

@@ -134,6 +134,16 @@ async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   expect(page.title === `#${OTHER_ASK}` && page.rows.includes(OTHER_ASK) && page.act === '关掉这件' && page.said.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
     'the tail should open the 后台 page, the task shown whole', page)
   await capture(win, outDir, 'tasks-page')
+  // Its list folds to a narrow strip (« at its head) and unfolds from there (»); the task shown stays.
+  await run(win, `document.querySelector('#tasks-page .tp-side .tp-fold').click()`)
+  const folded = await until(win, `(() => {
+    const side = document.querySelector('#tasks-page .tp-side')
+    return side?.classList.contains('tp-side-folded') && { width: Math.round(side.getBoundingClientRect().width), rows: side.querySelectorAll('.tp-row').length, title: ${pageState}.title }
+  })()`, 'the list folded to its strip')
+  expect(folded.width <= 40 && folded.rows === 0 && folded.title === `#${OTHER_ASK}`, 'folded, the list should be a narrow strip and the task stay shown', folded)
+  await capture(win, outDir, 'tasks-list-folded')
+  await run(win, `document.querySelector('#tasks-page .tp-side .tp-fold').click()`)
+  await until(win, `(${pageState}).rows.length > 0`, 'the list unfolded again')
   // One of the hub's pages: its sidebar stays, so 关于你 is a click away and 后台 a click back.
   await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
   const profile = await until(win, `(() => {
@@ -227,6 +237,13 @@ async function reportSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `(${cardOf(BIG_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-report')
+  // The island's tail (✓ N 做完了) stays inside it, a long task name giving way (…) instead.
+  const tail = await run(win, `(() => {
+    const island = document.querySelector('#island .isl')?.getBoundingClientRect()
+    const cell = document.querySelector('#island .isl-bg')?.getBoundingClientRect()
+    return island && cell ? { islandRight: Math.round(island.right), tailRight: Math.round(cell.right), text: document.querySelector('#island .isl-bg').textContent } : null
+  })()`)
+  expect(!tail || tail.tailRight <= tail.islandRight, 'the island\'s tail should stay inside the island', tail)
   await followUpSteps(win, outDir, expect)
   const page = await openFromLine(win, BIG_ASK)
   expect(page.act === '关掉这件', 'its line should open the task\'s page', page)

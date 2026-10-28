@@ -28,6 +28,8 @@ export const initialTasks = Object.freeze({
   page: Object.freeze({ open: false, selected: null as string | null, steps: false }),
   /** The dock in the corner (view/task-dock.ts): folded to its tag, and the ended tasks put away from it. */
   dockCollapsed: false,
+  /** The 后台 page's list folded to a narrow strip by the user (view/tasks-page.ts), kept for the next launch. */
+  listFolded: false,
   dockHidden: [] as string[],
   /** Whether the main area has room for the dock beside the column; without it the dock folds unless peeked at. */
   dockRoom: true,
@@ -264,6 +266,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
 
   return {
     task_moving: (state, { moving }) => withTasks(state, { moving }),
+    tasks_list_folded: (state, { folded }) => withTasks(state, { listFolded: Boolean(folded) }),
     task_dock_toggled: (state, { collapsed }) => withTasks(state, { dockCollapsed: Boolean(collapsed), dockPeek: false }),
     task_dock_room: (state, { room }) => (state.tasks.dockRoom === Boolean(room) ? state : withTasks(state, { dockRoom: Boolean(room), dockPeek: false })),
     task_dock_peek: (state, { peek }) => withTasks(state, { dockPeek: Boolean(peek) }),

@@ -914,6 +914,16 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   flex: none; width: 280px; display: flex; flex-direction: column; gap: 2px; padding: 14px 12px; overflow-y: auto;
   border-right: 1px solid var(--line);
 }
+.tp-side-head { display: flex; align-items: center; gap: 8px; padding: 0 0 6px 12px; }
+.tp-side-title { flex: 1; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+.tp-fold { width: 28px; height: 28px; border-color: transparent; background: none; font-size: 15px; color: var(--ink-3); }
+.tp-fold:hover { border-color: var(--line-2); color: var(--ink); }
+/* Folded: a narrow strip, » to unfold, and how many wait on the user. */
+.tp-side-folded { width: 36px; padding: 14px 4px; align-items: center; gap: 8px; overflow: visible; }
+.tp-count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box; text-align: center;
+  background: var(--orange); color: var(--bg); font: 700 11px/18px var(--font-mono);
+}
 .tp-group { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; color: var(--ink-3); padding: 12px 12px 4px; }
 .tp-row {
   position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: none; border-radius: 10px;
@@ -954,7 +964,7 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .task-mark[data-status="stopped"]::before { content: '■'; font-size: 9px; }
 .task-mark[data-status="error"]::before { content: '!'; font-weight: 700; }
 @media (max-width: 720px) {
-  .tp-side { width: 200px; }
+  .tp-side:not(.tp-side-folded) { width: 200px; }
   .tp-head, .tp-scroll { padding-left: 16px; padding-right: 16px; }
   .tp-composer { margin: 0 16px 16px; }
 }

@@ -57,7 +57,8 @@
 .isl-head:disabled { cursor: default; }
 /* Ending in the progress ring, the ring sits in the right end the way the cat sits in the left. */
 .isl-head:has(> .isl-ring:last-child) { padding-right: calc((var(--isl-head) - 3px - 16px) / 2); }
-.isl-label { flex: none; font-size: 14px; font-weight: 700; }
+/* The label gives way (…) before the tail does: a long task name never pushes 「✓ 4 做完了」 out of the island. */
+.isl-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 700; }
 .isl[data-host="desk"] .isl-label { font-size: 15px; }
 .isl[data-tone="waiting"] .isl-label { color: var(--orange); }
 .isl[data-tone="error"] .isl-label { color: var(--red); }
@@ -108,7 +109,7 @@
 
 /* Tasks in the background (view/island-tasks.js): a cell at the tail, a dot a task; opened, a line each. */
 .isl-bg {
-  flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 2px; padding-left: 10px;
+  flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 2px; padding-left: 10px; white-space: nowrap;
   border-left: 1px solid var(--line-2); font-size: 12px; color: var(--ink-2);
 }
 .isl-bg b { font: 700 13px var(--font-mono); color: var(--ink); }
