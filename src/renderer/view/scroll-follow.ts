@@ -3,6 +3,12 @@ const BOTTOM_SLACK_PX = 32
 /** Breathing room kept above the latest question when a long answer stops auto-scrolling. */
 const ANCHOR_GAP_PX = 24
 const KEYS_THAT_SCROLL_UP = new Set(['PageUp', 'ArrowUp', 'Home'])
+const READER_CONTROL_EVENT = 'viva:reader-control'
+
+/** A reader revealing existing content owns the scroll position before its height changes. */
+export function takeReaderControl(element: Element): void {
+  element.dispatchEvent(new Event(READER_CONTROL_EVENT, { bubbles: true }))
+}
 
 export const distanceFromBottom = (el: { scrollTop: number, scrollHeight: number, clientHeight: number }) => el.scrollHeight - el.scrollTop - el.clientHeight
 
@@ -50,6 +56,8 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
     anchorSpent = true
     updateJump()
   }
+
+  scrollEl.addEventListener(READER_CONTROL_EVENT, yieldToReader)
 
   scrollEl.addEventListener('wheel', (event) => {
     if (event.deltaY < 0) yieldToReader()
@@ -102,8 +110,7 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
     },
     /** Content changed size without a re-render (web fonts, wrapping): stay on the bottom if that is where we are following. */
     onContentResize() {
-      if (!following || !anchorSpent) return
-      write(scrollEl.scrollHeight)
+      if (following && anchorSpent) write(scrollEl.scrollHeight)
       updateJump()
     },
     isFollowing: () => following,

@@ -22,10 +22,33 @@ const AVATAR_CAT_PX = 36
 type CatSlots = Map<string, { key: string, el: HTMLElement }>
 type Look = { latest: boolean, mood: CatMood | 'idle', cats?: CatSlots }
 const containerCats = new WeakMap<HTMLElement, CatSlots>()
+const avatarLooks = new WeakMap<Element, string>()
+
+function avatarMood(message: ThreadMessage, look: Look): CatMood | 'idle' {
+  if (!look.latest) return 'idle'
+  const typing = message.open || (message.shown ?? message.text.length) < message.text.length
+  return typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood
+}
 
 /** A small cat on its disc beside each answer: the latest one shows what the agent does now, earlier ones rest. */
-const avatar = (message: ThreadMessage, look: Look) => h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
-  catFor(look.cats ?? new Map(), message.id, look.latest ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
+function avatar(message: ThreadMessage, look: Look) {
+  const mood = avatarMood(message, look)
+  const slot = h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
+    catFor(look.cats ?? new Map(), message.id, mood, { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
+  avatarLooks.set(slot, `${mood}:${look.latest}`)
+  return slot
+}
+
+/** Status changes update only the portrait, keeping a reader-expanded answer and its nodes intact. */
+function refreshAvatar(view: View, message: ThreadMessage, look: Look) {
+  if (message.role !== 'assistant') return
+  const slot = elementsOf(view)[0]?.querySelector<HTMLElement>('.cat-avatar')
+  if (!slot) return
+  const mood = avatarMood(message, look), key = `${mood}:${look.latest}`
+  if (avatarLooks.get(slot) === key) return
+  reconcileChildren(slot, [catFor(look.cats ?? new Map(), message.id, mood, { size: AVATAR_CAT_PX, frame: true, still: !look.latest })])
+  avatarLooks.set(slot, key)
+}
 
 /** Moods the cat leaves for `typing` while the answer is still being typed out, the agent's own turn over or not. */
 const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
@@ -71,10 +94,8 @@ function assistantView(message: ThreadMessage, handlers: Handlers, traceReady: b
   const text = answerText(message, handlers)
   text.querySelector('.caret')?.remove()
   if (typing) caretHost(text).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
-  // A request or an error still shows; otherwise the cat types as long as the words come out.
-  const mood = typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood
   return h('div', { class: 'msg-agent' },
-    avatar(message, { ...look, mood }),
+    avatar(message, look),
     h('div', { class: 'msg-body' },
       text,
       hasReceipt(message) && !typing ? receiptButton(message, handlers, traceReady) : null))
@@ -303,10 +324,9 @@ function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonl
   return view
 }
 
-function messageInputs(message: ThreadMessage, traceReady: boolean, look: Look) {
+function messageInputs(message: ThreadMessage, traceReady: boolean) {
   return [message.role, message.text, message.shown, message.open, message.receipt, message.images,
     message.asked, message.steered, message.via, message.failed, message.restored,
-    message.role === 'assistant' && look.latest, message.role === 'assistant' && look.latest ? look.mood : null,
     message.role === 'user' ? null : traceReady]
 }
 
@@ -360,7 +380,9 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
     const look = { latest: message.id === latestAnswer, mood, cats }
-    return part(`message:${message.id}`, messageInputs(message, traceReady, look), () => messageView(message, handlers, traceReady, look))
+    const view = part(`message:${message.id}`, messageInputs(message, traceReady), () => messageView(message, handlers, traceReady, look))
+    refreshAvatar(view, message, look)
+    return view
   })
   // A background task's card goes under the words that started it (后台做), or under the message that was last when
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.

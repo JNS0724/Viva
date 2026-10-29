@@ -18,6 +18,7 @@ import { checkComposition } from './smoke-composition.ts'
 import { checkInputBoundaries } from './smoke-input-boundaries.ts'
 import { checkMarkdownLists } from './smoke-markdown-lists.ts'
 import { checkStarLayouts } from './smoke-star-layout.ts'
+import { checkAnswerExpansion } from './smoke-answer-expansion.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -407,6 +408,9 @@ const MARKDOWN_STATE = `(() => {
 /** Markdown in an answer becomes real headings, lists, tables and code; nothing in it runs, loads or navigates. */
 async function checkMarkdown(win: SmokeWindow, outDir: string) {
   const failures: string[] = await checkMarkdownLists(win)
+  await checkAnswerExpansion(win, (ok, message, seen) => {
+    if (!ok) failures.push(`answer expansion: ${message}: ${JSON.stringify(seen)}`)
+  })
   await newTopic(win)
   await wait(UI_WAIT_MS)
   await submit(win, MARKDOWN_PROMPT)

@@ -6,6 +6,7 @@ import type { Lexer as MarkedLexer, Token, Tokens } from 'marked'
 
 const Lexer: typeof MarkedLexer = UntypedLexer
 import { h } from './dom.ts'
+import { takeReaderControl } from './scroll-follow.ts'
 
 /** Where a link goes, and how a host shows a picture (or null to leave it as a link). */
 type Context = { openLink: (url: string) => void, image: ((src: string, alt: string) => HTMLElement | null) | null }
@@ -114,6 +115,7 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
  * Both renders must use the same handlers (the answer's own openLink closure).
  */
 export function expandMarkdown(target: HTMLElement, complete: HTMLElement): void {
+  takeReaderControl(target)
   const previous = [...target.childNodes]
   const next = [...complete.childNodes]
   let keep = 0
