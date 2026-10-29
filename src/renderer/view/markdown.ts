@@ -107,6 +107,21 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
   return h('div', { class: 'msg-text markdown' }, blocks(new Lexer({ gfm: true }).lex(text), { openLink, image }))
 }
 
+/**
+ * Expand a finished answer without detaching its unchanged opening blocks. Parse the whole source first:
+ * reference definitions later in the answer can change an earlier block. Only exactly equal blocks keep
+ * their nodes, links and accessibility identities; everything from the first difference is replaced.
+ * Both renders must use the same handlers (the answer's own openLink closure).
+ */
+export function expandMarkdown(target: HTMLElement, complete: HTMLElement): void {
+  const previous = [...target.childNodes]
+  const next = [...complete.childNodes]
+  let keep = 0
+  while (keep < previous.length && keep < next.length && previous[keep].isEqualNode(next[keep])) keep++
+  while (target.childNodes.length > keep) target.lastChild?.remove()
+  target.append(...next.slice(keep))
+}
+
 /** Where a typing caret goes: after the last text in the answer, not below it. */
 export function caretHost(root: HTMLElement): Element {
   const candidates = root.querySelectorAll('p, li, h3, h4, h5, pre code, td, th')

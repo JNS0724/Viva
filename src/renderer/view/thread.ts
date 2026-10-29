@@ -5,7 +5,7 @@ import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.
 import type { CatMood } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h, label } from './dom.ts'
-import { caretHost, renderMarkdown } from './markdown.ts'
+import { caretHost, expandMarkdown, renderMarkdown } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
@@ -59,7 +59,7 @@ function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
   const el = renderMarkdown(start, { openLink: handlers.openLink })
   el.append(h('button', {
     class: 'btn btn-outline btn-small answer-more', type: 'button', text: `展开全文（还有约 ${Math.round((text.length - start.length) / 1000)} 千字）`,
-    onClick: () => el.replaceChildren(...renderMarkdown(text, { openLink: handlers.openLink }).childNodes),
+    onClick: () => expandMarkdown(el, renderMarkdown(text, { openLink: handlers.openLink })),
   }))
   return el
 }
