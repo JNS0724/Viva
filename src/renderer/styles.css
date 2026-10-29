@@ -136,7 +136,8 @@ html:not([data-platform="darwin"]) {
 .col-grip:hover::after, .col-resizing .col-grip::after, .col-grip:focus-visible::after { opacity: .5; }
 .col-grip:focus-visible { outline: none; }
 .col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
-.scroll { position: relative; flex: 1; width: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
+/* A message's star extends 38px beyond its column. Keep that lane inside the scrollport at narrow widths too. */
+.scroll { position: relative; flex: 1; width: 100%; min-height: 0; padding-inline: 38px; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
 .jump-latest {
   position: sticky; bottom: 16px; z-index: 5; flex: none; height: 38px; padding: 0 18px; border: none; border-radius: 999px;
   background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);

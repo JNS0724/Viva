@@ -17,6 +17,7 @@ import { runShowcase } from './smoke-showcase.ts'
 import { checkComposition } from './smoke-composition.ts'
 import { checkInputBoundaries } from './smoke-input-boundaries.ts'
 import { checkMarkdownLists } from './smoke-markdown-lists.ts'
+import { checkStarLayouts } from './smoke-star-layout.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -542,7 +543,7 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
       problems.push(...await checkSources(win, outDir, { userData: hooks.userData, fixtures: hooks.fixtures, pick: hooks.pickSourceFolder }))
     }
     else if (smokePhase === 'relaunch') {
-      problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
+      problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir), ...await checkStarLayouts(win, outDir))
       // Last on this profile: they add questions to the conversation the checks above look at.
       problems.push(...await checkDeskAsk(win, outDir, hooks.desk?.()))
       problems.push(...await checkPictures(win, outDir, hooks.desk?.()))
