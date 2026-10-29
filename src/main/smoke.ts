@@ -16,6 +16,7 @@ import { checkPerf } from './smoke-perf.ts'
 import { runShowcase } from './smoke-showcase.ts'
 import { checkComposition } from './smoke-composition.ts'
 import { checkInputBoundaries } from './smoke-input-boundaries.ts'
+import { checkMarkdownLists } from './smoke-markdown-lists.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -404,7 +405,7 @@ const MARKDOWN_STATE = `(() => {
 
 /** Markdown in an answer becomes real headings, lists, tables and code; nothing in it runs, loads or navigates. */
 async function checkMarkdown(win: SmokeWindow, outDir: string) {
-  const failures: string[] = []
+  const failures: string[] = await checkMarkdownLists(win)
   await newTopic(win)
   await wait(UI_WAIT_MS)
   await submit(win, MARKDOWN_PROMPT)

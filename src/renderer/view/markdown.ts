@@ -63,7 +63,7 @@ function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
 function listItem(item: Tokens.ListItem, ctx: Context) {
   return h('li', { class: item.task ? 'md-task' : null },
     item.task ? h('input', { type: 'checkbox', checked: item.checked, disabled: true, 'aria-label': item.checked ? '已完成' : '未完成' }) : null,
-    blocks(item.tokens.filter((token) => token.type !== 'checkbox'), ctx, { tight: !item.loose }))
+    ...blocks(item.tokens.filter((token) => token.type !== 'checkbox'), ctx, { tight: !item.loose }).flat())
 }
 
 function table(token: Tokens.Table, ctx: Context) {
@@ -79,7 +79,7 @@ function block(token: Token, ctx: Context, { tight }: { tight: boolean }): View 
     case 'heading': return h(HEADING_TAGS[token.depth - 1] ?? 'h5', { class: `md-heading md-h${token.depth}` }, inline(token.tokens, ctx))
     case 'paragraph': return h('p', null, inline(token.tokens, ctx))
     // Inside a tight list item the text is not a paragraph of its own.
-    case 'text': return h(tight ? 'span' : 'p', null, inline(token.tokens ?? [token], ctx))
+    case 'text': return tight ? inline(token.tokens ?? [token], ctx) : h('p', null, inline(token.tokens ?? [token], ctx))
     case 'code': return h('pre', { class: 'md-code' },
       token.lang ? h('span', { class: 'md-code-lang', text: token.lang }) : null,
       h('code', { text: token.text }))
@@ -109,6 +109,6 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
 
 /** Where a typing caret goes: after the last text in the answer, not below it. */
 export function caretHost(root: HTMLElement): Element {
-  const candidates = root.querySelectorAll('p, li > span, h3, h4, h5, pre code, td, th')
+  const candidates = root.querySelectorAll('p, li, h3, h4, h5, pre code, td, th')
   return candidates[candidates.length - 1] ?? root
 }
