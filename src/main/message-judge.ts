@@ -20,7 +20,9 @@ export const JUDGE_SYSTEM = [
   '只输出一个 JSON 对象，不要别的文字：{"items":[{"id":"消息编号","important":true或false,"why":"为什么要用户处理，十个字左右","title":"短标题","ask":"建议跟进做什么","remind_at":"ISO 8601 时间或 null"}]}。',
   '每条消息一项，id 照抄。',
 ].join('\n')
-export const JUDGE_MAX_TOKENS = 1500
+// The model's thinking shares this budget with its JSON. At 1500, real DeepSeek calls exhausted it
+// before writing any verdicts; reserve enough for both without disabling reasoning.
+export const JUDGE_MAX_TOKENS = 4000
 /** Messages judged in one call. */
 export const JUDGE_BATCH = 20
 const MAX_TEXT_CHARS = 1500
@@ -66,19 +68,19 @@ export function judgeInput(messages: readonly StoredMessage[], { profile, decisi
   ].filter(Boolean).join('\n\n')
 }
 
-/** The important ones out of the model's answer; anything off-shape counts as nothing important. */
-export function parseVerdicts(text: string, messages: readonly StoredMessage[], now: number): Verdict[] {
+/** null means the model did not return a usable judgment, distinct from a valid list with none important. */
+function checkedVerdicts(text: string, messages: readonly StoredMessage[], now: number): Verdict[] | null {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
-  if (start < 0 || end <= start) return []
+  if (start < 0 || end <= start) return null
   let data: unknown
   try {
     data = JSON.parse(text.slice(start, end + 1))
   } catch {
-    return []
+    return null
   }
   const checked = verdictSchema.safeParse(data)
-  if (!checked.success) return []
+  if (!checked.success) return null
   const known = new Map(messages.map((m) => [keyOf(m), m]))
   return checked.data.items.flatMap((item) => {
     const message = known.get(item.id)
@@ -93,6 +95,11 @@ export function parseVerdicts(text: string, messages: readonly StoredMessage[], 
       remindAt: Number.isFinite(remind) && remind > now ? remind : null,
     }]
   })
+}
+
+/** The important ones only; callers needing failure identity use checkedVerdicts. */
+export function parseVerdicts(text: string, messages: readonly StoredMessage[], now: number): Verdict[] {
+  return checkedVerdicts(text, messages, now) ?? []
 }
 
 export interface JudgeDeps {
@@ -118,13 +125,19 @@ export function createMessageJudge(deps: JudgeDeps) {
     const asked = batch.filter((m) => !muted.includes(m))
     if (!asked.length) return { ok: true, suggested: 0 }
     const input = judgeInput(asked, { profile: profile(), decisions: store.recentDecisions(), now: now() })
-    const result = await prepareText({ system: JUDGE_SYSTEM, input, maxTokens: JUDGE_MAX_TOKENS }, signal)
+    const result = await prepareText({ system: JUDGE_SYSTEM, input, maxTokens: JUDGE_MAX_TOKENS, requireComplete: true }, signal)
     // Only a call the model was asked counts against the day's calls.
-    if (result.ok || result.called !== false) store.logEvent('prepare_call', { kind: 'judge', ok: result.ok, messages: asked.length })
+    if (result.ok || result.called !== false) store.logEvent('prepare_call', { kind: 'judge', ok: result.ok, messages: asked.length,
+      ...(!result.ok ? { problem: result.problem } : {}) })
     if (!result.ok) return { ok: false, suggested: 0 }
+    const verdicts = checkedVerdicts(result.text, asked, now())
+    if (verdicts === null) {
+      store.logEvent('judge_invalid', { messages: asked.length })
+      return { ok: false, suggested: 0 }
+    }
     const byKey = new Map(asked.map((m) => [keyOf(m), m]))
     let suggested = 0
-    for (const verdict of parseVerdicts(result.text, asked, now())) {
+    for (const verdict of verdicts) {
       const message = byKey.get(verdict.id) as StoredMessage
       const made = store.addSuggestion({
         source: message.source, messageId: message.id, sender: message.from ?? '', title: verdict.title, ask: verdict.ask, why: verdict.why, remindAt: verdict.remindAt,

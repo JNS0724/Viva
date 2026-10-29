@@ -61,6 +61,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
     op: 'mcp_import',
     mutating: false,
     description: '把用户自己的 dsh 里配好的 MCP 服务器整体搬到这里，密钥一起带过来，用户不用重新填写，也不需要确认。'
+        + '直接调用本工具，不要先执行命令列目录或读取配置文件；路径检查和配置读取由本工具完成。'
       + '用户说「把 dsh 的 MCP 搬过来」「从 dsh 导入」时使用。没指定位置就从默认位置（~/.dsh）导入；名字已经有的会跳过。'
       + '结果会说导入了哪些、还缺哪些密钥；把它转告用户。这一轮结束后生效。',
     parameters: {

@@ -10,9 +10,12 @@ import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 // What dsh adds to the context: ctx.permissionPresets.
 import type {} from '@deepseek-ai/dsh-permission-presets'
+import type {} from '@deepseek-ai/dsh-fs'
+import type {} from '@deepseek-ai/dsh-tools'
+import { accessDecision } from './access.ts'
 
 export const name = 'viva-permission'
-export const inject = ['permissionPresets', 'sessions']
+export const inject = ['permissionPresets', 'sessions', 'tools', 'fs']
 /** dsh's preset names (dsh-base's permission presets, and Auto). */
 export const LEVELS = Object.freeze(['danger-full-access', 'auto', 'workspace-write', 'read-only'])
 export const Config = z.object({ preset: z.union(LEVELS).default('workspace-write') })
@@ -27,4 +30,11 @@ export function apply(ctx: Context, config: { preset: string }) {
   }
   ctx.on('session/created', pin)
   for (const session of ctx.sessions.list()) pin(session)
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const decision = await accessDecision({
+      preset: config.preset, name: exec.name, args: exec.arguments, cwd: exec.agent?.session.header.cwd,
+      canonicalize: async (file, cwd) => ctx.fs.processPath(await ctx.fs.resolve(file, { cwd, signal: exec.signal })),
+    })
+    return decision ?? next()
+  })
 }

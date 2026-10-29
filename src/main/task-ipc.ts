@@ -2,6 +2,7 @@ import type { Conversation } from './history-db.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import type { TaskRegistry } from './task-registry.ts'
+import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
 /**
  * Background tasks from the window (phase 3). While a turn runs, words about something else move it to the
@@ -9,7 +10,6 @@ import type { TaskRegistry } from './task-registry.ts'
  * folds there as a task, and the conversation goes on in a new segment with what came before it and the new
  * words. Undone, it all goes back as it was. The window keeps what the task says and saves it here.
  */
-const MAX_TEXT_CHARS = 20_000
 const MAX_TITLE_CHARS = 40
 
 export const TASK_PROBLEMS: Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } = Object.freeze({
@@ -67,6 +67,10 @@ interface TaskIpcDeps {
 }
 
 export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, setCurrent, isBusy, setBusy, agentInfo, agent }: TaskIpcDeps) {
+  const restoredSummary = (entry: StoredTask) => {
+    const host = db.sideTaskHost(entry.segmentId)
+    return { ...summaryOf(entry), ...(host ? { host } : {}) }
+  }
   for (const task of store.list()) registry?.put({ ...task,
     resultPreview: task.resultPreview ?? db.get(task.segmentId)?.messages.slice(task.keep ?? 0).filter(message => message.role === 'assistant').at(-1)?.text ?? '',
   }, true)
@@ -122,6 +126,9 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const { mode, model } = agentInfo()
     const started = await agent.startTask(words === null ? {} : { words })
     if (!started.ok) return { ok: false, problem: TASK_PROBLEMS[started.reason] ?? `没能交给后台（${started.reason}）` }
+    // A conversation with only 后台做 requests has no foreground messages yet. Keep its identity too,
+    // otherwise the task points at an absent parent and its history row cannot return after a restart.
+    if (!db.get(main.id)) db.save(main, [], { keepEmpty: true })
     const segment = db.save(db.create({ sessionId: started.taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
     db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
     const task = { id: started.taskId, segmentId: segment.id, title: titleOf(text), words: text }
@@ -195,7 +202,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
         const found = db.get(entry.segmentId)
         if (!found) return []
         tasks.set(entry.id, entry)
-        return [{ task: summaryOf(entry), status: entry.status, endedAt: entry.endedAt, messages: found.messages.slice(entry.keep) }]
+        return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages: found.messages.slice(entry.keep) }]
       })
   }
 
@@ -236,7 +243,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     registry?.restart(taskId)
     agent.promptTask(taskId, GO_ON)
     const said = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
-    return { ok: true, task: summaryOf(kept), messages: said }
+    return { ok: true, task: restoredSummary(kept), messages: said }
   }
 
   ipcMain.handle('task:spin-off', (_event, request) => spinOff(request))

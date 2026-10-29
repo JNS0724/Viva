@@ -73,6 +73,21 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: any) 
     await wait(UI_WAIT_MS)
     await capture(page, outDir, 'desk-input')
 
+    // The field and the document both hear the key. Neither may submit/dismiss an IME candidate.
+    const composition: Array<{ key: string, legacy: boolean, kept: boolean }> = []
+    for (const key of ['Enter', 'Escape']) for (const legacy of [false, true]) {
+      await run(page, `(() => {
+        const field = document.querySelector('.isl-field')
+        field.value = '尚未确认的中文 🐈'
+        field.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, bubbles: true, cancelable: true,
+          isComposing: ${!legacy}, keyCode: ${legacy ? 229 : 0} }))
+      })()`)
+      await wait(UI_WAIT_MS)
+      const kept = await run(page, `document.querySelector('.isl')?.dataset.form === 'input' && document.querySelector('.isl-field')?.value === '尚未确认的中文 🐈'`)
+      composition.push({ key, legacy, kept: Boolean(kept) })
+    }
+    await run(page, `document.querySelector('.isl-field').value = ''`)
+
     await run(page, DRAG_OVER)
     const drop = await until(page, `document.querySelector('.isl')?.dataset.form === 'drop' && document.querySelector('.isl-drop')?.textContent`, 'the island opening for dropped files')
     await wait(UI_WAIT_MS)
@@ -92,9 +107,10 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: any) 
     desk.closeInput()
     await finishTurn(win)
     await capture(win, outDir, 'desk-asked')
-    report(`desk input: ${JSON.stringify({ opened, drop, refused, steering })}`)
+    report(`desk input: ${JSON.stringify({ opened, composition, drop, refused, steering })}`)
 
     const failures: string[] = []
+    if (composition.some(item => !item.kept)) failures.push(`IME confirmation must keep the desktop island input: ${JSON.stringify(composition)}`)
     if (!opened.focused) failures.push('the island input should take the keyboard')
     if (!opened.hint.includes('发到当前对话')) failures.push(`the island input should say where the question goes: ${opened.hint}`)
     if (refused !== MISSING) failures.push(`a dropped file without a path should be refused with "${MISSING}", was "${refused}"`)

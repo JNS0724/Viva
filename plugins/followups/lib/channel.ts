@@ -19,16 +19,17 @@ const MAX_ROUTE_CHARS = 200
 /** A follow-up as the model proposes it: the app checks every field again before showing the card. */
 export interface Proposal { title: string, ask: string, remindAt?: string, prepareBy?: string, files?: string[], watchFile?: string }
 
-export interface PrepareRequest { id: string, provider: string, model: string, system: string, input: string, maxTokens: number }
+export interface PrepareRequest { id: string, provider: string, model: string, system: string, input: string, maxTokens: number, requireComplete?: boolean }
 
 const text = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max
 
 /** A prepare request from the app, checked; null when it is not one. */
 export function prepareRequest(message: any): PrepareRequest | null {
   if (message?.type !== 'prepare') return null
-  const { id, provider, model, system, input, maxTokens } = message
+  const { id, provider, model, system, input, maxTokens, requireComplete } = message
   if (!text(id, MAX_ID_CHARS) || !text(provider, MAX_ROUTE_CHARS) || !text(model, MAX_ROUTE_CHARS)) return null
   if (!text(system, MAX_SYSTEM_CHARS) || !text(input, MAX_INPUT_CHARS)) return null
+  if (requireComplete !== undefined && typeof requireComplete !== 'boolean') return null
   const tokens = Number.isInteger(maxTokens) && maxTokens > 0 ? Math.min(maxTokens, MAX_TOKENS) : MAX_TOKENS
-  return { id, provider, model, system, input, maxTokens: tokens }
+  return { id, provider, model, system, input, maxTokens: tokens, ...(requireComplete ? { requireComplete: true } : {}) }
 }

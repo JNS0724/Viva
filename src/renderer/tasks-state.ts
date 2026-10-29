@@ -372,10 +372,15 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView(messages, at) })],
     }),
     /** Tasks that had ended by the last launch (task-store.js): back as they were, to be asked again or closed. */
-    tasks_restored: (state, { list }) => withTasks(state, {
-      list: [...state.tasks.list.filter((entry) => !list.some((item: { task: BackgroundTask }) => item.task.id === entry.id)),
-        ...list.map(({ task, status, endedAt, messages }: { task: BackgroundTask, status: string, endedAt: number, messages: ThreadMessage[] }) => settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))],
-    }),
+    tasks_restored: (state, { list }) => {
+      const restored = list.map(({ task, status, endedAt, messages }: { task: BackgroundTask, status: string, endedAt: number, messages: ThreadMessage[] }) =>
+        settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))
+      return withTasks(state, {
+        list: [...state.tasks.list.filter(entry => !restored.some((task: BackgroundTask) => task.id === entry.id)), ...restored],
+        reports: [...state.tasks.reports.filter(entry => !restored.some((task: BackgroundTask) => task.id === entry.taskId)),
+          ...restored.filter((task: BackgroundTask) => task.host).map((task: BackgroundTask) => ({ taskId: task.id, title: task.title, status: task.status, preview: previewOf(task.view), shown: true }))],
+      })
+    },
     /**
      * 接着问 or 「#name …」 to a task that ended: the words are its next question, and it is back at work in
      * the background. Its card goes; a new one comes when it is done again.

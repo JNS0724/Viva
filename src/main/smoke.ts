@@ -14,6 +14,8 @@ import { runLive } from './live.ts'
 import { checkTimeline } from './smoke-timeline.ts'
 import { checkPerf } from './smoke-perf.ts'
 import { runShowcase } from './smoke-showcase.ts'
+import { checkComposition } from './smoke-composition.ts'
+import { checkInputBoundaries } from './smoke-input-boundaries.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -339,6 +341,7 @@ async function checkFiles(win: SmokeWindow, outDir: string, cwd: string) {
   await fs.writeFile(path.join(cwd, 'tools', 'run.sh'), 'echo hi\n')
   await fs.writeFile(path.join(cwd, 'notes', 'app.ts'), 'const answer: number = 42\n')
   await fs.writeFile(path.join(cwd, 'notes', '账目.csv'), '日期,金额\n10-20,"1,200"\n')
+  await fs.writeFile(path.join(cwd, 'notes', '损坏图片.md'), '# 正文仍可读\n\n![坏地址](%ZZ.png)\n\nQA-BROKEN-IMAGE-END\n')
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   // The long task left the drawer open; open it only if it is not.
@@ -361,6 +364,13 @@ async function checkFiles(win: SmokeWindow, outDir: string, cwd: string) {
   const cells = await until(win, `(() => { const cells = [...document.querySelectorAll('.file-table td')].map((el) => el.textContent); return cells.length && cells })()`, 'the CSV table')
   expect(cells.join('|') === '日期|金额|10-20|1,200', 'a CSV file should show as a table, quoted commas kept', cells)
   await capture(win, outDir, 'files-table')
+
+  await run(win, clickRow('损坏图片.md'))
+  const brokenImage = await until(win, `document.querySelector('.file-doc')?.textContent.includes('QA-BROKEN-IMAGE-END')`, 'a malformed image address leaves the rest of Markdown readable')
+  expect(brokenImage, 'a malformed local image address should degrade to text without breaking preview', brokenImage)
+  await capture(win, outDir, 'files-broken-image')
+  await run(win, clickRow('账目.csv'))
+  await until(win, `document.querySelector('.file-table')`, 'back to the CSV preview')
   await run(win, `document.querySelector('.open-more').click()`)
   await until(win, `Boolean(document.querySelector('.open-menu .open-reveal'))`, 'the open menu')
   // The system lists the apps that open the file; the first time it reads their icons too. A machine with none still shows the menu.
@@ -537,6 +547,8 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
       problems.push(...await checkPictures(win, outDir, hooks.desk?.()))
       problems.push(...await checkTopics(win, outDir))
       problems.push(...await checkPermission(win, outDir))
+      problems.push(...await checkComposition(win))
+      problems.push(...await checkInputBoundaries(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))

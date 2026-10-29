@@ -108,8 +108,17 @@ export function taskTile(task: BackgroundTask, report: TaskReport | null, handle
  * The tasks with a line in the conversation now: those at work or waiting, and those that ended while what
  * they came back with is still shown, each with that report.
  */
-export function cardedTasks(state: State): Array<{ task: BackgroundTask, report: TaskReport | null }> {
+export function restoredTaskAnchors(state: State): Array<{ taskId: string, at: number }> {
   const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])])])
+  return state.tasks.list.filter(task => task.host?.conversationId === String(state.conversationId)
+    && Number.isSafeInteger(task.host.at) && task.host.at >= 0 && !hosted.has(task.id))
+    .toSorted((a, b) => a.host!.order - b.host!.order)
+    .map(task => ({ taskId: task.id, at: Math.min(task.host!.at, state.messages.length) }))
+}
+
+export function cardedTasks(state: State): Array<{ task: BackgroundTask, report: TaskReport | null }> {
+  const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])]),
+    ...restoredTaskAnchors(state).map(anchor => anchor.taskId)])
   return state.tasks.list.flatMap((task): Array<{ task: BackgroundTask, report: TaskReport | null }> => {
     if (!hosted.has(task.id)) return []
     if (LIVE.has(task.status) || task.status === 'interrupted') return [{ task, report: null }]

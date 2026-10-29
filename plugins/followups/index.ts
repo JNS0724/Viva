@@ -13,6 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { prepareRequest, type PrepareRequest, type Proposal } from './lib/channel.ts'
+import { preparationText } from './lib/result.ts'
 
 export const name = 'viva-followups'
 export const inject = ['tools', 'llm']
@@ -42,9 +43,7 @@ async function complete(ctx: Context, request: PrepareRequest, signal: AbortSign
     signal,
   })
   for await (const chunk of stream) assembler.push(chunk)
-  // A draft cut at the token limit is still worth showing; anything else (an error, a tool call) is not.
-  if (assembler.finish?.kind !== 'stop' && assembler.finish?.kind !== 'max-tokens') throw new Error(`模型停在了 ${assembler.finish?.kind ?? '中途'}`)
-  return assembler.blocks().filter((block) => block.type === 'text').map((block) => block.text).join('').trim()
+  return preparationText(assembler, request.requireComplete)
 }
 
 /** Answers the app's prepare requests, one call each, stopped when the app says the user came back. */

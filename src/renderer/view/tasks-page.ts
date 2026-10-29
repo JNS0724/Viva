@@ -5,6 +5,7 @@ import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
 import { followupDetail, followupStanding, suggestionDetail, whenText } from './followups.ts'
+import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../../shared/text-limits.ts'
 
 /**
  * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
@@ -158,11 +159,24 @@ function inputView(task: BackgroundTask, handlers: Handlers) {
   const send = () => {
     const text = field.value.trim()
     if (!text) return
+    if (text.length > MAX_MESSAGE_CHARS) return handlers.inputProblem(MESSAGE_TOO_LONG)
+    const draft = field.value
+    const page = field.closest('.tp-main')?.parentElement
     field.value = ''
-    handlers.sendToTask(task.id, text)
+    // A refused follow-up restores the draft in this task, through redraws, without overwriting newer typing.
+    const restore = () => {
+      const current = page?.querySelector<HTMLTextAreaElement>(`textarea[name="${CSS.escape(field.name)}"]`)
+      if (current && !current.value) current.value = draft
+    }
+    Promise.resolve(handlers.sendToTask(task.id, text)).then((accepted) => {
+      if (accepted === false) restore()
+    }).catch(() => {
+      restore()
+      handlers.inputProblem('这次没能送出，请重试。')
+    })
   }
   field.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
     event.preventDefault()
     send()
   })
