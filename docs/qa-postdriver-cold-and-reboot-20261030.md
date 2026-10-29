@@ -71,4 +71,6 @@ WPR独立实例 `55a32c1ea89d`，start/stop0，已停止并收齐同一session79
 
 QA strict noEmit通过。重新评估exit1：预览和全文时间预算现已通过；来源、保真、绘制上限、锚点及回归保持通过。帧/堆、重复停顿、完整原生矩阵、至少20次真实输入/导航及前后台/新话题、资源趋势仍开放。processCleanup只表示本轮已收尾，不代替资源稳定性。
 
+补充离线分析：锁屏前466.7ms区间中，轻量轨迹没有浏览器主线程事件，渲染器已记录任务/消息墙钟区间并集约0.101ms；100ms区间的浏览器/渲染器并集约0.064/0.134ms。这些不是CPU利用率，rAF帧时间戳也不等于精确回调或屏幕呈现时间；没有覆盖同等时长的连续任务，不证明系统空闲或没有未记录的原生阻塞。此结果不支持把此前QA52的UIA长消息机制直接套到这两个间隔。下次有效复测需结合调度/桌面合成，未据此修改产品或放行stalls。原始173569事件再次完整解析，rejected0；摘要及输入哈希为 `desktop/qa59-prelock-gaps-analysis.json` / `qa59-prelock-gaps-receipt.json`。
+
 `record-postdriver-cold.ts`、`record-reboot-native.ts`核对原始数据并保存摘要、哈希及更新前evaluation。完整记录见证据根 `E:/viva/qa-20261029-performance`、`desktop/reboot-native-checkpoint.json` 和 `CHECKPOINTS.md`。解锁后从新独立窗口补余下原生尺寸/100%与150%缩放/真实流式和快滚矩阵，再完成反馈与资源验收；不改性能合同或完整功能要求。
