@@ -1,5 +1,6 @@
 import { capture, run, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { dockPendingSteps, dockSteps } from './smoke-dock.ts'
+import { checkTaskCardRetention } from './smoke-task-card.ts'
 
 /**
  * Background tasks on the real dsh (phase 3): while a turn waits on an approval, words about something else
@@ -341,6 +342,7 @@ async function leaveRunning(win: SmokeWindow) {
 
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+  await checkTaskCardRetention(win, expect)
   await routeSteps(win, outDir, expect, hooks)
   await offerSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)

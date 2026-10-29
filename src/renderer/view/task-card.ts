@@ -67,6 +67,16 @@ function partsOf(task: BackgroundTask, report: TaskReport | null, handlers: Hand
 /** Where the line in the conversation leads: to answer it, to see how it goes, to read what it came back with. */
 const LEADS: Readonly<Record<string, string>> = { waiting: '去处理 →', interrupted: '去处理 →', running: '看看 →' }
 
+/** The conversation's line shows status, not the task's streaming answer. Keep its node while those words agree. */
+export function taskCardInputs(task: BackgroundTask, report: TaskReport | null, now: number): readonly unknown[] {
+  return [task.id, task.title, task.status,
+    task.status === 'running' ? task.now : null,
+    task.status === 'running' ? minutesSince(task.startedAt, now) : null,
+    task.status === 'waiting' ? task.permission : null,
+    task.status === 'waiting' ? task.question : null,
+    report?.preview ?? null]
+}
+
 /**
  * A task's line in the conversation, under the words that started it, changing in place as it goes: where it
  * stands and one line of it. No buttons of its own: a click opens its page, where it is answered, followed up

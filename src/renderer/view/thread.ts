@@ -10,7 +10,7 @@ import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { offeredBackground } from '../tasks-state.ts'
-import { cardedTasks, restoredTaskAnchors, taskCard } from './task-card.ts'
+import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
 import { proposalCard } from './followups.ts'
@@ -365,7 +365,7 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   // A background task's card goes under the words that started it (后台做), or under the message that was last when
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
   const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id,
-    part(`task:${task.id}`, [task, report, Math.floor(now / 60_000)], () => taskCard(task, report, handlers, now))]))
+    part(`task:${task.id}`, taskCardInputs(task, report, now), () => taskCard(task, report, handlers, now))]))
   const anchors = restoredTaskAnchors(state)
   const takeCards = (ids: readonly (string | undefined)[]) => ids.flatMap((id) => {
     const card = id ? cards.get(id) : undefined
