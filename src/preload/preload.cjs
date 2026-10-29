@@ -2,6 +2,13 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 // Each call takes its channel's arguments, as the page is told it does (globals.d.ts AgentApi).
 contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
+  getLanguage: () => ipcRenderer.invoke('language:get'),
+  setLanguage: (language) => ipcRenderer.invoke('language:set', language),
+  onLanguage: (callback) => {
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../shared/i18n/locale.ts').LanguageState} */ state) => callback(state)
+    ipcRenderer.on('language:changed', listener)
+    return () => ipcRenderer.removeListener('language:changed', listener)
+  },
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: process.platform,
   getInfo: () => ipcRenderer.invoke('agent:info'),

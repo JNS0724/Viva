@@ -1,3 +1,4 @@
+import { isLanguage, type Language } from '../shared/i18n/locale.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -18,6 +19,7 @@ const FILE_VERSION = 1
  * prepareSchedule: background preparation's windows (prepare-schedule.ts checks what is read).
  */
 export interface Preferences {
+  language: Language
   deskIsland: boolean
   deskPlaces: any
   deskCoached: boolean
@@ -30,6 +32,7 @@ export interface Preferences {
 }
 
 const DEFAULTS: Readonly<Preferences> = Object.freeze({
+  language: 'system',
   deskIsland: true,
   deskPlaces: Object.freeze({ last: null, places: Object.freeze({}) }),
   deskCoached: false,
@@ -45,6 +48,7 @@ export function createPreferences({ file, onError = () => {} }: { file: string, 
   function read(): Preferences {
     try {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+      saved.language = isLanguage(saved.language) ? saved.language : 'zh-CN'
       return Object.fromEntries(Object.entries(DEFAULTS).map(([key, value]) => [key, typeof saved[key] === typeof value ? saved[key] : value])) as Preferences
     } catch (err: any) {
       if (err.code !== 'ENOENT') onError(err)
@@ -57,6 +61,7 @@ export function createPreferences({ file, onError = () => {} }: { file: string, 
   /** @returns the preferences after the change */
   function set(key: string, value: unknown): Preferences {
     if (!Object.hasOwn(DEFAULTS, key)) throw new Error(`unknown preference: ${key}`)
+    if (key === 'language' && !isLanguage(value)) throw new Error('Invalid language')
     const known = DEFAULTS[key as keyof Preferences]
     if (typeof value !== typeof known) throw new Error(`${key} must be a ${typeof known}`)
     const next = { ...read(), [key]: value }

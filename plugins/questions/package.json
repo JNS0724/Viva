@@ -2,7 +2,7 @@
   "name": "viva-questions",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的提问通道：模型用 ask_user_question 提问时，把问题交给应用窗口，等用户回答",
+  "description": "Viva questions: show ask_user_question in the app and wait for the user",
   "type": "module",
   "main": "index.js",
   "exports": {

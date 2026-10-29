@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import type { Followup } from './followup-store.ts'
 
 /**
@@ -58,13 +59,13 @@ const MAX_TITLES = 3
 /** Up to three titles, then how many more. */
 function titles(followups: ReadonlyArray<{ title: string }>): string {
   const shown = followups.slice(0, MAX_TITLES).map((f) => f.title).join('、')
-  return followups.length > MAX_TITLES ? `${shown} 等 ${followups.length} 件` : shown
+  return followups.length > MAX_TITLES ? t("main.notice-plan.and.others.total", { shown: shown, length: followups.length }) : shown
 }
 
 /** What a reminder says beside its title: the draft is waiting, or it could not be made ready in time. */
 function reminderBody(followup: Followup): string {
-  if (followup.status === 'ready' || followup.status === 'seen') return '准备好了，点开看'
-  if (followup.prepareBy !== null) return '还没准备好（你一直在忙），要现在准备吗？'
+  if (followup.status === 'ready' || followup.status === 'seen') return t("main.notice-plan.ready.open.to.review")
+  if (followup.prepareBy !== null) return t("main.notice-plan.not.ready.yet.you.have.been.busy")
   return followup.ask
 }
 
@@ -74,14 +75,14 @@ const endOfDay = (ts: number) => new Date(ts).setHours(23, 59, 59, 999)
 /** 今天: what waits for the user and what will be reminded of before the day ends, in one line. */
 function todayNotice(ready: readonly Followup[], suggestions: ReadonlyArray<{ id: string, title: string }>, later: readonly Followup[], windowInFront: boolean): Notice {
   const parts = [
-    ready.length ? `准备好 ${ready.length} 件` : null,
-    suggestions.length ? `${suggestions.length} 条消息要你看看` : null,
-    later.length ? `今天要提醒 ${later.length} 件` : null,
+    ready.length ? t("main.notice-plan.ready", { length: ready.length }) : null,
+    suggestions.length ? t("main.notice-plan.messages.to.review", { length: suggestions.length }) : null,
+    later.length ? t("main.notice-plan.reminders.today", { length: later.length }) : null,
   ].filter(Boolean)
   return {
     kind: 'today',
     followupIds: [...ready.map((f) => f.id), ...suggestions.map((s) => s.id)],
-    title: '今天',
+    title: t("main.notice-plan.today"),
     body: `${parts.join(' · ')}：${titles([...ready, ...suggestions, ...later])}`,
     interrupts: !windowInFront,
     system: !windowInFront,
@@ -99,8 +100,8 @@ export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CA
     notices.push({
       kind: 'missed',
       followupIds: missed.map((f) => f.id),
-      title: missed.length === 1 ? missed[0].title : `错过的提醒 · ${missed.length} 件`,
-      body: `原定于 ${clock(first)}：${titles(missed)}`,
+      title: missed.length === 1 ? missed[0].title : t("main.notice-plan.missed.reminders", { length: missed.length }),
+      body: t("main.notice-plan.originally.scheduled.for", { value1: clock(first), value2: titles(missed) }),
       interrupts: false,
       system: true,
     })
@@ -119,9 +120,9 @@ export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CA
     notices.push({
       kind: 'ready',
       followupIds: [...ready.map((f) => f.id), ...suggestions.map((s) => s.id)],
-      title: both ? `准备好 ${ready.length} 件 · ${suggestions.length} 条消息要你看看`
-        : ready.length ? `准备好 ${ready.length} 件，等你看` : `${suggestions.length} 条消息可能要你处理`,
-      body: ready.length ? `${titles([...ready, ...suggestions])} · 都还没动，等你点头` : `${titles(suggestions)} · 要不要跟进，由你定`,
+      title: both ? t("main.notice-plan.ready.messages.to.review", { length: ready.length, length2: suggestions.length })
+        : ready.length ? t("main.notice-plan.ready.for.your.review", { length: ready.length }) : t("main.notice-plan.messages.may.need.your.attention", { length: suggestions.length }),
+      body: ready.length ? t("main.notice-plan.no.action.taken.waiting.for.your.approval", { value1: titles([...ready, ...suggestions]) }) : t("main.notice-plan.you.decide.whether.to.follow.up", { value1: titles(suggestions) }),
       interrupts: !windowInFront,
       system: !windowInFront,
     })

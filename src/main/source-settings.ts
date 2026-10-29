@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { checkConfigValues, MAX_EVERY, MIN_EVERY, missingFields, type ConfigValues, type SourceManifest } from './source-contract.ts'
@@ -96,13 +97,13 @@ export function createSourceSettings({ file, crypto, onError = () => {} }: { fil
     const checked = checkConfigValues(manifest.config, { ...current.values, ...Object.fromEntries(typed) })
     if (checked.problem !== undefined) throw new Error(checked.problem)
     const everyMinutes = change.everyMinutes ?? current.everyMinutes
-    if (!Number.isInteger(everyMinutes) || everyMinutes < MIN_EVERY || everyMinutes > MAX_EVERY) throw new Error(`轮询间隔要在 ${MIN_EVERY}–${MAX_EVERY} 分钟之间`)
+    if (!Number.isInteger(everyMinutes) || everyMinutes < MIN_EVERY || everyMinutes > MAX_EVERY) throw new Error(t("main.source-settings.polling.interval.must.be.minutes", { MIN_EVERY: MIN_EVERY, MAX_EVERY: MAX_EVERY }))
     const enabled = change.enabled ?? current.enabled
     const missing = missingFields(manifest.config, checked.values)
-    if (enabled && missing.length) throw new Error(`先填好：${missing.join('、')}`)
+    if (enabled && missing.length) throw new Error(t("main.source-settings.fill.in.first", { value1: missing.join('、') }))
     const { plain, secrets } = splitValues(manifest, checked.values)
     const hasSecrets = Object.keys(secrets).length > 0
-    if (hasSecrets && !crypto.isEncryptionAvailable()) throw new Error('系统钥匙串不可用，无法安全保存密钥')
+    if (hasSecrets && !crypto.isEncryptionAvailable()) throw new Error(t("main.source-settings.system.keychain.unavailable.credentials.cannot.be.stored"))
     const stored: StoredSettings = {
       enabled,
       everyMinutes,

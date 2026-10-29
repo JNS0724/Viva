@@ -2,7 +2,7 @@
   "name": "viva-fork",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的回溯通道（原型）：从对话里某一句之前分出一个新会话，可以换工作目录，供应用接着用",
+  "description": "Viva rewind: fork a conversation before a selected message with optional directory change",
   "type": "module",
   "main": "index.js",
   "exports": {

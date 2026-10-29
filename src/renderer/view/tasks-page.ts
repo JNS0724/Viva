@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
 import { pageGroups, pageTask } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
@@ -13,13 +15,13 @@ import { followupDetail, followupStanding, suggestionDetail, whenText } from './
  * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
  * draft and what can be done with it. Same place as 搜索 · 关于你 · 设置.
  */
-const GROUP_NAMES: Readonly<Record<string, string>> = { waiting: '等你确认', running: '在做', ended: '做完了' }
+let GROUP_NAMES: Readonly<Record<string, string>> = { waiting: t("task-card.waiting.for.approval"), running: t("island-tasks.working"), ended: t("island-view.done") }
 const LIVE = new Set(['running', 'waiting'])
 /** Follow-ups on the page are picked by this prefix, beside the tasks' ids. */
 export const FOLLOWUP_KEY = 'followup:'
 /** And the messages suggested for one by this. */
 export const SUGGESTION_KEY = 'suggestion:'
-const FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', '待你看的'], ['preparing', '在准备'], ['scheduled', '已安排']]
+let FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]]
 const LISTED_STATUSES = new Set(FOLLOWUP_GROUPS.map(([status]) => status))
 
 /** The keys on the list at the left, in its order: messages to decide on, follow-ups by group, then the tasks. */
@@ -48,13 +50,13 @@ function suggestionGroup(state: State, selected: string | null, handlers: Handle
   const open: Untyped[] = state.followups.suggestions.filter((suggestion: Untyped) => suggestion.status === 'open')
   if (!open.length) return []
   return [
-    h('div', { class: 'tp-group', text: `要我跟进吗 · ${open.length}` }),
+    h('div', { class: 'tp-group', text: t("tasks-page.follow.up", { length: open.length }) }),
     ...open.map((suggestion) => h('button', {
       class: 'tp-row fu-row', type: 'button', 'data-status': 'suggested', 'aria-current': `${SUGGESTION_KEY}${suggestion.id}` === selected ? 'page' : null,
       onClick: () => handlers.selectTask(`${SUGGESTION_KEY}${suggestion.id}`),
     },
     h('span', { class: 'tp-name', text: suggestion.title }),
-    h('span', { class: 'tp-meta', text: `${suggestion.sender || '消息'} · ${suggestion.why}` }))),
+    h('span', { class: 'tp-meta', text: t("tasks-page.label", { value1: suggestion.sender || t("tasks-page.message"), why: suggestion.why }) }))),
   ]
 }
 
@@ -78,17 +80,17 @@ function followupGroups(state: State, selected: string | null, handlers: Handler
 /** One line on background preparation: preparing now, waiting on the user, or when it looks next. */
 function prepareLine(state: State, now: number) {
   const prepare = state.followups.state
-  if (prepare?.running) return h('p', { class: 'fu-state', 'data-on': 'true', text: `后台准备中 · ${prepare.current}` })
-  if (prepare?.waiting) return h('p', { class: 'fu-state', text: `等一会儿再准备：${prepare.waiting}` })
-  if (prepare?.nextAt) return h('p', { class: 'fu-state', text: `下次后台准备 ${whenText(prepare.nextAt, now)}` })
+  if (prepare?.running) return h('p', { class: 'fu-state', 'data-on': 'true', text: t("tasks-page.preparing.in.background", { current: prepare.current }) })
+  if (prepare?.waiting) return h('p', { class: 'fu-state', text: t("tasks-page.preparing.later", { waiting: prepare.waiting }) })
+  if (prepare?.nextAt) return h('p', { class: 'fu-state', text: t("tasks-page.next.background.preparation", { value1: whenText(prepare.nextAt, now) }) })
   return null
 }
 
 function sideView(state: State, handlers: Handlers, now: number) {
   const selected = state.tasks.page.selected
-  return h('nav', { class: 'hub-side tp-side', 'aria-label': '后台任务' },
+  return h('nav', { class: 'hub-side tp-side', 'aria-label': t("tasks-page.background.tasks") },
     h('button', { class: 'hub-back', type: 'button', onClick: () => handlers.closeHub() },
-      icon('back', 16), '返回', h('kbd', { text: 'Esc' })),
+      icon('back', 16), t("tasks-page.back"), h('kbd', { text: 'Esc' })),
     prepareLine(state, now),
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
@@ -129,9 +131,9 @@ function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
   const items = traceItems(task.view)
   if (!items.length) return null
   const open = state.tasks.page.steps
-  return h('section', { class: 'tp-steps', 'aria-label': '过程' },
+  return h('section', { class: 'tp-steps', 'aria-label': t("drawer.activity") },
     h('button', { class: 'tp-toggle', type: 'button', 'aria-expanded': String(open), onClick: () => handlers.toggleTaskSteps() },
-      `过程 · ${items.length} 步　${open ? '收起 ▴' : '展开 ▾'}`),
+      t("tasks-page.activity.steps", { length: items.length, value2: open ? t("tasks-page.collapse") : t("tasks-page.expand") })),
     open
       ? h('ol', { class: 'trace' }, items.map((item) => h('li', { class: 'trace-row' },
         h('span', { class: 'trace-rail' }, h('span', { class: 'dot', 'data-tone': item.tone }), h('span', { class: 'line' })),
@@ -142,11 +144,11 @@ function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
 }
 
 function inputView(task: BackgroundTask, handlers: Handlers) {
-  if (task.status === 'interrupted') return h('button', { class: 'btn btn-secondary', type: 'button', text: '接着做', onClick: () => handlers.resumeUnfinished(task.id) })
+  if (task.status === 'interrupted') return h('button', { class: 'btn btn-secondary', type: 'button', text: t("followups.continue"), onClick: () => handlers.resumeUnfinished(task.id) })
   const live = LIVE.has(task.status)
   const field = h('textarea', {
-    class: 'tp-input', name: `task-input-${task.id}`, rows: 2, 'aria-label': live ? '插话' : '接着问',
-    placeholder: live ? '插话：补充或修改要求…　Enter 发送' : '接着问…　Enter 发送',
+    class: 'tp-input', name: `task-input-${task.id}`, rows: 2, 'aria-label': live ? t("tasks-page.interruption") : t("task-card.ask.more"),
+    placeholder: live ? t("tasks-page.add.or.change.instructions.enter.to.send") : t("tasks-page.ask.more.enter.to.send"),
   })
   const send = () => {
     const text = field.value.trim()
@@ -161,7 +163,7 @@ function inputView(task: BackgroundTask, handlers: Handlers) {
   })
   return h('form', { class: 'tp-composer', onSubmit: (event: SubmitEvent) => { event.preventDefault(); send() } },
     field,
-    h('button', { class: 'send-btn', type: 'submit', 'aria-label': live ? '插话' : '接着问' }, icon('send', 20)))
+    h('button', { class: 'send-btn', type: 'submit', 'aria-label': live ? t("tasks-page.interruption") : t("task-card.ask.more") }, icon('send', 20)))
 }
 
 /** The follow-up picked, or, with nothing picked and no task, the first that waits for the user. */
@@ -185,7 +187,7 @@ function mainView(state: State, handlers: Handlers, now: number) {
   const task = selected?.startsWith(FOLLOWUP_KEY) || selected?.startsWith(SUGGESTION_KEY) ? null : pageTask(state)
   if (!task) {
     return h('div', { class: 'tp-main tp-empty' },
-      h('p', { class: 'help', text: '后台还没有事。在输入框里写好，点「后台做」交给后台；它做完会告诉你。' }))
+      h('p', { class: 'help', text: t("tasks-page.no.background.work.yet.type.a.request") }))
   }
   const live = LIVE.has(task.status)
   const thread = h('div', { class: 'thread tp-thread' })
@@ -195,8 +197,8 @@ function mainView(state: State, handlers: Handlers, now: number) {
       h('h2', { class: 'tp-title', text: `#${task.title}` }),
       h('span', { class: 'tp-status' }, statusMark(task.status), standing(task, now)),
       live
-        ? h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: '停下', onClick: () => handlers.stopTask(task.id) })
-        : h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: '关掉这件', onClick: () => handlers.closeTask(task.id) })),
+        ? h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("island-tasks.stop"), onClick: () => handlers.stopTask(task.id) })
+        : h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("tasks-page.close.this.task"), onClick: () => handlers.closeTask(task.id) })),
     h('div', { class: 'tp-scroll' }, thread, stepsView(state, task, handlers)),
     inputView(task, handlers))
 }
@@ -217,3 +219,8 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
   const next = container.querySelector('.tp-scroll')
   if (next) next.scrollTop = sameTask && !atBottom ? top : next.scrollHeight
 }
+
+onLocaleChange(() => {
+  GROUP_NAMES = { waiting: t("task-card.waiting.for.approval"), running: t("island-tasks.working"), ended: t("island-view.done") }
+  FOLLOWUP_GROUPS = [['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]]
+})

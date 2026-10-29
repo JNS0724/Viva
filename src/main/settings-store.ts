@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -15,12 +16,12 @@ export interface Encryption {
 
 /** @returns the trimmed key */
 export function validateApiKey(input: unknown): string {
-  if (typeof input !== 'string') throw new Error('API key 必须是文本')
+  if (typeof input !== 'string') throw new Error(t("main.settings-store.api.key.must.be.text"))
   const key = input.trim()
-  if (!key) throw new Error('请先填写 API key')
-  if (/\s/.test(key)) throw new Error('API key 里不能有空格或换行')
+  if (!key) throw new Error(t("main.settings-store.enter.an.api.key.first"))
+  if (/\s/.test(key)) throw new Error(t("main.settings-store.api.key.cannot.contain.spaces.or.line"))
   if (key.length < KEY_MIN_LENGTH || key.length > KEY_MAX_LENGTH) {
-    throw new Error(`API key 长度应在 ${KEY_MIN_LENGTH}–${KEY_MAX_LENGTH} 个字符之间`)
+    throw new Error(t("main.settings-store.api.key.must.contain.characters", { KEY_MIN_LENGTH: KEY_MIN_LENGTH, KEY_MAX_LENGTH: KEY_MAX_LENGTH }))
   }
   return key
 }
@@ -62,7 +63,7 @@ export function createSettingsStore({ file, crypto, onError = () => {} }: { file
 
   function saveApiKey(input: unknown): string {
     const key = validateApiKey(input)
-    if (!crypto.isEncryptionAvailable()) throw new Error('系统钥匙串不可用，无法安全保存 key')
+    if (!crypto.isEncryptionAvailable()) throw new Error(t("main.model-providers.system.keychain.unavailable.the.key.cannot.be"))
     writeFile({ version: FILE_VERSION, deepseekApiKey: crypto.encryptString(key).toString('base64') })
     return key
   }

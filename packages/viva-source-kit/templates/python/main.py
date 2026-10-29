@@ -13,7 +13,7 @@ def fetch_after(config, since):
     """TODO: fetch what came after `since` from your system. Here: a few demo messages, numbered."""
     last = 5
     return [
-        {"number": n, "sender": "[示例发件人]", "subject": f"示例消息 {n}", "body": f"这是第 {n} 条",
+        {"number": n, "sender": "[Example sender]", "subject": f"Example message {n}", "body": f"Message number {n} ",
          "time": datetime(2026, 10, 25, n, tzinfo=timezone.utc).isoformat()}
         for n in range(since + 1, min(since + 2, last) + 1)
     ]
@@ -21,7 +21,7 @@ def fetch_after(config, since):
 
 def check(config):
     if not config.get("account"):
-        return {"ok": False, "problem": "请填写账号"}
+        return {"ok": False, "problem": "Enter an account"}
     return {"ok": True}
 
 
@@ -48,7 +48,7 @@ def main():
     elif request.get("action") == "poll":
         answer = poll(config, request.get("cursor"))
     else:
-        raise ValueError(f"不认识的动作：{request.get('action')}")
+        raise ValueError(f"Unknown action: {request.get('action')}")
     print(json.dumps(answer, ensure_ascii=False))
 
 

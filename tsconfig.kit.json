@@ -5,7 +5,7 @@
   "compilerOptions": {
     "noEmit": false,
     "outDir": "packages/viva-source-kit/dist",
-    "rootDir": "src/main",
+    "rootDir": "src",
     "lib": ["ES2023"],
     "types": ["node"]
   },

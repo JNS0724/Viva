@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n/translate.ts'
+import { initializeLanguage } from './language.ts'
 import { IMAGE_LIMITS } from '../shared/images.ts'
 import { insertText, pastedParts } from './paste.ts'
 import { createIsland } from './view/island-dom.ts'
@@ -16,6 +18,8 @@ const DRAG_START_PX = 4
 const MAX_FILES = 10
 const IDLE_VIEW = Object.freeze({ form: 'idle', tone: 'idle', mood: 'idle', label: '', recent: [] })
 const api = window.desk
+let languageReady = false
+await initializeLanguage(api, () => { if (languageReady) show() })
 
 /**
  * From the main process: the window's view, the form to show, where the island sits, whether it is dragged,
@@ -37,7 +41,7 @@ const messageOf = (err: unknown) => String((err as Error | null)?.message ?? err
 async function addImages(pasted: readonly File[]) {
   for (const file of pasted) {
     if (images.length >= IMAGE_LIMITS.perMessage) {
-      error = `一次最多 ${IMAGE_LIMITS.perMessage} 张图`
+      error = t("desk.up.to.images.per.message", { perMessage: IMAGE_LIMITS.perMessage })
       break
     }
     try {
@@ -78,22 +82,22 @@ stage.append(island.el)
 
 /** Why the input cannot take a question now, if it cannot. */
 function busyOf(view: { form: string }) {
-  return view.form === 'pending' ? { text: '还没连上，先打开窗口看看' } : null
+  return view.form === 'pending' ? { text: t("desk.not.connected.yet.open.the.window.to") } : null
 }
 
 /** What the island shows now, from what the main process said and what happens on this page. */
 function shownView() {
   const view = payload?.view ?? IDLE_VIEW
-  if (dropping) return { form: 'drop', tone: 'done', mood: 'idle', label: '交给 Viva', recent: [], count: dropping }
+  if (dropping) return { form: 'drop', tone: 'done', mood: 'idle', label: t("desk.give.to.viva"), recent: [], count: dropping }
   // Dragged, it is the cat alone, the size of the window that follows the pointer (desk-place.ts DRAG_SIZE): the
   // tail of tasks and preparation would make it wider and be cut off on both sides.
   if (payload?.dragging) return { ...view, form: 'mini', tone: 'idle', mood: 'idle', dragging: true, background: null, prepare: null }
   // While the agent waits on the user the input steps aside: what it waits on comes first.
   if (payload?.form === 'input' && view.form !== 'waiting' && view.form !== 'asking') {
     // While the agent works, what is asked goes into the turn it is on.
-    return { form: 'input', tone: 'done', mood: 'idle', label: '问 Viva', recent: [], busy: busyOf(view), steering: view.form === 'working', files, images, error }
+    return { form: 'input', tone: 'done', mood: 'idle', label: t("desk.ask.viva"), recent: [], busy: busyOf(view), steering: view.form === 'working', files, images, error }
   }
-  if (payload?.form === 'mini' && payload.coach) return { form: 'coach', tone: 'done', mood: 'idle', label: 'Viva 在这儿', recent: [] }
+  if (payload?.form === 'mini' && payload.coach) return { form: 'coach', tone: 'done', mood: 'idle', label: t("desk.viva.is.here"), recent: [] }
   return payload?.form === 'mini' ? { ...view, form: 'mini', tone: 'idle', mood: 'idle' } : view
 }
 
@@ -248,3 +252,6 @@ island.el.addEventListener('drop', async (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && payload?.form === 'input') api.act({ kind: 'dismiss' })
 })
+
+languageReady = true
+show()

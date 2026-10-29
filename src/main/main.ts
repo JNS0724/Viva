@@ -1,3 +1,6 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
+import { registerLanguageIpc } from './language-ipc.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -256,7 +259,7 @@ const takenServerNames = () => mcpStore.list().map((server) => server.name)
 
 function serverNamed(name: string) {
   const server = mcpStore.list().find((item) => item.name === name)
-  if (!server) throw new Error(`没有名为「${name}」的 MCP 服务器`)
+  if (!server) throw new Error(t("main.main.no.mcp.server.named", { name: name }))
   return server
 }
 
@@ -284,20 +287,20 @@ function configActions(config: Config): ConfigActions {
   }
   return {
     listServers: () => mcpStore.list().map((server) => `${server.name}（${server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')}）`
-      + (server.missing.length ? ` 缺少密钥：${server.missing.join('、')}` : '')),
+      + (server.missing.length ? t("main.main.missing.credentials", { value1: server.missing.join('、') }) : '')),
     prepareServer: (spec) => {
       parseServerInput(serverForm(spec, Object.fromEntries(spec.secrets.map((name) => [name, 'x']))), takenServerNames())
     },
     addServer: (spec, secrets) => {
       mcpStore.add(parseServerInput(serverForm(spec, secrets), takenServerNames()))
       mcpReloadDue = true
-      return `已接入 MCP 服务器「${spec.name}」，这一轮结束后生效${spec.secrets.length ? '；密钥由用户在窗口里填写并加密保存' : ''}。`
+      return t("main.main.connected.mcp.server.takes.effect.after.this", { name: spec.name, value2: spec.secrets.length ? t("main.main.credentials.are.entered.in.the.window.by") : '' })
     },
     removeServer: (name) => {
-      if (!takenServerNames().includes(name)) throw new Error(`没有名为「${name}」的 MCP 服务器`)
+      if (!takenServerNames().includes(name)) throw new Error(t("main.main.no.mcp.server.named", { name: name }))
       mcpStore.remove(name)
       mcpReloadDue = true
-      return `已移除 MCP 服务器「${name}」，这一轮结束后生效。`
+      return t("main.main.removed.mcp.server.takes.effect.after.this", { name: name })
     },
     prepareUpdate: (spec) => {
       editServer(serverNamed(spec.name), updateChanges(spec, Object.fromEntries(spec.secrets.map((name) => [name, 'x']))), takenServerNames())
@@ -306,7 +309,7 @@ function configActions(config: Config): ConfigActions {
       const next = editServer(serverNamed(spec.name), updateChanges(spec, secrets), takenServerNames())
       mcpStore.update(spec.name, next)
       mcpReloadDue = true
-      return `已修改 MCP 服务器「${next.name}」，这一轮结束后生效${next.missing.length ? `；还缺 ${next.missing.join('、')}，用户可以在 设置 → 扩展 里点「编辑」补上` : ''}。`
+      return t("main.main.updated.mcp.server.takes.effect.after.this", { name: next.name, value2: next.missing.length ? t("main.main.still.needs.the.user.can.enter.these", { value1: next.missing.join('、') }) : '' })
     },
     /** No card: the servers and keys are the user's own, already set up in dsh (they asked for it this way). */
     importServers: async (dir) => {
@@ -317,9 +320,9 @@ function configActions(config: Config): ConfigActions {
       return importSummary(result, { forModel: true })
     },
     listSkills: () => listSkills(roots()).map((skill) => `${skill.id}：${skill.name}${skill.description ? ` — ${skill.description}` : ''}${skill.problem ? `（${skill.problem}）` : ''}`),
-    createSkill: (spec) => `已新建 skill「${createSkill(spec, userRoot())}」，下次遇到同类事会用上。`,
-    installSkill: (source) => `已安装 skill「${importSkill(source, userRoot())}」。`,
-    removeSkill: async (id) => `已删除 skill「${await removeSkill(id, roots(), (file) => shell.trashItem(file))}」，可以在废纸篓里找回。`,
+    createSkill: (spec) => t("main.main.created.skill.it.will.be.available.for", { value1: createSkill(spec, userRoot()) }),
+    installSkill: (source) => t("main.main.installed.skill", { value1: importSkill(source, userRoot()) }),
+    removeSkill: async (id) => t("main.main.deleted.skill.it.can.be.recovered.from", { value1: await removeSkill(id, roots(), (file) => shell.trashItem(file)) }),
   }
 }
 
@@ -384,10 +387,10 @@ function recoverFromCrash({ message }: { message: string }) {
   crashes = [...crashes.filter((at) => now - at < 10 * 60_000), now]
   const delay = restartDelay(crashes, now)
   if (delay === null) {
-    emitToRenderer({ type: 'error', message: `助手连续意外退出，已停止重试：${message}。可以检查设置后重新打开应用。` })
+    emitToRenderer({ type: 'error', message: t("main.main.the.assistant.exited.repeatedly.retrying.has.stopped", { message: message }) })
     return
   }
-  emitToRenderer({ type: 'error', message: `助手意外退出，${Math.round(delay / 1000)} 秒后自动重新连接…` })
+  emitToRenderer({ type: 'error', message: t("main.main.the.assistant.exited.unexpectedly.reconnecting.in.seconds", { value1: Math.round(delay / 1000) }) })
   clearTimeout(restartTimer)
   restartTimer = setTimeout(() => {
     if (!bridge && !quitting) startBridge()
@@ -408,10 +411,10 @@ const stopBridgeInTime = () => Promise.race([stopBridge(), new Promise((resolve)
 
 /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
 const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '' })
-const SETUP_MESSAGES: Readonly<Record<string, string>> = { 'no-key': '请先在设置里填写 DeepSeek API key，或添加其他模型', 'no-dsh': '没有找到 DeepSeek Harness，请在项目目录运行 npm install' }
+let SETUP_MESSAGES: Readonly<Record<string, string>> = { 'no-key': t("main.main.enter.a.deepseek.api.key.or.add"), 'no-dsh': t("main.main.deepseek.harness.not.found.run.npm.install") }
 
 function requireBridge() {
-  if (!bridge) throw new Error(SETUP_MESSAGES[lastInfo.problem] ?? '助手还没有连接')
+  if (!bridge) throw new Error(SETUP_MESSAGES[lastInfo.problem] ?? t("main.main.the.assistant.is.not.connected.yet"))
   return bridge
 }
 
@@ -435,7 +438,7 @@ async function startBridge() {
     return info
   } catch (err: any) {
     console.error('[main] failed to start agent bridge:', err)
-    emitToRenderer({ type: 'error', message: `连接助手失败：${err.message}` })
+    emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: err.message }) })
     return null
   }
 }
@@ -486,7 +489,7 @@ const canOpenAtLogin = () => app.isPackaged && !currentConfig().smoke
 
 /** 开机启动: off unless the user turns it on; started so, Viva stays in the tray (startedHidden). */
 function setOpenAtLogin(on: boolean) {
-  if (!canOpenAtLogin()) throw new Error('只有安装好的 Viva 能开机启动')
+  if (!canOpenAtLogin()) throw new Error(t("main.main.start.at.login.is.available.only.in"))
   app.setLoginItemSettings({ openAtLogin: on, ...(process.platform === 'win32' ? { args: ['--hidden'] } : {}) })
   preferences.set('openAtLogin', on)
 }
@@ -500,7 +503,7 @@ const permissionNow = () => (PERMISSION_LEVELS.includes(preferences.get().permis
  */
 async function setPermission(level: string) {
   if (!PERMISSION_LEVELS.includes(level)) throw new Error(`invalid permission level: ${level}`)
-  if (turn.active) throw new Error('助手正在工作，等这一轮结束再换权限')
+  if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before"))
   preferences.set('permission', level)
   return { settings: settingsView(), info: await restartKeepingConversation() }
 }
@@ -516,7 +519,7 @@ function registerAgentIpc() {
   let newSessionPending: Promise<typeof lastInfo> | null = null
   ipcMain.handle('agent:info', () => lastInfo)
   ipcMain.handle('agent:prompt', (_event, text, images = []) => {
-    if (newSessionPending) throw new Error('新话题正在准备，请稍候')
+    if (newSessionPending) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
     // With pictures the words may be left out.
     const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
     const pictures = imagesForPrompt(imageStore, images)
@@ -540,7 +543,7 @@ function registerAgentIpc() {
   ipcMain.handle('agent:cancel', () => bridge?.cancel())
   ipcMain.handle('agent:new-session', () => {
     if (newSessionPending) return newSessionPending
-    if (turn.active) throw new Error('助手正在工作，等这一轮结束再开新话题')
+    if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before.2"))
     const measure = sessionTiming()
     newSessionPending = measure('new-topic.total', async () => {
       if (!bridge) {
@@ -716,9 +719,9 @@ async function switchAgent(sessionId: string | null, cwd?: string | null) {
   return info
 }
 
-const FORK_PROBLEMS: Readonly<Record<string, string>> = Object.freeze({
-  unavailable: '这个版本的助手不支持切换工作目录，请更新 Viva',
-  missing: '当前对话已经结束，请稍后再试',
+let FORK_PROBLEMS: Readonly<Record<string, string>> = Object.freeze({
+  unavailable: t("main.main.this.assistant.version.cannot.change.working.directories"),
+  missing: t("main.main.this.conversation.has.ended.try.again.later"),
 })
 
 /**
@@ -734,7 +737,7 @@ async function switchWorkDir(dir: string) {
     return { ...lastInfo, cwd: dir }
   }
   const forked = await bridge.fork({ cwd: dir })
-  if (!forked.ok) throw new Error(FORK_PROBLEMS[forked.reason] ?? `没能切换工作目录（${forked.reason}）`)
+  if (!forked.ok) throw new Error(FORK_PROBLEMS[forked.reason] ?? t("main.main.could.not.change.working.directory", { reason: forked.reason }))
   workDir = dir
   lastInfo = { ...forked.info, remembersHistory: true }
   conversation = historyDb.create({
@@ -745,13 +748,13 @@ async function switchWorkDir(dir: string) {
 }
 
 async function chooseWorkFolder() {
-  const result = await dialog.showOpenDialog(mainWindow(), { title: '选择工作目录', properties: ['openDirectory', 'createDirectory'] })
+  const result = await dialog.showOpenDialog(mainWindow(), { title: t("main.main.choose.working.directory"), properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
 async function chooseExportPath(defaultName: string): Promise<string | null> {
   const result = await dialog.showSaveDialog(mainWindow(), {
-    title: '导出对话',
+    title: t("main.main.export.conversation"),
     defaultPath: path.join(app.getPath('documents'), defaultName),
     filters: [{ name: 'Markdown', extensions: ['md'] }],
   })
@@ -776,7 +779,7 @@ const importDsh = (dir: string) => importDshServers({ dir, store: mcpStore, take
 
 async function chooseDshDir(): Promise<string | null> {
   const result = await dialog.showOpenDialog(mainWindow(), {
-    title: '选择 dsh 的文件夹（通常叫 .dsh）', defaultPath: os.homedir(), properties: ['openDirectory', 'showHiddenFiles'],
+    title: t("main.main.choose.the.dsh.folder.usually.named.dsh"), defaultPath: os.homedir(), properties: ['openDirectory', 'showHiddenFiles'],
   })
   return result.canceled ? null : result.filePaths[0] ?? null
 }
@@ -812,7 +815,7 @@ let smokeSourcePick: string | null = null
 /** 安装消息源: a folder with a viva-source.json in it. */
 async function chooseSourceFolder(): Promise<string | null> {
   if (smokeSourcePick) return smokeSourcePick
-  const result = await dialog.showOpenDialog(mainWindow(), { title: '选择消息源文件夹（里面有 viva-source.json）', properties: ['openDirectory'] })
+  const result = await dialog.showOpenDialog(mainWindow(), { title: t("main.main.choose.a.source.folder.containing.viva.source"), properties: ['openDirectory'] })
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
@@ -821,7 +824,7 @@ function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createM
     db: memoryDb,
     habits: () => personal.habits(),
     cwd: () => config.cwd,
-    chooseDocs: () => pickFiles({ title: '选择常用文档', properties: ['openFile', 'multiSelections'] }),
+    chooseDocs: () => pickFiles({ title: t("main.main.choose.reference.documents"), properties: ['openFile', 'multiSelections'] }),
   })
   registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
   registerExtensionsIpc(ipcMain, {
@@ -878,12 +881,12 @@ function openPersonal(config: Config) {
     idleSeconds: () => powerMonitor.getSystemIdleTime(),
     loadSchedule: () => preferences.get().prepareSchedule,
     storeSchedule: (schedule) => preferences.set('prepareSchedule', schedule),
-    userBusy: () => (turn.active ? '你正在对话' : bridge?.workingTasks() ? '你的后台任务在跑' : null),
+    userBusy: () => (turn.active ? t("main.main.you.are.in.a.conversation") : bridge?.workingTasks() ? t("main.main.your.background.tasks.are.running") : null),
     prepareText: (call, signal) => {
       // The model the conversation is on, else the one new conversations start on.
       const route = parseModelValue(String(lastInfo.modelValue ?? '')) ?? profileModels(config).defaultModel
-      if (!route) return Promise.resolve({ ok: false as const, problem: '还没有可用的模型', called: false as const })
-      return bridge ? bridge.prepareText({ ...route, ...call }, signal) : Promise.resolve({ ok: false as const, problem: '助手还没准备好', called: false as const })
+      if (!route) return Promise.resolve({ ok: false as const, problem: t("main.main.no.model.available.yet"), called: false as const })
+      return bridge ? bridge.prepareText({ ...route, ...call }, signal) : Promise.resolve({ ok: false as const, problem: t("main.acp-bridge.the.assistant.is.not.ready.yet"), called: false as const })
     },
     takenUp: (conversationId, since) => (taskStore?.list() ?? []).some((task) => (task.startedAt ?? 0) >= since
       && (task.segmentId === conversationId || historyDb.get(task.segmentId)?.conversation.parentId === conversationId)),
@@ -1132,6 +1135,15 @@ app.whenReady().then(async () => {
     file: path.join(app.getPath('userData'), 'preferences.json'),
     onError: (err) => console.error('[preferences] could not read them, using the defaults:', err.message),
   })
+  // Existing smoke fixtures assert Chinese copy, independent of the host OS language.
+  if (resolveConfig(process.env, fs.existsSync).smoke && process.env.SMOKE_PHASE !== 'language') preferences.set('language', 'zh-CN')
+  registerLanguageIpc(ipcMain, {
+    getLanguage: () => preferences.get().language,
+    saveLanguage: (language) => { preferences.set('language', language) },
+    systemLocale: () => app.getLocale(),
+    refreshNative: () => tray?.setPending(pendingFollowups),
+    broadcast: (state) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('language:changed', state) },
+  })
   modelStore = createModelStore({
     file: path.join(app.getPath('userData'), 'models.json'),
     crypto: safeStorage,
@@ -1143,7 +1155,7 @@ app.whenReady().then(async () => {
     store: imageStore,
     setDir: (dir) => preferences.set('imagesDir', dir),
     chooseFolder: async () => {
-      const result = await dialog.showOpenDialog(mainWindow(), { title: '把图片放到哪里', properties: ['openDirectory', 'createDirectory'] })
+      const result = await dialog.showOpenDialog(mainWindow(), { title: t("main.main.where.should.images.be.stored"), properties: ['openDirectory', 'createDirectory'] })
       return result.canceled ? null : result.filePaths[0] ?? null
     },
     reveal: (dir) => shell.openPath(dir),
@@ -1190,7 +1202,7 @@ app.whenReady().then(async () => {
 }).catch((err) => {
   // Without a window there is nothing to show the error in, and the process would stay on with nothing to see.
   console.error('[viva] could not start:', err)
-  dialog.showErrorBox('Viva 无法启动', err?.message ?? String(err))
+  dialog.showErrorBox(t("main.main.viva.could.not.start"), err?.message ?? String(err))
   app.exit(1)
 })
 
@@ -1214,4 +1226,12 @@ app.on('will-quit', () => {
   historyDb?.close()
   memoryDb?.close()
   traceDb?.close()
+})
+
+onLocaleChange(() => {
+  SETUP_MESSAGES = { 'no-key': t("main.main.enter.a.deepseek.api.key.or.add"), 'no-dsh': t("main.main.deepseek.harness.not.found.run.npm.install") }
+  FORK_PROBLEMS = Object.freeze({
+  unavailable: t("main.main.this.assistant.version.cannot.change.working.directories"),
+  missing: t("main.main.this.conversation.has.ended.try.again.later"),
+})
 })

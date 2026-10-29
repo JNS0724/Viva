@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import type { AcpServer } from './mcp-config.ts'
@@ -30,9 +32,9 @@ const SHUTDOWN_GRACE_MS = 1500
 const CLIENT_INFO = { name: 'viva', version: pkg.version }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
 /** dsh decides at launch, from the model it starts on, whether its prompts take pictures. */
-const NO_IMAGES = '这个模型看不了图片（DeepSeek 里只有 V41-Flash 能看），图片没有发出去'
+let NO_IMAGES = t("main.acp-bridge.this.model.cannot.read.images.among.deepseek")
 /** A task let go when it would not stop (cancelTask): what dsh started for it may still be running. */
-const STOPPED_ANYWAY = '已停下。它之前开始的命令没有响应停止，可能还在电脑上运行；需要的话在任务管理器（活动监视器）里结束它。'
+let STOPPED_ANYWAY = t("main.acp-bridge.stopped.a.command.started.earlier.did.not")
 const NO_MCP = (): AcpServer[] => []
 export const MCP_RETRY_MS = 30_000
 type PromptBlocks = Parameters<ClientSideConnection['prompt']>[0]['prompt']
@@ -63,11 +65,11 @@ export function failingMcpServer<S extends { name: string }>(err: any, servers: 
 
 /** spawn reports a missing working directory as ENOENT too, so that is checked before blaming the program. */
 function launchError(err: NodeJS.ErrnoException, { command, nodeBin, cwd }: { command: string, nodeBin: string, cwd: string }) {
-  if (err.code !== 'ENOENT') return `无法启动 dsh：${err.message}`
-  if (!fs.existsSync(cwd)) return `工作目录不存在：${cwd}`
+  if (err.code !== 'ENOENT') return t("main.acp-bridge.could.not.start.dsh", { message: err.message })
+  if (!fs.existsSync(cwd)) return t("main.acp-bridge.working.directory.does.not.exist", { cwd: cwd })
   return command === nodeBin
-    ? `找不到 Node.js（${nodeBin}）：dsh 需要它才能运行，请先安装 Node.js，或用 DSH_NODE 指定路径`
-    : `找不到 dsh：${command}`
+    ? t("main.acp-bridge.node.js.not.found.dsh.requires.node", { nodeBin: nodeBin })
+    : t("main.acp-bridge.dsh.not.found", { command: command })
 }
 
 /** Not yet exited. A finished process's id may already belong to another one, so it is never signalled. */
@@ -202,7 +204,7 @@ export function createAcpBridge({
       streams.close()
       followupDesk.close()
       if (disposed) return
-      const message = describeError(`dsh 已退出（${code ?? signal}）`, stderrTail)
+      const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
       if (onExit) onExit({ code, signal, message })
       else emit({ type: 'error', message })
     })
@@ -405,7 +407,7 @@ export function createAcpBridge({
    * @param targetCwd its directory, when not the current one
    */
   async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd) {
-    if (switching) throw Error('会话正在准备，请稍候')
+    if (switching) throw Error(t("main.acp-bridge.preparing.the.session.please.wait"))
     switching = true
     const measure = sessionTiming(onTiming)
     try {
@@ -667,7 +669,7 @@ export function createAcpBridge({
 
   /** Background preparation: one model call with no tools, from the followups plugin; nothing while dsh is down. */
   function prepareText(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
-    if (!child?.connected) return Promise.resolve({ ok: false, problem: '助手还没准备好', called: false })
+    if (!child?.connected) return Promise.resolve({ ok: false, problem: t("main.acp-bridge.the.assistant.is.not.ready.yet"), called: false })
     return followupDesk.prepare(call, signal)
   }
 
@@ -676,3 +678,8 @@ export function createAcpBridge({
 
   return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, dispose, pid }
 }
+
+onLocaleChange(() => {
+  NO_IMAGES = t("main.acp-bridge.this.model.cannot.read.images.among.deepseek")
+  STOPPED_ANYWAY = t("main.acp-bridge.stopped.a.command.started.earlier.did.not")
+})

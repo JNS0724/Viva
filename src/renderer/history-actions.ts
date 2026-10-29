@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 const SEARCH_DEBOUNCE_MS = 200
 const TOAST_MS = 3000
 
@@ -21,7 +22,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
     try {
       dispatch({ type: 'history_results', query, results: await api.searchTimeline(query.trim()) })
     } catch (err) {
-      report('搜索失败')(err)
+      report(t("history-actions.search.failed"))(err)
     }
   }
 
@@ -62,9 +63,9 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
     async jumpToHit(hit: SearchHit) {
       dispatch({ type: 'history_close' })
       try {
-        if (!await jumpTo(hit)) showToast('这条消息已经不在时间线上了')
+        if (!await jumpTo(hit)) showToast(t("history-actions.this.message.is.no.longer.in.the"))
       } catch (err) {
-        report('跳转失败')(err)
+        report(t("history-actions.could.not.jump.to.the.message"))(err)
       }
     },
 

@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n/translate.ts'
+import { getLocale } from '../shared/i18n/locale.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import hljs from 'highlight.js/lib/common'
@@ -46,7 +48,7 @@ export interface FilePreview {
   openable: boolean
 }
 
-const outside = () => new Error('这个位置不在工作区里')
+const outside = () => new Error(t("main.workspace-files.this.location.is.outside.the.workspace"))
 
 /**
  * @param root the workspace folder
@@ -64,7 +66,7 @@ export function resolveInside(root: string, rel: unknown): string {
 }
 
 const toRel = (root: string, abs: string) => path.relative(fs.realpathSync(root), abs).split(path.sep).join('/')
-const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'zh-Hans-CN', { sensitivity: 'base', numeric: true })
+const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, getLocale(), { sensitivity: 'base', numeric: true })
 
 export function listFolder(root: string, rel: string): { path: string, entries: FolderEntry[], truncated: boolean } {
   const dir = resolveInside(root, rel)
@@ -122,8 +124,8 @@ const highlighted = (text: string, language: string) => hljs.highlight(text, { l
 export function previewFile(root: string, rel: string, { offset = 0 }: { offset?: number } = {}): FilePreview {
   const file = resolveInside(root, rel)
   const stat = fs.statSync(file)
-  if (!stat.isFile()) throw new Error('这不是文件')
-  if (!Number.isInteger(offset) || offset < 0 || offset > stat.size) throw new Error('读取位置不对')
+  if (!stat.isFile()) throw new Error(t("main.workspace-files.this.is.not.a.file"))
+  if (!Number.isInteger(offset) || offset < 0 || offset > stat.size) throw new Error(t("main.workspace-files.invalid.read.position"))
   const name = path.basename(file)
   const ext = path.extname(name).toLowerCase()
   const base = { path: toRel(root, file), name, size: stat.size, openable: canOpen(name) }

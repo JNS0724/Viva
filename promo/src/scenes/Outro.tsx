@@ -1,10 +1,13 @@
+import { usePromoCopy } from '../i18n'
 import { AbsoluteFill, Img, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion'
 import { COLORS, FONT, MONO } from '../theme'
 
-const PILLS = ['macOS', 'Windows', '开源 · 免费', 'DeepSeek']
 
 /** The name again, where to get it, and what it runs on; the light swells once and settles. */
 export const Outro: React.FC = () => {
+  const copy = usePromoCopy()
+  const PILLS = ['macOS', 'Windows', copy('copy19'), 'DeepSeek']
+
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   const p = spring({ frame, fps, config: { damping: 200 } })
@@ -16,7 +19,7 @@ export const Outro: React.FC = () => {
         <Img src={staticFile('icon.png')} style={{ width: 150, height: 150 }} />
         <div style={{ fontSize: 120, fontWeight: 800, letterSpacing: -2 }}>Viva</div>
       </div>
-      <div style={{ marginTop: 30, fontSize: 40, color: COLORS.muted, opacity: p }}>你说过的事，它替你记着</div>
+      <div style={{ marginTop: 30, fontSize: 40, color: COLORS.muted, opacity: p }}>{copy('copy20')}</div>
       <div style={{ display: 'flex', gap: 18, marginTop: 50 }}>
         {PILLS.map((pill, i) => {
           const q = spring({ frame: frame - 16 - i * 5, fps, config: { damping: 200 } })

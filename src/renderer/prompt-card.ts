@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { permissionDetail } from './selectors.ts'
 
 /**
@@ -7,7 +9,7 @@ import { permissionDetail } from './selectors.ts'
  */
 export { PROMPT_HEADS } from './selectors.ts'
 
-const COMMAND_TITLE = '运行命令'
+let COMMAND_TITLE = t("prompt-card.run.command")
 
 /** A tool call whose only argument is the command it runs. */
 const commandOf = (rawInput: Record<string, any> | null | undefined): string => (typeof rawInput?.command === 'string' && Object.keys(rawInput).length === 1 ? rawInput.command : '')
@@ -26,3 +28,7 @@ export function permissionCard(permission: { title: string, rawInput?: Record<st
   const command = commandOf(permission.rawInput)
   return { title: command ? COMMAND_TITLE : permission.title, detail: permissionDetail(permission), command }
 }
+
+onLocaleChange(() => {
+  COMMAND_TITLE = t("prompt-card.run.command")
+})

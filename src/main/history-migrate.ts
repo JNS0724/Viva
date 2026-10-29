@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -9,7 +10,7 @@ export interface LegacyConversation { id: unknown, createdAt: number, updatedAt:
 
 function readLegacyFile(file: string): LegacyConversation {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
-  if (raw?.version !== LEGACY_VERSION) throw new Error(`不支持的历史文件版本：${raw?.version}`)
+  if (raw?.version !== LEGACY_VERSION) throw new Error(t("main.history-migrate.unsupported.history.file.version", { version: raw?.version }))
   return {
     id: raw.id,
     createdAt: Number(raw.createdAt) || 0,
@@ -33,7 +34,7 @@ export function migrateLegacyHistory({ dir, db, onError = () => {} }: {
     try {
       if (db.importConversation(readLegacyFile(path.join(dir, name)))) imported += 1
     } catch (err: any) {
-      onError(new Error(`跳过无法导入的历史文件 ${name}：${err.message}`))
+      onError(new Error(t("main.history-migrate.skipping.history.file", { name: name, message: err.message })))
     }
   }
   fs.renameSync(dir, `${dir}${BACKUP_SUFFIX}`)

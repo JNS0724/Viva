@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -94,7 +95,7 @@ function readManifest(file: string): Manifest {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'))
   } catch (err: any) {
-    throw new Error(`dsh profile 的 package.json 无法读取（${file}）：${err.message}`)
+    throw new Error(t("main.dsh-profile.cannot.read.dsh.profile.package.json", { file: file, message: err.message }))
   }
 }
 
@@ -154,7 +155,7 @@ function writeShim(modules: string, plugin: ProfilePlugin) {
   const folder = path.join(modules, plugin.name)
   const existing = fs.lstatSync(folder, { throwIfNoEntry: false })
   if (existing?.isSymbolicLink()) fs.unlinkSync(folder)
-  else if (existing && !isShim(folder)) throw new Error(`${folder} 不是 Viva 写的插件入口，请手动移走后重启`)
+  else if (existing && !isShim(folder)) throw new Error(t("main.dsh-profile.is.not.a.plugin.entry.created.by", { folder: folder }))
   fs.mkdirSync(folder, { recursive: true })
   writeIfChanged(path.join(folder, 'package.json'), `${JSON.stringify(shimManifest(plugin), null, 2)}\n`)
   writeIfChanged(path.join(folder, 'index.js'), `${SHIM_MARK}\nexport * from ${JSON.stringify(pathToFileURL(pluginEntry(plugin.dir)).href)}\n`)
@@ -176,7 +177,7 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   persona?: Persona, models?: ProfileModels, imagesDir?: string,
 }): string {
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
-  if (bad) throw new Error(`插件名必须以 ${APP_PLUGIN_PREFIX} 开头：${bad.name}`)
+  if (bad) throw new Error(t("main.dsh-profile.plugin.names.must.start.with", { APP_PLUGIN_PREFIX: APP_PLUGIN_PREFIX, name: bad.name }))
   const dir = path.join(dshHome, 'profiles', profile)
   const modules = path.join(dir, 'node_modules')
   fs.mkdirSync(modules, { recursive: true })

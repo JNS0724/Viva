@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -349,7 +350,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
   }
 
   function changeOne(statement: Pick<Statement, 'run'>, ...params: unknown[]) {
-    if (statement.run(...params).changes === 0) throw new Error('找不到这段对话')
+    if (statement.run(...params).changes === 0) throw new Error(t("main.history-db.conversation.not.found"))
   }
 
   /**

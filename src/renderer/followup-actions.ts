@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import type { ProposalCard } from './followup-state.ts'
 
 /**
@@ -72,7 +73,7 @@ export function createFollowupActions({ api, getState, dispatch, errorMessage, f
         dispatch({ type: 'proposal_failed', id, message: errorMessage(err) })
       }
     },
-    dismissFollowup: (id: string) => change(() => api.dismissFollowup(id), '好，这件不跟进了'),
+    dismissFollowup: (id: string) => change(() => api.dismissFollowup(id), t("followup-actions.this.follow.up.has.been.removed")),
     async continueFollowup(id: string) {
       const view = await change(() => api.continueFollowup(id))
       if (view?.text) fillComposer(view.text)
@@ -81,12 +82,12 @@ export function createFollowupActions({ api, getState, dispatch, errorMessage, f
       const view = await change(() => api.continueFollowup(id))
       if (view?.text) startTask(view.text)
     },
-    prepareFollowupNow: (id: string) => change(() => api.prepareFollowupNow(id), '马上在后台准备'),
-    wakePreparation: () => change(() => api.wakePreparation(), '叫醒了，过一会儿再准备'),
-    savePrepareSchedule: (schedule: Record<string, unknown>) => change(() => api.setPrepareSchedule(schedule), '已保存，下一个时段起按新的时段准备'),
+    prepareFollowupNow: (id: string) => change(() => api.prepareFollowupNow(id), t("followup-actions.preparing.in.the.background.now")),
+    wakePreparation: () => change(() => api.wakePreparation(), t("followup-actions.awake.preparation.will.resume.shortly")),
+    savePrepareSchedule: (schedule: Record<string, unknown>) => change(() => api.setPrepareSchedule(schedule), t("followup-actions.saved.the.new.schedule.starts.with.the")),
     /** A message suggested for a follow-up: 跟进, 不重要 (learnt), 以后别问这类. */
     settleSuggestion: (id: string, action: 'accept' | 'decline' | 'never') => change(() => api.settleSuggestion(id, action),
-      action === 'accept' ? '已加到跟进，会在后台起草' : action === 'never' ? '好，这个发件人以后不再问' : '好，记下了：这类不重要'),
-    pausePreparation: (minutes: number) => change(() => api.pausePreparation(minutes), minutes ? `后台准备暂停 ${minutes / 60} 小时` : '后台准备继续'),
+      action === 'accept' ? t("followup-actions.added.to.follow.ups.a.draft.will") : action === 'never' ? t("followup-actions.you.will.not.be.asked.about.this") : t("followup-actions.noted.this.kind.of.message.is.not")),
+    pausePreparation: (minutes: number) => change(() => api.pausePreparation(minutes), minutes ? t("followup-actions.background.preparation.paused.for.hours", { value1: minutes / 60 }) : t("followup-actions.background.preparation.resumed")),
   }
 }

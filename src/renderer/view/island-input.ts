@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { formatSize } from '../selectors.ts'
 import { h } from './dom.ts'
 import { picture } from './pictures.ts'
@@ -12,13 +14,13 @@ import { picture } from './pictures.ts'
  * and, while files are dragged over the island, { form: 'drop', count }.
  */
 export const INPUT_FORMS = new Set(['input', 'drop'])
-const PLACEHOLDER = '问 Viva…'
-const PLACEHOLDER_FILES = '要它做什么？直接按「总结」也行'
-const PLACEHOLDER_STEER = '插话：补充或修改要求…'
-const PLACEHOLDER_IMAGES = '想问这张图什么？'
-const SUMMARIZE = '总结'
-const TARGET = '发到当前对话'
-const TARGET_STEER = '助手正在工作，下一步就会读到'
+let PLACEHOLDER = t("island-input.ask.viva")
+let PLACEHOLDER_FILES = t("island-input.what.should.i.do.you.can.also")
+let PLACEHOLDER_STEER = t("island-input.add.or.change.instructions")
+let PLACEHOLDER_IMAGES = t("island-input.what.would.you.like.to.know.about")
+let SUMMARIZE = t("island-input.summarize")
+let TARGET = t("island-input.send.to.current.conversation")
+let TARGET_STEER = t("island-input.the.assistant.is.working.and.will.read")
 
 export function createIslandInput({ send, dismiss, removeFile, removeImage = () => {}, paste = null }: {
   send: (text: string) => void, dismiss: () => void, removeFile: (path: string) => void,
@@ -48,6 +50,7 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
 
   /** The field as the view wants it: open for typing, or showing why it is not. */
   function sync(view: IslandShown) {
+    field.setAttribute('aria-label', PLACEHOLDER)
     pictures = view.images?.length ?? 0
     field.disabled = Boolean(view.busy)
     field.placeholder = view.busy?.text ?? (view.steering ? PLACEHOLDER_STEER : view.files.length ? PLACEHOLDER_FILES : pictures ? PLACEHOLDER_IMAGES : PLACEHOLDER)
@@ -60,26 +63,26 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
     h('span', { class: 'doc-ico', 'aria-hidden': 'true' }),
     h('span', { class: 'isl-file-name', text: file.name }),
     h('small', { text: formatSize(file.size) }),
-    h('button', { type: 'button', class: 'isl-file-x', 'aria-label': `去掉 ${file.name}`, text: '×', onClick: () => removeFile(file.path) }))
+    h('button', { type: 'button', class: 'isl-file-x', 'aria-label': t("island-input.remove", { name: file.name }), text: '×', onClick: () => removeFile(file.path) }))
   const imageChip = (image: { id: string, size: number }, i: number) => h('span', { class: 'isl-file isl-image' },
     picture(image.id, { cls: 'isl-file-thumb' }),
-    h('span', { class: 'isl-file-name', text: `图片 ${i + 1}` }),
+    h('span', { class: 'isl-file-name', text: t("island-input.image", { value1: i + 1 }) }),
     h('small', { text: formatSize(image.size) }),
-    h('button', { type: 'button', class: 'isl-file-x', 'aria-label': `去掉图片 ${i + 1}`, text: '×', onClick: () => removeImage(image.id) }))
+    h('button', { type: 'button', class: 'isl-file-x', 'aria-label': t("island-input.remove.image", { value1: i + 1 }), text: '×', onClick: () => removeImage(image.id) }))
 
   /** What unfolds below the field. */
   function panel(view: IslandShown): View[] {
     if (view.form === 'drop') {
       return [h('div', { class: 'isl-drop' },
-        h('b', { text: '松手，交给 Viva' }),
-        h('span', { text: `${view.count > 1 ? `${view.count} 个文件` : '文件'} · 只交给助手文件路径，不复制` }))]
+        h('b', { text: t("island-input.drop.to.give.to.viva") }),
+        h('span', { text: t("island-input.only.file.paths.are.shared.with.the", { value1: view.count > 1 ? t("island-input.files", { count: view.count }) : t("drawer.files") }) }))]
     }
     const error = view.error ? h('div', { class: 'isl-error', role: 'alert', text: view.error }) : null
-    if (view.busy) return [hint(h('span', { class: 'isl-push', text: 'Esc 收起' })), error]
+    if (view.busy) return [hint(h('span', { class: 'isl-push', text: t("island-input.esc.to.close") })), error]
     const target = view.steering ? TARGET_STEER : TARGET
     const images = view.images ?? []
     if (images.length && !view.files.length) {
-      return [h('div', { class: 'isl-files' }, images.map(imageChip)), hint(target, h('span', { class: 'isl-push', text: 'Enter 发送 · Esc 收起' })), error]
+      return [h('div', { class: 'isl-files' }, images.map(imageChip)), hint(target, h('span', { class: 'isl-push', text: t("island-input.enter.to.send.esc.to.close") })), error]
     }
     if (view.files.length) {
       return [
@@ -90,7 +93,7 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
         error,
       ]
     }
-    return [hint(target, h('span', { class: 'isl-push', text: 'Shift+Enter 换行 · Esc 收起' })), error]
+    return [hint(target, h('span', { class: 'isl-push', text: t("island-input.shift.enter.for.a.new.line.esc") })), error]
   }
 
   return {
@@ -104,3 +107,13 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
     },
   }
 }
+
+onLocaleChange(() => {
+  PLACEHOLDER = t("island-input.ask.viva")
+  PLACEHOLDER_FILES = t("island-input.what.should.i.do.you.can.also")
+  PLACEHOLDER_STEER = t("island-input.add.or.change.instructions")
+  PLACEHOLDER_IMAGES = t("island-input.what.would.you.like.to.know.about")
+  SUMMARIZE = t("island-input.summarize")
+  TARGET = t("island-input.send.to.current.conversation")
+  TARGET_STEER = t("island-input.the.assistant.is.working.and.will.read")
+})

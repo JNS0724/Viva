@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
 import { catMood, currentAction, traceItems, truncate } from './selectors.ts'
@@ -85,8 +87,8 @@ function lastAnswer(state: State) {
 
 function afterTurn(state: State, base: IslandBase): IslandView {
   const receipt = state.lastReceipt
-  if (receipt.stopReason === 'cancelled') return { ...base, form: 'idle', tone: 'idle', label: '已停止', detail: state.info.model || '' }
-  return { ...base, form: 'done', tone: 'done', label: '已完成', elapsedMs: receipt.ms, detail: lastAnswer(state) }
+  if (receipt.stopReason === 'cancelled') return { ...base, form: 'idle', tone: 'idle', label: t("island-view.stopped"), detail: state.info.model || '' }
+  return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: lastAnswer(state) }
 }
 
 /**
@@ -108,7 +110,7 @@ function backgroundOf(state: State): IslandBackground | null {
   return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, done, items }
 }
 
-const TASK_ENDED: Readonly<Record<string, readonly [said: string, tone: string]>> = { done: ['做完了', 'done'], stopped: ['停下了', 'idle'], error: ['出错了', 'error'] }
+let TASK_ENDED: Readonly<Record<string, readonly [said: string, tone: string]>> = { done: [t("island-view.done"), 'done'], stopped: [t("island-view.stopped.2"), 'idle'], error: [t("island-view.something.went.wrong"), 'error'] }
 
 /** Follow-ups ready and preparation going, when there is either; nothing otherwise, so the island stays as it was. */
 function prepareOf(state: State): IslandView['prepare'] | undefined {
@@ -147,29 +149,33 @@ function mainView(state: State, background: IslandBackground | null): IslandView
   }
   if (state.phase === 'asking' && state.secret) {
     const { requestId, server } = state.secret
-    return { ...base, form: 'asking', tone: 'waiting', label: PROMPT_HEADS.secret, question: { questionId: requestId, id: 'secret', text: `接入「${server}」需要你填写密钥`, options: [] } }
+    return { ...base, form: 'asking', tone: 'waiting', label: PROMPT_HEADS.secret, question: { questionId: requestId, id: 'secret', text: t("island-view.enter.credentials.to.connect", { server: server }), options: [] } }
   }
   if (state.phase === 'asking' && state.question) {
     return { ...base, form: 'asking', tone: 'waiting', label: PROMPT_HEADS.question, question: questionView(state.question) }
   }
   if (state.phase === 'working') {
     return {
-      ...base, form: 'working', tone: 'working', label: '工作中',
+      ...base, form: 'working', tone: 'working', label: t("island-view.working"),
       action: currentAction(state), startedAt: state.turn?.startedAt ?? null, steps: state.turn?.tools ?? 0,
       // A turn that runs a while is offered the background (D, view/island-dom.js); at once when the agent said it would (E).
       ...(spinOffTarget(state) ? { movable: true } : {}),
       ...(offeredBackground(state) ? { offered: true } : {}),
     }
   }
-  if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: '出错', detail: truncate(state.error, DETAIL_LIMIT) }
+  if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: t("island-view.error"), detail: truncate(state.error, DETAIL_LIMIT) }
   const finished = state.tasks.finished
   if (finished) {
     const [said, tone] = TASK_ENDED[finished.status] ?? TASK_ENDED.done
     const form = tone === 'error' ? 'error' : 'done'
     return { ...base, mood: tone === 'idle' ? 'idle' : form, form, tone, label: `#${finished.title} ${said}`, task: finished.title }
   }
-  if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: '连接中' }
-  if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: '未连接' }
+  if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.connecting") }
+  if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected") }
   if (state.lastReceipt) return afterTurn(state, base)
-  return { ...base, form: 'idle', tone: 'idle', label: '空闲', detail: state.info.model || '' }
+  return { ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' }
 }
+
+onLocaleChange(() => {
+  TASK_ENDED = { done: [t("island-view.done"), 'done'], stopped: [t("island-view.stopped.2"), 'idle'], error: [t("island-view.something.went.wrong"), 'error'] }
+})

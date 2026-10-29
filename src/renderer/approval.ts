@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 /**
  * dsh asks for approval with the tool call's id only (dsh-acp sends `toolCall: { toolCallId }` and English
  * option names): what is to be approved comes from the tool call it announced just before, which carries the
@@ -13,15 +15,15 @@ type ToolInput = Record<string, any> | null | undefined
 
 /** The app's own configuration tools (viva-config plugin), said plainly. */
 const CONFIG_TITLES: Readonly<Record<string, (input: ToolInput) => string>> = {
-  viva_mcp_add: (input) => `接入 MCP 服务器「${input?.name ?? ''}」`,
-  viva_mcp_remove: (input) => `移除 MCP 服务器「${input?.name ?? ''}」`,
-  viva_skill_create: (input) => `新建 skill「${input?.name ?? ''}」`,
-  viva_skill_install: (input) => `安装 skill：${input?.path ?? ''}`,
-  viva_skill_remove: (input) => `删除 skill「${input?.id ?? ''}」`,
+  viva_mcp_add: (input) => t("approval.connect.mcp.server", { value1: input?.name ?? '' }),
+  viva_mcp_remove: (input) => t("approval.remove.mcp.server", { value1: input?.name ?? '' }),
+  viva_skill_create: (input) => t("approval.create.skill", { value1: input?.name ?? '' }),
+  viva_skill_install: (input) => t("approval.install.skill", { value1: input?.path ?? '' }),
+  viva_skill_remove: (input) => t("approval.delete.skill", { value1: input?.id ?? '' }),
 }
 
 /** What each kind of answer is called on the card, whatever dsh names it. */
-const OPTION_NAMES: Readonly<Record<string, string>> = { allow_once: '允许', allow_always: '总是允许', reject_once: '拒绝', reject_always: '总是拒绝' }
+let OPTION_NAMES: Readonly<Record<string, string>> = { allow_once: t("approval.allow"), allow_always: t("approval.always.allow"), reject_once: t("approval.deny"), reject_always: t("approval.always.deny") }
 
 const fileName = (input: ToolInput) => String(input?.path ?? input?.file_path ?? '').split(/[\\/]/).filter(Boolean).pop() ?? ''
 
@@ -38,11 +40,15 @@ export function approvalTitle(tool: { title: string, rawInput?: ToolInput } | nu
   if (!tool) return null
   const input = tool.rawInput
   if (CONFIG_TITLES[tool.title]) return CONFIG_TITLES[tool.title](input)
-  if (COMMAND_TOOLS.has(tool.title) && typeof input?.command === 'string') return `运行命令：${oneLine(input.command)}`
+  if (COMMAND_TOOLS.has(tool.title) && typeof input?.command === 'string') return t("approval.run.command", { value1: oneLine(input.command) })
   const file = fileName(input)
-  if (WRITE_TOOLS.has(tool.title) && file) return `写入 ${file}`
-  if (EDIT_TOOLS.has(tool.title) && file) return `修改 ${file}`
+  if (WRITE_TOOLS.has(tool.title) && file) return t("approval.write", { file: file })
+  if (EDIT_TOOLS.has(tool.title) && file) return t("approval.edit", { file: file })
   return tool.title
 }
 
 export const optionName = (option: { name: string, kind?: string }): string => OPTION_NAMES[option.kind ?? ''] ?? option.name
+
+onLocaleChange(() => {
+  OPTION_NAMES = { allow_once: t("approval.allow"), allow_always: t("approval.always.allow"), reject_once: t("approval.deny"), reject_always: t("approval.always.deny") }
+})

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import path from 'node:path'
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'
@@ -77,7 +78,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         const active = tools.get(id) ?? new Map<string, string>(); tools.set(id, active)
         const toolId = text(update.toolCallId)
         if (update.status === 'completed' || update.status === 'failed') active.delete(toolId)
-        else if (toolId) active.set(toolId, text(update.title).slice(0, 200) || active.get(toolId) || '执行工具')
+        else if (toolId) active.set(toolId, text(update.title).slice(0, 200) || active.get(toolId) || t("main.task-registry.run.tool"))
         task.currentAction = [...active.values()].at(-1) ?? null
       }
       if (kind === 'agent_message_chunk') task.resultPreview = (task.resultPreview + text(record(update.content).text)).slice(-4000)
@@ -116,7 +117,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const visible = (task: Task) => 'taskId' in scope ? task.taskId === scope.taskId : Boolean(task.cwd && scope.cwd) && directory(task.cwd) === directory(scope.cwd)
     if (request.op === 'get') {
       const task = tasks.get(request.taskId ?? '')
-      if (!task || !visible(task)) throw new Error('任务不存在或不在当前可查询范围内')
+      if (!task || !visible(task)) throw new Error(t("main.task-registry.task.does.not.exist.or.is.outside"))
       return { observedAt: now(), task: { ...snapshot(task), resultPreview: request.includeOutput ? task.resultPreview : undefined,
         ...(request.includeRequest ? { request: task.request } : {}) } }
     }
@@ -132,11 +133,11 @@ export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 
 export function parseTaskQuery(value: unknown): TaskQuery {
   const raw = record(value)
-  if (raw.op !== 'list' && raw.op !== 'get') throw new Error('未知的任务查询操作')
-  if (raw.op === 'get' && (typeof raw.taskId !== 'string' || !raw.taskId || raw.taskId.length > 200)) throw new Error('taskId 无效')
-  if (raw.status !== undefined && !statuses.has(text(raw.status))) throw new Error('status 无效')
-  for (const key of ['limit', 'offset'] as const) if (raw[key] !== undefined && (!Number.isSafeInteger(raw[key]) || Number(raw[key]) < (key === 'limit' ? 1 : 0))) throw new Error(`${key} 无效`)
-  for (const key of ['includeRequest', 'includeOutput'] as const) if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw new Error(`${key} 无效`)
+  if (raw.op !== 'list' && raw.op !== 'get') throw new Error(t("main.task-registry.unknown.task.query.operation"))
+  if (raw.op === 'get' && (typeof raw.taskId !== 'string' || !raw.taskId || raw.taskId.length > 200)) throw new Error(t("main.task-registry.invalid.taskid"))
+  if (raw.status !== undefined && !statuses.has(text(raw.status))) throw new Error(t("main.task-registry.invalid.status"))
+  for (const key of ['limit', 'offset'] as const) if (raw[key] !== undefined && (!Number.isSafeInteger(raw[key]) || Number(raw[key]) < (key === 'limit' ? 1 : 0))) throw new Error(t("main.task-registry.invalid", { key: key }))
+  for (const key of ['includeRequest', 'includeOutput'] as const) if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw new Error(t("main.task-registry.invalid", { key: key }))
   return { op: raw.op, taskId: text(raw.taskId), status: raw.status as TaskStatus | undefined, limit: Math.min(Number(raw.limit ?? 10), 30),
     offset: Number(raw.offset ?? 0), includeRequest: raw.includeRequest === true, includeOutput: raw.includeOutput === true }
 }

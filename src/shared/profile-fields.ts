@@ -1,3 +1,4 @@
+import { t } from './i18n/translate.ts'
 /**
  * The fields of the user's profile ("关于你"). Shared by the main process (storage, the memory tools,
  * the context sent with each prompt) and the renderer (the profile page and the intro form).
@@ -8,9 +9,9 @@ export interface ProfileField { key: string, label: string, hint: string }
 export interface RetiredField { key: string, label: string, kind?: string, names?: boolean, private?: boolean }
 
 export const PROFILE_FIELDS: readonly ProfileField[] = Object.freeze([
-  { key: 'role', label: '角色与职责', hint: '例如：支付平台部的后端负责人，负责清结算' },
-  { key: 'projects', label: '在推进的事', hint: '例如：Q4 对账系统重构，每周四上线' },
-  { key: 'preferences', label: '偏好与习惯', hint: '例如：回答先给结论；对比方案时用表格' },
+  { key: 'role', get label() { return t('profile.role') }, get hint() { return t('profile.role.hint') } },
+  { key: 'projects', get label() { return t('profile.projects') }, get hint() { return t('profile.projects.hint') } },
+  { key: 'preferences', get label() { return t('profile.preferences') }, get hint() { return t('profile.preferences.hint') } },
 ])
 
 /**

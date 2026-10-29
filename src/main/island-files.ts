@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -6,8 +8,8 @@ import path from 'node:path'
  * the agent reads them as it reads any file outside the workspace, asking the user first if its rules say so.
  * Only files can be handed over; a folder, or anything that is not there, is refused with a reason.
  */
-export const NOT_A_FILE = '文件夹先不支持，请拖文件'
-export const MISSING = '找不到这个文件'
+export let NOT_A_FILE = t("main.island-files.folders.are.not.supported.here.yet.drop")
+export let MISSING = t("main.island-files.file.not.found")
 
 export interface DroppedFile { path: string, name: string, size: number }
 
@@ -27,3 +29,8 @@ export function describeDropped(paths: readonly string[]): { files: DroppedFile[
   }
   return { files }
 }
+
+onLocaleChange(() => {
+  NOT_A_FILE = t("main.island-files.folders.are.not.supported.here.yet.drop")
+  MISSING = t("main.island-files.file.not.found")
+})

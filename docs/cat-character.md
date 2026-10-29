@@ -1,56 +1,55 @@
-# Viva 猫角色设定
+# Viva cat character
 
-应用使用两套独立构图：头部特写用在首页（问候语上方 64px）、对话头像、标题栏的岛和桌面岛；半身图目前没有地方显示，留给以后的大尺寸场景。新增素材前先对照本页，再在同一圆底下检查轮廓、表情和切换时的位置。
+[English](cat-character.md) · [简体中文](cat-character.zh-CN.md)
 
-## 角色识别特征
+The app has two separate compositions. Head close-ups appear on the home page (64 px above the greeting), conversation avatars, title-bar island, and desktop island. Busts are currently reserved for larger future scenes. Before adding assets, check these rules and compare silhouette, expression, and alignment against the same circular background.
 
-- 毛色为暖调炭黑，以清晰的几何轮廓和克制的明暗表现身体；胸腹没有白斑，不画背带、衣领这类装饰线。
-- 眼睛为大而修长的杏仁形，虹膜琥珀金色，黑色瞳孔配奶油色高光。
-- 鼻子小、三角形；鼻子和内耳是柔和的陶土粉色。
-- 正面朝向观众时，画面右侧的耳朵有一处小折角缺口；画面左侧的前爪是奶油白色，其余爪子炭黑。转身时保持同一只耳朵、同一只爪子，不要直接镜像。
-- 头部宽大、略呈楔形，高三角耳；应用里用短胸口的半身构图，保留大脸的辨识度。
-- 统一戴奶油白船长帽：海蓝帽带、短帽檐、小金色罗盘徽记；帽子在两耳之间，露出缺耳，不遮眉眼。
-- 画风是平面几何的二维绘本插画：干净色块、克制的暖色描边，不要纸纹、散点或毛发细线。
+## Identity
 
-## 应用素材
+- Warm charcoal-black fur, clear geometric silhouettes, restrained shading. No white chest/belly patch or decorative collar/strap lines.
+- Large, elongated almond eyes, amber-gold irises, black pupils, and cream highlights.
+- Small triangular nose; muted terracotta-pink nose and inner ears.
+- Facing the viewer, the right ear has a small folded notch and the left front paw is cream-white; the other paws are charcoal. Preserve the same physical ear and paw when turning, rather than mirroring.
+- A broad, slightly wedge-shaped head and tall triangular ears; busts keep a short chest and a recognizably large face.
+- Cream captain’s cap with an ocean-blue band, short brim, and small gold compass emblem. Place it between the ears, exposing the notched ear and eyebrows.
+- Flat geometric 2D picture-book illustration: clean color areas and restrained warm outlines; no paper texture, speckles, or fine fur lines.
 
-素材在 `src/assets/cat/bust/`，每个状态两张：
+## Assets
 
-- `idle.png` 等七张半身图，512×512；`typing` 的半身由 `typing-base.png`（带键盘的身体）和 `typing-paw-left.png`、`typing-paw-right.png` 两只爪子叠成。
-- `idle-head.png` 等七张头部特写，256×256，只有帽子、耳朵和脸，脸占画面七成以上。
-- 另有为以后准备的 `sleeping.png` / `sleeping-head.png`，见文末「记录」。
+`src/assets/cat/bust/` contains two compositions per state:
 
-都是透明 PNG，从 1024×1024 的原图等比缩小导出（头部在 2 倍屏上最大显示 128px），不带底色和白边。原图、生成提示词和过程稿不放进仓库，由设计者保存。
+- Seven 512×512 busts such as `idle.png`. Typing combines `typing-base.png` (body with keyboard), `typing-paw-left.png`, and `typing-paw-right.png`.
+- Seven 256×256 close-ups such as `idle-head.png`, with only hat, ears, and face; the face occupies over 70% of the image.
+- Reserved `sleeping.png` / `sleeping-head.png`; see History below.
 
-构图约定：
+All are transparent PNGs scaled proportionally from 1024×1024 originals, without background or white fringe. Head images support up to 128 px on a 2× display. Designers retain originals, generation prompts, and process drafts outside the repository.
 
-- 半身以待命为基准，七张的外轮廓完全对齐，切换时猫不跳动；头部特写同样七张对齐。
-- 圆底中心在画面正中。身体底部是贴着圆底的弧线，只有耳朵尖伸出圆外。
-- 「在写」的键盘有意画得很大：宽于头部、伸出圆底，表现「在干活」。半身图按 1.65 倍显示键盘和爪子；头部特写下方显示同样的键盘。
-- 思考的三个点、等你确认的「!」、提问的「?」、完成的星光由 `src/renderer/view/cat.ts` 叠在图上；出错的汗滴直接画在图里。
+### Composition
 
-## 状态
+Align all seven bust silhouettes to idle, and all seven heads to each other, so switching states does not jump. Center the circular background; the body ends in an arc against it, with only ear tips extending beyond. The typing keyboard is deliberately wider than the head and extends outside the circle. Busts display keyboard and paws at 1.65×; heads use the same keyboard below them.
 
-| 状态 | 半身动作 | 头部特写 | 叠加提示 |
-| --- | --- | --- | --- |
-| `idle` 待命 | 正视观众，放松微笑，前爪在下巴下 | 平静睁眼、微笑 | 无 |
-| `thinking` 思考 | 眼睛往上看，白爪抵下巴 | 明显抬眼 | 三点气泡 |
-| `typing` 在写 | 两只前爪交替敲大键盘 | 眯眼往下看 | 下方的键盘和爪子 |
-| `confirm` 等你确认 | 白爪举到脸旁，肉垫朝外 | 眼神专注、眉毛上扬 | `!` |
-| `ask` 有问题 | 折耳、挠头、微张嘴 | 抬眉、张嘴 | `?` |
-| `done` 完成 | 笑眯眼、张嘴，双爪举到脸旁 | 闭眼笑 | 星光（小尺寸只留一颗，在右上角） |
-| `error` 出错 | 帽子略歪，「哎呀」表情，白爪在胸口 | 睁大眼、张嘴 | 图里画的汗滴 |
+`src/renderer/view/cat.ts` overlays thinking dots, approval `!`, question `?`, and completion sparkles. The error sweat drop is painted into the image.
 
-## 显示规则
+## States
 
-- 48px 及以下自动用头部特写，更大用半身；`drawCat` 的 `variant` 可以指定（首页 64px 指定用头部特写）。
-- 对话里只有最新一条回答的头像跟着状态动，之前的都显示静止的待命；回答还在逐字出现时显示「在写」。
-- 第一次画猫时把全部图片预先加载，之后换状态不会闪空圆。
-- 角色本身不旋转、不缩放；动的是「在写」的爪子和叠加的提示。系统设置了「减少动态效果」时全部停下。
-- 新增或改动素材后，在首页、36px 对话头像、36px 标题栏的岛、桌面岛上都看一遍，并连续切换几个状态。
+| State | Bust | Close-up | Overlay |
+|---|---|---|---|
+| `idle` | Faces viewer, relaxed smile, paws below chin | Calm open eyes, smile | None |
+| `thinking` | Looks up, white paw on chin | Clearly raised gaze | Three-dot bubble |
+| `typing` | Alternating paws on large keyboard | Squints downward | Keyboard and paws below |
+| `confirm` | White paw beside face, pad outward | Focused eyes, raised brows | `!` |
+| `ask` | Folded ear, scratches head, mouth slightly open | Raised brows, open mouth | `?` |
+| `done` | Smiles with eyes closed, mouth open, paws raised | Closed-eye smile | Sparkles; one at top right at small sizes |
+| `error` | Slightly crooked cap, “oops” expression, white paw at chest | Wide eyes, open mouth | Painted sweat drop |
 
-## 记录
+## Display
 
-- 2026-10-24：换成戴船长帽的几何画风黑猫；七个状态各出半身和头部特写；去掉纸纹；统一构图；「在写」拆成键盘和两只爪子交替敲击；标题栏的猫从 24px 放大到 36px（岛高 48px、标题栏 56px）。
-- 2026-10-26：首页去掉半身大图和光晕，改成问候语上方 64px 的头部特写，问候语从 64px 缩到 48px，首页以问候语和输入框为主。
-- 已备好、还没用上：睡觉。素材已放进 `src/assets/cat/bust/`：`sleeping.png`（512px）和 `sleeping-head.png`（256px），都是整只趴睡的猫（蜷着身子、前爪和尾巴都在），小尺寸直接用整只缩小，不用头部特写。还没有接到任何状态上，所以 `CAT_MOODS` 里没有它。上线时右上角配一个奶油色的「zzz」气泡（和思考的气泡同色），慢慢上下浮动；静止和「减少动态效果」时不动。
+Use heads automatically at 48 px or smaller, busts above that. `drawCat` can override the variant; the 64 px home image explicitly uses a head. Only the newest answer avatar follows current activity; older answers stay still in idle. While text is being revealed, show typing.
+
+Preload all assets when first drawing the cat to prevent empty-circle flashes. The character itself does not rotate or scale; only typing paws and overlays animate. Respect reduced-motion settings by stopping all motion. After asset changes, inspect the home page, 36 px conversation avatar, 36 px title-bar island, and desktop island while switching states repeatedly.
+
+## History
+
+- **2026-10-24:** introduced the geometric black cat with captain’s hat; seven aligned bust/head pairs; removed paper texture; split typing into keyboard and alternating paws; enlarged the title-bar cat from 24 to 36 px (48 px island, 56 px title bar).
+- **2026-10-26:** replaced the large home bust and glow with a 64 px head above the greeting; reduced greeting text from 64 to 48 px to focus the home page on greeting and input.
+- **Prepared but unused:** sleeping. `sleeping.png` (512 px) and `sleeping-head.png` (256 px) both show the whole curled-up cat with paws and tail. Small sizes scale the whole cat rather than using a head close-up. It is not wired to any state and is absent from `CAT_MOODS`. When enabled, add a cream “zzz” bubble at top right, matching the thinking bubble, floating slowly; keep it still when requested or under reduced motion.

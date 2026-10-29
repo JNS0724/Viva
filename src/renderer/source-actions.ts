@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /** The form as the main process takes it (sources-ipc.ts formChange). */
 export type SourceForm = { everyMinutes?: number, values?: Record<string, unknown> }
 
@@ -50,12 +51,12 @@ export function createSourceActions({ api, getState, dispatch, errorMessage }: P
     /** Switching on a source whose required fields are empty opens its form instead. */
     toggleSource(id: string, enabled: boolean) {
       const missing: string[] = sourceOf(id)?.settings.missing ?? []
-      if (enabled && missing.length) return dispatch({ type: 'sources_edit', id, notice: `先填好：${missing.join('、')}，再打开` })
-      return change(id, () => api.saveSource(id, { enabled }), enabled ? '已打开，马上拉一次' : '已关闭，不再读取')
+      if (enabled && missing.length) return dispatch({ type: 'sources_edit', id, notice: t("source-actions.fill.in.before.enabling", { value1: missing.join('、') }) })
+      return change(id, () => api.saveSource(id, { enabled }), enabled ? t("source-actions.enabled.fetching.now") : t("source-actions.disabled.no.further.messages.will.be.read"))
     },
     editSource: (id: string) => dispatch({ type: 'sources_edit', id }),
     cancelSourceEdit: () => dispatch({ type: 'sources_edit', id: null }),
-    saveSource: (id: string, form: SourceForm) => change(id, () => api.saveSource(id, form), '已保存，下次拉取时生效', { closeForm: true }),
+    saveSource: (id: string, form: SourceForm) => change(id, () => api.saveSource(id, form), t("source-actions.saved.takes.effect.on.the.next.fetch"), { closeForm: true }),
     async checkSource(id: string, form: SourceForm) {
       if (getState().sources.busy) return
       dispatch({ type: 'sources_busy', id })
@@ -68,11 +69,11 @@ export function createSourceActions({ api, getState, dispatch, errorMessage }: P
     pollSourceNow: (id: string) => change(id, () => api.pollSourceNow(id), null),
     /** 安装消息源…: the folder dialog, then the chosen folder shown for a yes (or why it cannot be installed). */
     chooseSource: () => change(INSTALLING, () => api.chooseSource(), null),
-    installSource: () => change(INSTALLING, () => api.installSource(), '已安装，填好设置后打开它'),
+    installSource: () => change(INSTALLING, () => api.installSource(), t("source-actions.installed.complete.the.settings.and.enable.it")),
     cancelSourceInstall: () => change(INSTALLING, () => api.cancelSourceInstall(), null),
     /** Moves its folder to the trash and lets its settings, messages and data go. */
     removeSource: (id: string, name: string) => change(id, () => api.removeSource(id),
-      (view) => (view.removed === 'trashed' ? `已把「${name}」移到废纸篓` : `已删除「${name}」`)),
+      (view) => (view.removed === 'trashed' ? t("extension-actions.moved.to.trash", { name: name }) : t("model-actions.deleted", { name: name }))),
     async openSourcesFolder() {
       try {
         await api.openSourcesFolder()

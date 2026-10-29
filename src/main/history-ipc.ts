@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs/promises'
 import { readSessionTrace } from './dsh-log.ts'
 import { exportFileName, toMarkdown } from './history-export.ts'
@@ -20,8 +22,8 @@ const summaryOf = (conversation: Pick<Conversation, 'id' | 'title' | 'updatedAt'
 const viewOf = (found: ReturnType<HistoryDb['get']>) => (found
   ? { ...summaryOf(found.conversation), parentId: found.conversation.parentId, createdAt: found.conversation.createdAt, messages: found.messages }
   : null)
-const BUSY = '助手正在工作，等这一轮结束再回到那个话题'
-const GONE = '那个话题接不回来了：助手那边已经没有它的记录'
+let BUSY = t("main.history-ipc.wait.for.this.turn.to.finish.before")
+let GONE = t("main.history-ipc.cannot.resume.that.topic.the.assistant.no")
 
 function assertQuery(value: unknown) {
   if (typeof value !== 'string' || value.length > MAX_QUERY_CHARS) throw new Error('invalid search query')
@@ -70,7 +72,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   /** Shows an older conversation and reattaches the agent to its dsh session when it still can. */
   handle('history:open', async (id) => {
     const found = db.get(assertId(id))
-    if (!found) throw new Error('找不到这段对话，可能已被删除')
+    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
     if (found.conversation.id === current().id) return { conversation: viewOf(found), info: agentInfo() }
     const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
     setCurrent({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
@@ -84,7 +86,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:resume-topic', async (id) => {
     if (isBusy()) throw new Error(BUSY)
     const found = db.get(assertId(id))
-    if (!found) throw new Error('找不到这段对话，可能已被删除')
+    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
     const { sessionId, cwd } = found.conversation
     const started = await switchAgent(sessionId, cwd)
     if (!started.resumed) throw new Error(GONE)
@@ -110,10 +112,15 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
 
   handle('history:export', async (id) => {
     const found = db.get(assertId(id))
-    if (!found) throw new Error('找不到这段对话，可能已被删除')
+    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
     const file = await chooseExportPath(exportFileName(found.conversation.title))
     if (!file) return { saved: false }
     await fs.writeFile(file, toMarkdown(found.conversation, found.messages), 'utf8')
     return { saved: true, file }
   })
 }
+
+onLocaleChange(() => {
+  BUSY = t("main.history-ipc.wait.for.this.turn.to.finish.before")
+  GONE = t("main.history-ipc.cannot.resume.that.topic.the.assistant.no")
+})

@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { PROFILE_FIELDS } from '../../shared/profile-fields.ts'
 import { formatListTime } from '../selectors.ts'
 import { h, keepingInput, label } from './dom.ts'
@@ -14,13 +16,13 @@ type MemoryRow = {
 }
 type IntroItem = { key: string, label: string, hint: string, multiline: boolean }
 
-const KIND_LABEL: Readonly<Record<string, string>> = { fact: '事实', preference: '偏好', person: '人', project: '项目', role: '身份' }
-const SOURCE_LABEL: Readonly<Record<string, string>> = { user: '你添加', agent: '助手记下' }
-const INTRO_ITEMS: readonly IntroItem[] = [
-  { key: 'role', label: '你的工作', hint: '例如：支付平台部的后端负责人，负责清结算', multiline: false },
-  { key: 'projects', label: '在推进的事', hint: '例如：Q4 对账系统重构', multiline: false },
-  { key: 'preferences', label: '偏好与习惯', hint: '例如：回答先给结论；对比方案时用表格', multiline: false },
-  { key: 'sources', label: '常用网站（只用来让助手读一遍）', hint: '一行一个网址，例如内部 wiki、项目看板', multiline: true },
+let KIND_LABEL: Readonly<Record<string, string>> = { fact: t("profile-panel.fact"), preference: t("profile-panel.preference"), person: t("profile-panel.person"), project: t("profile-panel.project"), role: t("profile-panel.role") }
+let SOURCE_LABEL: Readonly<Record<string, string>> = { user: t("profile-panel.added.by.you"), agent: t("profile-panel.remembered.by.assistant") }
+let INTRO_ITEMS: readonly IntroItem[] = [
+  { key: 'role', label: t("profile-panel.your.work"), hint: t("profile-panel.for.example.backend.lead.for.payments.responsible"), multiline: false },
+  { key: 'projects', label: t("profile-panel.current.projects"), hint: t("profile-panel.for.example.q.reconciliation.system.redesign"), multiline: false },
+  { key: 'preferences', label: t("profile-panel.preferences.and.habits"), hint: t("profile-panel.for.example.lead.with.the.conclusion.compare"), multiline: false },
+  { key: 'sources', label: t("profile-panel.websites.read.once.by.the.assistant"), hint: t("profile-panel.one.url.per.line.such.as.an"), multiline: true },
 ]
 
 function fieldEditor(field: ProfileField, entry: { value: string } | undefined, memory: MemoryPage, handlers: Handlers) {
@@ -38,8 +40,8 @@ function fieldEditor(field: ProfileField, entry: { value: string } | undefined, 
   },
   input,
   h('div', { class: 'profile-edit-actions' },
-    h('button', { class: 'btn btn-accent btn-small', type: 'submit', disabled: memory.busy, text: '保存' }),
-    h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '取消', onClick: () => handlers.editField(null) })))
+    h('button', { class: 'btn btn-accent btn-small', type: 'submit', disabled: memory.busy, text: t("extensions.save") }),
+    h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("extensions.cancel"), onClick: () => handlers.editField(null) })))
 }
 
 function fieldCard(field: ProfileField, memory: MemoryPage, handlers: Handlers) {
@@ -49,7 +51,7 @@ function fieldCard(field: ProfileField, memory: MemoryPage, handlers: Handlers) 
     h('div', { class: 'profile-field-head' },
       label(field.label),
       editing ? null : h('button', {
-        class: 'link-btn', type: 'button', text: entry ? '编辑' : '填写', 'aria-label': `编辑${field.label}`,
+        class: 'link-btn', type: 'button', text: entry ? t("extensions.edit") : t("profile-panel.fill.in"), 'aria-label': t("profile-panel.edit", { label: field.label }),
         onClick: () => handlers.editField(field.key),
       })),
     editing
@@ -59,7 +61,7 @@ function fieldCard(field: ProfileField, memory: MemoryPage, handlers: Handlers) 
 
 /** Once there is something to say: it goes along with each conversation, so it is shown here too. */
 const habitsRow = (habits: { text?: string, samples?: number }) => (habits.text
-  ? h('p', { class: 'help', text: `使用习惯（根据最近 ${habits.samples} 次提问）：${habits.text}` })
+  ? h('p', { class: 'help', text: t("profile-panel.usage.habits.based.on.your.last.questions", { samples: habits.samples ?? 0, text: habits.text }) })
   : null)
 
 /** Read-only: it is rebuilt from the memories, so changing a memory is how it changes. */
@@ -67,16 +69,16 @@ function synthesisSection(memory: MemoryPage, now: number) {
   const synthesis = memory.synthesis
   return h('section', { class: 'profile-section' },
     h('div', { class: 'row-between' },
-      h('h3', { class: 'profile-heading', text: '助手整理的画像' }),
-      synthesis ? h('span', { class: 'memory-meta mono', text: `更新于 ${formatListTime(synthesis.createdAt, now)}` }) : null),
+      h('h3', { class: 'profile-heading', text: t("profile-panel.profile.prepared.by.the.assistant") }),
+      synthesis ? h('span', { class: 'memory-meta mono', text: t("profile-panel.updated", { value1: formatListTime(synthesis.createdAt, now) }) }) : null),
     synthesis
       ? h('p', { class: 'profile-synthesis', text: synthesis.text })
-      : h('p', { class: 'empty', text: '助手记下一些关于你的事之后，会定期把它们整理成画像，大约每天一次。' }),
-    h('p', { class: 'help', text: '由下面的记忆整理而来；想纠正，改对应的记忆即可。' }))
+      : h('p', { class: 'empty', text: t("profile-panel.once.the.assistant.remembers.things.about.you") }),
+    h('p', { class: 'help', text: t("profile-panel.compiled.from.the.memories.below.edit.a") }))
 }
 
 function memoryMeta(memory: MemoryRow, now: number) {
-  const keywords = memory.keywords?.length ? `关键词：${memory.keywords.join('、')}` : ''
+  const keywords = memory.keywords?.length ? t("profile-panel.keywords", { value1: memory.keywords.join('、') }) : ''
   return [KIND_LABEL[memory.kind], SOURCE_LABEL[memory.source], formatListTime(memory.createdAt, now), keywords].filter(Boolean).join(' · ')
 }
 
@@ -86,15 +88,15 @@ function memoryItem(memory: MemoryRow, handlers: Handlers, now: number) {
       h('span', { class: 'memory-text', text: memory.text }),
       h('span', { class: 'memory-meta mono', text: memoryMeta(memory, now) })),
     h('button', {
-      class: 'icon-btn memory-delete', type: 'button', 'aria-label': `删除记忆：${memory.text}`, title: '删除',
+      class: 'icon-btn memory-delete', type: 'button', 'aria-label': t("profile-panel.delete.memory", { text: memory.text }), title: t("extensions.delete"),
       onClick: () => handlers.deleteMemory(memory),
     }, icon('close', 14)))
 }
 
 function invalidReason(memory: MemoryRow, now: number) {
   const when = formatListTime(memory.invalidAt ?? 0, now)
-  if (memory.supersededBy) return `${when} 被新的记忆取代`
-  return memory.invalidatedBy === 'user' ? `${when} 按你的要求忘掉` : `${when} 助手判断已不成立`
+  if (memory.supersededBy) return t("profile-panel.replaced.by.a.newer.memory", { when: when })
+  return memory.invalidatedBy === 'user' ? t("profile-panel.forgotten.at.your.request", { when: when }) : t("profile-panel.considered.outdated.by.the.assistant", { when: when })
 }
 
 function invalidItem(memory: MemoryRow, handlers: Handlers, now: number) {
@@ -103,7 +105,7 @@ function invalidItem(memory: MemoryRow, handlers: Handlers, now: number) {
       h('span', { class: 'memory-text', text: memory.text }),
       h('span', { class: 'memory-meta mono', text: invalidReason(memory, now) })),
     h('button', {
-      class: 'btn btn-outline btn-small', type: 'button', text: '恢复', 'aria-label': `恢复记忆：${memory.text}`,
+      class: 'btn btn-outline btn-small', type: 'button', text: t("profile-panel.restore"), 'aria-label': t("profile-panel.restore.memory", { text: memory.text }),
       onClick: () => handlers.reviveMemory(memory),
     }))
 }
@@ -114,7 +116,7 @@ function invalidSection(memory: MemoryPage, handlers: Handlers, now: number) {
   return h('div', { class: 'memory-invalid' },
     h('button', {
       class: 'link-btn', type: 'button', 'aria-expanded': String(memory.invalidOpen),
-      text: memory.invalidOpen ? '收起已失效的记忆' : `已失效 · ${memory.invalid}`, onClick: handlers.toggleInvalid,
+      text: memory.invalidOpen ? t("profile-panel.hide.inactive.memories") : t("profile-panel.inactive", { invalid: memory.invalid }), onClick: handlers.toggleInvalid,
     }),
     memory.invalidOpen && memory.invalidItems.length
       ? h('ul', { class: 'memory-list' }, memory.invalidItems.map((item: MemoryRow) => invalidItem(item, handlers, now)))
@@ -124,25 +126,25 @@ function invalidSection(memory: MemoryPage, handlers: Handlers, now: number) {
 function memoriesSection(memory: MemoryPage, handlers: Handlers, now: number) {
   const addInput = h('input', {
     class: 'field', name: 'memory-new', 'data-version': String(memory.lastAdded ?? ''), maxlength: 500,
-    placeholder: '想让助手记住什么？例如：周报每周五下班前交', 'aria-label': '添加一条记忆',
+    placeholder: t("profile-panel.what.should.the.assistant.remember.for.example"), 'aria-label': t("profile-panel.add.a.memory"),
   })
   const search = h('input', {
-    class: 'field', name: 'memory-search', type: 'search', value: memory.query, placeholder: '搜索记忆…', 'aria-label': '搜索记忆',
+    class: 'field', name: 'memory-search', type: 'search', value: memory.query, placeholder: t("profile-panel.search.memories"), 'aria-label': t("profile-panel.search.memories.2"),
     onInput: () => handlers.searchMemories(search.value),
   })
   const searching = memory.query.trim() !== ''
   const empty = searching
-    ? `没有包含「${memory.query.trim()}」的记忆`
-    : '还没有记忆。聊天时提到的重要信息，助手会自己记下来；你也可以直接在上面添加。'
+    ? t("profile-panel.no.memories.contain", { value1: memory.query.trim() })
+    : t("profile-panel.no.memories.yet.the.assistant.remembers.important")
   return h('section', { class: 'profile-section' },
-    h('div', { class: 'row-between' }, h('h3', { class: 'profile-heading', text: `记忆 · ${memory.total}` }), search),
+    h('div', { class: 'row-between' }, h('h3', { class: 'profile-heading', text: t("profile-panel.memories", { total: memory.total }) }), search),
     h('form', {
       class: 'field-row',
       onSubmit: async (event: SubmitEvent) => {
         event.preventDefault()
         if (await handlers.addMemory(addInput.value)) addInput.value = ''
       },
-    }, addInput, h('button', { class: 'btn btn-outline btn-field', type: 'submit', disabled: memory.busy, text: '添加' })),
+    }, addInput, h('button', { class: 'btn btn-outline btn-field', type: 'submit', disabled: memory.busy, text: t("models.add") })),
     memory.items.length
       ? h('ul', { class: 'memory-list' }, memory.items.map((item: MemoryRow) => memoryItem(item, handlers, now)))
       : h('p', { class: 'empty', text: empty }),
@@ -151,11 +153,11 @@ function memoriesSection(memory: MemoryPage, handlers: Handlers, now: number) {
 
 function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[] {
   return [
-    h('h2', { class: 'settings-title', id: 'profile-title', text: '关于你' }),
-    h('p', { class: 'help', text: '助手对你的了解都在这里，每一条都可以改或删，只保存在这台电脑上。' }),
+    h('h2', { class: 'settings-title', id: 'profile-title', text: t("profile-panel.about.you") }),
+    h('p', { class: 'help', text: t("profile-panel.everything.the.assistant.knows.about.you.is") }),
     memory.error ? h('p', { class: 'form-error', role: 'alert', text: memory.error }) : null,
     h('section', { class: 'profile-section' },
-      h('h3', { class: 'profile-heading', text: '你填写的画像' }),
+      h('h3', { class: 'profile-heading', text: t("profile-panel.your.profile") }),
       h('div', { class: 'profile-grid' }, PROFILE_FIELDS.map((field) => fieldCard(field, memory, handlers))),
       habitsRow(memory.habits)),
     synthesisSection(memory, now),
@@ -189,19 +191,19 @@ function introView(memory: MemoryPage, handlers: Handlers): View[] {
   },
   ...INTRO_ITEMS.map((item) => introInput(item, current(item.key))),
   h('div', { class: 'intro-docs' },
-    h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: memory.busy, onClick: handlers.addDocs }, '添加常用文档'),
-    h('span', { class: 'help', text: '会复制一份到工作区的「我的资料」，原文件不动' })),
+    h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: memory.busy, onClick: handlers.addDocs }, t("profile-panel.add.reference.documents")),
+    h('span', { class: 'help', text: t("profile-panel.copies.them.into.the.workspace.reference.folder") })),
   docs,
   h('label', { class: 'intro-check' },
     h('input', { type: 'checkbox', name: 'intro-analyze', checked: true }),
-    h('span', { text: '保存后让助手阅读这些网站和文档，补全画像（会在对话里进行，你能看到每一步）' })),
+    h('span', { text: t("profile-panel.after.saving.ask.the.assistant.to.read") })),
   memory.error ? h('p', { class: 'form-error', role: 'alert', text: memory.error }) : null,
   h('div', { class: 'settings-actions' },
-    h('button', { class: 'btn btn-accent', type: 'submit', disabled: memory.busy, text: memory.busy ? '保存中…' : '保存' }),
-    h('button', { class: 'btn btn-outline btn-field', type: 'button', text: '以后再说', onClick: handlers.skipIntro })))
+    h('button', { class: 'btn btn-accent', type: 'submit', disabled: memory.busy, text: memory.busy ? t("extensions.saving") : t("extensions.save") }),
+    h('button', { class: 'btn btn-outline btn-field', type: 'button', text: t("home.maybe.later"), onClick: handlers.skipIntro })))
   return [
-    h('h2', { class: 'settings-title', id: 'profile-title', text: '让我认识你' }),
-    h('p', { class: 'help', text: '每一项都可以留空，以后在「关于你」里随时改。' }),
+    h('h2', { class: 'settings-title', id: 'profile-title', text: t("profile-panel.let.me.get.to.know.you") }),
+    h('p', { class: 'help', text: t("profile-panel.every.field.is.optional.edit.them.anytime") }),
     form,
   ]
 }
@@ -219,3 +221,14 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
   if (shownView !== 'intro' && memory.view === 'intro') container.querySelector<HTMLElement>('[name="intro-role"]')?.focus()
   container.querySelector<HTMLElement>('.profile-input')?.focus()
 }
+
+onLocaleChange(() => {
+  KIND_LABEL = { fact: t("profile-panel.fact"), preference: t("profile-panel.preference"), person: t("profile-panel.person"), project: t("profile-panel.project"), role: t("profile-panel.role") }
+  SOURCE_LABEL = { user: t("profile-panel.added.by.you"), agent: t("profile-panel.remembered.by.assistant") }
+  INTRO_ITEMS = [
+  { key: 'role', label: t("profile-panel.your.work"), hint: t("profile-panel.for.example.backend.lead.for.payments.responsible"), multiline: false },
+  { key: 'projects', label: t("profile-panel.current.projects"), hint: t("profile-panel.for.example.q.reconciliation.system.redesign"), multiline: false },
+  { key: 'preferences', label: t("profile-panel.preferences.and.habits"), hint: t("profile-panel.for.example.lead.with.the.conclusion.compare"), multiline: false },
+  { key: 'sources', label: t("profile-panel.websites.read.once.by.the.assistant"), hint: t("profile-panel.one.url.per.line.such.as.an"), multiline: true },
+]
+})

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -19,9 +20,9 @@ const SKIPPED_DIRS = new Set(['.system'])
  */
 export function skillRoots({ dshHome, cwd }: { dshHome: string, cwd: string }) {
   return [
-    { id: 'user', dir: path.join(dshHome, 'skills'), label: '本机 · Viva 的 skill 文件夹', managed: true },
-    { id: 'workspace', dir: path.join(cwd, '.dsh', 'skills'), label: '工作区 · .dsh/skills', managed: false },
-    { id: 'workspace-agents', dir: path.join(cwd, '.agents', 'skills'), label: '工作区 · .agents/skills', managed: false },
+    { id: 'user', dir: path.join(dshHome, 'skills'), label: t("main.skills.local.viva.skills.folder"), managed: true },
+    { id: 'workspace', dir: path.join(cwd, '.dsh', 'skills'), label: t("main.skills.workspace.dsh.skills"), managed: false },
+    { id: 'workspace-agents', dir: path.join(cwd, '.agents', 'skills'), label: t("main.skills.workspace.agents.skills"), managed: false },
   ]
 }
 
@@ -68,7 +69,7 @@ function readSkill(root: SkillRoot, entry: fs.Dirent) {
     return null
   }
   const meta = parseFrontmatter(text)
-  const problem = !meta ? '缺少 frontmatter' : !meta.name || !meta.description ? '缺少 name 或 description' : ''
+  const problem = !meta ? t("main.skills.missing.frontmatter") : !meta.name || !meta.description ? t("main.skills.missing.name.or.description") : ''
   return {
     id: `${root.id}:${entry.name}`,
     name: meta?.name || entry.name.replace(/\.md$/i, ''),
@@ -104,14 +105,14 @@ export function listSkills(roots: readonly SkillRoot[]) {
  */
 export function importSkill(source: string, targetDir: string): string {
   const isFolder = fs.statSync(source).isDirectory()
-  if (!isFolder && !source.toLowerCase().endsWith('.md')) throw new Error('请选择包含 SKILL.md 的文件夹，或一个 .md 文件')
+  if (!isFolder && !source.toLowerCase().endsWith('.md')) throw new Error(t("main.skills.choose.a.folder.containing.skill.md.or"))
   const skillFile = isFolder ? path.join(source, SKILL_FILE) : source
-  if (!fs.existsSync(skillFile)) throw new Error('这个文件夹里没有 SKILL.md')
+  if (!fs.existsSync(skillFile)) throw new Error(t("main.skills.this.folder.has.no.skill.md"))
   const meta = parseFrontmatter(fs.readFileSync(skillFile, 'utf8'))
-  if (!meta?.name || !meta.description) throw new Error('SKILL.md 开头需要有 name 和 description（YAML frontmatter）')
+  if (!meta?.name || !meta.description) throw new Error(t("main.skills.skill.md.must.start.with.name.and"))
   const target = path.join(targetDir, path.basename(source))
-  if (path.resolve(target) === path.resolve(source)) throw new Error('这个 skill 已经在 skill 目录里了')
-  if (fs.existsSync(target)) throw new Error(`skill 目录里已经有「${path.basename(source)}」了`)
+  if (path.resolve(target) === path.resolve(source)) throw new Error(t("main.skills.this.skill.is.already.in.the.skills"))
+  if (fs.existsSync(target)) throw new Error(t("main.skills.the.skills.folder.already.contains", { value1: path.basename(source) }))
   fs.mkdirSync(targetDir, { recursive: true })
   fs.cpSync(source, target, { recursive: true, errorOnExist: true, force: false })
   return meta.name
@@ -127,7 +128,7 @@ const frontmatterValue = (text: unknown) => String(text).replace(/\s+/g, ' ').re
  */
 export function createSkill({ name, description, instructions }: { name: string, description: string, instructions: string }, targetDir: string): string {
   const target = path.join(targetDir, name)
-  if (fs.existsSync(target)) throw new Error(`已经有名为「${name}」的 skill 了`)
+  if (fs.existsSync(target)) throw new Error(t("main.skills.a.skill.named.already.exists", { name: name }))
   fs.mkdirSync(target, { recursive: true })
   const text = `---\nname: "${frontmatterValue(name)}"\ndescription: "${frontmatterValue(description)}"\n---\n\n${String(instructions).trim()}\n`
   fs.writeFileSync(path.join(target, SKILL_FILE), text)
@@ -140,8 +141,8 @@ export function createSkill({ name, description, instructions }: { name: string,
  */
 export async function removeSkill(id: string, roots: readonly SkillRoot[], trash: (file: string) => Promise<void>) {
   const skill = listSkills(roots).find((item) => item.id === id)
-  if (!skill) throw new Error('找不到这个 skill，可能已被删除')
-  if (!skill.managed) throw new Error('这个 skill 不在本应用管理的目录里，请到它所在的文件夹删除')
+  if (!skill) throw new Error(t("main.skills.skill.not.found.it.may.have.been"))
+  if (!skill.managed) throw new Error(t("main.skills.this.skill.is.outside.the.app.managed"))
   await trash(skill.path)
   return skill.name
 }

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import { nativeFileApplications, openNativeFileApplication } from '@deepseek-ai/dsh-native-command'
 import type { Shell } from 'electron'
@@ -62,7 +63,7 @@ export function registerFilesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { root, s
   /** Opens with the given app (one of files:apps), or with the system default. */
   ipcMain.handle('files:open', async (_event, rel, app: unknown = null) => {
     const file = resolveInside(root(), checkPath(rel))
-    if (!canOpen(file)) throw new Error('这是程序或脚本，只能在文件夹中显示')
+    if (!canOpen(file)) throw new Error(t("main.files-ipc.this.is.a.program.or.script.it"))
     if (app !== null) {
       if (typeof app !== 'string' || !app || app.length > MAX_APP_ID_CHARS) throw new Error('invalid app')
       return native.openWith(file, app)
@@ -74,7 +75,7 @@ export function registerFilesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { root, s
   /** A picture a Markdown file in the workspace shows. */
   ipcMain.handle('files:image', (_event, rel) => {
     const preview = previewFile(root(), checkPath(rel))
-    if (preview.kind !== 'image') throw new Error('这不是图片，或者太大了')
+    if (preview.kind !== 'image') throw new Error(t("main.files-ipc.this.is.not.an.image.or.it"))
     return preview.dataUrl
   })
 

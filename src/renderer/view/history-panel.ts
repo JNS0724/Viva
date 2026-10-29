@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h, label } from './dom.ts'
 
@@ -11,7 +13,7 @@ function snippetView(snippet: Snippet | null | undefined) {
   return h('span', { class: 'history-snippet' }, snippet.before, h('mark', { text: snippet.hit }), snippet.after)
 }
 
-const SPEAKERS: Readonly<Record<string, string>> = { user: '你', assistant: 'Viva' }
+let SPEAKERS: Readonly<Record<string, string>> = { user: t("history-panel.you"), assistant: 'Viva' }
 
 /** The message said right before or after the hit, dimmed, so the hit reads in its place. */
 const contextLine = (message: Nearby) => (message
@@ -23,14 +25,14 @@ const contextLine = (message: Nearby) => (message
  * 详情 closes the page and scrolls the timeline to it (timeline-search.js).
  */
 function hitView(hit: SearchHit, handlers: Handlers, now: number) {
-  const who = SPEAKERS[hit.role] ?? '记录'
+  const who = SPEAKERS[hit.role] ?? t("history-panel.record")
   const where = [formatListTime(hit.at, now), hit.cwd ? workspaceName(hit.cwd) : null].filter(Boolean).join(' · ')
   return h('li', { class: 'search-hit' },
     h('div', { class: 'hit-body' },
       h('span', { class: 'history-meta mono' }, h('b', { class: 'history-title', text: who }), where),
       h('div', { class: 'hit-lines' }, contextLine(hit.before), snippetView(hit.snippet), contextLine(hit.after))),
     h('button', {
-      class: 'btn btn-outline btn-small hit-open', type: 'button', text: '详情 →', 'aria-label': `在对话里看${who}说的这句`,
+      class: 'btn btn-outline btn-small hit-open', type: 'button', text: t("history-panel.details"), 'aria-label': t("history-panel.view.this.message.from.in.the.conversation", { who: who }),
       onClick: () => handlers.jumpToHit(hit),
     }))
 }
@@ -39,11 +41,11 @@ const empty = (text: string) => h('div', { class: 'empty', text })
 
 function searchView(state: State, handlers: Handlers, now: number): View[] {
   const { query, results } = state.history
-  if (!query.trim()) return [h('div', { class: 'history-hint', text: '输入几个字，找回之前说过的话' })]
-  if (results === null) return [h('div', { class: 'history-hint', text: '搜索中…' })]
-  if (results.length === 0) return [empty(`没有找到「${query.trim()}」`)]
+  if (!query.trim()) return [h('div', { class: 'history-hint', text: t("history-panel.type.a.few.words.to.find.earlier") })]
+  if (results === null) return [h('div', { class: 'history-hint', text: t("history-panel.searching") })]
+  if (results.length === 0) return [empty(t("history-panel.no.results.for", { value1: query.trim() }))]
   return [
-    label(`${results.length} 条消息`),
+    label(t("history-panel.messages", { length: results.length })),
     h('ul', { class: 'history-items' }, results.map((hit: SearchHit) => hitView(hit, handlers, now))),
   ]
 }
@@ -65,3 +67,7 @@ export function renderToast(container: HTMLElement, toast: { text: string, actio
     h('span', { text: toast.text }),
     toast.action ? h('button', { class: 'toast-action', type: 'button', text: toast.action.label, onClick: () => handlers.toastAction(toast) }) : null))
 }
+
+onLocaleChange(() => {
+  SPEAKERS = { user: t("history-panel.you"), assistant: 'Viva' }
+})

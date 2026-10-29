@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -63,13 +64,13 @@ export function workDirProblem(dir: unknown, { platform = process.platform, home
   platform?: string, home?: string, env?: Record<string, string | undefined>, isDirectory?: (dir: string) => boolean,
 } = {}): string | null {
   const p = pathFor(platform)
-  if (platform === 'win32' && /^(\\\\|\/\/)/.test(typeof dir === 'string' ? dir : '')) return '不支持网络路径（\\\\服务器\\共享），可以先映射成本地盘符，或者复制到本机'
-  if (typeof dir !== 'string' || !dir || !p.isAbsolute(dir)) return '需要选一个文件夹的完整路径'
+  if (platform === 'win32' && /^(\\\\|\/\/)/.test(typeof dir === 'string' ? dir : '')) return t("main.work-dir.network.paths.server.share.are.not.supported")
+  if (typeof dir !== 'string' || !dir || !p.isAbsolute(dir)) return t("main.work-dir.choose.a.full.folder.path")
   // A file dragged onto the window lands here too.
-  if (!isDirectory(dir)) return '这不是一个文件夹，或者它已经不在了'
-  if (keyOf(dir, platform) === keyOf(p.parse(p.normalize(dir)).root, platform)) return '不能把整个磁盘作为工作目录，请选其中的某个文件夹'
-  if (sameDir(dir, home, platform)) return '不能直接用用户主目录，请选它里面的某个文件夹'
-  if (systemDirs(platform, env).some((system) => within(dir, system, platform))) return '这是系统的文件夹，不能作为工作目录'
+  if (!isDirectory(dir)) return t("main.work-dir.this.is.not.a.folder.or.it")
+  if (keyOf(dir, platform) === keyOf(p.parse(p.normalize(dir)).root, platform)) return t("main.work-dir.an.entire.drive.cannot.be.a.working")
+  if (sameDir(dir, home, platform)) return t("main.work-dir.the.user.home.directory.cannot.be.used")
+  if (systemDirs(platform, env).some((system) => within(dir, system, platform))) return t("main.work-dir.system.folders.cannot.be.used.as.the")
   return null
 }
 

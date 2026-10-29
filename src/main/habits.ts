@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /**
  * Work habits read from the user's own history, without the model: for now, the hours they usually
  * ask for help. Pure, so it can be tested with fixed timestamps.
@@ -34,6 +35,6 @@ export function activeHours(timestamps: readonly number[]): { samples: number, r
   for (const ts of timestamps) counts[new Date(ts).getHours()] += 1
   const busiest = Math.max(...counts)
   const ranges = hourRanges(counts.map((n) => n >= Math.max(MIN_HOUR_COUNT, busiest * ACTIVE_SHARE)))
-  const text = `常在 ${ranges.map(([from, to]) => `${from}–${to} 点`).join('、')}使用`
+  const text = t("main.habits.often.active.at", { value1: ranges.map(([from, to]) => t("main.habits.label", { from: from, to: to })).join('、') })
   return { samples, ranges, text }
 }

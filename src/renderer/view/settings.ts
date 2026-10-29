@@ -1,3 +1,6 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
+import { languageControl } from '../language.ts'
 import { formatSize } from '../selectors.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { extensionsSection } from './extensions.ts'
@@ -11,35 +14,35 @@ import { prepareSection } from './prepare-settings.ts'
  */
 type Settings = State['settings'] & { deskIsland?: boolean, shortcut?: { held: boolean } | null, openAtLogin?: { on: boolean, available: boolean } }
 
-const SOURCE_COPY: Readonly<Record<string, string>> = { saved: '已保存在本机', env: '来自环境变量 DEEPSEEK_API_KEY' }
+let SOURCE_COPY: Readonly<Record<string, string>> = { saved: t("settings.saved.on.this.computer"), env: t("settings.from.deepseek.api.key.environment.variable") }
 
 function keyStatus(settings: Settings) {
   return h('div', { class: 'key-status', 'data-has-key': String(settings.hasKey) },
     h('div', { class: 'key-status-copy' },
       label('DeepSeek key'),
-      h('span', { class: 'key-status-text', text: settings.hasKey ? SOURCE_COPY[settings.source] : '还没有填写 key' })),
+      h('span', { class: 'key-status-text', text: settings.hasKey ? SOURCE_COPY[settings.source] : t("settings.no.key.entered.yet") })),
     h('span', { class: 'key-hint', text: settings.hasKey ? settings.keyHint : '----' }))
 }
 
 function keyForm(settings: Settings, handlers: Handlers) {
   const input = h('input', {
-    id: 'settings-key',
+    id: 'settings-key', name: 'api-key',
     class: 'field',
     type: 'password',
     autocomplete: 'off',
     spellcheck: 'false',
-    placeholder: settings.hasKey ? '输入新的 key 以替换' : 'sk-…',
+    placeholder: settings.hasKey ? t("settings.enter.a.new.key.to.replace") : 'sk-…',
     'aria-describedby': 'settings-help',
     disabled: settings.busy || !settings.encryptionAvailable,
   })
   const toggle = h('button', {
     type: 'button',
     class: 'btn btn-outline btn-field',
-    text: '显示',
+    text: t("settings.show"),
     onClick: () => {
       const reveal = input.type === 'password'
       input.type = reveal ? 'text' : 'password'
-      toggle.textContent = reveal ? '隐藏' : '显示'
+      toggle.textContent = reveal ? t("settings.hide") : t("settings.show")
     },
   })
   const form = h('form', {
@@ -49,23 +52,23 @@ function keyForm(settings: Settings, handlers: Handlers) {
       handlers.saveKey(input.value)
     },
   },
-  h('label', { class: 'label', for: 'settings-key', text: settings.hasKey ? '换一个 key' : 'DeepSeek API key' }),
+  h('label', { class: 'label', for: 'settings-key', text: settings.hasKey ? t("settings.replace.key") : 'DeepSeek API key' }),
   h('div', { class: 'field-row' }, input, toggle),
   h('div', { class: 'settings-actions' },
     h('button', {
       type: 'submit',
       class: 'btn btn-accent',
       disabled: settings.busy || !settings.encryptionAvailable,
-      text: settings.busy ? '连接中…' : '保存并连接',
+      text: settings.busy ? t("selectors.connecting") : t("settings.save.and.connect"),
     }),
     settings.source === 'saved'
-      ? h('button', { type: 'button', class: 'btn btn-outline btn-field', disabled: settings.busy, text: '清除已保存的 key', onClick: handlers.clearKey })
+      ? h('button', { type: 'button', class: 'btn btn-outline btn-field', disabled: settings.busy, text: t("settings.clear.saved.key"), onClick: handlers.clearKey })
       : null))
   return { form, input }
 }
 
 function feedback(settings: Settings) {
-  if (!settings.encryptionAvailable) return h('p', { class: 'form-error', role: 'alert', text: '系统钥匙串不可用，暂时无法安全保存 key。可以改用环境变量 DEEPSEEK_API_KEY 启动。' })
+  if (!settings.encryptionAvailable) return h('p', { class: 'form-error', role: 'alert', text: t("settings.the.system.keychain.is.unavailable.so.the") })
   if (settings.error) return h('p', { class: 'form-error', role: 'alert', text: settings.error })
   if (settings.notice) return h('p', { class: 'form-notice', role: 'status', text: settings.notice })
   return null
@@ -78,23 +81,23 @@ const shortcutKeys = () => (document.documentElement.dataset.platform === 'darwi
 function shortcutLine(settings: Settings) {
   if (!settings.shortcut) return null
   return settings.shortcut.held
-    ? h('span', { class: 'help', text: `在任何程序里按 ${shortcutKeys()}，在岛上问 Viva。` })
-    : h('span', { class: 'help form-error', text: `快捷键 ${shortcutKeys()} 被别的程序占用了，暂时不能在岛上提问。` })
+    ? h('span', { class: 'help', text: t("settings.press.in.any.app.to.ask.viva", { value1: shortcutKeys() }) })
+    : h('span', { class: 'help form-error', text: t("settings.the.shortcut.is.used.by.another.app", { value1: shortcutKeys() }) })
 }
 
 /** The desktop island can be turned off (it is on by default) and put back at the top centre. */
 function deskSection(settings: Settings, handlers: Handlers) {
-  return h('section', { class: 'ext', 'aria-label': '桌面岛' },
+  return h('section', { class: 'ext', 'aria-label': t("settings.desktop.island") },
     h('label', { class: 'pref-row' },
       h('span', { class: 'pref-copy' },
-        h('span', { class: 'profile-heading', text: '桌面岛' }),
-        h('span', { class: 'help', text: '关闭窗口后 Viva 留在托盘里，桌面岛显示助手在做什么，需要你确认时可以直接在上面处理。可以拖到屏幕任意位置。' }),
+        h('span', { class: 'profile-heading', text: t("settings.desktop.island") }),
+        h('span', { class: 'help', text: t("settings.after.closing.the.window.viva.stays.in") }),
         shortcutLine(settings)),
       h('input', {
-        type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': '桌面岛',
+        type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': t("settings.desktop.island"),
         onChange: (event: Event) => handlers.setDeskIsland((event.target as HTMLInputElement).checked),
       })),
-    h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: '放回顶部正中', onClick: () => handlers.resetDeskPlace() }),
+    h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: t("settings.move.to.top.center"), onClick: () => handlers.resetDeskPlace() }),
     openAtLoginRow(settings, handlers))
 }
 
@@ -104,18 +107,18 @@ function openAtLoginRow(settings: Settings, handlers: Handlers) {
   if (!login) return null
   return h('label', { class: 'pref-row' },
     h('span', { class: 'pref-copy' },
-      h('span', { class: 'profile-heading', text: '开机启动' }),
+      h('span', { class: 'profile-heading', text: t("settings.start.at.login") }),
       h('span', { class: 'help', text: login.available
-        ? '开机后 Viva 留在托盘里，不打开窗口；这样电脑开着时，跟进的提醒都能送到。'
-        : '安装好的 Viva 才能开机启动。' })),
+        ? t("settings.viva.starts.in.the.tray.without.opening")
+        : t("settings.start.at.login.is.available.in.the") })),
     h('input', {
-      type: 'checkbox', class: 'switch', name: 'open-at-login', checked: login.on, disabled: !login.available, 'aria-label': '开机启动',
+      type: 'checkbox', class: 'switch', name: 'open-at-login', checked: login.on, disabled: !login.available, 'aria-label': t("settings.start.at.login"),
       'data-version': String(login.on),
       onChange: (event: Event) => handlers.setOpenAtLogin((event.target as HTMLInputElement).checked),
     }))
 }
 
-const CLEAR_WARNING = '清空后，以前对话里的图片会显示成「图已清理」，回到那些话题时助手也看不到那些图了。'
+let CLEAR_WARNING = t("settings.after.clearing.images.in.older.conversations.show")
 
 /** 贴过的图片: where they are and how much they take; open the folder, move it, or empty it (after a yes). */
 function imagesSection(settings: Settings, handlers: Handlers) {
@@ -126,16 +129,16 @@ function imagesSection(settings: Settings, handlers: Handlers) {
     ? h('div', { class: 'images-confirm', role: 'alert' },
       h('span', { class: 'help', text: CLEAR_WARNING }),
       h('div', { class: 'settings-actions' },
-        h('button', { type: 'button', class: 'btn btn-outline images-clear', text: '清空', onClick: () => handlers.clearImages() }),
-        h('button', { type: 'button', class: 'btn btn-outline', text: '取消', onClick: () => handlers.cancelClearImages() })))
+        h('button', { type: 'button', class: 'btn btn-outline images-clear', text: t("settings.clear"), onClick: () => handlers.clearImages() }),
+        h('button', { type: 'button', class: 'btn btn-outline', text: t("extensions.cancel"), onClick: () => handlers.cancelClearImages() })))
     : h('div', { class: 'settings-actions' },
-      h('button', { type: 'button', class: 'btn btn-outline', text: '打开文件夹', disabled: busy, onClick: () => handlers.openImagesFolder() }),
-      h('button', { type: 'button', class: 'btn btn-outline', text: busy ? '处理中…' : '改位置…', disabled: busy, onClick: () => handlers.moveImages() }),
-      h('button', { type: 'button', class: 'btn btn-outline', text: '清空', disabled: busy || usage.bytes === 0, onClick: () => handlers.askClearImages() }))
-  return h('section', { class: 'ext', 'aria-label': '贴过的图片' },
+      h('button', { type: 'button', class: 'btn btn-outline', text: t("settings.open.folder"), disabled: busy, onClick: () => handlers.openImagesFolder() }),
+      h('button', { type: 'button', class: 'btn btn-outline', text: busy ? t("extensions.working") : t("settings.change.location"), disabled: busy, onClick: () => handlers.moveImages() }),
+      h('button', { type: 'button', class: 'btn btn-outline', text: t("settings.clear"), disabled: busy || usage.bytes === 0, onClick: () => handlers.askClearImages() }))
+  return h('section', { class: 'ext', 'aria-label': t("settings.pasted.images") },
     h('span', { class: 'pref-copy' },
-      h('span', { class: 'profile-heading', text: '贴过的图片' }),
-      h('span', { class: 'help', text: `${usage.count} 张 · 占用 ${formatSize(usage.bytes)}` }),
+      h('span', { class: 'profile-heading', text: t("settings.pasted.images") }),
+      h('span', { class: 'help', text: t("settings.images", { count: usage.count, value2: formatSize(usage.bytes) }) }),
       h('span', { class: 'help mono images-dir', title: usage.dir, text: usage.dir })),
     actions)
 }
@@ -154,14 +157,15 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
   const { form, input } = keyForm(settings, handlers)
   keepingInput(container, () => container.replaceChildren(
     h('section', { class: 'settings', 'aria-labelledby': 'settings-title' },
-      h('h2', { class: 'settings-title', id: 'settings-title', text: '设置' }),
+      h('h2', { class: 'settings-title', id: 'settings-title', text: t("settings.settings") }),
+      languageControl(),
       keyStatus(settings),
       form,
       feedback(settings),
       h('p', {
         class: 'help',
         id: 'settings-help',
-        text: '加密保存在本机，只显示末 4 位。换 key 会重新连接，当前对话清空；用其他模型时可以不填。',
+        text: t("settings.encrypted.on.this.computer.only.the.last"),
       }),
       modelsSection(models, handlers),
       deskSection(settings, handlers),
@@ -171,3 +175,8 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       extensionsSection(extensions, handlers, { connected }))))
   if (isFirstShow && !input.disabled) input.focus()
 }
+
+onLocaleChange(() => {
+  SOURCE_COPY = { saved: t("settings.saved.on.this.computer"), env: t("settings.from.deepseek.api.key.environment.variable") }
+  CLEAR_WARNING = t("settings.after.clearing.images.in.older.conversations.show")
+})

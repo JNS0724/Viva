@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 /**
  * Going back to something the user said and on from there with other words (phase 2, 「从这里重来」 and
  * 「改了重发」). The agent forks to before that turn (the viva-fork plugin finds it by the words); the timeline
@@ -11,12 +13,12 @@ import { sideEffectsOf } from './side-effects.ts'
 
 const MAX_TEXT_CHARS = 20_000
 
-export const REWIND_PROBLEMS: Readonly<Record<string, string>> & { busy: string, unsaved: string } = Object.freeze({
-  busy: '先停止当前任务，再回到前面重来',
-  unsaved: '这句话还没有保存好，稍后再试',
-  invalid: '在助手的记录里找不到这句话，没法从这里重来',
-  missing: '当前对话已经结束，请稍后再试',
-  unavailable: '这个版本的助手不支持回到前面，请更新 Viva',
+export let REWIND_PROBLEMS: Readonly<Record<string, string>> & { busy: string, unsaved: string } = Object.freeze({
+  busy: t("main.rewind-ipc.stop.the.current.task.before.restarting.from"),
+  unsaved: t("main.rewind-ipc.this.message.has.not.been.saved.yet"),
+  invalid: t("main.rewind-ipc.this.message.is.not.in.the.assistant"),
+  missing: t("main.main.this.conversation.has.ended.try.again.later"),
+  unavailable: t("main.rewind-ipc.this.assistant.version.cannot.rewind.update.viva"),
 })
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
@@ -44,7 +46,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, cu
     const stored = db.get(previous.id)
     if (stored?.messages[keep]?.text !== words) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
     const forked = await forkAgent({ words, occurrence })
-    if (!forked.ok) return { ok: false, problem: REWIND_PROBLEMS[forked.reason] ?? `没能回到那里（${forked.reason}）` }
+    if (!forked.ok) return { ok: false, problem: REWIND_PROBLEMS[forked.reason] ?? t("main.rewind-ipc.could.not.return.there", { reason: forked.reason }) }
     const kept = stored.messages.slice(0, keep)
     const { mode, model } = { ...agentInfo(), ...forked.info }
     const next = db.save(
@@ -111,3 +113,13 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, cu
   ipcMain.handle('timeline:folded', (_event, id) => folded(id))
   ipcMain.handle('timeline:switch-path', (_event, id) => switchPath(id))
 }
+
+onLocaleChange(() => {
+  REWIND_PROBLEMS = Object.freeze({
+  busy: t("main.rewind-ipc.stop.the.current.task.before.restarting.from"),
+  unsaved: t("main.rewind-ipc.this.message.has.not.been.saved.yet"),
+  invalid: t("main.rewind-ipc.this.message.is.not.in.the.assistant"),
+  missing: t("main.main.this.conversation.has.ended.try.again.later"),
+  unavailable: t("main.rewind-ipc.this.assistant.version.cannot.rewind.update.viva"),
+})
+})

@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,8 +15,8 @@ import { removeTree } from './remove-tree.ts'
 export const IMAGE_FOLDERS: readonly string[] = Object.freeze(['pasted', 'attachments', 'cache'])
 /** The folder made inside the one the user picks to move the pictures to. */
 export const MOVED_FOLDER_NAME = 'Viva 图片'
-const TOO_BIG = `图片太大了（上限 ${IMAGE_LIMITS.bytes / 1024 / 1024} MB）`
-const NOT_IMAGE = '只能发 PNG、JPG、GIF、WebP 图片'
+let TOO_BIG = t("main.image-ipc.image.is.too.large.maximum.mb", { value1: IMAGE_LIMITS.bytes / 1024 / 1024 })
+let NOT_IMAGE = t("main.image-store.only.png.jpg.gif.and.webp.images")
 
 function sizeOf(dir: string): { bytes: number, files: number } {
   let entries: fs.Dirent[]
@@ -85,8 +87,8 @@ export function createImageStore({ dir }: { dir: () => string }) {
     const from = path.resolve(dir())
     const to = path.resolve(parent, MOVED_FOLDER_NAME)
     if (to === from) return to
-    if (to.startsWith(`${from}${path.sep}`)) throw new Error('不能放进现在的图片文件夹里面')
-    if (IMAGE_FOLDERS.some((name) => fs.existsSync(path.join(to, name)))) throw new Error(`「${to}」里已经有 Viva 的图片了，换一个位置`)
+    if (to.startsWith(`${from}${path.sep}`)) throw new Error(t("main.image-store.cannot.move.into.the.current.image.folder"))
+    if (IMAGE_FOLDERS.some((name) => fs.existsSync(path.join(to, name)))) throw new Error(t("main.image-store.already.contains.viva.images.choose.another.location", { to: to }))
     fs.mkdirSync(to, { recursive: true })
     for (const name of IMAGE_FOLDERS) {
       const source = path.join(from, name)
@@ -98,3 +100,8 @@ export function createImageStore({ dir }: { dir: () => string }) {
 
   return { keep, pathOf, usage, clear, moveTo }
 }
+
+onLocaleChange(() => {
+  TOO_BIG = t("main.image-ipc.image.is.too.large.maximum.mb", { value1: IMAGE_LIMITS.bytes / 1024 / 1024 })
+  NOT_IMAGE = t("main.image-store.only.png.jpg.gif.and.webp.images")
+})

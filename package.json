@@ -3,7 +3,7 @@
   "productName": "Viva",
   "version": "0.4.0-beta.5",
   "private": true,
-  "description": "Viva：个人桌面助手，Electron 外壳 + DeepSeek Harness（ACP）",
+  "description": "Viva: a personal desktop assistant powered by Electron and DeepSeek Harness (ACP)",
   "license": "MIT",
   "author": "JNS0724",
   "repository": {
@@ -33,7 +33,9 @@
     "predist:mac": "npm run build",
     "dist:mac": "electron-builder --mac dmg --publish never",
     "predist:win": "npm run build",
-    "dist:win": "electron-builder --win nsis --publish never"
+    "dist:win": "electron-builder --win nsis --publish never",
+    "smoke:language": "npm run build && cross-env SMOKE_PHASE=language DEEPSEEK_API_KEY= electron .",
+    "check:i18n": "node scripts/check-i18n.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",
@@ -83,7 +85,11 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "${productName}-${version}-win-${arch}-setup.${ext}"
+      "artifactName": "${productName}-${version}-win-${arch}-setup.${ext}",
+      "installerLanguages": [
+        "en_US",
+        "zh_CN"
+      ]
     },
     "dmg": {
       "title": "${productName} ${version}"

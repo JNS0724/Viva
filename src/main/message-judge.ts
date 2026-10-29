@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { z } from 'zod'
 import type { FollowupStore } from './followup-store.ts'
 import type { PrepareCall, Prepared as PreparedText } from './followup-channel.ts'
@@ -87,9 +88,9 @@ export function parseVerdicts(text: string, messages: readonly StoredMessage[], 
     const remind = item.remind_at ? Date.parse(item.remind_at) : NaN
     return [{
       id: item.id,
-      why: clip(item.why?.trim() || '可能要你处理', MAX_WHY_CHARS),
-      title: clip(item.title?.trim() || message.title || '一条消息', MAX_TITLE_CHARS),
-      ask: clip(item.ask?.trim() || `处理「${message.title ?? '这条消息'}」`, MAX_ASK_CHARS),
+      why: clip(item.why?.trim() || t('judge.why'), MAX_WHY_CHARS),
+      title: clip(item.title?.trim() || message.title || t('judge.title'), MAX_TITLE_CHARS),
+      ask: clip(item.ask?.trim() || t('judge.handle', { title: message.title ?? t('judge.message') }), MAX_ASK_CHARS),
       remindAt: Number.isFinite(remind) && remind > now ? remind : null,
     }]
   })

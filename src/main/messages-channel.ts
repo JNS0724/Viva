@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import type { ReadRequest } from './message-reader.ts'
 
 /**
@@ -39,10 +40,10 @@ export function createMessagesDesk({ send, read }: {
     const id = typeof message.id === 'string' && message.id.length <= MAX_ID_CHARS ? message.id : null
     if (!id) return
     const answer = (ok: boolean, text: string) => send({ type: 'messages_result', id, ok, text })
-    if (!read) return answer(false, '这个版本的应用没有消息源')
+    if (!read) return answer(false, t('messages.unavailable'))
     read(readRequestOf(message.request))
       .then((text) => answer(true, text))
-      .catch((err) => answer(false, `读消息时出错：${err instanceof Error ? err.message : String(err)}`))
+      .catch((err) => answer(false, t('messages.readError', { error: err instanceof Error ? err.message : String(err) })))
   }
   return { receive }
 }

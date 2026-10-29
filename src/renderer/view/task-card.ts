@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { optionName } from '../approval.ts'
 import { permissionCard, promptButtons } from '../prompt-card.ts'
 import { formatListTime } from '../selectors.ts'
@@ -9,18 +11,18 @@ import { h } from './dom.ts'
  * 接着问 / ×). One quiet look for every state: the words say where it stands, and the only colour is the
  * button that answers it. 详情 → is the 后台 page, on this task (view/tasks-page.js).
  */
-const SAID: Readonly<Record<string, string>> = { running: '后台在做', done: '做完了', stopped: '停下了', error: '出错了', interrupted: '已中断' }
+let SAID: Readonly<Record<string, string>> = { running: t("task-card.running.in.background"), done: t("island-view.done"), stopped: t("island-view.stopped.2"), error: t("island-view.something.went.wrong"), interrupted: t("task-card.interrupted") }
 const LIVE = new Set(['running', 'waiting'])
 const MINUTE_MS = 60_000
 
 const minutesSince = (at: number | undefined, now: number) => {
   const minutes = Math.floor((now - (at ?? now)) / MINUTE_MS)
-  return minutes < 1 ? '刚开始' : `${minutes} 分钟`
+  return minutes < 1 ? t("island-tasks.just.started") : t("island-tasks.minutes", { minutes: minutes })
 }
 
 /** Where a task stands, in a few words: its line on the 后台 page, the head of its page, its card. */
 export function standing(task: BackgroundTask, now: number): string {
-  if (task.status === 'waiting') return task.question ? '等你回答' : '等你确认'
+  if (task.status === 'waiting') return task.question ? t("task-card.waiting.for.your.answer") : t("task-card.waiting.for.approval")
   if (task.status === 'running') return [task.now, minutesSince(task.startedAt, now)].filter(Boolean).join(' · ')
   return `${SAID[task.status] ?? SAID.done} · ${formatListTime(task.endedAt ?? now, now)}`
 }
@@ -37,7 +39,7 @@ type CardParts = { said: string, line: string, actions: HTMLButtonElement[] }
 function waitingParts(task: BackgroundTask, handlers: Handlers): CardParts {
   if (task.permission) {
     return {
-      said: '等你确认',
+      said: t("task-card.waiting.for.approval"),
       line: permissionCard(task.permission).title,
       actions: promptButtons(task.permission.options).map((option) => button(optionName(option),
         () => handlers.respond(task.permission.requestId, option.optionId), option.role === 'primary' ? 'primary' : 'secondary')),
@@ -46,25 +48,25 @@ function waitingParts(task: BackgroundTask, handlers: Handlers): CardParts {
   const [first]: QuestionItem[] = task.question?.questions ?? []
   const single = task.question?.questions.length === 1 && !first.multiSelect
   return {
-    said: '等你回答',
+    said: t("task-card.waiting.for.your.answer"),
     line: first?.question ?? '',
     actions: single ? first.options.map((option) => button(option.label, () => handlers.pickTaskOption(task.id, first.id, option.label))) : [],
   }
 }
 
 function partsOf(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): CardParts {
-  if (task.status === 'interrupted') return { said: '已中断', line: '助手断开，任务尚未恢复', actions: [button('接着做', () => handlers.resumeUnfinished(task.id))] }
+  if (task.status === 'interrupted') return { said: t("task-card.interrupted"), line: t("task-card.assistant.disconnected.task.has.not.resumed"), actions: [button(t("followups.continue"), () => handlers.resumeUnfinished(task.id))] }
   if (task.status === 'waiting') return waitingParts(task, handlers)
   if (task.status === 'running') {
-    const line = [task.now, `已 ${minutesSince(task.startedAt, now)}`].filter(Boolean).join(' · ')
-    return { said: SAID.running, line, actions: [button('停下', () => handlers.stopTask(task.id))] }
+    const line = [task.now, t("task-card.elapsed", { value1: minutesSince(task.startedAt, now) })].filter(Boolean).join(' · ')
+    return { said: SAID.running, line, actions: [button(t("island-tasks.stop"), () => handlers.stopTask(task.id))] }
   }
-  return { said: SAID[task.status] ?? SAID.done, line: report?.preview ?? '', actions: [button('接着问', () => handlers.followUpTask(task.id))] }
+  return { said: SAID[task.status] ?? SAID.done, line: report?.preview ?? '', actions: [button(t("task-card.ask.more"), () => handlers.followUpTask(task.id))] }
 }
 
 /** @param report what it came back with, once it ended */
 export function taskCard(task: BackgroundTask, report: TaskReport | null, handlers: Handlers, now: number): HTMLElement {
-  const open = button('详情 →', () => handlers.openTasks(task.id))
+  const open = button(t("history-panel.details"), () => handlers.openTasks(task.id))
   const parts = partsOf(task, report, handlers, now)
   const ended = !LIVE.has(task.status)
   return h('div', { class: 'task-report task-card', role: 'status', 'data-status': task.status, 'data-task': task.id },
@@ -72,7 +74,7 @@ export function taskCard(task: BackgroundTask, report: TaskReport | null, handle
       h('b', { class: 'task-report-head' }, statusMark(task.status), h('span', { class: 'task-name', text: `#${task.title}` }), h('span', { class: 'task-state', text: parts.said })),
       parts.line ? h('span', { class: 'task-report-text', text: parts.line }) : null),
     ...(ended ? [open, ...parts.actions] : [...parts.actions, open]),
-    ended ? h('button', { class: 'icon-btn task-report-x', type: 'button', 'aria-label': '收起', text: '×', onClick: () => handlers.dismissReport(task.id) }) : null)
+    ended ? h('button', { class: 'icon-btn task-report-x', type: 'button', 'aria-label': t("rewind.collapse"), text: '×', onClick: () => handlers.dismissReport(task.id) }) : null)
 }
 
 /**
@@ -88,3 +90,7 @@ export function cardedTasks(state: State): Array<{ task: BackgroundTask, report:
     return report ? [{ task, report }] : []
   })
 }
+
+onLocaleChange(() => {
+  SAID = { running: t("task-card.running.in.background"), done: t("island-view.done"), stopped: t("island-view.stopped.2"), error: t("island-view.something.went.wrong"), interrupted: t("task-card.interrupted") }
+})

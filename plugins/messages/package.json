@@ -2,7 +2,7 @@
   "name": "viva-messages",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的消息查看：对话里只读地查看消息源（邮箱、告警、通讯工具）收进来的消息，先拉取最新的",
+  "description": "Viva message reader: refresh and read connected mail, alert, and messaging sources",
   "type": "module",
   "main": "index.js",
   "exports": {
