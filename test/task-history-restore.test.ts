@@ -10,6 +10,30 @@ import { checkedIpc, type RawIpc } from '../src/main/ipc-contract.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { cardedTasks, restoredTaskAnchors } from '../src/renderer/view/task-card.ts'
 import { dockTasks } from '../src/renderer/tasks-state.ts'
+import { setLocale } from '../src/shared/i18n/locale.ts'
+
+test('resuming an unfinished task sends the same model instruction in either UI language', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-resume-locale-'))
+  const db = openHistoryDb({ file: path.join(dir, 'history.db') })
+  t.after(() => { setLocale('zh-CN'); db.close(); fs.rmSync(dir, { recursive: true, force: true }) })
+  const main = db.create({ sessionId: 'main' })
+  const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
+  const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
+  const prompts: string[] = []
+  const unexpected = () => { throw new Error('unexpected task operation') }
+  registerTaskIpc(ipc, { db, current: () => main, setCurrent: unexpected, isBusy: () => false,
+    setBusy: unexpected, agentInfo: () => ({}),
+    store: { list: () => [{ id: 'task', segmentId: 'segment', title: 'User title', keep: 0 }], add: unexpected, remove: unexpected },
+    agent: { spinOff: unexpected, mergeBack: unexpected, closeTask: unexpected, cancelTask: unexpected,
+      steerTask: unexpected, startTask: unexpected, resumeTask: async () => ({ ok: true }),
+      promptTask: (_id: string, text: string) => { prompts.push(text) } },
+  })
+  for (const locale of ['en', 'zh-CN', 'en'] as const) {
+    setLocale(locale)
+    await handlers.get('task:resume')!({}, 'task')
+  }
+  assert.deepEqual(prompts, Array(3).fill('刚才 Viva 关掉了，请接着做没做完的事。'))
+})
 
 const user = (text: string) => ({ role: 'user', text, receipt: null })
 const answer = (text: string) => ({ role: 'assistant', text, receipt: null })

@@ -1,3 +1,6 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
+import { initializeLanguage } from './language.ts'
 import { withFiles } from '../shared/attachments.ts'
 import { IMAGE_TYPES } from '../shared/images.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
@@ -40,7 +43,7 @@ const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
 const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'turn_end', 'error', 'task_started'])
-const STEER_LOST = '插话没有送到助手，等这一轮结束后再说一次'
+let STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
 const api = window.agent
 /** A part of the page (index.html): one missing is a broken page, said at once rather than at its first use. */
 function byId(id: string): HTMLElement {
@@ -258,7 +261,7 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   },
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
   ask: ({ text, files, images = [] }) => {
-    if (!ask(withFiles(text, files), { via: 'island', images })) historyActions.showToast('Viva 岛上的问题没有送出：助手现在还不能接收')
+    if (!ask(withFiles(text, files), { via: 'island', images })) historyActions.showToast(t("app.the.island.question.was.not.sent.the"))
   },
 }
 
@@ -469,8 +472,8 @@ function ask(text: string, { via = null as string | null, images = [] as Array<{
   return true
 }
 
-const IMAGES_WAIT = '助手正在工作，图片等这一轮结束再发'
-const IMAGES_NOT_TO_TASKS = '图片只能发在这里的对话里，不能交给后台任务'
+let IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
+let IMAGES_NOT_TO_TASKS = t("app.images.can.only.be.sent.to.this")
 
 /** A question with pictures: only as the next question of the conversation on screen. */
 function askWithImages(text: string, images: Array<{ id: string }>, via: string | null) {
@@ -537,7 +540,7 @@ function answer(answers: Answers) {
   if (!question) return
   dispatch({ type: 'question_answered', questionId: question.questionId, answers, at: Date.now() })
   api.answerQuestion(question.questionId, answers)
-    .then((accepted) => accepted || historyActions.showToast('这个问题已经结束，回答没有送出'))
+    .then((accepted) => accepted || historyActions.showToast(t("app.this.question.has.ended.your.answer.was")))
     .catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
 }
 
@@ -546,7 +549,7 @@ async function provideSecrets(values: Record<string, string> | null) {
   if (!secret) return
   try {
     const accepted = await api.provideSecrets(secret.requestId, values)
-    if (!accepted) historyActions.showToast('这次接入已经结束了')
+    if (!accepted) historyActions.showToast(t("app.this.connection.request.has.ended"))
     dispatch({ type: 'secret_resolved', requestId: secret.requestId, provided: values !== null, at: Date.now() })
   } catch (err) {
     historyActions.showToast(errorMessage(err))
@@ -716,8 +719,8 @@ const handlers = {
     draftImages.clear()
     markAllGone(document)
     return usage
-  }, '图片已清空'),
-  moveImages: () => imagesChange(() => api.moveImages(), '图片已经搬过去了'),
+  }, t("app.images.cleared")),
+  moveImages: () => imagesChange(() => api.moveImages(), t("app.images.moved")),
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
   pickOption(id: string, label: string) {
     const question = state.question
@@ -769,7 +772,7 @@ const handlers = {
     try {
       const { settings } = await api.setPermission(level)
       dispatch({ type: 'permission_done', level: settings.permission })
-      historyActions.showToast(`权限已换成「${PERMISSION_LEVELS.find((item) => item.value === settings.permission)?.name ?? settings.permission}」`)
+      historyActions.showToast(t("app.permission.changed.to", { value1: PERMISSION_LEVELS.find((item) => item.value === settings.permission)?.name ?? settings.permission }))
     } catch (err) {
       dispatch({ type: 'permission_done', level: null })
       historyActions.showToast(errorMessage(err))
@@ -831,20 +834,20 @@ const handlers = {
   async resetDeskPlace() {
     try {
       dispatch({ type: 'settings_loaded', view: await api.resetDeskPlace() })
-      historyActions.showToast('Viva 岛已放回屏幕顶部正中')
+      historyActions.showToast(t("app.viva.island.moved.to.the.top.center"))
     } catch (err) {
       dispatch({ type: 'settings_failed', message: errorMessage(err) })
     }
   },
   saveKey: (value: string) => applySettingsChange(() => api.saveApiKey(value), saveNotice),
-  clearKey: () => applySettingsChange(() => api.clearApiKey(), () => '已清除保存的 key'),
+  clearKey: () => applySettingsChange(() => api.clearApiKey(), () => t("app.saved.key.cleared")),
   togglePicker: () => dispatch({ type: 'picker_toggle' }),
   async setConfig(configId: string, value: string) {
     if (state.switching || state.newTopicPending) return
     try {
       dispatch({ type: 'config_applied', info: await api.setConfig(configId, value) })
     } catch (err) {
-      dispatch({ type: 'error', message: `切换失败：${errorMessage(err)}` })
+      dispatch({ type: 'error', message: t("app.could.not.switch", { value1: errorMessage(err) }) })
     }
   },
   openDrawer(tab: string) {
@@ -869,7 +872,7 @@ const handlers = {
   openLink: (url: string) => {
     const place = timelinePlace(url)
     if (place) return historyActions.jumpToHit(place)
-    return api.openLink(url).catch((err) => dispatch({ type: 'error', message: `打不开链接：${errorMessage(err)}` }))
+    return api.openLink(url).catch((err) => dispatch({ type: 'error', message: t("links.open.failed", { p0: errorMessage(err) }) }))
   },
 }
 
@@ -883,9 +886,9 @@ const HUB_OPENERS: Readonly<Record<string, () => unknown>> = {
 }
 
 function saveNotice(info: AgentInfo | null | undefined) {
-  if (info?.mode === 'live') return `已保存并连接 · ${info.model || 'DeepSeek'}`
-  if (info?.mode === 'setup') return `已保存，但还不能连接：${setupView(info)?.title ?? ''}`
-  return '已保存，但没能连上 DeepSeek Harness，详情见对话区'
+  if (info?.mode === 'live') return t("app.saved.and.connected", { value1: info.model || 'DeepSeek' })
+  if (info?.mode === 'setup') return t("app.saved.but.not.connected.yet", { value1: setupView(info)?.title ?? '' })
+  return t("app.saved.but.could.not.connect.to.deepseek")
 }
 
 /** Saving or clearing the key restarts the agent in the main process, so the conversation starts over. */
@@ -1077,10 +1080,10 @@ function wireFolderDrop() {
       return dom.input.focus()
     }
     const files = Array.from(event.dataTransfer.files)
-    if (files.length !== 1) return historyActions.showToast('一次拖一个文件夹进来')
-    if (isBusy(state) || state.switching || state.workDir.switching) return historyActions.showToast('助手正在工作或准备话题，请稍后再换工作目录')
+    if (files.length !== 1) return historyActions.showToast(t("app.drop.one.folder.at.a.time"))
+    if (isBusy(state) || state.switching || state.workDir.switching) return historyActions.showToast(t("app.the.assistant.is.working.or.preparing.a"))
     const dir = api.pathForFile(files[0])
-    return dir ? workDirActions.switchTo(dir) : historyActions.showToast('这不是电脑上的文件夹')
+    return dir ? workDirActions.switchTo(dir) : historyActions.showToast(t("app.this.is.not.a.folder.on.this"))
   })
 }
 
@@ -1092,8 +1095,8 @@ function labelShortcuts() {
 function reportMcpProblems(info: AgentInfo | undefined) {
   const dropped: Array<{ name: string }> = info?.mcp?.dropped ?? []
   if (dropped.length === 0) return
-  const names = dropped.map((item) => (item.name === 'memory' ? '记忆工具' : `「${item.name}」`)).join('、')
-  historyActions.showToast(`${names} 没能连上，已暂时跳过`, { action: { label: '查看', kind: 'open-settings' }, ms: 8000 })
+  const names = dropped.map((item) => (item.name === 'memory' ? t("app.memory.tools") : `「${item.name}」`)).join('、')
+  historyActions.showToast(t("app.could.not.connect.and.were.skipped.for", { names: names }), { action: { label: t("app.view"), kind: 'open-settings' }, ms: 8000 })
 }
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
@@ -1118,10 +1121,11 @@ function handleEvent(event: AgentEvent) {
 }
 
 async function boot() {
+  if (api) await initializeLanguage(api, () => render(dom, state, handlers))
   labelShortcuts()
   render(dom, state, handlers)
   if (!api) {
-    dispatch({ type: 'error', message: '没有找到 preload 提供的 window.agent，请通过 Electron 启动。' })
+    dispatch({ type: 'error', message: t("app.the.preload.bridge.window.agent.is.missing") })
     return
   }
   api.onIslandAction?.((action) => handlers.islandAction(action))
@@ -1150,3 +1154,9 @@ async function boot() {
 }
 
 boot().catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+
+onLocaleChange(() => {
+  STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
+  IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
+  IMAGES_NOT_TO_TASKS = t("app.images.can.only.be.sent.to.this")
+})

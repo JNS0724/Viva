@@ -2,7 +2,7 @@
   "name": "viva-trace",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的过程记录：把每轮的思考和工具调用写进 trace.db，供应用重新打开对话时显示",
+  "description": "Viva activity recording: persist reasoning and tool calls for restored conversations",
   "type": "module",
   "main": "index.js",
   "exports": {

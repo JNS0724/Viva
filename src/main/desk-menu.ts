@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import type { MenuItemConstructorOptions } from 'electron'
 
 /**
@@ -12,12 +13,12 @@ export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlac
   ask: () => void, open: () => void, stop: () => void, resetPlace: () => void, hide: () => void, switchOff: () => void,
 }): MenuItemConstructorOptions[] {
   return [
-    { label: '提问…', accelerator: shortcut, registerAccelerator: false, click: ask },
-    { label: '打开 Viva 窗口', click: open },
-    { label: '停止', enabled: working, click: stop },
+    { label: t('native.ask'), accelerator: shortcut, registerAccelerator: false, click: ask },
+    { label: t('native.openWindow'), click: open },
+    { label: t('native.stop'), enabled: working, click: stop },
     { type: 'separator' },
-    { label: '放回顶部正中', click: resetPlace },
-    { label: '先隐藏（下次关闭窗口时再出现）', click: hide },
-    { label: '不再显示桌面岛（可在设置里打开）', click: switchOff },
+    { label: t('native.resetIsland'), click: resetPlace },
+    { label: t('native.hideIsland'), click: hide },
+    { label: t('native.disableIsland'), click: switchOff },
   ]
 }

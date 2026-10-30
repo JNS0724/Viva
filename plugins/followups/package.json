@@ -2,7 +2,7 @@
   "name": "viva-followups",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的主动跟进：对话里提出跟进建议（用户点了才建），以及后台准备用的不带工具的模型调用",
+  "description": "Viva follow-ups: user-approved proposals and tool-free background preparation",
   "type": "module",
   "main": "index.js",
   "exports": {

@@ -28,7 +28,7 @@ const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs'])
  * model (live.ts, docs/live-check.md), the second reopening what the first left. `timeline` opens on a history
  * weeks long written before it starts (smoke-timeline.ts); `perf` on one far longer, to measure reading it (smoke-perf.ts).
  */
-const SMOKE_PHASES = new Set(['walkthrough', 'relaunch', 'setup', 'memory', 'resume', 'showcase', 'live', 'live-resume', 'timeline', 'perf'])
+const SMOKE_PHASES = new Set(['language', 'walkthrough', 'relaunch', 'setup', 'memory', 'resume', 'showcase', 'live', 'live-resume', 'timeline', 'perf'])
 
 /** The app's own dsh profile: the ACP template plus the memory plugin; see dsh-profile.js. */
 export const DSH_PROFILE = 'viva'

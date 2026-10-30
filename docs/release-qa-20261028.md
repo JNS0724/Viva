@@ -1,41 +1,43 @@
-# 2026-10-28 至 29 日发布验收记录
+# Release acceptance record: October 28–29, 2026
 
-基线为 main `f95eb68`，产品修复及验收提交截至 `6ad99f8`。本记录供 `0.4.0-beta.6` 发布审阅，不包含本机凭据、个人数据或大型性能原始文件。
+English | [简体中文](release-qa-20261028.zh-CN.md)
 
-## 范围与结果
+Baseline: main `f95eb68`; product fixes and acceptance through `6ad99f8`. This historical record supports review of `0.4.0-beta.6`. It contains no local credentials, personal data or large raw performance captures. Its results do not validate subsequent branches.
 
-- 更新 main 后建立独立验收分支；按现有功能覆盖聊天、文件、权限、记忆、插话、反问、MCP/skill、跟进、消息源、后台任务、模型切换、桌面岛、历史和重启。
-- 精确修复提交通过 770 项单元/集成测试、严格类型检查与构建；Windows 候选安装包通过六阶段冒烟，完整 26 个真模型场景各重复 3 次全部通过。
-- 补测自然记忆遗忘、后台多任务与重启锚点、停止后重开、真实十分钟文件监控、20,000/20,001 字符输入边界及宽内容。
-- 84 组布局与 84 组离线字体布局检查通过；Windows 原生截图、点击、Unicode 输入、最大化/还原和系统菜单键盘调整大小通过。鼠标边框拖拽未完成可靠复核。
-- Windows WPR 已恢复录制并成功归档 ETL，解析退出 0、丢失事件 0；录制只证明取证能力恢复，不证明性能根因或修复。
-- macOS/Windows CI 对发布提交执行检查、打包及安装后冒烟；发布工作流只有打包验证全部通过才上传安装包。
+## Scope and results
 
-## 已修复的缺陷
+- Updated main and created an isolated acceptance branch, covering chat, files, permissions, memory, steering, questions, MCP/skills, follow-ups, sources, background tasks, model switching, desktop island, history and restart.
+- The exact fix commit passed 770 unit/integration tests, strict typechecking and build. The installed Windows candidate passed six smoke phases and all 26 real-model scenarios, each repeated three times.
+- Additional checks covered natural memory forgetting, multiple background tasks and restart anchors, stopping and reopening, a real ten-minute file watch, 20,000/20,001-character input boundaries and wide content.
+- All 84 layout cases and 84 offline-font layout cases passed. Windows native screenshots, clicks, Unicode input, maximize/restore and system-menu keyboard resizing passed. Mouse border-drag resizing was not reliably reverified.
+- Windows WPR recording was restored and an ETL archived; parsing exited 0 with zero lost events. This establishes capture capability, not a performance root cause or fix.
+- macOS/Windows CI checks, packages and smokes the release commit after installation; release attachments are uploaded only after packaging validation passes.
 
-| 问题 | 修复及验证 |
+## Fixed defects
+
+| Problem | Fix and validation |
 |---|---|
-| 工作区外读取确认与路径边界 | 校验真实路径和目录联接，拒绝后不返回内容；权限单元、集成及真模型允许/拒绝旅程通过。 |
-| 后台消息判断截断后静默忽略 | 增加输出预算，拒绝无效结果并保留待处理消息；回归与真模型复测通过。 |
-| 重启后后台任务卡丢失或位置不对 | 按原话题和锚点恢复，保留已读/关闭语义；持久化回归和重启旅程通过。 |
-| IME 确认键误触发提交或关闭 | 覆盖主输入、任务、编辑和桌面岛等合成事件；硬件候选窗口仍待人工验收。 |
-| 超长或被拒绝的输入草稿丢失 | 提交前统一检查长度并保留输入，拒绝时恢复对应草稿且不覆盖新输入；边界与安装包烟测通过。 |
-| 窄窗口溢出、坏图片 URI 破坏预览 | 收紧布局边界并隔离图片解析失败；高缩放/宽内容和异常 URI 回归通过。 |
-| 重打包后 ASAR 完整性记录过期 | 按最终 ASAR 刷新 Windows/macOS 元数据；跨平台逻辑回归及实际 Windows 安装通过。 |
+| Outside-workspace read approval and path boundaries | Validate real paths and junctions; denial returns no content. Permission unit/integration tests and real-model allow/deny journeys passed. |
+| Truncated background judgments silently ignored messages | Increased output budget, rejected invalid results and retained pending messages. Regression and real-model retests passed. |
+| Task cards missing or misplaced after restart | Restore original topic/anchor with seen/dismissed semantics. Persistence regressions and restart journeys passed. |
+| IME confirmation accidentally submitted or closed input | Covered synthetic composition events in main, task, edit and desktop-island inputs. Physical candidate windows still need manual acceptance. |
+| Oversized/rejected input lost drafts | Check length before submission, retain input and restore the corresponding rejected draft without overwriting newer input. Boundary and installed-app smoke checks passed. |
+| Narrow overflow and bad image URIs broke previews | Constrained layout and isolated image parsing failures. High-scale/wide-content and malformed-URI regressions passed. |
+| Stale ASAR integrity records after repacking | Refresh Windows/macOS metadata from final ASAR. Cross-platform logic regressions and actual Windows installation passed. |
 
-还补充了中文错误与重连说明，以及记忆、表格和 MCP 工具指导。早期失败、误报与复测分别保存，没有用重试结果抹掉失败。
+Chinese error/reconnect explanations and memory/table/MCP tool guidance were also improved. Initial failures, false positives and retests remain separately recorded; retries did not erase failures.
 
-## 保留的问题与弱点
+## Open issues and weaknesses
 
-- **性能 QA-013 保持开放**：初始 16,000 字符预览与全文展开必须分别测量。约 200KB/507 节全文达到 14,568 个页面元素，超过原定 4,000 预算，展开观察到 94–289ms 长任务；展开后 980 帧滚动 p95 约 8.6–8.7ms。布局隔离、屏外绘制和透明度实验未满足保真/几何/性能条件，均未加入产品。
-- 高缩放最小窗口阅读区较矮，“新内容”提示可能覆盖一部分正文，仍可滚动查看；权限卡技术参数的可理解性需要改善。
-- 后台准备受前台忙碌、暂停、退避和额度限制，等待反馈与按钮距离较远；启动连接期间过早提交后台任务的提示不够贴切，但请求保留且可重试。
-- 记忆召回仍受查询词选择影响；模型可能误判消息重要性、误解草稿阶段、生成错误表格或不能逐字复制长重复内容。工具指导不能保证模型永远正确。
-- “只起草不发送”的 MCP 工具名称规则不构成任意工具/命令的完整副作用隔离；删除聊天也不等于删除底层模型日志，须保持文档边界清楚。
-- 安装包未签名；字体晚到达、实体 IME、Explorer 拖放、托盘/通知/快捷键冲突、睡眠重启、多显示器和 macOS 实机体验尚未全面人工验证。
+- **Performance QA-013 remains open.** Measure the initial 16,000-character preview separately from full expansion. A roughly 200 KB/507-section answer expanded to 14,568 DOM elements, exceeding the original 4,000 budget, with 94–289 ms long tasks. Scrolling afterward over 980 frames had p95 about 8.6–8.7 ms. Layout containment, offscreen rendering and opacity experiments failed fidelity/geometry/performance conditions and were excluded.
+- At high scaling and minimum window size, the reading area is short and the New content indicator can cover some text, which remains scrollable. Permission-card technical parameters need clearer explanations.
+- Background preparation depends on foreground activity, pause, backoff and budget; waiting feedback sits far from its control. Submitting background work too early during connection gives an imprecise message, but the request remains retryable.
+- Recall depends on query selection. Models may misjudge message importance, misunderstand drafting, create malformed tables or fail to copy long repetitive text exactly. Tool guidance cannot guarantee correctness.
+- Draft-only MCP naming rules do not completely isolate side effects of arbitrary tools/commands. Deleting chat does not delete underlying model logs; documentation must retain these boundaries.
+- Installers are unsigned. Late fonts, physical IME, Explorer drag/drop, tray/notifications/shortcut conflicts, sleep/restart, multiple displays and macOS device interaction have not completed comprehensive manual validation.
 
-## 发布决定
+## Release decision
 
-2026-10-29，用户授权：已无确认的未修复功能可用性阻断时，可以暂缓性能问题并提交、合并、发布新版。当前已确认缺陷中，开放的产品调查为上述性能问题；未验证范围和弱点继续披露，不宣称原始全面验收全部通过。按 beta 发布标准执行 PR 检查和双平台打包门槛。
+On October 29, 2026 the user authorized committing, merging and releasing when no confirmed unresolved functional usability blocker remained, while deferring performance work. The open product investigation was the performance issue above. Unverified scope and weaknesses remain disclosed; this does not claim every original acceptance item passed. Beta PR checks and dual-platform packaging gates apply.
 
-长对话渲染改动按用户要求单独封存，不在本轮修改、测试、合并或发布范围。
+Long-conversation rendering changes were separately archived at the user's request and excluded from this modification, test, merge and release scope. The historical authorization here does not authorize a new release.

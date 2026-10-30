@@ -1,325 +1,150 @@
-# 记忆方案
+# Memory design
 
-本文描述 Viva 当前的长期记忆设计：记忆如何写入、更新、检索，画像如何生成，以及插件和 app 之间的约定。实现以代码为准，文中的数字都对应代码里的常量。
+English | [简体中文](memory.zh-CN.md)
 
-## 目录
+This describes long-term memory writes, updates, retrieval, profile synthesis, and the plugin/app contract. Code is authoritative. Historical validation statements below retain their original scope; they are not new internationalization test results.
 
-- [1. 目标与约束](#1-目标与约束)
-- [2. 总体结构](#2-总体结构)
-- [3. 数据约定：memory.db](#3-数据约定memorydb)
-- [4. 写入：两条通道](#4-写入两条通道)
-- [5. 更新：只新增，软失效](#5-更新只新增软失效)
-- [6. 画像：用户填写 + 定时整理](#6-画像用户填写--定时整理)
-- [7. 检索：三层](#7-检索三层)
-- [8. 每轮的时序](#8-每轮的时序)
-- [9. 用户看得见、改得了](#9-用户看得见改得了)
-- [10. 安全与隐私](#10-安全与隐私)
-- [11. 替换记忆方案](#11-替换记忆方案)
-- [12. 测试](#12-测试)
-- [13. 参数一览](#13-参数一览)
-- [14. 已知问题与待定事项](#14-已知问题与待定事项)
-- [15. 设计取舍与依据](#15-设计取舍与依据)
+## 1. Goals and constraints
 
-## 1. 目标与约束
+Remember the user's role, collaborators, projects, preferences, agreements, and decisions. Avoid flooding every turn with fuzzy matches to the full question. Replace outdated facts while preserving history. Every entry must be inspectable, editable, and removable, including background writes. Memory must remain replaceable independently of the app. Data stays local except inputs to the user's chosen model; passwords, keys, verification codes, and identity numbers must not be stored.
 
-- **助手了解用户**：记得用户是谁、和谁共事、在做什么、喜欢怎样的回答，以及过去的约定和决定。
-- **不召回噪音**：不能每轮都拿用户原话去做模糊匹配，把一堆不相关的记忆塞给模型。
-- **会更新**：事实变了（比如换了上级），旧的要退出，新的要生效，而且历史可查。
-- **用户可控**：每一条都看得见、改得了、删得掉；后台写入的内容也要通知用户。
-- **记忆模块独立、可替换**：记忆方案将来可能变化，替换时不能牵动 app 的其余部分。
-- **数据只留在本机**：除了模型调用，不发往任何地方；密码、密钥、验证码、证件号永远不保存。
+## 2. Structure
 
-## 2. 总体结构
+`plugins/memory` runs in the private Viva dsh profile alongside activity and policy plugins. Electron provides UI; both processes access `memory.db` in WAL mode. See [Architecture](architecture.md).
 
-记忆整体是一个 dsh 插件（`plugins/memory`），和「过程」插件、工具策略插件一起挂在 app 自己的 dsh profile 里。app 只负责界面，两者共用同一个 SQLite 文件 `memory.db`。整个应用的插件化分层见 [architecture.md](architecture.md)。
-
-```
-Electron 主进程                                    dsh 进程（--profile viva）
-┌───────────────────────────────┐                 ┌──────────────────────────────────────────┐
-│ dsh-profile.js 写 profile     │──启动──────────▶│ 插件 viva-memory（plugins/memory）        │
-│ memory-ipc.js 「关于你」读写  │                 │  · pre-step：注入固定层 + 名称推送        │
-│ personal.js 汇报变化、写习惯  │                 │  · 工具：remember / recall / forget       │
-└──────────────┬────────────────┘                 │  · 轮次结束：后台提取 → 画像整理          │
-               │                                  └───────────────────┬──────────────────────┘
-               └──────────────── memory.db（同一个文件，WAL）──────────┘
-```
-
-| 位置 | 职责 |
+| Module | Responsibility |
 |---|---|
-| `plugins/memory/index.js` | dsh 插件入口：pre-step 注入、注册工具、轮次结束后的后台任务、压缩计数 |
-| `plugins/memory/lib/store.js` | `memory.db` 的读写，也就是插件和 app 之间的约定 |
-| `plugins/memory/lib/layers.js` | 每轮带什么的规划（纯函数） |
-| `plugins/memory/lib/names.js` | 名称词表与名称匹配 |
-| `plugins/memory/lib/match.js` | `memory_recall` 的打分和门槛 |
-| `plugins/memory/lib/context.js` | 注入文本的格式、记忆规则 |
-| `plugins/memory/lib/inject.js` | 每轮的串联：读库 → 规划 → 存会话状态 → 记日志 |
-| `plugins/memory/lib/tools.js` | 三个记忆工具 |
-| `plugins/memory/lib/extract.js` | 轮次结束后的后台提取 |
-| `plugins/memory/lib/synthesize.js` | 定时整理画像 |
-| `src/main/app-plugins.js` | 插件清单、人设、兼容性检查（约定版本、dsh 版本） |
-| `src/main/dsh-profile.js` | 每次启动 dsh 前写好应用 dsh 目录里的 `profiles/viva` |
-| `src/main/personal.js` | 汇报插件写了什么、带上了什么；把使用习惯写进库 |
-| `src/main/memory-ipc.js` | 「关于你」页面的 IPC |
+| `plugins/memory/index.ts` | Pre-step injection, tools, after-turn work, compaction count |
+| `plugins/memory/lib/store.ts` | Shared database contract |
+| `layers.ts` | Pure per-turn injection planning |
+| `names.ts` | Name vocabulary and matching |
+| `match.ts` | Recall scoring/threshold |
+| `context.ts` | Injected text and memory rules |
+| `inject.ts` | Read, plan, persist session state, log injection |
+| `tools.ts` | Memory tools |
+| `extract.ts` | Background extraction |
+| `synthesize.ts` | Profile synthesis |
+| `src/main/app-plugins.ts` | Plugin list, persona, contract/dsh compatibility |
+| `src/main/dsh-profile.ts` | Private profile generation |
+| `src/main/personal.ts` | Changes/injection reporting and habit writes |
+| `src/main/memory-ipc.ts` | About-you IPC |
 
-### profile 与插件挂载
+Before each dsh start, `dsh-profile.ts` writes changed files under `<app data>/dsh/profiles/viva`: an ACP composition (`dsh-base`, `dsh-acp-app`) plus `link:` plugin dependencies; forwarding packages in profile `node_modules/viva-*` exporting the plugin file URL; and `cordis.patch.yml` containing persona, plugin insertions, and the database path. `cordis.yml` and `pnpm-workspace.yaml` are created only when absent. Installed apps keep plugins inside app.asar.
 
-`dsh-profile.js` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`，只写有变化的文件：
+Declared contract and exact dsh peer versions must match or the plugin is excluded with a Settings explanation. Other user profiles, including their ACP profile, are untouched. Profile-write failure falls back to ACP without memory; plugin-load failure logs its name but leaves conversation available.
 
-- `package.json`：组合包和 dsh 自带的 `acp` 模板相同（`dsh-base`、`dsh-acp-app`），另加每个插件的 `link:` 依赖，比如 `"viva-memory": "link:<app>/plugins/memory"`。
-- `node_modules/viva-*`：转发到插件入口的小包（`export * from '<插件入口的文件 URL>'`），插件本身留在应用里（安装后在 app.asar 内）。
-- `cordis.patch.yml`：写入人设，插入每个插件，并把 `memory.db` 的路径写进记忆插件的 `config.file`。
-- 启动前先做兼容性检查：插件声明的约定版本（`package.json` 的 `viva.contract.memory`）必须等于 app 需要的版本，dsh 依赖必须等于当前安装的 dsh 版本。不通过就不写进 profile，原因显示在设置页。
-- `cordis.yml`、`pnpm-workspace.yaml`：只在缺失时写入。
+## 3. Database contract
 
-用户的其他 profile（包括 `acp`）不会被读写。profile 写不了时，app 退回 `acp` profile：助手照常可用，只是没有记忆。插件加载失败时，dsh 会输出一条带插件名的警告，会话照常进行。
+`store.ts` enables WAL, a three-second busy timeout, and short transactions. Opening an old database adds columns and runs one-time profile migrations.
 
-## 3. 数据约定：memory.db
+| Table | Contents and writer |
+|---|---|
+| `profile` | `field,value,source,updated_at`; user-owned fields |
+| `memories` | User/tool/extractor memories |
+| `syntheses` | Synthesized profile text/date; latest 20 versions, plugin-owned |
+| `sessions` | Per-dsh-session retrieval state JSON |
+| `injections` | Actual injected context; latest 1,000 records, read by app activity |
+| `meta` | `contract_version` (1; newer versions are rejected), `onboarding`, app-written `habits`, `plugin_started_at`, `profile_migrated`, and owner-specific metadata |
 
-插件和 app 都通过 `store.js` 访问它。数据库开启 WAL，`busy_timeout` 为 3 秒，所有写入都是短事务，两个进程可以同时读写。旧数据库在打开时自动补上新增的列，并做一次画像迁移（见 6.3）。
+Memory fields are `text` and unique normalized `norm`; `kind` (`role`, `person`, `project`, `preference`, `fact`); `source` (`user` or `agent`); up to six `keywords`; `conversation_id` (claimed by app, or `profile-migration`); millisecond `created_at/updated_at`; nullable `invalid_at`; `superseded_by`; and `invalidated_by` (`user` or `agent`).
 
-| 表 | 内容 | 谁写 |
+## 4. Two write channels
+
+The model chooses what to propose; code validates what may be stored.
+
+**Explicit tools:** Remember requests call `memory_remember(text, kind, keywords)` immediately. Duplicate normalized text refreshes its timestamp and merges keywords; invalid entries are restored. `memory_recall` accepts specific keywords; one is enough for a precise subject, and an unsuccessful multi-keyword query should be retried with fewer terms. It returns at most five sufficiently relevant memories. `memory_forget` invalidates an id only at the user's request. These native dsh tools do not show permission cards. Invalid keywords are dropped rather than failing the entire call. Tool descriptions and memory rules forbid claiming a save without successful execution.
+
+**Background extraction:** `agent/turn-stopping` starts asynchronous work without delaying the answer. The user's own words must contain at least four characters and a self-description signal (role, recurring schedule, preferences, changed supervisor, etc.) or a known name; a bare first-person pronoun does not qualify. Up to ten candidates are chosen by names first, then wording. Only those candidates may be invalidated. The current provider/model receives JSON containing today's date, user text, the first 1,500 answer characters, profile, and candidates. Output is `{"add":[{text,kind,keywords,replaces}],"invalidate":[id]}`, at most three changes. Any invalid result discards the batch and logs a reason.
+
+## 5. Append and invalidate
+
+Automatic changes add facts and optionally point `replaces` at an old fact, or explicitly invalidate a candidate. Old entries get invalidation/replacement metadata and leave retrieval/synthesis, but remain reviewable/restorable. `applyExtraction` is atomic: more than three changes, missing/unseen candidates, user-owned invalidation, sensitive text, invalid kinds, or memory-cap overflow rolls back the whole batch.
+
+User-owned entries can be invalidated only by the user, directly or through an explicitly requested `memory_forget` (`invalidated_by=user`). Re-saving identical content restores it. Actual deletion only happens in About you and offers Undo, restoring prior invalidation state too. Each injection/extraction includes today's date; relative dates must be saved as absolute dates.
+
+## 6. User profile and synthesized profile
+
+Profile fields and learned facts use different write paths. The user owns role/responsibilities, current projects, and preferences. The synthesized profile is a derived view of active memories, not directly editable; change its source memories instead. Up to eight profile-kind memories added after the last synthesis appear as Recently learned.
+
+After extraction, synthesis is considered using the current model route. Changed/refreshed/invalidated memories trigger rebuilding when there is no prior synthesis, a profile memory was invalidated, 24 hours elapsed, or five changes accumulated. Inputs are user profile excluding email and at most 150 active role/person/project/preference memories with dates. The previous synthesis is deliberately excluded to avoid copying invalid facts back.
+
+The existing synthesis format uses four ordered headings—identity/responsibilities, regular contacts, current work, preferences—with `- ` lines and a 1,200-character cap. These stored format markers are currently Chinese and validated as a contract, independent of interface language. Invalid format or sensitive output retains the previous synthesis.
+
+Legacy agent-written profile fields become agent memories line by line once, then are cleared without new-memory notifications. Since 0.2.2, retired user department/domain/contact/site/document/IM fields become user memories; department/domain map to role, contacts to person, others to fact, with name keywords where appropriate. Email remains private in the table: never migrated, shown, or sent to the model. `profile_trimmed` records this migration.
+
+## 7. Three retrieval layers
+
+### Fixed context
+
+Today, memory rules, user profile, synthesized profile, recent discoveries, and habits share a 3,200-character budget. Rules always fit first; remaining sections consume the budget in order. Reasons are `first` (session start), `compacted` (counted `compaction/end` events), and `changed` (profile/synthesis/habits changed). Newly learned conversation memories do not resend the fixed layer because the model already saw them. Crossing midnight injects just the new date.
+
+### Name-triggered context
+
+Vocabulary comes from current-project profile text (split punctuation/newlines, removing parenthetical/colon explanations) and active memory keywords. Generic or too-short terms are excluded. Exact names match; long Chinese names also match contiguous four-character aliases. English requires word boundaries, so PR does not match prompt.
+
+Only the user's own words count. Inputs over 300 characters use their first/last lines, capped at 120 each; short (at most six characters) or recognized follow-up phrases incorporate the preceding question. Sort by matched-name count then update time; send at most three memories with their name reason. Already-pushed unchanged entries and fixed-context entries are excluded. Session start/compaction resets pushed state. No name match means no push, without fuzzy fallback.
+
+### Explicit recall
+
+When context is insufficient, the model calls `memory_recall`. A query qualifies by containment against a memory keyword, or at least 34% coverage using Chinese bigrams/English words. Return at most five entries; no match returns empty and asks the model to admit uncertainty.
+
+## 8. Turn sequence
+
+1. On the first pre-step of a user turn (not child-agent turns), read profile/synthesis/memory, plan layers, save session state, and log injection. Append sourced `<about-user>…</about-user>` context after the question.
+2. The model answers and may call native memory tools.
+3. On turn-stopping, run extraction then due synthesis asynchronously, within a combined 120-second deadline; unloading aborts them.
+4. On turn end, app `personal.collect()` reports immediately, then polls every two seconds for 30 seconds. `memory_changed` drives notifications; `memory_context` drives activity rows.
+
+Injection/background failures log a reason without failing the conversation.
+
+## 9. Inspect and control
+
+About you contains user fields, habits, dated read-only synthesis, searchable/addable/deletable memories with kind/source/keywords, and expandable invalid entries with reasons and Restore. Activity explains which context was included and why. Saves and invalidations show View notifications. Deleting a conversation does not delete memory. Settings considers the plugin loaded only when its heartbeat is newer than the current dsh start.
+
+## 10. Privacy and safety
+
+`looksSecret` rejects passwords/passcodes/verification codes, `sk-` keys, tokens, 18-digit identity numbers, and random strings of 32+ characters; long document-link ids are exempt. Memory text, keywords, and synthesized profiles all pass this filter. Email is excluded from model/extractor/synthesizer inputs. JSON isolates extraction/synthesis inputs from instructions. Background work never overwrites or invalidates user-owned entries. SQLite `secure_delete` clears deleted records. Data lives locally in `memory.db`; only selected injected context and background-call inputs go to the configured model.
+
+## 11. Replacing the plugin
+
+Provide a `viva-*` dsh plugin declaring `"viva":{"contract":{"memory":1}}`, then replace the memory entry in `APP_PLUGINS`. Preserve `memory@1` tables and store interfaces (`profile`, `memories` including invalidation fields, `syntheses`, `injections`) to retain UI/activity compatibility. Schema changes require contract version 2 and coordinated IPC/personal/UI changes. Exact dsh peers currently pin `0.2.0-rc.2`; upgrades require coordinated plugin manifests or compatibility checks exclude them while chat remains available.
+
+## 12. Tests
+
+| Suite | Coverage |
+|---|---|
+| `memory.test.js` | Store, context, tools, IPC |
+| `memory-layers.test.js` | Vocabulary, query basis, layers, injection, keywords, migrations |
+| `memory-extract.test.js` | Gate/candidates/validation, rollback, invalidation/restoration, UI state |
+| `memory-synthesis.test.js` | Timing/format/input scope, fixed context, legacy migration |
+| `memory-plugin.test.js` | Actual dsh/full profile/fake model: injection counts, names, tools, restart, failure, extraction including answer text, replacement, user protection, synthesis, persona |
+| `app-plugins.test.js` | Plugin list and contract/dsh/database compatibility |
+| `dsh-profile.test.js` | Profile writing/idempotency/link replacement/failure preservation |
+| `npm run smoke` memory phase | Actual Electron and dsh, fake model, full UI flow |
+| `npm run live:memory` | Actual DeepSeek model, manual and billable |
+
+The fake LLM intercepts requests through `DEEPSEEK_BASE_URL`, provides deterministic chat/extraction/synthesis responses, and needs no real key. Live memory tests read `DEEPSEEK_API_KEY` or a mode-600 `LIVE_ENV` file without printing it, use disposable sessions, and write `smoke/live-memory.json`.
+
+## 13. Parameters
+
+| Parameter | Value | Owner |
 |---|---|---|
-| `profile` | 用户填写的画像字段（`field, value, source, updated_at`） | 只有用户（「关于你」页面） |
-| `memories` | 记忆，见下 | 用户、模型工具、后台提取 |
-| `syntheses` | 助手整理的画像（`text, created_at`），保留最近 20 版 | 插件（定时整理） |
-| `sessions` | 每个 dsh 会话的检索状态（JSON） | 插件 |
-| `injections` | 每轮实际带给模型的内容，保留最近 1000 条 | 插件；app 读来显示在「过程」里 |
-| `meta` | `contract_version`（约定版本，当前为 1；遇到更新版本写入的库会直接报错，不会误读）、`onboarding`、`habits`（使用习惯文本，app 写）、`plugin_started_at`（插件心跳）、`profile_migrated` | 各自所有者 |
+| Fixed context / recent discoveries | 3,200 characters / 8 | `context.ts` |
+| Pushed memories | 3 | `layers.ts` |
+| Long input / short follow-up | >300 / ≤6 characters | `layers.ts` |
+| Chinese alias | 4 contiguous characters | `names.ts` |
+| Recall threshold / limit | 34% / 5 | `match.ts`, `tools.ts` |
+| Extraction minimum / candidates / changes | 4 characters / 10 / 3 | `extract.ts`, `store.ts` |
+| Synthesis interval / changes / inputs / length | 24 hours / 5 / 150 / 1,200 characters | `synthesize.ts`, `store.ts` |
+| After-turn deadline | 120 seconds | `index.ts` |
+| App result polling | Every 2 seconds for 30 seconds | `main.ts` |
+| Memory length / total | 500 characters / 5,000 | `store.ts` |
+| Keywords / length | 6 / 2–20 characters | `store.ts` |
 
-`memories` 的字段：
+## 14. Limitations
 
-| 字段 | 说明 |
-|---|---|
-| `text` / `norm` | 一句话的记忆。`norm` 是规范化后的文本，用来去重（唯一） |
-| `kind` | `role` 身份职责、`person` 人、`project` 项目、`preference` 偏好、`fact` 其他 |
-| `source` | `user` 用户添加，`agent` 模型或后台写入 |
-| `keywords` | 这条记忆涉及的人名、项目名、系统名，最多 6 个，用于按名称推送 |
-| `conversation_id` | 来自哪段对话。app 在汇报时认领；迁移来的记忆标为 `profile-migration` |
-| `created_at` / `updated_at` | 毫秒时间戳 |
-| `invalid_at` | 失效时间，`NULL` 表示有效 |
-| `superseded_by` | 被哪条新记忆取代 |
-| `invalidated_by` | `user`（用户要求忘掉）或 `agent`（后台判断已不成立） |
+Changing a supervisor does not automatically invalidate an indirect weekly-report recipient agreement; confirming derived implications remains undecided. Kinds can be misclassified. Deduplication recognizes normalized exact text, not paraphrases. Fixed-layer resend after compaction has unit coverage but the original validation did not force actual-dsh compaction. The prior memory work reports Windows 11 installed-app verification; that is historical evidence. Exact dsh pinning remains required. Memory rules currently ride in a sourced user message; moving them to a cacheable system prefix needs a verified dsh section-registration API. Packaging uses electron-builder/asar with the ACP dependency closure. Language heuristics and synthesis markers remain part of the memory contract and need separate bilingual model evaluation.
 
-## 4. 写入：两条通道
+## 15. Design rationale
 
-业界的做法是「对话中显式写入 + 后台异步提取」，我们也走两条通道。**写什么由模型决定，能写什么由代码把关。**
-
-### 4.1 对话中：模型当场调用工具
-
-用户明确说「记住…」「以后…」时，主模型调用 `memory_remember`，当场保存并告诉用户。
-
-| 工具 | 作用 |
-|---|---|
-| `memory_remember` | 保存一条记忆（`text`、`kind`、`keywords`）。与已有记忆相同时只刷新时间，并合并关键词；如果那条已经失效，就恢复它 |
-| `memory_recall` | 用具体关键词检索，明确对象可以只写一个词；多个词无结果时先减少词再查。最多返回 5 条，没有足够相关的就返回空，见 7.3 |
-| `memory_forget` | 按编号让一条记忆失效（不删除），只在用户要求时使用 |
-
-- 这三个都是 dsh 原生工具，不弹授权卡片。
-- 关键词参数校验很宽松：不合格的关键词由 store 直接丢掉，不会让整次调用失败。
-- 工具描述和固定层里的【记忆规则】都写明：没有调用成功，就不能说「记住了」。
-
-### 4.2 轮次结束后：后台提取（`extract.js`）
-
-监听 dsh 的 `agent/turn-stopping`，不等待结果，不拖慢回答：
-
-1. **门槛**：用户自己的话不少于 4 个字，并且含有陈述自己的信号（「我是」「我负责」「以后」「每周」「上级」「离职」等），或者提到了词表里的名称。单字「我」不算，所以「帮我算一下」会被跳过，不发起模型调用。
-2. **候选**：最多 10 条，先取「关于这一轮提到的名称」的记忆，再按措辞匹配补足。**提取器只能修改它看到的这些候选。**
-3. **调用模型**：复用当前 agent 的 provider 和模型。输入以 JSON 传入，包括今天的日期、用户的话、助手的回答（截取前 1500 字）、画像和候选记忆，避免用户的文字被当成指令。
-4. **输出**：`{"add":[{text, kind, keywords, replaces}], "invalidate":[id]}`，最多 3 处改动。
-5. **校验与写入**，见第 5 节。任何一处不合格，整批丢弃，日志里记一行原因。
-
-## 5. 更新：只新增，软失效
-
-参考 mem0 从「让 LLM 自动增删改」退回「只追加」的经验，以及 Zep 的软失效做法。
-
-- **自动写入只能新增。** 后台提取要改变一条旧记忆，只能新增一条，再用 `replaces` 指向旧的；或者把旧的放进 `invalidate`。
-- **失效而不删除。** 旧记忆被标上 `invalid_at`、`superseded_by`、`invalidated_by`，之后不再参与检索、推送和画像整理，但留在库里可查、可恢复。
-- **整批要么全部生效，要么全部不生效**（`store.applyExtraction`）。出现以下任何一种情况，整批回滚：
-  - 改动超过 3 处；
-  - 要失效的记忆不在给它看的候选里，或者不存在；
-  - 要失效的是用户自己写的记忆；
-  - 新内容含有敏感信息，或者 `kind` 不合法；
-  - 记忆总数超过上限。
-- **用户写的优先。** `source = 'user'` 的记忆只有用户能让它失效：可以在页面上操作，也可以要求模型用 `memory_forget` 来做（这时 `invalidated_by = 'user'`）。后台提取永远不能动它。
-- **说同样的话会恢复。** 再次保存一条和已失效记忆相同的内容，它会重新生效。
-- **真正删除只有一种方式：用户在「关于你」里点删除。** 删除后底部出现撤销；撤销时，失效状态也一并恢复。
-- **日期：** 每次注入都带上【今天】。规则要求模型把「下周一」写成具体日期，后台提取也拿到今天的日期，所以记忆里留下的是绝对日期。
-
-## 6. 画像：用户填写 + 定时整理
-
-画像和事实记忆**不走同一套写入机制**：数据源只有一个（用户填写的字段和有效的记忆），画像是从中生成的视图。这和 Claude、ChatGPT 定期重建记忆摘要的做法一致。
-
-### 6.1 三个部分
-
-| 部分 | 来源 | 谁能改 |
-|---|---|---|
-| **你填写的画像** | `profile` 表（角色与职责、在推进的事、偏好与习惯） | 只有用户 |
-| **助手整理的画像** | `syntheses` 表的最新一版 | 不能直接改；改对应的记忆，下次整理时更新 |
-| **最近了解到的** | 上次整理之后写入的画像类记忆（`role`、`person`、`project`、`preference`），最多 8 条 | 随记忆而变 |
-
-### 6.2 定时整理（`synthesize.js`）
-
-- **检查时机**：每轮结束、后台提取完成之后检查一次。这时手上正好有模型路由可以复用。所以「定时」的实际含义是：app 开着并且有对话时，满足条件就整理。
-- **触发条件**：自上次整理以来有记忆被写入、刷新或失效，并且满足以下任一条：
-  - 还没有过画像；
-  - 有画像类记忆失效（画像里可能写着已经不成立的事，比如旧上级），立即重新整理；
-  - 距上次整理已满 24 小时；
-  - 已经积累了 5 处改动。
-- **输入**：用户填写的画像（不含邮箱），以及最多 150 条有效的画像类记忆（带日期）。**不把上一版画像交给模型**，否则失效的旧事实可能被抄回来。
-- **输出格式**：只能使用【身份与职责】【常打交道的人】【在推进的事】【偏好】这四个小标题，按顺序排列，标题下每行以「- 」开头，总长不超过 1200 字。格式不对或含敏感信息的结果会被丢弃，继续使用上一版。
-
-### 6.3 旧数据迁移
-
-旧版本里，模型可以往画像字段里追加内容。首次打开数据库时，`source = 'agent'` 的画像字段会按行拆成「助手记下」的记忆，类别按字段对应，比如「常打交道的人」变成 `person`；随后这些字段被清空。迁移只做一次，迁移出来的记忆不弹「已记住」。
-
-0.2.2 起画像只剩「角色与职责」「在推进的事」「偏好与习惯」三项。首次打开数据库时，用户在部门、领域、常打交道的人、常用网站和文档、工作 IM 里写过的内容，会按行变成用户自己的记忆（部门和领域是 `role`，人是 `person`，其余是 `fact`；人名、部门、领域同时记成关键词），随后这些字段被清空，所以内容仍然看得见、改得了。工作邮箱是私密字段，原样留在表里，不迁移、不显示，也从不发给模型。这次迁移同样只做一次（`meta` 里的 `profile_trimmed`）。
-
-## 7. 检索：三层
-
-「什么时候查、拿什么查」分三层，越往下越依赖模型自己判断。
-
-### 7.1 第 1 层：固定层（不检索）
-
-内容依次是：【今天】、【记忆规则】、【画像】（用户填写的）、【助手整理的画像】、【最近了解到的】、【使用习惯】。总长不超过 3200 字，规则一定会放进去，其余按这个顺序放到预算用完为止。
-
-**什么时候发送**（`layers.js` 的 `fixedReason`）：
-
-| 原因 | 条件 |
-|---|---|
-| `first` | 会话的第一轮 |
-| `compacted` | dsh 压缩过对话之后。插件用会话投影统计 `compaction/end` 事件的次数 |
-| `changed` | 用户填写的画像、整理出的画像或使用习惯变了 |
-
-会话进行中学到的记忆**不会**触发重新发送：它们来自这段对话，模型本来就知道。日期跨天时，会单独补发一行【今天】。
-
-### 7.2 第 2 层：按名称推送
-
-- **词表**：来自画像里的「在推进的事」（按顿号、逗号、换行切开，去掉括号里的注释和冒号后的说明），加上所有有效记忆的关键词；人和部门都在记忆的关键词里。泛词（「项目」「系统」等）和过短的词不收录。
-- **匹配**：
-  - 名称原样出现即命中；长中文名的任意连续 4 个字也算命中，比如「对账系统」能命中「Q4 对账系统重构」。
-  - 英文名要求完整单词，「PR」不会匹配到「prompt」里。
-- **检索依据**：只看用户自己的话。
-  - 超过 300 字的输入（多半是粘贴的材料），只取首尾各一行，每行最多 120 字。
-  - 不超过 6 个字、或以「那」「这」「继续」「第二个」等开头的追问，拼上上一个问题一起看。
-- **推送**：
-  - 按命中名称的数量、再按更新时间排序，最多 3 条，每条附上命中原因〔名称〕。
-  - 同一会话里推过的不再推（编辑过的记忆算新的），固定层里已有的也不推。
-  - 会话第一轮或压缩之后，「已推送」记录清零。
-- **没有命中名称时不推。** 不再退回「碰上一个词就算」的模糊匹配。
-
-### 7.3 第 3 层：模型自己查
-
-固定层和推送都不够时，模型调用 `memory_recall`，用自己提炼的关键词去查。命中条件（`match.js`）满足其一即可：
-
-- 查询词和这条记忆的某个关键词互相包含；
-- 按中文二字组 / 英文单词计算，覆盖了查询的至少 34%。
-
-结果最多 5 条，查不到就返回空，并提示模型如实说不知道。
-
-## 8. 每轮的时序
-
-```
-用户发送
-  └─ dsh pre-step（第 1 步，只针对用户发起的轮次；子 agent 不处理）
-       ├─ inject.js：读画像 / 整理结果 / 记忆 → layers.js 规划 → 存会话状态 → 记录注入日志
-       └─ 把 <about-user>…</about-user> 作为一条带来源的 user 消息，接在用户的问题后面
-  模型回答（可能调用 memory_* 工具，不弹授权）
-  └─ dsh turn-stopping
-       └─ 后台（不等待，总时限 120 秒，插件卸载时中止）
-            ├─ extract.js：门槛 → 候选 → 调用模型 → 校验 → applyExtraction
-            └─ synthesize.js：到期了就整理画像
-  app 收到 turn_end
-       └─ personal.collect()：立即汇报一次，之后每 2 秒查一次，持续 30 秒
-            ├─ memory_changed → 「已记住…」「…已不再使用」提示
-            └─ memory_context → 「过程」里的「带上记忆」行
-```
-
-注入或后台任务出错，只记一行日志，不影响这一轮对话。
-
-## 9. 用户看得见、改得了
-
-- **「关于你」页面**，从上到下依次是：
-  - 你填写的画像；
-  - 使用习惯；
-  - 助手整理的画像（带更新时间，只读）；
-  - 记忆列表，可以搜索、添加、删除，并显示类别、来源和关键词；
-  - 「已失效 · N」，展开后能看到失效原因（被取代、按你的要求忘掉、助手判断已不成立），并能恢复。
-- **「过程」**：每轮带上了什么，比如「画像、偏好和记忆规则（会话开始时）」「因为提到「周报」：…」。
-- **提示**：模型或后台写入、或让某条记忆失效时，都会弹出提示，并带「查看」按钮。
-- **页面上写明**：删除对话不会删除记忆。
-- **设置页**：显示记忆插件是否已加载，判断依据是插件心跳晚于本次 dsh 的启动时间。
-
-## 10. 安全与隐私
-
-- **敏感信息过滤**（`looksSecret`）：密码、口令、验证码、`sk-` 开头的密钥、token、18 位证件号、32 位以上的随机串，都会被拒绝保存。记忆、关键词、画像整理结果都要经过这道检查；文档链接里的长 id 不算。
-- **邮箱**不会发给模型，也不会交给提取器和画像整理。
-- **注入隔离**：提取和整理的输入都以 JSON 传入，用户和网页的文字不会被当成指令或分隔符。
-- **用户写的内容**永远不会被后台覆盖或使其失效。
-- **删除**：数据库开启了 `secure_delete`，真正删除的内容不会残留在文件里。
-- **数据位置**：所有数据都在本机 `memory.db` 里。发给模型的只有每轮注入的内容和后台调用的输入，走的是用户自己的 DeepSeek key。
-
-## 11. 替换记忆方案
-
-记忆是独立的 dsh 插件，替换时：
-
-1. 写一个新的 dsh 插件，名字以 `viva-` 开头，在 `package.json` 里声明 `"viva": { "contract": { "memory": 1 } }`，然后在 `src/main/app-plugins.js` 的 `APP_PLUGINS` 里把原来的记忆插件换掉。
-2. app 只通过 `memory.db` 和插件打交道。新方案只要提供约定 `memory@1`，也就是 `profile`、`memories`（含失效字段）、`syntheses`、`injections` 这几张表和 `store.js` 的接口，「关于你」和「过程」就不用改。如果改了数据结构，就把约定升到 2，并同时修改 `memory-ipc.js`、`personal.js` 和对应的界面。
-3. 插件声明的 dsh 版本是精确的 `0.2.0-rc.2`。升级 dsh 后，兼容性检查会把它排除并在设置页说明原因（对话不受影响，只是没有记忆），要同步修改 `plugins/memory/package.json`。
-
-## 12. 测试
-
-| 命令 / 文件 | 覆盖 |
-|---|---|
-| `test/memory.test.js` | store、上下文格式、工具、IPC |
-| `test/memory-layers.test.js` | 名称词表、检索依据、三层规划、每轮串联、关键词、数据库迁移 |
-| `test/memory-extract.test.js` | 提取门槛、候选范围、输出校验、整批回滚、失效与恢复、界面状态 |
-| `test/memory-synthesis.test.js` | 整理时机、格式校验、输入范围、固定层组成、旧画像迁移 |
-| `test/memory-plugin.test.js` | **真实 dsh + app 的完整 profile + 假模型**（`test/fixtures/dsh-harness.js`）：注入次数、名称推送、工具写入、重启恢复、插件故障、后台提取（含读到助手回答）、替换旧事实、用户条目保护、画像整理、人设 |
-| `test/app-plugins.test.js` | 插件清单、约定版本和 dsh 版本检查、数据库的约定版本 |
-| `test/dsh-profile.test.js` | profile 写入、幂等、链接替换、出错时不覆盖 |
-| `npm run smoke`（memory 阶段） | 在 Electron 里用真实 dsh + 假模型走完整个界面流程 |
-| `npm run live:memory` | **真实 DeepSeek 模型**，手动运行，会产生少量费用 |
-
-- **假模型**（`test/fixtures/fake-llm.js`）：把 `DEEPSEEK_BASE_URL` 指向它，就能截获 dsh 发给模型的每个请求。它按固定规则回复，也会扮演后台提取器和画像整理员，不需要 key。
-- **真实模型测试**：从 `DEEPSEEK_API_KEY` 环境变量读取 key（也可以用 `LIVE_ENV` 指向一个权限为 600 的文件），不打印 key。它在临时目录里跑多个会话，测完删除，结果写到 `smoke/live-memory.json`。
-
-## 13. 参数一览
-
-| 参数 | 值 | 位置 |
-|---|---|---|
-| 固定层总长上限 | 3200 字 | `context.js` `MAX_CONTEXT_CHARS` |
-| 「最近了解到的」条数 | 8 | `context.js` `RECENT_LIMIT` |
-| 每轮最多推送 | 3 条 | `layers.js` `PUSH_LIMIT` |
-| 视为粘贴材料的长度 | 300 字 | `layers.js` `LONG_PROMPT_CHARS` |
-| 视为追问的长度 | ≤ 6 字 | `layers.js` `FOLLOW_UP_CHARS` |
-| 长名称的别名长度 | 连续 4 字 | `names.js` `ALIAS_CHARS` |
-| recall 覆盖率门槛 / 条数 | 34% / 5 条 | `match.js` `MIN_COVERAGE`，`tools.js` `RECALL_LIMIT` |
-| 后台提取：最少字数 / 候选 / 改动上限 | 4 字 / 10 条 / 3 处 | `extract.js`，`store.js` `MAX_EXTRACTED_CHANGES` |
-| 画像整理：间隔 / 改动阈值 / 输入条数 / 长度上限 | 24 小时 / 5 处 / 150 条 / 1200 字 | `synthesize.js`，`store.js` `MAX_SYNTHESIS_CHARS` |
-| 轮次结束后任务的总时限 | 120 秒 | `index.js` `AFTER_TURN_TIMEOUT_MS` |
-| app 轮询后台结果 | 每 2 秒，持续 30 秒 | `main.js` `LATE_MEMORY_*` |
-| 单条记忆长度 / 总条数 | 500 字 / 5000 条 | `store.js` |
-| 关键词个数 / 长度 | 6 个 / 2–20 字 | `store.js` |
-
-## 14. 已知问题与待定事项
-
-- **连带变化不会自动更新。** 换了上级之后，「周报交给张三」这条仍然有效。这条记忆没有提到「上级」，后台提取不会判定它和新事实矛盾。待定：要不要在模型推出这类结论时，让它当场确认并记下。
-- **分类可能不准**：例如把周报约定标成了偏好。目前只靠提示约束。
-- **去重只识别完全相同的文本**（规范化后），换个说法写的同一件事会存成两条。
-- **对话压缩后重新发送固定层**的逻辑有单元测试，但还没在真实 dsh 里触发压缩来验证。
-- **Windows**：已在 Windows 11 上验证，包括安装后的应用。
-- **dsh 版本锁定**：插件声明的版本是精确的 `0.2.0-rc.2`，见 11。
-- **【记忆规则】随固定层作为 user 消息发送**：放进系统提示词能利用前缀缓存，需要先确认 dsh 的提示词段注册接口，见 [architecture.md](architecture.md) 第 8 节。
-- **打包**：已配置（electron-builder 加 asar，只打包 ACP 组合用到的 dsh），见 README「打包」。
-
-## 15. 设计取舍与依据
-
-| 取舍 | 依据 |
-|---|---|
-| 不用用户原话每轮做模糊检索，改为三层 | 原话检索在追问、粘贴长文本、话题切换时噪音很大 |
-| 记忆做成 dsh 插件，而不是 app 里的 MCP 服务器 | 插件能在每一步之前注入、把状态记在会话里（重启和压缩后仍在）、注册不弹授权的原生工具，换方案就是换插件 |
-| 显式写入 + 后台提取兜底 | 只靠主模型调用工具不稳定（实测出现过嘴上说「记住了」却没有保存）；LangMem、Letta 等都是双通道 |
-| 后台只追加、软失效 | mem0 从自动增删改退回只追加；Zep 用失效标记保留历史 |
-| 画像由用户填写 + 定时整理 | 画像直接改写会越写越乱（LangChain 文档）；Claude、ChatGPT 都是从记忆或历史定期重建摘要 |
-| 不让 LLM 打重要性分数、不做遗忘曲线 | 目前只见于论文，没有看到产品采用，结果也不稳定 |
-| 后台写入一律通知、可撤销 | Cursor 的自动记忆因为不透明被批评，后来被删掉了 |
+The original design favored three layers over raw-question fuzzy retrieval to reduce follow-up/paste/topic-switch noise; a dsh plugin over MCP to support pre-step injection, durable session state, and native tools; explicit writes plus extraction because verbal save claims can fail; append/soft-invalidation to preserve history; and user fields plus rebuilt summaries rather than repeatedly rewriting one profile. It cited LangMem/Letta, mem0/Zep, and vendor summary behavior as inspiration, not as verified current product guarantees. Importance scores and forgetting curves were deferred for lack of stable product evidence. Background changes are visible and reversible to keep memory understandable.

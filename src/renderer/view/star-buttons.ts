@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
 
 /**
@@ -18,8 +19,8 @@ export function attachStars(container: HTMLElement, { placeOf, isStarred, toggle
   const show = (button: HTMLButtonElement, starred: boolean) => {
     if (button.getAttribute('aria-pressed') === String(starred)) return
     button.setAttribute('aria-pressed', String(starred))
-    button.setAttribute('aria-label', starred ? '取消收藏' : '收藏这条')
-    button.title = starred ? '取消收藏' : '收藏这条，回顾里能找到'
+    button.setAttribute('aria-label', starred ? t("bookmarks.remove") : t("bookmarks.add"))
+    button.title = starred ? t("bookmarks.remove") : t("bookmarks.add.hint")
     button.textContent = starred ? '★' : '☆'
   }
 

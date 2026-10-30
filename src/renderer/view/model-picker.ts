@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n/translate.ts'
 import { isBusy } from '../state.ts'
 import { h, label } from './dom.ts'
 import { icon } from './icons.ts'
@@ -21,7 +22,7 @@ function modelOption(model: Choice, info: AgentInfo, handlers: Handlers) {
 }
 
 function effortRow(info: AgentInfo, handlers: Handlers) {
-  return h('div', { class: 'effort-row', role: 'group', 'aria-label': '推理强度' }, info.efforts.map((effort: Choice) => h('button', {
+  return h('div', { class: 'effort-row', role: 'group', 'aria-label': t("model-picker.reasoning.effort") }, info.efforts.map((effort: Choice) => h('button', {
     type: 'button',
     class: 'effort',
     'aria-pressed': String(effort.value === info.effort),
@@ -31,11 +32,11 @@ function effortRow(info: AgentInfo, handlers: Handlers) {
 }
 
 function menu(info: AgentInfo, handlers: Handlers) {
-  return h('div', { class: 'model-menu', role: 'dialog', 'aria-label': '选择模型' },
+  return h('div', { class: 'model-menu', role: 'dialog', 'aria-label': t("model-picker.choose.model") },
     label('MODEL'),
     info.models.map((model: Choice) => modelOption(model, info, handlers)),
     info.efforts?.length ? [label('REASONING EFFORT'), effortRow(info, handlers)] : null,
-    h('p', { class: 'model-hint', text: '从下一轮对话开始生效' }))
+    h('p', { class: 'model-hint', text: t("model-picker.takes.effect.from.the.next.turn") }))
 }
 
 /** Model + reasoning-effort switcher in the composer. Disabled mid-turn because dsh pins the route per turn. */
@@ -47,7 +48,7 @@ export function renderModelPicker(dom: { modelArea: HTMLElement, modelBtn: HTMLB
   const disabled = !hasChoices || isBusy(state) || state.switching || state.newTopicPending
   const effort = effortName(info)
   dom.modelBtn.disabled = disabled
-  dom.modelBtn.title = isBusy(state) ? '本轮结束后可以切换模型' : '切换模型与推理强度'
+  dom.modelBtn.title = isBusy(state) ? t("model-picker.you.can.switch.models.after.this.turn") : t("model-picker.switch.model.and.reasoning.effort")
   dom.modelBtn.setAttribute('aria-expanded', String(state.picker && !disabled))
   // replaceChildren would print a null as "null", unlike h()
   dom.modelBtn.replaceChildren(...[

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import path from 'node:path'
 import type { PrepareCall, Prepared as PreparedText, ProposalView } from './followup-channel.ts'
 import { createFileWatch } from './file-watch.ts'
@@ -56,7 +57,7 @@ export function openFollowups(deps: FollowupsDeps) {
   async function prepare(followup: Followup, signal: AbortSignal): Promise<Prepared> {
     const conversationId = followup.origin.conversationId
     if (conversationId && deps.takenUp(conversationId, followup.createdAt)) {
-      return { skip: '你已经从那段对话开了后台任务在做这件事，这里不再重复准备。' }
+      return { skip: t("main.followups-main.you.already.started.a.background.task.from") }
     }
     const { input, readFiles } = materialsFor(followup, { ...deps.materials, message: deps.messages?.message })
     const result = await deps.prepareText({ system: PREPARE_SYSTEM, input, maxTokens: PREPARE_MAX_TOKENS }, signal)

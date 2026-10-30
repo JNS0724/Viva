@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
 import { checkConfigValues, type CheckResult, type ConfigField, type ConfigValues, type SourceManifest } from './source-contract.ts'
 import type { BrokenFolder, SourceFolder } from './source-folders.ts'
@@ -108,12 +109,12 @@ export function registerSourcesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: S
 
   /** Replacing or removing a source while it runs would pull its folder from under it (Windows refuses outright). */
   function idle(id: string) {
-    if (deps.poller.isRunning(id) || checking.has(id)) throw new Error('它正在拉取，等一会儿再试')
+    if (deps.poller.isRunning(id) || checking.has(id)) throw new Error(t("main.sources-ipc.fetching.in.progress.try.again.shortly"))
   }
 
   function folderOf(id: string): SourceFolder {
     const folder = deps.list().sources.find((source) => source.manifest.id === id)
-    if (!folder) throw new Error('这个消息源已经不在了，刷新看看')
+    if (!folder) throw new Error(t("main.sources-ipc.this.source.is.no.longer.available.try"))
     return folder
   }
 
@@ -163,7 +164,7 @@ export function registerSourcesIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: S
   })
 
   handle('sources:install', async () => {
-    if (!pending) throw new Error('先选择要安装的文件夹')
+    if (!pending) throw new Error(t("main.sources-ipc.choose.a.folder.to.install.first"))
     const inspected = pending
     idle(inspected.manifest.id)
     pending = null

@@ -1,7 +1,8 @@
+import { t } from '../shared/i18n/translate.ts'
 import { isBusy } from './state.ts'
 
 /** What to tell the user after a change to the servers, from what the main process reports back. */
-const appliedNotice = (done: string) => (view: { info?: unknown }) => (view.info ? `${done}，当前对话已经生效` : `${done}，下次连接时生效`)
+const appliedNotice = (done: string) => (view: { info?: unknown }) => (view.info ? t("extension-actions.active.in.this.conversation", { done: done }) : t("extension-actions.takes.effect.on.the.next.connection", { done: done }))
 
 /** The edit form as the main process takes it (extensions-ipc.ts formChanges). */
 type ServerForm = { name: string, type: string, command: string, args: string, url: string, keys: Array<{ name: string, value: string }> }
@@ -32,7 +33,7 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
   /** Changing servers reattaches the session, which would cancel a running task. */
   function guardMcp() {
     if (!isBusy(getState())) return true
-    dispatch({ type: 'extensions_failed', message: '先停止当前任务，再修改 MCP 服务器' })
+    dispatch({ type: 'extensions_failed', message: t("extension-actions.stop.the.current.task.before.changing.mcp") })
     return false
   }
 
@@ -45,9 +46,9 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
       }
     },
     removeServer(name: string) {
-      if (guardMcp()) change(() => api.removeMcpServer(name), appliedNotice('已删除'))
+      if (guardMcp()) change(() => api.removeMcpServer(name), appliedNotice(t("extension-actions.deleted")))
     },
-    removeSkill: (skill: { id: string, name: string }) => change(() => api.removeSkill(skill.id), () => `已把「${skill.name}」移到废纸篓`),
+    removeSkill: (skill: { id: string, name: string }) => change(() => api.removeSkill(skill.id), () => t("extension-actions.moved.to.trash", { name: skill.name })),
 
     toggleImportMenu: () => dispatch({ type: 'extensions_import_menu' }),
     closeImportMenu: () => dispatch({ type: 'extensions_import_menu', open: false }),
@@ -63,7 +64,7 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
     addEditKey: () => dispatch({ type: 'extensions_edit_key_add' }),
     removeEditKey: (id: number) => dispatch({ type: 'extensions_edit_key_remove', id }),
     saveServer(name: string, form: ServerForm) {
-      if (guardMcp()) change(() => api.updateMcpServer(name, form), appliedNotice('已保存'))
+      if (guardMcp()) change(() => api.updateMcpServer(name, form), appliedNotice(t("extension-actions.saved")))
     },
   }
 }

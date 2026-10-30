@@ -2,7 +2,7 @@
   "name": "viva-config",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的对话配置：模型在用户确认后接入或移除 MCP 服务器、新建或安装 skill，由应用执行，密钥只由用户在窗口里填写",
+  "description": "Viva configuration: approved MCP and skill changes with separate secure secret entry",
   "type": "module",
   "main": "index.js",
   "exports": {

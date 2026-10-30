@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -67,7 +68,7 @@ export function commandFor(folder: SourceFolder, options: RunOptions): Ran<{ com
   base.VIVA_SOURCE_CONTRACT = String(SOURCE_CONTRACT)
   if (first === 'node') return { ok: true, value: { command: execPath, args, env: { ...base, ELECTRON_RUN_AS_NODE: '1' } } }
   const command = findProgram(first, folder.dir, base, platform)
-  if (!command) return { ok: false, problem: `找不到要运行的程序：${first}` }
+  if (!command) return { ok: false, problem: t("main.source-run.program.not.found", { first: first }) }
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(command)) return viaCmd(command, args, base)
   return { ok: true, value: { command, args, env: base } }
 }
@@ -100,7 +101,7 @@ function findProgram(name: string, dir: string, base: Record<string, string>, pl
  */
 function viaCmd(command: string, args: readonly string[], base: Record<string, string>): Ran<{ command: string, args: string[], env: Record<string, string>, verbatim?: boolean }> {
   const odd = args.find((arg) => !PLAIN_ARG.test(arg))
-  if (odd !== undefined || /["%^&|<>]/.test(command)) return { ok: false, problem: `${path.basename(command)} 的参数只能是简单的词：${(odd ?? command).slice(0, 40)}` }
+  if (odd !== undefined || /["%^&|<>]/.test(command)) return { ok: false, problem: t("main.source-run.arguments.must.be.simple.words", { value1: path.basename(command), value2: (odd ?? command).slice(0, 40) }) }
   const line = [`"${command}"`, ...args].join(' ')
   return { ok: true, value: { command: base.COMSPEC ?? 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], env: base, verbatim: true } }
 }
@@ -139,7 +140,7 @@ export function runSource(folder: SourceFolder, request: SourceRequest, options:
   try {
     fs.mkdirSync(options.dataDir, { recursive: true })
   } catch {
-    return Promise.resolve({ ok: false, problem: '建不了消息源的数据文件夹' })
+    return Promise.resolve({ ok: false, problem: t("main.source-run.cannot.create.the.source.data.folder") })
   }
   const { command, args, env, verbatim = false } = prepared.value
   return new Promise((resolve) => {
@@ -164,9 +165,9 @@ export function runSource(folder: SourceFolder, request: SourceRequest, options:
     }
     const timer = setTimeout(() => {
       stop()
-      finish({ ok: false, problem: `超过 ${Math.round(timeoutMs / 1000)} 秒没有结果，已停止` })
+      finish({ ok: false, problem: t("main.source-run.no.result.after.seconds.stopped", { value1: Math.round(timeoutMs / 1000) }) })
     }, timeoutMs)
-    child.on('error', (error) => finish({ ok: false, problem: `启动失败：${error.message}` }))
+    child.on('error', (error) => finish({ ok: false, problem: t("main.source-run.could.not.start", { message: error.message }) }))
     // Decoded as a stream, so a character split between two chunks stays whole.
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
@@ -175,7 +176,7 @@ export function runSource(folder: SourceFolder, request: SourceRequest, options:
       outBytes += Buffer.byteLength(chunk)
       if (outBytes > maxOutputBytes) {
         stop()
-        finish({ ok: false, problem: `输出超过 ${Math.round(maxOutputBytes / 1024)} KB，已停止` })
+        finish({ ok: false, problem: t("main.source-run.output.exceeded.kb.stopped", { value1: Math.round(maxOutputBytes / 1024) }) })
         return
       }
       out += chunk
@@ -184,9 +185,9 @@ export function runSource(folder: SourceFolder, request: SourceRequest, options:
       err = (err + chunk).slice(-STDERR_TAIL_CHARS * 4)
     })
     child.on('close', (code, signal) => {
-      if (code !== 0) return finish({ ok: false, problem: tail(err) || (code === null ? `程序被结束了（${signal}）` : `程序退出，代码 ${code}`) })
+      if (code !== 0) return finish({ ok: false, problem: tail(err) || (code === null ? t("main.source-run.program.terminated", { signal: String(signal) }) : t("main.source-run.program.exited.with.code", { code: code })) })
       const parsed = lastJsonLine(out)
-      finish(parsed ? { ok: true, value: parsed.value } : { ok: false, problem: '没有输出 JSON 结果' })
+      finish(parsed ? { ok: true, value: parsed.value } : { ok: false, problem: t("main.source-run.no.json.result.returned") })
     })
     child.stdin?.on('error', () => {})
     child.stdin?.end(`${JSON.stringify({ contract: SOURCE_CONTRACT, ...request })}\n`)

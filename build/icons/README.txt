@@ -1,4 +1,13 @@
-Viva 应用图标
+Viva application icons / Viva 应用图标
+
+viva-source.png: approved original flat artwork, preserved unchanged.
+viva.png: 1024px transparent rounded PNG.
+viva.icns: macOS application icon, 16–1024px including Retina.
+viva.ico: Windows multi-resolution icon, 16/20/24/32/40/48/64/96/128/256px.
+viva.iconset/: standard macOS source set with system icon margins.
+png/: commonly used PNG sizes from 16 to 1024px.
+
+Only the outer black background connected to the canvas edge was removed; the cat, brand color, and tail-tip pattern remain. package.json mac.icon / win.icon point here.
 
 viva-source.png：用户确认的扁平版原图，完整保留。
 viva.png：1024px 透明圆角通用 PNG。

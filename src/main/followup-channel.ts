@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /**
  * The app's side of the followups contract (plugins/followups/lib/channel.ts), held by acp-bridge.ts: proposals
  * the model makes in a conversation go to the window as `followup_propose` events, checked first; background
@@ -67,7 +68,7 @@ export function createFollowupDesk({ send, emit, setTimer = setTimeout, clearTim
     }
     if (message?.type !== 'prepare_result') return
     const id = String(message.id ?? '')
-    if (typeof message.ok !== 'boolean' || typeof message.text !== 'string') return settle(id, { ok: false, problem: '准备的结果不完整' })
+    if (typeof message.ok !== 'boolean' || typeof message.text !== 'string') return settle(id, { ok: false, problem: t("main.followup-channel.preparation.result.is.incomplete") })
     settle(id, message.ok ? { ok: true, text: message.text.slice(0, MAX_TEXT_CHARS) } : { ok: false, problem: message.text.slice(0, MAX_PROBLEM_CHARS) })
   }
 
@@ -75,21 +76,21 @@ export function createFollowupDesk({ send, emit, setTimer = setTimeout, clearTim
   function prepare(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
     const id = `prep${++seq}-${Date.now().toString(36)}`
     return new Promise<Prepared>((resolve) => {
-      if (signal?.aborted) return resolve({ ok: false, problem: '先停下了', called: false })
+      if (signal?.aborted) return resolve({ ok: false, problem: t("main.followup-channel.stopped.for.now"), called: false })
       const stop = (problem: string) => {
         send({ type: 'prepare_cancel', id })
         settle(id, { ok: false, problem })
       }
-      const timer = setTimer(() => stop('准备超时了'), PREPARE_TIMEOUT_MS)
+      const timer = setTimer(() => stop(t("main.followup-channel.preparation.timed.out")), PREPARE_TIMEOUT_MS)
       waiting.set(id, { resolve, timer })
-      signal?.addEventListener('abort', () => stop('先停下了'), { once: true })
+      signal?.addEventListener('abort', () => stop(t("main.followup-channel.stopped.for.now")), { once: true })
       send({ type: 'prepare', id, ...call })
     })
   }
 
   /** dsh is going away: nothing will answer what still waits. */
   function close() {
-    for (const id of [...waiting.keys()]) settle(id, { ok: false, problem: '助手断开了，下次再准备' })
+    for (const id of [...waiting.keys()]) settle(id, { ok: false, problem: t("main.followup-channel.assistant.disconnected.preparation.will.retry.later") })
   }
 
   return { receive, prepare, close }

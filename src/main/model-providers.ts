@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -18,10 +20,10 @@ const MAX_URL_CHARS = 2000
 /** dsh's own DeepSeek route; the stock ACP default points at it. */
 export const DEEPSEEK_PROVIDER = 'deepseek-official'
 /** The wire protocols dsh's pi-ai adapter speaks, as the settings form names them. */
-export const PROTOCOLS = Object.freeze({
-  'openai-completions': 'OpenAI 兼容（Chat Completions）',
+export let PROTOCOLS = Object.freeze({
+  'openai-completions': t("main.model-providers.openai.compatible.chat.completions"),
   'openai-responses': 'OpenAI Responses',
-  'anthropic-messages': 'Anthropic 兼容（Messages）',
+  'anthropic-messages': t("main.model-providers.anthropic.compatible.messages"),
 })
 /** Route ids look like this, so they never collide with pi-ai's catalog providers (openai, anthropic, …). */
 const ID_PREFIX = 'custom-'
@@ -38,21 +40,21 @@ export interface ModelChoice { provider: string, model: string }
 export const keyEnvName = (id: string): string => `${KEY_ENV_PREFIX}${id.slice(ID_PREFIX.length).toUpperCase()}`
 
 function requireText(value: unknown, what: string, max: number): string {
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`请填写${what}`)
-  if (value.trim().length > max) throw new Error(`${what}太长了`)
+  if (typeof value !== 'string' || !value.trim()) throw new Error(t("main.mcp-config.enter", { what: what }))
+  if (value.trim().length > max) throw new Error(t("main.mcp-config.is.too.long", { what: what }))
   return value.trim()
 }
 
 function parseBaseUrl(value: unknown): string {
-  const text = requireText(value, '接口地址', MAX_URL_CHARS)
+  const text = requireText(value, t("main.model-providers.api.address"), MAX_URL_CHARS)
   let url: URL
   try {
     url = new URL(text)
   } catch {
-    throw new Error('接口地址不是有效的网址')
+    throw new Error(t("main.model-providers.api.address.is.not.a.valid.url"))
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('接口地址要以 http:// 或 https:// 开头')
-  if (url.username || url.password || url.search || url.hash) throw new Error('接口地址里不能带账号、查询参数或 #')
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(t("main.model-providers.api.address.must.start.with.http.or"))
+  if (url.username || url.password || url.search || url.hash) throw new Error(t("main.model-providers.api.address.cannot.contain.credentials.query.parameters"))
   // The adapter appends its own path (/chat/completions, /v1/messages); a trailing slash would double it.
   return text.replace(/\/+$/, '')
 }
@@ -60,11 +62,11 @@ function parseBaseUrl(value: unknown): string {
 /** Model ids one per line or separated by commas. */
 function parseModels(value: unknown): string[] {
   const models = String(value ?? '').split(/[\n,，]/).map((item) => item.trim()).filter(Boolean)
-  if (models.length === 0) throw new Error('请至少填写一个模型 ID')
-  if (models.length > MAX_MODELS) throw new Error(`模型最多 ${MAX_MODELS} 个`)
+  if (models.length === 0) throw new Error(t("main.model-providers.enter.at.least.one.model.id"))
+  if (models.length > MAX_MODELS) throw new Error(t("main.model-providers.up.to.models.allowed", { MAX_MODELS: MAX_MODELS }))
   const bad = models.find((model) => model.length > MAX_MODEL_CHARS || /\s/.test(model))
-  if (bad) throw new Error(`模型 ID 不能有空格，也不能太长：${bad.slice(0, 40)}`)
-  if (new Set(models).size !== models.length) throw new Error('模型 ID 有重复')
+  if (bad) throw new Error(t("main.model-providers.model.ids.cannot.contain.spaces.or.be", { value1: bad.slice(0, 40) }))
+  if (new Set(models).size !== models.length) throw new Error(t("main.model-providers.duplicate.model.ids"))
   return models
 }
 
@@ -75,9 +77,9 @@ function parseModels(value: unknown): string[] {
  */
 export function parseProviderInput(input: any, takenNames: readonly string[]): ProviderInput {
   if (!input || typeof input !== 'object') throw new Error('invalid model provider')
-  const name = requireText(input.name, '名称', MAX_NAME_CHARS)
-  if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(`已经有名为「${name}」的模型提供方了`)
-  if (!Object.hasOwn(PROTOCOLS, input.api)) throw new Error('请选择接口协议')
+  const name = requireText(input.name, t("main.mcp-config.name"), MAX_NAME_CHARS)
+  if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(t("main.model-providers.a.model.provider.named.already.exists", { name: name }))
+  if (!Object.hasOwn(PROTOCOLS, input.api)) throw new Error(t("main.model-providers.choose.an.api.protocol"))
   const keyText = typeof input.key === 'string' ? input.key.trim() : ''
   return {
     name,
@@ -193,8 +195,8 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
 
   function add(config: ProviderInput): Provider {
     const { stored, lastModel } = read()
-    if (stored.length >= MAX_PROVIDERS) throw new Error(`最多添加 ${MAX_PROVIDERS} 个模型提供方`)
-    if (config.key && !crypto.isEncryptionAvailable()) throw new Error('系统钥匙串不可用，无法安全保存 key')
+    if (stored.length >= MAX_PROVIDERS) throw new Error(t("main.model-providers.up.to.model.providers.allowed", { MAX_PROVIDERS: MAX_PROVIDERS }))
+    if (config.key && !crypto.isEncryptionAvailable()) throw new Error(t("main.model-providers.system.keychain.unavailable.the.key.cannot.be"))
     const id = newId()
     const key = config.key ? crypto.encryptString(config.key).toString('base64') : null
     write({ stored: [...stored, { id, name: config.name, api: config.api, baseURL: config.baseURL, models: config.models, key }], lastModel })
@@ -204,7 +206,7 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
   function remove(id: string): void {
     const { stored, lastModel } = read()
     const next = stored.filter((provider) => provider.id !== id)
-    if (next.length === stored.length) throw new Error('没有这个模型提供方')
+    if (next.length === stored.length) throw new Error(t("main.model-providers.model.provider.not.found"))
     write({ stored: next, lastModel: lastModel?.provider === id ? null : lastModel })
   }
 
@@ -217,3 +219,11 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
 
   return { list, add, remove, lastModel, setLastModel }
 }
+
+onLocaleChange(() => {
+  PROTOCOLS = Object.freeze({
+  'openai-completions': t("main.model-providers.openai.compatible.chat.completions"),
+  'openai-responses': 'OpenAI Responses',
+  'anthropic-messages': t("main.model-providers.anthropic.compatible.messages"),
+})
+})

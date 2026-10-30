@@ -1,10 +1,12 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import { checkImages, IMAGE_LIMITS, mimeOfId } from '../shared/images.ts'
 import type { createImageStore } from './image-store.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
 
-const GONE = '有张图片已经不在图片文件夹里了（可能被清空了），去掉它再发'
-const BUSY = '助手正在工作，等这一轮结束再改'
+let GONE = t("main.image-ipc.an.image.is.missing.from.the.image")
+let BUSY = t("main.image-ipc.wait.for.this.turn.to.finish.before")
 
 /**
  * The window's and the desktop island's side of pictures: keeping one pasted, and in settings the folder's size,
@@ -20,8 +22,8 @@ export function registerImageIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { store, 
   restart: () => Promise<unknown>,
 }) {
   const keep = (_event: unknown, bytes: unknown) => {
-    if (!(bytes instanceof Uint8Array) && !(bytes instanceof ArrayBuffer)) throw new Error('无效的图片')
-    if (bytes.byteLength > IMAGE_LIMITS.bytes) throw new Error(`图片太大了（上限 ${IMAGE_LIMITS.bytes / 1024 / 1024} MB）`)
+    if (!(bytes instanceof Uint8Array) && !(bytes instanceof ArrayBuffer)) throw new Error(t("main.image-ipc.invalid.image"))
+    if (bytes.byteLength > IMAGE_LIMITS.bytes) throw new Error(t("main.image-ipc.image.is.too.large.maximum.mb", { value1: IMAGE_LIMITS.bytes / 1024 / 1024 }))
     return store.keep(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
   }
   ipcMain.handle('images:keep', keep)
@@ -61,3 +63,8 @@ export function imagesForPrompt(store: Pick<ReturnType<typeof createImageStore>,
     return { data: fs.readFileSync(file).toString('base64'), mimeType }
   })
 }
+
+onLocaleChange(() => {
+  GONE = t("main.image-ipc.an.image.is.missing.from.the.image")
+  BUSY = t("main.image-ipc.wait.for.this.turn.to.finish.before")
+})

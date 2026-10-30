@@ -1,13 +1,13 @@
 {
   "contract": 1,
   "id": "my-command-source",
-  "name": "命令行消息源",
+  "name": "Command-line source",
   "kind": "mail",
   "run": ["node", "index.mjs"],
-  "reads": "TODO：写清会读什么，例如「发件人、标题、正文前 2000 字」",
+  "reads": "TODO: describe what is read, e.g. sender, subject, first 2000 body characters",
   "everyMinutes": 5,
   "config": {
-    "command": { "type": "string", "title": "命令", "required": true, "help": "输出 JSON 的命令，例如 mail-cli" },
-    "args": { "type": "string", "title": "参数", "default": "list --json", "help": "用空格分开" }
+    "command": { "type": "string", "title": "Command", "required": true, "help": "Command producing JSON, e.g. mail-cli" },
+    "args": { "type": "string", "title": "Arguments", "default": "list --json", "help": "Separate with spaces" }
   }
 }

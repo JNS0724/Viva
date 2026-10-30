@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { z } from 'zod'
 
 /**
@@ -46,9 +48,9 @@ const fieldSchema = z.discriminatedUnion('type', [
 
 const runSchema = z.array(z.string().min(1).max(1000)).min(1).max(LIMITS.runParts)
 
-const manifestSchema = z.object({
+let manifestSchema = z.object({
   contract: z.literal(SOURCE_CONTRACT),
-  id: z.string().regex(SOURCE_ID, 'id 只能用小写字母、数字和连字符，最多 40 个字符'),
+  id: z.string().regex(SOURCE_ID, t("main.source-contract.id.must.use.lowercase.letters.numbers.and")),
   name: z.string().trim().min(1).max(40),
   kind: z.enum(SOURCE_KINDS),
   run: runSchema,
@@ -91,15 +93,15 @@ function issueText(error: z.ZodError): string {
 export function checkManifest(input: unknown): Checked<'manifest', SourceManifest> {
   const contract = (input as { contract?: unknown } | null)?.contract
   if (typeof contract === 'number' && contract > SOURCE_CONTRACT) {
-    return { problem: `需要更新 Viva：这个消息源按第 ${contract} 版约定写成，当前只支持第 ${SOURCE_CONTRACT} 版` }
+    return { problem: t("main.source-contract.update.viva.this.source.uses.contract.version", { contract: contract, SOURCE_CONTRACT: SOURCE_CONTRACT }) }
   }
   const result = manifestSchema.safeParse(input)
-  if (!result.success) return { problem: `${MANIFEST_FILE} 不对：${issueText(result.error)}` }
+  if (!result.success) return { problem: t("main.source-contract.invalid", { MANIFEST_FILE: MANIFEST_FILE, value2: issueText(result.error) }) }
   const manifest = result.data
-  if (Object.keys(manifest.config).length > LIMITS.configFields) return { problem: `配置项最多 ${LIMITS.configFields} 个` }
+  if (Object.keys(manifest.config).length > LIMITS.configFields) return { problem: t("main.source-contract.up.to.configuration.fields.allowed", { configFields: LIMITS.configFields }) }
   for (const [key, field] of Object.entries(manifest.config)) {
-    if (!FIELD_KEY.test(key)) return { problem: `配置项名只能用英文字母、数字和下划线：${key.slice(0, 40)}` }
-    if (field.type === 'enum' && field.default !== undefined && !field.values.includes(field.default)) return { problem: `配置项 ${key} 的默认值不在可选值里` }
+    if (!FIELD_KEY.test(key)) return { problem: t("main.source-contract.configuration.keys.must.use.english.letters.numbers", { value1: key.slice(0, 40) }) }
+    if (field.type === 'enum' && field.default !== undefined && !field.values.includes(field.default)) return { problem: t("main.source-contract.default.value.for.configuration.field.is.not", { key: key }) }
   }
   return { manifest }
 }
@@ -119,9 +121,9 @@ const messageSchema = z.object({
 
 function linkProblem(link: string): string | null {
   try {
-    return LINK_PROTOCOLS.has(new URL(link).protocol) ? null : 'link 只能是 http、https 或 mailto 链接'
+    return LINK_PROTOCOLS.has(new URL(link).protocol) ? null : t("main.source-contract.link.must.use.http.https.or.mailto")
   } catch {
-    return 'link 不是有效的链接'
+    return t("main.source-contract.link.is.not.a.valid.url")
   }
 }
 
@@ -131,8 +133,8 @@ export function checkMessage(input: unknown): Checked<'message', SourceMessage> 
   if (!result.success) return { problem: issueText(result.error) }
   const { at: rawAt, ...rest } = result.data
   const at = typeof rawAt === 'number' ? rawAt : Date.parse(rawAt)
-  if (!Number.isFinite(at)) return { problem: 'at：不是有效的时间' }
-  if (!rest.title && !rest.text) return { problem: 'title 和 text 至少要有一个' }
+  if (!Number.isFinite(at)) return { problem: t("main.source-contract.at.invalid.time") }
+  if (!rest.title && !rest.text) return { problem: t("main.source-contract.at.least.one.of.title.and.text") }
   if (rest.link) {
     const problem = linkProblem(rest.link)
     if (problem) return { problem }
@@ -155,13 +157,13 @@ const pollSchema = z.object({
 
 function droppedLine(raw: unknown, problem: string): string {
   const id = (raw as { id?: unknown } | null)?.id
-  return `${typeof id === 'string' && id ? `消息 ${id.slice(0, 60)}` : '一条消息'}：${problem}`
+  return t("main.source-contract.label", { value1: typeof id === 'string' && id ? t("main.source-contract.message", { value1: id.slice(0, 60) }) : t("main.source-contract.a.message"), problem: problem })
 }
 
 /** A poll's answer: a bad cursor or list fails the whole poll; a bad message is dropped and the rest kept. */
 export function checkPollResult(input: unknown): Checked<'result', PollResult> {
   const result = pollSchema.safeParse(input)
-  if (!result.success) return { problem: `poll 的结果不对：${issueText(result.error)}` }
+  if (!result.success) return { problem: t("main.source-contract.invalid.poll.result", { value1: issueText(result.error) }) }
   const messages: SourceMessage[] = []
   const dropped: string[] = []
   for (const raw of result.data.messages) {
@@ -182,7 +184,7 @@ export type CheckResult = z.infer<typeof checkSchema>
 /** A check's answer: ok, or what is wrong in the source's own words. */
 export function checkCheckResult(input: unknown): Checked<'result', CheckResult> {
   const result = checkSchema.safeParse(input)
-  if (!result.success) return { problem: `check 的结果不对：${issueText(result.error)}` }
+  if (!result.success) return { problem: t("main.source-contract.invalid.check.result", { value1: issueText(result.error) }) }
   return { result: result.data }
 }
 
@@ -191,19 +193,19 @@ function valueProblem(field: ConfigField, value: unknown): string | null {
   switch (field.type) {
     case 'string':
     case 'secret':
-      return typeof value === 'string' && value.length <= LIMITS.configValueChars ? null : '要填文本'
+      return typeof value === 'string' && value.length <= LIMITS.configValueChars ? null : t("main.source-contract.enter.text")
     case 'number':
-      return typeof value === 'number' && Number.isFinite(value) ? null : '要填数字'
+      return typeof value === 'number' && Number.isFinite(value) ? null : t("main.source-contract.enter.a.number")
     case 'boolean':
-      return typeof value === 'boolean' ? null : '要选是或否'
+      return typeof value === 'boolean' ? null : t("main.source-contract.choose.yes.or.no")
     case 'enum':
-      return typeof value === 'string' && field.values.includes(value) ? null : `只能选：${field.values.join('、')}`
+      return typeof value === 'string' && field.values.includes(value) ? null : t("main.source-contract.choose.from", { value1: field.values.join('、') })
   }
 }
 
 /** The values of `fields` with defaults filled in: unknown keys refused, each value of its field's type. */
 export function checkConfigValues(fields: SourceManifest['config'], values: Readonly<Record<string, unknown>>): Checked<'values', ConfigValues> {
-  for (const key of Object.keys(values)) if (!Object.hasOwn(fields, key)) return { problem: `没有这个配置项：${key.slice(0, 40)}` }
+  for (const key of Object.keys(values)) if (!Object.hasOwn(fields, key)) return { problem: t("main.source-contract.unknown.configuration.field", { value1: key.slice(0, 40) }) }
   const entries: Array<[string, ConfigValue]> = []
   for (const [key, field] of Object.entries(fields)) {
     const value = values[key] ?? ('default' in field ? field.default : undefined)
@@ -221,3 +223,18 @@ export function missingFields(fields: SourceManifest['config'], values: ConfigVa
     .filter(([key, field]) => 'required' in field && field.required === true && (values[key] === undefined || values[key] === ''))
     .map(([, field]) => field.title)
 }
+
+onLocaleChange(() => {
+  manifestSchema = z.object({
+  contract: z.literal(SOURCE_CONTRACT),
+  id: z.string().regex(SOURCE_ID, t("main.source-contract.id.must.use.lowercase.letters.numbers.and")),
+  name: z.string().trim().min(1).max(40),
+  kind: z.enum(SOURCE_KINDS),
+  run: runSchema,
+  /** `run` for one platform instead, where the program is called otherwise (`py` on Windows, `python3` elsewhere). */
+  runOn: z.object({ win32: runSchema.optional(), darwin: runSchema.optional(), linux: runSchema.optional() }).optional(),
+  reads: z.string().trim().min(1).max(200),
+  everyMinutes: z.number().int().min(MIN_EVERY_MINUTES).max(MAX_EVERY_MINUTES).default(DEFAULT_EVERY_MINUTES),
+  config: z.record(z.string(), fieldSchema).default({}),
+})
+})

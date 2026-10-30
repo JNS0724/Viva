@@ -1,3 +1,5 @@
+import { localeRevision } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
 
 /**
@@ -36,7 +38,7 @@ export function activeTurn(count: number, topOf: (index: number) => number, line
 /** The question on one line, cut to fit a tooltip. */
 export function turnPreview(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim()
-  if (!line) return '（图片或文件）'
+  if (!line) return t("topic.attachment.only")
   return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS)}…` : line
 }
 
@@ -80,7 +82,7 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
     let turn = 0
     marks = places.map((place, index) => {
       const folded = place.matches(FOLDED)
-      const tip = folded ? `话题 · ${place.dataset.title ?? ''}` : `第 ${turn += 1} 轮 · ${turnPreview(questionText(place))}`
+      const tip = folded ? t("rail.topic", { p0: place.dataset.title ?? '' }) : t("rail.turn", { p0: turn += 1, p1: turnPreview(questionText(place)) })
       return h('button', {
         class: folded ? 'turn-mark turn-topic' : 'turn-mark', type: 'button', tabindex: '-1', 'aria-label': tip, 'data-tip': tip, onclick: () => jump(index),
       })
@@ -90,11 +92,13 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
     rail.hidden = places.length < MIN_TURNS
   }
 
+  let shownLocale = -1
   const refresh = () => {
     frame = 0
     // A question inside a folded topic is that topic's dot, not a line of its own.
     const found = [...scroll.querySelectorAll<HTMLElement>(PLACES)].filter((place) => place.matches(FOLDED) || !place.closest(FOLDED))
-    if (!sameList(found, places)) {
+    if (!sameList(found, places) || shownLocale !== localeRevision()) {
+      shownLocale = localeRevision()
       places = found
       rebuild()
     }

@@ -10,8 +10,17 @@ import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './sm
  * folded to a line, a dot on the rail; a folded topic opens in place; a message is starred; 回顾 lists the topics by
  * month and day, filters them, opens one to read, and lists what is starred.
  */
-const DAY_MS = 86_400_000
 const HOUR_MS = 3_600_000
+
+/** Calendar offsets keep fixtures on their intended local day, including midnight and DST boundaries. */
+export function timelineSeedTime(now: number, daysAgo: number, hour: number): number {
+  const day = new Date(now)
+  day.setDate(day.getDate() - daysAgo)
+  day.setHours(0, 0, 0, 0)
+  if (hour < 0) return Math.max(day.getTime(), now + hour * HOUR_MS)
+  day.setHours(Math.floor(hour), Math.round((hour % 1) * 60), 0, 0)
+  return day.getTime()
+}
 
 /**
  * `continues`: the seed (by index) whose topic it goes on (继续这个话题, days later). `cwd`: where it was talked in
@@ -46,12 +55,11 @@ const messagesOf = (seed: Seed) => seed.talk.map((text, i) => (i % 2
 export function seedTimeline(userData: string, now = Date.now()) {
   let clock = 0
   const db = openHistoryDb({ file: path.join(userData, 'history.db'), now: () => clock })
-  const today = new Date(now).setHours(0, 0, 0, 0)
   let previous: string | null = null
   const ids: string[] = []
   fs.mkdirSync(seedDir(userData, 'other'), { recursive: true })
   for (const seed of SEEDS) {
-    clock = seed.hour < 0 ? now + seed.hour * HOUR_MS : today - seed.daysAgo * DAY_MS + seed.hour * HOUR_MS
+    clock = timelineSeedTime(now, seed.daysAgo, seed.hour)
     // A task is started from the conversation (task-ipc.ts start); a topic gone on goes on from its segment.
     const parentId: string | null = seed.task ? previous : seed.continues === undefined ? null : ids[seed.continues]
     const saved: { id: string } = db.save(db.create({ cwd: seedDir(userData, seed.cwd), parentId }), messagesOf(seed))
@@ -175,7 +183,7 @@ const AGENT = `window.agent.getInfo().then((info) => ({ sessionId: info.sessionI
 async function checkReview(win: BrowserWindow, outDir: string, expect: Expect) {
   await run(win, `document.querySelector('#earlier .timeline-more').click()`)
   const listed = await until(win, `(() => { const seen = ${REVIEW}; return seen.topics.length >= 9 && seen })()`, '回顾 listing the topics')
-  expect(listed.page === 'true' && listed.months.length === 2 && listed.days.includes('今天') && listed.days.includes('昨天'),
+  expect(listed.page === 'true' && listed.months.length >= 2 && listed.months.length <= 3 && listed.days.includes('今天') && listed.days.includes('昨天'),
     '回顾 should open on the topics by month and day, newest first', listed)
   const gone = listed.topics.indexOf('帮我比较一下两家云服务的报价')
   expect(gone >= 0 && listed.metas[gone].includes('开始于') && listed.topics.filter((title: string) => title.includes('B 家的带宽')).length === 0,

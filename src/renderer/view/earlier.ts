@@ -1,3 +1,5 @@
+import { onLocaleChange, localeRevision } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { reachedRecentEnd } from '../earlier-state.ts'
 import { earlierRows, formatListTime, workspaceName, type EarlierRow } from '../selectors.ts'
 import { isBusy } from '../state.ts'
@@ -13,10 +15,10 @@ import { reconcileChildren } from './reconcile.ts'
  * longer has is a step quieter, its head says so, and it can be taken up again; where the topic on screen
  * starts, a line says so. More comes in when the user scrolls up to the top, or asks for it with the button there.
  */
-const NEW_TOPIC_NOTE = '助手从这里重新开始，不带上面的内容；关于你的记忆照常'
-const BACK_NOTE = '助手接着那个话题的内容聊，中间的不记得'
+let NEW_TOPIC_NOTE = t("earlier.the.assistant.starts.here.without.the.content")
+let BACK_NOTE = t("earlier.the.assistant.continues.that.topic.without.the")
 /** Its own session gone: a new conversation, the topic's latest turns going with the first question as records. */
-const carriedNote = (turns: number) => `原来的会话已经接不上，这是新对话；会带上这个话题最近 ${turns} 轮记录，仅供助手参考`
+const carriedNote = (turns: number) => t("topic.carried.context", { p0: turns })
 
 type RowOf<K extends EarlierRow['kind']> = Extract<EarlierRow, { kind: K }>
 type TopicBlock = ReturnType<typeof topicBlocks>[number]
@@ -26,8 +28,8 @@ function workdirLine(row: RowOf<'workdir'>) {
   return h('div', { class: 'timeline-workdir', role: 'separator', title: row.cwd },
     h('span', { class: 'timeline-workdir-ico', 'aria-hidden': 'true', text: '📁' }),
     ...(row.continues
-      ? [h('span', { text: '换到 ' }), h('b', { text: workspaceName(row.cwd) }), h('span', { text: ' 目录 · 接着聊' })]
-      : [h('span', { text: '工作目录换成 ' }), h('b', { text: workspaceName(row.cwd) }), h('span', { class: 'timeline-workdir-path mono', text: row.cwd })]))
+      ? [h('span', { text: t("earlier.switched.to") }), h('b', { text: workspaceName(row.cwd) }), h('span', { text: t("earlier.directory.continuing") })]
+      : [h('span', { text: t("earlier.working.directory.changed.to") }), h('b', { text: workspaceName(row.cwd) }), h('span', { class: 'timeline-workdir-path mono', text: row.cwd })]))
 }
 
 const ROW_VIEWS: { [K in EarlierRow['kind']]: (row: RowOf<K>, handlers: Handlers) => View } = {
@@ -60,7 +62,7 @@ function openedRows(rows: readonly EarlierRow[], handlers: Handlers, cachedRows:
   const place = rowPlace(messages[hidden - 1].id)
   return [
     h('button', {
-      class: 'timeline-more topic-rest', type: 'button', text: `这个话题前面还有 ${hidden} 条，在回顾里看 →`,
+      class: 'timeline-more topic-rest', type: 'button', text: t("topic.earlier.messages", { p0: hidden }),
       onClick: () => place && handlers.jumpToHit(place),
     }),
     ...cachedRows(rows.slice(rows.indexOf(first))),
@@ -87,12 +89,12 @@ function oldTopic(block: TopicBlock, build: () => View[], handlers: Handlers, { 
     class: 'topic-old', 'data-title': `${when} · ${title}`, 'data-segments': block.segments.map((segment) => segment.id).join(' '),
     onToggle: (event: Event) => { if ((event.currentTarget as HTMLDetailsElement).open) fill() },
   },
-    h('summary', { class: 'topic-head', title: '助手不记得这段，点开看全文' },
+    h('summary', { class: 'topic-head', title: t("topic.forgotten.expand") },
       h('b', { class: 'topic-title', text: title }),
       // The day is on the line above it; the line itself says when in the day.
-      h('span', { class: 'topic-meta mono', text: `${turnsOf(messages)} 轮 · ${new Date(block.at ?? 0).toTimeString().slice(0, 5)}` }),
+      h('span', { class: 'topic-meta mono', text: t("topic.turns.time", { p0: turnsOf(messages), p1: new Date(block.at ?? 0).toTimeString().slice(0, 5) }) }),
       h('button', {
-        class: 'topic-back', type: 'button', disabled: busy, title: busy ? '等这一轮结束再回去' : null, text: '回到这个话题',
+        class: 'topic-back', type: 'button', disabled: busy, title: busy ? t("earlier.wait.for.this.turn.to.finish.before") : null, text: t("earlier.return.to.this.topic"),
         onClick: (event: MouseEvent) => {
           // A button in the folded line: it takes the topic up, it does not open or close it.
           event.preventDefault()
@@ -136,11 +138,11 @@ function startLine(start: ReturnType<typeof topicStart>, handlers: Handlers, { n
   const when = topicTime(start.at, now)
   if (start.kind === 'back') {
     const note = start.carried === null ? BACK_NOTE : carriedNote(start.carried)
-    return [h('div', { class: 'topic-start', role: 'separator' }, `回到 话题 · ${when}`), h('div', { class: 'topic-note', text: note })]
+    return [h('div', { class: 'topic-start', role: 'separator' }, t("topic.return.timestamp", { p0: when })), h('div', { class: 'topic-note', text: note })]
   }
   return [
-    h('div', { class: 'topic-start', role: 'separator' }, '新话题', when ? h('time', { text: when }) : null,
-      start.undo ? h('button', { class: 'topic-back', type: 'button', disabled: busy, text: '撤销', onClick: () => handlers.resumeTopic(start.undo) }) : null),
+    h('div', { class: 'topic-start', role: 'separator' }, t("earlier.new.topic"), when ? h('time', { text: when }) : null,
+      start.undo ? h('button', { class: 'topic-back', type: 'button', disabled: busy, text: t("memory-actions.undo"), onClick: () => handlers.resumeTopic(start.undo) }) : null),
     h('div', { class: 'topic-note', text: NEW_TOPIC_NOTE }),
   ]
 }
@@ -156,13 +158,17 @@ export function updateEarlierControls(container: HTMLElement, state: State) {
   const busy = isBusy(state) || state.switching
   for (const button of container.querySelectorAll<HTMLButtonElement>('.topic-back')) {
     button.disabled = busy
-    button.title = busy ? '等这一轮结束再回去' : ''
+    button.title = busy ? t("earlier.wait.for.this.turn.to.finish.before") : ''
   }
 }
 
 export function renderEarlier(container: HTMLElement, state: State, handlers: Handlers, now = Date.now()) {
-  const inputs = [state.earlier, state.info.cwd, state.topic.parentId]
-  const cached = earlierViews.get(container)
+  const inputs = [localeRevision(), state.earlier, state.info.cwd, state.topic.parentId]
+  const previous = earlierViews.get(container)
+  const cached = previous?.inputs[0] === localeRevision() ? previous : undefined
+  const opened = previous && !cached
+    ? new Set([...container.querySelectorAll<HTMLDetailsElement>('details.topic-old[open]')].map(fold => fold.dataset.segments))
+    : null
   if (cached && inputs.every((value, i) => cached.inputs[i] === value)) {
     reconcileChildren(container, [...cached.nodes, ...startLine(topicStart(state), handlers, { now, busy: isBusy(state) || state.switching })].filter((view): view is Node | string => Boolean(view)))
     updateEarlierControls(container, state)
@@ -185,8 +191,8 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
   // Scrolling up reads back the recent part only; what is older is read in 回顾 (view/review.ts), by day.
   const more = !earlier.hasMore || earlier.segments.length === 0 ? null
     : reachedRecentEnd(earlier, now)
-      ? h('button', { class: 'timeline-more', type: 'button', text: '更早的记录在回顾里 →', onClick: () => handlers.openReview() })
-      : h('button', { class: 'timeline-more', type: 'button', disabled: earlier.loading, text: earlier.loading ? '正在读取…' : '更早的对话', onClick: () => handlers.loadEarlier() })
+      ? h('button', { class: 'timeline-more', type: 'button', text: t("history.older.in.review"), onClick: () => handlers.openReview() })
+      : h('button', { class: 'timeline-more', type: 'button', disabled: earlier.loading, text: earlier.loading ? t("earlier.loading") : t("earlier.earlier.conversations"), onClick: () => handlers.loadEarlier() })
   const rowCache = cached?.rows ?? new WeakMap<EarlierRow, View>()
   const cachedRows = (rows: readonly EarlierRow[]) => rows.flatMap((row) => {
     if (!rowCache.has(row)) rowCache.set(row, rowView(row, handlers))
@@ -210,5 +216,17 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
   const nodes = [more, ...views, ...rowViews(tail, handlers)].filter((view): view is Node | string => Boolean(view))
   earlierViews.set(container, { inputs, nodes, blocks: blockCache, rows: rowCache })
   reconcileChildren(container, [...nodes, ...startLine(topicStart(state), handlers, options)].filter((view): view is Node | string => Boolean(view)))
+  if (opened?.size) {
+    for (const fold of container.querySelectorAll<HTMLDetailsElement>('details.topic-old')) {
+      if (!opened.has(fold.dataset.segments)) continue
+      fold.open = true
+      fillers.get(fold)?.()
+    }
+  }
   updateEarlierControls(container, state)
 }
+
+onLocaleChange(() => {
+  NEW_TOPIC_NOTE = t("earlier.the.assistant.starts.here.without.the.content")
+  BACK_NOTE = t("earlier.the.assistant.continues.that.topic.without.the")
+})

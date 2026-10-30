@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "reviewedOn": "2026-10-30",
+  "pairs": [
+    {
+      "en": "README.md",
+      "zh": "README.zh-CN.md",
+      "enHash": "5bc8e1082887b3c77d70fc50d28fd76ceb619162395c93eb209d9985b65fffa8",
+      "zhHash": "1ee9e9862004bcf0788b5193a2b4e7eaad62859c51e94853b8680fbf2b788053"
+    },
+    {
+      "en": "packages/viva-source-kit/README.md",
+      "zh": "packages/viva-source-kit/README.zh-CN.md",
+      "enHash": "498b6c5e4d7155dda0488cb1f608fcd0c4d8cebc1bdea8004492d372d3b16a6d",
+      "zhHash": "4ae7fd67f3795b58aef0459544fafbbd35630726bc949416c87493d24b90c2de"
+    },
+    {
+      "en": "docs/architecture.md",
+      "zh": "docs/architecture.zh-CN.md",
+      "enHash": "a103f14c240baef7fc10d1399275bc6bfa4c13bf16f4c3a50afdab2ec590e221",
+      "zhHash": "6073d0c644d6a8b29542d2343771abba1246aa4335ea18ea95aebb4e99f2ae13"
+    },
+    {
+      "en": "docs/background-task-tools.md",
+      "zh": "docs/background-task-tools.zh-CN.md",
+      "enHash": "746f937ae28c567db953610247058c8649cc307267fd9ca70592b7569160edf6",
+      "zhHash": "598312f927f9838386f19c0c52ad90edc2745d867e1645e0d62e16a6d6fa038e"
+    },
+    {
+      "en": "docs/cat-character.md",
+      "zh": "docs/cat-character.zh-CN.md",
+      "enHash": "19c2085e778bfc006905638535ee53c0be387441654fca00d24039f35fd46bf0",
+      "zhHash": "6098cddad2d0b0973d8b22d8912eedd13690d35419fb8906a9672f75b7970112"
+    },
+    {
+      "en": "docs/development.md",
+      "zh": "docs/development.zh-CN.md",
+      "enHash": "b0a230a58d0716f07d4fe6c6dcd37b5969eeb6ba8c6f25def050a990296050bb",
+      "zhHash": "260bf42c2bbe8522e68f7706cb36230e8e316d9b5f21a9769c8737bc54466b8f"
+    },
+    {
+      "en": "docs/dsh-upgrade-validation-20261026.md",
+      "zh": "docs/dsh-upgrade-validation-20261026.zh-CN.md",
+      "enHash": "102b4f45010fe1c91f8cfa92490f779df27b833218fc76a1ff7328b5896e75ef",
+      "zhHash": "f65d97d52d998430a2427dfbd38967203e76e667f14873509d69fc07907c93aa"
+    },
+    {
+      "en": "docs/features.md",
+      "zh": "docs/features.zh-CN.md",
+      "enHash": "1a50a44c2563b4158896dc6b12b6910a33d68c2e82aad6f2ba5b3e3c75a456a7",
+      "zhHash": "7b75ad400227e301a29a60b4fa58e0b432ab99dfc7aee8f0838c70b6ae76f282"
+    },
+    {
+      "en": "docs/internationalization.md",
+      "zh": "docs/internationalization.zh-CN.md",
+      "enHash": "340f3436fbecfb39ad5846a0415c418e26ec321444582f1aacb66c0e98e5daad",
+      "zhHash": "14ba75e2cb951a22e5ad0afbbc3f68719ed438dd9506ba71a519dbe95df8b7c0"
+    },
+    {
+      "en": "docs/live-check.md",
+      "zh": "docs/live-check.zh-CN.md",
+      "enHash": "82dd4712baa5a0f4c105ab4dc9c37e986649556f486ed234fdab884487e11120",
+      "zhHash": "437c808dccdd549b3049f03f3fe1185d1265e6e2b3dcf45fec79ef56e900f9e5"
+    },
+    {
+      "en": "docs/memory.md",
+      "zh": "docs/memory.zh-CN.md",
+      "enHash": "ff3853ed53ce424f65c159efe8b60636bf4fc3a3df07aaa99ad09adedd9f9a24",
+      "zhHash": "d011f6195a50e7f83d4ec27fbc345e3f0905844b6924a6e49d75c86bce86df9a"
+    },
+    {
+      "en": "docs/new-topic-performance-20261026.md",
+      "zh": "docs/new-topic-performance-20261026.zh-CN.md",
+      "enHash": "9bc40f1cd1b68fc96ae992392be48a12b01023323f00fc1db886d8ca8f34dc64",
+      "zhHash": "bd6466c4afb112a783ceff788ec2f1e6c656d8bd2baa80e5f661af19235718b5"
+    },
+    {
+      "en": "docs/release-qa-20261028.md",
+      "zh": "docs/release-qa-20261028.zh-CN.md",
+      "enHash": "d7cd2dc67ff5894c04e76d0130bec41a33b4e0ecd04885d76ddeb059a750e1ce",
+      "zhHash": "b09b9c96925be6ed3c14873c05a6ff8039450673c1a7a4bb5d49c6d8e405d65a"
+    },
+    {
+      "en": "docs/sources.md",
+      "zh": "docs/sources.zh-CN.md",
+      "enHash": "c3d05ef25fec93351535403e90c65d876cce367e1db5b3f1a8a7f72d26e64906",
+      "zhHash": "4e34f8f8da2b4436899d2f4de9d5ae1d0572957c3848192b045061386e926961"
+    },
+    {
+      "en": "docs/windows-performance-20261026.md",
+      "zh": "docs/windows-performance-20261026.zh-CN.md",
+      "enHash": "53b1d4b6bfa039b7749b8e7d7c60e9e4e7f9db4a0d9c23dd2ff0d49f464ec751",
+      "zhHash": "e4963dbcd642327b56302347b76b6f80486533f9af84e5ce2ed8d6ea5e8501d3"
+    },
+    {
+      "en": "docs/releases/v0.4.0-beta.1.md",
+      "zh": "docs/releases/v0.4.0-beta.1.zh-CN.md",
+      "enHash": "08a261d8a073a755eb6f93a9ad3e586db758cc113d89722ef69c0f0195887ff3",
+      "zhHash": "961ffb63916105641077d62f351d7e7b8e52acfbc76dd5e4ce7d2023e03a1ba7"
+    },
+    {
+      "en": "docs/releases/v0.4.0-beta.3.md",
+      "zh": "docs/releases/v0.4.0-beta.3.zh-CN.md",
+      "enHash": "dd2d94fa94c683670ad86ee34ac3e6373ee3b1ee374f141cd779923210ae0d20",
+      "zhHash": "fc89b45942c95b2c2403ceb5fdcf6a84c05b783be300361d9250c5a687582924"
+    },
+    {
+      "en": "docs/releases/v0.4.0-beta.4.md",
+      "zh": "docs/releases/v0.4.0-beta.4.zh-CN.md",
+      "enHash": "f8a9c04001c2c3fdaac2cd39ea6d922d231ea54a70e30cb4b27225b1d79b3fb6",
+      "zhHash": "8cd2d28b55519c733909ad2e82c3e97c54580d270b39de359adade6592993f50"
+    },
+    {
+      "en": "docs/releases/v0.4.0-beta.5.md",
+      "zh": "docs/releases/v0.4.0-beta.5.zh-CN.md",
+      "enHash": "931e7bf706986fc7db58c667b579b53eef36c1e2fa6f7c84c08eb6c4babfc22f",
+      "zhHash": "528046653e7c03483150fb5c7eeb789b0556754772bd85af8ca7a8f17f77da65"
+    },
+    {
+      "en": "docs/releases/v0.4.0-beta.6.md",
+      "zh": "docs/releases/v0.4.0-beta.6.zh-CN.md",
+      "enHash": "6b5d41597fddc0c4229f7dff27cc75de263ed244a830e0669661158ab71b60d5",
+      "zhHash": "c615a6c5f95b307ad49905dede55c869e0ca30c0f517ff3128e577f9bbe51c59"
+    }
+  ],
+  "bilingual": [
+    "AGENTS.md",
+    "build/icons/README.txt"
+  ]
+}

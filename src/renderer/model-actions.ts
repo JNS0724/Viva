@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { isBusy } from './state.ts'
 
 /**
@@ -13,7 +14,7 @@ export function createModelActions({ api, getState, dispatch, errorMessage }: Pi
   async function change(request: () => Promise<ModelsView>, noticeFor: (view: ModelsView) => string) {
     if (getState().models.busy) return
     if (isBusy(getState())) {
-      dispatch({ type: 'models_failed', message: '先停止当前任务，再修改模型' })
+      dispatch({ type: 'models_failed', message: t("model-actions.stop.the.current.task.before.changing.models") })
       return
     }
     dispatch({ type: 'models_busy' })
@@ -34,7 +35,7 @@ export function createModelActions({ api, getState, dispatch, errorMessage }: Pi
       }
     },
     toggleAddProvider: (adding: boolean) => dispatch({ type: 'models_adding', adding }),
-    addProvider: (values: Args<'models:add'>[0]) => change(() => api.addModelProvider(values), (view) => `已添加「${view.added}」，可以在模型菜单里选择它的模型`),
-    removeProvider: (provider: { id: string, name: string }) => change(() => api.removeModelProvider(provider.id), () => `已删除「${provider.name}」`),
+    addProvider: (values: Args<'models:add'>[0]) => change(() => api.addModelProvider(values), (view) => t("model-actions.added.choose.its.models.from.the.model", { added: view.added ?? '' })),
+    removeProvider: (provider: { id: string, name: string }) => change(() => api.removeModelProvider(provider.id), () => t("model-actions.deleted", { name: provider.name })),
   }
 }

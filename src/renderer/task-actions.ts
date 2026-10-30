@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { answersFrom, type QuestionAnswer } from './question-state.ts'
 import { spinOffTarget, taskMessages } from './tasks-state.ts'
 
@@ -13,7 +15,7 @@ export const FINISHED_MS = 5000
 export const REPORT_RETRY_MS = 1000
 /** While a task talks, what it said is saved at most this often, so quitting Viva loses little. */
 export const SAVE_EVERY_MS = 10_000
-const UNDO_FAILED = '没能撤销'
+let UNDO_FAILED = t("task-actions.could.not.undo")
 const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_question_closed'])
 /** What the main process says of the agent (acp-bridge.ts), as far as holding it back reads it. */
 type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
@@ -83,7 +85,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     const origin = getState().info.sessionId ?? null
     const previous = getState().tasks.submissions.find(item => item.id === retryId)
     if (previous && previous.origin !== origin) {
-      showToast('请回到提交时的话题再重试，内容已保留')
+      showToast(t("task-actions.return.to.the.topic.where.you.submitted"))
       return false
     }
     const id = retryId ?? `submission-${Date.now()}-${++submissionCounter}`
@@ -92,7 +94,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     starting++
     const result = await call(() => api.startTask(words ? { text, words } : { text }))
     if (!result.ok) {
-      dispatch({ type: 'task_submit_failed', id, problem: result.problem ?? '没能交给后台' })
+      dispatch({ type: 'task_submit_failed', id, problem: result.problem ?? t("task-actions.could.not.start.in.the.background") })
       starting--
       if (!starting) { const events = [...earlyTasks.values()].flat(); earlyTasks.clear(); events.forEach(deliver) }
       return false
@@ -109,7 +111,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   /** 放到后台 (the island's, D; beside a long turn, E): the turn goes on in the background, and the conversation is free. */
   async function moveToBackground() {
     const result = await move()
-    if (!result.ok && result.problem) showToast(`没能放到后台：${result.problem}`)
+    if (!result.ok && result.problem) showToast(t("task-actions.could.not.move.to.background", { problem: result.problem }))
   }
 
   /**
@@ -153,7 +155,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   function steerTask(taskId: string, text: string) {
     dispatch({ type: 'task_steer', taskId, text, at: Date.now() })
     api.steerTask(taskId, text)
-      .then((result: { ok?: boolean } | null) => result?.ok || showToast('这件事已经停下了，话没有送到'))
+      .then((result: { ok?: boolean } | null) => result?.ok || showToast(t("task-actions.this.task.has.stopped.your.message.was")))
       .catch((err: unknown) => showToast(errorMessage(err)))
   }
 
@@ -213,14 +215,14 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     const result = await call(() => api.askTask(taskId, text))
     if (result?.ok) return true
     dispatch({ type: 'task_ask_failed', task: before })
-    showToast(result?.problem ?? '没能接着问')
+    showToast(result?.problem ?? t("task-actions.could.not.continue.asking"))
     return false
   }
 
   /** 接着做: it goes on in the background, from what it had said. */
   async function resumeUnfinished(taskId: string) {
     const result = await call(() => api.resumeTask(taskId))
-    if (!result.ok) return showToast(result.problem ?? '没能接着做')
+    if (!result.ok) return showToast(result.problem ?? t("task-actions.could.not.continue"))
     return dispatch({ type: 'task_resumed', task: result.task, messages: result.messages, at: Date.now() })
   }
 
@@ -238,7 +240,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     if (!question) return
     dispatch({ type: 'question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
     api.answerQuestion(question.questionId, answers)
-      .then((accepted: boolean) => accepted || showToast('这个问题已经结束，回答没有送出'))
+      .then((accepted: boolean) => accepted || showToast(t("app.this.question.has.ended.your.answer.was")))
       .catch((err: unknown) => showToast(errorMessage(err)))
   }
 
@@ -294,3 +296,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     toggleRoute: () => dispatch({ type: 'route_toggle' }),
   }
 }
+
+onLocaleChange(() => {
+  UNDO_FAILED = t("task-actions.could.not.undo")
+})

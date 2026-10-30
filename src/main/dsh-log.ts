@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { stepsFrom } from '../../plugins/trace/lib/steps.ts'
@@ -35,19 +36,19 @@ const at = (p: unknown) => (p ? [{ path: String(p) }] : [])
 /** How each dsh tool shows up in the trace. Only small, non-content arguments are kept. */
 const TOOL_VIEWS: Record<string, (a: Record<string, any>) => Partial<ToolView>> = {
   bash: (a) => ({ kind: 'execute', title: shorten(a.description || a.command), rawInput: { command: shorten(a.command) } }),
-  read: (a) => ({ kind: 'read', title: `读取 ${fileName(a.file_path)}`, locations: at(a.file_path) }),
-  edit: (a) => ({ kind: 'edit', title: `编辑 ${fileName(a.file_path)}`, locations: at(a.file_path) }),
-  write: (a) => ({ kind: 'edit', title: `写入 ${fileName(a.file_path)}`, locations: at(a.file_path) }),
-  web_fetch: (a) => ({ kind: 'fetch', title: '抓取网页', rawInput: { url: String(a.url ?? '') } }),
+  read: (a) => ({ kind: 'read', title: t("main.dsh-log.read", { value1: fileName(a.file_path) }), locations: at(a.file_path) }),
+  edit: (a) => ({ kind: 'edit', title: t("main.dsh-log.edit", { value1: fileName(a.file_path) }), locations: at(a.file_path) }),
+  write: (a) => ({ kind: 'edit', title: t("main.dsh-log.write", { value1: fileName(a.file_path) }), locations: at(a.file_path) }),
+  web_fetch: (a) => ({ kind: 'fetch', title: t("main.dsh-log.fetch.webpage"), rawInput: { url: String(a.url ?? '') } }),
   web_search: (a) => {
     const query = (Array.isArray(a.queries) ? a.queries : [a.query]).filter(Boolean).join(' / ')
-    return { kind: 'search', title: shorten(`搜索 ${query}`), rawInput: { query } }
+    return { kind: 'search', title: shorten(t("main.dsh-log.search", { query: query })), rawInput: { query } }
   },
-  todo_write: () => ({ kind: 'think', title: '更新待办' }),
+  todo_write: () => ({ kind: 'think', title: t("main.dsh-log.update.to.dos") }),
 }
 
 function toolFrom(sessionId: string, step: Extract<Step, { kind: 'tool' }>): ToolView {
-  const view = TOOL_VIEWS[step.name]?.(step.args ?? {}) ?? { kind: 'other', title: String(step.name || '工具调用') }
+  const view = TOOL_VIEWS[step.name]?.(step.args ?? {}) ?? { kind: 'other', title: String(step.name || t("main.dsh-log.tool.call")) }
   return { kind: 'other', title: '', locations: [], rawInput: null, ...view, id: `${sessionId}:${step.callId}`, status: step.status, at: step.at }
 }
 

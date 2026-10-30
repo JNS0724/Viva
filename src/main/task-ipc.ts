@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
@@ -12,17 +13,17 @@ import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
  */
 const MAX_TITLE_CHARS = 40
 
-export const TASK_PROBLEMS: Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } = Object.freeze({
-  unsaved: '这句话还没有保存好，就在这里接着说吧',
-  invalid: '在助手的记录里找不到正在做的这件事',
-  missing: '当前对话已经结束，请稍后再试',
-  unavailable: '这个版本的助手不支持后台任务，请更新 Viva',
-  lost: '这件事接不上了：上次的记录找不到，可以选「不做了」',
-  gone: '这件事接不上了：上次的记录找不到，可以关掉它',
-  going: '这件还在做，直接说就会插进去',
+export const taskProblems = (): Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } => ({
+  unsaved: t("main.task-ipc.this.message.has.not.been.saved.yet"),
+  invalid: t("main.task-ipc.the.current.task.is.not.in.the"),
+  missing: t("main.main.this.conversation.has.ended.try.again.later"),
+  unavailable: t("main.task-ipc.this.assistant.version.does.not.support.background"),
+  lost: t("main.task-ipc.cannot.resume.previous.record.missing.you.can"),
+  gone: t("main.task-ipc.cannot.resume.previous.record.missing.you.can.2"),
+  going: t("main.task-ipc.this.task.is.running.your.message.will"),
 })
 
-/** What a task taken up again is told: Viva was closed while it worked. */
+/** Model instruction, not UI copy: keep it independent of the interface language. */
 const GO_ON = '刚才 Viva 关掉了，请接着做没做完的事。'
 /** Without a store (tests that do not need one), nothing is kept between launches. */
 const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remove: () => {} })
@@ -90,9 +91,9 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     if (!isBusy()) return { ok: false, reason: 'idle' }
     const previous = current()
     const stored = db.get(previous.id)
-    if (!stored || stored.messages[keep]?.text !== words) return { ok: false, problem: TASK_PROBLEMS.unsaved }
+    if (!stored || stored.messages[keep]?.text !== words) return { ok: false, problem: taskProblems().unsaved }
     const spun = await agent.spinOff({ words })
-    if (!spun.ok) return { ok: false, problem: TASK_PROBLEMS[spun.reason] ?? `没能放到后台（${spun.reason}）` }
+    if (!spun.ok) return { ok: false, problem: taskProblems()[spun.reason] ?? t("main.task-ipc.could.not.move.to.background", { reason: spun.reason }) }
     setBusy(false)
     const kept = stored.messages.slice(0, keep)
     const { mode, model } = { ...agentInfo(), ...spun.info }
@@ -125,7 +126,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const main = current()
     const { mode, model } = agentInfo()
     const started = await agent.startTask(words === null ? {} : { words })
-    if (!started.ok) return { ok: false, problem: TASK_PROBLEMS[started.reason] ?? `没能交给后台（${started.reason}）` }
+    if (!started.ok) return { ok: false, problem: taskProblems()[started.reason] ?? t("main.task-ipc.could.not.start.in.background", { reason: started.reason }) }
     // A conversation with only 后台做 requests has no foreground messages yet. Keep its identity too,
     // otherwise the task points at an absent parent and its history row cannot return after a restart.
     if (!db.get(main.id)) db.save(main, [], { keepEmpty: true })
@@ -163,7 +164,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   async function undo(taskId: string) {
     const task = taskById(taskId)
     const back = await agent.mergeBack(taskId)
-    if (!back.ok) return { ok: false, problem: TASK_PROBLEMS[back.reason] ?? '没能撤销' }
+    if (!back.ok) return { ok: false, problem: taskProblems()[back.reason] ?? t("main.task-ipc.could.not.undo") }
     tasks.delete(taskId)
     detach(taskId)
     store.remove(taskId)
@@ -214,11 +215,11 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     if (!isText(text)) throw new Error('invalid task request')
     const kept = store.list().find((entry) => entry.id === taskId)
     // Let go since the window listed it (beyond the latest kept): said plainly, not as an error.
-    if (!kept) return { ok: false, problem: TASK_PROBLEMS.gone }
-    if (!isEnded(kept)) return { ok: false, problem: TASK_PROBLEMS.going }
+    if (!kept) return { ok: false, problem: taskProblems().gone }
+    if (!isEnded(kept)) return { ok: false, problem: taskProblems().going }
     if (!attached.has(taskId)) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
-      if (!taken.ok) return { ok: false, problem: TASK_PROBLEMS.gone }
+      if (!taken.ok) return { ok: false, problem: taskProblems().gone }
       attached = new Set([...attached, taskId])
     }
     const { endedAt: _endedAt, status: _status, ...going } = kept
@@ -237,7 +238,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const kept = store.list().find((entry) => entry.id === taskId)
     if (!kept) throw new Error('no such task')
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
-    if (!taken.ok) return { ok: false, problem: TASK_PROBLEMS.lost }
+    if (!taken.ok) return { ok: false, problem: taskProblems().lost }
     tasks.set(taskId, kept)
     attached = new Set([...attached, taskId])
     registry?.restart(taskId)

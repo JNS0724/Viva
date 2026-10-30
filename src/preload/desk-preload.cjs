@@ -5,6 +5,13 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
  * and what the user asks with which dropped files. Dropped files are known to it only by their paths.
  */
 contextBridge.exposeInMainWorld('desk', /** @satisfies {DeskApi} */ ({
+  getLanguage: () => ipcRenderer.invoke('language:get'),
+  setLanguage: (language) => ipcRenderer.invoke('language:set', language),
+  onLanguage: (callback) => {
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../shared/i18n/locale.ts').LanguageState} */ state) => callback(state)
+    ipcRenderer.on('language:changed', listener)
+    return () => ipcRenderer.removeListener('language:changed', listener)
+  },
   onView: (callback) => {
     const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {unknown} */ payload) => callback(payload)
     ipcRenderer.on('island:view', listener)

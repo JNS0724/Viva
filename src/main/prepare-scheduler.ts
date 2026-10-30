@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import type { Followup, FollowupStore, ReadFile } from './followup-store.ts'
 import type { MessageJudge } from './message-judge.ts'
 import { isActive, nextActive, nextWindow, slotFor, type PrepareSchedule } from './prepare-schedule.ts'
@@ -12,7 +14,7 @@ import { isActive, nextActive, nextWindow, slotFor, type PrepareSchedule } from 
  * wait for the next window too, and are judged first in its batch (message-judge.ts).
  */
 /** What the batch says it is doing while it judges new messages. */
-const JUDGING = '看新消息'
+let JUDGING = t("main.prepare-scheduler.review.new.messages")
 const MINUTE_MS = 60_000
 const DAY_MS = 24 * 60 * MINUTE_MS
 /** Waiting on the user to be done, it looks again this often. */
@@ -112,11 +114,11 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
   function gate(plan: PrepareSchedule, due: readonly Followup[]): { why: string, until: number } | null {
     const at = now()
     const asked = due.some((f) => asap.has(f.id))
-    if (plan.pausedUntil !== null && plan.pausedUntil > at) return { why: '暂停中', until: plan.pausedUntil }
-    if (!asked && restUntil > at) return { why: '刚叫醒，过一会儿再准备', until: restUntil }
-    if (brokenUntil > at) return { why: '上次准备出错了，过一会儿再试', until: brokenUntil }
-    if (!asked && !isActive(at, plan)) return { why: '不在活跃时间段', until: nextActive(at, plan) }
-    if (store.countEvents('prepare_call', startOfDay(at)) >= plan.dailyCalls) return { why: '今天的调用用完了', until: nextActive(startOfDay(at) + DAY_MS, plan) }
+    if (plan.pausedUntil !== null && plan.pausedUntil > at) return { why: t("main.prepare-scheduler.paused"), until: plan.pausedUntil }
+    if (!asked && restUntil > at) return { why: t("main.prepare-scheduler.just.woke.up.preparation.will.resume.shortly"), until: restUntil }
+    if (brokenUntil > at) return { why: t("main.prepare-scheduler.previous.preparation.failed.retrying.later"), until: brokenUntil }
+    if (!asked && !isActive(at, plan)) return { why: t("main.prepare-scheduler.outside.active.hours"), until: nextActive(at, plan) }
+    if (store.countEvents('prepare_call', startOfDay(at)) >= plan.dailyCalls) return { why: t("main.prepare-scheduler.today.s.call.budget.is.used.up"), until: nextActive(startOfDay(at) + DAY_MS, plan) }
     const userBusy = busy()
     if (userBusy) return { why: userBusy, until: at + BLOCKED_RETRY_MS }
     return null
@@ -261,3 +263,7 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
 }
 
 export type PrepareScheduler = ReturnType<typeof createPrepareScheduler>
+
+onLocaleChange(() => {
+  JUDGING = t("main.prepare-scheduler.review.new.messages")
+})

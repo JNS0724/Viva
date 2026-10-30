@@ -1,3 +1,4 @@
+import { usePromoCopy } from '../i18n'
 import { AbsoluteFill, Img, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion'
 import { KineticText } from '../components/KineticText'
 import { COLORS, FONT } from '../theme'
@@ -12,20 +13,22 @@ interface Tile {
   zoom: number
 }
 
-const TILES: readonly Tile[] = [
-  { image: 'sources.png', label: '接入消息源', note: '邮箱、告警、任何能跑的程序', accent: COLORS.blue, focus: '56% 47%', zoom: 2.1 },
-  { image: 'suggestion.png', label: '挑出要你做的', note: '依据和原消息都给你看', accent: COLORS.orange, focus: '42% 26%', zoom: 1.9 },
-  { image: 'prepare-settings.png', label: '你选的时段才动', note: '不占你用电脑的时候', accent: COLORS.violet, focus: '56% 30%', zoom: 2.1 },
-]
 
 /** Three tiles fly in one after another, each turning flat as it lands: the loop from message to suggestion. */
 export const Bento: React.FC = () => {
+  const copy = usePromoCopy()
+  const TILES: readonly Tile[] = [
+  { image: 'sources.png', label: copy('copy9'), note: copy('copy10'), accent: COLORS.blue, focus: '56% 47%', zoom: 2.1 },
+  { image: 'suggestion.png', label: copy('copy11'), note: copy('copy12'), accent: COLORS.orange, focus: '42% 26%', zoom: 1.9 },
+  { image: 'prepare-settings.png', label: copy('copy13'), note: copy('copy14'), accent: COLORS.violet, focus: '56% 30%', zoom: 2.1 },
+]
+
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   return (
     <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'center', fontFamily: FONT, color: COLORS.ink }}>
       <div style={{ fontSize: 64, fontWeight: 800, marginBottom: 64, letterSpacing: -1 }}>
-        <KineticText text="不只是你说的，消息里的事也不漏" />
+        <KineticText text={copy('copy15')} />
       </div>
       <div style={{ display: 'flex', gap: 40, perspective: 1800 }}>
         {TILES.map((tile, i) => {

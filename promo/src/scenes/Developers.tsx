@@ -1,3 +1,4 @@
+import { usePromoCopy } from '../i18n'
 import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion'
 import { Caption } from '../components/Caption'
 import { COLORS, MONO } from '../theme'
@@ -17,6 +18,7 @@ const CHARS_PER_FRAME = 1.6
 
 /** The code types itself out beside the pitch to developers. */
 export const Developers: React.FC = () => {
+  const copy = usePromoCopy()
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   const enter = spring({ frame, fps, config: { damping: 20 } })
@@ -29,7 +31,7 @@ export const Developers: React.FC = () => {
   const caretLine = lines.findIndex((runs, i) => runs.some(([shown], j) => shown.length < CODE[i][j][0].length))
   return (
     <AbsoluteFill style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 100 }}>
-      <Caption eyebrow="开放给开发者" title="任何语言，都能接进来" body="一个文件夹、一个程序：标准输入进，标准输出出。密钥只交给它自己。" accent={COLORS.orange} />
+      <Caption eyebrow={copy('copy16')} title={copy('copy17')} body={copy('copy18')} accent={COLORS.orange} />
       <div
         style={{
           width: 980, padding: '40px 46px', borderRadius: 22, background: 'rgba(10, 15, 27, 0.9)', border: `1px solid ${COLORS.line}`,

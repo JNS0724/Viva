@@ -154,7 +154,12 @@ interface ActionDeps {
 type Handlers = Readonly<Record<string, (...args: any[]) => any>>
 
 /** The main window's bridge to the main process (preload.cjs). */
-interface AgentApi {
+interface LanguageApi {
+  getLanguage: () => Promise<import('../shared/i18n/locale.ts').LanguageState>
+  setLanguage: (language: import('../shared/i18n/locale.ts').Language) => Promise<import('../shared/i18n/locale.ts').LanguageState>
+  onLanguage: (callback: (state: import('../shared/i18n/locale.ts').LanguageState) => void) => Unlisten
+}
+interface AgentApi extends LanguageApi {
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: string
   getInfo: Invoke<'agent:info'>
@@ -277,7 +282,7 @@ interface AgentApi {
 }
 
 /** The desktop island's bridge (desk-preload.cjs): dropped files are known to it only by their paths. */
-interface DeskApi {
+interface DeskApi extends LanguageApi {
   onView: (callback: (view: any) => void) => Unlisten
   act: (...args: Args<'island:act'>) => void
   describeFiles: (files: ArrayLike<File>) => Promise<{ files?: Array<{ path: string, name: string, size: number }>, error?: string }>

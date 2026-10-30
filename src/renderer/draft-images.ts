@@ -1,7 +1,9 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { IMAGE_LIMITS } from '../shared/images.ts'
 import { draftPictures, pictureKept } from './view/pictures.ts'
 
-const TOO_MANY = `一次最多 ${IMAGE_LIMITS.perMessage} 张图`
+let TOO_MANY = t("desk.up.to.images.per.message", { perMessage: IMAGE_LIMITS.perMessage })
 /** IPC errors arrive as "Error invoking remote method 'x': Error: msg"; keep only the message. */
 const messageOf = (err: unknown) => String((err as { message?: unknown } | null)?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
@@ -58,3 +60,7 @@ export function createDraftImages({ keep, container, onChange = () => {}, showEr
     },
   }
 }
+
+onLocaleChange(() => {
+  TOO_MANY = t("desk.up.to.images.per.message", { perMessage: IMAGE_LIMITS.perMessage })
+})

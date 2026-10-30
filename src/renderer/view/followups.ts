@@ -1,3 +1,6 @@
+import { calendarDays, formatDate } from '../../shared/i18n/format.ts'
+import { onLocaleChange, getLocale } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { formatHM } from '../selectors.ts'
 import type { ProposalCard } from '../followup-state.ts'
 import { h } from './dom.ts'
@@ -9,10 +12,10 @@ import { renderMarkdown } from './markdown.ts'
  * The copy says what happens and what it gives back; the background preparation's codename stays out of it.
  */
 const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
-const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+let WEEKDAYS = [t("followups.sunday"), t("followups.monday"), t("followups.tuesday"), t("followups.wednesday"), t("followups.thursday"), t("followups.friday"), t("followups.saturday")]
 const DAY_MS = 24 * 60 * 60 * 1000
 const WEEK_DAYS = 7
-export const PRESET_NAMES: Readonly<Record<string, string>> = { three: '每天三次', two: '每天两次', one: '每天一次', custom: '自定义' }
+export let PRESET_NAMES: Readonly<Record<string, string>> = { three: t("followups.three.times.a.day"), two: t("followups.twice.a.day"), one: t("followups.once.a.day"), custom: t("followups.custom") }
 export const PRESET_TIMES: Readonly<Record<string, string>> = { three: '08:30 / 12:30 / 16:30', two: '09:00 / 17:00', one: '08:30' }
 
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
@@ -20,12 +23,13 @@ const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
 /** 今天 17:00, 明天 09:00, 周五 17:00 within the week, 10月30日 17:00 further off. */
 export function whenText(ts: number, now = Date.now()): string {
   const date = new Date(ts)
-  const days = Math.round((startOfDay(ts) - startOfDay(now)) / DAY_MS)
+  const days = calendarDays(now, ts)
   const time = formatHM(date)
-  if (days === 0) return `今天 ${time}`
-  if (days === 1) return `明天 ${time}`
+  if (days === 0) return t("followups.today", { time: time })
+  if (days === 1) return t("followups.tomorrow", { time: time })
   if (days > 1 && days < WEEK_DAYS) return `${WEEKDAYS[date.getDay()]} ${time}`
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${time}`
+  if (getLocale() === 'en') return `${formatDate(date, { month: 'short', day: 'numeric' })} ${time}`
+  return t("followups.label", { value1: date.getMonth() + 1, value2: date.getDate(), time: time })
 }
 
 const parsed = (iso: string | null) => (iso ? Date.parse(iso) : NaN)
@@ -36,39 +40,39 @@ function proposalLines(proposal: Untyped, now: number) {
   const remindAt = parsed(proposal.remindAt)
   const line = (when: string, what: string) => h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: when }), h('span', { text: what }))
   return [
-    Number.isFinite(prepareBy) ? line(`${whenText(prepareBy, now)} 前`, '在后台准备草稿，只读、不发送') : null,
-    Number.isFinite(remindAt) ? line(whenText(remindAt, now), '提醒你看') : null,
-    proposal.files?.length ? line('会读', proposal.files.join('、')) : null,
-    proposal.watchFile ? line('盯着', `${proposal.watchFile} 一改（停 10 分钟后），就在下一个时段准备`) : null,
+    Number.isFinite(prepareBy) ? line(t("followups.before", { value1: whenText(prepareBy, now) }), t("followups.prepare.a.draft.in.the.background.read")) : null,
+    Number.isFinite(remindAt) ? line(whenText(remindAt, now), t("followups.remind.you.to.review")) : null,
+    proposal.files?.length ? line(t("followups.will.read"), proposal.files.join('、')) : null,
+    proposal.watchFile ? line(t("followups.watch"), t("followups.when.changes.after.quiet.minutes.prepare.in", { watchFile: proposal.watchFile })) : null,
   ]
 }
 
 /** After 跟进, for the first follow-up that needs preparing: when preparation may run, one tap. */
 function windowsChooser(card: ProposalCard, handlers: Handlers) {
-  if (card.chosen) return h('p', { class: 'fu-note', text: `后台准备：${PRESET_NAMES[card.chosen]}（在设置「后台准备」里随时改）` })
-  return h('div', { class: 'fu-choose', role: 'group', 'aria-label': '后台准备的时段' },
-    h('span', { class: 'fu-note', text: '后台准备在什么时候做？在你没在用 Viva 的时候，按时段把要准备的一起做。' }),
+  if (card.chosen) return h('p', { class: 'fu-note', text: t("followups.background.preparation.change.anytime.in.settings", { value1: PRESET_NAMES[card.chosen] }) })
+  return h('div', { class: 'fu-choose', role: 'group', 'aria-label': t("followups.background.preparation.schedule") },
+    h('span', { class: 'fu-note', text: t("followups.when.should.preparation.run.related.work.is") }),
     h('div', { class: 'fu-presets' }, ['three', 'two', 'one'].map((preset) => h('button', {
       class: `${preset === 'three' ? BUTTON.primary : BUTTON.secondary} fu-preset`, type: 'button', disabled: card.busy,
       onClick: () => handlers.chooseWindows(card.id, preset),
     }, h('b', { text: PRESET_NAMES[preset] }), h('span', { class: 'mono', text: PRESET_TIMES[preset] })))),
-    h('span', { class: 'fu-note', text: '也可以在设置「后台准备」里自定义时段，工作日和周末分开设。' }))
+    h('span', { class: 'fu-note', text: t("followups.you.can.also.customize.weekday.and.weekend") }))
 }
 
 function decidedCard(card: ProposalCard, handlers: Handlers, now: number) {
   const { proposal } = card
   if (card.status !== 'accepted') {
-    return h('section', { class: 'confirm fu-card fu-done', 'aria-label': '不跟进' },
-      h('p', { class: 'fu-note', text: card.status === 'never' ? `好，「${proposal.title}」这类以后不再问。` : '好，不跟进。同一件事 30 天内不再问。' }))
+    return h('section', { class: 'confirm fu-card fu-done', 'aria-label': t("followups.do.not.follow.up") },
+      h('p', { class: 'fu-note', text: card.status === 'never' ? t("followups.okay.you.will.not.be.asked.about", { title: proposal.title }) : t("followups.okay.no.follow.up.you.will.not") }))
   }
   const accepted = card.accepted ?? {}
   const when = [
-    accepted.prepareBy ? `${whenText(accepted.prepareBy, now)} 前在后台准备` : null,
-    accepted.remindAt ? `${whenText(accepted.remindAt, now)} 提醒你` : null,
+    accepted.prepareBy ? t("followups.prepare.in.the.background.before", { value1: whenText(accepted.prepareBy, now) }) : null,
+    accepted.remindAt ? t("followups.remind.you.at", { value1: whenText(accepted.remindAt, now) }) : null,
   ].filter(Boolean).join('，')
-  return h('section', { class: 'confirm fu-card fu-done', 'aria-label': '已加到跟进' },
-    h('div', { class: 'fu-title' }, h('b', { text: `已加到跟进：${proposal.title}` })),
-    h('p', { class: 'fu-note', text: `${when} · 在后台页能看、能删` }),
+  return h('section', { class: 'confirm fu-card fu-done', 'aria-label': t("followups.added.to.follow.ups") },
+    h('div', { class: 'fu-title' }, h('b', { text: t("followups.added.to.follow.ups.2", { title: proposal.title }) })),
+    h('p', { class: 'fu-note', text: t("followups.view.or.remove.in.background", { when: when }) }),
     card.chooseWindows ? windowsChooser(card, handlers) : null,
     card.error ? h('p', { class: 'form-error', role: 'alert', text: card.error }) : null)
 }
@@ -77,26 +81,26 @@ function decidedCard(card: ProposalCard, handlers: Handlers, now: number) {
 export function proposalCard(card: ProposalCard, handlers: Handlers, now = Date.now()) {
   if (card.status !== 'open') return decidedCard(card, handlers, now)
   const { proposal } = card
-  return h('section', { class: 'confirm fu-card', 'aria-label': '要我跟进吗？' },
-    h('div', { class: 'confirm-head' }, h('span', { text: '要我跟进吗？' }), h('span', { class: 'pulse-dot' })),
+  return h('section', { class: 'confirm fu-card', 'aria-label': t("followups.would.you.like.me.to.follow.up") },
+    h('div', { class: 'confirm-head' }, h('span', { text: t("followups.would.you.like.me.to.follow.up") }), h('span', { class: 'pulse-dot' })),
     h('div', { class: 'confirm-title', text: proposal.title }),
     h('p', { class: 'fu-ask', text: proposal.ask }),
     h('div', { class: 'fu-lines' }, proposalLines(proposal, now)),
     h('div', { class: 'confirm-actions' },
-      h('button', { class: BUTTON.primary, type: 'button', text: '跟进', disabled: card.busy, onClick: () => handlers.acceptProposal(card.id) }),
-      h('button', { class: BUTTON.secondary, type: 'button', text: '不用', disabled: card.busy, onClick: () => handlers.declineProposal(card.id) }),
-      h('button', { class: BUTTON.text, type: 'button', text: '以后别问这类', disabled: card.busy, onClick: () => handlers.neverProposal(card.id) }),
-      h('span', { class: 'confirm-hint', text: '你点了「跟进」才会生效' })),
+      h('button', { class: BUTTON.primary, type: 'button', text: t("followups.follow.up"), disabled: card.busy, onClick: () => handlers.acceptProposal(card.id) }),
+      h('button', { class: BUTTON.secondary, type: 'button', text: t("followups.no.thanks"), disabled: card.busy, onClick: () => handlers.declineProposal(card.id) }),
+      h('button', { class: BUTTON.text, type: 'button', text: t("followups.do.not.ask.about.this.kind.again"), disabled: card.busy, onClick: () => handlers.neverProposal(card.id) }),
+      h('span', { class: 'confirm-hint', text: t("followups.only.takes.effect.after.you.click.follow") })),
     card.error ? h('p', { class: 'form-error', role: 'alert', text: card.error }) : null)
 }
 
 /** What a follow-up waits on, in a few words, for the 后台 page's list. */
 export function followupStanding(followup: Untyped, now = Date.now()): string {
-  if (followup.status === 'ready') return followup.draftAt ? `${formatHM(new Date(followup.draftAt))} 准备好` : '准备好了'
-  if (followup.status === 'preparing') return '正在准备'
-  if (followup.watching && !followup.prepareBy) return `盯着 ${followup.watching}`
-  if (followup.prepareBy) return `${whenText(followup.prepareBy, now)} 前准备`
-  if (followup.remindAt) return `${whenText(followup.remindAt, now)} 提醒`
+  if (followup.status === 'ready') return followup.draftAt ? t("followups.ready.at", { value1: formatHM(new Date(followup.draftAt)) }) : t("followups.ready")
+  if (followup.status === 'preparing') return t("followups.preparing")
+  if (followup.watching && !followup.prepareBy) return t("followups.watching", { watching: followup.watching })
+  if (followup.prepareBy) return t("followups.prepare.before", { value1: whenText(followup.prepareBy, now) })
+  if (followup.remindAt) return t("followups.remind.at", { value1: whenText(followup.remindAt, now) })
   return ''
 }
 
@@ -108,42 +112,42 @@ export function suggestionDetail(suggestion: Untyped, handlers: Handlers, now = 
     h('button', { class: BUTTON[kind], type: 'button', text, onClick: () => handlers.settleSuggestion(suggestion.id, action) })
   return h('div', { class: 'tp-main fu-main', 'data-suggestion': suggestion.id },
     h('header', { class: 'tp-head' },
-      h('h2', { class: 'tp-title', text: '这条像是要你处理，要我跟进吗？' })),
+      h('h2', { class: 'tp-title', text: t("followups.this.looks.like.something.for.you.to") })),
     h('div', { class: 'tp-scroll fu-scroll' },
       message
         ? h('article', { class: 'fu-draft fu-message' },
-          h('div', { class: 'fu-note', text: `${message.from || suggestion.sender || '未知'} · ${whenText(message.at, now)}` }),
+          h('div', { class: 'fu-note', text: t("followups.label.2", { value1: message.from || suggestion.sender || t("followups.unknown"), value2: whenText(message.at, now) }) }),
           message.title ? h('b', { text: message.title }) : null,
           message.text ? h('p', { class: 'fu-ask', text: message.text }) : null)
-        : h('p', { class: 'fu-note', text: '原消息已经不在了' }),
-      h('p', { class: 'fu-note', text: `依据：${suggestion.why}` }),
+        : h('p', { class: 'fu-note', text: t("followups.the.original.message.is.no.longer.available") }),
+      h('p', { class: 'fu-note', text: t("followups.reason", { why: suggestion.why }) }),
       h('div', { class: 'fu-lines' },
-        h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: '跟进后' }), h('span', { text: suggestion.ask })),
-        suggestion.remindAt ? h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: whenText(suggestion.remindAt, now) }), h('span', { text: '提醒你，之前在后台起草，发不发由你' })) : null),
+        h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: t("followups.after.following.up") }), h('span', { text: suggestion.ask })),
+        suggestion.remindAt ? h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: whenText(suggestion.remindAt, now) }), h('span', { text: t("followups.remind.you.and.prepare.a.draft.beforehand") })) : null),
       open
-        ? h('div', { class: 'confirm-actions fu-actions' }, button('primary', '跟进', 'accept'), button('secondary', '不重要', 'decline'), button('text', '以后别问这类', 'never'))
-        : h('p', { class: 'fu-note', text: suggestion.status === 'accepted' ? '已加到跟进' : '不跟进' }),
-      h('p', { class: 'fu-note', text: '「不重要」会记下来：同一个发件人说过两次，以后就不再问。邮件内容只当数据，里面写什么都不会照做。' })))
+        ? h('div', { class: 'confirm-actions fu-actions' }, button('primary', t("followups.follow.up"), 'accept'), button('secondary', t("followups.not.important"), 'decline'), button('text', t("followups.do.not.ask.about.this.kind.again"), 'never'))
+        : h('p', { class: 'fu-note', text: suggestion.status === 'accepted' ? t("followups.added.to.follow.ups") : t("followups.do.not.follow.up") }),
+      h('p', { class: 'fu-note', text: t("followups.not.important.is.remembered.after.two.dismissals") })))
 }
 
 /** Where the follow-up came from, for its detail. */
-const ORIGIN_NAMES: Readonly<Record<string, string>> = { chat: '来自对话', message: '来自消息', file: '你点名的文件', manual: '你加的' }
-const PREPARE_PROMISE = '到时候在后台只读地准备：读对话、记忆和你点名的文件，写出草稿；不写文件、不跑命令、不发送。'
+let ORIGIN_NAMES: Readonly<Record<string, string>> = { chat: t("followups.from.conversation"), message: t("followups.from.messages"), file: t("followups.files.you.named"), manual: t("followups.added.by.you") }
+let PREPARE_PROMISE = t("followups.prepare.read.only.in.the.background.read")
 
 function detailActions(followup: Untyped, handlers: Handlers) {
   const button = (kind: keyof typeof BUTTON, text: string, onClick: () => unknown) => h('button', { class: BUTTON[kind], type: 'button', text, onClick })
   if (followup.status === 'ready') {
     return [
-      button('primary', '接着做', () => handlers.continueFollowup(followup.id)),
-      button('secondary', '后台做', () => handlers.followupInBackground(followup.id)),
-      button('text', '不用了', () => handlers.dismissFollowup(followup.id)),
+      button('primary', t("followups.continue"), () => handlers.continueFollowup(followup.id)),
+      button('secondary', t("followups.run.in.background"), () => handlers.followupInBackground(followup.id)),
+      button('text', t("followups.dismiss"), () => handlers.dismissFollowup(followup.id)),
     ]
   }
   return [
     followup.status === 'preparing'
-      ? button('secondary', '叫醒它', () => handlers.wakePreparation())
-      : button('secondary', '现在就准备', () => handlers.prepareFollowupNow(followup.id)),
-    button('text', '删掉', () => handlers.dismissFollowup(followup.id)),
+      ? button('secondary', t("followups.wake.up"), () => handlers.wakePreparation())
+      : button('secondary', t("followups.prepare.now"), () => handlers.prepareFollowupNow(followup.id)),
+    button('text', t("followups.delete"), () => handlers.dismissFollowup(followup.id)),
   ]
 }
 
@@ -152,12 +156,12 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
   const ready = followup.status === 'ready'
   const facts = [
     ORIGIN_NAMES[followup.origin] ?? '',
-    followup.prepareBy ? `${whenText(followup.prepareBy, now)} 前准备好` : null,
-    followup.remindAt ? `${whenText(followup.remindAt, now)} 提醒` : null,
-    followup.files?.length ? `会读 ${followup.files.join('、')}` : null,
-    followup.watching ? `盯着 ${followup.watching}，一改就准备` : null,
+    followup.prepareBy ? t("followups.ready.before", { value1: whenText(followup.prepareBy, now) }) : null,
+    followup.remindAt ? t("followups.remind.at", { value1: whenText(followup.remindAt, now) }) : null,
+    followup.files?.length ? t("followups.will.read.2", { value1: followup.files.join('、') }) : null,
+    followup.watching ? t("followups.watching.prepare.when.it.changes", { watching: followup.watching }) : null,
   ].filter(Boolean).join(' · ')
-  const waiting = followup.status === 'preparing' ? `正在后台准备${prepare?.queued ? `，后面还有 ${prepare.queued} 件` : ''}` : PREPARE_PROMISE
+  const waiting = followup.status === 'preparing' ? t("followups.preparing.in.the.background", { value1: prepare?.queued ? t("followups.more.queued", { queued: prepare.queued }) : '' }) : PREPARE_PROMISE
   return h('div', { class: 'tp-main fu-main', 'data-followup': followup.id },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: followup.title }),
@@ -165,10 +169,17 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
     h('div', { class: 'tp-scroll fu-scroll' },
       h('p', { class: 'fu-ask', text: followup.ask }),
       h('p', { class: 'fu-note', text: facts }),
-      followup.lateFrom ? h('span', { class: 'fu-late', text: `电脑睡着了，原定于 ${whenText(followup.lateFrom, now)}` }) : null,
+      followup.lateFrom ? h('span', { class: 'fu-late', text: t("followups.the.computer.was.asleep.originally.scheduled.for", { value1: whenText(followup.lateFrom, now) }) }) : null,
       ready && followup.draft
         ? h('article', { class: 'fu-draft' }, renderMarkdown(followup.draft, { openLink: handlers.openLink }))
         : h('p', { class: 'fu-note', text: waiting }),
       h('div', { class: 'confirm-actions fu-actions' }, detailActions(followup, handlers)),
-      ready ? h('p', { class: 'fu-note', text: '「接着做」把草稿放进输入框，你看过再发；邮件和消息永远由你自己发。' }) : null))
+      ready ? h('p', { class: 'fu-note', text: t("followups.continue.puts.the.draft.in.the.input") }) : null))
 }
+
+onLocaleChange(() => {
+  WEEKDAYS = [t("followups.sunday"), t("followups.monday"), t("followups.tuesday"), t("followups.wednesday"), t("followups.thursday"), t("followups.friday"), t("followups.saturday")]
+  PRESET_NAMES = { three: t("followups.three.times.a.day"), two: t("followups.twice.a.day"), one: t("followups.once.a.day"), custom: t("followups.custom") }
+  ORIGIN_NAMES = { chat: t("followups.from.conversation"), message: t("followups.from.messages"), file: t("followups.files.you.named"), manual: t("followups.added.by.you") }
+  PREPARE_PROMISE = t("followups.prepare.read.only.in.the.background.read")
+})

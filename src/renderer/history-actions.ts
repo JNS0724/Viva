@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import type { VerifiedMessage } from './timeline-search.ts'
 
 const SEARCH_DEBOUNCE_MS = 200
@@ -44,7 +45,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
     try {
       dispatch({ type: 'history_results', query, results: await api.searchTimeline(query.trim()) })
     } catch (err) {
-      report('搜索失败')(err)
+      report(t("history-actions.search.failed"))(err)
     }
   }
 

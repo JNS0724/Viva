@@ -1,3 +1,5 @@
+import { localeRevision } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { fileName, splitFiles } from '../../shared/attachments.ts'
 import { optionName } from '../approval.ts'
 import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.ts'
@@ -34,12 +36,12 @@ const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
 function receiptButton(message: ThreadMessage & { receipt: Receipt }, handlers: Handlers, traceReady: boolean) {
   if (message.restored && !traceReady) return h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) })
   return h('button', { class: 'receipt', onClick: () => handlers.openDrawer('trace') },
-    `${receiptLine(message.receipt)} · 查看过程 →`)
+    t("thread.view.activity", { value1: receiptLine(message.receipt) }))
 }
 
 function historyDivider(note: { when: string, memory: string }) {
   return h('div', { class: 'history-divider', role: 'separator' },
-    h('span', { class: 'history-when', text: `以上是历史消息 · ${note.when}` }),
+    h('span', { class: 'history-when', text: t("thread.earlier.messages", { when: note.when }) }),
     note.memory ? h('span', { text: note.memory }) : null)
 }
 
@@ -58,7 +60,7 @@ function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
   const start = answerStart(text)
   const el = renderMarkdown(start, { openLink: handlers.openLink })
   el.append(h('button', {
-    class: 'btn btn-outline btn-small answer-more', type: 'button', text: `展开全文（还有约 ${Math.round((text.length - start.length) / 1000)} 千字）`,
+    class: 'btn btn-outline btn-small answer-more', type: 'button', text: t("thread.expand.remaining", { p0: Math.round((text.length - start.length) / 1000) }),
     onClick: () => el.replaceChildren(...renderMarkdown(text, { openLink: handlers.openLink }).childNodes),
   }))
   return el
@@ -93,7 +95,7 @@ function askedView(message: ThreadMessage): View {
     sentPictures(message.images),
     files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
     text)
-  const notes = [message.steered && '工作中插话', message.via === 'island' && '从 Viva 岛发送', message.failed && '没有送到'].filter(Boolean)
+  const notes = [message.steered && t("thread.sent.during.work"), message.via === 'island' && t("thread.sent.from.viva.island"), message.failed && t("thread.not.delivered")].filter(Boolean)
   if (!notes.length) return bubble
   return [bubble, h('div', { class: `msg-via${message.failed ? ' msg-via-failed' : ''}`, text: notes.join(' · ') })]
 }
@@ -153,7 +155,7 @@ function permissionCard(permission: NonNullable<State['permission']>, handlers: 
         text: optionName(option),
         onClick: () => handlers.respond(permission.requestId, option.optionId),
       })),
-      h('span', { class: 'confirm-hint', text: '有风险的操作总会先问你' })))
+      h('span', { class: 'confirm-hint', text: t("thread.risky.actions.require.your.approval") })))
 }
 
 /** The agent's question as the state keeps it: its questions, and what is picked so far for each. */
@@ -185,9 +187,9 @@ function questionCard(question: AskedQuestion, handlers: Handlers) {
     cardHead(head),
     question.questions.map((item) => questionItem(item, question, handlers)),
     h('div', { class: 'confirm-actions' },
-      single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: '提交', onClick: () => handlers.submitAnswer() }),
-      h('button', { class: `${BUTTON.text} ask-skip`, text: '跳过', onClick: () => handlers.skipQuestion() }),
-      h('span', { class: 'confirm-hint', text: '也可以直接在下面输入你的回答' })))
+      single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: t("thread.submit"), onClick: () => handlers.submitAnswer() }),
+      h('button', { class: `${BUTTON.text} ask-skip`, text: t("island-dom.skip"), onClick: () => handlers.skipQuestion() }),
+      h('span', { class: 'confirm-hint', text: t("thread.you.can.also.type.your.answer.below") })))
 }
 
 /**
@@ -195,15 +197,15 @@ function questionCard(question: AskedQuestion, handlers: Handlers) {
  * agent to be connected: until then the main process has no session to take the task up in.
  */
 function unfinishedCard(task: { id: string, title: string }, handlers: Handlers, ready: boolean) {
-  return h('div', { class: 'task-report task-unfinished', role: 'group', 'aria-label': '上次没做完' },
+  return h('div', { class: 'task-report task-unfinished', role: 'group', 'aria-label': t("thread.unfinished.from.last.time") },
     h('div', { class: 'task-report-main' },
       h('b', { class: 'task-report-head', text: `#${task.title}` }),
-      h('span', { class: 'task-report-text', text: '上次关掉 Viva 时这件还没做完' })),
+      h('span', { class: 'task-report-text', text: t("thread.this.task.was.unfinished.when.viva.closed") })),
     h('button', {
-      class: `${BUTTON.primary} task-report-open`, type: 'button', text: '接着做', disabled: !ready,
-      title: ready ? null : '连上助手后就能接着做', onClick: () => handlers.resumeUnfinished(task.id),
+      class: `${BUTTON.primary} task-report-open`, type: 'button', text: t("followups.continue"), disabled: !ready,
+      title: ready ? null : t("thread.connect.the.assistant.to.continue"), onClick: () => handlers.resumeUnfinished(task.id),
     }),
-    h('button', { class: `${BUTTON.text} task-report-open`, type: 'button', text: '不做了', onClick: () => handlers.forgetUnfinished(task.id) }))
+    h('button', { class: `${BUTTON.text} task-report-open`, type: 'button', text: t("thread.abandon"), onClick: () => handlers.forgetUnfinished(task.id) }))
 }
 
 /** The agent said the turn will take long (E): 放到后台 beside it, while it runs. Not a card: it asks nothing. */
@@ -211,8 +213,8 @@ function offerRow(state: State, handlers: Handlers) {
   const offered = offeredBackground(state)
   if (!offered) return ''
   return h('div', { class: 'offer', role: 'note' },
-    h('span', { class: 'offer-text', text: offered.why ? `这件要一会儿：${offered.why}。放到后台，你先忙别的？` : '这件要一会儿。放到后台，你先忙别的？' }),
-    h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: '放到后台', onClick: () => handlers.moveToBackground() }))
+    h('span', { class: 'offer-text', text: offered.why ? t("thread.this.will.take.a.while.move.it", { why: offered.why }) : t("island-dom.this.will.take.a.while.move.it") }),
+    h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: t("island-dom.move.to.background"), onClick: () => handlers.moveToBackground() }))
 }
 
 const workingCats = new Map<string, { key: string, el: HTMLElement }>()
@@ -226,9 +228,9 @@ function workingRow(state: State) {
 
 function errorRow(message: string) {
   return h('div', { class: 'msg-error', role: 'alert' },
-    label('出错了'),
+    label(t("island-view.something.went.wrong")),
     h('div', { text: userError(message) }),
-    h('div', { class: 'muted', text: '检查模型的 key 和接口地址、网络，或查看终端日志。' }))
+    h('div', { class: 'muted', text: t("thread.check.the.model.key.api.address.network") }))
 }
 
 let secretForm: { requestId: string, el: HTMLFormElement } | null = null
@@ -243,19 +245,19 @@ function secretCard(secret: { requestId: string, server: string, names: readonly
     class: 'field', type: 'password', name: `secret-${name}`, autocomplete: 'off', spellcheck: 'false', 'aria-label': name, placeholder: name,
   }))
   const el = h('form', {
-    class: 'confirm ask secret', 'aria-label': '需要你填写密钥',
+    class: 'confirm ask secret', 'aria-label': t("thread.credentials.needed"),
     onSubmit: (event: SubmitEvent) => {
       event.preventDefault()
       handlers.submitSecrets(Object.fromEntries(secret.names.map((name, i) => [name, inputs[i].value])))
     },
   },
   cardHead(PROMPT_HEADS.secret),
-  h('div', { class: 'confirm-title', text: `接入「${secret.server}」需要这些密钥` }),
+  h('div', { class: 'confirm-title', text: t("thread.connecting.requires.these.credentials", { server: secret.server }) }),
   secret.names.map((name, i) => h('label', { class: 'secret-field' }, h('span', { class: 'secret-name', text: name }), inputs[i])),
   h('div', { class: 'confirm-actions' },
-    h('button', { class: BUTTON.primary, type: 'submit', text: '保存' }),
-    h('button', { class: BUTTON.secondary, type: 'button', text: '不接入', onClick: () => handlers.declineSecrets() }),
-    h('span', { class: 'confirm-hint', text: '加密保存在这台电脑上，不会发给模型' })))
+    h('button', { class: BUTTON.primary, type: 'submit', text: t("extensions.save") }),
+    h('button', { class: BUTTON.secondary, type: 'button', text: t("thread.do.not.connect"), onClick: () => handlers.declineSecrets() }),
+    h('span', { class: 'confirm-hint', text: t("thread.encrypted.on.this.computer.never.sent.to") })))
   secretForm = { requestId: secret.requestId, el }
   return el
 }
@@ -296,6 +298,7 @@ const sameInputs = (a: readonly unknown[], b: readonly unknown[]) => a.length ==
 
 /** Cache each row independently, so a new prompt or a streamed chunk never detaches old messages. */
 function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View): View {
+  inputs = [localeRevision(), ...inputs]
   const previous = cache.get(key)
   if (previous && sameInputs(previous.inputs, inputs)) return previous.view
   const view = build()
@@ -331,7 +334,7 @@ function restLine(state: State, start: number, handlers: Handlers) {
   const seq = state.messages.slice(0, start).filter((message) => !message.open).length - 1
   const segmentId = state.conversationId
   return h('button', {
-    class: 'timeline-more thread-rest', type: 'button', text: `本话题前面还有 ${start} 条，在回顾里看 →`, disabled: !segmentId || seq < 0,
+    class: 'timeline-more thread-rest', type: 'button', text: t("topic.current.earlier.messages", { p0: start }), disabled: !segmentId || seq < 0,
     onClick: () => segmentId && handlers.jumpToHit({ segmentId: String(segmentId), seq }),
   })
 }
@@ -393,11 +396,11 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
     ...state.tasks.unfinished.map((task) => part(`unfinished:${task.id}`, [task, state.info.mode], () => unfinishedCard(task, handlers, state.info.mode === 'live'))),
     ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },
       h('b', { class: 'task-name', text: item.text }),
-      h('div', { class: 'task-submit-status', role: 'status', text: item.status === 'failed' ? `没有交给后台：${item.problem}` : '已收到，正在准备后台任务…' }),
+      h('div', { class: 'task-submit-status', role: 'status', text: item.status === 'failed' ? t("thread.not.started.in.background", { problem: item.problem ?? '' }) : t("thread.received.preparing.background.task") }),
       item.status === 'failed' ? h('div', {},
-        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '重试', onClick: () => handlers.retrySubmission(item.id) }),
-        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '移除', onClick: () => handlers.dismissSubmission(item.id) })) : null))),
-    state.tasks.moving ? part('moving', [], () => h('div', { role: 'status', text: '正在放到后台…' })) : '',
+        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("thread.retry"), onClick: () => handlers.retrySubmission(item.id) }),
+        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("extensions.remove"), onClick: () => handlers.dismissSubmission(item.id) })) : null))),
+    state.tasks.moving ? part('moving', [], () => h('div', { role: 'status', text: t("thread.moving.to.background") })) : '',
     // The follow-ups the model proposed in this conversation, each to be decided on (view/followups.ts).
     ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
     part('offer', [offeredBackground(state)?.why ?? null], () => offerRow(state, handlers)),

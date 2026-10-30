@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import path from 'node:path'
 import type { Menu as ElectronMenu, NativeImage, Tray as ElectronTray } from 'electron'
 
@@ -36,13 +37,13 @@ export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen,
   const tray = new Tray(image as NativeImage)
 
   function setPending(count: number) {
-    tray.setToolTip(count ? `${TOOLTIP} · ${count} 件等你看` : TOOLTIP)
+    tray.setToolTip(count ? `${TOOLTIP} · ${t('native.pending', { count })}` : TOOLTIP)
     if (platform === 'darwin') tray.setTitle?.(count ? String(count) : '')
     tray.setContextMenu(Menu.buildFromTemplate([
-      ...(count ? [{ label: `${count} 件等你看`, click: onPending }, { type: 'separator' as const }] : []),
-      { label: '打开 Viva', click: onOpen },
+      ...(count ? [{ label: t('native.pending', { count }), click: onPending }, { type: 'separator' as const }] : []),
+      { label: t('native.open'), click: onOpen },
       { type: 'separator' },
-      { label: '退出 Viva', click: onQuit },
+      { label: t('native.quit'), click: onQuit },
     ]))
   }
 

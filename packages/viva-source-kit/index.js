@@ -10,7 +10,7 @@ async function readRequest() {
   let input = ''
   for await (const chunk of process.stdin) input += chunk
   const request = JSON.parse(input)
-  if (!request || typeof request !== 'object') throw new Error('收到的请求不是 JSON 对象')
+  if (!request || typeof request !== 'object') throw new Error('Request must be a JSON object')
   return request
 }
 
@@ -29,13 +29,13 @@ const say = (value) => new Promise((resolve) => process.stdout.write(`${JSON.str
  *   check?: (config: Record<string, unknown>) => unknown }} source
  */
 export async function defineSource(source) {
-  if (typeof source?.poll !== 'function') throw new TypeError('defineSource 需要一个 poll(config, cursor) 函数')
+  if (typeof source?.poll !== 'function') throw new TypeError('defineSource requires a poll(config, cursor) function')
   try {
     const request = await readRequest()
     const config = request.config ?? {}
     if (request.action === 'check') await say(checkAnswer(source.check ? await source.check(config) : true))
     else if (request.action === 'poll') await say(await source.poll(config, request.cursor ?? null))
-    else throw new Error(`不认识的动作：${request.action}`)
+    else throw new Error(`Unknown action: ${request.action}`)
   } catch (err) {
     // The app shows stderr's last lines as the reason; keep it to what the user can act on.
     process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`)

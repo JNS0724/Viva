@@ -1,9 +1,11 @@
+import { usePromoCopy } from '../i18n'
 import { AbsoluteFill, Img, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion'
 import { KineticText } from '../components/KineticText'
 import { COLORS, FONT } from '../theme'
 
 /** The cat drops in with a ring of light bursting out behind it, then the name and the promise. */
 export const Intro: React.FC = () => {
+  const copy = usePromoCopy()
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   const pop = spring({ frame, fps, config: { damping: 12, mass: 0.8 } })
@@ -27,7 +29,7 @@ export const Intro: React.FC = () => {
       </div>
       <div style={{ marginTop: 40, fontSize: 132, fontWeight: 800, letterSpacing: interpolate(lift, [0, 1], [40, -2]), opacity: lift }}>Viva</div>
       <div style={{ marginTop: 12, fontSize: 44, color: COLORS.muted }}>
-        <KineticText text="会主动跟进的桌面 AI 助手" delay={40} />
+        <KineticText text={copy('copy0')} delay={40} />
       </div>
     </AbsoluteFill>
   )

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Encryption } from './settings-store.ts'
@@ -38,8 +39,8 @@ export interface ServerConfig {
 const lines = (text: unknown) => String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
 
 function requireText(value: unknown, what: string, max: number): string {
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`请填写${what}`)
-  if (value.length > max) throw new Error(`${what}太长了`)
+  if (typeof value !== 'string' || !value.trim()) throw new Error(t("main.mcp-config.enter", { what: what }))
+  if (value.length > max) throw new Error(t("main.mcp-config.is.too.long", { what: what }))
   return value.trim()
 }
 
@@ -47,39 +48,39 @@ function requireText(value: unknown, what: string, max: number): string {
 function parsePairs(text: unknown, what: string): Record<string, string> {
   const pairs = lines(text).map((line) => {
     const at = line.indexOf('=')
-    if (at <= 0) throw new Error(`${what}要写成「名称=值」，每行一个：${line.slice(0, 40)}`)
+    if (at <= 0) throw new Error(t("main.mcp-config.must.use.name.value.one.per.line", { what: what, value2: line.slice(0, 40) }))
     return [line.slice(0, at).trim(), line.slice(at + 1).trim()]
   })
   const names = pairs.map(([name]) => name)
-  if (new Set(names).size !== names.length) throw new Error(`${what}有重复的名称`)
+  if (new Set(names).size !== names.length) throw new Error(t("main.mcp-config.contains.duplicate.names", { what: what }))
   return Object.fromEntries(pairs)
 }
 
 function parseUrl(value: unknown): string {
-  const text = requireText(value, '服务器地址', MAX_URL_CHARS)
+  const text = requireText(value, t("main.config-channel.server.address"), MAX_URL_CHARS)
   let url: URL
   try {
     url = new URL(text)
   } catch {
-    throw new Error('服务器地址不是有效的网址')
+    throw new Error(t("main.mcp-config.server.address.is.not.a.valid.url"))
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('服务器地址要以 http:// 或 https:// 开头')
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(t("main.mcp-config.server.address.must.start.with.http.or"))
   return url.toString()
 }
 
 /** The keys of one kind (env or headers), with the names still missing a value: names fit, values fit. */
 function checkKeys(values: Record<string, string>, missing: readonly string[], kind: ServerConfig['type']) {
   const http = kind === 'http'
-  const what = http ? '请求头' : '环境变量'
+  const what = http ? t("main.mcp-config.headers") : t("main.mcp-config.environment.variables")
   const pattern = http ? HEADER_NAME_PATTERN : ENV_NAME_PATTERN
   const names = [...Object.keys(values), ...missing]
-  if (names.length > MAX_PAIRS) throw new Error(`${what}最多 ${MAX_PAIRS} 个`)
-  if (new Set(names.map((name) => (http ? name.toLowerCase() : name))).size !== names.length) throw new Error(`${what}有重复的名称`)
-  for (const name of names) if (!pattern.test(name)) throw new Error(`${what}名称不合法：${name.slice(0, 40)}`)
+  if (names.length > MAX_PAIRS) throw new Error(t("main.mcp-config.allows.at.most.entries", { what: what, MAX_PAIRS: MAX_PAIRS }))
+  if (new Set(names.map((name) => (http ? name.toLowerCase() : name))).size !== names.length) throw new Error(t("main.mcp-config.contains.duplicate.names", { what: what }))
+  for (const name of names) if (!pattern.test(name)) throw new Error(t("main.mcp-config.invalid.name", { what: what, value2: name.slice(0, 40) }))
   for (const [name, value] of Object.entries(values)) {
-    if (typeof value !== 'string') throw new Error(`${what}「${name}」的值不对`)
-    if (value.length > MAX_SECRET_CHARS) throw new Error(`${what}「${name}」的值太长了`)
-    if (http && /[\r\n]/.test(value)) throw new Error(`请求头「${name}」的值要写在一行里`)
+    if (typeof value !== 'string') throw new Error(t("main.mcp-config.invalid.value.for", { what: what, name: name }))
+    if (value.length > MAX_SECRET_CHARS) throw new Error(t("main.mcp-config.value.for.is.too.long", { what: what, name: name }))
+    if (http && /[\r\n]/.test(value)) throw new Error(t("main.mcp-config.header.must.be.on.one.line", { name: name }))
   }
 }
 
@@ -89,19 +90,19 @@ function checkKeys(values: Record<string, string>, missing: readonly string[], k
  * @param takenNames names already in use by other servers (the memory server's included)
  */
 export function validateServer(config: ServerConfig, takenNames: readonly string[]): ServerConfig {
-  const name = requireText(config.name, '名称', 32)
-  if (!NAME_PATTERN.test(name)) throw new Error('名称只能用英文字母、数字、- 和 _，最多 32 个字符')
-  if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(`已经有名为「${name}」的服务器了`)
-  if (!SERVER_TYPES.includes(config.type)) throw new Error('请选择连接方式')
+  const name = requireText(config.name, t("main.mcp-config.name"), 32)
+  if (!NAME_PATTERN.test(name)) throw new Error(t("main.mcp-config.names.must.use.english.letters.numbers.and"))
+  if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(t("main.mcp-config.a.server.named.already.exists", { name: name }))
+  if (!SERVER_TYPES.includes(config.type)) throw new Error(t("main.mcp-config.choose.a.connection.type"))
   const missing = [...new Set(config.missing ?? [])]
   if (config.type === 'http') {
     const url = parseUrl(config.url)
     checkKeys(config.headers, missing, 'http')
     return { name, type: 'http', command: '', args: [], url, env: {}, headers: { ...config.headers }, missing }
   }
-  const command = requireText(config.command, '启动命令', MAX_COMMAND_CHARS)
+  const command = requireText(config.command, t("main.config-channel.launch.command"), MAX_COMMAND_CHARS)
   const args = [...config.args]
-  if (args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.length > MAX_ARG_CHARS)) throw new Error('参数太多或太长了')
+  if (args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.length > MAX_ARG_CHARS)) throw new Error(t("main.mcp-config.too.many.or.overly.long.arguments"))
   checkKeys(config.env, missing, 'stdio')
   return { name, type: 'stdio', command, args, url: '', env: { ...config.env }, headers: {}, missing }
 }
@@ -117,7 +118,7 @@ export function parseServerInput(input: any, takenNames: readonly string[]): Ser
   const http = input.type === 'http'
   return validateServer({
     name: input.name, type: input.type, command: input.command, args: lines(input.args), url: input.url,
-    env: http ? {} : parsePairs(input.env, '环境变量'), headers: http ? parsePairs(input.headers, '请求头') : {}, missing: [],
+    env: http ? {} : parsePairs(input.env, t("main.mcp-config.environment.variables")), headers: http ? parsePairs(input.headers, t("main.mcp-config.headers")) : {}, missing: [],
   }, takenNames)
 }
 
@@ -203,7 +204,7 @@ export function toAcpServers(configs: readonly ServerConfig[], { resolve = resol
     if (config.type === 'http') return [{ type: 'http', name: config.name, url: config.url, headers: toPairs(config.headers) }]
     const command = resolve(config.command)
     if (!command) {
-      missing.push({ name: config.name, reason: `找不到命令：${config.command}` })
+      missing.push({ name: config.name, reason: t("main.mcp-config.command.not.found", { command: config.command }) })
       return []
     }
     return [{ name: config.name, command, args: config.args, env: toPairs(config.env) }]
@@ -259,7 +260,7 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
   function encrypt(config: ServerConfig): string | null {
     const hasSecrets = Object.keys(config.env).length > 0 || Object.keys(config.headers).length > 0
     if (!hasSecrets) return null
-    if (!crypto.isEncryptionAvailable()) throw new Error('系统钥匙串不可用，无法安全保存环境变量和请求头')
+    if (!crypto.isEncryptionAvailable()) throw new Error(t("main.mcp-config.system.keychain.unavailable.environment.variables.and.headers"))
     return crypto.encryptString(JSON.stringify({ env: config.env, headers: config.headers })).toString('base64')
   }
 
@@ -277,7 +278,7 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
   /** Several at once (an import), in one write: all of them or, past the limit, none. */
   function addMany(configs: readonly ServerConfig[]): void {
     const current = list()
-    if (current.length + configs.length > MAX_SERVERS) throw new Error(`最多添加 ${MAX_SERVERS} 个 MCP 服务器，现在有 ${current.length} 个`)
+    if (current.length + configs.length > MAX_SERVERS) throw new Error(t("main.mcp-config.up.to.mcp.servers.allowed.currently", { MAX_SERVERS: MAX_SERVERS, length: current.length }))
     writeAll([...current, ...configs])
   }
 
@@ -286,14 +287,14 @@ export function createMcpConfigStore({ file, crypto, onError = () => {} }: { fil
   /** The server named `name` replaced by `config`, in its place in the list. */
   function update(name: string, config: ServerConfig): void {
     const current = list()
-    if (!current.some((server) => server.name === name)) throw new Error(`没有名为「${name}」的服务器`)
+    if (!current.some((server) => server.name === name)) throw new Error(t("main.extensions-ipc.no.server.named", { name: name }))
     writeAll(current.map((server) => (server.name === name ? config : server)))
   }
 
   function remove(name: string): void {
     const current = list()
     const next = current.filter((config) => config.name !== name)
-    if (next.length === current.length) throw new Error(`没有名为「${name}」的服务器`)
+    if (next.length === current.length) throw new Error(t("main.extensions-ipc.no.server.named", { name: name }))
     writeAll(next)
   }
 

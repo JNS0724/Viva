@@ -7,3 +7,15 @@
 - 迁移期间测试和覆盖率入口必须同时发现 `.test.ts` 与尚未迁移的 `.test.js`；迁移后删除旧文件，避免重复运行或漏跑。
 - 外部工具要求的 CommonJS 入口、对外发布的 JavaScript 模板和生成产物保留其必要格式；如迁移相关源文件，同时验证构建、打包和下游调用。
 - 验证改动时运行相关测试及 `npm run typecheck`；测试入口或构建配置改变后，确认完整测试集合仍被发现。
+
+## Development conventions (English)
+
+The Chinese and English sections describe the same rules.
+
+- Write new tests in TypeScript (`*.test.ts`); prefer TypeScript for new source and internal scripts.
+- Migrate touched JavaScript modules, tests, and internal fixtures incrementally, keeping each batch independently verifiable. Do not rewrite the repository merely to change extensions.
+- Add meaningful types and include migrated files in typechecking. Do not hide errors with `@ts-nocheck`, broad new `any`, or disabled strict checks. Preserve behavior and coverage.
+- Tests run source directly through Node/Electron native type stripping: use erasable syntax, `import type`, and `.ts` source import extensions.
+- During migration, test and coverage discovery must include both `.test.ts` and remaining `.test.js`; remove migrated duplicates.
+- Keep formats required by external tools, published JavaScript templates, and generated outputs. Validate build, packaging, and downstream invocation when migrating their sources.
+- Run relevant tests and `npm run typecheck`. After changing discovery/build configuration, verify the full test collection is still discovered.

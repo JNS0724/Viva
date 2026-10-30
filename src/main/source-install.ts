@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -57,18 +58,18 @@ const inside = (child: string, parent: string) => {
 /** Whether `dir` can be installed, and what it is. */
 export function inspectFolder(dir: string, root: string): Inspected | { problem: string } {
   const resolved = path.resolve(dir)
-  if (inside(resolved, path.resolve(root))) return { problem: '这个文件夹已经在消息源文件夹里了，点「刷新」就能看到' }
+  if (inside(resolved, path.resolve(root))) return { problem: t("main.source-install.this.folder.is.already.in.the.sources") }
   const read = readManifest(resolved)
   if ('problem' in read) return read
   let size: ReturnType<typeof measure>
   try {
     size = measure(resolved)
   } catch (err) {
-    return { problem: `读不了这个文件夹：${(err as Error).message}` }
+    return { problem: t("main.source-install.cannot.read.this.folder", { message: (err as Error).message }) }
   }
-  if (size.tooDeep) return { problem: `文件夹嵌套太深（超过 ${MAX_DEPTH} 层），可能有指回上层的链接` }
-  if (size.files > MAX_FILES) return { problem: `文件太多了（超过 ${MAX_FILES} 个）` }
-  if (size.bytes > MAX_BYTES) return { problem: `文件夹太大了（超过 ${Math.round(MAX_BYTES / 1024 / 1024)} MB）` }
+  if (size.tooDeep) return { problem: t("main.source-install.folder.nesting.exceeds.levels.a.link.may", { MAX_DEPTH: MAX_DEPTH }) }
+  if (size.files > MAX_FILES) return { problem: t("main.source-install.too.many.files.more.than", { MAX_FILES: MAX_FILES }) }
+  if (size.bytes > MAX_BYTES) return { problem: t("main.source-install.folder.is.too.large.over.mb", { value1: Math.round(MAX_BYTES / 1024 / 1024) }) }
   return { dir: resolved, manifest: read.manifest, files: size.files, bytes: size.bytes }
 }
 
@@ -82,7 +83,7 @@ export async function installFolder(inspected: Inspected, root: string): Promise
     await fs.promises.cp(inspected.dir, staging, { recursive: true, dereference: true, filter: (from) => !SKIPPED.has(path.basename(from)) })
     // The copy must still be the source that was shown: the folder may have changed since.
     const copied = readManifest(staging)
-    if ('problem' in copied || copied.manifest.id !== inspected.manifest.id) throw new Error('文件夹在确认之后变了，请重新选择')
+    if ('problem' in copied || copied.manifest.id !== inspected.manifest.id) throw new Error(t("main.source-install.the.folder.changed.after.confirmation.choose.it"))
     if (!fs.existsSync(target)) {
       fs.renameSync(staging, target)
       return target
@@ -137,7 +138,7 @@ export function clearLeftovers(root: string): void {
 /** Moves the source's folder to the trash, or deletes it; only folders inside `root` are ever touched. */
 export async function removeFolder(folder: SourceFolder, root: string, trash: (dir: string) => Promise<void>): Promise<'trashed' | 'deleted'> {
   const dir = path.resolve(folder.dir)
-  if (!inside(dir, path.resolve(root)) || dir === path.resolve(root)) throw new Error('这个消息源不在消息源文件夹里')
+  if (!inside(dir, path.resolve(root)) || dir === path.resolve(root)) throw new Error(t("main.source-install.this.source.is.outside.the.sources.directory"))
   try {
     await trash(dir)
     return 'trashed'

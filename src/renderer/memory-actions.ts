@@ -1,4 +1,4 @@
-
+import { t } from '../shared/i18n/translate.ts'
 const SEARCH_DEBOUNCE_MS = 200
 const UNDO_TOAST_MS = 8000
 const NOTICE_TOAST_MS = 6000
@@ -18,8 +18,8 @@ type MemoryItem = { id: number, [field: string]: any }
  */
 export function introPrompt({ sources, docs }: { sources: readonly string[], docs: ReadonlyArray<{ path: string }> }) {
   return [
-    '请先了解一下我：阅读下面这些我常用的网站和文档，归纳我所在的部门、负责的领域、在推进的项目和常打交道的人，',
-    '把这些逐条用 memory_remember 记下来（部门和职责用 kind=role，人用 person，项目用 project），重要的术语和约定也记下；打不开的就跳过。最后用三五句话告诉我你了解到了什么。',
+    t("memory-actions.get.to.know.me.first.read.the"),
+    t("memory-actions.save.each.fact.using.memory.remember.kind"),
     ...[...sources, ...docs.map((doc) => doc.path)].map((item) => `- ${item}`),
   ].join('\n')
 }
@@ -31,8 +31,8 @@ export function introChanges(values: IntroValues) {
 
 /** "已记住：周报每周五交给张三" / "已记住 3 条" / "已补充画像：在推进的事". */
 export function memoryNotice({ memories = [], invalidated = [] }: { memories?: readonly string[], invalidated?: readonly string[] }) {
-  const remembered = memories.length === 1 ? `已记住：${memories[0]}` : memories.length > 1 ? `已记住 ${memories.length} 条新内容` : ''
-  const replaced = invalidated.length === 1 ? `「${invalidated[0]}」已不再使用` : invalidated.length > 1 ? `${invalidated.length} 条旧记忆已不再使用` : ''
+  const remembered = memories.length === 1 ? t("memory-actions.remembered", { value1: memories[0] }) : memories.length > 1 ? t("memory-actions.remembered.new.facts", { length: memories.length }) : ''
+  const replaced = invalidated.length === 1 ? t("memory-actions.is.no.longer.used", { value1: invalidated[0] }) : invalidated.length > 1 ? t("memory-actions.old.memories.are.no.longer.used", { length: invalidated.length }) : ''
   return [remembered, replaced].filter(Boolean).join('；')
 }
 
@@ -67,8 +67,8 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     const sources = lines(values.sources)
     const wantsReading = analyze && (sources.length > 0 || docs.length > 0)
     if (wantsReading && ask(introPrompt({ sources, docs }))) return
-    showToast(wantsReading ? '已保存。连接模型后，可以再让助手阅读这些资料' : '已保存，可以在「关于你」里随时补充', {
-      action: { label: '查看', kind: 'open-profile' }, ms: NOTICE_TOAST_MS,
+    showToast(wantsReading ? t("memory-actions.saved.once.a.model.is.connected.ask") : t("memory-actions.saved.you.can.add.more.in.about"), {
+      action: { label: t("app.view"), kind: 'open-profile' }, ms: NOTICE_TOAST_MS,
     })
   }
 
@@ -113,7 +113,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       try {
         const removed = await api.deleteMemory(memory.id)
         dispatch({ type: 'memory_removed', id: memory.id })
-        if (removed) showToast('已删除这条记忆', { action: { label: '撤销', kind: 'undo-memory', payload: removed }, ms: UNDO_TOAST_MS })
+        if (removed) showToast(t("memory-actions.memory.deleted"), { action: { label: t("memory-actions.undo"), kind: 'undo-memory', payload: removed }, ms: UNDO_TOAST_MS })
       } catch (err) {
         fail(err)
       }
@@ -124,7 +124,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
         await api.restoreMemory(memory)
         await runSearch(getState().memory.query)
       } catch (err) {
-        showToast(`撤销失败：${errorMessage(err)}`)
+        showToast(t("memory-actions.could.not.undo", { value1: errorMessage(err) }))
       }
     },
 
@@ -180,7 +180,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     /** The agent saved something during the last turn: say so, and keep an open page current. */
     onMemoryChanged(event: { memories?: readonly string[], invalidated?: readonly string[] }) {
       const text = memoryNotice(event)
-      if (text) showToast(text, { action: { label: '查看', kind: 'open-profile' }, ms: NOTICE_TOAST_MS })
+      if (text) showToast(text, { action: { label: t("app.view"), kind: 'open-profile' }, ms: NOTICE_TOAST_MS })
       loadMemory()
     },
   }

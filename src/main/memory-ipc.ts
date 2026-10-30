@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { MAX_MEMORY_CHARS, type openMemoryDb } from '../../plugins/memory/lib/store.ts'
@@ -16,7 +17,7 @@ function freeName(dir: string, fileName: string) {
     const candidate = n === 1 ? fileName : `${name} (${n})${ext}`
     if (!fs.existsSync(path.join(dir, candidate))) return candidate
   }
-  throw new Error(`「${fileName}」的同名文件太多了`)
+  throw new Error(t("main.memory-ipc.too.many.files.with.the.same.name", { fileName: fileName }))
 }
 
 /**
@@ -24,13 +25,13 @@ function freeName(dir: string, fileName: string) {
  * @returns paths relative to the workspace, with forward slashes
  */
 export function copyIntoWorkspace(files: readonly string[], cwd: string): Array<{ name: string, path: string }> {
-  if (files.length > MAX_DOCS) throw new Error(`一次最多添加 ${MAX_DOCS} 份文档`)
+  if (files.length > MAX_DOCS) throw new Error(t("main.memory-ipc.add.up.to.documents.at.a.time", { MAX_DOCS: MAX_DOCS }))
   const dir = path.join(cwd, DOCS_DIR_NAME)
   fs.mkdirSync(dir, { recursive: true })
   return files.map((file) => {
     const stat = fs.statSync(file)
-    if (!stat.isFile()) throw new Error(`不是文件：${path.basename(file)}`)
-    if (stat.size > MAX_DOC_BYTES) throw new Error(`「${path.basename(file)}」超过 50 MB`)
+    if (!stat.isFile()) throw new Error(t("main.memory-ipc.not.a.file", { value1: path.basename(file) }))
+    if (stat.size > MAX_DOC_BYTES) throw new Error(t("main.memory-ipc.exceeds.mb", { value1: path.basename(file) }))
     const name = freeName(dir, path.basename(file))
     fs.copyFileSync(file, path.join(dir, name), fs.constants.COPYFILE_EXCL)
     return { name, path: `${DOCS_DIR_NAME}/${name}` }

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /** Validation shared by the history database, the legacy JSON import and the IPC boundary. */
 import { checkImages, type ImageRef } from '../shared/images.ts'
 
@@ -22,36 +23,36 @@ function normalizeReceipt(receipt: any): Receipt | null {
   const { ms, tools, thoughts, stopReason } = receipt
   if (!(Number.isFinite(ms) && ms >= 0) || !isCount(tools) || !isCount(thoughts)
     || typeof stopReason !== 'string' || stopReason.length > MAX_STOP_REASON_CHARS) {
-    throw new Error('无效的消息 receipt')
+    throw new Error(t("main.history-schema.invalid.message.receipt"))
   }
   return { ms, tools, thoughts, stopReason }
 }
 
 function normalizeMessage(message: any): StoredMessage {
-  if (!ROLES.has(message?.role)) throw new Error(`无效的消息 role：${message?.role}`)
-  if (typeof message.text !== 'string' || message.text.length > MAX_TEXT_CHARS) throw new Error('无效的消息 text')
+  if (!ROLES.has(message?.role)) throw new Error(t("main.history-schema.invalid.message.role", { role: message?.role }))
+  if (typeof message.text !== 'string' || message.text.length > MAX_TEXT_CHARS) throw new Error(t("main.history-schema.invalid.message.text"))
   const images = checkImages(message.images)
-  if (!images) throw new Error('无效的消息 images')
+  if (!images) throw new Error(t("main.history-schema.invalid.message.images"))
   return { role: message.role, text: message.text, receipt: normalizeReceipt(message.receipt), ...(images.length ? { images } : {}) }
 }
 
 /** Keeps only what is persisted from a list of messages (renderer state or a file), or throws. */
 export function normalizeMessages(input: unknown): StoredMessage[] {
-  if (!Array.isArray(input)) throw new Error('历史记录必须是消息列表')
-  if (input.length > MAX_MESSAGES) throw new Error(`历史消息太多（上限 ${MAX_MESSAGES} 条）`)
+  if (!Array.isArray(input)) throw new Error(t("main.history-schema.history.must.be.a.list.of.messages"))
+  if (input.length > MAX_MESSAGES) throw new Error(t("main.history-schema.too.many.history.messages.maximum", { MAX_MESSAGES: MAX_MESSAGES }))
   return input.map(normalizeMessage)
 }
 
 /** Conversation and session ids end up in file paths and queries, so only plain ids pass. */
 export function assertId(id: unknown): string {
-  if (typeof id !== 'string' || !SAFE_ID.test(id)) throw new Error(`无效的会话 id：${id}`)
+  if (typeof id !== 'string' || !SAFE_ID.test(id)) throw new Error(t("main.history-schema.invalid.conversation.id", { id: String(id) }))
   return id
 }
 
 /** A user-chosen title, trimmed. */
 export function normalizeTitle(input: unknown): string {
   const title = typeof input === 'string' ? input.trim() : ''
-  if (!title || title.length > MAX_TITLE_CHARS) throw new Error(`标题需要 1–${MAX_TITLE_CHARS} 个字`)
+  if (!title || title.length > MAX_TITLE_CHARS) throw new Error(t("main.history-schema.title.must.contain.characters", { MAX_TITLE_CHARS: MAX_TITLE_CHARS }))
   return title
 }
 

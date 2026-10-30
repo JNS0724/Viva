@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -188,9 +189,9 @@ export function dayOf(ts: number): string {
 function checkNew(input: NewFollowup) {
   const title = input.title.trim()
   const ask = input.ask.trim()
-  if (!title || title.length > MAX_TITLE_CHARS) throw new Error(`标题要在 1–${MAX_TITLE_CHARS} 个字之间`)
-  if (!ask || ask.length > MAX_ASK_CHARS) throw new Error(`要做的事要在 1–${MAX_ASK_CHARS} 个字之间`)
-  if (input.remindAt == null && input.prepareBy == null && !input.watchPath) throw new Error('跟进要有提醒时间、准备时间或要看的文件')
+  if (!title || title.length > MAX_TITLE_CHARS) throw new Error(t("main.followup-store.title.must.contain.characters", { MAX_TITLE_CHARS: MAX_TITLE_CHARS }))
+  if (!ask || ask.length > MAX_ASK_CHARS) throw new Error(t("main.followup-store.task.description.must.contain.characters", { MAX_ASK_CHARS: MAX_ASK_CHARS }))
+  if (input.remindAt == null && input.prepareBy == null && !input.watchPath) throw new Error(t("main.followup-store.a.follow.up.needs.a.reminder.time"))
   return { title, ask }
 }
 

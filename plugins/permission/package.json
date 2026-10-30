@@ -2,7 +2,7 @@
   "name": "viva-permission",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的权限档位：用户在窗口里选的完全 / 自动 / 工作区修改 / 仅可查看，用到 dsh 打开或接着的每个会话上",
+  "description": "Viva permission presets: apply the user selection to every new or resumed dsh session",
   "type": "module",
   "main": "index.js",
   "exports": {

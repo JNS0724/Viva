@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h, label } from './dom.ts'
 import { focusView, patchReader, reviewView } from './review.ts'
@@ -12,7 +14,7 @@ function snippetView(snippet: Snippet | null | undefined) {
   return h('span', { class: 'history-snippet' }, snippet.before, h('mark', { text: snippet.hit }), snippet.after)
 }
 
-const SPEAKERS: Readonly<Record<string, string>> = { user: '你', assistant: 'Viva' }
+let SPEAKERS: Readonly<Record<string, string>> = { user: t("history-panel.you"), assistant: 'Viva' }
 
 /** The message said right before or after the hit, dimmed, so the hit reads in its place. */
 const contextLine = (message: Nearby) => (message
@@ -24,14 +26,14 @@ const contextLine = (message: Nearby) => (message
  * it is on screen, else reads it here where it is kept (review-actions.ts openRef).
  */
 function hitView(hit: SearchHit, handlers: Handlers, now: number) {
-  const who = SPEAKERS[hit.role] ?? '记录'
+  const who = SPEAKERS[hit.role] ?? t("history-panel.record")
   const where = [formatListTime(hit.at, now), hit.cwd ? workspaceName(hit.cwd) : null].filter(Boolean).join(' · ')
   return h('li', { class: 'search-hit' },
     h('div', { class: 'hit-body' },
       h('span', { class: 'history-meta mono' }, h('b', { class: 'history-title', text: who }), where),
       h('div', { class: 'hit-lines' }, contextLine(hit.before), snippetView(hit.snippet), contextLine(hit.after))),
     h('button', {
-      class: 'btn btn-outline btn-small hit-open', type: 'button', text: '详情 →', 'aria-label': `在对话里看${who}说的这句`,
+      class: 'btn btn-outline btn-small hit-open', type: 'button', text: t("history-panel.details"), 'aria-label': t("history-panel.view.this.message.from.in.the.conversation", { who: who }),
       onClick: () => handlers.jumpToHit(hit),
     }))
 }
@@ -44,11 +46,11 @@ function searchView(state: State, handlers: Handlers, now: number): View[] {
   if (!query.trim()) return reviewView(state, handlers, now)
   // A hit opened (详情): read at the top, the results kept below it.
   const focus = focusView(state, handlers, now)
-  if (results === null) return [focus, h('div', { class: 'history-hint', text: '搜索中…' })]
-  if (results.length === 0) return [focus, empty(`没有找到「${query.trim()}」`)]
+  if (results === null) return [focus, h('div', { class: 'history-hint', text: t("history-panel.searching") })]
+  if (results.length === 0) return [focus, empty(t("review.search.empty", { p0: query.trim() }))]
   return [
     focus,
-    label(`${results.length} 条消息`),
+    label(t("review.message.count", { p0: results.length })),
     h('ul', { class: 'history-items' }, results.map((hit: SearchHit) => hitView(hit, handlers, now))),
   ]
 }
@@ -84,3 +86,7 @@ export function renderToast(container: HTMLElement, toast: { text: string, actio
     h('span', { text: toast.text }),
     toast.action ? h('button', { class: 'toast-action', type: 'button', text: toast.action.label, onClick: () => handlers.toastAction(toast) }) : null))
 }
+
+onLocaleChange(() => {
+  SPEAKERS = { user: t("history-panel.you"), assistant: 'Viva' }
+})
