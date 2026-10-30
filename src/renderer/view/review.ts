@@ -13,11 +13,11 @@ import { reconcileChildren } from './reconcile.ts'
  * Filtered to topics with background tasks or files, or the starred messages. A message opened from a search hit,
  * a link or a star is read at the top. More comes in at the bottom.
  */
-const FILTER_NAMES = (): Readonly<Record<string, string>> => ({ all: t("merge.all.50"), tasks: t("tasks-page.background.tasks"), files: t("merge.with.files.51"), stars: t("merge.bookmarks.52") })
+const FILTER_NAMES = (): Readonly<Record<string, string>> => ({ all: t("review.filter.all"), tasks: t("tasks-page.background.tasks"), files: t("review.filter.files"), stars: t("review.filter.bookmarks") })
 const EMPTY = (): Readonly<Record<string, string>> => ({
-  all: t("merge.no.conversations.yet.53"),
-  tasks: t("merge.no.background.tasks.yet.54"),
-  files: t("merge.no.topics.with.files.or.images.yet.55"),
+  all: t("review.empty.conversations"),
+  tasks: t("review.empty.tasks"),
+  files: t("review.empty.files"),
 })
 const SPEAKERS = (): Readonly<Record<string, string>> => ({ user: t("history-panel.you"), assistant: 'Viva' })
 
@@ -25,7 +25,7 @@ const hint = (text: string) => h('div', { class: 'history-hint', text })
 const clock = (at: number) => new Date(at).toTimeString().slice(0, 5)
 
 function filterBar(filter: string, handlers: Handlers) {
-  return h('div', { class: 'review-filters', role: 'group', 'aria-label': t("merge.filter.56") },
+  return h('div', { class: 'review-filters', role: 'group', 'aria-label': t("review.filter.label") },
     REVIEW_FILTERS.map((key) => h('button', {
       class: 'review-filter', type: 'button', 'aria-pressed': String(filter === key), text: FILTER_NAMES()[key],
       onClick: () => handlers.reviewFilter(key),
@@ -58,7 +58,7 @@ function readMessage(message: ReaderMessage, found: string | null, handlers: Han
 function readerEdge(edge: ReaderEdge, count: number, handlers: Handlers) {
   return h('button', {
     class: 'reader-edge timeline-more', type: 'button', 'data-edge': edge,
-    text: edge === 'before' ? t("merge.earlier.messages.57", { p0: count }) : t("merge.more.messages.58", { p0: count }),
+    text: edge === 'before' ? t("review.reader.earlier", { p0: count }) : t("review.reader.more", { p0: count }),
     onClick: () => handlers.readerMore(edge),
   })
 }
@@ -80,8 +80,8 @@ function readerParts(key: string, head: string | null, review: State['review'], 
   return [
     ...readerBody(key, review, handlers, found),
     head ? h('div', { class: 'review-reader-actions' },
-      h('span', { class: 'review-reader-note', text: t("merge.these.records.are.outside.the.current.conversation.the.assistant.can.look.them.u.59") }),
-      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("merge.continue.this.topic.60"), onClick: () => handlers.resumeFromReview(head) })) : null,
+      h('span', { class: 'review-reader-note', text: t("review.reader.context.note") }),
+      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("review.continue.topic"), onClick: () => handlers.resumeFromReview(head) })) : null,
   ].flat(2).filter((part): part is Node | string => part instanceof Node || (typeof part === 'string' && part !== ''))
 }
 
@@ -110,12 +110,12 @@ export function focusView(state: State, handlers: Handlers, now = Date.now()): V
   if (!focus) return null
   const isTopic = focus.key.startsWith('t:')
   const when = focus.at === null ? '' : formatListTime(focus.at, now)
-  return h('section', { class: 'review-focus', 'aria-label': t("merge.read.records.61") },
+  return h('section', { class: 'review-focus', 'aria-label': t("review.read.records") },
     h('div', { class: 'review-focus-head' },
       h('span', { class: 'review-kind', text: isTopic ? t("history-panel.record") : t("island-tasks.background") }),
-      h('b', { class: 'review-title', text: focus.title || t("merge.no.question.18") }),
+      h('b', { class: 'review-title', text: focus.title || t("topic.no.question") }),
       when ? h('span', { class: 'review-meta mono', text: when }) : null,
-      h('button', { class: 'btn btn-text btn-small review-focus-close', type: 'button', text: t("merge.close.62"), onClick: () => handlers.reviewCloseFocus() })),
+      h('button', { class: 'btn btn-text btn-small review-focus-close', type: 'button', text: t("review.close"), onClick: () => handlers.reviewCloseFocus() })),
     focus.notice ? h('div', { class: 'review-notice', role: 'status', text: focus.notice }) : null,
     reader(focus.key, focus.head, state.review, handlers, focus.found))
 }
@@ -123,13 +123,13 @@ export function focusView(state: State, handlers: Handlers, now = Date.now()): V
 function taskItem(task: ReviewTask, review: State['review'], handlers: Handlers) {
   const key = segmentKey(task.id)
   const open = review.open === key && !review.focus
-  const marks = [task.hasFiles ? t("merge.with.files.51") : null, task.stars ? `★ ${task.stars}` : null].filter(Boolean).join(' · ')
+  const marks = [task.hasFiles ? t("review.filter.files") : null, task.stars ? `★ ${task.stars}` : null].filter(Boolean).join(' · ')
   return h('li', { class: 'review-task', 'data-open': String(open) },
     h('button', { class: 'review-row review-task-row', type: 'button', 'aria-expanded': String(open), onClick: () => handlers.reviewOpen(key) },
       h('span', { class: 'review-kind', text: t("island-tasks.background") }),
-      h('span', { class: 'review-title', text: task.title || t("merge.no.question.18") }),
+      h('span', { class: 'review-title', text: task.title || t("topic.no.question") }),
       marks ? h('span', { class: 'review-marks', text: marks }) : null,
-      h('span', { class: 'review-meta mono', text: t("merge.turns.28", { p0: task.turns, p1: clock(task.createdAt) }) })),
+      h('span', { class: 'review-meta mono', text: t("topic.turns.time", { p0: task.turns, p1: clock(task.createdAt) }) })),
     open ? reader(key, null, review, handlers) : null)
 }
 
@@ -137,16 +137,16 @@ function topicItem(topic: ReviewTopic, review: State['review'], handlers: Handle
   const key = topicKey(topic.id)
   const open = review.open === key && !review.focus
   const marks = [
-    topic.hasFiles ? t("merge.with.files.51") : null,
+    topic.hasFiles ? t("review.filter.files") : null,
     topic.stars ? `★ ${topic.stars}` : null,
-    topic.cwds.length > 1 ? t("merge.folder.changed.63", { p0: topic.cwds.map((cwd) => workspaceName(cwd)).join(' → ') }) : null,
+    topic.cwds.length > 1 ? t("review.folder.changed", { p0: topic.cwds.map((cwd) => workspaceName(cwd)).join(' → ') }) : null,
   ].filter(Boolean).join(' · ')
-  const began = begunEarlier(topic) ? t("merge.started.64", { p0: dayLabel(topic.startedAt, now) }) : ''
+  const began = begunEarlier(topic) ? t("review.topic.started", { p0: dayLabel(topic.startedAt, now) }) : ''
   return h('li', { class: 'review-topic', 'data-open': String(open) },
-    h('button', { class: 'review-row', type: 'button', 'aria-expanded': String(open), 'aria-label': t("merge.read.records.65", { p0: topic.title }), onClick: () => handlers.reviewOpen(key) },
-      h('b', { class: 'review-title', text: topic.title || t("merge.no.question.18") }),
+    h('button', { class: 'review-row', type: 'button', 'aria-expanded': String(open), 'aria-label': t("review.read.topic.label", { p0: topic.title }), onClick: () => handlers.reviewOpen(key) },
+      h('b', { class: 'review-title', text: topic.title || t("topic.no.question") }),
       marks ? h('span', { class: 'review-marks', text: marks }) : null,
-      h('span', { class: 'review-meta mono', text: t("merge.turns.66", { p0: topic.turns, p1: clock(topic.lastAt), p2: began }) })),
+      h('span', { class: 'review-meta mono', text: t("review.topic.turns.time", { p0: topic.turns, p1: clock(topic.lastAt), p2: began }) })),
     open ? reader(key, topic.head, review, handlers) : null,
     topic.tasks.length ? h('ul', { class: 'review-tasks' }, topic.tasks.map((task) => taskItem(task, review, handlers))) : null)
 }
@@ -159,8 +159,8 @@ function topicList(review: State['review'], handlers: Handlers, now: number): Vi
       h('div', { class: 'review-day-head', text: day.label }),
       h('ul', { class: 'review-items' }, day.topics.map((topic) => topicItem(topic, review, handlers, now)))))))
   const more = review.hasMore
-    ? h('button', { class: 'timeline-more', type: 'button', disabled: review.loading, text: review.loading ? t("earlier.loading") : t("merge.earlier.67"), onClick: () => handlers.reviewMore() })
-    : review.topics.length ? hint(t("merge.no.earlier.records.68")) : null
+    ? h('button', { class: 'timeline-more', type: 'button', disabled: review.loading, text: review.loading ? t("earlier.loading") : t("review.earlier"), onClick: () => handlers.reviewMore() })
+    : review.topics.length ? hint(t("review.no.earlier")) : null
   return [...(months.length ? months : [hint(EMPTY()[review.filter] ?? EMPTY().all)]), more]
 }
 
@@ -172,14 +172,14 @@ type StarredItem = { segmentId: string, seq: number, messageId?: number, role: s
  */
 function starredList(review: State['review'], handlers: Handlers, now: number): View[] {
   if (review.starred === null) return [hint(t("earlier.loading"))]
-  if (!review.starred.length) return [hint(t("merge.no.bookmarks.yet.hover.over.a.message.and.click.69"))]
+  if (!review.starred.length) return [hint(t("bookmarks.empty"))]
   return [h('ul', { class: 'review-items review-stars' }, review.starred.map((item: StarredItem) =>
     h('li', { class: 'review-star', 'data-deleted': String(Boolean(item.deleted)) },
       h('span', { class: 'history-meta mono' }, h('b', { class: 'history-title', text: SPEAKERS()[item.role] ?? t("history-panel.record") }),
-        `${formatListTime(item.at, now)} · ${item.title}${item.deleted ? t("merge.deleted.70") : ''}`),
+        `${formatListTime(item.at, now)} · ${item.title}${item.deleted ? t("review.deleted.suffix") : ''}`),
       h('div', { class: 'review-star-text', text: item.text }),
       item.deleted ? null : h('div', { class: 'review-star-actions' },
-        h('button', { class: 'btn btn-text btn-small', type: 'button', text: t("merge.remove.bookmark.71"), onClick: () => handlers.toggleStar({ segmentId: item.segmentId, seq: item.seq }, false) }),
+        h('button', { class: 'btn btn-text btn-small', type: 'button', text: t("bookmarks.remove"), onClick: () => handlers.toggleStar({ segmentId: item.segmentId, seq: item.seq }, false) }),
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("history-panel.details"),
           onClick: () => handlers.openStarred({ segmentId: item.segmentId, seq: item.seq, messageId: item.messageId }) })))))]
 }

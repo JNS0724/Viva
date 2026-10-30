@@ -8,8 +8,8 @@ import type { MessagePlace } from './stars.ts'
  * back); the 收藏 list; and stars put on or taken off anywhere, with the stars of what is on screen read back.
  * Reading never touches the agent: the conversation and its directory stay as they are.
  */
-const NOTICE_MISSING = t("merge.the.original.message.is.gone.it.may.have.been.regenerated.or.withdrawn.nearby.re.6")
-const NOTICE_EMPTY = t("merge.the.original.message.is.gone.and.this.segment.has.no.other.content.7")
+const missingNotice = () => t("review.notice.missing")
+const emptyNotice = () => t("review.notice.empty")
 const RETRY_MS = 8000
 const TITLE_CHARS = 40
 /** How many messages are read on at a time, at either end of what is read (review-state.ts READER_MAX keeps it bounded). */
@@ -58,7 +58,7 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     } catch (err) {
       if (mine !== asked) return
       dispatch({ type: 'review_failed' })
-      report(t("merge.could.not.load.review.8"))(err)
+      report(t("review.load.failed"))(err)
     }
   }
 
@@ -66,7 +66,7 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     try {
       dispatch({ type: 'review_starred', items: await api.starredMessages() })
     } catch (err) {
-      report(t("merge.could.not.load.bookmarks.9"))(err)
+      report(t("bookmarks.load.failed"))(err)
     }
   }
 
@@ -95,10 +95,10 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
     try {
       const read = await fetchRead(key, { from: 0 })
       if (outdated(mine)) return undefined
-      if (!read) return showToast(t("merge.this.segment.has.been.deleted.10"))
+      if (!read) return showToast(t("review.segment.deleted"))
       dispatch({ type: 'review_read', key, read: mine, messages: read.messages, from: read.from, total: read.total })
     } catch (err) {
-      if (!outdated(mine)) report(t("merge.could.not.read.this.segment.11"))(err)
+      if (!outdated(mine)) report(t("review.segment.unreadable"))(err)
     }
     return undefined
   }
@@ -122,7 +122,7 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
       keepPlace(() => dispatch({ type: 'review_read_more', read, edge, part }))
     } catch (err) {
       dispatch({ type: 'review_read_more', read, edge, part: null })
-      report(t("merge.could.not.read.this.segment.11"))(err)
+      report(t("review.segment.unreadable"))(err)
     }
   }
 
@@ -138,7 +138,7 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
       const located = await api.locateMessage(ref.messageId === undefined
         ? { segmentId: ref.segmentId, seq: ref.seq } : { segmentId: ref.segmentId, seq: ref.seq, messageId: ref.messageId })
       if (outdated(mine)) return undefined
-      if (located.status === 'deleted') return showToast(t("merge.this.record.has.been.deleted.12"))
+      if (located.status === 'deleted') return showToast(t("review.record.deleted"))
       const { key } = located.reader
       // The part around the message, however far into a long topic it is.
       const around = located.seq === null ? undefined : { segmentId: located.segmentId, seq: located.seq }
@@ -150,15 +150,15 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
         whole = true
       }
       if (outdated(mine)) return undefined
-      if (!read) return showToast(t("merge.this.record.has.been.deleted.12"))
-      const notice = located.status === 'found' ? null : located.seq === null ? NOTICE_EMPTY : NOTICE_MISSING
+      if (!read) return showToast(t("review.record.deleted"))
+      const notice = located.status === 'found' ? null : located.seq === null ? emptyNotice() : missingNotice()
       const msgId = located.seq === null ? null : `${located.segmentId}-${located.seq}`
       const found = located.status === 'found' ? msgId : null
       dispatch({ type: 'review_focus', key, title: read.title, at: read.at, head: read.head, found, notice })
       dispatch({ type: 'review_read', key, read: mine, whole, messages: read.messages, from: read.from, total: read.total })
-      if (msgId !== null && !reveal(msgId) && found) showToast(t("merge.the.message.was.found.but.could.not.be.displayed.13"))
+      if (msgId !== null && !reveal(msgId) && found) showToast(t("review.message.display.failed"))
     } catch (err) {
-      if (!outdated(mine)) showToast(t("merge.could.not.load.14", { p0: errorMessage(err) }), { action: { label: t("thread.retry"), kind: 'open-ref', payload: ref }, ms: RETRY_MS })
+      if (!outdated(mine)) showToast(t("review.read.failed", { p0: errorMessage(err) }), { action: { label: t("thread.retry"), kind: 'open-ref', payload: ref }, ms: RETRY_MS })
     }
     return undefined
   }
@@ -192,7 +192,7 @@ export function createReviewActions({ api, getState, dispatch, showToast, errorM
         const changed = await api.starMessage(place.segmentId, place.seq, starred)
         dispatch({ type: 'star_changed', ...place, starred, changed })
       } catch (err) {
-        report(starred ? t("merge.could.not.bookmark.15") : t("merge.could.not.remove.bookmark.16"))(err)
+        report(starred ? t("bookmarks.add.failed") : t("bookmarks.remove.failed"))(err)
       }
     },
     /** After a render: the stars of the segments now shown, read once for each set of them. */

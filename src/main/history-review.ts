@@ -200,7 +200,7 @@ export function reviewQueries(db: DatabaseSync, now: () => number) {
   function setStar(id: unknown, seq: unknown, starred: boolean): boolean {
     const segment = assertId(id)
     const at = Number(seq)
-    if (!Number.isInteger(at) || at < 0 || !sql.message.get(segment, at)) throw new Error(t("merge.this.message.could.not.be.found.it.may.have.been.removed.3"))
+    if (!Number.isInteger(at) || at < 0 || !sql.message.get(segment, at)) throw new Error(t("history.message.not.found"))
     const result = starred ? sql.star.run(segment, at, now()) : sql.unstar.run(segment, at)
     return Number(result.changes) > 0
   }

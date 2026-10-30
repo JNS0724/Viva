@@ -1,4 +1,3 @@
-import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
 import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage, SUGGESTION_KEY } from '../tasks-state.ts'
@@ -16,10 +15,10 @@ import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../../shared/text-limits.ts
  * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
  * draft and what can be done with it. One of the hub's pages, beside 回顾 · 关于你 · 设置.
  */
-let GROUP_NAMES: Readonly<Record<string, string>> = { waiting: t("merge.needs.your.attention.74"), running: t("island-tasks.in.background"), ended: t("island-view.done") }
+const groupNames = (): Readonly<Record<string, string>> => ({ waiting: t("task.status.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") })
 const LIVE = new Set(['running', 'waiting'])
 export { FOLLOWUP_KEY, SUGGESTION_KEY }
-let FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]]
+const followupGroupsCopy = (): ReadonlyArray<[string, string]> => ([['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]])
 
 /**
  * The page as it is drawn: what was picked, while it is still on the list; once it is gone from there (deleted,
@@ -47,7 +46,7 @@ function suggestionGroup(state: State, selected: string | null, handlers: Handle
 
 function followupGroups(state: State, selected: string | null, handlers: Handlers, now: number) {
   const list: readonly Untyped[] = state.followups.followups
-  return FOLLOWUP_GROUPS.flatMap(([status, name]) => {
+  return followupGroupsCopy().flatMap(([status, name]) => {
     const group = list.filter((followup) => followup.status === status)
     if (!group.length) return []
     return [
@@ -79,10 +78,10 @@ function foldedSide(state: State, handlers: Handlers) {
   const waiting = state.tasks.list.filter((task) => task.status === 'waiting').length
   return h('nav', { class: 'tp-side tp-side-folded', 'aria-label': t("tasks-page.background.tasks") },
     h('button', {
-      class: 'icon-btn tp-fold', type: 'button', title: t("merge.expand.background.tasks.83"), 'aria-label': t("merge.expand.background.tasks.83"), 'aria-expanded': 'false',
+      class: 'icon-btn tp-fold', type: 'button', title: t("dock.expand"), 'aria-label': t("dock.expand"), 'aria-expanded': 'false',
       onClick: () => handlers.foldTaskList(false),
     }, h('span', { text: '»', 'aria-hidden': 'true' })),
-    waiting ? h('span', { class: 'tp-count', title: t("merge.tasks.need.your.attention.79", { p0: waiting }), text: String(waiting) }) : null)
+    waiting ? h('span', { class: 'tp-count', title: t("dock.waiting.count", { p0: waiting }), text: String(waiting) }) : null)
 }
 
 /**
@@ -96,14 +95,14 @@ function sideView(state: State, handlers: Handlers, now: number) {
     h('div', { class: 'tp-side-head' },
       h('span', { class: 'tp-side-title', text: t("tasks-page.background.tasks") }),
       h('button', {
-        class: 'icon-btn tp-fold', type: 'button', title: t("merge.collapse.list.89"), 'aria-label': t("merge.collapse.list.89"), 'aria-expanded': 'true',
+        class: 'icon-btn tp-fold', type: 'button', title: t("task.list.collapse"), 'aria-label': t("task.list.collapse"), 'aria-expanded': 'true',
         onClick: () => handlers.foldTaskList(true),
       }, h('span', { text: '«', 'aria-hidden': 'true' }))),
     prepareLine(state, now),
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
     ...pageGroups(state).flatMap(({ key, tasks }) => [
-      h('div', { class: 'tp-group', text: `${GROUP_NAMES[key]} · ${tasks.length}` }),
+      h('div', { class: 'tp-group', text: `${groupNames()[key]} · ${tasks.length}` }),
       ...tasks.map((task) => h('button', {
         class: 'tp-row', type: 'button', 'aria-current': task.id === selected ? 'page' : null,
         onClick: () => handlers.selectTask(task.id),
@@ -174,7 +173,7 @@ function inputView(task: BackgroundTask, handlers: Handlers) {
       if (accepted === false) restore()
     }).catch(() => {
       restore()
-      handlers.inputProblem(t("merge.could.not.send.please.try.again.90"))
+      handlers.inputProblem(t("task.send.failed"))
     })
   }
   field.addEventListener('keydown', (event) => {
@@ -240,8 +239,3 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
   const next = container.querySelector('.tp-scroll')
   if (next) next.scrollTop = sameTask && !atBottom ? top : next.scrollHeight
 }
-
-onLocaleChange(() => {
-  GROUP_NAMES = { waiting: t("merge.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") }
-  FOLLOWUP_GROUPS = [['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]]
-})

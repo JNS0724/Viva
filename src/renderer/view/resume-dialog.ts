@@ -8,30 +8,30 @@ import { h } from './dom.ts'
  * 继续这个话题 waiting on the user (resume-state.ts): before switching to another directory; its directory gone;
  * its session gone. Going on from saved records says how much goes with it and that it is only for reference.
  */
-const carryNote = () => t("merge.a.new.conversation.will.include.the.latest.turns.as.reference.only.instructions..36")
+const carryNote = () => t("resume.reference.note")
 
 type Copy = { title: string, lines: Array<{ text: string, path?: boolean }>, main: string | null, choose: string | null }
 
 function copyOf(asked: ResumeAsk): Copy {
-  const dir = asked.cwd ?? t("merge.not.recorded.37")
+  const dir = asked.cwd ?? t("resume.folder.unrecorded")
   if (asked.stage === 'confirm-dir') {
     return {
-      title: t("merge.switch.to.this.topic.s.folder.to.continue.38"),
-      lines: [{ text: t("merge.this.topic.used.continuing.will.change.the.working.folder.to.39", { p0: workspaceName(dir) }) }, { text: dir, path: true }],
-      main: t("merge.switch.and.continue.40"), choose: null,
+      title: t("resume.switch.folder.title"),
+      lines: [{ text: t("resume.switch.folder.description", { p0: workspaceName(dir) }) }, { text: dir, path: true }],
+      main: t("resume.switch.folder.confirm"), choose: null,
     }
   }
   if (asked.stage === 'missing-dir') {
     return {
-      title: t("merge.this.topic.s.folder.no.longer.exists.41"),
-      lines: [{ text: t("merge.this.topic.used.which.cannot.be.found.the.original.session.requires.its.original.42", { p0: dir }) }, { text: t("merge.choose.a.folder.43", { p0: carryNote() }) }],
-      main: null, choose: t("merge.choose.a.folder.and.continue.with.records.44"),
+      title: t("resume.folder.missing.title"),
+      lines: [{ text: t("resume.folder.missing.description", { p0: dir }) }, { text: t("resume.choose.folder.note", { p0: carryNote() }) }],
+      main: null, choose: t("resume.choose.folder.continue"),
     }
   }
   return {
-    title: t("merge.the.original.session.is.unavailable.45"),
-    lines: [{ text: t("merge.the.assistant.no.longer.has.this.topic.s.session.46", { p0: carryNote() }) }, { text: t("merge.start.in.47", { p0: dir }) }],
-    main: t("merge.continue.with.records.48"), choose: t("merge.choose.another.folder.49"),
+    title: t("resume.session.gone.title"),
+    lines: [{ text: t("resume.session.gone.description", { p0: carryNote() }) }, { text: t("resume.start.folder", { p0: dir }) }],
+    main: t("resume.continue.records"), choose: t("resume.choose.another.folder"),
   }
 }
 

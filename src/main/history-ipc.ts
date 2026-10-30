@@ -146,7 +146,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (isBusy()) throw new Error(BUSY)
     const found = db.get(assertId(id))
     if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
-    if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("merge.this.folder.no.longer.exists.choose.another.2"))
+    if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("workspace.missing.choose"))
     const topicId = db.topicOf(found.conversation.id)
     const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
     const carried = carriedRecords(part?.messages ?? found.messages)

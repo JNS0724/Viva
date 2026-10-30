@@ -11,7 +11,7 @@ import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
 import { APP_ROOT, CODE_ROOT, DSH_PROFILE, resolveConfig } from './config.ts'
-import { createAcpBridge, SWITCHING } from './acp-bridge.ts'
+import { createAcpBridge, switchingMessage } from './acp-bridge.ts'
 import { createDeskIsland } from './desk-island.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.ts'
@@ -538,7 +538,7 @@ function registerAgentIpc() {
     const agent = requireBridge()
     // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
     // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
-    if (agent.isSwitching()) throw new Error(SWITCHING)
+    if (agent.isSwitching()) throw new Error(switchingMessage())
     try {
       personal.habits()
     } catch (err: any) {
@@ -728,7 +728,7 @@ function registerSettingsIpc() {
  * nor a new session (resume-failure.ts says why not, and the agent stays on the conversation it was on).
  */
 async function switchAgent(sessionId: string | null, cwd?: string | null, { exactly = false } = {}) {
-  if (exactly && !(cwd && isFolder(cwd))) throw new ResumeError('missing-dir', t('resume.missing.directory', { cwd: cwd ?? t('merge.not.recorded.37') }))
+  if (exactly && !(cwd && isFolder(cwd))) throw new ResumeError('missing-dir', t('resume.missing.directory', { cwd: cwd ?? t('resume.folder.unrecorded') }))
   if (exactly && !bridge) throw new ResumeError('unavailable', '助手还没准备好')
   const target = cwd && isFolder(cwd) ? cwd : workDirNow()
   if (!bridge) {

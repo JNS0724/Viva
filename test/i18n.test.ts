@@ -18,7 +18,7 @@ import { readMessages } from '../src/main/message-reader.ts'
 import { dayLabel } from '../src/renderer/review-state.ts'
 import { userError } from '../src/renderer/user-error.ts'
 import { MESSAGE_TOO_LONG } from '../src/shared/text-limits.ts'
-import { SAID } from '../src/renderer/view/task-card.ts'
+import { taskStatusNames } from '../src/renderer/view/task-card.ts'
 
 test('merged review dates, task states, input limits and safe errors follow repeated locale changes', () => {
   const at = new Date(2026, 9, 20, 9).getTime()
@@ -27,7 +27,7 @@ test('merged review dates, task states, input limits and safe errors follow repe
     setLocale(locale)
     assert.match(dayLabel(at, now), locale === 'en' ? /Oct/ : /10月20日/)
     assert.match(MESSAGE_TOO_LONG, locale === 'en' ? /20,000 characters/ : /20,000 个字符/)
-    assert.equal(SAID.waiting, locale === 'en' ? 'Needs your attention' : '等你处理')
+    assert.equal(taskStatusNames().waiting, locale === 'en' ? 'Needs your attention' : '等你处理')
     assert.equal(userError('The assistant exited unexpectedly. Reconnecting in 3 seconds…'),
       t('main.main.the.assistant.exited.unexpectedly.reconnecting.in.seconds', { value1: 3 }))
     const safe = userError('The assistant exited repeatedly. Retrying has stopped: secret-provider-body')

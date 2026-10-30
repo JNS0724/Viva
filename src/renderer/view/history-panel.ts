@@ -47,10 +47,10 @@ function searchView(state: State, handlers: Handlers, now: number): View[] {
   // A hit opened (详情): read at the top, the results kept below it.
   const focus = focusView(state, handlers, now)
   if (results === null) return [focus, h('div', { class: 'history-hint', text: t("history-panel.searching") })]
-  if (results.length === 0) return [focus, empty(t("merge.no.results.for.31", { p0: query.trim() }))]
+  if (results.length === 0) return [focus, empty(t("review.search.empty", { p0: query.trim() }))]
   return [
     focus,
-    label(t("merge.messages.32", { p0: results.length })),
+    label(t("review.message.count", { p0: results.length })),
     h('ul', { class: 'history-items' }, results.map((hit: SearchHit) => hitView(hit, handlers, now))),
   ]
 }

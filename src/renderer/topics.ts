@@ -74,7 +74,7 @@ const TITLE_CHARS = 40
 export function topicTitle(messages: ReadonlyArray<{ role: string, text: string }>): string {
   const first = messages.find((message) => message.role === 'user')
   const line = splitFiles(first?.text ?? '').text.replace(/\s+/g, ' ').trim()
-  if (!line) return first ? t("merge.image.or.file.17") : t("merge.no.question.18")
+  if (!line) return first ? t("topic.attachment.only") : t("topic.no.question")
   return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS)}…` : line
 }
 

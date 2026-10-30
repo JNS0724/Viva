@@ -18,7 +18,7 @@ import { reconcileChildren } from './reconcile.ts'
 let NEW_TOPIC_NOTE = t("earlier.the.assistant.starts.here.without.the.content")
 let BACK_NOTE = t("earlier.the.assistant.continues.that.topic.without.the")
 /** Its own session gone: a new conversation, the topic's latest turns going with the first question as records. */
-const carriedNote = (turns: number) => t("merge.the.original.session.is.unavailable.this.is.a.new.conversation.with.the.latest.t.25", { p0: turns })
+const carriedNote = (turns: number) => t("topic.carried.context", { p0: turns })
 
 type RowOf<K extends EarlierRow['kind']> = Extract<EarlierRow, { kind: K }>
 type TopicBlock = ReturnType<typeof topicBlocks>[number]
@@ -62,7 +62,7 @@ function openedRows(rows: readonly EarlierRow[], handlers: Handlers, cachedRows:
   const place = rowPlace(messages[hidden - 1].id)
   return [
     h('button', {
-      class: 'timeline-more topic-rest', type: 'button', text: t("merge.earlier.messages.in.this.topic.read.in.review.26", { p0: hidden }),
+      class: 'timeline-more topic-rest', type: 'button', text: t("topic.earlier.messages", { p0: hidden }),
       onClick: () => place && handlers.jumpToHit(place),
     }),
     ...cachedRows(rows.slice(rows.indexOf(first))),
@@ -89,10 +89,10 @@ function oldTopic(block: TopicBlock, build: () => View[], handlers: Handlers, { 
     class: 'topic-old', 'data-title': `${when} · ${title}`, 'data-segments': block.segments.map((segment) => segment.id).join(' '),
     onToggle: (event: Event) => { if ((event.currentTarget as HTMLDetailsElement).open) fill() },
   },
-    h('summary', { class: 'topic-head', title: t("merge.the.assistant.no.longer.remembers.this.part.expand.to.read.it.27") },
+    h('summary', { class: 'topic-head', title: t("topic.forgotten.expand") },
       h('b', { class: 'topic-title', text: title }),
       // The day is on the line above it; the line itself says when in the day.
-      h('span', { class: 'topic-meta mono', text: t("merge.turns.28", { p0: turnsOf(messages), p1: new Date(block.at ?? 0).toTimeString().slice(0, 5) }) }),
+      h('span', { class: 'topic-meta mono', text: t("topic.turns.time", { p0: turnsOf(messages), p1: new Date(block.at ?? 0).toTimeString().slice(0, 5) }) }),
       h('button', {
         class: 'topic-back', type: 'button', disabled: busy, title: busy ? t("earlier.wait.for.this.turn.to.finish.before") : null, text: t("earlier.return.to.this.topic"),
         onClick: (event: MouseEvent) => {
@@ -138,7 +138,7 @@ function startLine(start: ReturnType<typeof topicStart>, handlers: Handlers, { n
   const when = topicTime(start.at, now)
   if (start.kind === 'back') {
     const note = start.carried === null ? BACK_NOTE : carriedNote(start.carried)
-    return [h('div', { class: 'topic-start', role: 'separator' }, t("merge.return.to.topic.29", { p0: when })), h('div', { class: 'topic-note', text: note })]
+    return [h('div', { class: 'topic-start', role: 'separator' }, t("topic.return.timestamp", { p0: when })), h('div', { class: 'topic-note', text: note })]
   }
   return [
     h('div', { class: 'topic-start', role: 'separator' }, t("earlier.new.topic"), when ? h('time', { text: when }) : null,
@@ -191,7 +191,7 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
   // Scrolling up reads back the recent part only; what is older is read in 回顾 (view/review.ts), by day.
   const more = !earlier.hasMore || earlier.segments.length === 0 ? null
     : reachedRecentEnd(earlier, now)
-      ? h('button', { class: 'timeline-more', type: 'button', text: t("merge.older.records.are.in.review.30"), onClick: () => handlers.openReview() })
+      ? h('button', { class: 'timeline-more', type: 'button', text: t("history.older.in.review"), onClick: () => handlers.openReview() })
       : h('button', { class: 'timeline-more', type: 'button', disabled: earlier.loading, text: earlier.loading ? t("earlier.loading") : t("earlier.earlier.conversations"), onClick: () => handlers.loadEarlier() })
   const rowCache = cached?.rows ?? new WeakMap<EarlierRow, View>()
   const cachedRows = (rows: readonly EarlierRow[]) => rows.flatMap((row) => {

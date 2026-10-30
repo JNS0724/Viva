@@ -17,7 +17,7 @@ function prepareCell(view: IslandShown): HTMLElement | null {
   const prepare = view.prepare
   if (!prepare) return null
   if (prepare.ready) {
-    return h('span', { class: 'isl-bg isl-bg-ready', title: t("merge.ready.for.your.review.33", { p0: prepare.ready }) },
+    return h('span', { class: 'isl-bg isl-bg-ready', title: t("background.ready.count", { p0: prepare.ready }) },
       h('b', { text: String(prepare.ready) }), h('span', { text: t("island-tasks.ready") }))
   }
   if (!prepare.running || !QUIET.has(view.form)) return null
@@ -38,11 +38,11 @@ export function tailCell(view: IslandShown): HTMLElement | null {
       h('b', { text: `+${alsoWaiting}` }), h('span', { text: t("island-tasks.waiting.for.you") }))
   }
   if (count) {
-    return h('span', { class: 'isl-bg isl-bg-live', title: t("merge.tasks.in.background.34", { p0: count }), 'aria-label': t("merge.tasks.in.background.34", { p0: count }) },
+    return h('span', { class: 'isl-bg isl-bg-live', title: t("background.running.count", { p0: count }), 'aria-label': t("background.running.count", { p0: count }) },
       h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) }))
   }
   if (done) {
-    return h('span', { class: 'isl-bg isl-bg-done', title: t("merge.tasks.completed.35", { p0: done }), 'aria-label': t("merge.tasks.completed.35", { p0: done }) },
+    return h('span', { class: 'isl-bg isl-bg-done', title: t("background.completed.count", { p0: done }), 'aria-label': t("background.completed.count", { p0: done }) },
       h('b', { text: `✓ ${done}` }))
   }
   return prepareCell(view)

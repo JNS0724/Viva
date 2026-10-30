@@ -46,11 +46,11 @@ export function renderTopicLabel(area: HTMLElement, state: State, handlers: Hand
  * its default, for whoever never finds the grips at its edges (view/column-resize.ts).
  */
 function topicInfo(count: number, percent: number | null, handlers: Handlers) {
-  const used = percent === null ? t("topic-label.usage.not.available.yet") : t("merge.used.93", { p0: percent })
+  const used = percent === null ? t("topic-label.usage.not.available.yet") : t("topic.context.used", { p0: percent })
   return h('div', { class: 'ctx-menu', role: 'dialog', 'aria-label': t("topic-label.this.topic") },
     h('div', { class: 'ctx-menu-info' },
-      h('b', { text: count ? t("merge.the.assistant.remembers.messages.in.this.topic.94", { p0: count }) : t("topic-label.new.topic.the.assistant.has.no.conversation") }),
-      h('span', { text: t("merge.when.full.the.oldest.content.is.compressed.automatically.memories.about.you.do.n.95", { p0: used, p1: NEW_TOPIC_KEY() }) }),
-      h('span', { text: t("merge.drag.either.edge.to.adjust.the.conversation.width.96") })),
-    h('button', { class: 'ctx-item', type: 'button', text: t("merge.reset.conversation.width.97"), onClick: () => handlers.resetColumn() }))
+      h('b', { text: count ? t("topic.context.remembered", { p0: count }) : t("topic-label.new.topic.the.assistant.has.no.conversation") }),
+      h('span', { text: t("topic.context.explanation", { p0: used, p1: NEW_TOPIC_KEY() }) }),
+      h('span', { text: t("column.resize.hint") })),
+    h('button', { class: 'ctx-item', type: 'button', text: t("column.reset"), onClick: () => handlers.resetColumn() }))
 }

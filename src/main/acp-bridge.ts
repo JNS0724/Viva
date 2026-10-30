@@ -1,4 +1,3 @@
-import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -28,16 +27,16 @@ import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
 const STDERR_TAIL_LIMIT = 4000
-export const SWITCHING = t("merge.switching.conversations.wait.before.sending.0")
+export const switchingMessage = () => t("session.switching")
 /** dsh gets this long to finish after its input closes, then its process tree is ended; then killed outright. */
 const SHUTDOWN_GRACE_MS = 1500
 // The version the app was built as, so it cannot fall behind a release (package.json ships in the app).
 const CLIENT_INFO = { name: 'viva', version: pkg.version }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
 /** dsh decides at launch, from the model it starts on, whether its prompts take pictures. */
-let NO_IMAGES = t("main.acp-bridge.this.model.cannot.read.images.among.deepseek")
+const noImagesMessage = () => t("main.acp-bridge.this.model.cannot.read.images.among.deepseek")
 /** A task let go when it would not stop (cancelTask): what dsh started for it may still be running. */
-let STOPPED_ANYWAY = t("main.acp-bridge.stopped.a.command.started.earlier.did.not")
+const stoppedMessage = () => t("main.acp-bridge.stopped.a.command.started.earlier.did.not")
 const NO_MCP = (): AcpServer[] => []
 export const MCP_RETRY_MS = 30_000
 type PromptBlocks = Parameters<ClientSideConnection['prompt']>[0]['prompt']
@@ -320,7 +319,7 @@ export function createAcpBridge({
   async function switchExactly(targetSessionId: string, targetCwd: string, measure: ReturnType<typeof sessionTiming>) {
     const leaving = sessionId
     if (targetSessionId === leaving) return { ...infoFrom(configNow ?? undefined), resumed: true }
-    if (!canResume) throw new ResumeError('gone', t("merge.this.assistant.version.cannot.resume.earlier.sessions.1"))
+    if (!canResume) throw new ResumeError('gone', t("session.resume.unsupported"))
     let response
     try {
       // Closed earlier (撤销 a new topic goes back to the session just left): that close finishes first.
@@ -380,9 +379,9 @@ export function createAcpBridge({
    */
   async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = []) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
-    if (isSwitching()) throw new Error(SWITCHING)
+    if (isSwitching()) throw new Error(switchingMessage())
     if (images.length && !seesImages) {
-      emit({ type: 'error', message: NO_IMAGES })
+      emit({ type: 'error', message: noImagesMessage() })
       return
     }
     const asked = sessionId
@@ -657,7 +656,7 @@ export function createAcpBridge({
       giveUp: () => {
         if (operation.stream) streams.finish(operation.stream)
         operation.released = true
-        emit({ type: 'task_end', taskId, stopReason: 'cancelled', message: STOPPED_ANYWAY })
+        emit({ type: 'task_end', taskId, stopReason: 'cancelled', message: stoppedMessage() })
       },
     })
   }
@@ -745,8 +744,3 @@ export function createAcpBridge({
   const isSwitching = () => switching || preparing > 0
   return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, isSwitching, dispose, pid }
 }
-
-onLocaleChange(() => {
-  NO_IMAGES = t("main.acp-bridge.this.model.cannot.read.images.among.deepseek")
-  STOPPED_ANYWAY = t("main.acp-bridge.stopped.a.command.started.earlier.did.not")
-})

@@ -872,7 +872,7 @@ const handlers = {
   openLink: (url: string) => {
     const place = timelinePlace(url)
     if (place) return historyActions.jumpToHit(place)
-    return api.openLink(url).catch((err) => dispatch({ type: 'error', message: t("merge.could.not.open.link.4", { p0: errorMessage(err) }) }))
+    return api.openLink(url).catch((err) => dispatch({ type: 'error', message: t("links.open.failed", { p0: errorMessage(err) }) }))
   },
 }
 

@@ -60,7 +60,7 @@ function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
   const start = answerStart(text)
   const el = renderMarkdown(start, { openLink: handlers.openLink })
   el.append(h('button', {
-    class: 'btn btn-outline btn-small answer-more', type: 'button', text: t("merge.expand.full.text.about.k.more.characters.91", { p0: Math.round((text.length - start.length) / 1000) }),
+    class: 'btn btn-outline btn-small answer-more', type: 'button', text: t("thread.expand.remaining", { p0: Math.round((text.length - start.length) / 1000) }),
     onClick: () => el.replaceChildren(...renderMarkdown(text, { openLink: handlers.openLink }).childNodes),
   }))
   return el
@@ -334,7 +334,7 @@ function restLine(state: State, start: number, handlers: Handlers) {
   const seq = state.messages.slice(0, start).filter((message) => !message.open).length - 1
   const segmentId = state.conversationId
   return h('button', {
-    class: 'timeline-more thread-rest', type: 'button', text: t("merge.earlier.messages.in.this.topic.read.in.review.92", { p0: start }), disabled: !segmentId || seq < 0,
+    class: 'timeline-more thread-rest', type: 'button', text: t("topic.current.earlier.messages", { p0: start }), disabled: !segmentId || seq < 0,
     onClick: () => segmentId && handlers.jumpToHit({ segmentId: String(segmentId), seq }),
   })
 }

@@ -38,7 +38,7 @@ export function createResumeActions({ api, getState, dispatch, showToast, errorM
       // Where the agent is now: back where it was, or (that gone too) on a new session.
       if (result.info) dispatch({ type: 'config_applied', info: result.info })
       if (result.reason === 'unavailable') {
-        return showToast(t("merge.cannot.reconnect.to.the.original.session.right.now.try.again.later.5", { p0: result.message }), { action: { label: t("thread.retry"), kind: 'resume-topic', payload: segmentId }, ms: RETRY_MS })
+        return showToast(t("session.resume.retry", { p0: result.message }), { action: { label: t("thread.retry"), kind: 'resume-topic', payload: segmentId }, ms: RETRY_MS })
       }
       return dispatch({ type: 'resume_ask', stage: result.reason, segmentId, cwd: result.cwd ?? null })
     } catch (err) {

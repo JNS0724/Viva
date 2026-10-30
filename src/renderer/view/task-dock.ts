@@ -20,12 +20,12 @@ export function dockTagWords(summary: ReturnType<typeof dockSummary>): string {
   const done = summary.ended - summary.failed
   if (summary.waiting || summary.failed) {
     return [
-      summary.waiting ? t("merge.tasks.need.your.attention.79", { p0: summary.waiting }) : null,
-      summary.failed ? t("merge.tasks.failed.80", { p0: summary.failed }) : null,
-      working ? t("merge.in.background.81", { p0: working }) : null,
+      summary.waiting ? t("dock.waiting.count", { p0: summary.waiting }) : null,
+      summary.failed ? t("dock.failed.count", { p0: summary.failed }) : null,
+      working ? t("dock.running.count", { p0: working }) : null,
     ].filter(Boolean).join(' · ')
   }
-  return working ? t("merge.in.background.81", { p0: working }) : t("merge.completed.82", { p0: done })
+  return working ? t("dock.running.count", { p0: working }) : t("dock.completed.count", { p0: done })
 }
 
 function tag(state: State, handlers: Handlers): HTMLElement {
@@ -36,13 +36,13 @@ function tag(state: State, handlers: Handlers): HTMLElement {
   // What needs the user stands out even folded: a failure in red, a wait in orange; the rest stays quiet.
   const tone = summary.failed ? 'error' : summary.waiting ? 'waits' : 'quiet'
   return h('button', {
-    class: 'dock-tag', type: 'button', 'data-tone': tone, title: t("merge.expand.background.tasks.83"), 'aria-label': t("merge.background.tasks.84", { p0: words }),
+    class: 'dock-tag', type: 'button', 'data-tone': tone, title: t("dock.expand"), 'aria-label': t("dock.label", { p0: words }),
     onClick: unfold,
-  }, h('i', { class: 'dock-dot', 'aria-hidden': 'true' }), h('span', { text: words }), tone === 'quiet' ? null : h('span', { class: 'dock-tag-go', text: t("merge.take.a.look.85") }))
+  }, h('i', { class: 'dock-dot', 'aria-hidden': 'true' }), h('span', { text: words }), tone === 'quiet' ? null : h('span', { class: 'dock-tag-go', text: t("dock.look") }))
 }
 
 /** Past the rows the dock has room for: how many more there are, a way to all of them on the 后台 page; none, null. */
-export const dockMore = (count: number): string | null => (count > MAX_TILES ? t("merge.more.view.all.86", { p0: count - MAX_TILES }) : null)
+export const dockMore = (count: number): string | null => (count > MAX_TILES ? t("dock.more", { p0: count - MAX_TILES }) : null)
 
 /** What the dock shows, so a render that changes none of it leaves its buttons (and a press on one) alone. */
 const rendered = new WeakMap<HTMLElement, string>()
@@ -51,10 +51,10 @@ function panel(container: HTMLElement, state: State, handlers: Handlers, now: nu
   const fold = state.tasks.dockPeek ? () => handlers.peekDock(false) : () => handlers.toggleDock(true)
   const more = dockMore(shown.length)
   const head = h('div', { class: 'dock-head' },
-    h('span', { class: 'dock-title', text: t("merge.background.87", { p0: shown.length }) }),
+    h('span', { class: 'dock-title', text: t("dock.title", { p0: shown.length }) }),
     // Whatever was put away from the dock is still on the 后台 page: the way there is the last line when some are
     // cut off, here otherwise.
-    more ? null : h('button', { class: 'btn btn-text dock-all', type: 'button', text: t("merge.view.all.88"), onClick: () => handlers.openTasks() }),
+    more ? null : h('button', { class: 'btn btn-text dock-all', type: 'button', text: t("dock.view.all"), onClick: () => handlers.openTasks() }),
     h('button', { class: 'icon-btn dock-fold', type: 'button', 'aria-label': t("rewind.collapse"), title: t("rewind.collapse"), text: '–', onClick: fold }))
   // What waits on the user comes first, so it is the last to be cut off.
   container.replaceChildren(head, ...shown.slice(0, MAX_TILES).map(({ task, report }) => taskTile(task, report, handlers, now)),

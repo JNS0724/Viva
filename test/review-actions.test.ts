@@ -2,6 +2,25 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { createReviewActions } from '../src/renderer/review-actions.ts'
+import { setLocale } from '../src/shared/i18n/locale.ts'
+
+test('missing and empty record notices use the locale at the time of the action', async () => {
+  try {
+    for (const locale of ['en', 'zh-CN', 'en'] as const) {
+      setLocale(locale)
+      for (const seq of [1, null]) {
+        const { actions, state } = setup({
+          locateMessage: async () => ({ status: 'missing', segmentId: 'a', seq, reader: { key: 't:t1', topicId: 't1' } }),
+          readHistory: async () => seq === null ? { ...topicRead, total: 0, messages: [] } : topicRead,
+        })
+        await actions.openRef({ segmentId: 'a', seq: 3, messageId: 9 })
+        const notice = state().review.focus?.notice ?? ''
+        assert.match(notice, locale === 'en' ? /The original message is gone/ : /原文已经不在了/)
+        assert.match(notice, seq === null ? (locale === 'en' ? /no other content/ : /没有别的内容/) : (locale === 'en' ? /Nearby records/ : /附近的记录/))
+      }
+    }
+  } finally { setLocale('zh-CN') }
+})
 
 /** A message named by a search hit, a link or a star, read in 回顾 straight from where it is kept. */
 

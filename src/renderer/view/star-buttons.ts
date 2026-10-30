@@ -19,8 +19,8 @@ export function attachStars(container: HTMLElement, { placeOf, isStarred, toggle
   const show = (button: HTMLButtonElement, starred: boolean) => {
     if (button.getAttribute('aria-pressed') === String(starred)) return
     button.setAttribute('aria-pressed', String(starred))
-    button.setAttribute('aria-label', starred ? t("merge.remove.bookmark.71") : t("merge.bookmark.this.message.72"))
-    button.title = starred ? t("merge.remove.bookmark.71") : t("merge.bookmark.this.message.to.find.it.in.review.73")
+    button.setAttribute('aria-label', starred ? t("bookmarks.remove") : t("bookmarks.add"))
+    button.title = starred ? t("bookmarks.remove") : t("bookmarks.add.hint")
     button.textContent = starred ? '★' : '☆'
   }
 

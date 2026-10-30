@@ -38,7 +38,7 @@ export function activeTurn(count: number, topOf: (index: number) => number, line
 /** The question on one line, cut to fit a tooltip. */
 export function turnPreview(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim()
-  if (!line) return t("merge.image.or.file.17")
+  if (!line) return t("topic.attachment.only")
   return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS)}…` : line
 }
 
@@ -82,7 +82,7 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
     let turn = 0
     marks = places.map((place, index) => {
       const folded = place.matches(FOLDED)
-      const tip = folded ? t("merge.topic.98", { p0: place.dataset.title ?? '' }) : t("merge.turn.99", { p0: turn += 1, p1: turnPreview(questionText(place)) })
+      const tip = folded ? t("rail.topic", { p0: place.dataset.title ?? '' }) : t("rail.turn", { p0: turn += 1, p1: turnPreview(questionText(place)) })
       return h('button', {
         class: folded ? 'turn-mark turn-topic' : 'turn-mark', type: 'button', tabindex: '-1', 'aria-label': tip, 'data-tip': tip, onclick: () => jump(index),
       })
