@@ -20,10 +20,10 @@ test('reasoning can exhaust the output budget without producing an answer', () =
   assert.throws(() => preparationText(assembled('', 'max-tokens')), /输出正文前已用完/)
 })
 
-test('a truncated structured judgment fails even if its partial JSON looks complete; a draft stays usable', () => {
+test('a completion-required call rejects truncated JSON; the legacy helper can still expose partial text', () => {
   const partial = assembled('{"items":[]}', 'max-tokens')
-  assert.throws(() => preparationText(partial, true), /消息保留待重试/)
-  assert.equal(preparationText(partial), '{"items":[]}', 'ordinary drafts retain their partial-text behavior')
+  assert.throws(() => preparationText(partial, true), /保留待重试/)
+  assert.equal(preparationText(partial), '{"items":[]}', 'the optional legacy helper retains its partial-text behavior')
   assert.equal(preparationText(assembled('正文', 'stop'), true), '正文', 'reasoning never becomes answer text')
 })
 
