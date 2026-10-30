@@ -821,6 +821,10 @@ function openTasksPage() {
 
 /** A follow-up's notice as a system notification; clicked, it opens the 后台 page. */
 function showNotice(notice: Notice) {
+  // Native Windows notifications may register/update a Start-menu shortcut for
+  // our app ID. Automated smoke runs must not point that shortcut at a QA binary.
+  // Notification planning/delivery is tested with injected notifiers separately.
+  if (resolveConfig(process.env, fs.existsSync).smoke) return
   if (!Notification.isSupported()) return
   const shown = new Notification({ title: notice.title, body: notice.body })
   const shownAt = Date.now()

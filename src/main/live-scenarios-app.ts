@@ -217,7 +217,7 @@ const history: LiveScenario = {
     await ctx.shot('history-resumed')
     await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, ctrlKey: true, bubbles: true }))`)
     await run(win, `(() => {
-      const input = document.getElementById('history-search')
+      const input = (document.getElementById('history-search-frame')?.contentDocument?.getElementById('history-search') ?? document.getElementById('history-search'))
       input.value = ${JSON.stringify(code)}
       input.dispatchEvent(new Event('input'))
     })()`)

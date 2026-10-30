@@ -1,5 +1,8 @@
 /** UI copy only. Raw provider/RPC errors stay in application state and diagnostic logs, never in a bubble. */
 export function userError(message: string): string {
+  if (/SetNamedSecurityInfoW|grantWrite\(|sandbox.{0,30}(?:prepar|setup)/i.test(message)) {
+    return '命令还没有执行：无法准备工作区的受限运行环境。请换到你拥有的本地文件夹后重试；详细原因可在应用日志中查看。'
+  }
   // These are bounded status messages produced by the app itself, not provider response bodies.
   if (/^助手意外退出，\d+ 秒后自动重新连接…$/.test(message)) return message
   if (message.startsWith('助手连续意外退出，已停止重试：')) return '助手连续意外退出，已停止重试。请检查模型设置后重新打开应用。'

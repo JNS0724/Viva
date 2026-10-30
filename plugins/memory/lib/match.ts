@@ -83,3 +83,16 @@ export function recallMatches<T extends { text: string, keywords?: string[], upd
     .slice(0, limit)
     .map(({ memory }) => memory)
 }
+
+/** A bounded fallback labels partial keyword hits instead of treating them as a full-query match. */
+export function recallCandidates<T extends { text: string, keywords?: string[], updatedAt: number }>(memories: readonly T[], query: string, limit: number): { found: T[], partial: boolean } {
+  const direct = recallMatches(memories, query, limit)
+  if (direct.length) return { found: direct, partial: false }
+  const words = [...new Set(queryWords(query))]
+  // Only explicit short keyword lists: never turn a sentence into a broad any-word search.
+  if (words.length < 2 || words.length > 4 || words.some(word => [...word].length > 8)) return { found: [], partial: false }
+  const scores = new Map<T, number>()
+  for (const word of words) for (const memory of recallMatches(memories, word, limit)) scores.set(memory, (scores.get(memory) ?? 0) + 1)
+  const found = [...scores].sort((a, b) => b[1] - a[1] || b[0].updatedAt - a[0].updatedAt).slice(0, limit).map(([memory]) => memory)
+  return { found, partial: found.length > 0 }
+}

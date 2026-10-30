@@ -9,8 +9,8 @@ export { PROMPT_HEADS } from './selectors.ts'
 
 const COMMAND_TITLE = '运行命令'
 
-/** A tool call whose only argument is the command it runs. */
-const commandOf = (rawInput: Record<string, any> | null | undefined): string => (typeof rawInput?.command === 'string' && Object.keys(rawInput).length === 1 ? rawInput.command : '')
+/** A command may also carry a description, a working directory or other execution arguments. */
+const commandOf = (rawInput: Record<string, unknown> | null | undefined): string => typeof rawInput?.command === 'string' ? rawInput.command : ''
 
 /** Buttons by role: the main one (the first that allows, filled), the others (outlined). */
 export function promptButtons(options: readonly PermissionOption[]): Array<PermissionOption & { role: 'primary' | 'secondary' }> {

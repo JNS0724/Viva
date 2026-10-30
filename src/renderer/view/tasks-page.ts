@@ -4,6 +4,7 @@ import { h, keepingInput } from './dom.ts'
 import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
+import { reconcileChildren } from './reconcile.ts'
 import { followupDetail, followupStanding, suggestionDetail, whenText } from './followups.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../../shared/text-limits.ts'
 
@@ -133,20 +134,48 @@ const scopedHandlers = (handlers: Handlers, task: BackgroundTask): Handlers => (
   skipQuestion: () => handlers.skipTaskQuestion(task.id),
 })
 
-function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
+type StepItem = ReturnType<typeof traceItems>[number]
+const stepRows = new WeakMap<HTMLElement, Map<string, { item: StepItem, node: HTMLElement }>>()
+
+function stepRow(item: StepItem) {
+  return h('li', { class: 'trace-row' },
+    h('span', { class: 'trace-rail' }, h('span', { class: 'dot', 'data-tone': item.tone }), h('span', { class: 'line' })),
+    h('div', { class: 'trace-main' },
+      h('div', { class: 'row-between' }, h('span', { class: 'trace-title', text: item.title }), h('span', { class: 'trace-time', text: item.time })),
+      item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))
+}
+
+function updateSteps(section: HTMLElement, state: State, task: BackgroundTask) {
   const items = traceItems(task.view)
-  if (!items.length) return null
   const open = state.tasks.page.steps
-  return h('section', { class: 'tp-steps', 'aria-label': '过程' },
-    h('button', { class: 'tp-toggle', type: 'button', 'aria-expanded': String(open), onClick: () => handlers.toggleTaskSteps() },
-      `过程 · ${items.length} 步　${open ? '收起 ▴' : '展开 ▾'}`),
-    open
-      ? h('ol', { class: 'trace' }, items.map((item) => h('li', { class: 'trace-row' },
-        h('span', { class: 'trace-rail' }, h('span', { class: 'dot', 'data-tone': item.tone }), h('span', { class: 'line' })),
-        h('div', { class: 'trace-main' },
-          h('div', { class: 'row-between' }, h('span', { class: 'trace-title', text: item.title }), h('span', { class: 'trace-time', text: item.time })),
-          item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))))
-      : null)
+  const toggle = section.querySelector<HTMLButtonElement>('.tp-toggle')!
+  const label = `过程 · ${items.length} 步　${open ? '收起 ▴' : '展开 ▾'}`
+  if (toggle.textContent !== label) toggle.textContent = label
+  if (toggle.getAttribute('aria-expanded') !== String(open)) toggle.setAttribute('aria-expanded', String(open))
+  if (!items.length) { section.remove(); stepRows.delete(section); return }
+  if (!open) { section.querySelector('.trace')?.remove(); stepRows.delete(section); return }
+  const previous = stepRows.get(section)
+  const next = new Map<string, { item: StepItem, node: HTMLElement }>()
+  const nodes = items.map(item => {
+    const cached = previous?.get(item.key)
+    const node = cached && cached.item.title === item.title && cached.item.detail === item.detail
+      && cached.item.time === item.time && cached.item.tone === item.tone ? cached.node : stepRow(item)
+    next.set(item.key, { item, node })
+    return node
+  })
+  let list = section.querySelector<HTMLOListElement>('.trace')
+  if (!list) { list = h('ol', { class: 'trace' }); section.append(list) }
+  reconcileChildren(list, nodes)
+  stepRows.set(section, next)
+}
+
+function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
+  if (!traceItems(task.view).length) return null
+  const section = h('section', { class: 'tp-steps', 'aria-label': '过程' },
+    h('button', { class: 'tp-toggle', type: 'button', onClick: () => handlers.toggleTaskSteps() },
+      ''))
+  updateSteps(section, state, task)
+  return section
 }
 
 function inputView(task: BackgroundTask, handlers: Handlers) {
@@ -222,10 +251,28 @@ function mainView(state: State, handlers: Handlers, now: number) {
     inputView(task, handlers))
 }
 
-/** Rebuilt as the tasks change; what was typed and where it was scrolled to stay. */
+const renderedPages = new WeakMap<HTMLElement, { state: State, handlers: Handlers, now: number }>()
+
+/** Only a local disclosure changed; all other render inputs must still match. */
+export function onlyTaskStepsChanged(before: State, after: State): boolean {
+  const sameExcept = (a: object, b: object, except: string) => {
+    const left = Object.entries(a).filter(([key]) => key !== except)
+    const right = Object.entries(b).filter(([key]) => key !== except)
+    return left.length === right.length && left.every(([key, value]) => Reflect.get(b, key) === value)
+  }
+  return before.tasks.page.open && after.tasks.page.open
+    && before.tasks.page.steps !== after.tasks.page.steps
+    && sameExcept(before, after, 'tasks')
+    && sameExcept(before.tasks, after.tasks, 'page')
+    && sameExcept(before.tasks.page, after.tasks.page, 'steps')
+}
+
+/** Rebuilt as task content changes; a disclosure keeps the conversation and input alive. */
 export function renderTasksPage(container: HTMLElement, shown: State, handlers: Handlers, now = Date.now()) {
+  const prior = renderedPages.get(container)
   container.dataset.open = String(shown.tasks.page.open)
   if (!shown.tasks.page.open) {
+    renderedPages.delete(container)
     container.replaceChildren()
     return
   }
@@ -234,7 +281,46 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
   const sameTask = container.querySelector<HTMLElement>('.tp-main')?.dataset.task === state.tasks.page.selected
   const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
   const top = scroller?.scrollTop ?? 0
+  const task = pageTask(state)
+  const steps = container.querySelector<HTMLElement>('.tp-steps')
+  const toggle = steps?.querySelector<HTMLButtonElement>('.tp-toggle')
+  if (prior && prior.handlers === handlers && sameTask && task && steps && toggle
+    && onlyTaskStepsChanged(prior.state, shown)) {
+    updateSteps(steps, state, task)
+    if (scroller) scroller.scrollTop = atBottom ? scroller.scrollHeight : top
+    renderedPages.set(container, { state: shown, handlers, now })
+    return
+  }
+  // A stream changes the task view, not its identity. Keep the thread's keyed
+  // rendering cache and the live textarea (including composition) attached.
+  const previousTask = prior && pageTask(onPage(prior.state))
+  const main = container.querySelector<HTMLElement>('.tp-main')
+  const thread = main?.querySelector<HTMLElement>('.tp-thread')
+  if (prior?.handlers === handlers && sameTask && task && previousTask?.id === task.id
+    && previousTask.status === task.status && main && thread && scroller) {
+    container.querySelector('.tp-side')?.replaceWith(sideView(state, handlers, now))
+    const title = main.querySelector('.tp-title')
+    if (title && title.textContent !== `#${task.title}`) title.textContent = `#${task.title}`
+    if (standing(previousTask, prior.now) !== standing(task, now)) {
+      main.querySelector('.tp-status')?.replaceChildren(statusMark(task.status), standing(task, now))
+    }
+    renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
+    if (prior.state.tasks.page.steps !== state.tasks.page.steps
+      || previousTask.view.timeline !== task.view.timeline
+      || previousTask.view.thoughts !== task.view.thoughts
+      || previousTask.view.tools !== task.view.tools) {
+      if (steps) updateSteps(steps, state, task)
+      else {
+        const nextSteps = stepsView(state, task, handlers)
+        if (nextSteps) scroller.append(nextSteps)
+      }
+    }
+    scroller.scrollTop = atBottom ? scroller.scrollHeight : top
+    renderedPages.set(container, { state: shown, handlers, now })
+    return
+  }
   keepingInput(container, () => container.replaceChildren(sideView(state, handlers, now), mainView(state, handlers, now)))
   const next = container.querySelector('.tp-scroll')
   if (next) next.scrollTop = sameTask && !atBottom ? top : next.scrollHeight
+  renderedPages.set(container, { state: shown, handlers, now })
 }

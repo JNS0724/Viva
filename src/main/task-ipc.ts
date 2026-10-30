@@ -15,7 +15,8 @@ const MAX_TITLE_CHARS = 40
 export const TASK_PROBLEMS: Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } = Object.freeze({
   unsaved: '这句话还没有保存好，就在这里接着说吧',
   invalid: '在助手的记录里找不到正在做的这件事',
-  missing: '当前对话已经结束，请稍后再试',
+  missing: '当前还没有可用对话，请等待连接完成或新建话题后重试',
+  connecting: '助手正在连接，请连接完成后重试；这次的内容已保留',
   unavailable: '这个版本的助手不支持后台任务，请更新 Viva',
   lost: '这件事接不上了：上次的记录找不到，可以选「不做了」',
   gone: '这件事接不上了：上次的记录找不到，可以关掉它',
@@ -124,6 +125,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     if (!isText(text) || (words !== null && !isText(words))) throw new Error('invalid task request')
     const main = current()
     const { mode, model } = agentInfo()
+    if (mode === 'connecting') return { ok: false, problem: TASK_PROBLEMS.connecting }
     const started = await agent.startTask(words === null ? {} : { words })
     if (!started.ok) return { ok: false, problem: TASK_PROBLEMS[started.reason] ?? `没能交给后台（${started.reason}）` }
     // A conversation with only 后台做 requests has no foreground messages yet. Keep its identity too,

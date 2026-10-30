@@ -166,6 +166,9 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       modelsSection(models, handlers),
       deskSection(settings, handlers),
       imagesSection(settings, handlers),
+      h('section', { class: 'ext', 'aria-label': '本地数据与删除范围' },
+        h('span', { class: 'profile-heading', text: '本地数据与删除范围' }),
+        h('p', { class: 'help', text: '聊天记录以明文保存在本机。删除或清空 Viva 中的聊天记录，不会同时清除底层助手的会话日志、长期记忆或已保存的图片；这些数据没有统一的自动到期删除时间。忘掉记忆也可以在「关于你」中恢复。' })),
       prepareSection(followups, handlers),
       sourcesSection(sources, handlers),
       extensionsSection(extensions, handlers, { connected }))))

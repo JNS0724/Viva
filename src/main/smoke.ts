@@ -453,7 +453,7 @@ const ISLAND_REACHABLE = `(() => {
 })()`
 
 const typeSearch = (text: string) => `(() => {
-  const input = document.getElementById('history-search')
+  const input = (document.getElementById('history-search-frame')?.contentDocument?.getElementById('history-search') ?? document.getElementById('history-search'))
   input.value = ${JSON.stringify(text)}
   input.dispatchEvent(new Event('input'))
 })()`
@@ -499,7 +499,7 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
 
   // ⌘F searches what was said; a hit scrolls the timeline to that message and marks it.
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }))`)
-  const focused = await run(win, 'document.activeElement?.id ?? ""')
+  const focused = await run(win, `(document.getElementById('history-search-frame')?.contentDocument?.activeElement?.id || document.activeElement?.id) ?? ""`)
   expect(focused === 'history-search', '⌘F should put the cursor in the search field', focused)
   await run(win, typeSearch(SEARCH_TEXT))
   await wait(UI_WAIT_MS)

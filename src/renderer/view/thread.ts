@@ -167,7 +167,11 @@ function permissionCard(permission: NonNullable<State['permission']>, handlers: 
   return h('section', { class: 'confirm', 'aria-label': head },
     cardHead(head),
     h('div', { class: 'confirm-title', text: title }),
-    detail ? h('pre', { class: 'confirm-detail', text: detail }) : null,
+    permission.rawInput?.description && typeof permission.rawInput.description === 'string'
+      ? h('p', { class: 'confirm-reason', text: `工具提供的说明：${permission.rawInput.description}` }) : null,
+    cardOf(permission).command ? h('p', { class: 'confirm-hint', text: '命令可以读写文件、访问网络或启动程序。请核对完整命令后决定。' }) : null,
+    detail ? h('details', { class: 'confirm-parameters', open: true },
+      h('summary', { text: '完整操作参数' }), h('pre', { class: 'confirm-detail', text: detail })) : null,
     h('div', { class: 'confirm-actions' },
       promptButtons(permission.options).map((option) => h('button', {
         class: BUTTON[option.role],

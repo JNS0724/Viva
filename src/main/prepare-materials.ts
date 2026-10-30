@@ -85,6 +85,7 @@ export function materialsFor(followup: Followup, sources: MaterialSources): { in
   const profile = sources.profile()
   const parts = [
     `现在是 ${stamp(now)}。`,
+    '【当前阶段】用户已经接受这项跟进；现在执行准备，直接给出可用草稿，不要再次询问是否接受或是否开始。缺少的信息只列与本次结果直接相关的必要项。',
     `【要准备的事】${followup.title}\n${followup.ask}${times ? `\n（${times}）` : ''}`,
     conversationPart(followup, sources),
     messagePart(followup, sources),

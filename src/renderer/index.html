@@ -7,7 +7,7 @@
   <title>Viva</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Doto:wght@600;800&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Doto:wght@600;800&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=optional">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./island.css">
   <link rel="stylesheet" href="./personal.css">
@@ -57,11 +57,11 @@
         <div class="hub-main">
           <!-- 回顾: search, or with nothing typed the timeline by day (view/history-panel.js, view/review.js). -->
           <section class="hub-page hub-search" data-page="search" aria-label="回顾" hidden>
-            <label class="history-search">
+            <div class="history-search">
               <span class="sr-only">搜索说过的话</span>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
-              <input id="history-search" type="search" placeholder="搜索说过的话…" autocomplete="off" spellcheck="false">
-            </label>
+              <input id="history-search" type="search" aria-label="搜索说过的话" placeholder="搜索说过的话…" autocomplete="off" spellcheck="false">
+            </div>
             <div class="history-list" id="history-list"></div>
           </section>
           <div class="hub-page" id="profile-root" data-page="profile" hidden></div>
@@ -83,8 +83,8 @@
           <div class="home" id="home"></div>
           <div class="earlier" id="earlier" hidden></div>
           <div class="thread" id="thread" hidden></div>
-          <button class="jump-latest" id="jump-latest" type="button" hidden>↓ 新内容</button>
         </section>
+        <button class="jump-latest" id="jump-latest" type="button" hidden>↓ 新内容</button>
         <!-- 按轮次跳转: one mark per question (view/turn-rail.js). -->
         <nav class="turn-rail" id="turn-rail" aria-label="按轮次跳转" hidden></nav>
 

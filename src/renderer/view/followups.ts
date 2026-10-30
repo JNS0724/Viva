@@ -157,7 +157,8 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
     followup.files?.length ? `会读 ${followup.files.join('、')}` : null,
     followup.watching ? `盯着 ${followup.watching}，一改就准备` : null,
   ].filter(Boolean).join(' · ')
-  const waiting = followup.status === 'preparing' ? `正在后台准备${prepare?.queued ? `，后面还有 ${prepare.queued} 件` : ''}` : PREPARE_PROMISE
+  const waiting = followup.status === 'preparing' ? `正在后台准备${prepare?.queued ? `，后面还有 ${prepare.queued} 件` : ''}`
+    : prepare?.waiting ? `正在等待：${prepare.waiting}。条件满足后会继续准备。` : PREPARE_PROMISE
   return h('div', { class: 'tp-main fu-main', 'data-followup': followup.id },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: followup.title }),
@@ -169,6 +170,7 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
       ready && followup.draft
         ? h('article', { class: 'fu-draft' }, renderMarkdown(followup.draft, { openLink: handlers.openLink }))
         : h('p', { class: 'fu-note', text: waiting }),
-      h('div', { class: 'confirm-actions fu-actions' }, detailActions(followup, handlers)),
-      ready ? h('p', { class: 'fu-note', text: '「接着做」把草稿放进输入框，你看过再发；邮件和消息永远由你自己发。' }) : null))
+      h('div', { class: 'confirm-actions fu-actions' }, detailActions(followup, handlers),
+        !ready && prepare?.waiting ? h('span', { class: 'fu-note', role: 'status', text: `等待原因：${prepare.waiting}` }) : null),
+      ready ? h('p', { class: 'fu-note', text: '「接着做」把草稿放进输入框，你看过再发。后台准备阶段没有执行工具；继续对话后，工具按当前权限运行。' }) : null))
 }

@@ -135,7 +135,7 @@ const READER_MESSAGES = `${READER} [data-msg]`
 
 const openSearch = (words: string) => `(() => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }))
-  const input = document.getElementById('history-search')
+  const input = (document.getElementById('history-search-frame')?.contentDocument?.getElementById('history-search') ?? document.getElementById('history-search'))
   input.value = ${JSON.stringify(words)}
   input.dispatchEvent(new Event('input'))
 })()`

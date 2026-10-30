@@ -58,10 +58,12 @@ export function attachColumnResize(area: HTMLElement, grips: readonly HTMLElemen
   const root = document.documentElement
   let width = Number.isFinite(saved()) ? saved() : COLUMN.default
   const apply = () => {
-    const column = clampColumn(width, area.clientWidth)
+    // Read before changing the inherited width; a second read would force layout of the conversation.
+    const available = area.clientWidth
+    const column = clampColumn(width, available)
     root.style.setProperty('--col', `${column}px`)
     for (const grip of grips) grip.setAttribute('aria-valuenow', String(column))
-    onWidth(column, area.clientWidth)
+    onWidth(column, available)
   }
   const reset = () => {
     width = COLUMN.default
