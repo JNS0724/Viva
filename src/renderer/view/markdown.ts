@@ -54,7 +54,14 @@ function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
       case 'link': return link(token.href, inline(token.tokens, ctx), ctx.openLink)
       // In answers images are never loaded: the alt text, linked to where the image is. A host that may
       // show them (the 文件 preview, for pictures in the workspace) passes `image`.
-      case 'image': return ctx.image?.(token.href, token.text) ?? link(token.href, t("files-panel.image", { value1: token.text || token.href }), ctx.openLink)
+      case 'image': {
+        const shown = ctx.image?.(token.href, token.text)
+        if (shown) return shown
+        const label = token.text || token.href
+        const fallback = link(token.href, t("files-panel.image", { value1: label }), ctx.openLink)
+        fallback.dataset.mdImageLabel = label
+        return fallback
+      }
       case 'text': return token.tokens ? inline(token.tokens, ctx) : token.text
       // escape, html and anything newer: what was written, as text
       default: return token.raw
@@ -129,4 +136,14 @@ export function expandMarkdown(target: HTMLElement, complete: HTMLElement): void
 export function caretHost(root: HTMLElement): Element {
   const candidates = root.querySelectorAll('p, li, h3, h4, h5, pre code, td, th')
   return candidates[candidates.length - 1] ?? root
+}
+
+/** Localize generated labels without detaching source text, selection ranges or accessibility identities. */
+export function refreshMarkdownLanguage(root: HTMLElement): void {
+  for (const checkbox of root.querySelectorAll<HTMLInputElement>('input[type="checkbox"][disabled]')) {
+    checkbox.setAttribute('aria-label', checkbox.checked ? t("island-view.completed") : t("markdown.incomplete"))
+  }
+  for (const image of root.querySelectorAll<HTMLElement>('[data-md-image-label]')) {
+    image.textContent = t("files-panel.image", { value1: image.dataset.mdImageLabel ?? '' })
+  }
 }

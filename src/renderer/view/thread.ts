@@ -7,7 +7,7 @@ import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.
 import type { CatMood } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h, label } from './dom.ts'
-import { caretHost, expandMarkdown, renderMarkdown } from './markdown.ts'
+import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
@@ -322,10 +322,14 @@ const threadViews = new WeakMap<HTMLElement, Map<string, CachedView>>()
 const sameInputs = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => value === b[i])
 
 /** Cache each row independently, so a new prompt or a streamed chunk never detaches old messages. */
-function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View): View {
+function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean): View {
   inputs = [localeRevision(), ...inputs]
   const previous = cache.get(key)
   if (previous && sameInputs(previous.inputs, inputs)) return previous.view
+  if (previous && sameInputs(previous.inputs.slice(1), inputs.slice(1)) && localize?.(previous.view)) {
+    cache.set(key, { inputs, view: previous.view })
+    return previous.view
+  }
   const view = build()
   cache.set(key, { inputs, view })
   return view
@@ -343,6 +347,21 @@ function messageView(message: ThreadMessage, handlers: Handlers, traceReady: boo
   const [bubble, ...notes] = elementsOf(view)
   // The tools never participate in bubble sizing; busy/idle changes only their visibility.
   return markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
+}
+
+/** Only translated chrome changes; a finished answer stays exactly where the reader expanded it. */
+function localizeAssistant(view: View, message: ThreadMessage): boolean {
+  if (message.role !== 'assistant') return false
+  const root = elementsOf(view)[0]
+  const markdown = root?.querySelector<HTMLElement>('.markdown')
+  if (!markdown) return false
+  refreshMarkdownLanguage(markdown)
+  const more = markdown.querySelector<HTMLElement>('.answer-more')
+  if (more) more.textContent = t("thread.expand.remaining", { p0: Math.round((message.text.length - answerStart(message.text).length) / 1000) })
+  const receipt = root.querySelector<HTMLElement>('.receipt')
+  if (receipt && message.receipt) receipt.textContent = receipt.tagName === 'BUTTON'
+    ? t("thread.view.activity", { value1: receiptLine(message.receipt) }) : receiptLine(message.receipt)
+  return true
 }
 
 /**
@@ -371,8 +390,8 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   for (const id of cats.keys()) if (!messageIds.has(id)) cats.delete(id)
   const previous = threadViews.get(container) ?? new Map<string, CachedView>()
   const cache = new Map<string, CachedView>()
-  const part = (key: string, inputs: readonly unknown[], build: () => View) => {
-    const view = cachedView(previous, key, inputs, build)
+  const part = (key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean) => {
+    const view = cachedView(previous, key, inputs, build, localize)
     cache.set(key, previous.get(key)!)
     return view
   }
@@ -387,7 +406,7 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
     const look = { latest: message.id === latestAnswer, mood, cats }
-    const view = part(`message:${message.id}`, messageInputs(message, traceReady), () => messageView(message, handlers, traceReady, look))
+    const view = part(`message:${message.id}`, messageInputs(message, traceReady), () => messageView(message, handlers, traceReady, look), view => localizeAssistant(view, message))
     refreshAvatar(view, message, look)
     return view
   })

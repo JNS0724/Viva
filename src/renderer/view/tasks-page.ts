@@ -272,7 +272,8 @@ export function onlyTaskStepsChanged(before: State, after: State): boolean {
 /** Rebuilt as task content changes; a disclosure keeps the conversation and input alive. */
 export function renderTasksPage(container: HTMLElement, shown: State, handlers: Handlers, now = Date.now()) {
   const cached = renderedPages.get(container)
-  const prior = cached?.locale === getLocale() ? cached : undefined
+  const prior = cached
+  const localeChanged = Boolean(prior && prior.locale !== getLocale())
   container.dataset.open = String(shown.tasks.page.open)
   if (!shown.tasks.page.open) {
     renderedPages.delete(container)
@@ -287,7 +288,7 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
   const task = pageTask(state)
   const steps = container.querySelector<HTMLElement>('.tp-steps')
   const toggle = steps?.querySelector<HTMLButtonElement>('.tp-toggle')
-  if (prior && prior.handlers === handlers && sameTask && task && steps && toggle
+  if (prior && !localeChanged && prior.handlers === handlers && sameTask && task && steps && toggle
     && onlyTaskStepsChanged(prior.state, shown)) {
     updateSteps(steps, state, task)
     if (scroller) scroller.scrollTop = atBottom ? scroller.scrollHeight : top
@@ -304,11 +305,25 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
     container.querySelector('.tp-side')?.replaceWith(sideView(state, handlers, now))
     const title = main.querySelector('.tp-title')
     if (title && title.textContent !== `#${task.title}`) title.textContent = `#${task.title}`
-    if (standing(previousTask, prior.now) !== standing(task, now)) {
+    if (localeChanged || standing(previousTask, prior.now) !== standing(task, now)) {
       main.querySelector('.tp-status')?.replaceChildren(statusMark(task.status), standing(task, now))
     }
+    if (localeChanged) {
+      const live = LIVE.has(task.status)
+      const action = main.querySelector('.tp-act')
+      if (action) action.textContent = live ? t("island-tasks.stop") : t("tasks-page.close.this.task")
+      const field = main.querySelector<HTMLTextAreaElement>('.tp-input')
+      if (field) {
+        field.setAttribute('aria-label', live ? t("tasks-page.interruption") : t("task-card.ask.more"))
+        field.placeholder = live ? t("tasks-page.add.or.change.instructions.enter.to.send") : t("tasks-page.ask.more.enter.to.send")
+        main.querySelector('.tp-composer button')?.setAttribute('aria-label', live ? t("tasks-page.interruption") : t("task-card.ask.more"))
+      } else {
+        const resume = main.querySelector(':scope > button')
+        if (resume) resume.textContent = t("followups.continue")
+      }
+    }
     renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
-    if (prior.state.tasks.page.steps !== state.tasks.page.steps
+    if (localeChanged || prior.state.tasks.page.steps !== state.tasks.page.steps
       || previousTask.view.timeline !== task.view.timeline
       || previousTask.view.thoughts !== task.view.thoughts
       || previousTask.view.tools !== task.view.tools) {

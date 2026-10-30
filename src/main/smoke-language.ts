@@ -1,3 +1,4 @@
+import { checkReadingLanguage } from './smoke-language-reading.ts'
 import type { BrowserWindow } from 'electron'
 import { capture, run, until, type SmokeHooks } from './smoke-kit.ts'
 
@@ -95,5 +96,6 @@ export async function checkLanguage(win: BrowserWindow, outDir: string, hooks: S
     if (await run(page, `document.querySelector('.isl-field')?.value !== 'island draft'`)) problems.push('Desktop island lost its draft during language switching')
     desk.force(false)
   } else problems.push('Desktop island missing from language smoke')
+  problems.push(...await checkReadingLanguage(win))
   return problems
 }
