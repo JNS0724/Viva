@@ -37,6 +37,49 @@ export async function checkLanguage(win: BrowserWindow, outDir: string, hooks: S
     await run(win, `window.agent.setLanguage('${locale}')`)
     await until(win, `document.documentElement.lang === '${locale}'`, 'repeated language switch')
   }
+  // Reuse identical state/objects across switches: these views have their own render caches.
+  const mergedViews = await run(win, `(async () => {
+    const { setLocale, getLocale } = await import('../shared/i18n/locale.js');
+    const { initialState, reduce } = await import('./state.js');
+    const { renderTaskDock } = await import('./view/task-dock.js');
+    const { renderResumeDialog } = await import('./view/resume-dialog.js');
+    const { reviewView } = await import('./view/review.js');
+    const { renderEarlier, openEarlierRow } = await import('./view/earlier.js');
+    const original = getLocale();
+    const dock = document.createElement('div'), dialog = document.createElement('div');
+    const handlers = new Proxy({}, { get: () => () => {} });
+    const taskState = reduce(initialState, { type: 'task_started', task: { id: 'language-test', title: 'User 标题', words: 'User text' }, text: 'User text', at: 1 });
+    const state = { ...taskState, tasks: { ...taskState.tasks, dockRoom: true }, review: { ...initialState.review, loaded: true, hasMore: false } };
+    const asked = { stage: 'gone', segmentId: 'language-test', cwd: '/user/资料' };
+    const earlier = document.createElement('div');
+    const earlierState = { ...state, earlier: { segments: [{ id: 'old', parentId: null, cwd: '/user/资料', createdAt: 1000,
+      messages: [{ seq: 0, role: 'user', text: 'Original 原文', at: 1000 }] }], hasMore: false, loading: false } };
+    const results = [];
+    try {
+      for (const locale of ['en', 'zh-CN', 'en']) {
+        setLocale(locale);
+        renderTaskDock(dock, state, handlers, 60000);
+        renderResumeDialog(dialog, asked, handlers);
+        renderEarlier(earlier, earlierState, handlers, 60000);
+        if (!results.length) openEarlierRow(earlier, 'old-0');
+        const review = document.createElement('div');
+        review.replaceChildren(...reviewView(state, handlers, 60000).flat(Infinity).filter(Boolean));
+        results.push({ locale, dock: dock.textContent, dialog: dialog.textContent, review: review.textContent,
+          opened: earlier.querySelector('details.topic-old')?.open, original: earlier.querySelector('[data-msg="old-0"]')?.textContent });
+      }
+    } finally { setLocale(original); renderResumeDialog(dialog, null, handlers); }
+    return results;
+  })()`)
+  for (const view of mergedViews) {
+    if (!view.dock.includes('User 标题') || !view.dialog.includes('/user/资料')) problems.push('Merged views changed user content')
+    if (!view.opened || !view.original?.includes('Original 原文')) problems.push('Language switching collapsed an open earlier topic')
+    const expected = view.locale === 'en'
+      ? ['Background', 'Continue with records', 'Bookmarks']
+      : ['后台', '用记录接着聊', '收藏']
+    if (!view.dock.includes(expected[0]) || !view.dialog.includes(expected[1]) || !view.review.includes(expected[2])) {
+      problems.push('Merged task dock, resume dialog or review kept stale language: ' + view.locale)
+    }
+  }
   const after = await run(win, `window.agent.getInfo()`)
   if (before.sessionId !== after.sessionId || before.mode !== after.mode) problems.push('Changing language changed the agent session')
   const desk = hooks.desk?.()

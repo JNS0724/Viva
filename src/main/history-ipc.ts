@@ -5,6 +5,8 @@ import { readSessionTrace } from './dsh-log.ts'
 import { exportFileName, toMarkdown } from './history-export.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import { assertId } from './history-schema.ts'
+import { CARRY_TURNS, carriedRecords } from './history-carry.ts'
+import { ResumeError } from './resume-failure.ts'
 import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
 
@@ -40,12 +42,20 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   traceDb?: () => ReturnType<typeof openTraceDb> | null,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null, [field: string]: unknown },
-  switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<StartedAgent>,
+  switchAgent: (sessionId: string | null, cwd?: string | null, options?: { exactly?: boolean }) => Promise<StartedAgent>,
   chooseExportPath: (defaultName: string) => Promise<string | null>,
   schedule?: (fn: () => void, ms: number) => void,
   isBusy?: () => boolean,
+  /** Whether a directory is there; the one the agent is in now. */
+  folderExists?: (dir: string) => boolean,
+  workDir?: () => string | null,
+  /** Records to go with the first question of a conversation (main.ts agent:prompt). */
+  carryNext?: (conversationId: string, text: string) => void,
 }) {
   const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
+  const folderExists = deps.folderExists ?? (() => true)
+  const workDir = deps.workDir ?? (() => null)
+  const carryNext = deps.carryNext ?? (() => {})
   const isBusy = deps.isBusy ?? (() => false)
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref?.())
   const handle = handlerOf(ipcMain)
@@ -68,6 +78,22 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   /** The one timeline: the segments before `id` (the window scrolls up into them), and search across all of it. */
   handle('history:segments-before', (id, limit) => db.segmentsBefore(assertId(id), { limit: Number(limit) || undefined }))
   handle('history:search-messages', (query) => db.searchMessages(assertQuery(query)))
+  /**
+   * 回顾: the topics, the one last talked in first, a page after the topic named last; a part of a topic's or a
+   * segment's messages to read (history-reader.ts); the stars, putting one on saying whether it changed anything.
+   * Reading never touches the agent: it stays on the conversation it is on, in its directory.
+   */
+  handle('history:review', (after, filter) => db.review({ after: after ?? null, filter: filter ?? 'all' }))
+  handle('history:read', (key, request) => db.read(key, request ?? {}))
+  /** A link, search hit or star: where the message is now, and where 回顾 reads it (history-db.ts locate). */
+  handle('history:locate', (ref) => {
+    const located = db.locate(ref)
+    const reader = located.status === 'deleted' ? null : db.readerOf(located.segmentId)
+    return reader ? { ...located, reader } : { status: 'deleted' as const, segmentId: located.segmentId, reader: null }
+  })
+  handle('history:star', (id, seq, starred) => db.setStar(id, seq, starred === true))
+  handle('history:stars-in', (ids) => db.starsIn(ids))
+  handle('history:starred', () => db.starredMessages())
 
   /** Shows an older conversation and reattaches the agent to its dsh session when it still can. */
   handle('history:open', async (id) => {
@@ -80,19 +106,56 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   })
 
   /**
-   * 回到这个话题, and 撤销 a new topic: the agent takes up that segment's session again, and what is said from
-   * now on goes in a new segment at the end of the timeline that goes on from it, so the timeline stays in order.
+   * Before 继续这个话题: the directory it goes on in, whether that is still there, and whether it is the one the
+   * agent is in now (the window says so before switching, and asks for another when it is gone).
+   */
+  handle('history:resume-check', (id) => {
+    const found = db.get(assertId(id))
+    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
+    const { cwd } = found.conversation
+    return { cwd, exists: Boolean(cwd && folderExists(cwd)), same: Boolean(cwd && cwd === workDir()) }
+  })
+
+  /**
+   * 继续这个话题, and 撤销 a new topic: the agent takes up that segment's own session again, in its own directory,
+   * and what is said from now on goes in a new segment at the end of the timeline that goes on from it. When it
+   * cannot (resume-failure.ts) the agent stays where it was and the window is told why: `info`, where it is now.
    */
   handle('history:resume-topic', async (id) => {
     if (isBusy()) throw new Error(BUSY)
     const found = db.get(assertId(id))
     if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
     const { sessionId, cwd } = found.conversation
-    const started = await switchAgent(sessionId, cwd)
-    if (!started.resumed) throw new Error(GONE)
+    if (!sessionId) return { ok: false as const, reason: 'gone' as const, message: GONE, cwd, info: null }
+    try {
+      const started = await switchAgent(sessionId, cwd, { exactly: true })
+      const { mode, model } = agentInfo()
+      setCurrent(db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id }))
+      return { ok: true as const, info: { ...started, remembersHistory: true }, parentId: found.conversation.id }
+    } catch (err) {
+      if (!(err instanceof ResumeError)) throw err
+      return { ok: false as const, reason: err.reason, message: err.message, cwd, info: err.info && { ...err.info, remembersHistory: Boolean(err.info.resumed) } }
+    }
+  })
+
+  /**
+   * The topic's own session gone (or its directory): it goes on in a new session in `dir`, its latest turns carried
+   * with the first question as records to refer to (history-carry.ts); the new segment goes on from it.
+   */
+  handle('history:continue-from-records', async (id, dir) => {
+    if (isBusy()) throw new Error(BUSY)
+    const found = db.get(assertId(id))
+    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
+    if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("merge.this.folder.no.longer.exists.choose.another.2"))
+    const topicId = db.topicOf(found.conversation.id)
+    const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
+    const carried = carriedRecords(part?.messages ?? found.messages)
+    const started = await switchAgent(null, dir)
     const { mode, model } = agentInfo()
-    setCurrent(db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id }))
-    return { info: { ...started, remembersHistory: true }, parentId: found.conversation.id }
+    const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id })
+    setCurrent(next)
+    if (carried.turns) carryNext(next.id, carried.text)
+    return { info: { ...started, remembersHistory: false }, parentId: found.conversation.id, turns: carried.turns }
   })
 
   handle('history:trace', (id, until) => readSessionTrace({

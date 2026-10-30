@@ -80,8 +80,10 @@ async function attempt(base: Base, scenario: LiveScenario, step: 'run' | 'prepar
   } catch (err) {
     failures.push(`stopped: ${err instanceof Error ? err.message : String(err)}`)
     await ctx.shot('stopped').catch(() => {})
-    await recover(base.win).catch(() => {})
   }
+  // A successful denial can legitimately be followed by a new clarification. It must not leave the
+  // foreground turn busy and make the next attempt time out waiting for 新话题. Clean every attempt.
+  await recover(base.win).catch(err => failures.push(`cleanup: ${err instanceof Error ? err.message : String(err)}`))
   return { ok: failures.length === 0, ms: Date.now() - started, failures, shots }
 }
 

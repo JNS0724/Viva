@@ -113,6 +113,12 @@ exports.default = async function afterPack(context) {
   const unpacked = keep.filter((dir) => hasNative(path.join(target, dir))).map((dir) => dir.split(path.sep).join('/'))
   const files = countFiles(target)
   await asar.createPackageWithOptions(target, archive, { unpackDir: `{${unpacked.join(',')}}` })
+  // electron-builder embeds integrity BEFORE afterPack. This hook replaces the archive, so refresh the
+  // final hash now, before its signing phase. A stale hash can terminate Electron before main.js runs.
+  const { refreshAsarIntegrity } = await import('./asar-integrity.ts')
+  const hash = await refreshAsarIntegrity({ resources, platform: context.electronPlatformName,
+    executable: path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`) })
+  console.log(`  • after-pack       final app.asar header SHA256 ${hash}`)
   fs.rmSync(target, { recursive: true, force: true })
   const left = fs.existsSync(path.join(resources, 'app.asar.unpacked')) ? countFiles(path.join(resources, 'app.asar.unpacked')) : 0
   console.log(`  • after-pack       app.asar holds ${files - left} files; ${left} unpacked beside it (${unpacked.join(', ')})`)

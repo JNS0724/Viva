@@ -51,9 +51,10 @@ test('opened, the page shows the task asked for, or the first in it; it closes t
   assert.equal(pageTask(reduce(first, { type: 'tasks_page_open', taskId: 'old' }))?.id, 'old')
   assert.equal(pageTask(reduce(first, { type: 'tasks_page_select', taskId: 'old' }))?.id, 'old')
 
+  assert.equal(first.hub.last, 'tasks', '后台 is one of the hub\'s pages: the 关于你 icon opens on it when it was the last shown')
   const search = reduce(first, { type: 'history_open' })
   assert.deepEqual([hubPage(search), search.tasks.page.open], ['search', false])
-  assert.equal(search.hub.last, 'search', 'the 关于你 icon never opens on the 后台 page')
+  assert.equal(search.hub.last, 'search')
   assert.equal(hubPage(reduce(first, { type: 'hub_close' })), null)
 })
 

@@ -35,8 +35,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "57bd77bcb6106d46290382dda9b12602dba2ce54c96dda9c84f64864e84de242",
-      "zhHash": "7974b7742470b7509ba26278828576db03bf72ab1e04f7edd7286d565d247c13"
+      "enHash": "b0a230a58d0716f07d4fe6c6dcd37b5969eeb6ba8c6f25def050a990296050bb",
+      "zhHash": "260bf42c2bbe8522e68f7706cb36230e8e316d9b5f21a9769c8737bc54466b8f"
     },
     {
       "en": "docs/dsh-upgrade-validation-20261026.md",
@@ -47,8 +47,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "200eacf0e3899e2b016f8fd97e0398ace29dce64b849af2dc84130a0f246a766",
-      "zhHash": "a493098bdda28eb8c32dc3d033cdd69cea8af6ee4d470b179a2a2d7442a57173"
+      "enHash": "1a50a44c2563b4158896dc6b12b6910a33d68c2e82aad6f2ba5b3e3c75a456a7",
+      "zhHash": "7b75ad400227e301a29a60b4fa58e0b432ab99dfc7aee8f0838c70b6ae76f282"
     },
     {
       "en": "docs/internationalization.md",
@@ -65,14 +65,20 @@
     {
       "en": "docs/memory.md",
       "zh": "docs/memory.zh-CN.md",
-      "enHash": "7222781c5bcb6924ee115a9898fcc902123d806476d5adc6570f0ce89e538270",
-      "zhHash": "0001ff897fa49295f552f3befcb6e99905f27e598571c87167df75dceb5f90c7"
+      "enHash": "ff3853ed53ce424f65c159efe8b60636bf4fc3a3df07aaa99ad09adedd9f9a24",
+      "zhHash": "d011f6195a50e7f83d4ec27fbc345e3f0905844b6924a6e49d75c86bce86df9a"
     },
     {
       "en": "docs/new-topic-performance-20261026.md",
       "zh": "docs/new-topic-performance-20261026.zh-CN.md",
       "enHash": "9bc40f1cd1b68fc96ae992392be48a12b01023323f00fc1db886d8ca8f34dc64",
       "zhHash": "bd6466c4afb112a783ceff788ec2f1e6c656d8bd2baa80e5f661af19235718b5"
+    },
+    {
+      "en": "docs/release-qa-20261028.md",
+      "zh": "docs/release-qa-20261028.zh-CN.md",
+      "enHash": "d7cd2dc67ff5894c04e76d0130bec41a33b4e0ecd04885d76ddeb059a750e1ce",
+      "zhHash": "b09b9c96925be6ed3c14873c05a6ff8039450673c1a7a4bb5d49c6d8e405d65a"
     },
     {
       "en": "docs/sources.md",
@@ -109,6 +115,12 @@
       "zh": "docs/releases/v0.4.0-beta.5.zh-CN.md",
       "enHash": "931e7bf706986fc7db58c667b579b53eef36c1e2fa6f7c84c08eb6c4babfc22f",
       "zhHash": "528046653e7c03483150fb5c7eeb789b0556754772bd85af8ca7a8f17f77da65"
+    },
+    {
+      "en": "docs/releases/v0.4.0-beta.6.md",
+      "zh": "docs/releases/v0.4.0-beta.6.zh-CN.md",
+      "enHash": "6b5d41597fddc0c4229f7dff27cc75de263ed244a830e0669661158ab71b60d5",
+      "zhHash": "c615a6c5f95b307ad49905dede55c869e0ca30c0f517ff3128e577f9bbe51c59"
     }
   ],
   "bilingual": [

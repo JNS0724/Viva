@@ -3,6 +3,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { initializeLanguage } from './language.ts'
 import { withFiles } from '../shared/attachments.ts'
 import { IMAGE_TYPES } from '../shared/images.ts'
+import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
 import { createDraftImages } from './draft-images.ts'
 import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
@@ -23,12 +24,20 @@ import { historyMessages, setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
 import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
-import { liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
+import { hasDockRoom, liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
+import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
+import { attachTurnRail } from './view/turn-rail.ts'
+import { attachStars } from './view/star-buttons.ts'
+import { openEarlierRow } from './view/earlier.ts'
+import { createResumeActions } from './resume-actions.ts'
+import { createReviewActions } from './review-actions.ts'
+import { isStarred, placeOf } from './stars.ts'
 import { scheduleFrame } from './view/frame.ts'
+import { attachColumnResize, sideBeside } from './view/column-resize.ts'
 
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
@@ -72,6 +81,7 @@ const elements = {
   workdirMenu: byId('workdir-menu'),
   workdirConfirm: byId('workdir-confirm-root'),
   rewindConfirm: byId('rewind-confirm-root'),
+  resumeDialog: byId('resume-root'),
   toggleDrawer: byId('toggle-drawer'),
   settings: byId('settings-root'),
   modelArea: byId('model-area'),
@@ -91,19 +101,81 @@ const elements = {
   hubSearchKey: byId('hub-search-key'),
   /** 后台: every background task and the one picked (view/tasks-page.js). */
   tasksPage: byId('tasks-page'),
+  /** The background tasks floating in the corner of the main area (view/task-dock.ts). */
+  taskDock: byId('task-dock'),
+  main: byId('main'),
 }
 /** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */
 const dom = { ...elements, follower: createScrollFollower(elements.scroll, elements.jumpLatest) }
 /** The page's elements, as the views draw into them. */
 export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
+attachTurnRail(dom.scroll, byId('turn-rail'))
 
-let state: State = initialState
+const DOCK_KEY = 'viva:dock-collapsed'
+const TASK_LIST_KEY = 'viva:tasks-list-folded'
+/** A choice kept for the next launch (the dock, the 后台 page's list folded); storage refused, false. */
+function storedFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === 'true'
+  } catch {
+    return false
+  }
+}
+function storeFlag(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, String(value))
+  } catch {
+    // Storage refused: kept for this launch only.
+  }
+}
+
+/** The ended tasks seen (tasks-state.ts dockHidden), a JSON list of ids: the latest so many, enough for any launch. */
+const SEEN_KEY = 'viva:tasks-seen'
+const SEEN_KEPT = 200
+function storedSeen(): unknown {
+  try {
+    return JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]')
+  } catch {
+    return []
+  }
+}
+function storeSeen(ids: readonly string[]) {
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(ids.slice(-SEEN_KEPT)))
+  } catch {
+    // Storage refused: seen for this launch only.
+  }
+}
+
+let state: State = [
+  { type: 'task_dock_toggled', collapsed: storedFlag(DOCK_KEY) },
+  { type: 'tasks_list_folded', folded: storedFlag(TASK_LIST_KEY) },
+  { type: 'tasks_seen_restored', ids: storedSeen() },
+].reduce((before: State, action) => reduce(before, action), initialState)
+
+// The column's width as the user dragged it, kept within the main area as the window and the drawer change it;
+// whatever is left beside it says whether the dock has room there.
+// The first call comes at once, before the handlers a render needs exist: that one only sets the state.
+let columnWired = false
+const column = attachColumnResize(dom.main, [byId('col-grip-left'), byId('col-grip-right')], (width, area) => {
+  const action = { type: 'task_dock_room', room: hasDockRoom(sideBeside(width, area), state.tasks.dockRoom) }
+  if (columnWired) dispatch(action)
+  else state = reduce(state, action)
+})
+columnWired = true
+new ResizeObserver(column.fit).observe(dom.main)
+// The dock peeked at sits above the input and its label: their top, measured from the main area's bottom.
+new ResizeObserver(() => {
+  dom.main.style.setProperty('--composer-lift', `${dom.main.clientHeight - dom.composer.offsetTop + 56}px`)
+}).observe(dom.composer)
 let pendingReveal: (() => void) | null = null
 let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
 let historyReady = false
 let pendingRender: (() => void) | null = null
+/** What follows each render once the page is wired (the stars, below). */
+let afterRender: (() => void) | null = null
 const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
@@ -111,6 +183,7 @@ function dispatch(action: Action) {
   const next = reduce(state, action)
   if (timing !== null) recordRendererTiming('history-state', performance.now() - timing)
   if (next === state) return
+  if (next.tasks.dockHidden !== state.tasks.dockHidden) storeSeen(next.tasks.dockHidden)
   state = next
   if (['acp_update', 'task_update'].includes(action.type ?? '') && LIVE_TEXT_UPDATES.has(action.update?.sessionUpdate)) {
     // State stays current for user actions, while a burst of model chunks paints once per frame.
@@ -123,6 +196,7 @@ function dispatch(action: Action) {
   }
   startReveal()
   publishIsland()
+  afterRender?.()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
 }
 
@@ -256,8 +330,88 @@ const historyActions = createHistoryActions({
   dispatch,
   searchField: dom.historySearch,
   errorMessage,
-  jumpTo: (hit: Untyped) => timelineActions.jumpTo(hit),
+  locate: (hit: SearchHit) => api.locateMessage(hit.messageId === undefined
+    ? { segmentId: hit.segmentId, seq: hit.seq } : { segmentId: hit.segmentId, seq: hit.seq, messageId: hit.messageId }),
+  // On screen means drawn: a message of a long conversation or topic past what is drawn is read in 回顾.
+  revealOnScreen: (found) => {
+    const target = hitTarget(state, found)
+    const row = target && timelineRow(target.msgId)
+    return row ? () => revealRow(row) : null
+  },
+  openInReview: (hit: SearchHit) => reviewActions.openRef(hit),
 })
+/** 回顾 on the 搜索 page, and the stars on messages (review-actions.ts). */
+const reviewActions = createReviewActions({
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage,
+  keepPlace: (change: () => void) => keepReaderPlace(change),
+  // The message found stays marked while it is read (view/review.ts); here it is only scrolled to.
+  reveal: (msgId: string) => {
+    const row = dom.historyList.querySelector(`.review-focus [data-msg="${CSS.escape(msgId)}"]`)
+    if (!row) return false
+    row.scrollIntoView({ block: 'center' })
+    return true
+  },
+})
+
+/** The star by a message, in the timeline (the conversation, or an earlier row) and in a topic read in 回顾. */
+const starViews = [
+  attachStars(dom.scroll, {
+    placeOf: (el) => placeOf(state, el.dataset.msg ?? '', el.closest('#earlier') ? 'row' : 'thread'),
+    isStarred: (place) => isStarred(state, place),
+    toggle: (place, starred) => reviewActions.toggleStar(place, starred),
+  }),
+  attachStars(dom.historyList, {
+    placeOf: (el) => placeOf(state, el.dataset.msg ?? '', 'row'),
+    isStarred: (place) => isStarred(state, place),
+    toggle: (place, starred) => reviewActions.toggleStar(place, starred),
+  }),
+]
+/**
+ * A part read on in 回顾 (review-actions.ts readMore): the message at the top of what is seen stays where it is
+ * on screen, though messages came in above it or went from above it.
+ */
+function keepReaderPlace(change: () => void) {
+  const pane = dom.historyList.closest<HTMLElement>('.hub-main')
+  const top = pane?.getBoundingClientRect().top ?? 0
+  const anchor = [...dom.historyList.querySelectorAll<HTMLElement>('.review-reader [data-msg]')].find((el) => el.getBoundingClientRect().bottom > top)
+  const msgId = anchor?.dataset.msg
+  const before = anchor?.getBoundingClientRect().top
+  change()
+  if (!pane || !msgId || before === undefined) return
+  const after = dom.historyList.querySelector(`.review-reader [data-msg="${CSS.escape(msgId)}"]`)?.getBoundingClientRect().top
+  if (after !== undefined) pane.scrollTop += after - before
+}
+
+/** Reads on by itself when the end of the part read in 回顾 comes near (view/review.ts readerEdge). */
+const READ_ON_MARGIN = '600px'
+const readerEdges = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    const edge = (entry.target as HTMLElement).dataset.edge
+    if (entry.isIntersecting && (edge === 'before' || edge === 'after')) void reviewActions.readerMore(edge)
+  }
+}, { rootMargin: READ_ON_MARGIN })
+let watchedEdges: Element[] = []
+function watchReaderEdges() {
+  const edges = [...dom.historyList.querySelectorAll('.reader-edge:not([disabled])')]
+  if (edges.length === watchedEdges.length && edges.every((edge, i) => edge === watchedEdges[i])) return
+  readerEdges.disconnect()
+  for (const edge of edges) readerEdges.observe(edge)
+  watchedEdges = edges
+}
+
+let shownStars: unknown = null
+/** After each render: the stars of the segments on screen read back, and the stars shown in step with them. */
+afterRender = () => {
+  watchReaderEdges()
+  reviewActions.refreshStars([
+    ...state.earlier.segments.map((segment) => segment.id), String(state.conversationId ?? ''),
+    // A topic read in 回顾 only, never read back into the timeline.
+    ...(state.review.reading?.messages ?? []).map((message: { segmentId: string }) => message.segmentId),
+  ])
+  if (state.review.starKeys === shownStars) return
+  shownStars = state.review.starKeys
+  for (const view of starViews) view.sync()
+}
 
 const draftImages = createDraftImages({
   keep: (bytes: Uint8Array<ArrayBuffer>) => api.keepImage(bytes),
@@ -268,10 +422,14 @@ const draftImages = createDraftImages({
 /** How long a message found by search stays marked after the timeline scrolls to it. */
 const FOUND_MS = 2400
 
-/** Scrolls a message of the timeline (its `data-msg`, view/thread.js markMessage) to the middle and marks it a moment. */
-function revealMessage(msgId: string) {
-  const row = dom.scroll.querySelector(`[data-msg="${CSS.escape(msgId)}"]`)
-  if (!row) return
+/**
+ * The row of a message of the timeline (its `data-msg`, view/thread.js markMessage) as drawn: in the conversation, or
+ * in the earlier part, a folded topic opened and drawn for it (view/earlier.ts). Null when it is not drawn there.
+ */
+const timelineRow = (msgId: string) => dom.thread.querySelector<HTMLElement>(`[data-msg="${CSS.escape(msgId)}"]`) ?? openEarlierRow(dom.earlier, msgId)
+
+/** Scrolls a row of the timeline to the middle and marks it a moment. */
+function revealRow(row: HTMLElement) {
   row.scrollIntoView({ block: 'center' })
   row.classList.add('msg-found')
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
@@ -285,6 +443,10 @@ function revealMessage(msgId: string) {
  * @returns {boolean} false when the agent can't take it now
  */
 function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
+  if (text.length > MAX_MESSAGE_CHARS) {
+    historyActions.showToast(MESSAGE_TOO_LONG)
+    return false
+  }
   if ((!text && !images.length) || setupView(state.info) || state.switching || state.newTopicPending) return false
   if (images.length) return askWithImages(text, images, via)
   // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
@@ -400,7 +562,14 @@ const taskActions = createTaskActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
   isTyping: () => Boolean(dom.input.value.trim()),
 })
-const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll, reveal: revealMessage })
+const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
+const resumeActions = createResumeActions({
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, busy: () => isBusy(state),
+  afterResume: () => {
+    dom.follower.jumpToLatest()
+    dom.input.focus()
+  },
+})
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
@@ -436,6 +605,8 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
   'open-profile': () => memoryActions.openProfile(),
   'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
   'open-settings': () => handlers.openSettings(),
+  'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
+  'resume-topic': (toast) => resumeActions.retryResume(toast.action.payload),
 }
 
 const handlers = {
@@ -445,6 +616,27 @@ const handlers = {
   },
   dismissSubmission: (id: string) => dispatch({ type: 'task_submit_dismissed', id }),
   ...historyActions,
+  ...reviewActions,
+  /** ⌘F and 回顾 in the sidebar: the field focused, and the timeline by day read again. */
+  openSearch() {
+    historyActions.openSearch()
+    reviewActions.refreshReview()
+  },
+  toggleHistory() {
+    historyActions.toggleHistory()
+    if (state.history.open) reviewActions.refreshReview()
+  },
+  /** 更早的记录在回顾里 at the top of the timeline: 回顾 with nothing typed, so it shows the days. */
+  openReview() {
+    dom.historySearch.value = ''
+    historyActions.searchHistory('')
+    handlers.openSearch()
+  },
+  /** 回到这个话题 on a topic read in 回顾: back to the conversation, going on from it. */
+  resumeFromReview(segmentId: string) {
+    dispatch({ type: 'history_close' })
+    return handlers.resumeTopic(segmentId)
+  },
   ...memoryActions,
   ...extensionActions,
   ...sourceActions,
@@ -462,9 +654,26 @@ const handlers = {
   pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),
   /** A task's report in the thread, put away (view/thread.js reportCard). */
   dismissReport: (taskId: string) => taskActions.dismissReport(taskId),
+  /** The dock in the corner: folded to its tag or unfolded, remembered for the next launch. */
+  toggleDock: (collapsed: boolean) => {
+    dispatch({ type: 'task_dock_toggled', collapsed })
+    storeFlag(DOCK_KEY, collapsed)
+  },
+  /** The 后台 page's list folded to its strip, or unfolded; kept for the next launch. */
+  foldTaskList: (folded: boolean) => {
+    dispatch({ type: 'tasks_list_folded', folded })
+    storeFlag(TASK_LIST_KEY, folded)
+  },
+  /** No room beside the column: the folded dock shown over the conversation for now, or put back. */
+  peekDock: (peek: boolean) => dispatch({ type: 'task_dock_peek', peek }),
+  /** 恢复默认宽度 in the topic label's menu: the conversation column back to its default width. */
+  resetColumn: () => column.reset(),
+  /** An ended task put away from the dock; its card in the conversation stays as the history. */
+  hideFromDock: (taskId: string) => dispatch({ type: 'task_dock_hidden', taskId }),
   /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
   async startInBackground() {
     const text = dom.input.value.trim()
+    if (text.length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     if (!text || setupView(state.info) || state.switching || state.newTopicPending) return dom.input.focus()
     dom.input.value = ''
     renderSendButton(dom, state)
@@ -485,6 +694,7 @@ const handlers = {
   skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
     if (setupView(state.info)) return handlers.openSettings()
+    if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     // 「#name 」 with no words yet (接着问 just wrote it): nothing to send, to the task or anywhere else.
     if (!state.question && mentionedTask(state, dom.input.value)?.text === '') return undefined
     const text = dom.input.value.trim()
@@ -550,21 +760,8 @@ const handlers = {
     measure: ({ stage, durationMs }) => recordRendererTiming(stage, durationMs),
   }),
   /** 回到这个话题 on an earlier topic, and 撤销 on a new one: the agent goes on from that segment. */
-  async resumeTopic(segmentId: string) {
-    if (state.switching) return undefined
-    if (isBusy(state)) return historyActions.showToast(t("app.wait.for.this.turn.to.finish.before"))
-    dispatch({ type: 'session_switching' })
-    try {
-      const { info, parentId } = await api.resumeTopic(segmentId)
-      dispatch({ type: 'topic_resumed', info, parentId, at: Date.now() })
-      dom.follower.jumpToLatest()
-      dom.input.focus()
-    } catch (err) {
-      dispatch({ type: 'session_switch_failed' })
-      historyActions.showToast(errorMessage(err))
-    }
-    return undefined
-  },
+  /** 继续这个话题, 回到这个话题, 撤销 a new topic (resume-actions.ts): its own session, the directory said first. */
+  ...resumeActions,
   toggleTopicMenu: () => dispatch({ type: 'topic_menu', open: !state.topic.menu }),
   /** The permission picker by the input (view/permission-picker.js): another level restarts dsh on this conversation. */
   togglePermissionMenu: () => dispatch({ type: 'permission_menu', open: !state.settings.permissionMenu }),
@@ -613,11 +810,12 @@ const handlers = {
    */
   sendToTask(taskId: string, text: string) {
     const task = state.tasks.list.find((entry) => entry.id === taskId)
-    if (!task) return
-    if (task.question) taskActions.typeTaskAnswer(taskId, text)
-    else if (task.endedAt === null) taskActions.steerTask(taskId, text)
-    else taskActions.askTask(taskId, text)
+    if (!task) return false
+    if (task.question) return taskActions.typeTaskAnswer(taskId, text)
+    if (task.endedAt === null) return taskActions.steerTask(taskId, text)
+    return taskActions.askTask(taskId, text)
   },
+  inputProblem: (message: string) => historyActions.showToast(message),
   toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
   async setDeskIsland(on: boolean) {
     try {
@@ -667,8 +865,15 @@ const handlers = {
   cancelWorkDir: () => workDirActions.cancelConfirm(),
   closeWorkDirMenu: () => workDirActions.closeMenu(),
   revealWorkDir: () => workDirActions.reveal(),
-  /** A link in an answer opens in the browser (or mail app), never inside the window. */
-  openLink: (url: string) => api.openLink(url).catch((err) => dispatch({ type: 'error', message: t("app.could.not.open.link", { value1: errorMessage(err) }) })),
+  /**
+   * A link in an answer opens in the browser (or mail app), never inside the window; a viva://timeline link
+   * (search_conversations) goes to that message of the timeline instead.
+   */
+  openLink: (url: string) => {
+    const place = timelinePlace(url)
+    if (place) return historyActions.jumpToHit(place)
+    return api.openLink(url).catch((err) => dispatch({ type: 'error', message: t("merge.could.not.open.link.4", { p0: errorMessage(err) }) }))
+  },
 }
 
 /** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */
@@ -743,6 +948,8 @@ function wireComposer() {
   dom.input.addEventListener('input', () => {
     renderSendButton(dom, state)
     renderRouteHint(dom, state)
+    // Typing puts away a dock that was only peeked at: the input is where the user is now.
+    if (state.tasks.dockPeek) handlers.peekDock(false)
   })
   // Pictures go above the words; words that came only as formatted text are put in by hand (paste.js).
   dom.input.addEventListener('paste', (event) => {
@@ -753,13 +960,15 @@ function wireComposer() {
     if (images.length) draftImages.add(images)
   })
   dom.input.addEventListener('keydown', (event) => {
+    // Some IMEs report the confirming key as 229 after isComposing has already cleared.
+    if (event.isComposing || event.keyCode === 229) return
     // Tab, while the line over the input says where the words would go: the other way.
-    if (event.key === 'Tab' && !event.shiftKey && !event.isComposing && routeOf(state, dom.input.value)) {
+    if (event.key === 'Tab' && !event.shiftKey && routeOf(state, dom.input.value)) {
       event.preventDefault()
       taskActions.toggleRoute()
       return
     }
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+    if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     handlers.send()
   })
@@ -813,6 +1022,7 @@ function wireDismissal() {
     if (state.files.menu && !event.composedPath().some((el) => el instanceof Element && el.classList.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
   })
   document.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return
     if (isHistoryShortcut(event)) {
       event.preventDefault()
       handlers.toggleHistory()

@@ -26,7 +26,26 @@ export const initialTasks = Object.freeze({
   unfinished: [] as Untyped[],
   /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
   page: Object.freeze({ open: false, selected: null as string | null, steps: false }),
+  /** The dock in the corner (view/task-dock.ts): folded to its tag, and the ended tasks put away from it. */
+  dockCollapsed: false,
+  /** The 后台 page's list folded to a narrow strip by the user (view/tasks-page.ts), kept for the next launch. */
+  listFolded: false,
+  /**
+   * Ended tasks the user has seen (opened on the 后台 page) or put away (知道了): no longer reminded of, in the
+   * dock or at the island's tail; their line in the conversation stays. Something new from one brings it back.
+   * Kept for the next launch (app.ts).
+   */
+  dockHidden: [] as string[],
+  /** Whether the main area has room for the dock beside the column; without it the dock folds unless peeked at. */
+  dockRoom: true,
+  dockPeek: false,
 })
+
+/**
+ * Whether the dock shows only its tag: folded by the user, or no room beside the column. Peeked at (its tag clicked
+ * without room) it shows either way; the user's own fold is kept for when the peek ends.
+ */
+export const dockFolded = (state: State): boolean => !state.tasks.dockPeek && (state.tasks.dockCollapsed || !state.tasks.dockRoom)
 
 /**
  * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
@@ -59,6 +78,70 @@ function settled(task: BackgroundTask): BackgroundTask {
 }
 
 export const liveTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => LIVE.has(task.status))
+
+/** Ended tasks the user has not seen yet: what the island's ✓ counts. */
+export const unseenEnded = (state: State): BackgroundTask[] =>
+  state.tasks.list.filter((task) => task.endedAt !== null && !LIVE.has(task.status) && task.status !== 'interrupted' && !state.tasks.dockHidden.includes(task.id))
+
+/** An ended task opened on the 后台 page has been seen: no more reminders of it, and the island stops saying it ended. */
+function seen(state: State, taskId: string | null): State {
+  const task = state.tasks.list.find((entry) => entry.id === taskId)
+  if (!task || task.endedAt === null || LIVE.has(task.status) || task.status === 'interrupted') return state
+  const finished = state.tasks.finished?.taskId === task.id ? null : state.tasks.finished
+  if (state.tasks.dockHidden.includes(task.id) && finished === state.tasks.finished) return state
+  const dockHidden = state.tasks.dockHidden.includes(task.id) ? state.tasks.dockHidden : [...state.tasks.dockHidden, task.id]
+  return { ...state, tasks: { ...state.tasks, dockHidden, finished } }
+}
+
+/** Order in the dock: what waits on the user, what works, what ended. */
+const DOCK_ORDER: Readonly<Record<string, number>> = { waiting: 0, interrupted: 0, running: 1 }
+
+/**
+ * The tasks in the dock (view/task-dock.ts): every one at work or waiting, and those that ended while what they
+ * came back with is still there, until put away from the dock. Putting one away there leaves its card in the
+ * conversation, which stays as its history.
+ */
+export function dockTasks(state: State): Array<{ task: BackgroundTask, report: TaskReport | null }> {
+  return state.tasks.list.flatMap((task): Array<{ task: BackgroundTask, report: TaskReport | null }> => {
+    if (task.status in DOCK_ORDER) return [{ task, report: null }]
+    const report = state.tasks.reports.find((entry) => entry.taskId === task.id) ?? null
+    return report && !state.tasks.dockHidden.includes(task.id) ? [{ task, report }] : []
+  }).toSorted((a, b) => (DOCK_ORDER[a.task.status] ?? 2) - (DOCK_ORDER[b.task.status] ?? 2))
+}
+
+/** What the folded dock says: how many go on, how many of those wait on the user, how many ended, how many of those failed. */
+export function dockSummary(state: State): { live: number, waiting: number, ended: number, failed: number } {
+  const shown = dockTasks(state)
+  return {
+    live: shown.filter(({ task }) => task.status in DOCK_ORDER).length,
+    waiting: shown.filter(({ task }) => DOCK_ORDER[task.status] === 0).length,
+    ended: shown.filter(({ task }) => !(task.status in DOCK_ORDER)).length,
+    failed: shown.filter(({ task }) => task.status === 'error').length,
+  }
+}
+
+/**
+ * Pressed by the column (no room beside it) with nothing waiting on the user or failed: the dock steps away
+ * altogether, the conversation first; the island in the title bar still counts the tasks. What needs the user keeps
+ * a clear tag in the corner.
+ */
+export function dockAway(state: State): boolean {
+  if (state.tasks.dockRoom || !dockFolded(state)) return false
+  const { waiting, failed } = dockSummary(state)
+  return !waiting && !failed
+}
+
+/**
+ * Room the dock needs beside the column to unfold (open), and below which it folds again (fold): the gap
+ * between them keeps a window resized right at the edge from folding and unfolding it over and over.
+ */
+/** styles.css .task-dock: its width, its inset from the right edge, and the least gap kept from the column. */
+const DOCK_PANEL = Object.freeze({ width: 300, inset: 20, gap: 12 })
+const DOCK_FOLD_PX = DOCK_PANEL.width + DOCK_PANEL.inset + DOCK_PANEL.gap
+const DOCK_HYSTERESIS_PX = 40
+export const DOCK_SPACE = Object.freeze({ open: DOCK_FOLD_PX + DOCK_HYSTERESIS_PX, fold: DOCK_FOLD_PX })
+/** Whether the dock has room, given the space beside the column and whether it had room until now. */
+export const hasDockRoom = (side: number, had: boolean): boolean => side >= (had ? DOCK_SPACE.fold : DOCK_SPACE.open)
 export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 
 /** The 后台 page's list: those waiting on the user, then those at work, then those that ended, latest first. */
@@ -74,6 +157,29 @@ export function pageGroups(state: State): Array<{ key: string, tasks: Background
 /** The task the 后台 page shows whole, or null. */
 export const pageTask = (state: State): BackgroundTask | null => state.tasks.list.find((task) => task.id === state.tasks.page.selected) ?? null
 const firstOnPage = (state: State): string | null => pageGroups(state)[0]?.tasks[0]?.id ?? null
+
+/** Follow-ups on the 后台 page are picked by this prefix, beside the tasks' ids. */
+export const FOLLOWUP_KEY = 'followup:'
+/** And the messages suggested for one by this. */
+export const SUGGESTION_KEY = 'suggestion:'
+const LISTED_FOLLOWUPS = ['ready', 'preparing', 'scheduled'] as const
+
+/** The keys on the page's list, in its order: messages to decide on, follow-ups by group, then the tasks. */
+function listedKeys(state: State): string[] {
+  const suggestions = state.followups.suggestions.filter((item: Untyped) => item.status === 'open').map((item: Untyped) => `${SUGGESTION_KEY}${item.id}`)
+  const followups = LISTED_FOLLOWUPS.flatMap((status) => state.followups.followups
+    .filter((item: Untyped) => item.status === status)
+    .map((item: Untyped) => `${FOLLOWUP_KEY}${item.id}`))
+  const tasks = pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
+  return [...suggestions, ...followups, ...tasks]
+}
+
+/** What the 后台 page shows: the one picked while it is still listed, else the first listed (view/tasks-page.ts onPage). */
+export function shownOnPage(state: State): string | null {
+  const keys = listedKeys(state)
+  const selected = state.tasks.page.selected
+  return selected && keys.includes(selected) ? selected : keys[0] ?? null
+}
 
 /** A task's tab in the drawer (view/drawer.js): what it did, as the 过程 tab shows the conversation's. */
 const TAB_PREFIX = 'task:'
@@ -202,6 +308,15 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
 
   return {
     task_moving: (state, { moving }) => withTasks(state, { moving }),
+    tasks_list_folded: (state, { folded }) => withTasks(state, { listFolded: Boolean(folded) }),
+    task_dock_toggled: (state, { collapsed }) => withTasks(state, { dockCollapsed: Boolean(collapsed), dockPeek: false }),
+    task_dock_room: (state, { room }) => (state.tasks.dockRoom === Boolean(room) ? state : withTasks(state, { dockRoom: Boolean(room), dockPeek: false })),
+    task_dock_peek: (state, { peek }) => withTasks(state, { dockPeek: Boolean(peek) }),
+    /**
+     * 知道了: an ended task put away unseen, as if seen: out of the dock, not counted, and the island no longer
+     * saying it ended. One at work or waiting stays until it ends.
+     */
+    task_dock_hidden: (state, { taskId }) => seen(state, taskId),
     task_submitting: (state, { submission }) => withTasks(state, {
       submissions: [...state.tasks.submissions.filter(item => item.id !== submission.id), submission],
     }),
@@ -243,7 +358,9 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
       const report = { taskId, title: task.title, status, preview: previewOf(view), shown: false }
       const reports = [...state.tasks.reports.filter((entry) => entry.taskId !== taskId), report]
-      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports })
+      // Something new came back: in the dock again, even if what it said before was put away there.
+      const dockHidden = state.tasks.dockHidden.filter((id) => id !== taskId)
+      return withTasks(state, { list, undo, finished: { taskId, title: task.title, status }, reports, dockHidden })
     },
 
     tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),
@@ -255,10 +372,15 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView(messages, at) })],
     }),
     /** Tasks that had ended by the last launch (task-store.js): back as they were, to be asked again or closed. */
-    tasks_restored: (state, { list }) => withTasks(state, {
-      list: [...state.tasks.list.filter((entry) => !list.some((item: { task: BackgroundTask }) => item.task.id === entry.id)),
-        ...list.map(({ task, status, endedAt, messages }: { task: BackgroundTask, status: string, endedAt: number, messages: ThreadMessage[] }) => settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))],
-    }),
+    tasks_restored: (state, { list }) => {
+      const restored = list.map(({ task, status, endedAt, messages }: { task: BackgroundTask, status: string, endedAt: number, messages: ThreadMessage[] }) =>
+        settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))
+      return withTasks(state, {
+        list: [...state.tasks.list.filter(entry => !restored.some((task: BackgroundTask) => task.id === entry.id)), ...restored],
+        reports: [...state.tasks.reports.filter(entry => !restored.some((task: BackgroundTask) => task.id === entry.taskId)),
+          ...restored.filter((task: BackgroundTask) => task.host).map((task: BackgroundTask) => ({ taskId: task.id, title: task.title, status: task.status, preview: previewOf(task.view), shown: true }))],
+      })
+    },
     /**
      * 接着问 or 「#name …」 to a task that ended: the words are its next question, and it is back at work in
      * the background. Its card goes; a new one comes when it is done again.
@@ -285,11 +407,16 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     tasks_page_open: (state, { taskId = null }) => {
       const known = (id: string | null) => state.tasks.list.some((task) => task.id === id)
       const selected = [taskId, state.tasks.page.selected].find((id) => id && known(id)) ?? firstOnPage(state)
-      // Opened again, its steps start folded.
-      return withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false } })
+      // Opened again, its steps start folded; the task shown, if ended, is seen.
+      return seen(withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false } }), selected)
     },
-    tasks_page_close: (state) => withTasks(state, { page: { ...state.tasks.page, open: false } }),
-    tasks_page_select: (state, { taskId }) => withTasks(state, { page: { ...state.tasks.page, selected: taskId } }),
+    /** Left, the task it showed has been seen, also when the page picked it by itself (shownOnPage). */
+    tasks_page_close: (state) => withTasks(seen(state, state.tasks.page.open ? shownOnPage(state) : null), { page: { ...state.tasks.page, open: false } }),
+    tasks_page_select: (state, { taskId }) => seen(withTasks(state, { page: { ...state.tasks.page, selected: taskId } }), taskId),
+    /** The tasks seen by the last launch, so a relaunch does not remind of them again. */
+    tasks_seen_restored: (state, { ids }) => withTasks(state, {
+      dockHidden: [...new Set([...state.tasks.dockHidden, ...(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [])])],
+    }),
     tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps } }),
 
     /** The task could not be asked (its session is gone): it is as it was before. */
@@ -336,8 +463,11 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         drawer: state.drawer === taskTab(taskId) ? 'trace' : state.drawer,
         taskCards: state.taskCards.filter(id => id !== taskId),
       }
-      // The page goes on to the next task when the one it showed is closed.
-      return state.tasks.page.selected === taskId ? withTasks(closed, { page: { ...closed.tasks.page, selected: firstOnPage(closed) } }) : closed
+      // The page goes on to the next task when the one it showed is closed; shown, that one is seen.
+      if (state.tasks.page.selected !== taskId) return closed
+      const next = firstOnPage(closed)
+      const moved = withTasks(closed, { page: { ...closed.tasks.page, selected: next } })
+      return closed.tasks.page.open ? seen(moved, next) : moved
     },
   }
 }

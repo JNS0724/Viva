@@ -34,6 +34,8 @@ The app runs from out/. scripts/build.mjs emits src/ and plugins/ through TypeSc
 
 ## Package
 
+Use Node.js 24, matching CI. Packaging hooks import TypeScript directly and require native type stripping; upgrade older Node versions first.
+
 ```bash
 npm run dist:mac
 npm run dist:win  # Run on Windows; NSIS allows choosing an installation folder
@@ -43,7 +45,7 @@ scripts/dsh-closure.cjs uses dsh --dump-config to find the ACP plugin compositio
 
 Remove runtime-unneeded source maps, declarations, TypeScript sources, README/CHANGELOG, tests, and examples (historically about 7,000 files); retain licenses and skills. Bundle the rest in app.asar, reducing many small writes and antivirus scans (historically about 300 installed files). Native/executable packages such as libvips, ripgrep, and node-pty go in app.asar.unpacked. Use platform prebuilds with npmRebuild false. Plugins remain in asar behind tiny file-URL forwarding packages, without symlinks or junctions.
 
-scripts/after-pack.cjs corrects electron-builder’s missing peers and excess packages by unpacking, adjusting to the closure, removing unused files, adding notices, and repacking. Missing required packages fail the build. Installed workspaces live in userData/workspace because the application directory is read-only; development uses repository workspace/.
+scripts/after-pack.cjs corrects electron-builder’s missing peers and excess packages by unpacking, adjusting to the closure, removing unused files, adding notices, and repacking. Missing required packages fail the build. After repacking, refresh Windows executable and macOS plist integrity metadata from the final ASAR header before signing; Electron fuse settings remain unchanged. Installed workspaces live in userData/workspace because the application directory is read-only; development uses repository workspace/.
 
 Historical macOS size: about 152 MB DMG (previously 259 MB), 388 MB unpacked, mostly Electron. These are dated measurements, not promises for every build.
 

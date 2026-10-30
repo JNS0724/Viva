@@ -38,14 +38,19 @@ export function renderTopicLabel(area: HTMLElement, state: State, handlers: Hand
     title: state.switching ? t("topic-label.you.can.type.now.and.send.when") : state.newTopicPending ? t("topic-label.retry.preparing.this.new.topic.keep.the") : busy ? t("new-topic-actions.stop.the.current.task.before.starting.a") : t("topic-label.new.topic", { value1: NEW_TOPIC_KEY() }),
     onClick: () => handlers.newSession(),
   }, h('span', { 'aria-hidden': 'true', text: '＋' }), state.switching ? t("topic-label.preparing") : state.newTopicPending ? t("topic-label.retry.new.topic") : t("earlier.new.topic"))
-  return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent) : null].filter((part) => part !== null))
+  return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent, handlers) : null].filter((part) => part !== null))
 }
 
-/** What the label means: how much is remembered, what happens when it is full. */
-function topicInfo(count: number, percent: number | null) {
-  const used = percent === null ? t("topic-label.usage.not.available.yet") : t("topic-label.used", { percent: percent })
+/**
+ * What the label means: how much is remembered, what happens when it is full; and the column's width back to
+ * its default, for whoever never finds the grips at its edges (view/column-resize.ts).
+ */
+function topicInfo(count: number, percent: number | null, handlers: Handlers) {
+  const used = percent === null ? t("topic-label.usage.not.available.yet") : t("merge.used.93", { p0: percent })
   return h('div', { class: 'ctx-menu', role: 'dialog', 'aria-label': t("topic-label.this.topic") },
     h('div', { class: 'ctx-menu-info' },
-      h('b', { text: count ? t("topic-label.the.assistant.remembers.messages.in.this.topic", { count: count }) : t("topic-label.new.topic.the.assistant.has.no.conversation") }),
-      h('span', { text: t("topic-label.when.full.the.oldest.content.is.automatically", { used: used, value2: NEW_TOPIC_KEY() }) })))
+      h('b', { text: count ? t("merge.the.assistant.remembers.messages.in.this.topic.94", { p0: count }) : t("topic-label.new.topic.the.assistant.has.no.conversation") }),
+      h('span', { text: t("merge.when.full.the.oldest.content.is.compressed.automatically.memories.about.you.do.n.95", { p0: used, p1: NEW_TOPIC_KEY() }) }),
+      h('span', { text: t("merge.drag.either.edge.to.adjust.the.conversation.width.96") })),
+    h('button', { class: 'ctx-item', type: 'button', text: t("merge.reset.conversation.width.97"), onClick: () => handlers.resetColumn() }))
 }

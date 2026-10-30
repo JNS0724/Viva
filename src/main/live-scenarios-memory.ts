@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ask, clip, closeHub, fileHolds, forgetMemories, fresh, MEMORY_SETTLE_MS, memoriesWith, openSettings, traceTitles, type LiveContext, type LiveScenario } from './live-kit.ts'
+import { ask, clip, closeHub, fileHolds, forgetMemories, fresh, MEMORY_SETTLE_MS, memoriesWith, openSettings, traceToolNames, type LiveContext, type LiveScenario } from './live-kit.ts'
 import { until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
@@ -57,13 +57,16 @@ const memorySupersede: LiveScenario = {
     try {
       await fresh(win)
       await ask(win, `记住：我的直属上级是 ${before}。`)
-      await untilRemembered(win, before)
-      await ask(win, `更正一下：从下周一开始我的直属上级换成 ${after} 了，${before} 调去别的部门了。`)
+      const original = await untilRemembered(win, before)
+      expect(original.length > 0, 'the original manager fact should be stored before the correction')
+      await ask(win, `更正一下：从现在开始我的直属上级换成 ${after} 了，${before} 已经调去别的部门了。`)
       await wait(MEMORY_SETTLE_MS)
       await fresh(win)
       const out = await ask(win, '我现在的直属上级是谁？只回答名字。')
       expect(out.answer.includes(after), 'the new manager should be the answer', clip(out.answer))
-      const stale = (await memoriesWith(win, before)).filter((memory) => !memory.text.includes(after))
+      // Keeping the historical fact “张某已调岗，不再是直属上级” is correct. Only the original active
+      // manager assertion must be invalidated; a substring match cannot distinguish those meanings.
+      const stale = (await memoriesWith(win, before)).filter((memory) => original.some(kept => kept.id === memory.id))
       expect(stale.length === 0, 'the old fact should no longer be a valid memory', stale)
       await ctx.shot('memory-supersede')
     } finally {
@@ -113,7 +116,7 @@ const mcpAddUse: LiveScenario = {
     // The server joins the session once the turn that set it up has ended.
     await wait(5_000)
     const used = await ask(win, `用 ${name} 的 create_draft 工具给 a@example.com 存一份草稿，内容是「你好 ${code}」。只存草稿，不要发送。`, { permission: 'allow' })
-    const steps = await traceTitles(win)
+    const steps = await traceToolNames(ctx)
     expect(steps.some((step) => step.includes('create_draft')), "the agent should call the server's tool", { steps: steps.slice(-8), answer: clip(used.answer) })
     expect(!steps.some((step) => step.includes('send_email')), 'asked only to draft, it should not send', steps.slice(-8))
     await ctx.shot('mcp-used')

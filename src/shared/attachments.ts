@@ -3,7 +3,9 @@
  * its end, which the model reads as plain text and the thread shows as file chips, also when an old
  * conversation is opened again. Nothing is copied; the paths are where the files already are.
  */
-const HEADER = '附带的文件（本机路径）：'
+/** Where the block starts; the history looks for it to tell which topics had files with them. */
+export const FILES_HEADER = '附带的文件（本机路径）：'
+const HEADER = FILES_HEADER
 const ITEM = '- '
 
 /** The question as sent to the agent. */

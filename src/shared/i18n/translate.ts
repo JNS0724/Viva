@@ -19,7 +19,7 @@ export function translate(key: string, values: Readonly<Record<string, string | 
   if (!Object.hasOwn(source, key)) missing(key)
   let template: string = Object.hasOwn(source, key) ? source[key as MessageKey] : Object.hasOwn(en, key) ? en[key as MessageKey] : en['errors.generic']
   // Only catalog-authored count phrases are inflected, before inserting any user text.
-  if (locale === 'en') template = template.replace(/\{(\w+)\} (messages|minutes|hours|days|files|tasks|items|seconds|reminders|images)\b/g, (phrase, name: string, noun: string) =>
+  if (locale === 'en') template = template.replace(/\{(\w+)\} (messages|minutes|hours|days|files|tasks|turns|items|seconds|reminders|images)\b/g, (phrase, name: string, noun: string) =>
     typeof values[name] === 'number' && new Intl.PluralRules('en').select(values[name]) === 'one' ? `{${name}} ${noun.slice(0, -1)}` : phrase)
   return template.replace(/\{(\w+)\}/g, (slot, name: string) => Object.hasOwn(values, name) ? String(values[name]) : slot)
 }

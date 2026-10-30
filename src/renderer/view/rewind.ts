@@ -32,7 +32,7 @@ function makeEditor(message: ThreadMessage, handlers: Handlers, later: number) {
   field.value = message.text
   const send = () => handlers.submitEdit(message.id, field.value)
   field.addEventListener('keydown', (event) => {
-    if (event.isComposing) return
+    if (event.isComposing || event.keyCode === 229) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       send()

@@ -1,6 +1,7 @@
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { rewindTarget } from './rewind-state.ts'
+import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
 
 /**
  * Going back to something the user said, from the window (phase 2): the bar's 从这里重来 (the same words again)
@@ -27,6 +28,7 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
   async function goBack(id: string, text: string | undefined, { confirmed = false } = {}) {
     const target = rewindTarget(getState(), id)
     const words = text?.trim()
+    if (words && words.length > MAX_MESSAGE_CHARS) return showToast(MESSAGE_TOO_LONG)
     if (!target || !words) return showToast(NOT_NOW)
     if (!confirmed) {
       const effects = await effectsOf(target)

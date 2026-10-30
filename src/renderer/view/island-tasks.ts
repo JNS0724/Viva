@@ -3,32 +3,32 @@ import { h } from './dom.ts'
 
 /**
  * Tasks in the background on the island (island-view.js background): the island stays one, with the
- * conversation on screen in front. At its tail, a cell says how many go on in the background, a dot each
- * (three at most); opened, it lists them, those that wait on the user first, to be allowed right there.
+ * conversation on screen in front. At its tail, a cell says how many go on in the background (a turning ring)
+ * or ended unseen (✓); opened, it lists them, those that wait on the user first, to be allowed right there.
  */
-const MAX_DOTS = 3
-/** Forms in which the conversation on screen is quiet, so the cell has room to say what the number is. */
+/** Forms in which the conversation on screen is quiet, so the cell has room for 后台准备中. */
 const QUIET = new Set(['idle', 'done'])
 
 /**
- * With no task to speak of, the follow-ups: how many are ready (✓ N 准备好), or, the conversation quiet, that
- * preparation goes on in the background, breathing. Tasks and the conversation come first.
+ * With no task to speak of, the follow-ups: how many are ready (N 准备好: no ✓, which says a task is done), or,
+ * the conversation quiet, that preparation goes on in the background, breathing. Tasks and the conversation come first.
  */
 function prepareCell(view: IslandShown): HTMLElement | null {
   const prepare = view.prepare
   if (!prepare) return null
   if (prepare.ready) {
-    return h('span', { class: 'isl-bg isl-bg-ready', title: t("island-tasks.ready.for.your.review", { ready: prepare.ready }) },
-      h('b', { text: `✓ ${prepare.ready}` }), QUIET.has(view.form) ? h('span', { text: t("island-tasks.ready") }) : null)
+    return h('span', { class: 'isl-bg isl-bg-ready', title: t("merge.ready.for.your.review.33", { p0: prepare.ready }) },
+      h('b', { text: String(prepare.ready) }), h('span', { text: t("island-tasks.ready") }))
   }
   if (!prepare.running || !QUIET.has(view.form)) return null
   return h('span', { class: 'isl-bg isl-bg-prep', title: t("island-tasks.preparing.in.the.background.pauses.when.you") }, h('i', { class: 'isl-breath', 'aria-hidden': 'true' }), h('span', { text: t("island-tasks.preparing.in.background") }))
 }
 
 /**
- * The cell at the island's tail, the way to the 后台 page: how many go on; or, when the island shows what
- * the conversation waits on and tasks wait too, that they do (+N 等你); or, all ended, how many (✓ N); with no
- * task, the follow-ups (prepareCell).
+ * The cell at the island's tail, the way to the 后台 page, in a sign and a number: when the island shows what
+ * the conversation waits on and tasks wait too, that they do (+N 等你, the one with words: it needs the user);
+ * else, some at work, a turning ring and how many (◌ N); else ended ones not yet seen, ✓ N (seen, they are
+ * not counted, so the cell goes once all are); with no task to speak of, the follow-ups (prepareCell).
  * @returns nothing with no task and no follow-up to speak of
  */
 export function tailCell(view: IslandShown): HTMLElement | null {
@@ -37,16 +37,15 @@ export function tailCell(view: IslandShown): HTMLElement | null {
     return h('span', { class: 'isl-bg isl-bg-waits', title: t("island-tasks.more.waiting.for.you", { alsoWaiting: alsoWaiting }) },
       h('b', { text: `+${alsoWaiting}` }), h('span', { text: t("island-tasks.waiting.for.you") }))
   }
-  if (!count && done) {
-    return h('span', { class: 'isl-bg isl-bg-done', title: t("island-tasks.completed", { done: done }) },
-      h('b', { text: `✓ ${done}` }), QUIET.has(view.form) ? h('span', { text: t("island-tasks.done") }) : null)
+  if (count) {
+    return h('span', { class: 'isl-bg isl-bg-live', title: t("merge.tasks.in.background.34", { p0: count }), 'aria-label': t("merge.tasks.in.background.34", { p0: count }) },
+      h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) }))
   }
-  if (!count) return prepareCell(view)
-  const dots = view.form === 'waiting' ? [] : Array.from({ length: Math.min(count, MAX_DOTS) }, () => h('i'))
-  return h('span', { class: 'isl-bg', title: t("island-tasks.in.the.background", { count: count }) },
-    h('b', { text: String(count) }),
-    QUIET.has(view.form) ? h('span', { text: t("island-tasks.in.background") }) : null,
-    dots.length ? h('span', { class: 'isl-dots', 'aria-hidden': 'true' }, dots) : null)
+  if (done) {
+    return h('span', { class: 'isl-bg isl-bg-done', title: t("merge.tasks.completed.35", { p0: done }), 'aria-label': t("merge.tasks.completed.35", { p0: done }) },
+      h('b', { text: `✓ ${done}` }))
+  }
+  return prepareCell(view)
 }
 
 /** Whose request it is, when a task in the background asks. */

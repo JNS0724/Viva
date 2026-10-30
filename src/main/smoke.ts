@@ -12,7 +12,11 @@ import { checkResume } from './smoke-tasks.ts'
 import { checkSources } from './smoke-sources.ts'
 import { checkFollowups } from './smoke-followups.ts'
 import { runLive } from './live.ts'
+import { checkTimeline } from './smoke-timeline.ts'
+import { checkPerf } from './smoke-perf.ts'
 import { runShowcase } from './smoke-showcase.ts'
+import { checkComposition } from './smoke-composition.ts'
+import { checkInputBoundaries } from './smoke-input-boundaries.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -338,6 +342,7 @@ async function checkFiles(win: SmokeWindow, outDir: string, cwd: string) {
   await fs.writeFile(path.join(cwd, 'tools', 'run.sh'), 'echo hi\n')
   await fs.writeFile(path.join(cwd, 'notes', 'app.ts'), 'const answer: number = 42\n')
   await fs.writeFile(path.join(cwd, 'notes', '账目.csv'), '日期,金额\n10-20,"1,200"\n')
+  await fs.writeFile(path.join(cwd, 'notes', '损坏图片.md'), '# 正文仍可读\n\n![坏地址](%ZZ.png)\n\nQA-BROKEN-IMAGE-END\n')
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   // The long task left the drawer open; open it only if it is not.
@@ -360,6 +365,13 @@ async function checkFiles(win: SmokeWindow, outDir: string, cwd: string) {
   const cells = await until(win, `(() => { const cells = [...document.querySelectorAll('.file-table td')].map((el) => el.textContent); return cells.length && cells })()`, 'the CSV table')
   expect(cells.join('|') === '日期|金额|10-20|1,200', 'a CSV file should show as a table, quoted commas kept', cells)
   await capture(win, outDir, 'files-table')
+
+  await run(win, clickRow('损坏图片.md'))
+  const brokenImage = await until(win, `document.querySelector('.file-doc')?.textContent.includes('QA-BROKEN-IMAGE-END')`, 'a malformed image address leaves the rest of Markdown readable')
+  expect(brokenImage, 'a malformed local image address should degrade to text without breaking preview', brokenImage)
+  await capture(win, outDir, 'files-broken-image')
+  await run(win, clickRow('账目.csv'))
+  await until(win, `document.querySelector('.file-table')`, 'back to the CSV preview')
   await run(win, `document.querySelector('.open-more').click()`)
   await until(win, `Boolean(document.querySelector('.open-menu .open-reveal'))`, 'the open menu')
   // The system lists the apps that open the file; the first time it reads their icons too. A machine with none still shows the menu.
@@ -456,11 +468,11 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}: ${JSON.stringify(seen)}`) }
   const panel = () => run(win, PANEL_STATE)
 
-  // There is no list of conversations: an empty search only says what to do.
+  // Nothing typed, the page is 回顾: the topics by day (view/review.ts), not search hits.
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))`)
   await wait(UI_WAIT_MS)
   let seen = await panel()
-  expect(seen.open && seen.titles.length === 0 && seen.list.includes('找回之前说过的话'), '⌘K should open the search with nothing listed', seen)
+  expect(seen.open && seen.titles.length === 0 && seen.list.includes('今天') && seen.list.includes('全部'), '⌘K should open 回顾 with the topics by day, no hits', seen)
 
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   await wait(UI_WAIT_MS)
@@ -470,9 +482,10 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
   await finishTurn(win)
   await submit(win, SECOND_PROMPT)
   await finishTurn(win)
-  // One timeline: what was said before the new session stays above it, under its day.
+  // One timeline: what was said before the new session stays above it, under its day (folded, it is named by its
+  // first question; its messages are drawn when it is opened).
   const timeline = await run(win, `({
-    earlier: [...document.querySelectorAll('#earlier .msg-user')].map((el) => el.textContent),
+    earlier: [...document.querySelectorAll('#earlier .msg-user, #earlier .topic-title')].map((el) => el.textContent),
     days: [...document.querySelectorAll('#earlier .timeline-day')].map((el) => el.textContent),
     shown: !document.getElementById('earlier').hidden,
   })`)
@@ -536,11 +549,15 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
       problems.push(...await checkPictures(win, outDir, hooks.desk?.()))
       problems.push(...await checkTopics(win, outDir))
       problems.push(...await checkPermission(win, outDir))
+      problems.push(...await checkComposition(win))
+      problems.push(...await checkInputBoundaries(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else if (smokePhase === 'live' || smokePhase === 'live-resume') problems.push(...await runLive(win, outDir, smokePhase, hooks))
+    else if (smokePhase === 'timeline') problems.push(...await checkTimeline(win, outDir))
+    else if (smokePhase === 'perf') problems.push(...await checkPerf(win, outDir))
     else problems.push(...await walkthrough(win, outDir, hooks))
   } catch (err) {
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)

@@ -60,9 +60,9 @@ html:not([data-platform="darwin"]) {
   --reserve-left: 0px;
   --reserve-right: calc(100vw - env(titlebar-area-width, calc(100vw - 140px)));
 }
-.app { display: grid; grid-template-rows: var(--titlebar-h) minmax(0, 1fr); height: 100vh; }
+.app { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--titlebar-h) minmax(0, 1fr); height: 100vh; }
 .titlebar {
-  position: relative; display: flex; align-items: center; justify-content: space-between;
+  position: relative; min-width: 0; display: flex; align-items: center; justify-content: space-between;
   padding: 0 calc(var(--reserve-right) + var(--titlebar-gutter)) 0 calc(var(--reserve-left) + var(--titlebar-gutter));
   border-bottom: 1px solid var(--line); -webkit-app-region: drag; user-select: none;
   /* The island unfolds over the conversation below, which comes later in the page. */
@@ -88,17 +88,63 @@ html:not([data-platform="darwin"]) {
 
 .chip { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 8px; background: var(--raised); font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 
-.body { position: relative; display: flex; min-height: 0; }
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+/* A zoomed minimum-size window must constrain the grid column instead of adopting its contents' min-width. */
+.body { position: relative; display: flex; min-width: 0; min-height: 0; }
+/* --rail-lane: kept free of the column at each side, the turn rail's on the left (view/column-resize.ts RAIL_LANE). */
+.main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+/* 按轮次跳转 (view/turn-rail.ts): in its own lane at the main area's left edge (--rail-lane), one mark per question,
+   packed tighter as turns add up; the right side is the task dock's. A mark's tip opens rightwards, over the text. */
+.turn-rail {
+  position: absolute; left: 4px; top: 50%; transform: translateY(-50%); z-index: 9; max-height: 56%;
+  display: flex; flex-direction: column; padding: 6px 0;
+}
+/* 12px each while they fit; past that they shrink together (no gap, no least height), so however many there are,
+   every one stays inside the rail and can be pointed at. */
+.turn-mark {
+  position: relative; flex: 0 1 12px; min-height: 0; width: 22px; padding: 0; border: none; background: none; cursor: pointer;
+}
+.turn-mark::before {
+  content: ''; position: absolute; left: 5px; top: 50%; width: 9px; height: 2px; margin-top: -1px; border-radius: 1px;
+  background: var(--mute); transition: width .12s, background .12s;
+}
+.turn-mark:hover::before, .turn-mark:focus-visible::before { width: 14px; background: var(--ink-2); }
+.turn-mark[aria-current]::before { width: 14px; background: var(--accent); }
+/* An earlier topic: a dot, not a line. */
+.turn-topic::before { left: 6px; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: none; border: 1.5px solid var(--mute); }
+.turn-topic:hover::before, .turn-topic:focus-visible::before { width: 7px; background: none; border-color: var(--ink-2); }
+.turn-topic[aria-current]::before { width: 7px; background: var(--accent); border-color: var(--accent); }
+.turn-topic + .turn-mark:not(.turn-topic) { margin-top: 6px; }
+.topic-old { scroll-margin-top: 24px; }
+.turn-mark:focus-visible { outline: none; }
+.turn-mark::after {
+  content: attr(data-tip); position: absolute; left: calc(100% + 6px); top: 50%; transform: translateY(-50%);
+  width: max-content; max-width: 280px; padding: 7px 11px; border-radius: 10px; border: 1px solid var(--line-2);
+  background: var(--raised); color: var(--ink); font-size: 12.5px; line-height: 1.5; text-align: left;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .45); opacity: 0; pointer-events: none; transition: opacity .1s;
+}
+.turn-mark:hover::after, .turn-mark:focus-visible::after { opacity: 1; }
+.msg-user-row, .msg-answer { scroll-margin-top: 24px; }
+/* The column's edges (view/column-resize.ts): invisible until the pointer is on one, then a thin line to drag; just
+   outside the column, never over the rail's marks (which end 26px in). */
+.col-grip {
+  position: absolute; top: 0; bottom: 0; z-index: 6; width: 12px; cursor: col-resize;
+  --at: max(28px, calc(50% - var(--col, 760px) / 2 - 12px));
+}
+.col-grip-left { left: var(--at); }
+.col-grip-right { right: var(--at); }
+.col-grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; border-radius: 1px; background: var(--accent); opacity: 0; transition: opacity .15s; }
+.col-grip:hover::after, .col-resizing .col-grip::after, .col-grip:focus-visible::after { opacity: .5; }
+.col-grip:focus-visible { outline: none; }
+.col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
 .scroll { position: relative; flex: 1; width: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
 .jump-latest {
   position: sticky; bottom: 16px; z-index: 5; flex: none; height: 38px; padding: 0 18px; border: none; border-radius: 999px;
   background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
 }
 .home { width: 100%; max-width: 1240px; min-height: 100%; padding: 24px 0; box-sizing: border-box; }
-.thread { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
+.thread { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
 /* The earlier part of the one timeline, above the conversation on screen (view/earlier.js). */
-.earlier { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 28px; padding: 36px 0 0; }
+.earlier { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 0; }
 .earlier + .thread { padding-top: 28px; }
 .timeline-more {
   align-self: center; height: 34px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line-2); background: none;
@@ -116,12 +162,24 @@ html:not([data-platform="darwin"]) {
 }
 .timeline-workdir b { color: var(--ink); }
 /* Topics (view/earlier.js): one the assistant no longer has is a step quieter, its head says so. */
-.topic-old { display: flex; flex-direction: column; gap: 28px; opacity: .5; transition: opacity .2s; }
-.topic-old:hover, .topic-old:focus-within { opacity: .8; }
-.topic-head { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-3); }
-.topic-head b { color: var(--ink-2); font-weight: 600; }
-.topic-head::after { content: ''; flex: 1; height: 1px; background: var(--line); order: 2; }
-.topic-head .topic-back { order: 3; }
+/* Folded to one line (its first question, turns, when); opened in place, its messages a step quieter. */
+.topic-old { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.topic-old[open] { border-color: var(--line-2); }
+.topic-head {
+  display: flex; align-items: center; gap: 14px; padding: 12px 16px; cursor: pointer; list-style: none;
+  font-size: 12px; color: var(--ink-3); border-radius: 14px;
+}
+.topic-head::-webkit-details-marker { display: none; }
+.topic-head:hover { background: var(--panel-2); }
+.topic-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.topic-old[open] > .topic-head { border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; }
+.topic-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topic-meta { flex: none; white-space: nowrap; }
+.topic-head .topic-back { flex: none; opacity: 0; }
+.topic-head:hover .topic-back, .topic-head .topic-back:focus-visible, .topic-old[open] .topic-back { opacity: 1; }
+.topic-chevron { flex: none; width: 8px; height: 8px; border-right: 1.5px solid var(--ink-3); border-bottom: 1.5px solid var(--ink-3); transform: rotate(45deg) translateY(-2px); transition: transform .15s; }
+.topic-old[open] .topic-chevron { transform: rotate(225deg) translateY(-2px); }
+.topic-body { display: flex; flex-direction: column; gap: 28px; padding: 20px 18px; opacity: .75; }
 .topic-back {
   height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel);
   color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
@@ -135,7 +193,7 @@ html:not([data-platform="darwin"]) {
 .topic-note { align-self: center; margin-top: -16px; font-size: 12px; color: var(--ink-3); text-align: center; }
 
 /* Above the input: what the assistant has in mind now, and ＋ 新话题 (view/topic-label.js). */
-.ctx-area { position: relative; width: 100%; max-width: 760px; display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ctx-area { position: relative; width: 100%; max-width: var(--col, 760px); display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .ctx-new {
   display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2);
   background: none; color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
@@ -166,7 +224,7 @@ html:not([data-platform="darwin"]) {
 
 /* ---------- composer ---------- */
 .composer {
-  width: 100%; max-width: 760px; margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
+  width: 100%; max-width: var(--col, 760px); margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
   border-radius: 22px; padding: 16px 12px 12px 18px; box-shadow: 0 0 0 4px rgba(90, 169, 255, .08), 0 20px 50px rgba(0, 0, 0, .45);
 }
 .composer:focus-within { border-color: #3A4C72; }
@@ -341,12 +399,95 @@ html:not([data-platform="darwin"]) {
 .task-report-text { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-report-open { flex: none; height: 32px; padding: 0 14px; font-size: 13px; white-space: nowrap; }
 .task-report-x { flex: none; font-size: 18px; line-height: 1; }
+
+/* The dock (view/task-dock.ts): one soft panel in the right corner of the main area, over its empty side (the turn
+   rail is on the left). Rows, not stacked cards: what waits on the user is tinted orange, what ended is quieter. */
+.task-dock {
+  position: absolute; right: 20px; bottom: 20px; z-index: 8; width: 300px; max-width: calc(100% - 40px); box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 8px;
+  border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); box-shadow: 0 16px 40px rgba(0, 0, 0, .45);
+}
+/* Folded, no panel: the tag alone sits lower, beside the note under the input rather than against the input itself. */
+.task-dock[data-collapsed="true"] {
+  width: auto; bottom: 8px; align-items: flex-end; padding: 0; border: none; background: none; box-shadow: none;
+}
+.dock-head { display: flex; align-items: center; gap: 6px; padding: 2px 2px 4px 8px; font-size: 12px; color: var(--ink-3); }
+.dock-title { flex: 1; font-weight: 700; letter-spacing: .04em; }
+.dock-all { height: 26px; padding: 0 6px; font-size: 12px; }
+.dock-fold { width: 26px; height: 26px; font-size: 16px; border: none; background: none; }
+.dock-tile {
+  position: relative; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; font-size: 13px;
+  transition: background .12s;
+}
+.dock-tile:hover, .dock-tile:focus-within { background: var(--raised); }
+.dock-tile + .dock-tile::before { content: ''; position: absolute; left: 12px; right: 12px; top: -2px; height: 1px; background: var(--line); }
+/* What waits on the user: a warm tint and an orange edge, the one thing in the dock that asks to be looked at. */
+.dock-tile[data-status="waiting"], .dock-tile[data-status="interrupted"] {
+  background: color-mix(in srgb, var(--orange) 10%, transparent); box-shadow: inset 3px 0 0 var(--orange);
+}
+.dock-tile[data-status="error"] { background: color-mix(in srgb, var(--red) 9%, transparent); box-shadow: inset 3px 0 0 var(--red); }
+.dock-tile[data-status="waiting"]::before, .dock-tile[data-status="interrupted"]::before, .dock-tile[data-status="error"]::before,
+.dock-tile[data-status="waiting"] + .dock-tile::before, .dock-tile[data-status="interrupted"] + .dock-tile::before { display: none; }
+.dock-tile-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 700; color: var(--ink); }
+/* Ended: quieter words. */
+.dock-tile[data-status="done"] .dock-tile-head, .dock-tile[data-status="stopped"] .dock-tile-head { color: var(--ink-2); font-weight: 600; }
+.dock-tile-head .task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-seen { height: 28px; padding: 0 6px; margin-left: auto; font-size: 12.5px; color: var(--ink-3); }
+.dock-tile-said { color: var(--ink-3); font-size: 12.5px; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.dock-tile[data-status="waiting"] .dock-tile-said, .dock-tile[data-status="interrupted"] .dock-tile-said { color: var(--ink-2); }
+.dock-tile-line { color: var(--ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-tile-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.dock-tile .task-report-open { height: 28px; padding: 0 12px; border-radius: 8px; font-size: 12.5px; }
+.dock-open { height: 28px; padding: 0 6px; font-size: 12.5px; }
+/* Past three rows: how many more, and the way to all of them, as the panel's last line. */
+.dock-more {
+  height: 30px; margin-top: 2px; border: none; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px;
+  background: none; color: var(--ink-3); font-size: 12px; cursor: pointer;
+}
+.dock-more:hover, .dock-more:focus-visible { color: var(--accent); }
+/* Folded: a quiet tag, which comes forward under the pointer. */
+.dock-tag {
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-radius: 15px;
+  border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2); font-size: 12px; cursor: pointer;
+  opacity: .55; transition: opacity .15s;
+}
+.dock-tag:hover, .dock-tag:focus-visible { opacity: 1; }
+.dock-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+/* Something waits on the user (or failed): the tag says so plainly, in colour, and does not fade. */
+.dock-tag:not([data-tone="quiet"]) {
+  height: 36px; padding: 0 16px; border-radius: 18px; opacity: 1; color: var(--ink); font-size: 13px; font-weight: 600;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
+}
+.dock-tag[data-tone="waits"] { border-color: var(--orange); background: color-mix(in srgb, var(--orange) 16%, var(--panel)); }
+.dock-tag[data-tone="error"] { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, var(--panel)); }
+.dock-tag[data-tone="waits"] .dock-dot { background: var(--orange); animation: dock-pulse 1.8s ease-out infinite; }
+.dock-tag[data-tone="error"] .dock-dot { background: var(--red); }
+.dock-tag-go { color: var(--ink-2); font-weight: 400; }
+@keyframes dock-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--orange) 60%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+@media (prefers-reduced-motion: reduce) { .dock-tag[data-tone="waits"] .dock-dot { animation: none; } }
+/* Peeked at without room beside the column: above the input (main sets --composer-lift), never over it. */
+.task-dock[data-peek="true"] { bottom: var(--composer-lift, 200px); }
 /* A background task's card (view/task-card.js): one quiet look whatever it is doing; the words say where it stands. */
-.task-card, .task-card[data-status] { border: 1px solid var(--line-2); }
-.task-card .task-report-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* A background task's line in the conversation (view/task-card.ts taskCard): one quiet row that opens its page. */
+.task-line {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; height: 40px; padding: 0 14px; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--ink-2); font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer; transition: background .12s, border-color .12s;
+}
+.task-line:hover, .task-line:focus-visible { background: var(--panel); border-color: var(--line-2); outline: none; }
+.task-line .task-name { flex: none; max-width: 40%; font-weight: 700; color: var(--ink); }
+.task-line-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); }
+.task-line-go { flex: none; margin-left: auto; color: var(--ink-3); font-size: 12.5px; }
+.task-line:hover .task-line-go { color: var(--accent); }
+/* Waiting on the user: it stands out, and leads to where it is answered. */
+.task-line[data-status="waiting"], .task-line[data-status="interrupted"] {
+  border-color: color-mix(in srgb, var(--orange) 55%, var(--line)); background: color-mix(in srgb, var(--orange) 8%, transparent);
+}
+.task-line[data-status="waiting"] .task-state, .task-line[data-status="interrupted"] .task-state,
+.task-line[data-status="waiting"] .task-line-go, .task-line[data-status="interrupted"] .task-line-go { color: var(--orange); font-weight: 600; }
+.task-line[data-status="error"] .task-state { color: var(--red); }
 .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-state { flex: none; font-size: 13px; font-weight: 400; color: var(--ink-3); }
-.task-card .task-report-text { color: var(--ink-3); }
 /* A task's drawer tab (view/drawer.js taskView): where it stands, then what it said, then what it did. */
 .task-tab-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 /* Where it stands on the left; its buttons (停下, or 接着问 and 关掉这件) together on the right. */
@@ -629,6 +770,9 @@ html:not([data-platform="darwin"]) {
   background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 20px 50px rgba(0, 0, 0, .6);
   display: flex; flex-direction: column;
 }
+@media (max-width: 720px) {
+  .workdir-menu { left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); }
+}
 .workdir-head { padding: 8px 10px 4px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-3); }
 .workdir-item {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: none; border-radius: 8px;
@@ -765,8 +909,25 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   .hub-page { padding: 20px 16px 40px; }
 }
 
-/* ---------- 后台 page (view/tasks-page.js) ---------- */
-.tasks-page .tp-side { width: 300px; gap: 2px; overflow-y: auto; }
+/* ---------- 后台 page (view/tasks-page.ts): one of the hub's pages, its list and the task picked side by side ---------- */
+.hub-page.hub-tasks { width: 100%; height: 100%; margin: 0; padding: 0; display: flex; min-height: 0; }
+.hub-page.hub-tasks[hidden] { display: none; }
+/* The page scrolls inside its own two columns, not as a whole. */
+.hub-main:has(> .hub-tasks:not([hidden])) { overflow: hidden; }
+.tp-side {
+  flex: none; width: 280px; display: flex; flex-direction: column; gap: 2px; padding: 14px 12px; overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+.tp-side-head { display: flex; align-items: center; gap: 8px; padding: 0 0 6px 12px; }
+.tp-side-title { flex: 1; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+.tp-fold { width: 28px; height: 28px; border-color: transparent; background: none; font-size: 15px; color: var(--ink-3); }
+.tp-fold:hover { border-color: var(--line-2); color: var(--ink); }
+/* Folded: a narrow strip, » to unfold, and how many wait on the user. */
+.tp-side-folded { width: 36px; padding: 14px 4px; align-items: center; gap: 8px; overflow: visible; }
+.tp-count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box; text-align: center;
+  background: var(--orange); color: var(--bg); font: 700 11px/18px var(--font-mono);
+}
 .tp-group { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; color: var(--ink-3); padding: 12px 12px 4px; }
 .tp-row {
   position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: none; border-radius: 10px;
@@ -807,7 +968,7 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .task-mark[data-status="stopped"]::before { content: '■'; font-size: 9px; }
 .task-mark[data-status="error"]::before { content: '!'; font-weight: 700; }
 @media (max-width: 720px) {
-  .tasks-page .tp-side { width: 200px; }
+  .tp-side:not(.tp-side-folded) { width: 200px; }
   .tp-head, .tp-scroll { padding-left: 16px; padding-right: 16px; }
   .tp-composer { margin: 0 16px 16px; }
 }
@@ -851,6 +1012,64 @@ body.drop-images::after { content: '松开，把图片放进输入框'; }
 /* The message search jumped to, marked for a moment (app.js revealMessage). */
 .msg-found { outline: 2px solid rgba(90, 169, 255, .7); outline-offset: 4px; border-radius: 12px; transition: outline-color .6s; }
 .history-hint { padding: 12px; color: var(--ink-3); font-size: 13px; }
+
+/* ---------- 回顾 (view/review.js): the timeline by month and day, a topic a line ---------- */
+.review-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.review-filter {
+  height: 30px; padding: 0 14px; border-radius: 15px; border: 1px solid var(--line-2); background: none;
+  color: var(--ink-2); font: 500 13px var(--font-sans); cursor: pointer;
+}
+.review-filter:hover { color: var(--ink); border-color: var(--ink-3); }
+.review-filter[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 700; }
+.review-month { display: flex; flex-direction: column; gap: 14px; margin-bottom: 26px; }
+.review-month-head { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
+.review-day { display: flex; flex-direction: column; gap: 8px; }
+.review-day-head { font-size: 12px; color: var(--ink-3); letter-spacing: .04em; }
+.review-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.review-topic { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.review-topic[data-open="true"] { border-color: var(--line-2); }
+.review-row {
+  width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: none; border-radius: 14px;
+  background: none; color: var(--ink); text-align: left; cursor: pointer; font-family: var(--font-sans);
+}
+.review-row:hover { background: var(--panel-2); }
+.review-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.review-kind { flex: none; padding: 2px 8px; border-radius: 6px; background: var(--raised); color: var(--accent); font-size: 11px; font-weight: 700; }
+.review-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.review-marks { flex: none; font-size: 12px; color: var(--orange); }
+.review-meta { flex: none; font-size: 12px; color: var(--ink-3); }
+.review-reader { display: flex; flex-direction: column; gap: 20px; padding: 18px 20px; border-top: 1px solid var(--line); }
+.review-reader .msg-user, .review-reader .msg-text { font-size: 14px; }
+.review-reader-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
+.review-reader-note { flex: 1; font-size: 12px; color: var(--ink-3); }
+/* A topic's background tasks, a line each under it. */
+.review-tasks { list-style: none; margin: 0; padding: 0 0 8px 28px; display: flex; flex-direction: column; gap: 2px; border-top: 1px dashed var(--line); }
+.review-task-row { padding-top: 8px; padding-bottom: 8px; }
+.review-task-row .review-title { font-weight: 500; color: var(--ink-2); }
+/* A message opened from a search hit, a link or a star: read at the top until closed. */
+.review-focus { margin-bottom: 18px; border: 1px solid var(--accent); border-radius: 14px; background: var(--panel); }
+.review-focus-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; }
+.review-notice { margin: 0 16px 12px; padding: 8px 12px; border-radius: 10px; background: var(--raised); color: var(--orange); font-size: 13px; }
+.review-star[data-deleted="true"] { opacity: .55; }
+/* 继续这个话题 asking first (view/resume-dialog.ts): the folder it goes on in. */
+.resume-dir { display: block; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: var(--raised); color: var(--ink); font-size: 13px; word-break: break-all; }
+.review-star { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); }
+.review-star-text { font-size: 14px; line-height: 1.6; color: var(--ink); }
+.review-star-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* The star by a message (view/star-buttons.js): on hover, and always once starred. */
+[data-msg].msg-agent, [data-msg].msg-user { position: relative; }
+.star-btn {
+  position: absolute; top: 4px; right: -38px; width: 28px; height: 28px; border: none; border-radius: 8px; background: none;
+  color: var(--ink-3); font-size: 16px; line-height: 1; cursor: pointer; opacity: 0; transition: opacity .12s;
+}
+[data-msg]:hover > .star-btn, .star-btn:focus-visible { opacity: 1; }
+.star-btn:hover { color: var(--ink); background: var(--raised); }
+.star-btn[aria-pressed="true"] { opacity: 1; color: var(--orange); }
+/* In 回顾 the reader has no gutter beside it: the star sits inside, room kept for it. */
+.review-reader [data-msg].msg-agent { padding-right: 34px; }
+.review-reader .star-btn { right: 0; top: 0; }
+.review-reader [data-msg].msg-user > .star-btn { right: auto; left: -36px; }
 
 /* ---------- toast ---------- */
 .toast-root { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 60; }

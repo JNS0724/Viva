@@ -38,6 +38,8 @@ dsh 是应用的一部分，和你自己装的 dsh 完全隔离：
 
 ## 打包
 
+打包使用 Node.js 24（与 CI 一致）。打包钩子直接导入 TypeScript 脚本，需要 Node 的原生类型擦除支持；旧版 Node 请先升级。
+
 ```bash
 npm run dist:mac    # macOS：dist/Viva-x.y.z-mac-arm64.dmg（未签名）
 npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-setup.exe（NSIS，可选安装目录）
@@ -47,7 +49,7 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 - **去掉运行时用不到的文件**：source map、类型声明、TypeScript 源码、README 和 CHANGELOG、测试和示例目录（约 7 千个文件）；许可证和 skill 文件保留。
 - **asar**：其余文件打成一个 `app.asar`。之前上万个小文件逐个写入、被杀毒软件逐个扫描，是 Windows 上安装慢的原因；现在整个应用约 300 个文件。含原生代码或可执行程序的包（原生模块、libvips、ripgrep、node-pty）自动识别后解包放在 `app.asar.unpacked`，供系统直接加载和运行。dsh 用应用自己的 Electron 以 Node 模式从 asar 里运行；dsh 的原生模块按平台预编译，不重新编译（`npmRebuild: false`）。
 - **插件入口**：dsh 的 profile 里每个插件是一个很小的转发包（`package.json` 加一行 `export * from '<插件的文件 URL>'`），插件本身留在 asar 里，它 import 的包在 asar 里解析；不需要符号链接或 junction。
-- **打包后的处理（`scripts/after-pack.cjs`）**：electron-builder 自己收集依赖时，漏掉了 dsh 各包之间的 peer 依赖，又带上了 dsh 为其他 profile 准备的包。打包后的钩子把 electron-builder 打出的 asar 解开，按闭包增删包，删掉无用文件，写入许可文件，再按自己的解包规则重新打成 asar；还缺包就让打包失败。
+- **打包后的处理（`scripts/after-pack.cjs`）**：electron-builder 自己收集依赖时，漏掉了 dsh 各包之间的 peer 依赖，又带上了 dsh 为其他 profile 准备的包。打包后的钩子把 electron-builder 打出的 asar 解开，按闭包增删包，删掉无用文件，写入许可文件，再按自己的解包规则重新打成 asar；还缺包就让打包失败。重打包后，在签名前按最终 ASAR 头刷新 Windows 可执行文件和 macOS plist 的完整性记录；不改变 Electron fuse 设置。
 - **工作区**：打包后的应用目录是只读的，工作区放在应用数据目录下的 `workspace/`；开发时（`npm start`）仍是仓库里的 `workspace/`。
 - **体积**：macOS 的 dmg 约 152MB（裁剪前 259MB），应用解开后约 388MB，大头是 Electron 本身。
 - **验证打包产物**：必须在仓库之外运行。在仓库里（`dist/` 下）运行时，Node 会顺着上级目录找到仓库自己的 `node_modules`，缺包也看不出来。对打包后的应用跑 memory 阶段的 smoke，用 `SMOKE_FIXTURES` 指向仓库的 `test/fixtures`（应用里没有测试目录）、`SMOKE_OUT` 指向输出目录：
@@ -177,7 +179,3 @@ npm run render      # 出 promo/out/viva-promo.mp4（1920×1080，30fps）
 - 对话压缩后重新带上画像的逻辑有单元测试，但还没在真实 dsh 里触发过压缩来验证。
 - Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和当时四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（profile 写入、插件加载）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
 - 字体从 Google Fonts 加载，离线时回退到系统字体。
-
-## 国际化检查
-
-`npm run check:i18n` 检查双语文档覆盖、导航、链接和审阅哈希；完整测试也包含这项检查。`npm run smoke:language` 验证实际 Electron 的主窗口/桌面岛切换、草稿与输入法行为。新增文案进入共享资源，文档修改需同步另一语言；详见[国际化](internationalization.zh-CN.md)。

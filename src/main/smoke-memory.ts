@@ -61,7 +61,10 @@ async function questionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await wait(UI_WAIT_MS)
   const thread = await run(win, `({
     asked: [...document.querySelectorAll('.msg-answer .msg-asked')].at(-1)?.textContent ?? '',
-    answer: [...document.querySelectorAll('.msg-answer')].at(-1)?.lastChild?.textContent ?? '',
+    // The answer's own text: not the question above it, nor the star a message gets once drawn (view/star-buttons).
+    answer: [...([...document.querySelectorAll('.msg-answer')].at(-1)?.childNodes ?? [])]
+      .filter((node) => !node.classList?.contains('msg-asked') && !node.classList?.contains('star-btn'))
+      .map((node) => node.textContent).join('').trim(),
     reply: [...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? '',
     card: Boolean(document.querySelector('.ask')),
   })`)
@@ -123,8 +126,10 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   const answers = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].map((el) => el.textContent)`)
   expect(answers.some((text: string) => text.startsWith('我已经了解你的背景（1 条相关记忆）')), 'naming 周报 should bring its memory along', answers.map((t: string) => t.slice(0, 24)))
   await run(win, `document.getElementById('toggle-drawer').click()`)
-  await wait(UI_WAIT_MS)
-  const trace = await run(win, `[...document.querySelectorAll('.trace-row')].map((row) => row.textContent)`)
+  // The trace comes in after the turn (a slower machine, a packaged app): wait for its row rather than a fixed time.
+  const rows = `[...document.querySelectorAll('.trace-row')].map((row) => row.textContent)`
+  const memoryRow = `${rows}.some((row) => row.includes('带上记忆') && row.includes(${JSON.stringify(`因为提到「周报」：${FACT}`)}))`
+  const trace = await until(win, memoryRow, 'the trace showing which memory went along', UI_WAIT_MS * 10).then(() => run(win, rows), () => run(win, rows))
   expect(trace.some((row: string) => row.includes('带上记忆') && row.includes(`因为提到「周报」：${FACT}`)), 'the trace should show which memory went along and why', trace)
   await capture(win, outDir, 'memory-trace')
 

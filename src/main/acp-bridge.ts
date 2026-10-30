@@ -15,9 +15,11 @@ import { createForkDesk } from './fork-channel.ts'
 import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createMessagesDesk } from './messages-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
+import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
 import type { TaskRead } from './tasks-channel.ts'
 import type { ReadRequest } from './message-reader.ts'
 import { createQuestionDesk } from './question-channel.ts'
+import { ResumeError, resumeReason } from './resume-failure.ts'
 import { stopInTime } from './stop-in-time.ts'
 import { createAssistantStream } from './assistant-stream.ts'
 import { createFreshSessions } from './fresh-sessions.ts'
@@ -26,6 +28,7 @@ import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
 const STDERR_TAIL_LIMIT = 4000
+export const SWITCHING = t("merge.switching.conversations.wait.before.sending.0")
 /** dsh gets this long to finish after its input closes, then its process tree is ended; then killed outright. */
 const SHUTDOWN_GRACE_MS = 1500
 // The version the app was built as, so it cannot fall behind a release (package.json ships in the app).
@@ -87,7 +90,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, taskRead = null, prewarmSessions = false, onTiming,
+  messageActions = null as { read: (request: ReadRequest) => Promise<string> } | null, taskRead = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming,
 }: {
   dshBin: string, nodeBin?: string, profile: string, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
@@ -96,6 +99,10 @@ export function createAcpBridge({
   /** What the message sources brought in, for viva_messages_read; null leaves the tool saying there are none. */
   messageActions?: { read: (request: ReadRequest) => Promise<string> } | null,
   taskRead?: TaskRead | null,
+  /** What was said in the timeline before, for search_conversations (viva-history); null leaves it saying there is none. */
+  historySearch?: HistorySearch | null,
+  /** The messages around one found, for read_conversation (viva-history). */
+  historyRead?: HistoryRead | null,
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
 }) {
@@ -143,6 +150,7 @@ export function createAcpBridge({
   // The messages the sources brought in, read from the conversation (viva-messages).
   const messagesDesk = createMessagesDesk({ send: toPlugins, read: messageActions?.read ?? null })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, authorized: id => id === sessionId || tasks.has(id) })
+  const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || tasks.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
     if (!running.has(id) || running.get(id)?.released) return
     if (tasks.has(id)) emit({ type: 'task_update', taskId: id, update })
@@ -193,6 +201,7 @@ export function createAcpBridge({
       followupDesk.receive(message)
       messagesDesk.receive(message)
       tasksDesk.receive(message)
+      historyDesk.receive(message)
       streams.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
@@ -302,6 +311,39 @@ export function createAcpBridge({
     }
   }
 
+  /**
+   * Goes over to exactly that session, in its own directory, or throws why not (resume-failure.ts), the agent left
+   * as it was: the session is resumed first, beside the one in use (dsh holds several, as it does tasks), and only
+   * then is the one in use left. So a failure, or a session that will not close, never leaves the conversation on
+   * screen without its session, nor puts a new one in its place.
+   */
+  async function switchExactly(targetSessionId: string, targetCwd: string, measure: ReturnType<typeof sessionTiming>) {
+    const leaving = sessionId
+    if (targetSessionId === leaving) return { ...infoFrom(configNow ?? undefined), resumed: true }
+    if (!canResume) throw new ResumeError('gone', t("merge.this.assistant.version.cannot.resume.earlier.sessions.1"))
+    let response
+    try {
+      // Closed earlier (撤销 a new topic goes back to the session just left): that close finishes first.
+      await closing.get(targetSessionId)?.catch(() => {})
+      response = await withMcpServers((servers) => live().resumeSession({ sessionId: targetSessionId, cwd: targetCwd, mcpServers: servers }))
+    } catch (err) {
+      console.error('[acp-bridge] could not resume the topic\'s session; staying where it was:', describeError(err))
+      throw new ResumeError(resumeReason(err), describeError(err, stderrTail))
+    }
+    questions.declineAll()
+    config?.closeAll()
+    steering.closeAll()
+    forking.closeAll()
+    if (leaving) {
+      broker.cancelAll(leaving)
+      retire(leaving, measure)
+    }
+    sessionId = targetSessionId
+    sessionCwd = targetCwd
+    prepareFresh()
+    return { ...infoFrom(response.configOptions), resumed: true }
+  }
+
   /** Changes the model or reasoning effort; dsh applies it from the next turn. */
   async function setConfig(configId: string, value: string) {
     try {
@@ -337,6 +379,8 @@ export function createAcpBridge({
    * @param images pictures pasted with it, base64
    */
   async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = []) {
+    // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
+    if (isSwitching()) throw new Error(SWITCHING)
     if (images.length && !seesImages) {
       emit({ type: 'error', message: NO_IMAGES })
       return
@@ -405,12 +449,15 @@ export function createAcpBridge({
   /**
    * Leaves the current session for `targetSessionId` (a reopened conversation), or for a fresh one when null.
    * @param targetCwd its directory, when not the current one
+   * @param exactly that session or none (继续这个话题, switchExactly): when it cannot be resumed, the agent stays
+   *   on the session it is on (nothing is lost by trying) and a ResumeError says why
    */
-  async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd) {
+  async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd, { exactly = false } = {}) {
     if (switching) throw Error(t("main.acp-bridge.preparing.the.session.please.wait"))
     switching = true
     const measure = sessionTiming(onTiming)
     try {
+      if (targetSessionId && exactly) return await measure('session.switch', () => switchExactly(targetSessionId, targetCwd, measure))
       return await measure('session.switch', async () => {
         const leaving = sessionId
         questions.declineAll()
@@ -436,6 +483,7 @@ export function createAcpBridge({
         return openSession(mcpServers().length ? released : undefined)
       })
     } catch (err) {
+      if (err instanceof ResumeError) throw err
       throw new Error(describeError(err, stderrTail))
     } finally { switching = false; if (sessionId) prepareFresh() }
   }
@@ -449,9 +497,25 @@ export function createAcpBridge({
   async function fork({ before, words, occurrence, cwd: targetCwd }: { before?: number, words?: string, occurrence?: number, cwd?: string } = {}): Promise<
     { ok: false, reason: string } | { ok: true, info: Awaited<ReturnType<typeof switchSession>> }
   > {
-    const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
-    if (!result.ok) return result
-    return { ok: true, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
+    return preparingSwitch(async () => {
+      const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
+      if (!result.ok) return result
+      return { ok: true as const, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
+    })
+  }
+
+  /**
+   * How many switches are being prepared (a session forked before switching to it): from the start, as the switch
+   * itself, no question goes in (isSwitching), else it would go to the session about to be left.
+   */
+  let preparing = 0
+  async function preparingSwitch<T>(work: () => Promise<T>): Promise<T> {
+    preparing += 1
+    try {
+      return await work()
+    } finally {
+      preparing -= 1
+    }
   }
 
   /**
@@ -459,7 +523,8 @@ export function createAcpBridge({
    * nothing stops); the main conversation goes on from before that turn, in a session forked there, found by
    * the words that started it (the viva-fork plugin).
    */
-  async function spinOff({ words }: { words: string }) {
+  const spinOff = ({ words }: { words: string }) => preparingSwitch(() => spinningOff({ words }))
+  async function spinningOff({ words }: { words: string }) {
     const taskId = sessionId
     if (!taskId || !running.has(taskId)) return { ok: false, reason: 'idle' }
     const forked = await forking.fork({ words, occurrence: 0 })
@@ -676,7 +741,9 @@ export function createAcpBridge({
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
   const pid = () => (child && isRunning(child) ? child.pid : null)
 
-  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, dispose, pid }
+  /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
+  const isSwitching = () => switching || preparing > 0
+  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, isSwitching, dispose, pid }
 }
 
 onLocaleChange(() => {

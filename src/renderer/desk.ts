@@ -250,6 +250,7 @@ island.el.addEventListener('drop', async (event) => {
 })
 // Esc closes the input even while its field cannot be typed in (the agent is busy).
 document.addEventListener('keydown', (event) => {
+  if (event.isComposing || event.keyCode === 229) return
   if (event.key === 'Escape' && payload?.form === 'input') api.act({ kind: 'dismiss' })
 })
 

@@ -1,48 +1,33 @@
 import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
-import { pageGroups, pageTask } from '../tasks-state.ts'
+import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage, SUGGESTION_KEY } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
 import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
 import { followupDetail, followupStanding, suggestionDetail, whenText } from './followups.ts'
+import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../../shared/text-limits.ts'
 
 /**
  * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
  * (待你看的 first: drafts prepared in the background; then what is being prepared, then what is scheduled); on
  * the right the one picked, its whole conversation as the thread shows one, its steps folded under it, and its
  * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
- * draft and what can be done with it. Same place as 搜索 · 关于你 · 设置.
+ * draft and what can be done with it. One of the hub's pages, beside 回顾 · 关于你 · 设置.
  */
-let GROUP_NAMES: Readonly<Record<string, string>> = { waiting: t("task-card.waiting.for.approval"), running: t("island-tasks.working"), ended: t("island-view.done") }
+let GROUP_NAMES: Readonly<Record<string, string>> = { waiting: t("merge.needs.your.attention.74"), running: t("island-tasks.in.background"), ended: t("island-view.done") }
 const LIVE = new Set(['running', 'waiting'])
-/** Follow-ups on the page are picked by this prefix, beside the tasks' ids. */
-export const FOLLOWUP_KEY = 'followup:'
-/** And the messages suggested for one by this. */
-export const SUGGESTION_KEY = 'suggestion:'
+export { FOLLOWUP_KEY, SUGGESTION_KEY }
 let FOLLOWUP_GROUPS: ReadonlyArray<[string, string]> = [['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]]
-const LISTED_STATUSES = new Set(FOLLOWUP_GROUPS.map(([status]) => status))
-
-/** The keys on the list at the left, in its order: messages to decide on, follow-ups by group, then the tasks. */
-function listedKeys(state: State): string[] {
-  const suggestions = state.followups.suggestions.filter((item: Untyped) => item.status === 'open').map((item: Untyped) => `${SUGGESTION_KEY}${item.id}`)
-  const followups = FOLLOWUP_GROUPS.flatMap(([status]) => state.followups.followups
-    .filter((item: Untyped) => item.status === status && LISTED_STATUSES.has(item.status))
-    .map((item: Untyped) => `${FOLLOWUP_KEY}${item.id}`))
-  const tasks = pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
-  return [...suggestions, ...followups, ...tasks]
-}
 
 /**
  * The page as it is drawn: what was picked, while it is still on the list; once it is gone from there (deleted,
  * answered, taken up), the first one on the list, so the right never shows what the left no longer has.
  */
 export function onPage(state: State): State {
-  const keys = listedKeys(state)
-  const selected = state.tasks.page.selected
-  const picked = selected && keys.includes(selected) ? selected : keys[0] ?? null
-  return picked === selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
+  const picked = shownOnPage(state)
+  return picked === state.tasks.page.selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
 }
 
 /** Messages that may need the user, first: they wait on a decision. */
@@ -86,11 +71,34 @@ function prepareLine(state: State, now: number) {
   return null
 }
 
+/**
+ * Folded by the user: a narrow strip where the list was, » to unfold it, and how many wait on the user so none
+ * is missed while it is folded.
+ */
+function foldedSide(state: State, handlers: Handlers) {
+  const waiting = state.tasks.list.filter((task) => task.status === 'waiting').length
+  return h('nav', { class: 'tp-side tp-side-folded', 'aria-label': t("tasks-page.background.tasks") },
+    h('button', {
+      class: 'icon-btn tp-fold', type: 'button', title: t("merge.expand.background.tasks.83"), 'aria-label': t("merge.expand.background.tasks.83"), 'aria-expanded': 'false',
+      onClick: () => handlers.foldTaskList(false),
+    }, h('span', { text: '»', 'aria-hidden': 'true' })),
+    waiting ? h('span', { class: 'tp-count', title: t("merge.tasks.need.your.attention.79", { p0: waiting }), text: String(waiting) }) : null)
+}
+
+/**
+ * The list beside the hub's own sidebar (返回 and the other pages stay there, as on every page of the hub), « at
+ * its head to fold it to a strip; the user's choice, kept, for the list is not looked at often.
+ */
 function sideView(state: State, handlers: Handlers, now: number) {
+  if (state.tasks.listFolded) return foldedSide(state, handlers)
   const selected = state.tasks.page.selected
-  return h('nav', { class: 'hub-side tp-side', 'aria-label': t("tasks-page.background.tasks") },
-    h('button', { class: 'hub-back', type: 'button', onClick: () => handlers.closeHub() },
-      icon('back', 16), t("tasks-page.back"), h('kbd', { text: 'Esc' })),
+  return h('nav', { class: 'tp-side', 'aria-label': t("tasks-page.background.tasks") },
+    h('div', { class: 'tp-side-head' },
+      h('span', { class: 'tp-side-title', text: t("tasks-page.background.tasks") }),
+      h('button', {
+        class: 'icon-btn tp-fold', type: 'button', title: t("merge.collapse.list.89"), 'aria-label': t("merge.collapse.list.89"), 'aria-expanded': 'true',
+        onClick: () => handlers.foldTaskList(true),
+      }, h('span', { text: '«', 'aria-hidden': 'true' }))),
     prepareLine(state, now),
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
@@ -153,11 +161,24 @@ function inputView(task: BackgroundTask, handlers: Handlers) {
   const send = () => {
     const text = field.value.trim()
     if (!text) return
+    if (text.length > MAX_MESSAGE_CHARS) return handlers.inputProblem(MESSAGE_TOO_LONG)
+    const draft = field.value
+    const page = field.closest('.tp-main')?.parentElement
     field.value = ''
-    handlers.sendToTask(task.id, text)
+    // A refused follow-up restores the draft in this task, through redraws, without overwriting newer typing.
+    const restore = () => {
+      const current = page?.querySelector<HTMLTextAreaElement>(`textarea[name="${CSS.escape(field.name)}"]`)
+      if (current && !current.value) current.value = draft
+    }
+    Promise.resolve(handlers.sendToTask(task.id, text)).then((accepted) => {
+      if (accepted === false) restore()
+    }).catch(() => {
+      restore()
+      handlers.inputProblem(t("merge.could.not.send.please.try.again.90"))
+    })
   }
   field.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
     event.preventDefault()
     send()
   })
@@ -221,6 +242,6 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
 }
 
 onLocaleChange(() => {
-  GROUP_NAMES = { waiting: t("task-card.waiting.for.approval"), running: t("island-tasks.working"), ended: t("island-view.done") }
+  GROUP_NAMES = { waiting: t("merge.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") }
   FOLLOWUP_GROUPS = [['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]]
 })

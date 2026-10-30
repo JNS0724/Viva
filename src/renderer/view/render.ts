@@ -14,11 +14,13 @@ import { renderHistoryPanel, renderToast } from './history-panel.ts'
 import { renderHome } from './home.ts'
 import { renderHub } from './hub.ts'
 import { renderTasksPage } from './tasks-page.ts'
+import { renderTaskDock } from './task-dock.ts'
 import { icon } from './icons.ts'
 import { renderIsland } from './island.ts'
 import { renderModelPicker } from './model-picker.ts'
 import { renderProfilePanel } from './profile-panel.ts'
 import { renderRewindConfirm } from './rewind.ts'
+import { renderResumeDialog } from './resume-dialog.ts'
 import { renderSettings } from './settings.ts'
 import { renderThread } from './thread.ts'
 import { renderTopicLabel } from './topic-label.ts'
@@ -114,7 +116,7 @@ function renderDrawerIfChanged(container: HTMLElement, state: State, handlers: H
 
 /** The panel only depends on its own slice; skipping identical renders keeps hover and focus in the list. */
 function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
-  const inputs = [localeRevision(), state.history]
+  const inputs = [localeRevision(), state.history, state.review]
   if (inputs.every((value, i) => value === renderedHistoryInputs[i])) return
   renderedHistoryInputs = inputs
   renderHistoryPanel(dom, state, handlers)
@@ -124,7 +126,7 @@ let renderedTasksPage: unknown[] = []
 
 /** The 后台 page depends on the tasks, the follow-ups and on itself; a task at work changes it as it goes. */
 function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
-  const inputs = [localeRevision(), state.tasks.list, state.tasks.page, state.followups]
+  const inputs = [localeRevision(), state.tasks.list, state.tasks.page, state.followups, state.tasks.listFolded]
   if (inputs.every((value, i) => value === renderedTasksPage[i])) return
   renderedTasksPage = inputs
   renderTasksPage(container, state, handlers, now)
@@ -224,6 +226,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   else renderThreadFollowing(dom, state, handlers, now)
   renderEarlierIfChanged(dom.earlier, state, handlers)
   renderDrawerIfChanged(dom.drawer, state, handlers)
+  renderTaskDock(dom.taskDock, state, handlers, now)
   renderComposer(dom, state, handlers)
   renderSettingsIfChanged(dom.settings, state, handlers)
   renderProfileIfChanged(dom.profile, state.memory, handlers)
@@ -232,6 +235,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)
+  renderResumeDialog(dom.resumeDialog, state.resume, handlers)
 }
 
 /** Per-frame update while text is being typed out: only the thread and the status island. */

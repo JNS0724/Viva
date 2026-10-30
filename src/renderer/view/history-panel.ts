@@ -2,6 +2,7 @@ import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h, label } from './dom.ts'
+import { focusView, patchReader, reviewView } from './review.ts'
 
 /** The words found, with a little of what is around them. */
 type Snippet = { before: string, hit: string, after: string }
@@ -21,8 +22,8 @@ const contextLine = (message: Nearby) => (message
   : null)
 
 /**
- * One message that has the words, between what was said before and after it;
- * 详情 closes the page and scrolls the timeline to it (timeline-search.js).
+ * One message that has the words, between what was said before and after it; 详情 scrolls the timeline to it when
+ * it is on screen, else reads it here where it is kept (review-actions.ts openRef).
  */
 function hitView(hit: SearchHit, handlers: Handlers, now: number) {
   const who = SPEAKERS[hit.role] ?? t("history-panel.record")
@@ -41,21 +42,39 @@ const empty = (text: string) => h('div', { class: 'empty', text })
 
 function searchView(state: State, handlers: Handlers, now: number): View[] {
   const { query, results } = state.history
-  if (!query.trim()) return [h('div', { class: 'history-hint', text: t("history-panel.type.a.few.words.to.find.earlier") })]
-  if (results === null) return [h('div', { class: 'history-hint', text: t("history-panel.searching") })]
-  if (results.length === 0) return [empty(t("history-panel.no.results.for", { value1: query.trim() }))]
+  // Nothing typed: 回顾, the timeline by day (view/review.ts).
+  if (!query.trim()) return reviewView(state, handlers, now)
+  // A hit opened (详情): read at the top, the results kept below it.
+  const focus = focusView(state, handlers, now)
+  if (results === null) return [focus, h('div', { class: 'history-hint', text: t("history-panel.searching") })]
+  if (results.length === 0) return [focus, empty(t("merge.no.results.for.31", { p0: query.trim() }))]
   return [
-    label(t("history-panel.messages", { length: results.length })),
+    focus,
+    label(t("merge.messages.32", { p0: results.length })),
     h('ul', { class: 'history-items' }, results.map((hit: SearchHit) => hitView(hit, handlers, now))),
   ]
 }
 
-/** The 搜索 page (view/hub.js): search across the one timeline. Only the results re-render; the field is static markup so typing is never interrupted. */
+/**
+ * The 回顾 page (view/hub.js): search across the one timeline, or with nothing typed, the timeline by day. Only
+ * the results re-render; the field is static markup so typing is never interrupted.
+ */
 export function renderHistoryPanel(dom: { historyList: HTMLElement }, state: State, handlers: Handlers, now = Date.now()) {
   if (!state.history.open) return
+  const before = drawn
+  drawn = { history: state.history, review: state.review }
+  // Only the part read changed (read on at an end, or the stars of what is shown): the reader takes it in place.
+  if (before && before.history === state.history && onlyReadingChanged(before.review, state.review) && patchReader(dom.historyList, state, handlers)) return
   // replaceChildren would turn a null into the text "null", unlike h()
   dom.historyList.replaceChildren(...searchView(state, handlers, now).filter((view): view is Node | string => Boolean(view)))
 }
+
+/** What the page was last drawn from. */
+let drawn: { history: State['history'], review: State['review'] } | null = null
+/** What changes as a long topic is read on, without anything else on the page changing (view/review.ts patchReader). */
+const READING_ONLY = new Set(['reading', 'starKeys'])
+const onlyReadingChanged = (before: State['review'], after: State['review']) =>
+  (Object.keys(after) as Array<keyof State['review']>).every((key) => READING_ONLY.has(key) || before[key] === after[key])
 
 /** Bottom toast, e.g. "已删除这条记忆 · 撤销". */
 export function renderToast(container: HTMLElement, toast: { text: string, action?: ToastAction | null } | null, handlers: Handlers) {

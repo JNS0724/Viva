@@ -26,6 +26,8 @@ The dark capsule has the cat on a blue circle at its upper left. Its border indi
 
 Send additions or corrections without waiting. The composer remains editable, with Send when it contains text and Stop when empty; desktop input behaves the same. The assistant reads the addition before its next step, after the current tool finishes, without starting a separate turn or interrupting that tool. The conversation marks it as steering. If the turn has just finished, delivery waits for cleanup and becomes the next question exactly once. Failed delivery stays visible with a retry-after-completion explanation.
 
+The main composer, Run in background, task composer, and Edit and resend accept at most 20,000 characters. Oversized input explains the limit and retains the draft before sending or changing conversation paths.
+
 ACP accepts only one active prompt per session, so `viva-steer` (`plugins/steer`, `steer@1`) relays through the dsh IPC channel to `agent.steer`. `src/main/steer-channel.ts` uses a five-second acknowledgement timeout. Actual-dsh integration tests verify delivery within the same turn and exactly one turn end.
 
 <a id="后台任务"></a>
@@ -33,7 +35,13 @@ ACP accepts only one active prompt per session, so `viva-steer` (`plugins/steer`
 
 Use Run in background beside the composer to start separate work from the current conversation. Long-running foreground work can offer Move to background. A different request while approval is pending can also be routed to background work.
 
-The main conversation shows a task card; the original request stays in task details. Cards contain approval/question actions, results, Continue, and Details. The island's task count opens the background page. Close dismisses a task; `#task-name message` addresses it. On restart unfinished tasks offer Resume or Discard. `smoke-tasks.ts` covers these paths.
+Each task leaves a single clickable status line in its original conversation, with its name, state, preview, and a link to its Background page. Approval and question actions live in the bottom-right task dock, or in the Background page when the dock is unavailable. Status wording is consistent across the conversation, dock, page, and island.
+
+The island shows a spinner and active count, a check and unseen completion count, or an attention count; ready follow-ups show their count and Ready. Opening a completed task marks that result seen, clears its island/dock reminder, and retains its historical line and page entry. Seen state survives restart; a new result becomes unseen again.
+
+The dock shows up to three tasks, prioritizing approvals, with Stop, Continue, Details, or Acknowledge as appropriate. It collapses to a small tag and remembers that choice. When space is tight, it yields to the conversation; pending approval/error tags remain and temporarily expand above the composer. The turn rail stays on the left. The Background page shares the persistent Review/Background/About you/Settings navigation and has a collapsible task list whose state is saved.
+
+Drag either conversation edge to resize from 560 px up to the available width; double-click restores 760 px. The width is saved. Close dismisses a task; `#task-name message` addresses it. Unfinished work offers Resume or Discard after restart. See `smoke-tasks.ts` and `smoke-dock.ts`.
 
 <a id="文件"></a>
 ## Files
@@ -41,6 +49,8 @@ The main conversation shows a task card; the original request stays in task deta
 The drawer is a read-only workspace browser. Folders load on expansion; `.git` and `node_modules` are subdued. Files read/written in the current conversation have blue markers; the tree refreshes after turns. Markdown renders local workspace images, code uses main-process highlight.js, CSV/TSV tables show up to 2,000 rows with a raw-text toggle, images display directly, and binary files show name/size. Text pages are 200 KB and load on scroll. Disk changes refresh the open preview.
 
 Open uses the default application. Its menu lists compatible apps with icons/default indication and Reveal in Finder/Explorer, using dsh's native-command module. Executables/scripts (`.exe`, `.sh`, `.js`, `.ps1`, etc.) only offer Reveal. Main validates paths and rejects traversal, absolute paths, and links escaping the workspace (`workspace-files.ts`).
+
+Assistant file access differs from read-only preview: in Workspace changes and Read only modes, reads/searches outside the real workspace path ask for approval, including links. Arbitrary shell commands also ask because command text cannot prove read-only scope. Denial returns no file content; one-time approval does not become permanent or override write restrictions. Auto uses dsh review; Full does not ask.
 
 <a id="在对话里配置-mcp-和-skill"></a>
 ## Configure MCP and skills in conversation
@@ -68,7 +78,7 @@ A request to remind or prepare something at a stated time produces a proposal. O
 - **Capability boundary:** preparation is a model call with no tools. The app reads the follow-up, recent conversation, synthesized profile, and explicitly named text files (up to 20 KB each, no binary files) and marks them as data. It can return a draft but cannot execute embedded instructions, change files, edit follow-ups, or alter memory.
 - **Review:** drafts appear in the background page. Continue puts a draft into the composer for review before sending; changed source files are flagged for rereading. Run in background creates normal work governed by current permissions. Discard removes it. A user task already handling the conversation prevents duplicate preparation.
 - **Notifications:** an agreed reminder fires once at its scheduled time, outside the proactive daily cap. Ready drafts surface during a gap: returning to the window, completing a conversation/task, or returning after 15 minutes away. Each item is announced once, at most three proactive interruptions daily; foreground announcements stay in the window. Missed reminders after sleep/restart are combined. If preparation is late, the reminder still fires, offers preparation, and records the miss for weekly settings statistics.
-- **Incoming messages:** new messages are judged in batches during preparation windows. Sender suppression and two Not important responses filter before model invocation. Remaining messages, profile, and prior feedback go to a tool-free model with strictly validated results; malformed results are ignored. Message text remains data. Suggestions identify source and evidence. Accept creates a follow-up, scheduled ahead of a known date or drafted promptly otherwise. Not important records feedback; category suppression excludes that sender. Each message is suggested only once. Suggestions and drafts share combined notifications and the three-per-day cap.
+- **Incoming messages:** new messages are judged in batches during preparation windows. Sender suppression and two Not important responses filter before model invocation. Remaining messages, profile, and prior feedback go to a tool-free model with strictly validated results; malformed or truncated results produce no suggestions and leave messages pending for a later preparation window. Message text remains data. Suggestions identify source and evidence. Accept creates a follow-up, scheduled ahead of a known date or drafted promptly otherwise. Not important records feedback; category suppression excludes that sender. Each message is suggested only once. Suggestions and drafts share combined notifications and the three-per-day cap.
 - **Today:** the first gap with relevant activity shows one daily summary of ready drafts, messages needing attention, and reminders due. It counts toward the cap and replaces separate ready announcements. The home card opens the background page; empty days show nothing.
 - **Watch a file:** an accepted `watch_file` proposal records mtime. Polling every minute avoids platform/network filesystem event differences. A change followed by ten quiet minutes schedules preparation in the next window, reading that file. Continuing does not stop the watch; deletion does.
 - **Visibility:** idle cats sleep during preparation; the island shows preparation/readiness, tray counts waiting items, and notifications open the background page. Optional launch-at-login is off by default and available only when installed; it starts in the tray.
@@ -112,7 +122,9 @@ When an essential location/time/object/account is missing and memory cannot answ
 
 `history.db` lives in app data (on macOS, `~/Library/Application Support/Viva`) and uses Electron's `node:sqlite`. It stores visible questions, answers, receipts, and dsh session identity, not thoughts/tool calls. Writes are incremental at turn start/end/error. Startup opens the latest conversation and tries ACP `session/resume`; failure starts a new session with an explicit lost-context divider.
 
-The title-bar profile icon opens the Search/About you/Settings hub below the title bar, leaving the island accessible. It remembers the last page. Back, Esc, or the icon closes it; ⌘F/Ctrl+F opens search. Search highlights matches with nearby messages; Details navigates and highlights the source. Three or more characters use FTS5 trigram; shorter queries use substring matching.
+The title-bar profile icon opens the Review/Background/About you/Settings hub below the title bar, leaving the island accessible. It remembers the last page. Back, Esc, or the icon closes it; ⌘F/Ctrl+F opens search. With no query, Review lists topics by month and day, newest first, with turn counts, files and bookmarks. Filters select all topics, tasks, files or bookmarks. Expand a topic to read or continue it; Earlier loads another page. Main-thread scrolling loads only the recent seven days. Older topics fold to one line, and the turn rail jumps among turns/topics with click or arrow keys. Hover over a message to bookmark it; rewinding removes bookmarks on rewritten messages. The assistant can use search_conversations and read_conversation, linking back with viva://timeline/<segment>/<sequence>.
+
+Search highlights matches with nearby messages; Details navigates and highlights the source. Three or more characters use FTS5 trigram; shorter queries use substring matching.
 
 Conversation menus offer Rename, Pin, Export Markdown, and Delete. Deletion offers Undo for eight seconds, then secure-deletes database content; dsh session logs remain. Old activity is restored from `sessions/…/session.v4.jsonl.zstd`; unavailable logs produce an explanation. Active work prevents conversation switching; switching disables sends. Legacy `history/*.json` imports once, preserving the renamed `history-imported` backup.
 
@@ -130,7 +142,7 @@ Forgetting/replacement invalidates instead of deleting and remains restorable in
 <a id="消息里的-markdown"></a>
 ## Markdown in messages
 
-Assistant answers support headings, emphasis/strikethrough, inline/fenced code with language labels, ordered/unordered/task/nested lists, aligned tables, quotes, rules, and links. User messages remain original text. `marked` lexes; `h()` creates nodes without `innerHTML`. Raw HTML displays literally; remote images become links instead of loading. Only http(s)/mailto links are enabled and main revalidates before opening the external browser/mail app; renderer navigation/new windows are blocked. Streaming parses incomplete code fences and reparses only when visible text changes.
+Assistant answers support headings, emphasis/strikethrough, inline/fenced code with language labels, ordered/unordered/task/nested lists, aligned tables, quotes, rules, and links. User messages remain original text. `marked` lexes; `h()` creates nodes without `innerHTML`. Raw HTML displays literally; remote images become links instead of loading. Internal viva://timeline links open the referenced record; only http(s)/mailto links open externally and main revalidates before opening the external browser/mail app; renderer navigation/new windows are blocked. Streaming parses incomplete code fences and reparses only when visible text changes.
 
 <a id="猫"></a>
 ## The cat

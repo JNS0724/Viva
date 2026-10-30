@@ -4,6 +4,8 @@ import { assistantStream } from './assistant-stream.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
 import { FILES_ACTIONS, initialFiles } from './files-state.ts'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.ts'
+import { REVIEW_ACTIONS, initialReview } from './review-state.ts'
+import { RESUME_ACTIONS, initialResume } from './resume-state.ts'
 import { closeHub, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
 import { QUESTION_ACTIONS } from './question-state.ts'
@@ -44,10 +46,12 @@ export const initialState = Object.freeze({
   /** Set when the thread opened with saved messages: how many there are and when they were saved. */
   restored: null as Untyped,
   /** Id of the conversation on screen once it is in the history (null for a new, unsaved one). */
-  conversationId: null as number | null,
+  conversationId: null as string | null,
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null as 'loading' | 'loaded' | 'unavailable' | null,
   history: initialHistory,
+  /** 回顾 on the 搜索 page: the timeline by day, filtered, a topic read in place, the stars (review-state.ts). */
+  review: initialReview,
   /** 搜索, 关于你 and 设置 share one page over the conversation: the one it opens on next (hub-state.js). */
   hub: initialHub,
   /** The one timeline: the segments before the one on screen (earlier-state.js). */
@@ -60,6 +64,8 @@ export const initialState = Object.freeze({
   folds: [] as Untyped[],
   /** The topic on screen: the segment it goes on from (null: a new topic), when it started, its menu (topics.js). */
   topic: initialTopic,
+  /** 继续这个话题 waiting on the user: another directory, a directory gone, a session gone (resume-state.ts). */
+  resume: initialResume,
   /** Turns that went on in the background, and the move that can still be undone (tasks-state.js). */
   tasks: initialTasks,
   /** Task cards started before any foreground message, anchored at the start of this topic only. */
@@ -320,17 +326,17 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
   history_loaded: (state, { conversationId = null, messages, savedAt, folds = [], parentId = null, createdAt = null }) => {
-    if (state.messages.length > 0 || !messages?.length) return state
+    if (state.messages.length > 0 || state.newTopicPending || !Array.isArray(messages) || (!messages.length && !conversationId)) return state
     return {
       ...state,
       conversationId,
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
-      restoredTrace: 'loading',
+      restoredTrace: messages.length ? 'loading' : null,
       messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
       })),
-      restored: { count: messages.length, savedAt },
+      restored: messages.length ? { count: messages.length, savedAt } : null,
     }
   },
 
@@ -383,9 +389,11 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   }),
 
   /** 回到这个话题 (or 撤销 a new one): the agent goes on from that segment; what is said next follows below. */
-  topic_resumed: (state, { info, parentId, at = null }) => ({
+  /** `carried`: how many turns of its saved records the topic goes on from, its own session gone (null: it is the session). */
+  topic_resumed: (state, { info, parentId, at = null, carried = null }) => ({
     ...ACTION_HANDLERS.new_session(state, { info }),
-    topic: { ...initialTopic, parentId, startedAt: at },
+    topic: { ...initialTopic, parentId, startedAt: at, carried },
+    resume: null,
   }),
   topic_menu: (state, { open }) => (state.topic.menu === open ? state : { ...state, topic: { ...state.topic, menu: open } }),
 
@@ -441,6 +449,8 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   close_island: (state) => (state.island ? { ...state, island: false } : state),
   hub_close: (state) => closeHub(state, reduce),
   ...HISTORY_ACTIONS,
+  ...REVIEW_ACTIONS,
+  ...RESUME_ACTIONS,
   ...EARLIER_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
   ...taskActions(HANDLERS),
