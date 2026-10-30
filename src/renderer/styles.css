@@ -55,8 +55,9 @@ button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px sol
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---------- shell ---------- */
-/* Windows / Linux: the system draws its caption buttons on the right (titleBarOverlay); env() reports where they start. */
-html:not([data-platform="darwin"]) {
+/* Windows / Linux: the system draws its caption buttons on the right (titleBarOverlay); env() reports where they start.
+   Keep this viewport-dependent value in the title bar so resizing does not invalidate every message's inherited style. */
+html:not([data-platform="darwin"]) .titlebar {
   --reserve-left: 0px;
   --reserve-right: calc(100vw - env(titlebar-area-width, calc(100vw - 140px)));
 }
