@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
 
 /**
@@ -16,11 +17,11 @@ function prepareCell(view: IslandShown): HTMLElement | null {
   const prepare = view.prepare
   if (!prepare) return null
   if (prepare.ready) {
-    return h('span', { class: 'isl-bg isl-bg-ready', title: `准备好 ${prepare.ready} 件，等你看` },
-      h('b', { text: String(prepare.ready) }), h('span', { text: '准备好' }))
+    return h('span', { class: 'isl-bg isl-bg-ready', title: t("background.ready.count", { p0: prepare.ready }) },
+      h('b', { text: String(prepare.ready) }), h('span', { text: t("island-tasks.ready") }))
   }
   if (!prepare.running || !QUIET.has(view.form)) return null
-  return h('span', { class: 'isl-bg isl-bg-prep', title: '在后台准备，你一开始用就停' }, h('i', { class: 'isl-breath', 'aria-hidden': 'true' }), h('span', { text: '后台准备中' }))
+  return h('span', { class: 'isl-bg isl-bg-prep', title: t("island-tasks.preparing.in.the.background.pauses.when.you") }, h('i', { class: 'isl-breath', 'aria-hidden': 'true' }), h('span', { text: t("island-tasks.preparing.in.background") }))
 }
 
 /**
@@ -33,15 +34,15 @@ function prepareCell(view: IslandShown): HTMLElement | null {
 export function tailCell(view: IslandShown): HTMLElement | null {
   const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
   if (alsoWaiting) {
-    return h('span', { class: 'isl-bg isl-bg-waits', title: `还有 ${alsoWaiting} 件在等你` },
-      h('b', { text: `+${alsoWaiting}` }), h('span', { text: '等你' }))
+    return h('span', { class: 'isl-bg isl-bg-waits', title: t("island-tasks.more.waiting.for.you", { alsoWaiting: alsoWaiting }) },
+      h('b', { text: `+${alsoWaiting}` }), h('span', { text: t("island-tasks.waiting.for.you") }))
   }
   if (count) {
-    return h('span', { class: 'isl-bg isl-bg-live', title: `${count} 件在后台`, 'aria-label': `${count} 件在后台` },
+    return h('span', { class: 'isl-bg isl-bg-live', title: t("background.running.count", { p0: count }), 'aria-label': t("background.running.count", { p0: count }) },
       h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) }))
   }
   if (done) {
-    return h('span', { class: 'isl-bg isl-bg-done', title: `${done} 件做完了`, 'aria-label': `${done} 件做完了` },
+    return h('span', { class: 'isl-bg isl-bg-done', title: t("background.completed.count", { p0: done }), 'aria-label': t("background.completed.count", { p0: done }) },
       h('b', { text: `✓ ${done}` }))
   }
   return prepareCell(view)
@@ -54,12 +55,12 @@ const MINUTE_MS = 60_000
 /** How long it has gone on, in minutes: the panel is not redrawn every second, so no seconds to go stale. */
 const runningFor = (startedAt: number | undefined, now: number) => {
   const minutes = Math.floor((now - (startedAt ?? now)) / MINUTE_MS)
-  return minutes < 1 ? '刚开始' : `${minutes} 分钟`
+  return minutes < 1 ? t("island-tasks.just.started") : t("island-tasks.minutes", { minutes: minutes })
 }
 
 function itemLine(item: Untyped, act: IslandAct, now: number) {
   const asks = item.permission
-  const doing = asks ? `想${asks.title}` : item.status === 'waiting' ? '在等你回答' : item.now ? `在${item.now}` : '在做'
+  const doing = asks ? t("island-tasks.wants.to", { title: asks.title }) : item.status === 'waiting' ? t("island-tasks.waiting.for.your.answer") : item.now ? t("island-tasks.currently", { now: item.now }) : t("island-tasks.working")
   const actions = asks
     ? asks.options.map((option: { optionId: string, name: string, role: string }) => h('button', {
       type: 'button',
@@ -68,10 +69,10 @@ function itemLine(item: Untyped, act: IslandAct, now: number) {
       onClick: () => act({ kind: 'permission', requestId: asks.requestId, optionId: option.optionId }),
     }))
     : [h('span', { class: 'isl-bg-time', text: runningFor(item.startedAt, now) }),
-      h('button', { type: 'button', class: 'isl-mini', text: '停下', onClick: () => act({ kind: 'stop-task', taskId: item.id }) })]
+      h('button', { type: 'button', class: 'isl-mini', text: t("island-tasks.stop"), onClick: () => act({ kind: 'stop-task', taskId: item.id }) })]
   return h('li', { class: 'isl-bg-item', 'data-status': item.status },
     // The line opens what the task did, in the drawer.
-    h('button', { type: 'button', class: 'isl-bg-mid', title: '查看过程', onClick: () => act({ kind: 'task', taskId: item.id }) },
+    h('button', { type: 'button', class: 'isl-bg-mid', title: t("island-tasks.view.activity"), onClick: () => act({ kind: 'task', taskId: item.id }) },
       h('b', { text: `#${item.title}` }),
       h('span', { text: doing })),
     ...actions)
@@ -82,8 +83,8 @@ export function backgroundSection(view: IslandShown, act: IslandAct, now = Date.
   const items: Untyped[] = view.background?.items ?? []
   if (!items.length) return null
   const done = view.background.done ?? 0
-  return h('section', { class: 'isl-bg-list', 'aria-label': '后台' },
-    h('div', { class: 'isl-sect' }, h('span', { text: '后台 ' }), h('b', { text: String(items.length) }),
-      done ? h('span', { text: ` · 做完了 ${done} 件` }) : null),
+  return h('section', { class: 'isl-bg-list', 'aria-label': t("island-tasks.background") },
+    h('div', { class: 'isl-sect' }, h('span', { text: t("island-tasks.background.2") }), h('b', { text: String(items.length) }),
+      done ? h('span', { text: t("island-tasks.done.2", { done: done }) }) : null),
     h('ol', {}, items.map((item) => itemLine(item, act, now))))
 }

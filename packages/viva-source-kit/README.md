@@ -1,11 +1,14 @@
 # viva-source-kit
 
-写 [Viva](https://github.com/JNS0724/Viva) 消息源用的小工具：
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-- `defineSource({ check, poll })`：消息源程序的运行时，读请求、写回答、处理出错
-- `viva-source test <文件夹>`：用 Viva 自己的校验代码，按 Viva 的方式跑一遍
-- `viva-source new <文件夹> [--template js|python|command]`：从模板开始
+Tools for building [Viva](https://github.com/JNS0724/Viva) message sources:
 
-完整说明见 Viva 仓库的 [docs/sources.md](https://github.com/JNS0724/Viva/blob/main/docs/sources.md)。
+- `defineSource({ check, poll })`: reads requests, writes responses, and handles errors.
+- `viva-source test <folder>`: checks a source using Viva’s own validation and runtime rules.
+- `viva-source new <folder> [--template js|python|command]`: starts from a template.
+- `--language en|zh-CN`: selects CLI output language; English is the default.
 
-`dist/` 由 Viva 仓库的 `scripts/build-source-kit.mjs` 从 app 源码生成（打包前自动运行），不要手改。
+See [docs/sources.md](https://github.com/JNS0724/Viva/blob/main/docs/sources.md).
+
+`dist/` is generated from app sources by `scripts/build-source-kit.mjs` before packaging. Do not edit it manually.

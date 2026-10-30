@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -101,7 +102,7 @@ export function installedDshVersion(appRoot: string): string {
 function peerProblem(peers: Record<string, string> | undefined, dshVersion: string): string | null {
   const pinned = Object.entries(peers ?? {}).filter(([name, range]) => name.startsWith('@deepseek-ai/dsh') && /^\d/.test(range))
   const stale = pinned.find(([, range]) => range !== dshVersion)
-  return stale ? `需要 dsh ${stale[1]}，当前是 ${dshVersion}` : null
+  return stale ? t("main.app-plugins.requires.dsh.current.version.is", { value1: stale[1], dshVersion: dshVersion }) : null
 }
 
 /** Why the plugin can't be used, or null when it can. */
@@ -110,12 +111,12 @@ export function pluginProblem(plugin: Pick<AppPlugin, 'name' | 'contract'>, { di
   try {
     manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
   } catch {
-    return '找不到插件，或者它的 package.json 无法读取'
+    return t("main.app-plugins.plugin.missing.or.its.package.json.cannot")
   }
-  if (manifest.name !== plugin.name) return `插件名是 ${manifest.name}，应为 ${plugin.name}`
+  if (manifest.name !== plugin.name) return t("main.app-plugins.plugin.name.is.expected", { name: manifest.name, name2: plugin.name })
   const provided = manifest.viva?.contract?.[plugin.contract]
   if (provided !== CONTRACTS[plugin.contract]) {
-    return `约定 ${plugin.contract} 的版本是 ${provided ?? '（未声明）'}，应用需要 ${CONTRACTS[plugin.contract]}`
+    return t("main.app-plugins.contract.version.is.this.app.requires", { contract: plugin.contract, value2: provided ?? t("main.app-plugins.not.declared"), value3: CONTRACTS[plugin.contract] })
   }
   return peerProblem(manifest.peerDependencies, dshVersion)
 }

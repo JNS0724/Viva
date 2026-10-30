@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /** Keep search controls out of the large conversation's AX serialization domain. */
 export async function mountHistorySearchFrame(input: HTMLInputElement): Promise<Document | null> {
   const host = input.parentElement
@@ -7,7 +8,7 @@ export async function mountHistorySearchFrame(input: HTMLInputElement): Promise<
   const frame = document.createElement('iframe')
   frame.id = 'history-search-frame'
   frame.className = 'history-search-frame'
-  frame.title = '搜索说过的话'
+  frame.title = t("shell.search.conversations")
   // The parent owns all event handlers. The child needs neither scripts nor preload APIs.
   frame.sandbox.add('allow-same-origin')
   const next = input.nextSibling

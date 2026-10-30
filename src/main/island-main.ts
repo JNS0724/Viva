@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { deskMenuTemplate } from './desk-menu.ts'
 import { describeDropped, MISSING } from './island-files.ts'
 import type { BrowserWindow, GlobalShortcut, IpcMainEvent, IpcMainInvokeEvent, Menu as ElectronMenu } from 'electron'
@@ -13,7 +15,7 @@ type DeskIsland = ReturnType<typeof createDeskIsland>
  * is checked (island-ipc.js); the desktop island may only speak on its own channels, the window on its own.
  */
 export const ASK_SHORTCUT = 'CommandOrControl+Shift+Space'
-const NOT_SENT = '没能发送，请再试一次'
+let NOT_SENT = t("main.island-main.could.not.send.please.try.again")
 
 /** deps.Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu */
 export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff }: {
@@ -121,3 +123,7 @@ export function registerAskShortcut(globalShortcut: Pick<GlobalShortcut, 'regist
     return false
   }
 }
+
+onLocaleChange(() => {
+  NOT_SENT = t("main.island-main.could.not.send.please.try.again")
+})

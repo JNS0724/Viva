@@ -7,3 +7,9 @@ smoke.log
 .claude/
 dist/
 out/
+.omx/i18n/
+.omx/language-smoke/
+.omx/test-tmp/
+
+.omx/merge-smoke/
+.omx/merge-language-smoke/

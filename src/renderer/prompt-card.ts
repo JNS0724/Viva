@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { permissionDetail } from './selectors.ts'
 
 /**
@@ -7,10 +9,12 @@ import { permissionDetail } from './selectors.ts'
  */
 export { PROMPT_HEADS } from './selectors.ts'
 
-const COMMAND_TITLE = '运行命令'
+let COMMAND_TITLE = t("prompt-card.run.command")
 
 /** A command may also carry a description, a working directory or other execution arguments. */
-const commandOf = (rawInput: Record<string, unknown> | null | undefined): string => typeof rawInput?.command === 'string' ? rawInput.command : ''
+const COMMAND_ARGUMENTS = new Set(['command', 'description', 'cwd', 'workdir', 'timeout', 'timeout_ms', 'yield_time_ms', 'max_output_tokens', 'shell'])
+const commandOf = (rawInput: Record<string, unknown> | null | undefined): string =>
+  typeof rawInput?.command === 'string' && Object.keys(rawInput).every(key => COMMAND_ARGUMENTS.has(key)) ? rawInput.command : ''
 
 /** Buttons by role: the main one (the first that allows, filled), the others (outlined). */
 export function promptButtons(options: readonly PermissionOption[]): Array<PermissionOption & { role: 'primary' | 'secondary' }> {
@@ -26,3 +30,7 @@ export function permissionCard(permission: { title: string, rawInput?: Record<st
   const command = commandOf(permission.rawInput)
   return { title: command ? COMMAND_TITLE : permission.title, detail: permissionDetail(permission), command }
 }
+
+onLocaleChange(() => {
+  COMMAND_TITLE = t("prompt-card.run.command")
+})

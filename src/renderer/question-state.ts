@@ -1,10 +1,12 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { closeStreams } from './streams.ts'
 
 /**
  * A question the agent asked mid-turn (ask_user_question, through the app's questions plugin). While it
  * waits, the phase is 'asking'; the answer joins the thread as the user's reply, under what was asked.
  */
-const SKIPPED = '（跳过）'
+let SKIPPED = t("question-state.skipped")
 
 /** An answer to one question: the options picked, and the user's own words. */
 export type QuestionAnswer = { id: string, selected: string[], custom?: string }
@@ -83,3 +85,7 @@ export const QUESTION_ACTIONS: Record<string, Reducer> = {
     }
   },
 }
+
+onLocaleChange(() => {
+  SKIPPED = t("question-state.skipped")
+})

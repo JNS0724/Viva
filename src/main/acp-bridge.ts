@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import type { AcpServer } from './mcp-config.ts'
@@ -26,16 +27,16 @@ import { describeConfig, describeError } from './session-info.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
 const STDERR_TAIL_LIMIT = 4000
-export const SWITCHING = '正在切换会话，等切换完成再发'
+export const switchingMessage = () => t("session.switching")
 /** dsh gets this long to finish after its input closes, then its process tree is ended; then killed outright. */
 const SHUTDOWN_GRACE_MS = 1500
 // The version the app was built as, so it cannot fall behind a release (package.json ships in the app).
 const CLIENT_INFO = { name: 'viva', version: pkg.version }
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
 /** dsh decides at launch, from the model it starts on, whether its prompts take pictures. */
-const NO_IMAGES = '这个模型看不了图片（DeepSeek 里只有 V41-Flash 能看），图片没有发出去'
+const noImagesMessage = () => t("main.acp-bridge.this.model.cannot.read.images.among.deepseek")
 /** A task let go when it would not stop (cancelTask): what dsh started for it may still be running. */
-const STOPPED_ANYWAY = '已停下。它之前开始的命令没有响应停止，可能还在电脑上运行；需要的话在任务管理器（活动监视器）里结束它。'
+const stoppedMessage = () => t("main.acp-bridge.stopped.a.command.started.earlier.did.not")
 const NO_MCP = (): AcpServer[] => []
 export const MCP_RETRY_MS = 30_000
 type PromptBlocks = Parameters<ClientSideConnection['prompt']>[0]['prompt']
@@ -66,11 +67,11 @@ export function failingMcpServer<S extends { name: string }>(err: any, servers: 
 
 /** spawn reports a missing working directory as ENOENT too, so that is checked before blaming the program. */
 function launchError(err: NodeJS.ErrnoException, { command, nodeBin, cwd }: { command: string, nodeBin: string, cwd: string }) {
-  if (err.code !== 'ENOENT') return `无法启动 dsh：${err.message}`
-  if (!fs.existsSync(cwd)) return `工作目录不存在：${cwd}`
+  if (err.code !== 'ENOENT') return t("main.acp-bridge.could.not.start.dsh", { message: err.message })
+  if (!fs.existsSync(cwd)) return t("main.acp-bridge.working.directory.does.not.exist", { cwd: cwd })
   return command === nodeBin
-    ? `找不到 Node.js（${nodeBin}）：dsh 需要它才能运行，请先安装 Node.js，或用 DSH_NODE 指定路径`
-    : `找不到 dsh：${command}`
+    ? t("main.acp-bridge.node.js.not.found.dsh.requires.node", { nodeBin: nodeBin })
+    : t("main.acp-bridge.dsh.not.found", { command: command })
 }
 
 /** Not yet exited. A finished process's id may already belong to another one, so it is never signalled. */
@@ -211,7 +212,7 @@ export function createAcpBridge({
       streams.close()
       followupDesk.close()
       if (disposed) return
-      const message = describeError(`dsh 已退出（${code ?? signal}）`, stderrTail)
+      const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
       if (onExit) onExit({ code, signal, message })
       else emit({ type: 'error', message })
     })
@@ -318,7 +319,7 @@ export function createAcpBridge({
   async function switchExactly(targetSessionId: string, targetCwd: string, measure: ReturnType<typeof sessionTiming>) {
     const leaving = sessionId
     if (targetSessionId === leaving) return { ...infoFrom(configNow ?? undefined), resumed: true }
-    if (!canResume) throw new ResumeError('gone', '这个版本的助手接不回以前的会话')
+    if (!canResume) throw new ResumeError('gone', t("session.resume.unsupported"))
     let response
     try {
       // Closed earlier (撤销 a new topic goes back to the session just left): that close finishes first.
@@ -378,9 +379,9 @@ export function createAcpBridge({
    */
   async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = []) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
-    if (isSwitching()) throw new Error(SWITCHING)
+    if (isSwitching()) throw new Error(switchingMessage())
     if (images.length && !seesImages) {
-      emit({ type: 'error', message: NO_IMAGES })
+      emit({ type: 'error', message: noImagesMessage() })
       return
     }
     const asked = sessionId
@@ -451,7 +452,7 @@ export function createAcpBridge({
    *   on the session it is on (nothing is lost by trying) and a ResumeError says why
    */
   async function switchSession(targetSessionId: string | null, targetCwd = sessionCwd, { exactly = false } = {}) {
-    if (switching) throw Error('会话正在准备，请稍候')
+    if (switching) throw Error(t("main.acp-bridge.preparing.the.session.please.wait"))
     switching = true
     const measure = sessionTiming(onTiming)
     try {
@@ -655,7 +656,7 @@ export function createAcpBridge({
       giveUp: () => {
         if (operation.stream) streams.finish(operation.stream)
         operation.released = true
-        emit({ type: 'task_end', taskId, stopReason: 'cancelled', message: STOPPED_ANYWAY })
+        emit({ type: 'task_end', taskId, stopReason: 'cancelled', message: stoppedMessage() })
       },
     })
   }
@@ -732,7 +733,7 @@ export function createAcpBridge({
 
   /** Background preparation: one model call with no tools, from the followups plugin; nothing while dsh is down. */
   function prepareText(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
-    if (!child?.connected) return Promise.resolve({ ok: false, problem: '助手还没准备好', called: false })
+    if (!child?.connected) return Promise.resolve({ ok: false, problem: t("main.acp-bridge.the.assistant.is.not.ready.yet"), called: false })
     return followupDesk.prepare(call, signal)
   }
 

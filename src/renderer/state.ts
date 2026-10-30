@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { approvalTitle, optionName } from './approval.ts'
 import { assistantStream } from './assistant-stream.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
@@ -168,7 +169,7 @@ function onThoughtChunk(state: State, update: AcpUpdate, at: number): State {
 }
 
 function mergeTool(existing: ToolCall | undefined, update: AcpUpdate, at: number): ToolCall {
-  const base = existing ?? { id: update.toolCallId, title: '工具调用', kind: 'other', status: 'pending', locations: [], at }
+  const base = existing ?? { id: update.toolCallId, title: t("state.tool.call"), kind: 'other', status: 'pending', locations: [], at }
   const changes = Object.fromEntries(
     TOOL_FIELDS.filter((key) => update[key] !== undefined && update[key] !== null).map((key) => [key, update[key]]),
   )
@@ -199,7 +200,7 @@ const UPDATE_HANDLERS: Readonly<Record<string, (state: State, update: AcpUpdate,
 function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
   const last = messages[messages.length - 1]
   if (last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
-  const text = receipt.stopReason === 'cancelled' ? '已停止本轮任务。' : '本轮没有文字回复。'
+  const text = receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn")
   return [...messages, { id: `m${messages.length}`, role: 'note', text, open: false, receipt }]
 }
 
@@ -262,7 +263,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   /** dsh names only the tool call; what it does comes from that call, announced just before (approval.js). */
   permission_request: (state, { requestId, toolCall, options, at }) => {
     const known = toolCall?.toolCallId ? state.tools[toolCall.toolCallId] : null
-    const title = toolCall?.title || approvalTitle(known) || '需要你确认'
+    const title = toolCall?.title || approvalTitle(known) || t("selectors.needs.your.approval")
     return {
       ...closeStreams(state),
       phase: 'waiting',
@@ -291,7 +292,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
         at,
         title: state.permission.title,
         allowed: Boolean(option?.kind?.startsWith('allow')),
-        choice: option ? optionName(option) : '已取消',
+        choice: option ? optionName(option) : t("state.canceled"),
       }],
     }
   },
@@ -316,7 +317,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     ...closeStreams(state),
     switching: state.newTopicPending && state.switching,
     phase: 'error',
-    error: message || '未知错误',
+    error: message || t("state.unknown.error"),
     permission: null,
     question: null,
     secret: null,
@@ -347,7 +348,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     switching: true, newTopicPending: true, phase: 'idle', error: null,
   }),
   new_session_ready: (state, { info }) => ({ ...state, info, switching: false, newTopicPending: false, phase: 'idle', error: null }),
-  new_session_failed: (state, { message }) => ({ ...state, switching: false, phase: 'error', error: `新话题准备失败：${message}。草稿已保留，请点击「重试新话题」。` }),
+  new_session_failed: (state, { message }) => ({ ...state, switching: false, phase: 'error', error: t("state.could.not.prepare.a.new.topic.your", { message: message }) }),
 
   /**
    * What the memory plugin put in front of the model this turn, reported when the turn ends. Each entry

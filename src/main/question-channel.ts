@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /**
  * Questions the model asks the user, on the app's side of the questions contract (version 1, see
  * plugins/questions/lib/channel.js): dsh's viva-questions plugin sends them over the IPC channel opened when
@@ -56,15 +57,15 @@ export function parseQuestion(message: any): QuestionSet | null {
  * (one unless it allows several), and optional text of the user's own.
  */
 export function checkAnswers(questions: readonly Question[], answers: unknown): Answer[] {
-  if (!Array.isArray(answers) || answers.length !== questions.length) throw new Error('回答和问题对不上')
+  if (!Array.isArray(answers) || answers.length !== questions.length) throw new Error(t("main.question-channel.the.answer.does.not.match.the.question"))
   return questions.map((question) => {
     const answer = answers.find((item) => item?.id === question.id)
     const selected: unknown[] | null = Array.isArray(answer?.selected) ? answer.selected : null
     const labels = new Set<unknown>(question.options.map((option) => option.label))
-    if (!selected || !selected.every((label) => labels.has(label))) throw new Error('选项无效')
-    if (!question.multiSelect && selected.length > 1) throw new Error('这个问题只能选一项')
+    if (!selected || !selected.every((label) => labels.has(label))) throw new Error(t("main.question-channel.invalid.option"))
+    if (!question.multiSelect && selected.length > 1) throw new Error(t("main.question-channel.choose.only.one.option.for.this.question"))
     const custom = typeof answer.custom === 'string' ? answer.custom.trim() : ''
-    if (custom.length > MAX_ANSWER_CHARS) throw new Error(`回答太长（上限 ${MAX_ANSWER_CHARS} 字）`)
+    if (custom.length > MAX_ANSWER_CHARS) throw new Error(t("main.question-channel.answer.is.too.long.maximum.characters", { MAX_ANSWER_CHARS: MAX_ANSWER_CHARS }))
     return { id: question.id, selected: [...new Set(selected as string[])], ...(custom ? { custom } : {}) }
   })
 }

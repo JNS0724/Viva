@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /**
  * MCP servers and skills set up from the conversation, on the app's side of the config contract (version 1,
  * see plugins/config/lib/channel.js). The plugin asks only after the user approved the change on the card;
@@ -26,27 +27,27 @@ const refuse = (message: string): never => { throw new Refused(message) }
 function text(value: unknown, what: string, max: number, { optional = false } = {}): string {
   if (value === undefined || value === null || value === '') {
     if (optional) return ''
-    refuse(`缺少${what}`)
+    refuse(t("main.config-channel.missing", { what: what }))
   }
-  if (typeof value !== 'string') refuse(`${what}要是文字`)
+  if (typeof value !== 'string') refuse(t("main.config-channel.must.be.text", { what: what }))
   const given = value as string
-  if (given.length > max) refuse(`${what}太长了（上限 ${max} 字）`)
+  if (given.length > max) refuse(t("main.config-channel.is.too.long.maximum.characters", { what: what, max: max }))
   return given.trim()
 }
 
 function list(value: unknown, what: string, { max, itemMax, pattern }: { max: number, itemMax: number, pattern?: RegExp }): string[] {
   if (value === undefined || value === null) return []
-  if (!Array.isArray(value) || value.length > max) refuse(`${what}最多 ${max} 项`)
+  if (!Array.isArray(value) || value.length > max) refuse(t("main.config-channel.allows.at.most.items", { what: what, max: max }))
   return (value as unknown[]).map((item) => {
-    if (typeof item !== 'string' || item.length > itemMax) refuse(`${what}里有一项不对`)
+    if (typeof item !== 'string' || item.length > itemMax) refuse(t("main.config-channel.contains.an.invalid.item", { what: what }))
     const given = item as string
-    if (pattern && !pattern.test(given)) refuse(`${what}不合法：${given.slice(0, 40)}`)
+    if (pattern && !pattern.test(given)) refuse(t("main.config-channel.invalid", { what: what, value2: given.slice(0, 40) }))
     return given
   })
 }
 
 function skillName(name: string): string {
-  if (!SKILL_NAME.test(name)) refuse('skill 名字只能用英文小写字母、数字和连字符，例如 weekly-report')
+  if (!SKILL_NAME.test(name)) refuse(t("main.config-channel.skill.names.must.use.lowercase.english.letters"))
   return name
 }
 
@@ -58,44 +59,44 @@ export interface ServerSpec { name: string, command: string, args: string[], url
  */
 export interface ServerUpdate { name: string, newName: string, command: string, args: string[] | null, url: string, secrets: string[] }
 
-const secretNames = (value: unknown) => list(value, '密钥名', { max: MAX_SECRETS, itemMax: 128, pattern: SECRET_NAME })
+const secretNames = (value: unknown) => list(value, t("main.config-channel.credential.name"), { max: MAX_SECRETS, itemMax: 128, pattern: SECRET_NAME })
 
 /** Each operation's arguments, checked and reduced to what it uses. */
 const ARGS: Record<string, (args: any) => any> = {
   mcp_list: () => ({}),
   mcp_add: (args): ServerSpec => {
     const spec = {
-      name: text(args.name, '服务器名称', MAX_NAME_CHARS),
-      command: text(args.command, '启动命令', MAX_COMMAND_CHARS, { optional: true }),
-      args: list(args.args, '启动参数', { max: MAX_ARGS, itemMax: MAX_ARG_CHARS }),
-      url: text(args.url, '服务器地址', MAX_URL_CHARS, { optional: true }),
+      name: text(args.name, t("main.config-channel.server.name"), MAX_NAME_CHARS),
+      command: text(args.command, t("main.config-channel.launch.command"), MAX_COMMAND_CHARS, { optional: true }),
+      args: list(args.args, t("main.config-channel.launch.arguments"), { max: MAX_ARGS, itemMax: MAX_ARG_CHARS }),
+      url: text(args.url, t("main.config-channel.server.address"), MAX_URL_CHARS, { optional: true }),
       secrets: secretNames(args.secrets),
     }
-    if (Boolean(spec.command) === Boolean(spec.url)) refuse('启动命令和服务器地址要二选一')
+    if (Boolean(spec.command) === Boolean(spec.url)) refuse(t("main.config-channel.choose.either.a.launch.command.or.a"))
     return spec
   },
   mcp_update: (args): ServerUpdate => {
     const spec = {
-      name: text(args.name, '服务器名称', MAX_NAME_CHARS),
-      newName: text(args.new_name, '新名称', MAX_NAME_CHARS, { optional: true }),
-      command: text(args.command, '启动命令', MAX_COMMAND_CHARS, { optional: true }),
-      args: args.args === undefined || args.args === null ? null : list(args.args, '启动参数', { max: MAX_ARGS, itemMax: MAX_ARG_CHARS }),
-      url: text(args.url, '服务器地址', MAX_URL_CHARS, { optional: true }),
+      name: text(args.name, t("main.config-channel.server.name"), MAX_NAME_CHARS),
+      newName: text(args.new_name, t("main.config-channel.new.name"), MAX_NAME_CHARS, { optional: true }),
+      command: text(args.command, t("main.config-channel.launch.command"), MAX_COMMAND_CHARS, { optional: true }),
+      args: args.args === undefined || args.args === null ? null : list(args.args, t("main.config-channel.launch.arguments"), { max: MAX_ARGS, itemMax: MAX_ARG_CHARS }),
+      url: text(args.url, t("main.config-channel.server.address"), MAX_URL_CHARS, { optional: true }),
       secrets: secretNames(args.secrets),
     }
-    if (spec.command && spec.url) refuse('启动命令和服务器地址要二选一')
+    if (spec.command && spec.url) refuse(t("main.config-channel.choose.either.a.launch.command.or.a"))
     return spec
   },
-  mcp_remove: (args) => ({ name: text(args.name, '服务器名称', MAX_NAME_CHARS) }),
-  mcp_import: (args) => ({ path: text(args.path, '路径', MAX_PATH_CHARS, { optional: true }) }),
+  mcp_remove: (args) => ({ name: text(args.name, t("main.config-channel.server.name"), MAX_NAME_CHARS) }),
+  mcp_import: (args) => ({ path: text(args.path, t("main.config-channel.path"), MAX_PATH_CHARS, { optional: true }) }),
   skill_list: () => ({}),
   skill_create: (args) => ({
-    name: skillName(text(args.name, 'skill 名字', MAX_NAME_CHARS)),
-    description: text(args.description, 'skill 说明', MAX_DESCRIPTION_CHARS),
-    instructions: text(args.instructions, '具体做法', MAX_INSTRUCTIONS_CHARS),
+    name: skillName(text(args.name, t("main.config-channel.skill.name"), MAX_NAME_CHARS)),
+    description: text(args.description, t("main.config-channel.skill.description"), MAX_DESCRIPTION_CHARS),
+    instructions: text(args.instructions, t("main.config-channel.instructions"), MAX_INSTRUCTIONS_CHARS),
   }),
-  skill_install: (args) => ({ path: text(args.path, '路径', MAX_PATH_CHARS) }),
-  skill_remove: (args) => ({ id: text(args.id, 'skill 的 id', MAX_PATH_CHARS) }),
+  skill_install: (args) => ({ path: text(args.path, t("main.config-channel.path"), MAX_PATH_CHARS) }),
+  skill_remove: (args) => ({ id: text(args.id, t("main.config-channel.skill.id"), MAX_PATH_CHARS) }),
 }
 
 const isId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS
@@ -107,7 +108,7 @@ export type ConfigRequest = { id: string, sessionId: string, op: string, args: a
 export function parseConfigRequest(message: any): ConfigRequest | null {
   if (message?.type !== 'config' || !isId(message.id)) return null
   const { id } = message
-  if (!OPS.has(message.op)) return { id, problem: `不支持的配置操作：${String(message.op).slice(0, 40)}` }
+  if (!OPS.has(message.op)) return { id, problem: t("main.config-channel.unsupported.configuration.operation", { value1: String(message.op).slice(0, 40) }) }
   try {
     const args = ARGS[message.op](message.args && typeof message.args === 'object' ? message.args : {})
     return { id, sessionId: String(message.sessionId ?? ''), op: message.op, args }
@@ -121,9 +122,9 @@ export function parseConfigRequest(message: any): ConfigRequest | null {
 function checkSecrets(names: readonly string[], values: any): Record<string, string> {
   return Object.fromEntries(names.map((name) => {
     const value = values?.[name]
-    if (typeof value !== 'string' || !value.trim()) throw new Error(`请填写 ${name}`)
-    if (/[\r\n]/.test(value)) throw new Error(`${name} 要写在一行里`)
-    if (value.length > MAX_SECRET_VALUE_CHARS) throw new Error(`${name} 太长了`)
+    if (typeof value !== 'string' || !value.trim()) throw new Error(t("main.config-channel.enter", { name: name }))
+    if (/[\r\n]/.test(value)) throw new Error(t("main.config-channel.must.be.on.one.line", { name: name }))
+    if (value.length > MAX_SECRET_VALUE_CHARS) throw new Error(t("main.config-channel.is.too.long", { name: name }))
     return [name, value.trim()]
   }))
 }
@@ -157,8 +158,8 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
   const pending = new Map<string, { op: 'mcp_add', spec: ServerSpec } | { op: 'mcp_update', spec: ServerUpdate }>()
   /** What happens with the keys once typed, and what the model is told when they are not. */
   const KEYED = {
-    mcp_add: { prepare: (spec: any) => actions.prepareServer(spec), apply: (spec: any, secrets: Record<string, string>) => actions.addServer(spec, secrets), undone: '没有接入' },
-    mcp_update: { prepare: (spec: any) => actions.prepareUpdate(spec), apply: (spec: any, secrets: Record<string, string>) => actions.updateServer(spec, secrets), undone: '没有修改' },
+    mcp_add: { prepare: (spec: any) => actions.prepareServer(spec), apply: (spec: any, secrets: Record<string, string>) => actions.addServer(spec, secrets), undone: t("main.config-channel.not.connected") },
+    mcp_update: { prepare: (spec: any) => actions.prepareUpdate(spec), apply: (spec: any, secrets: Record<string, string>) => actions.updateServer(spec, secrets), undone: t("main.config-channel.not.changed") },
   }
 
   const reply = (id: string, ok: boolean, text: string) => send({ type: 'config_result', id, ok, text })
@@ -174,7 +175,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
   const RUN: Record<string, (args: any) => string | Promise<string>> = {
     mcp_list: () => {
       const servers = actions.listServers()
-      return servers.length ? `已接入的 MCP 服务器：\n${bullet(servers)}` : '用户还没有接入任何 MCP 服务器。'
+      return servers.length ? t("main.config-channel.connected.mcp.servers", { value1: bullet(servers) }) : t("main.config-channel.the.user.has.not.connected.any.mcp")
     },
     mcp_add: (spec) => actions.addServer(spec, {}),
     mcp_update: (spec) => actions.updateServer(spec, {}),
@@ -182,7 +183,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
     mcp_import: ({ path }) => actions.importServers(path),
     skill_list: () => {
       const skills = actions.listSkills()
-      return skills.length ? `用户的 skill：\n${bullet(skills)}` : '用户还没有 skill。'
+      return skills.length ? t("main.config-channel.user.skills", { value1: bullet(skills) }) : t("main.config-channel.the.user.has.no.skills.yet")
     },
     skill_create: (spec) => actions.createSkill(spec),
     skill_install: ({ path }) => actions.installSkill(path),
@@ -198,7 +199,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
     const request = parseConfigRequest(message)
     if (!request) return
     if ('problem' in request) return reply(request.id, false, request.problem)
-    if (request.sessionId !== sessionId()) return reply(request.id, false, '用户已经离开了这段对话，配置没有进行。')
+    if (request.sessionId !== sessionId()) return reply(request.id, false, t("main.config-channel.the.user.has.left.this.conversation.configuration"))
     const { id, op, args } = request
     if ((op !== 'mcp_add' && op !== 'mcp_update') || args.secrets.length === 0) return perform(id, op, args)
     try {
@@ -220,7 +221,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
     const { op, spec } = waiting
     if (values === null) {
       pending.delete(requestId)
-      reply(requestId, false, `用户没有填写密钥，「${spec.name}」${KEYED[op].undone}。`)
+      reply(requestId, false, t("main.config-channel.the.user.did.not.enter.credentials", { name: spec.name, undone: KEYED[op].undone }))
       return true
     }
     const secrets = checkSecrets(spec.secrets, values)
@@ -235,7 +236,7 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
   function closeAll(): void {
     for (const [requestId, { op, spec }] of [...pending]) {
       pending.delete(requestId)
-      reply(requestId, false, `用户离开了这段对话，「${spec.name}」${KEYED[op].undone}。`)
+      reply(requestId, false, t("main.config-channel.the.user.left.this.conversation", { name: spec.name, undone: KEYED[op].undone }))
       emit({ type: 'secret_closed', requestId })
     }
   }

@@ -1,91 +1,88 @@
-# dsh 升级兼容验证（2026-10-26，Windows）
+# dsh upgrade compatibility validation (2026-10-26, Windows)
 
-## 结论与范围
+English | [简体中文](dsh-upgrade-validation-20261026.zh-CN.md)
 
-继续使用 ACP。本轮生产依赖保留 `0.2.0-rc.2`；在独立副本验证了 `0.2.1-rc.2`，没有把候选依赖或迁移代码复制回主项目，也没有安装、发布候选应用。
+## Conclusion and scope
 
-候选可通过本轮列出的兼容测试，但不能只修改三个 dsh 版本号：必须同步插件 peer 版本、Zod 版本和 persona 的工作目录模板。正式升级仍应单独提交，结合最新主分支重新验证。
+Continue using ACP. Production stayed on `0.2.0-rc.2`; `0.2.1-rc.2` was tested in an isolated copy. Candidate dependencies/migration changes were not copied to the main project, installed, or released. This is a historical report, not verification of the current internationalization branch.
 
-- 主项目：`E:\viva\Viva`，副本创建基于 `c4c13d73a429d00ab2262e14119a4cb92f276fa4` 的工作区快照，包含当时用户的后台任务气泡改动；不包含本轮随后开发的 P0/P1 会话优化。
-- 候选副本：`E:\viva\dsh-upgrade-validation-20261026`。
-- 项目外打包验证目录：`E:\viva\dsh-packaged-validation-20261026`。
-- Windows `10.0.26200`；Node `24.13.0`；Electron `44.7.0`（内嵌 Node `24.21.0`）。
-- 模型端使用本地假 Messages/SSE 服务与测试密钥，MCP 使用本地测试进程；没有调用真实模型或发送外部消息。
+The candidate passed the listed checks after coordinating plugin peer versions, Zod, and the persona working-directory template; changing only three dsh package versions is insufficient. A production upgrade needs its own change and retest against current main.
 
-## 版本选择
+- Original: `E:\viva\Viva`, workspace snapshot based on `c4c13d73a429d00ab2262e14119a4cb92f276fa4`, including concurrent background-task bubble changes but not subsequent P0/P1 session optimizations.
+- Candidate: `E:\viva\dsh-upgrade-validation-20261026`.
+- Outside-project packaged check: `E:\viva\dsh-packaged-validation-20261026`.
+- Windows `10.0.26200`, Node `24.13.0`, Electron `44.7.0` with embedded Node `24.21.0`.
+- Local fake Messages/SSE endpoints, test keys, and local MCP processes; no external model calls or messages.
 
-本次 npm 查询：`@deepseek-ai/dsh` 的 `latest` 为 `0.2.1-rc.2`，`next` 为 `0.2.1-rc.3`，均为候选版。`dsh-native-command` 与 `dsh-tool-ask-user` 的 `latest` 仍是旧版本，不能对所有包直接使用 `latest`。
+## Version selection
 
-副本明确安装：
+At that time npm reported dsh `latest=0.2.1-rc.2`, `next=0.2.1-rc.3`; both were prereleases. The other packages' latest tags still pointed to older versions, so using latest everywhere was incorrect. The copy explicitly installed:
 
 ```text
-@deepseek-ai/dsh                  0.2.1-rc.2
-@deepseek-ai/dsh-native-command   0.2.1-rc.2
-@deepseek-ai/dsh-tool-ask-user    0.2.1-rc.2
-zod                             4.4.3
+@deepseek-ai/dsh                 0.2.1-rc.2
+@deepseek-ai/dsh-native-command  0.2.1-rc.2
+@deepseek-ai/dsh-tool-ask-user   0.2.1-rc.2
+zod                            4.4.3
 ```
 
-所有 Viva 插件中 `@deepseek-ai/dsh*` 的精确 peer 版本同步为 `0.2.1-rc.2`。未修改 ACP SDK `1.9.0` 或 Electron `44.7.0`。
+All Viva plugin exact dsh peers were aligned to rc.2. ACP SDK `1.9.0` and Electron `44.7.0` were unchanged.
 
-## 实际发现的破坏点与副本修复
+## Breakages and fixes in the copy
 
-### 1. `{{cwd}}` 不再是可用的 system-prompt 变量
+### Removed system-prompt variable
 
-仅升级版本后，打开会话成功，但 prompt 在发出模型请求之前失败：
+Session creation succeeded, but prompting failed before any model request:
 
 ```text
 Internal error: turn failed: unknown prompt variable "{{cwd}}" in section
 "deployment:persona-suffix"; registered variables: provider, model
 ```
 
-Viva 的 `src/main/app-plugins.ts` 原本设置 `suffix: '你的工作目录是 {{cwd}}。'`。副本将 suffix 改为空字符串；新版默认组合中的 `dsh-working-directory` 会通过运行时上下文提供 `Current working directory: ...`，而非静态 persona 变量。`test/memory-plugin.test.js` 的 persona 测试相应改验该上下文。修复后真实模型请求和记忆、权限、流式等路径恢复。
+The original persona suffix used `{{cwd}}`. The candidate cleared it because the new default `dsh-working-directory` supplies `Current working directory: ...` as runtime context. The persona test was changed to assert that context. Model requests, memory, permissions, and streaming then resumed functioning.
 
-### 2. Zod 的不同精确版本造成类型不兼容
+### Exact Zod mismatch
 
-主项目 Zod 为 `4.6.7`，候选 `dsh-session-projection`、`dsh-llm` 等精确依赖 `4.4.3`。候选初次类型检查耗尽约 4 GB Node 堆；构建明确报出 memory projection 的 `TS2589`、`TS2769`，底层类型差异为 `_zod.version.minor` 的 `6` 与 `4`。
+The original root used `4.6.7`; candidate dsh session-projection/LLM packages required `4.4.3`. Initial typecheck exhausted roughly 4 GB heap; build reported `TS2589`/`TS2769` in memory projections with `_zod.version.minor` differing (`6` versus `4`). Aligning root Zod to `4.4.3` fixed both without casts or heap-limit masking.
 
-副本将根依赖对齐 `zod@4.4.3` 后，类型检查与构建通过。没有使用类型强制转换或提高堆上限掩盖该问题。
+### Temporary-directory permissions
 
-### 3. 本次执行环境的系统 Temp 权限
+Electron composition dumping initially hit `EPERM` creating a profile under system Temp. Pointing `TEMP`/`TMP` to the copy's existing `audit-temp` fixed it without product changes. This was an execution-environment permission boundary, not evidence of a candidate product regression.
 
-Electron 的 composition dump 最初在系统 Temp 创建 profile 时遇到 `EPERM`。将 `TEMP`、`TMP` 指向副本内已创建的 `audit-temp` 后通过，未修改产品代码。该现象只能说明本次执行环境的权限边界，不能据此认定升级导致产品故障。
+## Results
 
-## 验证结果
-
-| 检查 | 结果 | 范围 |
+| Check | Result | Scope |
 |---|---|---|
-| 仅改 dsh/peer 后的初次检查 | 失败 | 类型/构建失败；首轮关键测试 17 项中 15 项失败，prompt 的 cwd 模板错误是主要运行时阻断点 |
-| 修复后的 typecheck / build | 通过 | 全部项目 tsconfig；生成 out |
-| 关键测试，Node | 17/17 通过 | 流式首增量、取消保留前缀、单例 MCP 预热失败隔离、自动/完全权限、禁止直接发送策略、记忆读写/提炼/合成/恢复、旧 home 迁移 |
-| 相同关键测试，Electron | 17/17 通过 | 使用真正的 Electron Node 运行时，非 Node 替代 |
-| 其他插件测试，Node | 31/31 通过 | 配置卡片、后续准备、fork、图片、消息源、模型路由/切换、问题卡片、steering、后台任务、trace；该组也包含少量纯逻辑测试 |
-| 跨 dsh 版本恢复 | 通过 | 旧 `0.2.0-rc.2` 创建真实测试会话并退出，候选 `0.2.1-rc.2` 在同一隔离 home 恢复；ID 保持一致，后续模型请求包含旧历史 |
-| composition / 依赖闭包 | 通过 | Electron 执行真实 `--profile acp --dump-config`，110 roots / 368 packages |
-| Windows unpacked 构建 | 通过 | after-pack：368 packages，补入 36、移除 203，删除 6845 个不用的文件；asar 9973 个文件，58 个 unpacked 文件 |
-| 项目外运行打包 dsh | 通过 | 解包产物复制到项目外，使用其 `Viva.exe` 和 `app.asar` 内 dsh 执行 ACP dump，得到 98 个配置条目，避免项目 node_modules 回退掩盖缺包 |
-| NSIS 安装、升级安装、交互 GUI、真实用户数据、多平台 | 未运行 | unpacked 构建与协议测试不能代替这些检查 |
-| `0.2.1-rc.3` 完整运行时/打包回归 | 未运行 | 只核查官方说明及源码，不把 rc.2 的通过结果外推到 rc.3 |
-| P0/P1 最新优化代码与候选版组合 | 未运行 | 该副本是并行开发前的快照；正式升级时应重新组合验证 |
+| dsh/peer-only first attempt | Failed | Type/build errors; 15 of 17 critical tests failed, mainly the cwd template |
+| Corrected typecheck/build | Passed | All project configs and out generation |
+| Critical tests under Node | 17/17 | Streaming/cancel prefix, singleton MCP preparation isolation, auto/full permissions, no-send policy, memory tools/extraction/synthesis/resume, old-home migration |
+| Same tests under Electron | 17/17 | Actual embedded Node runtime |
+| Other plugin tests under Node | 31/31 | Config, preparation, fork, images, sources, model routing/switching, questions, steering, tasks, trace; some pure logic |
+| Cross-version resume | Passed | Real old-version session resumed by candidate in same isolated home, same id and previous history in next request |
+| Composition/dependency closure | Passed | Actual Electron ACP dump: 110 roots / 368 packages |
+| Windows unpacked build | Passed | 368 packages, 36 added, 203 removed, 6,845 unused files removed; 9,973 asar files and 58 unpacked files |
+| Packaged dsh outside project | Passed | Copied executable/asar ACP dump returned 98 config entries without repository node_modules fallback |
+| NSIS install/upgrade, interactive GUI, real user data, other platforms | Not run | Unpacked/protocol tests are not substitutes |
+| rc.3 full runtime/packaging regression | Not run | Only release notes/source reviewed; rc.2 passes do not extend to rc.3 |
+| Candidate with latest P0/P1 changes | Not run | Copy preceded those changes; combination requires retest |
 
-测试通过仅覆盖上述场景，不代表所有用户 MCP、复杂中断历史和长时间运行均兼容。
+Passing covers only those scenarios, not arbitrary user MCPs, complex interrupted histories, or prolonged use.
 
-## 执行命令与复现
+## Reproduction
 
-以下在候选副本运行，插件 peer 及 package.json 已先改为明确候选版本：
+In the candidate copy, after explicitly changing package and plugin peer versions:
 
 ```powershell
 npm install --no-audit --no-fund
 npm install zod@4.4.3 --save-exact --no-audit --no-fund
 npm run typecheck
 npm run build
-
 $env:DSH_NODE = (Get-Command node).Source
 node --test test/stream-runtime.test.js test/prewarm-runtime.test.js test/permission-plugin.test.js test/policy-plugin.test.js test/memory-plugin.test.js test/dsh-home.test.js
 node --test test/config-plugin.test.js test/followup-plugin.test.js test/fork-plugin.test.js test/images-bridge.test.js test/messages-plugin.test.js test/model-routes.test.js test/model-switch.test.js test/questions-plugin.test.js test/steer-plugin.test.js test/tasks-bridge.test.js test/trace-plugin.test.js
 node audit-cross-version.mjs
 ```
 
-Electron 核心测试通过 Node 启动并继承输出，避免将无测试输出的直接执行误认为通过：
+Electron tests inherited output through a Node launcher so silent execution could not be mistaken for success:
 
 ```powershell
 $env:TEMP = 'E:\viva\dsh-upgrade-validation-20261026\audit-temp'
@@ -95,18 +92,12 @@ node -e "const r=require('./scripts/dsh-closure.cjs').shippedPackages(process.cw
 npx electron-builder --win --dir --publish never
 ```
 
-本地审计副本保留：`upgrade-0.2.1-rc.2.patch`、`upgrade-files.json`、`audit-cross-version.mjs`、`closure-rc2.json`、`packaged-acp-dump.yml`。补丁包含依赖锁、插件清单及两处源码/测试迁移，未应用到主项目；下一轮应先检查新代码差异，不能盲目覆盖工作区。
+The local audit copy retains `upgrade-0.2.1-rc.2.patch`, `upgrade-files.json`, `audit-cross-version.mjs`, `closure-rc2.json`, and `packaged-acp-dump.yml`. The patch includes lockfiles, manifests, and two source/test migrations; it was not applied to main. Compare newer changes before reuse rather than overwriting a live checkout.
 
-## 收益判断与仍然存在的边界
+## Benefits and remaining boundaries
 
-官方 0.2.1 系列说明包含取消/超时、Agent 资源释放、恢复兼容、Windows 持久 PowerShell 等修复，值得正式升级验证。新版 ACP 取消收敛逻辑也有源码层增强；本次测试证明现有场景仍工作，没有测量这些修复在真实故障中的收益，也没有给出“升级后新话题更快”的结论。
+Official 0.2.1 notes describe cancellation/timeouts, agent cleanup, resume compatibility, and persistent Windows PowerShell fixes. Source also improves ACP cancellation convergence. These warrant upgrade testing, but this run measured neither real-failure benefits nor faster new-topic creation.
 
-新版 ACP 仍按会话挂载 MCP，并顺序等待；仍从 committed assistant messages 转发内容。因此当前会话预热和切换编排优化仍有必要，`viva-stream` 暂不能删除。
+ACP still mounts MCP per session sequentially and forwards committed assistant messages. Session preparation/switch orchestration remain useful; `viva-stream` cannot yet be removed. rc.3 mainly updates API-key-path model listings; its web menu/draft fixes do not directly improve Viva's frontend. Repeat compatibility checks before adopting it; the evidence did not justify skipping the tested rc.2 baseline.
 
-`0.2.1-rc.3` 相对 rc.2 的主要相关增量是 API Key 路径的模型列表更新；其 Web 菜单、草稿修复不直接改善 Viva 自有前端。采用 rc.3 前仍需重复同样的兼容验证。本轮没有足够证据为这点增量跳过已验证的 rc.2 基线。
-
-官方来源：
-
-- [0.2.1-rc.1 汇总说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.1)
-- [0.2.1-rc.2 发布说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.2)
-- [0.2.1-rc.3 发布说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.3)
+Official release notes: [rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.1), [rc.2](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.2), [rc.3](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.3).

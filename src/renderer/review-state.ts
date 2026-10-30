@@ -1,3 +1,6 @@
+import { getLocale } from '../shared/i18n/locale.ts'
+import { formatDate, calendarDays } from '../shared/i18n/format.ts'
+import { t } from '../shared/i18n/translate.ts'
 /**
  * 回顾 (view/review.ts): the topics, the one last talked in first, a page at a time (history-review.ts, which says
  * what each topic holds over all of it), shown by month and day; filtered to topics with background tasks or with
@@ -82,18 +85,16 @@ export const initialReview = Object.freeze({
   starKeys: [] as string[],
 })
 
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
-const DAY_MS = 86_400_000
 const startOfDay = (ts: number) => new Date(new Date(ts).toDateString()).getTime()
 
 export function dayLabel(ts: number, now: number) {
-  const days = Math.round((startOfDay(now) - startOfDay(ts)) / DAY_MS)
-  if (days === 0) return '今天'
-  if (days === 1) return '昨天'
+  const days = calendarDays(ts, now)
+  if (days === 0) return t("main.notice-plan.today")
+  if (days === 1) return t("selectors.yesterday")
   const date = new Date(ts)
-  return `${date.getMonth() + 1}月${date.getDate()}日 周${WEEKDAYS[date.getDay()]}`
+  return getLocale() === 'zh-CN' ? `${date.getMonth() + 1}月${date.getDate()}日 ${formatDate(date, { weekday: 'short' })}` : formatDate(date, { month: 'short', day: 'numeric', weekday: 'short' })
 }
-const monthLabel = (ts: number) => `${new Date(ts).getFullYear()}年${new Date(ts).getMonth() + 1}月`
+const monthLabel = (ts: number) => formatDate(ts, { year: 'numeric', month: 'long' })
 
 /** Whether a topic began on another day than it was last talked in (the page then says when it began). */
 export const begunEarlier = (topic: ReviewTopic) => startOfDay(topic.startedAt) !== startOfDay(topic.lastAt)

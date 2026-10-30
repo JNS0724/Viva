@@ -1,15 +1,17 @@
-# 后台任务查询工具
+# Background task query tools
 
-保持 ACP 会话链路，通过 `viva-tasks` DSH 插件和现有 Node IPC 调用主进程的 `TaskRegistry`。不增加 MCP 进程或模型调用。
+[English](background-task-tools.md) · [简体中文](background-task-tools.zh-CN.md)
 
-- `list_background_tasks({ status?, limit?, offset? })`：返回摘要、查询时间和下一页位置，默认 10 条，上限 30 条。
-- `get_background_task({ taskId, includeRequest?, includeOutput? })`：详情可按需包含原始请求和最新输出。输出只保留末尾 4000 字符，运行中的输出不代表最终结果。
-- 主对话只能查询当前工作目录的任务；后台会话只能查询自身。主进程验证会话仍有效，调用范围不能由工具参数指定。
-- 状态为 `running / waiting / done / stopped / error / interrupted`。`waitingFor` 区分权限确认和用户回答。应用重启未恢复的任务、DSH 退出时的活动任务为 `interrupted`；查询不触发恢复。
-- 返回 `observedAt`、`updatedAt` 和 `revision`。暂无事件不等于任务卡死，不推断进度百分比。列表分页基于当前快照；并发变化可能改变排序。
-- 原始请求最多 20000 字符，输出最多 4000 字符；默认列表不附带它们。任务内容作为数据处理，不作为指令执行。
-- 工具只读，不提供停止、恢复、批准、发送或修改操作。IPC 请求有 5 秒超时，支持取消及断开清理。
+The ACP session remains intact. The `viva-tasks` dsh plugin uses existing Node IPC to query the main process’s `TaskRegistry`, without adding an MCP process or model call.
 
-主进程消费 ACP/流式输出、权限、问题和结束事件维护状态，查询不依赖渲染进程。状态变动同步给 UI，文本增量沿用已有渲染事件，避免每个 token 再触发一次状态刷新。任务结束时主进程保存结果预览；旧任务从历史记录回填预览。
+- `list_background_tasks({ status?, limit?, offset? })` returns summaries, observation time, and next-page offset. Default limit: 10; maximum: 30.
+- `get_background_task({ taskId, includeRequest?, includeOutput? })` optionally includes the original request and latest output. Output is limited to its final 4,000 characters; running output is not a final result.
+- The main conversation queries tasks in its current working directory. A background session queries only itself. The main process validates session liveness; tool arguments cannot choose scope.
+- States are `running / waiting / done / stopped / error / interrupted`. `waitingFor` distinguishes approval from an answer. Unresumed tasks after restart, and active tasks when dsh exits, become `interrupted`. Queries do not resume them.
+- Results include `observedAt`, `updatedAt`, and `revision`. No new event does not mean a task is stuck; no percentage is inferred. Pagination uses the current snapshot; concurrent changes can reorder results.
+- Requests are limited to 20,000 characters and output to 4,000. Neither appears in lists by default. Task content is data, not instructions.
+- Tools are read-only: no stop, resume, approve, send, or modify operations. IPC has a five-second timeout and supports cancellation and disconnect cleanup.
 
-验证：`test/task-query.test.ts` 覆盖状态、隔离、分页、竞态和 IPC 生命周期；`test/tasks-plugin.test.ts` 通过真实内嵌 DSH 和本机假模型验证工具发现及两次调用，无外部模型请求。
+The main process consumes ACP/streaming output, permission, question, and completion events to maintain state. Queries do not depend on the renderer. State changes reach the UI; text deltas reuse existing rendering events, avoiding a second state refresh for every token. Completion saves an output preview; older tasks recover previews from history.
+
+Verification: `test/task-query.test.ts` covers states, isolation, pagination, races, and IPC lifecycle. `test/tasks-plugin.test.ts` verifies discovery and both calls using real embedded dsh and a local fake model, with no external model request.

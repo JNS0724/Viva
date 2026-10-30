@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { REVIEW_FILTERS, begunEarlier, dayLabel, reviewDays, segmentKey, topicKey, type ReaderEdge, type ReaderMessage, type ReviewTask, type ReviewTopic } from '../review-state.ts'
 import { formatListTime, workspaceName } from '../selectors.ts'
 import { h } from './dom.ts'
@@ -11,21 +13,21 @@ import { reconcileChildren } from './reconcile.ts'
  * Filtered to topics with background tasks or files, or the starred messages. A message opened from a search hit,
  * a link or a star is read at the top. More comes in at the bottom.
  */
-const FILTER_NAMES: Readonly<Record<string, string>> = { all: '全部', tasks: '后台任务', files: '带文件', stars: '收藏' }
-const EMPTY: Readonly<Record<string, string>> = {
-  all: '还没有聊过什么。',
-  tasks: '还没有交给后台的事。',
-  files: '还没有带文件或图片的话题。',
-}
-const SPEAKERS: Readonly<Record<string, string>> = { user: '你', assistant: 'Viva' }
+const FILTER_NAMES = (): Readonly<Record<string, string>> => ({ all: t("review.filter.all"), tasks: t("tasks-page.background.tasks"), files: t("review.filter.files"), stars: t("review.filter.bookmarks") })
+const EMPTY = (): Readonly<Record<string, string>> => ({
+  all: t("review.empty.conversations"),
+  tasks: t("review.empty.tasks"),
+  files: t("review.empty.files"),
+})
+const SPEAKERS = (): Readonly<Record<string, string>> => ({ user: t("history-panel.you"), assistant: 'Viva' })
 
 const hint = (text: string) => h('div', { class: 'history-hint', text })
 const clock = (at: number) => new Date(at).toTimeString().slice(0, 5)
 
 function filterBar(filter: string, handlers: Handlers) {
-  return h('div', { class: 'review-filters', role: 'group', 'aria-label': '筛选' },
+  return h('div', { class: 'review-filters', role: 'group', 'aria-label': t("review.filter.label") },
     REVIEW_FILTERS.map((key) => h('button', {
-      class: 'review-filter', type: 'button', 'aria-pressed': String(filter === key), text: FILTER_NAMES[key],
+      class: 'review-filter', type: 'button', 'aria-pressed': String(filter === key), text: FILTER_NAMES()[key],
       onClick: () => handlers.reviewFilter(key),
     })))
 }
@@ -34,7 +36,7 @@ function filterBar(filter: string, handlers: Handlers) {
  * Each message read, drawn once: reading on at one end keeps the messages already read (review-state.ts readOn),
  * so their views are kept with them and only the new ones are built (a long Markdown answer is not drawn again).
  */
-const readViews = new WeakMap<ReaderMessage, View>()
+let readViews = new WeakMap<ReaderMessage, View>()
 
 /** A message read, marked with where it is kept; `found`, the one a hit, link or star named. */
 function readMessage(message: ReaderMessage, found: string | null, handlers: Handlers): View {
@@ -56,7 +58,7 @@ function readMessage(message: ReaderMessage, found: string | null, handlers: Han
 function readerEdge(edge: ReaderEdge, count: number, handlers: Handlers) {
   return h('button', {
     class: 'reader-edge timeline-more', type: 'button', 'data-edge': edge,
-    text: edge === 'before' ? `更早的 ${count} 条` : `后面还有 ${count} 条`,
+    text: edge === 'before' ? t("review.reader.earlier", { p0: count }) : t("review.reader.more", { p0: count }),
     onClick: () => handlers.readerMore(edge),
   })
 }
@@ -64,7 +66,7 @@ function readerEdge(edge: ReaderEdge, count: number, handlers: Handlers) {
 /** What is open read: the part of its messages drawn, each with its star, and where more is; or that it is being read. */
 function readerBody(key: string, review: State['review'], handlers: Handlers, found: string | null): View[] {
   const reading = review.reading?.key === key ? review.reading : null
-  if (reading === null) return [hint('正在读取…')]
+  if (reading === null) return [hint(t("earlier.loading"))]
   const after = reading.total - reading.from - reading.messages.length
   return [
     reading.from > 0 ? readerEdge('before', reading.from, handlers) : null,
@@ -78,8 +80,8 @@ function readerParts(key: string, head: string | null, review: State['review'], 
   return [
     ...readerBody(key, review, handlers, found),
     head ? h('div', { class: 'review-reader-actions' },
-      h('span', { class: 'review-reader-note', text: '这段记录没有带进当前对话；助手需要时可以查。' }),
-      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '继续这个话题', onClick: () => handlers.resumeFromReview(head) })) : null,
+      h('span', { class: 'review-reader-note', text: t("review.reader.context.note") }),
+      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("review.continue.topic"), onClick: () => handlers.resumeFromReview(head) })) : null,
   ].flat(2).filter((part): part is Node | string => part instanceof Node || (typeof part === 'string' && part !== ''))
 }
 
@@ -108,12 +110,12 @@ export function focusView(state: State, handlers: Handlers, now = Date.now()): V
   if (!focus) return null
   const isTopic = focus.key.startsWith('t:')
   const when = focus.at === null ? '' : formatListTime(focus.at, now)
-  return h('section', { class: 'review-focus', 'aria-label': '查看记录' },
+  return h('section', { class: 'review-focus', 'aria-label': t("review.read.records") },
     h('div', { class: 'review-focus-head' },
-      h('span', { class: 'review-kind', text: isTopic ? '记录' : '后台' }),
-      h('b', { class: 'review-title', text: focus.title || '（没有提问）' }),
+      h('span', { class: 'review-kind', text: isTopic ? t("history-panel.record") : t("island-tasks.background") }),
+      h('b', { class: 'review-title', text: focus.title || t("topic.no.question") }),
       when ? h('span', { class: 'review-meta mono', text: when }) : null,
-      h('button', { class: 'btn btn-text btn-small review-focus-close', type: 'button', text: '关闭', onClick: () => handlers.reviewCloseFocus() })),
+      h('button', { class: 'btn btn-text btn-small review-focus-close', type: 'button', text: t("review.close"), onClick: () => handlers.reviewCloseFocus() })),
     focus.notice ? h('div', { class: 'review-notice', role: 'status', text: focus.notice }) : null,
     reader(focus.key, focus.head, state.review, handlers, focus.found))
 }
@@ -121,13 +123,13 @@ export function focusView(state: State, handlers: Handlers, now = Date.now()): V
 function taskItem(task: ReviewTask, review: State['review'], handlers: Handlers) {
   const key = segmentKey(task.id)
   const open = review.open === key && !review.focus
-  const marks = [task.hasFiles ? '带文件' : null, task.stars ? `★ ${task.stars}` : null].filter(Boolean).join(' · ')
+  const marks = [task.hasFiles ? t("review.filter.files") : null, task.stars ? `★ ${task.stars}` : null].filter(Boolean).join(' · ')
   return h('li', { class: 'review-task', 'data-open': String(open) },
     h('button', { class: 'review-row review-task-row', type: 'button', 'aria-expanded': String(open), onClick: () => handlers.reviewOpen(key) },
-      h('span', { class: 'review-kind', text: '后台' }),
-      h('span', { class: 'review-title', text: task.title || '（没有提问）' }),
+      h('span', { class: 'review-kind', text: t("island-tasks.background") }),
+      h('span', { class: 'review-title', text: task.title || t("topic.no.question") }),
       marks ? h('span', { class: 'review-marks', text: marks }) : null,
-      h('span', { class: 'review-meta mono', text: `${task.turns} 轮 · ${clock(task.createdAt)}` })),
+      h('span', { class: 'review-meta mono', text: t("topic.turns.time", { p0: task.turns, p1: clock(task.createdAt) }) })),
     open ? reader(key, null, review, handlers) : null)
 }
 
@@ -135,31 +137,31 @@ function topicItem(topic: ReviewTopic, review: State['review'], handlers: Handle
   const key = topicKey(topic.id)
   const open = review.open === key && !review.focus
   const marks = [
-    topic.hasFiles ? '带文件' : null,
+    topic.hasFiles ? t("review.filter.files") : null,
     topic.stars ? `★ ${topic.stars}` : null,
-    topic.cwds.length > 1 ? `换过目录 · ${topic.cwds.map((cwd) => workspaceName(cwd)).join(' → ')}` : null,
+    topic.cwds.length > 1 ? t("review.folder.changed", { p0: topic.cwds.map((cwd) => workspaceName(cwd)).join(' → ') }) : null,
   ].filter(Boolean).join(' · ')
-  const began = begunEarlier(topic) ? ` · 开始于 ${dayLabel(topic.startedAt, now)}` : ''
+  const began = begunEarlier(topic) ? t("review.topic.started", { p0: dayLabel(topic.startedAt, now) }) : ''
   return h('li', { class: 'review-topic', 'data-open': String(open) },
-    h('button', { class: 'review-row', type: 'button', 'aria-expanded': String(open), 'aria-label': `查看记录：${topic.title}`, onClick: () => handlers.reviewOpen(key) },
-      h('b', { class: 'review-title', text: topic.title || '（没有提问）' }),
+    h('button', { class: 'review-row', type: 'button', 'aria-expanded': String(open), 'aria-label': t("review.read.topic.label", { p0: topic.title }), onClick: () => handlers.reviewOpen(key) },
+      h('b', { class: 'review-title', text: topic.title || t("topic.no.question") }),
       marks ? h('span', { class: 'review-marks', text: marks }) : null,
-      h('span', { class: 'review-meta mono', text: `${topic.turns} 轮 · ${clock(topic.lastAt)}${began}` })),
+      h('span', { class: 'review-meta mono', text: t("review.topic.turns.time", { p0: topic.turns, p1: clock(topic.lastAt), p2: began }) })),
     open ? reader(key, topic.head, review, handlers) : null,
     topic.tasks.length ? h('ul', { class: 'review-tasks' }, topic.tasks.map((task) => taskItem(task, review, handlers))) : null)
 }
 
 function topicList(review: State['review'], handlers: Handlers, now: number): View[] {
-  if (!review.loaded) return [hint('正在读取…')]
+  if (!review.loaded) return [hint(t("earlier.loading"))]
   const months = reviewDays(review.topics, now).map((month) => h('section', { class: 'review-month' },
     h('h3', { class: 'review-month-head', text: month.label }),
     month.days.map((day) => h('div', { class: 'review-day' },
       h('div', { class: 'review-day-head', text: day.label }),
       h('ul', { class: 'review-items' }, day.topics.map((topic) => topicItem(topic, review, handlers, now)))))))
   const more = review.hasMore
-    ? h('button', { class: 'timeline-more', type: 'button', disabled: review.loading, text: review.loading ? '正在读取…' : '更早的', onClick: () => handlers.reviewMore() })
-    : review.topics.length ? hint('再往前就没有了') : null
-  return [...(months.length ? months : [hint(EMPTY[review.filter] ?? EMPTY.all)]), more]
+    ? h('button', { class: 'timeline-more', type: 'button', disabled: review.loading, text: review.loading ? t("earlier.loading") : t("review.earlier"), onClick: () => handlers.reviewMore() })
+    : review.topics.length ? hint(t("review.no.earlier")) : null
+  return [...(months.length ? months : [hint(EMPTY()[review.filter] ?? EMPTY().all)]), more]
 }
 
 type StarredItem = { segmentId: string, seq: number, messageId?: number, role: string, text: string, at: number, title: string, deleted?: boolean }
@@ -169,16 +171,16 @@ type StarredItem = { segmentId: string, seq: number, messageId?: number, role: s
  * whose record was just deleted shows so, greyed, until the record is gone for good (or comes back with 撤销).
  */
 function starredList(review: State['review'], handlers: Handlers, now: number): View[] {
-  if (review.starred === null) return [hint('正在读取…')]
-  if (!review.starred.length) return [hint('还没有收藏。把鼠标移到一条消息上，点旁边的 ☆。')]
+  if (review.starred === null) return [hint(t("earlier.loading"))]
+  if (!review.starred.length) return [hint(t("bookmarks.empty"))]
   return [h('ul', { class: 'review-items review-stars' }, review.starred.map((item: StarredItem) =>
     h('li', { class: 'review-star', 'data-deleted': String(Boolean(item.deleted)) },
-      h('span', { class: 'history-meta mono' }, h('b', { class: 'history-title', text: SPEAKERS[item.role] ?? '记录' }),
-        `${formatListTime(item.at, now)} · ${item.title}${item.deleted ? ' · 已删除' : ''}`),
+      h('span', { class: 'history-meta mono' }, h('b', { class: 'history-title', text: SPEAKERS()[item.role] ?? t("history-panel.record") }),
+        `${formatListTime(item.at, now)} · ${item.title}${item.deleted ? t("review.deleted.suffix") : ''}`),
       h('div', { class: 'review-star-text', text: item.text }),
       item.deleted ? null : h('div', { class: 'review-star-actions' },
-        h('button', { class: 'btn btn-text btn-small', type: 'button', text: '取消收藏', onClick: () => handlers.toggleStar({ segmentId: item.segmentId, seq: item.seq }, false) }),
-        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '详情 →',
+        h('button', { class: 'btn btn-text btn-small', type: 'button', text: t("bookmarks.remove"), onClick: () => handlers.toggleStar({ segmentId: item.segmentId, seq: item.seq }, false) }),
+        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("history-panel.details"),
           onClick: () => handlers.openStarred({ segmentId: item.segmentId, seq: item.seq, messageId: item.messageId }) })))))]
 }
 
@@ -187,3 +189,5 @@ export function reviewView(state: State, handlers: Handlers, now = Date.now()): 
   return [focusView(state, handlers, now), filterBar(review.filter, handlers),
     ...(review.filter === 'stars' ? starredList(review, handlers, now) : topicList(review, handlers, now))]
 }
+
+onLocaleChange(() => { readViews = new WeakMap<ReaderMessage, View>() })

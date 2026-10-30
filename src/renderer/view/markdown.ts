@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n/translate.ts'
 // The page imports marked by its file (it has no bundler, and the build copies what is imported this way,
 // scripts/build.mjs); marked's types are those of its package, so they are taken from there.
 // @ts-expect-error the file has no types of its own beside it
@@ -53,7 +54,7 @@ function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
       case 'link': return link(token.href, inline(token.tokens, ctx), ctx.openLink)
       // In answers images are never loaded: the alt text, linked to where the image is. A host that may
       // show them (the 文件 preview, for pictures in the workspace) passes `image`.
-      case 'image': return ctx.image?.(token.href, token.text) ?? link(token.href, `[图片：${token.text || token.href}]`, ctx.openLink)
+      case 'image': return ctx.image?.(token.href, token.text) ?? link(token.href, t("files-panel.image", { value1: token.text || token.href }), ctx.openLink)
       case 'text': return token.tokens ? inline(token.tokens, ctx) : token.text
       // escape, html and anything newer: what was written, as text
       default: return token.raw
@@ -63,7 +64,7 @@ function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
 
 function listItem(item: Tokens.ListItem, ctx: Context) {
   return h('li', { class: item.task ? 'md-task' : null },
-    item.task ? h('input', { type: 'checkbox', checked: item.checked, disabled: true, 'aria-label': item.checked ? '已完成' : '未完成' }) : null,
+    item.task ? h('input', { type: 'checkbox', checked: item.checked, disabled: true, 'aria-label': item.checked ? t("island-view.completed") : t("markdown.incomplete") }) : null,
     ...blocks(item.tokens.filter((token) => token.type !== 'checkbox'), ctx, { tight: !item.loose }).flat())
 }
 

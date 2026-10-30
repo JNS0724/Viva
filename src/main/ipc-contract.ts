@@ -24,6 +24,8 @@ const none = z.tuple([])
 
 /** Each channel's arguments after the event, as a tuple; a trailing `.optional()` may be left out. */
 export const IPC_ARGS = Object.freeze({
+  'language:get': none,
+  'language:set': z.tuple([z.enum(['system', 'zh-CN', 'en'])]),
   'agent:info': none,
   'agent:prompt': z.tuple([text, images.optional()]),
   'agent:steer': z.tuple([text]),

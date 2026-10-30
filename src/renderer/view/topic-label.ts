@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n/translate.ts'
 import { contextShare, NEAR_FULL, topicCount } from '../topics.ts'
 import { h } from './dom.ts'
 
@@ -26,17 +27,17 @@ export function renderTopicLabel(area: HTMLElement, state: State, handlers: Hand
   const full = share !== null && share >= NEAR_FULL
   const chip = h('button', {
     class: 'chip ctx-chip', type: 'button', 'data-tone': full ? 'full' : null, 'aria-expanded': String(state.topic.menu),
-    title: '助手现在记得的内容', onClick: () => handlers.toggleTopicMenu(),
+    title: t("topic-label.what.the.assistant.currently.remembers"), onClick: () => handlers.toggleTopicMenu(),
   },
-  h('span', { text: full ? '快满了 · 建议开新话题' : `本话题 · ${count} 条` }),
+  h('span', { text: full ? t("topic-label.almost.full.consider.a.new.topic") : t("topic-label.this.topic.messages", { count: count }) }),
   percent === null ? null : h('span', { class: 'ctx-bar', 'aria-hidden': 'true' }, barFill(percent)),
   percent === null ? null : h('span', { class: 'ctx-pct', text: `${percent}%` }))
   const newTopic = h('button', {
     class: 'ctx-new', type: 'button', disabled: busy || state.switching,
     'aria-busy': String(state.switching),
-    title: state.switching ? '可以先输入，准备好后即可发送' : state.newTopicPending ? '重试准备当前新话题，保留草稿' : busy ? '先停止当前任务，再开新话题' : `开新话题（${NEW_TOPIC_KEY()}）`,
+    title: state.switching ? t("topic-label.you.can.type.now.and.send.when") : state.newTopicPending ? t("topic-label.retry.preparing.this.new.topic.keep.the") : busy ? t("new-topic-actions.stop.the.current.task.before.starting.a") : t("topic-label.new.topic", { value1: NEW_TOPIC_KEY() }),
     onClick: () => handlers.newSession(),
-  }, h('span', { 'aria-hidden': 'true', text: '＋' }), state.switching ? '准备中…' : state.newTopicPending ? '重试新话题' : '新话题')
+  }, h('span', { 'aria-hidden': 'true', text: '＋' }), state.switching ? t("topic-label.preparing") : state.newTopicPending ? t("topic-label.retry.new.topic") : t("earlier.new.topic"))
   return area.replaceChildren(...[chip, newTopic, state.topic.menu ? topicInfo(count, percent, handlers) : null].filter((part) => part !== null))
 }
 
@@ -45,11 +46,11 @@ export function renderTopicLabel(area: HTMLElement, state: State, handlers: Hand
  * its default, for whoever never finds the grips at its edges (view/column-resize.ts).
  */
 function topicInfo(count: number, percent: number | null, handlers: Handlers) {
-  const used = percent === null ? '还没算出用了多少' : `已用 ${percent}%`
-  return h('div', { class: 'ctx-menu', role: 'dialog', 'aria-label': '本话题' },
+  const used = percent === null ? t("topic-label.usage.not.available.yet") : t("topic.context.used", { p0: percent })
+  return h('div', { class: 'ctx-menu', role: 'dialog', 'aria-label': t("topic-label.this.topic") },
     h('div', { class: 'ctx-menu-info' },
-      h('b', { text: count ? `助手现在记得本话题的 ${count} 条` : '新话题：助手还什么都不记得' }),
-      h('span', { text: `${used}；满了以后，最早的部分会被自动压缩。关于你的记忆不占这里。想换个话题，点「＋ 新话题」或按 ${NEW_TOPIC_KEY()}。` }),
-      h('span', { text: '对话宽度可以拖动两侧边缘调整。' })),
-    h('button', { class: 'ctx-item', type: 'button', text: '对话恢复默认宽度', onClick: () => handlers.resetColumn() }))
+      h('b', { text: count ? t("topic.context.remembered", { p0: count }) : t("topic-label.new.topic.the.assistant.has.no.conversation") }),
+      h('span', { text: t("topic.context.explanation", { p0: used, p1: NEW_TOPIC_KEY() }) }),
+      h('span', { text: t("column.resize.hint") })),
+    h('button', { class: 'ctx-item', type: 'button', text: t("column.reset"), onClick: () => handlers.resetColumn() }))
 }

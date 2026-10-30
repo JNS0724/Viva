@@ -1,22 +1,24 @@
+import { t } from '../shared/i18n/translate.ts'
 /** UI copy only. Raw provider/RPC errors stay in application state and diagnostic logs, never in a bubble. */
 export function userError(message: string): string {
   if (/SetNamedSecurityInfoW|grantWrite\(|sandbox.{0,30}(?:prepar|setup)/i.test(message)) {
-    return '命令还没有执行：无法准备工作区的受限运行环境。请换到你拥有的本地文件夹后重试；详细原因可在应用日志中查看。'
+    return t("handoff.error.sandbox.setup")
   }
   // These are bounded status messages produced by the app itself, not provider response bodies.
-  if (/^助手意外退出，\d+ 秒后自动重新连接…$/.test(message)) return message
-  if (message.startsWith('助手连续意外退出，已停止重试：')) return '助手连续意外退出，已停止重试。请检查模型设置后重新打开应用。'
+  const reconnect = /^(?:助手意外退出，(\d+) 秒后自动重新连接…|The assistant exited unexpectedly\. Reconnecting in (\d+) seconds…)$/.exec(message)
+  if (reconnect) return t('main.main.the.assistant.exited.unexpectedly.reconnecting.in.seconds', { value1: Number(reconnect[1] ?? reconnect[2]) })
+  if (message.startsWith('助手连续意外退出，已停止重试：') || message.startsWith('The assistant exited repeatedly. Retrying has stopped:')) return t("errors.assistant.retries.stopped")
   if (/\b(?:401|403)\b|authentication|unauthori[sz]ed|invalid.{0,30}(?:api.?key|token)|api.?key.{0,30}invalid/i.test(message)) {
-    return '模型连接凭据无效或没有访问权限，请在设置里检查 key，或切换到可用的模型。'
+    return t("errors.model.credentials")
   }
   if (/\b429\b|rate.?limit|quota|insufficient.{0,12}(?:balance|credit)|余额不足/i.test(message)) {
-    return '模型服务的额度不足或请求太多，请检查服务额度，或稍后重试。'
+    return t("errors.model.quota")
   }
   if (/connection error|ECONN|ENOTFOUND|ETIMEDOUT|fetch failed|network|socket|timed?\s*out|timeout|超时/i.test(message)) {
-    return '暂时连不上模型服务，请检查网络和接口地址，稍后重试。'
+    return t("errors.model.connection")
   }
   if (/\b404\b|no adapter|unknown (?:model|provider)|model.{0,20}not found/i.test(message)) {
-    return '这个模型暂时不可用，请检查模型名称和接口地址，或切换到其他模型。'
+    return t("errors.model.unavailable")
   }
-  return '这次没有完成，请稍后重试。详细原因可在应用日志中查看。'
+  return t("errors.attempt.incomplete")
 }

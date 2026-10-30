@@ -1129,3 +1129,7 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
 @keyframes cat-sleep { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
 @media (prefers-reduced-motion: reduce) { .cat[data-mood="sleeping"] .cat-art { animation: none; } }
 .home-today { border-color: var(--accent); }
+
+/* Reveal only after the persisted interface language is available. */
+html[data-language-loading] body { visibility: hidden; }
+.pref-row select { max-width: 45%; min-width: 8em; }

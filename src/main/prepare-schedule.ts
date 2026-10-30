@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /**
  * When background preparation may run: at the times the user picks (时段), in batches, never per item. Picked the
  * first time it is needed and changed in settings: a preset (three, two or one a day) or times of the user's own
@@ -59,15 +60,15 @@ const minutesOf = (time: string) => {
 }
 
 /** Times as the user typed them, checked: HH:MM, at most six, an hour apart; sorted. */
-export function checkTimes(times: unknown, what = '时段'): string[] {
-  if (!Array.isArray(times)) throw new Error(`${what}不对`)
+export function checkTimes(times: unknown, what = t("main.prepare-schedule.schedule")): string[] {
+  if (!Array.isArray(times)) throw new Error(t("main.followups-ipc.invalid", { what: what }))
   const bad = times.find((time) => typeof time !== 'string' || !TIME.test(time))
-  if (bad !== undefined) throw new Error(`${what}要写成 08:30 这样：${String(bad).slice(0, 20)}`)
+  if (bad !== undefined) throw new Error(t("main.prepare-schedule.must.use.a.time.such.as", { what: what, value2: String(bad).slice(0, 20) }))
   const sorted = [...new Set(times as string[])].sort((a, b) => minutesOf(a) - minutesOf(b))
-  if (!sorted.length) throw new Error(`${what}至少要有一个`)
-  if (sorted.length > MAX_WINDOWS) throw new Error(`${what}最多 ${MAX_WINDOWS} 个`)
+  if (!sorted.length) throw new Error(t("main.prepare-schedule.needs.at.least.one.entry", { what: what }))
+  if (sorted.length > MAX_WINDOWS) throw new Error(t("main.prepare-schedule.allows.up.to.windows", { what: what, MAX_WINDOWS: MAX_WINDOWS }))
   const close = sorted.find((time, i) => i > 0 && minutesOf(time) - minutesOf(sorted[i - 1]) < MIN_GAP_MINUTES)
-  if (close) throw new Error(`${what}相邻至少隔 1 小时：${close}`)
+  if (close) throw new Error(t("main.prepare-schedule.adjacent.windows.must.be.at.least.hour", { what: what, close: close }))
   return sorted
 }
 
@@ -77,11 +78,11 @@ const freshDefault = (): PrepareSchedule => ({ ...DEFAULT_SCHEDULE, weekday: [..
 export function checkSchedule(input: Partial<PrepareSchedule>): PrepareSchedule {
   const merged = { ...freshDefault(), ...input }
   const preset = (PRESET_NAMES.includes(merged.preset) ? merged.preset : 'three') as Preset
-  const weekday = preset === 'custom' ? checkTimes(merged.weekday, '工作日的时段') : [...PRESETS[preset]]
+  const weekday = preset === 'custom' ? checkTimes(merged.weekday, t("main.prepare-schedule.weekday.windows")) : [...PRESETS[preset]]
   const weekendMode = (WEEKEND_MODES.includes(merged.weekendMode) ? merged.weekendMode : 'same') as WeekendMode
-  const weekend = weekendMode === 'custom' ? checkTimes(merged.weekend, '周末的时段') : []
+  const weekend = weekendMode === 'custom' ? checkTimes(merged.weekend, t("main.prepare-schedule.weekend.windows")) : []
   const { activeFrom, activeTo } = merged
-  if (!TIME.test(activeFrom) || !TIME.test(activeTo) || minutesOf(activeFrom) >= minutesOf(activeTo)) throw new Error('活跃时间段不对')
+  if (!TIME.test(activeFrom) || !TIME.test(activeTo) || minutesOf(activeFrom) >= minutesOf(activeTo)) throw new Error(t("main.prepare-schedule.invalid.active.hours"))
   const dailyCalls = Number.isInteger(merged.dailyCalls) && merged.dailyCalls > 0 ? Math.min(merged.dailyCalls, MAX_DAILY_CALLS) : DEFAULT_DAILY_CALLS
   const pausedUntil = typeof merged.pausedUntil === 'number' && Number.isFinite(merged.pausedUntil) ? merged.pausedUntil : null
   return { chosen: merged.chosen === true, preset, weekday, weekendMode, weekend, activeFrom, activeTo, dailyCalls, pausedUntil }

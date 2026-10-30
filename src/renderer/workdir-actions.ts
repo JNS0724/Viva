@@ -1,10 +1,7 @@
-/**
- * The working directory from the window: what the chip under the input and its menu ask of the main process
- * (main/work-dir-ipc.js), and what its answers mean on screen. The conversation itself moves on when the main
- * process says so (the `workdir` event, a new part of the timeline).
- */
-const BUSY = '助手正在工作，等这一轮结束再换工作目录'
-const FAILED = '没能切换工作目录'
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
+let BUSY = t("workdir-actions.wait.for.this.turn.to.finish.before")
+let FAILED = t("workdir-actions.could.not.change.the.working.directory")
 
 export function createWorkDirActions({ api, getState, dispatch, errorMessage, showToast }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast'>) {
   const refused = (message: string) => {
@@ -67,3 +64,8 @@ export function createWorkDirActions({ api, getState, dispatch, errorMessage, sh
     },
   }
 }
+
+onLocaleChange(() => {
+  BUSY = t("workdir-actions.wait.for.this.turn.to.finish.before")
+  FAILED = t("workdir-actions.could.not.change.the.working.directory")
+})

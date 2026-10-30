@@ -4,29 +4,30 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const ROOT = path.join(import.meta.dirname, '..')
-const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8')
+const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8')
 const GLOBALS = read('src/renderer/globals.d.ts')
 
 /** The block between `interface Name {` and its closing brace at the start of a line. */
-const interfaceBody = (name) => {
-  const start = GLOBALS.indexOf(`interface ${name} {`)
+const interfaceBody = (name: string): string => {
+  const match = new RegExp(`interface ${name}(?: extends (\\w+))? \\{`).exec(GLOBALS)
+  const start = match?.index ?? -1
   assert.ok(start >= 0, `globals.d.ts declares ${name}`)
-  return GLOBALS.slice(start, GLOBALS.indexOf('\n}', start))
+  return (match?.[1] ? interfaceBody(match[1]) : '') + GLOBALS.slice(start, GLOBALS.indexOf('\n}', start))
 }
 
 /** Each method a preload script puts on the page, with the channel it invokes or sends on (null: none). */
-const exposed = (rel) => new Map([...read(rel).matchAll(/^ {2}(\w+): (.*)$/gm)].map(([, name, rest]) => [
+const exposed = (rel: string) => new Map([...read(rel).matchAll(/^ {2}(\w+): (.*)$/gm)].map(([, name, rest]) => [
   name,
-  rest.match(/ipcRenderer\.(?:invoke|send)\('([^']+)'/)?.[1] ?? null,
+  (name === 'getLanguage' || name === 'setLanguage') ? null : rest.match(/ipcRenderer\.(?:invoke|send)\('([^']+)'/)?.[1] ?? null,
 ]))
 
 /** Each member a declared interface names, with the channel its type takes its arguments from (null: none). */
-const declared = (name) => new Map([...interfaceBody(name).matchAll(/^ {2}(\w+): (.*)$/gm)].map(([, member, type]) => [
+const declared = (name: string) => new Map([...interfaceBody(name).matchAll(/^ {2}(\w+): (.*)$/gm)].map(([, member, type]) => [
   member,
   type.match(/(?:Invoke|Args)<'([^']+)'>/)?.[1] ?? null,
 ]))
 
-const sorted = (map) => [...map].sort(([a], [b]) => a.localeCompare(b))
+const sorted = (map: Map<string, string | null>) => [...map].sort(([a], [b]) => a.localeCompare(b))
 
 test('window.agent is declared with every method preload.cjs puts on the page, each on its own channel', () => {
   assert.deepEqual(sorted(declared('AgentApi')), sorted(exposed('src/preload/preload.cjs')))

@@ -1,5 +1,7 @@
 # Windows conversation responsiveness and real streaming
 
+English | [简体中文](windows-performance-20261026.zh-CN.md)
+
 Validated on 2026-10-26, Windows build 26200 at 175% scaling. Branch: `codex/windows-performance`.
 Base: `d6238c88fcdc9861d357b83005042a66830ecfe7`, combining PR #45 and the already merged PR #44.
 Runtime: Electron 44.7.0, dsh 0.2.0-rc.2. Real-model checks used DeepSeek-V41-Flash / high.

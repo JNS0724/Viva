@@ -1,3 +1,4 @@
+import { checkLanguage } from './smoke-language.ts'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { BrowserWindow } from 'electron'
@@ -541,7 +542,8 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
   try {
     await fs.mkdir(outDir, { recursive: true })
     await wait(BOOT_WAIT_MS)
-    if (smokePhase === 'setup') {
+    if (smokePhase === 'language') problems.push(...await checkLanguage(win, outDir, hooks))
+    else if (smokePhase === 'setup') {
       problems.push(...await checkSetup(win, outDir))
       // On the settings page checkSetup leaves open.
       problems.push(...await checkSources(win, outDir, { userData: hooks.userData, fixtures: hooks.fixtures, pick: hooks.pickSourceFolder }))

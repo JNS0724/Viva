@@ -12,10 +12,13 @@ interface KineticTextProps {
 export const KineticText: React.FC<KineticTextProps> = ({ text, delay = 0, stagger = 1.6, style }) => {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
+  // Translations may have many more characters; finish the reveal within the same scene beat.
+  const characters = Array.from(text)
+  const step = Math.min(stagger, 20 / Math.max(1, characters.length - 1))
   return (
     <span style={{ display: 'inline-block', whiteSpace: 'pre', ...style }}>
-      {Array.from(text).map((char, i) => {
-        const p = spring({ frame: frame - delay - i * stagger, fps, config: { damping: 200, mass: 0.6 } })
+      {characters.map((char, i) => {
+        const p = spring({ frame: frame - delay - i * step, fps, config: { damping: 200, mass: 0.6 } })
         return (
           <span
             key={i}

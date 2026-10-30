@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Followup, FollowupStore, Suggestion } from './followup-store.ts'
@@ -44,7 +45,7 @@ export interface FollowupsIpcDeps {
 }
 
 const text = (value: unknown, what: string, max = MAX_FIELD_CHARS): string => {
-  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${what}不对`)
+  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(t("main.followups-ipc.invalid", { what: what }))
   return value.trim()
 }
 
@@ -52,8 +53,8 @@ const text = (value: unknown, what: string, max = MAX_FIELD_CHARS): string => {
 function timeOf(value: unknown, what: string, now: number): number | null {
   if (value === null || value === undefined || value === '') return null
   const at = Date.parse(text(value, what, MAX_TIME_CHARS))
-  if (!Number.isFinite(at)) throw new Error(`${what}不是有效的时间`)
-  if (at < now - PAST_SLACK_MS) throw new Error(`${what}已经过了`)
+  if (!Number.isFinite(at)) throw new Error(t("main.followups-ipc.is.not.a.valid.time", { what: what }))
+  if (at < now - PAST_SLACK_MS) throw new Error(t("main.followups-ipc.has.already.passed", { what: what }))
   return at
 }
 
@@ -96,9 +97,9 @@ function suggestionView(suggestion: Suggestion, message: FollowupsIpcDeps['messa
 function continueText(followup: Followup): string {
   const changed = changedSince(followup.readFiles)
   return [
-    `接着做「${followup.title}」：${followup.ask}`,
-    followup.draft ? `\n\n后台准备好的草稿：\n\n${followup.draft}` : '',
-    changed.length ? `\n\n（这些文件在准备之后改过，请重新读：${changed.join('、')}）` : '',
+    t("main.followups-ipc.continue", { title: followup.title, ask: followup.ask }),
+    followup.draft ? t("main.followups-ipc.draft.prepared.in.the.background", { draft: followup.draft }) : '',
+    changed.length ? t("main.followups-ipc.these.files.changed.after.preparation.read.them", { value1: changed.join('、') }) : '',
   ].join('')
 }
 
@@ -129,7 +130,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
 
   const existing = (id: string) => {
     const followup = deps.store.get(id)
-    if (!followup) throw new Error('这条跟进已经不在了')
+    if (!followup) throw new Error(t("main.followups-ipc.this.follow.up.is.no.longer.available"))
     return followup
   }
 
@@ -138,14 +139,14 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
   /** 跟进 on a card: the follow-up made, its times checked; the first one that needs preparing asks for windows. */
   handle('followups:accept', (input) => {
     const at = now()
-    const title = text(input.title, '标题', MAX_TITLE_CHARS)
-    const ask = text(input.ask, '要做的事')
-    const remindAt = timeOf(input.remindAt, '提醒时间', at)
-    const prepareBy = timeOf(input.prepareBy, '准备时间', at)
+    const title = text(input.title, t("main.followups-ipc.title"), MAX_TITLE_CHARS)
+    const ask = text(input.ask, t("main.followups-ipc.task.description"))
+    const remindAt = timeOf(input.remindAt, t("main.followups-ipc.reminder.time"), at)
+    const prepareBy = timeOf(input.prepareBy, t("main.followups-ipc.preparation.time"), at)
     const named = Array.isArray(input.files) ? input.files.slice(0, MAX_FILES) : []
-    const files = named.map((file: unknown) => path.resolve(deps.workDir(), text(file, '文件', MAX_PATH_CHARS)))
-    const watchPath = input.watchFile ? path.resolve(deps.workDir(), text(input.watchFile, '要看的文件', MAX_PATH_CHARS)) : null
-    if (watchPath && !fs.existsSync(watchPath)) throw new Error(`找不到要看的文件：${watchPath}`)
+    const files = named.map((file: unknown) => path.resolve(deps.workDir(), text(file, t("main.followups-ipc.files"), MAX_PATH_CHARS)))
+    const watchPath = input.watchFile ? path.resolve(deps.workDir(), text(input.watchFile, t("main.followups-ipc.watched.file"), MAX_PATH_CHARS)) : null
+    if (watchPath && !fs.existsSync(watchPath)) throw new Error(t("main.followups-ipc.watched.file.not.found", { watchPath: watchPath }))
     const conversationId = typeof input.conversationId === 'string' && deps.conversationExists(input.conversationId) ? input.conversationId : undefined
     const followup = deps.store.add({ title, ask, origin: { kind: 'chat', ...(conversationId ? { conversationId } : {}) }, remindAt, prepareBy, files, watchPath })
     // Its change time as it is now: what changes from here starts a preparation.
@@ -156,7 +157,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
 
   /** 不用 on a card: the same thing is not proposed again for 30 days (followups-main.ts admitProposal). */
   handle('followups:decline', (input) => {
-    deps.store.logEvent('suggest_declined', { title: text(input.title, '标题', MAX_TITLE_CHARS), never: input.never === true })
+    deps.store.logEvent('suggest_declined', { title: text(input.title, t("main.followups-ipc.title"), MAX_TITLE_CHARS), never: input.never === true })
     return view()
   })
 
@@ -184,7 +185,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
   })
 
   handle('followups:prepare-now', (id) => {
-    if (existing(id).status !== 'scheduled') throw new Error('这条已经准备过了')
+    if (existing(id).status !== 'scheduled') throw new Error(t("main.followups-ipc.this.item.has.already.been.prepared"))
     deps.scheduler.prepareNow(id)
     return view()
   })
@@ -205,8 +206,8 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
    */
   handle('followups:suggestion', (id, action) => {
     const suggestion = deps.store.getSuggestion(id)
-    if (!suggestion || suggestion.status !== 'open') throw new Error('这条建议已经处理过了')
-    if (!SUGGESTION_ACTIONS.has(action)) throw new Error('不认识的操作')
+    if (!suggestion || suggestion.status !== 'open') throw new Error(t("main.followups-ipc.this.suggestion.has.already.been.handled"))
+    if (!SUGGESTION_ACTIONS.has(action)) throw new Error(t("main.followups-ipc.unknown.operation"))
     if (action !== 'accept') {
       deps.store.settleSuggestion(id, action === 'never' ? 'never' : 'declined')
       deps.store.logEvent('suggest_declined', { from: 'message', never: action === 'never' })
@@ -226,7 +227,7 @@ export function registerFollowupsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
 
   /** From the tray or settings: no preparation for a while (0: go on). */
   handle('followups:pause', (minutes) => {
-    if (!Number.isInteger(minutes) || minutes < 0 || minutes > MAX_PAUSE_MINUTES) throw new Error('暂停时间不对')
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > MAX_PAUSE_MINUTES) throw new Error(t("main.followups-ipc.invalid.pause.duration"))
     deps.saveSchedule({ ...deps.schedule(), pausedUntil: minutes ? now() + minutes * MINUTE_MS : null })
     return afterChange()
   })

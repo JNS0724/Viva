@@ -1,3 +1,4 @@
+import { PromoLanguage, usePromoCopy, type PromoLocale } from './i18n'
 import { linearTiming, springTiming, TransitionSeries } from '@remotion/transitions'
 import { fade } from '@remotion/transitions/fade'
 import { slide } from '@remotion/transitions/slide'
@@ -18,7 +19,9 @@ const soft = springTiming({ config: { damping: 200 }, durationInFrames: TRANSITI
 const even = linearTiming({ durationInFrames: TRANSITION_FRAMES })
 
 /** About 40 seconds: the promise, the real demo, what else it does, the door for developers, where to get it. */
-export const Promo: React.FC = () => (
+const PromoContent: React.FC = () => {
+  const copy = usePromoCopy()
+  return (
   <AbsoluteFill>
     <Backdrop />
     <TransitionSeries>
@@ -31,15 +34,15 @@ export const Promo: React.FC = () => (
       <TransitionSeries.Sequence durationInFrames={SCENE_FRAMES.bento}><Bento /></TransitionSeries.Sequence>
       <TransitionSeries.Transition presentation={wipe({ direction: 'from-right' })} timing={soft} />
       <TransitionSeries.Sequence durationInFrames={SCENE_FRAMES.approval}>
-        <Feature image="approval.png" eyebrow="动手前先问你" title="会改东西的，先给你看" body="要跑的命令、要动的文件写在卡片上，你允许了才做。" focus={{ x: 50, y: 70 }} side="right" accent={COLORS.orange} />
+        <Feature image="approval.png" eyebrow={copy('copy21')} title={copy('copy22')} body={copy('copy23')} focus={{ x: 50, y: 70 }} side="right" accent={COLORS.orange} />
       </TransitionSeries.Sequence>
       <TransitionSeries.Transition presentation={slide({ direction: 'from-right' })} timing={soft} />
       <TransitionSeries.Sequence durationInFrames={SCENE_FRAMES.files}>
-        <Feature image="files.png" eyebrow="文件就在手边" title="改了什么，一眼看清" body="工作目录里的文件、表格和 Markdown 直接预览。" focus={{ x: 70, y: 40 }} side="left" />
+        <Feature image="files.png" eyebrow={copy('copy24')} title={copy('copy25')} body={copy('copy26')} focus={{ x: 70, y: 40 }} side="left" />
       </TransitionSeries.Sequence>
       <TransitionSeries.Transition presentation={slide({ direction: 'from-right' })} timing={soft} />
       <TransitionSeries.Sequence durationInFrames={SCENE_FRAMES.today}>
-        <Feature image="home.png" eyebrow="今天" title="回到电脑前，先看一眼今天" body="准备好几件、几条消息要你看，都还没动，等你点头。" focus={{ x: 50, y: 62 }} side="right" accent={COLORS.violet} />
+        <Feature image="home.png" eyebrow={copy('copy27')} title={copy('copy28')} body={copy('copy29')} focus={{ x: 50, y: 62 }} side="right" accent={COLORS.violet} />
       </TransitionSeries.Sequence>
       <TransitionSeries.Transition presentation={fade()} timing={even} />
       <TransitionSeries.Sequence durationInFrames={SCENE_FRAMES.developers}><Developers /></TransitionSeries.Sequence>
@@ -48,3 +51,5 @@ export const Promo: React.FC = () => (
     </TransitionSeries>
   </AbsoluteFill>
 )
+}
+export const Promo: React.FC<{ locale: PromoLocale }> = ({ locale }) => <PromoLanguage.Provider value={locale}><PromoContent /></PromoLanguage.Provider>

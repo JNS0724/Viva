@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { isBusy } from './state.ts'
 
 const PREVIOUS_TOPIC_EVENTS = new Set(['update', 'config', 'turn_end', 'memory_context', 'question', 'question_closed', 'secret_request', 'secret_closed', 'followup_propose'])
@@ -16,7 +17,7 @@ export function createNewTopicAction({ getState, dispatch, open, focus, jump, to
   return async () => {
     const state = getState()
     if (state.switching || state.workDir.switching || state.settings.busy || state.settings.permissionBusy || state.rewind.busy || state.tasks.moving) return
-    if (isBusy(state)) { toast('先停止当前任务，再开新话题'); return }
+    if (isBusy(state)) { toast(t("new-topic-actions.stop.the.current.task.before.starting.a")); return }
     const started = performance.now()
     dispatch({ type: 'new_session_pending', at: Date.now() })
     jump()

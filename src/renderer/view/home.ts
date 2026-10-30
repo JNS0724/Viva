@@ -1,3 +1,4 @@
+import { t } from '../../shared/i18n/translate.ts'
 import { isProfileEmpty } from '../personal-state.ts'
 import { catMood, greeting, setupView, statusView } from '../selectors.ts'
 import { catFor } from './cat.ts'
@@ -12,13 +13,13 @@ const heroCat = (state: State, tone: string) => h('div', { class: 'cat-hero', 'd
 
 /** What the greeting says under it: the setup, the background at work, or the usual question. */
 function subtitle(state: State) {
-  if (state.info.mode === 'setup') return '先连接模型，我们就能开始。'
-  if (state.followups.state?.running) return '我在后台把你的待办过一遍，你忙你的。'
-  return '今天想让我帮你做什么？'
+  if (state.info.mode === 'setup') return t("home.connect.a.model.to.get.started")
+  if (state.followups.state?.running) return t("home.i.ll.review.your.to.dos.in")
+  return t("home.what.can.i.help.you.with.today")
 }
 
 function hero(state: State, now: number) {
-  return h('section', { class: 'home-hero', 'aria-label': '助手' },
+  return h('section', { class: 'home-hero', 'aria-label': t("home.assistant") },
     heroCat(state, statusView(state, now).tone),
     h('div', { class: 'hero-copy' },
       h('h1', { class: 'greeting', text: greeting(new Date(now)) }),
@@ -38,12 +39,12 @@ function todayCard(state: State, handlers: Handlers, now: number) {
   const suggested = state.followups.suggestions.filter((s: Untyped) => s.status === 'open').length
   const later = followups.filter((f) => OPEN.has(f.status) && f.status !== 'ready' && f.remindAt && f.remindAt > now && f.remindAt <= endOfDay(now)).length
   if (!ready && !suggested && !later) return null
-  const parts = [ready ? `准备好 ${ready} 件` : null, suggested ? `${suggested} 条消息要你看看` : null, later ? `今天要提醒 ${later} 件` : null].filter(Boolean)
-  return h('section', { class: 'home-card home-today', 'aria-label': '今天' },
+  const parts = [ready ? t("home.ready", { ready: ready }) : null, suggested ? t("home.messages.to.review", { suggested: suggested }) : null, later ? t("home.reminders.today", { later: later }) : null].filter(Boolean)
+  return h('section', { class: 'home-card home-today', 'aria-label': t("selectors.today") },
     h('div', { class: 'home-card-copy' },
-      h('h2', { class: 'setup-title', text: '今天' }),
-      h('p', { class: 'setup-body', text: `${parts.join(' · ')}。都还没动，等你点头。` })),
-    h('button', { class: 'btn btn-accent btn-small', type: 'button', text: '去看看', onClick: () => handlers.openTasks() }))
+      h('h2', { class: 'setup-title', text: t("selectors.today") }),
+      h('p', { class: 'setup-body', text: t("home.nothing.has.been.acted.on.waiting.for", { value1: parts.join(' · ') }) })),
+    h('button', { class: 'btn btn-accent btn-small', type: 'button', text: t("home.take.a.look"), onClick: () => handlers.openTasks() }))
 }
 
 /** While the agent cannot start: what is missing and how to fix it. */
@@ -56,13 +57,13 @@ function setupCard(setup: NonNullable<ReturnType<typeof setupView>>, handlers: H
 }
 
 /** First launches only: a light invitation to the intro, until it is done or put off. */
-const introCard = (handlers: Handlers) => h('section', { class: 'home-card tile-intro', 'aria-label': '让助手认识你' },
+const introCard = (handlers: Handlers) => h('section', { class: 'home-card tile-intro', 'aria-label': t("home.let.the.assistant.get.to.know.you") },
   h('div', { class: 'home-card-copy' },
-    h('h2', { class: 'intro-title', text: '让助手先认识你' }),
-    h('p', { class: 'setup-body', text: '填几项你的工作，之后的回答会更贴合你。' })),
+    h('h2', { class: 'intro-title', text: t("home.introduce.yourself") }),
+    h('p', { class: 'setup-body', text: t("home.add.a.few.details.about.your.work") })),
   h('div', { class: 'intro-actions' },
-    h('button', { class: 'btn btn-accent btn-small', type: 'button', id: 'start-intro', text: '开始', onClick: () => handlers.openProfile('intro') }),
-    h('button', { class: 'btn btn-outline btn-small', type: 'button', text: '以后再说', onClick: handlers.skipIntro })))
+    h('button', { class: 'btn btn-accent btn-small', type: 'button', id: 'start-intro', text: t("home.get.started"), onClick: () => handlers.openProfile('intro') }),
+    h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("home.maybe.later"), onClick: handlers.skipIntro })))
 
 const wantsIntro = (memory: State['memory']) => memory.loaded && memory.onboarding === 'pending' && isProfileEmpty(memory)
 

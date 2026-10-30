@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { checkManifest, MANIFEST_FILE, type SourceManifest } from './source-contract.ts'
@@ -18,16 +19,16 @@ export function readManifest(dir: string): { manifest: SourceManifest } | { prob
   const file = path.join(dir, MANIFEST_FILE)
   let text: string
   try {
-    if (fs.statSync(file).size > MAX_MANIFEST_BYTES) return { problem: `${MANIFEST_FILE} 太大了` }
+    if (fs.statSync(file).size > MAX_MANIFEST_BYTES) return { problem: t("main.source-folders.is.too.large", { MANIFEST_FILE: MANIFEST_FILE }) }
     text = fs.readFileSync(file, 'utf8')
   } catch (err) {
-    return { problem: (err as NodeJS.ErrnoException).code === 'ENOENT' ? `没有 ${MANIFEST_FILE}` : `读不了 ${MANIFEST_FILE}` }
+    return { problem: (err as NodeJS.ErrnoException).code === 'ENOENT' ? t("main.source-folders.missing", { MANIFEST_FILE: MANIFEST_FILE }) : t("main.source-folders.cannot.read", { MANIFEST_FILE: MANIFEST_FILE }) }
   }
   let data: unknown
   try {
     data = JSON.parse(text)
   } catch {
-    return { problem: `${MANIFEST_FILE} 不是有效的 JSON` }
+    return { problem: t("main.source-folders.is.not.valid.json", { MANIFEST_FILE: MANIFEST_FILE }) }
   }
   const checked = checkManifest(data)
   return checked.problem === undefined ? { manifest: checked.manifest } : { problem: checked.problem }
@@ -54,7 +55,7 @@ export function listSourceFolders(root: string): { sources: SourceFolder[], brok
       continue
     }
     if (sources.some((source) => source.manifest.id === read.manifest.id)) {
-      broken.push({ dir, name, problem: `id「${read.manifest.id}」和另一个消息源重复` })
+      broken.push({ dir, name, problem: t("main.source-folders.id.duplicates.another.source", { id: read.manifest.id }) })
       continue
     }
     sources.push({ dir, manifest: read.manifest })

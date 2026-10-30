@@ -1,3 +1,5 @@
+import { t } from '../../shared/i18n/translate.ts'
+import { localeRevision } from '../../shared/i18n/locale.ts'
 import { formatElapsed } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h } from './dom.ts'
@@ -70,14 +72,14 @@ function headParts(view: IslandShown, { host, now, tools, shortcut }: { host: Ho
   const desk = host === 'desk'
   switch (view.form) {
     case 'mini': return tools
-      ? [h('span', { class: 'isl-ask', text: '问 Viva，或把文件拖过来' }), h('span', { class: 'isl-kbd', text: shortcut })]
+      ? [h('span', { class: 'isl-ask', text: t("island-dom.ask.viva.or.drop.files.here") }), h('span', { class: 'isl-kbd', text: shortcut })]
       : []
     case 'coach': return [label(view.label)]
     case 'working': return desk
       ? [label(view.label), more(view.action), time(elapsedSince(view, now)), ring()]
-      : [label(view.label), time(elapsedSince(view, now)), view.steps ? more(`· ${view.steps} 步`) : null, ring()]
+      : [label(view.label), time(elapsedSince(view, now)), view.steps ? more(t("island-dom.steps", { steps: view.steps })) : null, ring()]
     case 'waiting':
-    case 'asking': return desk ? [label(view.label), taskTag(view)] : [label('需要你处理'), taskTag(view), more('↓')]
+    case 'asking': return desk ? [label(view.label), taskTag(view)] : [label(t("island-dom.needs.your.attention")), taskTag(view), more('↓')]
     // A task in the background that has just ended says only that (island-view.js).
     case 'done': return view.task ? [label(view.label)] : [label(view.label), time(formatElapsed(view.elapsedMs ?? 0)), desk ? more(view.detail) : null]
     default: return [label(view.label), more(view.detail)]
@@ -102,7 +104,7 @@ function permissionPanel(view: IslandShown, act: IslandAct) {
     h('div', { class: 'isl-actions' },
       permission.options.map((option: { optionId: string, name: string, role: string }) => button(option.name, ROLE[option.role],
         () => act({ kind: 'permission', requestId: permission.requestId, optionId: option.optionId }))),
-      button('查看详情', `${ROLE.text} isl-push`, () => act({ kind: 'open' }))),
+      button(t("island-dom.view.details"), `${ROLE.text} isl-push`, () => act({ kind: 'open' }))),
   ]
 }
 
@@ -113,17 +115,17 @@ function questionPanel(view: IslandShown, act: IslandAct) {
     h('div', { class: 'isl-title', text: question.text }),
     h('div', { class: 'isl-actions' },
       question.options.map((label: string) => button(label, ROLE.secondary, () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }))),
-      button(question.options.length ? '其他…' : '打开窗口回答', question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
-      question.skippable ? button('跳过', `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null),
+      button(question.options.length ? t("island-dom.other") : t("island-dom.open.window.to.answer"), question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
+      question.skippable ? button(t("island-dom.skip"), `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null),
   ]
 }
 
 /** The first time the cat rests on the desktop: what it can do, which nothing on it shows otherwise. */
 function coachPanel(act: IslandAct, shortcut: string) {
-  const tips = [`点我，或在任何应用里按 ${shortcut}，随时提问`, '把文件拖到我身上，交给我处理', '按住可以拖到别处；右键看更多']
+  const tips = [t("island-dom.click.me.or.press.in.any.app", { shortcut: shortcut }), t("island-dom.drop.files.onto.me.for.help"), t("island-dom.drag.to.move.right.click.for.more")]
   return [
     h('ul', { class: 'isl-tips' }, tips.map((text) => h('li', { text }))),
-    h('div', { class: 'isl-actions' }, button('知道了', 'isl-btn-blue', () => act({ kind: 'coached' }))),
+    h('div', { class: 'isl-actions' }, button(t("island-dom.got.it"), 'isl-btn-blue', () => act({ kind: 'coached' }))),
   ]
 }
 
@@ -152,8 +154,8 @@ export function offersBackground(view: IslandShown, now: number) {
 
 /** 这件要一会儿: not asked, only there for whoever opens the island while waiting (D). */
 const offerRow = (act: IslandAct) => h('div', { class: 'isl-offer' },
-  h('span', { text: '这件要一会儿。放到后台，你先忙别的？' }),
-  button('放到后台', 'isl-btn-blue isl-push', () => act({ kind: 'background' })))
+  h('span', { text: t("island-dom.this.will.take.a.while.move.it") }),
+  button(t("island-dom.move.to.background"), 'isl-btn-blue isl-push', () => act({ kind: 'background' })))
 
 /** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far, then the tasks. */
 function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: string, offer: boolean, now: number): View[] {
@@ -165,8 +167,8 @@ function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: str
   const steps = view.recent.length ? [
     stepList(view),
     h('div', { class: 'isl-actions' },
-      working ? button('停止', 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
-      button('查看完整过程 →', ROLE.text, () => act({ kind: 'trace' }))),
+      working ? button(t("island-dom.stop"), 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
+      button(t("island-dom.view.full.activity"), ROLE.text, () => act({ kind: 'trace' }))),
   ] : []
   return [...steps, offer ? offerRow(act) : null, backgroundSection(view, act, now)]
 }
@@ -178,9 +180,9 @@ const tool = (label: string, cls: string, onClick: () => void, text = '') => h('
  * would not open it, and the grip it is dragged by.
  */
 function deskTools(view: IslandShown, act: IslandAct) {
-  const grip = h('span', { class: 'isl-grip', title: '按住拖动', 'aria-hidden': 'true' })
-  if (view.form === 'working') return [tool('停止', 'isl-tool-stop', () => act({ kind: 'cancel' })), grip]
-  if (view.form === 'mini') return [tool('打开窗口', 'isl-tool-open', () => act({ kind: 'open' }), '↗'), grip]
+  const grip = h('span', { class: 'isl-grip', title: t("island-dom.drag.to.move"), 'aria-hidden': 'true' })
+  if (view.form === 'working') return [tool(t("island-dom.stop"), 'isl-tool-stop', () => act({ kind: 'cancel' })), grip]
+  if (view.form === 'mini') return [tool(t("island-dom.open.window"), 'isl-tool-open', () => act({ kind: 'open' }), '↗'), grip]
   return [grip]
 }
 
@@ -268,6 +270,8 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
     const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
     const offer = host === 'bar' && open && offersBackground(view, now)
     const next = islandSignatures(view, open, showTools, offer)
+    next.row = `${localeRevision()}:${next.row}`
+    next.panel = `${localeRevision()}:${next.panel}`
     if (next.row === signature.row) {
       const time = head.querySelector('.isl-time')
       if (time && view.form === 'working') time.textContent = elapsedSince(view, now)

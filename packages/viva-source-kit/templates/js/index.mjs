@@ -7,7 +7,7 @@ async function fetchAfter(config, since) {
   const last = 5
   const items = []
   for (let n = since + 1; n <= Math.min(since + 2, last); n += 1) {
-    items.push({ number: n, sender: '[示例发件人]', subject: `示例消息 ${n}`, body: `这是第 ${n} 条`, time: Date.UTC(2026, 9, 25, n) })
+    items.push({ number: n, sender: '[Example sender]', subject: `Example message ${n}`, body: `Message number ${n} `, time: Date.UTC(2026, 9, 25, n) })
   }
   return items
 }
@@ -15,7 +15,7 @@ async function fetchAfter(config, since) {
 defineSource({
   // Answer true when the config works, or say what is wrong in words the user can act on.
   async check(config) {
-    return config.account ? true : '请填写账号'
+    return config.account ? true : 'Enter an account'
   },
   // Hand back what came after the cursor (null the first time) and the cursor to read on from next time.
   async poll(config, cursor) {

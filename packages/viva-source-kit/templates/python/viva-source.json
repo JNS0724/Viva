@@ -1,14 +1,14 @@
 {
   "contract": 1,
   "id": "my-source",
-  "name": "我的消息源",
+  "name": "My source",
   "kind": "other",
   "run": ["python3", "main.py"],
   "runOn": { "win32": ["py", "-3", "main.py"] },
-  "reads": "TODO：写清会读什么，例如「告警名、级别、时间」",
+  "reads": "TODO: describe what is read, e.g. alert name, severity, time",
   "everyMinutes": 5,
   "config": {
-    "account": { "type": "string", "title": "账号", "default": "demo" },
-    "token": { "type": "secret", "title": "访问令牌", "help": "加密保存在用户的电脑上" }
+    "account": { "type": "string", "title": "Account", "default": "demo" },
+    "token": { "type": "secret", "title": "Access token", "help": "Stored encrypted on the user’s computer" }
   }
 }

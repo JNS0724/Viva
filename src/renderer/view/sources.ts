@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { formatListTime, formatSize } from '../selectors.ts'
 import { h, label } from './dom.ts'
 
@@ -16,26 +18,26 @@ type Source = {
 /** A folder chosen to install (sources-ipc.ts pendingView). */
 type Pending = { id: string, name: string, kind: string, reads: string, command: string, fields: readonly string[], from: string, files: number, bytes: number, replaces: boolean }
 
-const KIND_LABEL: Readonly<Record<string, string>> = { mail: '邮件', alert: '告警', chat: '通讯', other: '其他' }
-const SOURCE_DOCS_HINT = '消息源把邮件、告警、通讯工具里的新消息交给 Viva。每个消息源是一个文件夹，里面有 viva-source.json；'
-  + '点「安装消息源…」选择文件夹。它读到的内容只当数据，碰不到助手的工具。'
-const TRUST_WARNING = '消息源程序以你的权限运行，能读你的文件、能联网。只安装信得过的来源。'
+let KIND_LABEL: Readonly<Record<string, string>> = { mail: t("sources.email"), alert: t("sources.alerts"), chat: t("sources.messaging"), other: t("sources.other") }
+let SOURCE_DOCS_HINT = t("sources.sources.deliver.new.email.alerts.and.messages")
+  + t("sources.click.install.source.and.choose.a.folder")
+let TRUST_WARNING = t("sources.source.programs.run.with.your.permissions.and")
 
 const smallButton = (text: string, extra: Record<string, unknown>) => h('button', { class: 'btn btn-outline btn-small', type: 'button', text, ...extra })
 
 /** One line on how the source is doing: off, failing, or when it last read and how much it has. */
 function statusLine(source: Source) {
   const { settings, health } = source
-  if (!settings.enabled) return { tone: 'off', text: settings.missing.length ? `未打开 · 还要填：${settings.missing.join('、')}` : '未打开' }
-  if (source.running) return { tone: 'ok', text: '正在拉取…' }
-  if (health.lastError) return { tone: 'off', text: `出错：${health.lastError}${health.failures > 1 ? `（连续 ${health.failures} 次，稍后再试）` : ''}` }
-  const last = health.lastOkAt ? ` · 上次 ${formatListTime(health.lastOkAt)}` : ''
-  return { tone: 'ok', text: `每 ${settings.everyMinutes} 分钟${last} · 存着 ${health.count} 条` }
+  if (!settings.enabled) return { tone: 'off', text: settings.missing.length ? t("sources.disabled.still.needed", { value1: settings.missing.join('、') }) : t("sources.disabled") }
+  if (source.running) return { tone: 'ok', text: t("sources.fetching") }
+  if (health.lastError) return { tone: 'off', text: t("sources.error", { lastError: health.lastError, value2: health.failures > 1 ? t("sources.consecutive.failures.retrying.later", { failures: health.failures }) : '' }) }
+  const last = health.lastOkAt ? t("sources.last", { value1: formatListTime(health.lastOkAt) }) : ''
+  return { tone: 'ok', text: t("sources.every.minutes.messages.stored", { everyMinutes: settings.everyMinutes, last: last, count: health.count }) }
 }
 
 function latestList(source: Source) {
   if (!source.settings.enabled || !source.latest.length) return null
-  return h('ul', { class: 'source-latest', 'aria-label': `${source.name} 最近收到的` },
+  return h('ul', { class: 'source-latest', 'aria-label': t("sources.recently.received.by", { name: source.name }) },
     source.latest.map((m) => h('li', null,
       h('span', { class: 'source-latest-time mono', text: formatListTime(m.at) }),
       m.from ? h('span', { class: 'source-latest-from', text: m.from }) : null,
@@ -51,18 +53,18 @@ function sourceItem(source: Source, sources: Sources, handlers: Handlers) {
         h('span', { class: 'ext-name', text: source.name }),
         h('span', { class: 'badge', text: KIND_LABEL[source.kind] ?? source.kind }),
         h('span', { class: 'ext-status', 'data-tone': status.tone, text: status.text })),
-      h('span', { class: 'ext-detail', text: `会读：${source.reads}` }),
-      source.health.dropped.length ? h('span', { class: 'ext-detail', text: `上次有 ${source.health.dropped.length} 条格式不对，没收：${source.health.dropped[0]}` }) : null,
+      h('span', { class: 'ext-detail', text: t("sources.will.read", { reads: source.reads }) }),
+      source.health.dropped.length ? h('span', { class: 'ext-detail', text: t("sources.malformed.messages.were.rejected.last.time", { length: source.health.dropped.length, value2: source.health.dropped[0] }) }) : null,
       latestList(source)),
     h('div', { class: 'ext-actions' },
-      source.settings.enabled ? smallButton(sources.busy === source.id ? '拉取中…' : '现在拉一次', {
-        disabled: busy || source.running, 'aria-label': `现在拉一次 ${source.name}`, onClick: () => handlers.pollSourceNow(source.id),
+      source.settings.enabled ? smallButton(sources.busy === source.id ? t("sources.fetching.2") : t("sources.fetch.now"), {
+        disabled: busy || source.running, 'aria-label': t("sources.fetch.now.2", { name: source.name }), onClick: () => handlers.pollSourceNow(source.id),
       }) : null,
-      smallButton('设置', { disabled: busy, 'aria-label': `设置消息源 ${source.name}`, onClick: () => handlers.editSource(source.id) }),
-      smallButton('移除', { disabled: busy || source.running, 'aria-label': `移除消息源 ${source.name}`, onClick: () => handlers.removeSource(source.id, source.name) }),
+      smallButton(t("settings.settings"), { disabled: busy, 'aria-label': t("sources.configure.source", { name: source.name }), onClick: () => handlers.editSource(source.id) }),
+      smallButton(t("extensions.remove"), { disabled: busy || source.running, 'aria-label': t("sources.remove.source", { name: source.name }), onClick: () => handlers.removeSource(source.id, source.name) }),
       h('input', {
         // Unnamed, so a re-render shows whether it is on rather than what was last clicked (a refused switch-on).
-        type: 'checkbox', class: 'switch source-switch', checked: source.settings.enabled, disabled: busy, 'aria-label': `打开消息源 ${source.name}`,
+        type: 'checkbox', class: 'switch source-switch', checked: source.settings.enabled, disabled: busy, 'aria-label': t("sources.enable.source", { name: source.name }),
         onChange: (event: Event) => handlers.toggleSource(source.id, (event.target as HTMLInputElement).checked),
       })))
 }
@@ -80,7 +82,7 @@ function fieldInput(field: Field, source: Source, version: string) {
         (field.values ?? []).map((option) => h('option', { value: option, selected: option === value, text: option })))
     case 'secret': {
       const saved = source.settings.savedSecrets.includes(field.key)
-      return h('input', { ...common, type: 'password', class: 'field', autocomplete: 'off', spellcheck: 'false', placeholder: saved ? '保持不变（已加密保存）· 填写则替换' : '' })
+      return h('input', { ...common, type: 'password', class: 'field', autocomplete: 'off', spellcheck: 'false', placeholder: saved ? t("extensions.leave.unchanged.encrypted.enter.a.value.to") : '' })
     }
     case 'number':
       return h('input', { ...common, type: 'number', class: 'field', value: value === undefined ? '' : String(value) })
@@ -111,8 +113,8 @@ function checkLine(sources: Sources, source: Source) {
   const check = sources.check
   if (!check || check.id !== source.id) return null
   return check.ok
-    ? h('p', { class: 'form-notice', role: 'status', text: '连接正常' })
-    : h('p', { class: 'form-error', role: 'alert', text: `连不上：${check.problem}` })
+    ? h('p', { class: 'form-notice', role: 'status', text: t("sources.connection.successful") })
+    : h('p', { class: 'form-error', role: 'alert', text: t("sources.could.not.connect", { problem: check.problem }) })
 }
 
 /** The source's settings in place: every field its viva-source.json declares, and how often to read. */
@@ -120,25 +122,25 @@ function editItem(source: Source, sources: Sources, handlers: Handlers) {
   const version = `${source.id}:${source.settings.savedSecrets.join(',')}`
   const busy = sources.busy !== null
   const form = h('form', {
-    class: 'ext-edit', 'aria-label': `设置消息源 ${source.name}`,
+    class: 'ext-edit', 'aria-label': t("sources.configure.source", { name: source.name }),
     onSubmit: (event: SubmitEvent) => {
       event.preventDefault()
       handlers.saveSource(source.id, formValues(event.currentTarget as HTMLFormElement, source))
     },
   },
-  h('div', { class: 'ext-edit-head' }, h('span', { class: 'ext-name', text: `设置「${source.name}」` })),
+  h('div', { class: 'ext-edit-head' }, h('span', { class: 'ext-name', text: t("sources.configure", { name: source.name }) })),
   source.fields.map((field) => formRow(field.required ? `${field.title} *` : field.title, fieldInput(field, source, version), field.help)),
-  formRow('多久拉一次', h('input', {
+  formRow(t("sources.fetch.interval"), h('input', {
     class: 'field', type: 'number', name: 'source-every', min: 1, max: 1440, step: 1, 'data-version': version,
-    value: String(source.settings.everyMinutes), 'aria-label': '多久拉一次（分钟）',
-  }), '分钟'),
-  h('p', { class: 'ext-detail mono ellipsis', title: source.command, text: `运行：${source.command}` }),
+    value: String(source.settings.everyMinutes), 'aria-label': t("sources.fetch.interval.minutes"),
+  }), t("sources.minutes")),
+  h('p', { class: 'ext-detail mono ellipsis', title: source.command, text: t("sources.runs", { command: source.command }) }),
   checkLine(sources, source),
   h('div', { class: 'ext-edit-foot' },
-    h('button', { class: 'btn btn-accent btn-small', type: 'submit', disabled: busy, text: sources.busy === source.id ? '处理中…' : '保存' }),
-    smallButton('测试连接', { disabled: busy, onClick: () => handlers.checkSource(source.id, formValues(form, source)) }),
-    smallButton('取消', { onClick: () => handlers.cancelSourceEdit() }),
-    h('p', { class: 'help', text: '密钥加密保存在这台电脑上；保存后下次拉取就用新的设置' })))
+    h('button', { class: 'btn btn-accent btn-small', type: 'submit', disabled: busy, text: sources.busy === source.id ? t("extensions.working") : t("extensions.save") }),
+    smallButton(t("sources.test.connection"), { disabled: busy, onClick: () => handlers.checkSource(source.id, formValues(form, source)) }),
+    smallButton(t("extensions.cancel"), { onClick: () => handlers.cancelSourceEdit() }),
+    h('p', { class: 'help', text: t("sources.credentials.are.encrypted.on.this.computer.the") })))
   return h('li', { class: 'ext-item', 'data-id': source.id, 'data-editing': 'true' }, form)
 }
 
@@ -146,43 +148,50 @@ function editItem(source: Source, sources: Sources, handlers: Handlers) {
 function pendingCard(pending: Pending, sources: Sources, handlers: Handlers) {
   const busy = sources.busy !== null
   const row = (title: string, text: string, mono = false) => h('div', { class: 'ext-edit-row' }, label(title), h('span', { class: mono ? 'ext-detail mono' : 'ext-detail', text }))
-  return h('div', { class: 'ext-edit source-pending', role: 'group', 'aria-label': `安装消息源 ${pending.name}` },
+  return h('div', { class: 'ext-edit source-pending', role: 'group', 'aria-label': t("sources.install.source", { name: pending.name }) },
     h('div', { class: 'ext-edit-head' },
-      h('span', { class: 'ext-name', text: pending.replaces ? `更新「${pending.name}」？` : `安装「${pending.name}」？` }),
+      h('span', { class: 'ext-name', text: pending.replaces ? t("sources.update", { name: pending.name }) : t("sources.install", { name: pending.name }) }),
       h('span', { class: 'badge', text: KIND_LABEL[pending.kind] ?? pending.kind })),
-    row('会读', pending.reads),
-    row('会运行', pending.command, true),
-    row('要你填', pending.fields.length ? pending.fields.join('、') : '不用填'),
-    row('来自', `${pending.from} · ${pending.files} 个文件 · ${formatSize(pending.bytes)}`, true),
-    h('p', { class: 'form-error', text: pending.replaces ? `${TRUST_WARNING}会替换已经装好的同名消息源，设置保留。` : TRUST_WARNING }),
+    row(t("followups.will.read"), pending.reads),
+    row(t("sources.will.run"), pending.command, true),
+    row(t("sources.required.fields"), pending.fields.length ? pending.fields.join('、') : t("sources.no.fields.required")),
+    row(t("sources.from"), t("sources.files", { from: pending.from, files: pending.files, value3: formatSize(pending.bytes) }), true),
+    h('p', { class: 'form-error', text: pending.replaces ? t("sources.this.replaces.the.installed.source.with.the", { TRUST_WARNING: TRUST_WARNING }) : TRUST_WARNING }),
     h('div', { class: 'ext-edit-foot' },
-      h('button', { class: 'btn btn-accent btn-small', type: 'button', disabled: busy, text: pending.replaces ? '更新' : '安装', onClick: () => handlers.installSource() }),
-      smallButton('取消', { disabled: busy, onClick: () => handlers.cancelSourceInstall() })))
+      h('button', { class: 'btn btn-accent btn-small', type: 'button', disabled: busy, text: pending.replaces ? t("sources.update.2") : t("sources.install.2"), onClick: () => handlers.installSource() }),
+      smallButton(t("extensions.cancel"), { disabled: busy, onClick: () => handlers.cancelSourceInstall() })))
 }
 
 function brokenItem(broken: { name: string, problem: string }) {
   return h('li', { class: 'ext-item' }, h('div', { class: 'ext-copy' },
-    h('div', { class: 'ext-title' }, h('span', { class: 'ext-name mono', text: broken.name }), h('span', { class: 'ext-status', 'data-tone': 'off', text: '用不了' })),
+    h('div', { class: 'ext-title' }, h('span', { class: 'ext-name mono', text: broken.name }), h('span', { class: 'ext-status', 'data-tone': 'off', text: t("sources.unavailable") })),
     h('span', { class: 'ext-detail', text: broken.problem })))
 }
 
 /** The 消息源 part of settings: the sources in the sources folder, each switched on, set up and watched here. */
 export function sourcesSection(sources: Sources, handlers: Handlers) {
-  if (!sources.loaded) return h('section', { class: 'ext' }, label('消息源'), h('p', { class: 'help', text: '读取中…' }))
+  if (!sources.loaded) return h('section', { class: 'ext' }, label(t("sources.sources")), h('p', { class: 'help', text: t("extensions.loading") }))
   const item = (source: Source) => (sources.editing === source.id ? editItem(source, sources, handlers) : sourceItem(source, sources, handlers))
-  return h('section', { class: 'ext', 'aria-label': '消息源' },
-    label('消息源'),
+  return h('section', { class: 'ext', 'aria-label': t("sources.sources") },
+    label(t("sources.sources")),
     h('p', { class: 'help source-hint', text: SOURCE_DOCS_HINT }),
     sources.pending ? pendingCard(sources.pending, sources, handlers) : null,
     sources.sources.length
       ? h('ul', { class: 'ext-list' }, sources.sources.map(item))
-      : h('p', { class: 'help', text: '还没有消息源。' }),
-    sources.broken.length ? h('ul', { class: 'ext-list', 'aria-label': '用不了的消息源' }, sources.broken.map(brokenItem)) : null,
+      : h('p', { class: 'help', text: t("sources.no.sources.yet") }),
+    sources.broken.length ? h('ul', { class: 'ext-list', 'aria-label': t("sources.unavailable.sources") }, sources.broken.map(brokenItem)) : null,
     h('div', { class: 'source-folder' },
       h('span', { class: 'help mono ellipsis', title: sources.folder, text: sources.folder }),
-      smallButton('安装消息源…', { disabled: sources.busy !== null, onClick: () => handlers.chooseSource() }),
-      smallButton('打开文件夹', { onClick: () => handlers.openSourcesFolder() }),
-      smallButton('刷新', { disabled: sources.busy !== null, onClick: () => handlers.loadSources() })),
+      smallButton(t("sources.install.source.2"), { disabled: sources.busy !== null, onClick: () => handlers.chooseSource() }),
+      smallButton(t("settings.open.folder"), { onClick: () => handlers.openSourcesFolder() }),
+      smallButton(t("sources.refresh"), { disabled: sources.busy !== null, onClick: () => handlers.loadSources() })),
     sources.error ? h('p', { class: 'form-error', role: 'alert', text: sources.error }) : null,
     sources.notice ? h('p', { class: 'form-notice', role: 'status', text: sources.notice }) : null)
 }
+
+onLocaleChange(() => {
+  KIND_LABEL = { mail: t("sources.email"), alert: t("sources.alerts"), chat: t("sources.messaging"), other: t("sources.other") }
+  SOURCE_DOCS_HINT = t("sources.sources.deliver.new.email.alerts.and.messages")
+  + t("sources.click.install.source.and.choose.a.folder")
+  TRUST_WARNING = t("sources.source.programs.run.with.your.permissions.and")
+})

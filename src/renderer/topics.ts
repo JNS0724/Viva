@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 /**
  * 话题: the stretch of the one timeline the assistant has in mind. A segment either goes on from the one it
  * continues (its parentId: a change of working directory, or 回到这个话题) or starts a new topic (⌘N, 开新话题).
@@ -73,7 +74,7 @@ const TITLE_CHARS = 40
 export function topicTitle(messages: ReadonlyArray<{ role: string, text: string }>): string {
   const first = messages.find((message) => message.role === 'user')
   const line = splitFiles(first?.text ?? '').text.replace(/\s+/g, ' ').trim()
-  if (!line) return first ? '（图片或文件）' : '（没有提问）'
+  if (!line) return first ? t("topic.attachment.only") : t("topic.no.question")
   return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS)}…` : line
 }
 

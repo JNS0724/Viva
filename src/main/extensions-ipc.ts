@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { importSummary, shortPath, type ImportResult } from './dsh-mcp-import.ts'
 import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
 import { editServer, serverView, type createMcpConfigStore, type ServerChanges } from './mcp-config.ts'
@@ -83,7 +84,7 @@ export function registerExtensionsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps
 
   handle('ext:update-mcp', async (name, input) => {
     const current = store.list().find((server) => server.name === assertName(name))
-    if (!current) throw new Error(`没有名为「${name}」的服务器`)
+    if (!current) throw new Error(t("main.extensions-ipc.no.server.named", { name: name }))
     const next = editServer(current, formChanges(input), store.list().map((server) => server.name))
     store.update(current.name, next)
     const info = await applyMcp()

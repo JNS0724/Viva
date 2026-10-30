@@ -9,7 +9,7 @@ import { RAW_ERROR } from '../src/main/live-scenarios-app.ts'
 import { summarize } from '../scripts/live-report.mjs'
 
 const never = () => false
-const FEATURES = fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', 'features.md'), 'utf8')
+const FEATURES = fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', 'features.zh-CN.md'), 'utf8')
 
 test('the live check runs as two smoke phases', () => {
   assert.deepEqual([resolveConfig({ SMOKE_PHASE: 'live' }, never).smokePhase, resolveConfig({ SMOKE_PHASE: 'live-resume' }, never).smokePhase], ['live', 'live-resume'])
@@ -57,8 +57,9 @@ test('a raw error is told from a plain Chinese one', () => {
   assert.doesNotMatch('连不上模型服务，检查网络后再试。', RAW_ERROR)
 })
 
-const attempt = (ok, ms, failures = []) => ({ ok, ms, failures, shots: [] })
-const phase = (name, scenarios) => ({ phase: name, set: 'full', repeat: 2, startedAt: '2026-10-26T02:00:00.000Z', endedAt: '2026-10-26T02:40:00.000Z', scenarios })
+const attempt = (ok: boolean, ms: number, failures: string[] = []) => ({ ok, ms, failures, shots: [] })
+type Scenario = { id: string, title: string, feature: string, core: boolean, step: string, attempts: ReturnType<typeof attempt>[] }
+const phase = (name: string, scenarios: Scenario[]) => ({ phase: name, set: 'full', repeat: 2, startedAt: '2026-10-26T02:00:00.000Z', endedAt: '2026-10-26T02:40:00.000Z', scenarios })
 
 test('the report puts both launches together, failures first, and compares with the last run', () => {
   const live = phase('live', [

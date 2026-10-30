@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n/translate.ts'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -140,20 +141,20 @@ function pairsOf(raw: unknown, lookup: EnvLookup): { values: Record<string, stri
 function serverOf(config: any, lookup: EnvLookup): ServerConfig {
   const name = String(config?.serverName ?? '')
   const type = TRANSPORTS[config?.transport]
-  if (!type) throw new Error(`不支持的连接方式：${String(config?.transport).slice(0, 40)}`)
+  if (!type) throw new Error(t("main.dsh-mcp-import.unsupported.connection.type", { value1: String(config?.transport).slice(0, 40) }))
   const field = (raw: unknown, what: string) => {
     if (raw === undefined || raw === null) return ''
     const value = valueOf(raw, lookup)
-    if (value === undefined) throw new Error(`${what}用了 Viva 读不懂的写法`)
+    if (value === undefined) throw new Error(t("main.dsh-mcp-import.uses.a.format.viva.cannot.read", { what: what }))
     return value
   }
   if (type === 'http') {
     const { values, missing } = pairsOf(config.headers, lookup)
-    return validateServer({ name, type, command: '', args: [], url: field(config.url, '服务器地址'), env: {}, headers: values, missing }, [])
+    return validateServer({ name, type, command: '', args: [], url: field(config.url, t("main.config-channel.server.address")), env: {}, headers: values, missing }, [])
   }
-  const args = Array.isArray(config.args) ? config.args.map((arg: unknown) => field(arg, '启动参数')) : []
+  const args = Array.isArray(config.args) ? config.args.map((arg: unknown) => field(arg, t("main.config-channel.launch.arguments"))) : []
   const { values, missing } = pairsOf(config.env, lookup)
-  return validateServer({ name, type, command: field(config.command, '启动命令'), args, url: '', env: values, headers: {}, missing }, [])
+  return validateServer({ name, type, command: field(config.command, t("main.config-channel.launch.command")), args, url: '', env: values, headers: {}, missing }, [])
 }
 
 const isDir = (dir: string) => fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory() ?? false
@@ -165,10 +166,10 @@ const isDir = (dir: string) => fs.statSync(dir, { throwIfNoEntry: false })?.isDi
 export function readDshMcpServers(dshHome: string, { lookup }: { lookup: EnvLookup }): {
   servers: ServerConfig[], problems: Array<{ name: string, reason: string }>,
 } {
-  if (!isDir(dshHome)) throw new Error(`找不到文件夹：${dshHome}`)
+  if (!isDir(dshHome)) throw new Error(t("main.dsh-mcp-import.folder.not.found", { dshHome: dshHome }))
   const profilesDir = path.join(dshHome, 'profiles')
   const homePatch = path.join(dshHome, 'cordis.patch.yml')
-  if (!isDir(profilesDir) && !fs.existsSync(homePatch)) throw new Error(`这个文件夹不像 dsh 的文件夹（里面没有 profiles）：${dshHome}`)
+  if (!isDir(profilesDir) && !fs.existsSync(homePatch)) throw new Error(t("main.dsh-mcp-import.this.does.not.look.like.a.dsh", { dshHome: dshHome }))
 
   const problems: Array<{ name: string, reason: string }> = []
   const layer = (file: string, kind: 'root' | 'patch') => {
@@ -176,7 +177,7 @@ export function readDshMcpServers(dshHome: string, { lookup }: { lookup: EnvLook
       const list = readList(file)
       return list ? [{ kind, list }] : []
     } catch (err: any) {
-      problems.push({ name: path.relative(dshHome, file), reason: `读不懂这个文件：${String(err.message).split('\n')[0]}` })
+      problems.push({ name: path.relative(dshHome, file), reason: t("main.dsh-mcp-import.cannot.read.this.file", { value1: String(err.message).split('\n')[0] }) })
       return []
     }
   }
@@ -267,18 +268,18 @@ export function shortPath(file: string, home = os.homedir()): string {
  */
 export function importSummary(result: ImportResult, { home = os.homedir(), forModel = false } = {}): string {
   const where = shortPath(result.dir, home)
-  if (!result.added.length && !result.skipped.length && !result.problems.length) return `在 ${where} 里没有找到 MCP 服务器。`
+  if (!result.added.length && !result.skipped.length && !result.problems.length) return t("main.dsh-mcp-import.no.mcp.servers.found.in", { where: where })
   const names = (list: readonly string[]) => list.join('、')
   const lacking = result.added.filter((server) => server.missing.length)
-  const fill = forModel ? '用户可以在 设置 → 扩展 里点「编辑」补上' : '点「编辑」补上就能连接'
+  const fill = forModel ? t("main.dsh-mcp-import.the.user.can.complete.it.by.clicking") : t("main.dsh-mcp-import.click.edit.to.complete.it.and.connect")
   return [
     result.added.length
-      ? `已从 ${where} 导入 ${result.added.length} 个：${names(result.added.map((server) => server.name))}${forModel ? '，这一轮结束后生效' : ''}。`
-      : '没有新的服务器可以导入。',
-    result.skipped.length ? `跳过 ${result.skipped.length} 个重名的（${names(result.skipped)}）。` : '',
-    ...lacking.map((server) => `${server.name} 还缺 ${names(server.missing)}，${fill}。`),
-    result.problems.length ? `没能导入：${result.problems.map((problem) => `${problem.name}（${problem.reason}）`).join('；')}。` : '',
-    forModel && result.added.length ? '密钥已加密保存在这台电脑上，你看不到它们的值。' : '',
+      ? t("main.dsh-mcp-import.imported.from", { where: where, length: result.added.length, value3: names(result.added.map((server) => server.name)), value4: forModel ? t("main.dsh-mcp-import.takes.effect.after.this.turn") : '' })
+      : t("main.dsh-mcp-import.no.new.servers.to.import"),
+    result.skipped.length ? t("main.dsh-mcp-import.skipped.duplicate.names", { length: result.skipped.length, value2: names(result.skipped) }) : '',
+    ...lacking.map((server) => t("main.dsh-mcp-import.still.needs", { name: server.name, value2: names(server.missing), fill: fill })),
+    result.problems.length ? t("main.dsh-mcp-import.could.not.import", { value1: result.problems.map((problem) => `${problem.name}（${problem.reason}）`).join('；') }) : '',
+    forModel && result.added.length ? t("main.dsh-mcp-import.credentials.are.encrypted.on.this.computer.their") : '',
   ].join('')
 }
 

@@ -3,8 +3,27 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream, RequestError } from '@agentclientprotocol/sdk'
-import { createAcpBridge, SWITCHING } from '../src/main/acp-bridge.ts'
+import { createAcpBridge, switchingMessage } from '../src/main/acp-bridge.ts'
 import { ResumeError } from '../src/main/resume-failure.ts'
+import { setLocale } from '../src/shared/i18n/locale.ts'
+
+test('a bridge loaded before language initialization rejects switching prompts in the active language', async () => {
+  let release!: () => void
+  const { bridge } = bridgeWith({ slow: new Promise<void>(resolve => { release = resolve }) })
+  await bridge.start()
+  const going = bridge.switchSession(OLDER, '/work', { exactly: true })
+  try {
+    for (const locale of ['en', 'zh-CN', 'en'] as const) {
+      setLocale(locale)
+      await assert.rejects(bridge.prompt('User text'), locale === 'en' ? /Switching conversations/ : /正在切换会话/)
+    }
+  } finally {
+    release()
+    await going
+    bridge.dispose()
+    setLocale('zh-CN')
+  }
+})
 
 /**
  * 继续这个话题 through the real bridge: exactly that session or none. The session in use is left only once the topic's
@@ -95,7 +114,7 @@ test('a question while a topic is being taken up is refused; none reaches the se
   const { log, bridge } = bridgeWith({ slow: new Promise<void>((resolve) => { release = resolve }) })
   await bridge.start()
   const going = bridge.switchSession(OLDER, '/work', { exactly: true })
-  await assert.rejects(bridge.prompt('趁切换的时候问一句'), new RegExp(SWITCHING))
+  await assert.rejects(bridge.prompt('趁切换的时候问一句'), new RegExp(switchingMessage()))
   release()
   await going
   assert.equal(log.some(([kind]) => kind === 'prompt'), false, 'no turn was started')
@@ -109,7 +128,7 @@ test('a question while going back is prepared (the session still being forked) i
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const going = bridge.fork({ before: 0 })
   assert.equal(bridge.isSwitching(), true, 'from the moment going back starts, before the switch itself')
-  await assert.rejects(bridge.prompt('趁回退的时候问一句'), new RegExp(SWITCHING))
+  await assert.rejects(bridge.prompt('趁回退的时候问一句'), new RegExp(switchingMessage()))
   t.mock.timers.tick(60_000)
   const result = await going
   t.mock.timers.reset()

@@ -2,7 +2,7 @@
   "name": "viva-policy",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的工具策略：在 dsh 里、工具执行前用代码判断，例如只起草、不代为发送邮件和消息",
+  "description": "Viva tool policy: enforce draft-only mail and messaging before tool execution",
   "type": "module",
   "main": "index.js",
   "exports": {

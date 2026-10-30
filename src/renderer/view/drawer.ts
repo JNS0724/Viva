@@ -1,19 +1,21 @@
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { t } from '../../shared/i18n/translate.ts'
 import { traceItems, usageLabel } from '../selectors.ts'
 import { filesView } from './files-panel.ts'
 import { h, label } from './dom.ts'
 import { icon } from './icons.ts'
 import { drawerScrollPlan, scrollSnapshot } from './scroll-follow.ts'
 
-const TABS = [
-  { id: 'trace', name: '过程' },
-  { id: 'files', name: '文件' },
+let TABS = [
+  { id: 'trace', name: t("drawer.activity") },
+  { id: 'files', name: t("drawer.files") },
 ]
 
 const empty = (text: string) => h('div', { class: 'empty', text })
 
-const RESTORED_TRACE_NOTES: Readonly<Record<string, string>> = {
-  loading: '正在从 dsh 的日志里读取之前的过程…',
-  unavailable: '之前的过程记录读取不到：dsh 的日志可能已被清理。对话内容不受影响。',
+let RESTORED_TRACE_NOTES: Readonly<Record<string, string>> = {
+  loading: t("drawer.reading.earlier.activity.from.dsh.logs"),
+  unavailable: t("drawer.earlier.activity.is.unavailable.dsh.logs.may"),
 }
 
 function traceView(state: State): View[] {
@@ -31,7 +33,7 @@ function traceView(state: State): View[] {
             h('span', { class: 'trace-title', text: item.title }),
             h('span', { class: 'trace-time', text: item.time })),
           item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))))
-      : empty('助手的思考和用到的工具会按顺序出现在这里。'),
+      : empty(t("drawer.the.assistant.s.thoughts.and.tool.calls")),
   ]
 }
 
@@ -62,7 +64,7 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
         text: tab.name,
         onClick: () => handlers.openDrawer(tab.id),
       }))),
-      h('button', { class: 'icon-btn', 'aria-label': '收起抽屉', onClick: handlers.closeDrawer }, icon('close', 16))),
+      h('button', { class: 'icon-btn', 'aria-label': t("drawer.close.panel"), onClick: handlers.closeDrawer }, icon('close', 16))),
     h('div', { class: 'drawer-body', role: 'tabpanel' }, bodyOf(state, handlers)))
   const body = container.querySelector('.drawer-body')
   const plan = drawerScrollPlan(before, state.drawer)
@@ -73,3 +75,14 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
   const previewNow = container.querySelector<HTMLElement>('.file-preview[data-path]')
   if (previewNow && preview && previewNow.dataset.path === preview.path) previewNow.scrollTop = preview.top
 }
+
+onLocaleChange(() => {
+  TABS = [
+  { id: 'trace', name: t("drawer.activity") },
+  { id: 'files', name: t("drawer.files") },
+]
+  RESTORED_TRACE_NOTES = {
+  loading: t("drawer.reading.earlier.activity.from.dsh.logs"),
+  unavailable: t("drawer.earlier.activity.is.unavailable.dsh.logs.may"),
+}
+})

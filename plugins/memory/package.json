@@ -2,7 +2,7 @@
   "name": "viva-memory",
   "version": "0.1.0",
   "private": true,
-  "description": "Viva 的长期记忆：分层检索与记忆工具，作为 dsh 插件挂进应用自己的 profile",
+  "description": "Viva long-term memory: layered retrieval and native tools in the private dsh profile",
   "type": "module",
   "main": "index.js",
   "exports": {

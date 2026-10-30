@@ -1,3 +1,5 @@
+import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { rewindTarget } from './rewind-state.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
 
@@ -6,8 +8,8 @@ import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
  * and 改了重发 (the editor in place, then the new words). The main process forks the agent and stores the new
  * segment (main/rewind-ipc.js); then the words go as the next question.
  */
-const NOT_NOW = '助手在忙，或这句话还没保存好，稍后再试'
-const FAILED = '没能回到那里'
+let NOT_NOW = t("rewind-actions.the.assistant.is.busy.or.this.message")
+let FAILED = t("rewind-actions.could.not.return.there")
 
 export function createRewindActions({ api, getState, dispatch, showToast, errorMessage, ask }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage' | 'ask'> & {
   api: Pick<AgentApi, 'rewind' | 'rewindEffects' | 'foldedPath' | 'switchPath'>,
@@ -53,14 +55,14 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
     try {
       return dispatch({ type: 'fold_opened', id, ...await api.foldedPath(id) })
     } catch (err) {
-      return showToast(`打不开那条路：${errorMessage(err)}`)
+      return showToast(t("rewind-actions.could.not.open.that.branch", { value1: errorMessage(err) }))
     }
   }
 
   /** Back onto a folded path; the one on screen folds where the two part. */
   async function switchPath(id: string) {
     const state = getState()
-    if (state.phase !== 'idle' || state.rewind.busy) return showToast('先停止当前任务，再切到另一条路')
+    if (state.phase !== 'idle' || state.rewind.busy) return showToast(t("rewind-actions.stop.the.current.task.before.switching.branches"))
     dispatch({ type: 'rewind_busy' })
     let result
     try {
@@ -90,3 +92,8 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
     cancelRewindConfirm: () => dispatch({ type: 'rewind_confirm_cancel' }),
   }
 }
+
+onLocaleChange(() => {
+  NOT_NOW = t("rewind-actions.the.assistant.is.busy.or.this.message")
+  FAILED = t("rewind-actions.could.not.return.there")
+})

@@ -12,7 +12,7 @@ import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import { materialsFor } from '../src/main/prepare-materials.ts'
 import type { Followup } from '../src/main/followup-store.ts'
 import { openHistoryDb } from '../src/main/history-db.ts'
-import { registerTaskIpc, TASK_PROBLEMS } from '../src/main/task-ipc.ts'
+import { registerTaskIpc, taskProblems } from '../src/main/task-ipc.ts'
 
 test('approval shows the complete command and every additional argument', () => {
   const command = 'Write-Output "' + '完整命令'.repeat(500) + '"; Remove-Item important.txt'
@@ -22,6 +22,7 @@ test('approval shows the complete command and every additional argument', () => 
   assert.equal(card.command, command)
   assert.deepEqual(JSON.parse(card.detail), rawInput)
   assert.equal(permissionDetail({ rawInput: { command } }), command)
+  assert.equal(permissionCard({ title: '配置 MCP 服务', rawInput: { name: 'qa', command: 'node', args: ['server.js'] } }).title, '配置 MCP 服务')
 })
 
 test('keyword fallback recovers residence candidates without changing strict coverage or claiming certainty', () => {
@@ -70,7 +71,7 @@ test('connecting background submission fails before creating a task, then can re
     agent: { spinOff: idle, mergeBack: idle, closeTask: idle, cancelTask: idle, steerTask: idle, resumeTask: idle,
       startTask: async () => { calls++; return { ok: true, taskId: 'task1' } }, promptTask: idle } })
   assert.ok(invoke)
-  assert.deepEqual(await invoke(), { ok: false, problem: TASK_PROBLEMS.connecting })
+  assert.deepEqual(await invoke(), { ok: false, problem: taskProblems().connecting })
   assert.equal(calls, 0)
   mode = 'live'
   assert.equal((await invoke()).ok, true)
