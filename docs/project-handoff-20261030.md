@@ -1,8 +1,8 @@
 # Viva 交接与验证状态
 
-更新：2026-10-31。PR：[#60](https://github.com/JNS0724/Viva/pull/60)。功能修复基于 `36381e6`，已整合远程 main `42e4d1b`；PR 后续包含文档整理及 smoke 退出修复。CI 状态以 PR 当前提交为准。
+更新：2026-10-31。功能修复 PR [#60](https://github.com/JNS0724/Viva/pull/60) 已合入；经发布准备 PR [#61](https://github.com/JNS0724/Viva/pull/61) 发布 [v0.4.0-beta.7](https://github.com/JNS0724/Viva/releases/tag/v0.4.0-beta.7)，标签固定于 `eeb1093`。本次测试工程在独立分支 `codex/smoke-engineering-20261031` 改造，双平台 CI 以该 PR 当前提交为准。
 
-**功能修复已有回归证据；完整性能及实机验收仍未完成，不能据此宣告可发布。** 本文件汇总本 PR 的关键结论，过程日志、失败实验、原始 profile 和 ETL 留在本地验收目录，不纳入仓库文档。
+**beta.7 已按授权发布；完整性能及实机验收仍未完成。** 发布事实不代表未闭合的性能预算已经通过。本文件保留关键结论，过程日志、失败实验、原始 profile 和 ETL 留本地，不新增仓库过程报告。
 
 ## 修复范围
 
@@ -17,15 +17,15 @@
 
 | 范围 | 已验证 | 限制 |
 | --- | --- | --- |
-| 本地检查 | 严格类型检查、普通/冒烟构建、806/806 完整测试通过；冒烟迁移后已重跑完整测试 | CI 及手工验收分别看当前证据，不能用旧结果覆盖新失败。 |
-| 开发与实际安装 | 两者均通过 setup、walkthrough、relaunch、memory、resume、timeline、language 七阶段；306 个 out 文件与 ASAR、142 个安装 payload 哈希匹配 | 独立 QA274 已正常卸载；不代表正式升级、签名或 Mac 实机通过。 |
-| smoke 退出 | 改走正常 will-quit 资源清理后保留测试退出码；新候选的七阶段均正常退出 0，合成 renderer warning 经实际失败路径退出 1 | Windows CI 曾在语言断言通过后停滞；双平台 CI 以 PR 当前提交为准，3 分钟超时仍判失败。 |
-| 冒烟结构 | 32 个场景/辅助模块迁入 test/smoke；普通构建与 ASAR 均无场景代码；新七阶段、独立包外部 memory smoke 和失败退出 1 通过 | 主进程仅按开关加载；安装包显式传入 SMOKE_TEST_ROOT，双平台安装包验收以当前 CI 为准。 |
+| 本地检查 | 发布版为 803 项原生测试；独立测试工程当前严格类型、构建、806/806 原生测试通过 | 当前增加 4 项隔离测试，删除 1 项旧 smoke 配置测试；不以旧结果覆盖新失败。 |
+| 开发与实际安装 | 本次外部源码套件 7 个独立测试全部通过；Windows 安装产物 memory/resume、许可证、安装及卸载通过；ASAR 中场景代码和 Playwright 均为 0 | macOS 产物以本 PR CI 为准；不代表正式升级、签名或 Mac 实机通过。 |
+| smoke 退出 | 外部 runner 负责正常退出与有界清理；故意失败探针退出 1，核对其 Viva、DSH PID 均已结束，诊断文件齐全 | 清理失败仍判失败；只有核对唯一资料目录及 PID 后才允许兜底终止。 |
+| 冒烟结构 | 场景和假服务位于 test/smoke、test/fixtures；默认 7 个独立测试覆盖核心 UI 与原有七阶段，当前本地全部通过；showcase 捕获通过；live --dry 的重启与报告链路已跑通并如实返回语义失败 | 产品只保留显式开关启用的有限 driver，不导入场景或加载任意测试路径。Playwright Electron API 仍为实验性；真模型 26×3 未在本次工程改造后重跑。 |
 | 真模型 | `ad6c947` 完整 26 场景×3 次为 25/26；修复后 `36381e6` 的准备与材料注入两场景各 3/3 | 不能写成最新 SHA 已全量重跑 26/26；生成语义、表格格式及重复字面量数量仍可能有误差。 |
 | 阅读保真 | 全文 507 标题/表格/代码；第 1、254、507 节可查找、选中、定位；当前 200 条与旧话题 100 条绘制边界、千轮第 500 问定位通过 | 脚本 UI 与保真验证，不替代物理快滚或全部并发性能验收。 |
 | 原生交互 | 真实微软拼音、部分主窗/岛/托盘快捷键路径通过；WPR 对齐空白话题最大化/还原和全文 100% 最大化 | 150% 录制没有 resize 动作；完整 Windows 原生矩阵和 CPU 栈归因未完成。 |
 
-单独运行 smoke 子阶段前先执行 `npm run build:smoke`；`npm run smoke`、`smoke:language`、`live` 和 `showcase` 已自动构建。安装包需将 `SMOKE_TEST_ROOT` 指向本仓库的 `out/test/smoke`，共用夹具仍在 `test/fixtures`；双平台打包 CI 已接入。
+单跑源码套件前先 `npm run build`；`npm run smoke` 自动构建并运行公共 UI smoke 与完整 integration。`smoke:relaunch`、`smoke:resume` 会运行各自完整重启场景。`VIVA_SMOKE_EXECUTABLE` 指向已安装程序，`npm run smoke:package` 从外部验证它。独立资料目录位于系统临时目录，失败 trace/诊断、HTML 和 JUnit 位于被忽略的 `smoke/`；不上传原始 profile。性能套件单独运行且不录 trace，不改变原 AX、正文和预算约束。详见双语 development 文档。
 
 全文选择 SHA256 为 `9966d570777e5f79e2e6d6bd9174b88fc4789c80474a2c3fc8f2d148778cbd59`。原始响应、测试夹具错误、失败实验与修正前分析均留本地，不覆盖历史证据。
 
@@ -50,8 +50,10 @@
 4. E 盘工作区 WRITE_OWNER/沙箱准备失败仍有环境限制；C 盘合成工作区 12 次命令调用成功，不能推论所有 E 盘已修复。没有修改 ACL 或系统安全策略。
 5. Windows 分发签名、Mac 实机与物理快滚按用户决定待定。普通会话中的任意 shell/复合 MCP 仍不能承诺完整副作用隔离；无工具后台准备的边界不推广到普通会话。
 
+6. beta.7 首轮 macOS 发布检查缺少记忆注入过程行；同一标签、同一断言重跑一次后通过，原因尚未定位，已在公开发布说明披露。本次新 runner 失败时记录 ready/turn_end/memory_context 事件、会话、过程行和 injections 数据，不启用自动重试掩盖它。
+
 ## 接手约束与证据
 
 - 封存 stash `12d75c9` 不应用、不测试、不合入；不删除正文、不降低消息上限或验收门槛、不关闭或削弱 AX。
-- node_modules 是到 `E:/viva/Viva/node_modules` 的共享联接；本轮未安装或升级依赖。真实用户数据库、会话、密钥及桥接服务不作为测试夹具。
+- 原 E 盘验收目录的 node_modules 为共享联接，仍不安装或升级；独立测试工程使用自己的 node_modules，固定 Playwright 1.64.1、asar 3.4.1，产品运行时仍是 Electron 44.7.0。真实用户数据库、会话、密钥及桥接服务不作为测试夹具。
 - 原始证据留在执行本轮验收的本地聊天目录 `work/`：qa257/271 真模型、qa272/297/299 开发冒烟、qa298/301 失败退出、qa300 外部包入口、package-validation-qa274 安装验证、qa275 冷展开、qa280/281 WPR、qa291 保真、qa292/293 远程对照；PR 和本文件仅提交结论及必要边界。

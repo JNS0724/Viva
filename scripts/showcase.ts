@@ -5,10 +5,10 @@
 //   promo/public/          the same demo, sharp, and the scenes, for the promo video (promo/, Remotion);
 //                          promo/src/demo-meta.json its length
 // Needs ffmpeg on PATH. Run after `npm run build` (the npm script does both).
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
 import path from 'node:path'
+import { runExternalScenario } from '../test/smoke/run-external.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const OUT = path.join(ROOT, 'smoke', 'showcase')
@@ -19,18 +19,13 @@ const SHOT_WIDTH = 1600
 const GIF_WIDTH = 1100
 const FPS = 10
 
-function ffmpeg(args) {
+function ffmpeg(args: string[]) {
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], { stdio: 'inherit' })
 }
 
-function runApp() {
-  const electron = createRequire(import.meta.url)('electron')
-  const ran = spawnSync(electron, ['.'], {
-    cwd: ROOT,
-    stdio: 'inherit',
-    env: { ...process.env, SMOKE_TEST_ROOT: path.join(ROOT, 'out', 'test', 'smoke'), SMOKE_PHASE: 'showcase', SMOKE_OUT: OUT, DEEPSEEK_API_KEY: 'smoke-fake-key', SMOKE_LLM_PORT: '47816' },
-  })
-  if (ran.status !== 0) throw new Error(`the showcase run failed (${ran.status}); see smoke/showcase for what it captured`)
+async function runApp() {
+  const problems = await runExternalScenario({ phases: ['showcase'], outputDirectory: OUT })
+  if (problems.length) throw new Error(problems.join('\n'))
 }
 
 function shots() {
@@ -58,8 +53,8 @@ function demo() {
   }
 }
 
-runApp()
+await runApp()
 shots()
 demo()
-const size = (file) => `${(fs.statSync(file).size / 1024 / 1024).toFixed(1)} MB`
+const size = (file: string) => `${(fs.statSync(file).size / 1024 / 1024).toFixed(1)} MB`
 console.log(`[showcase] docs/images: ${SHOTS.length} scenes, demo.gif ${size(path.join(IMAGES, 'demo.gif'))}; promo/public/demo.mp4 ${size(path.join(PROMO, 'demo.mp4'))}`)

@@ -28,21 +28,19 @@ test('the code is found beside the project from the sources, and in out/ once bu
   assert.equal(CODE_ROOT, APP_ROOT, 'the tests run from the sources')
 })
 
-test('config defaults live under the app root, and smoke phases are named', () => {
+test('config defaults live under the app root; legacy smoke environment does not select test code', () => {
   const config = resolveConfig({ SMOKE_PHASE: 'walkthrough' }, never)
   assert.equal(config.dshBin, path.join(APP_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
   assert.equal(config.nodeBin, process.execPath, 'dsh runs on the app itself')
   assert.equal(config.runtime.electron, true)
   assert.equal(config.cwd, path.join(APP_ROOT, 'workspace'))
-  assert.deepEqual([config.smoke, config.smokePhase], [true, 'walkthrough'])
-  assert.equal(config.smokeOut, path.join(APP_ROOT, 'smoke'))
+  assert.deepEqual(config, resolveConfig({}, never))
   const home = resolveConfig({ DSH_HOME: '/tmp/users-dsh' }, never, '', false, { userData: '/data/Viva', execPath: '/apps/Viva' })
   assert.deepEqual([home.dshHome, home.nodeBin], [path.join('/data/Viva', 'dsh'), '/apps/Viva'], "the user's DSH_HOME is not the app's")
   assert.deepEqual(resolveConfig({ DSH_NODE: '/opt/node' }, never).runtime, { nodeBin: '/opt/node', electron: false })
   assert.equal(resolveConfig({}, never, '', false, { userData: '/data/Viva', packaged: true }).cwd, path.resolve('/data/Viva', 'workspace'), 'the installed app keeps its workspace out of its own folder')
   assert.equal(resolveConfig({ DSH_BIN: 'test/fake.js' }, never).dshBin, path.resolve('test/fake.js'))
   assert.equal(resolveConfig({ DSH_BIN: 'dsh' }, never).dshBin, 'dsh', 'a bare command is looked up on PATH')
-  assert.deepEqual([resolveConfig({ SMOKE_PHASE: 'nope' }, never).smoke, resolveConfig({}, never).smokePhase], [false, null])
 })
 
 test('a JavaScript entry point runs under node (no .cmd shim on Windows); anything else runs directly', () => {

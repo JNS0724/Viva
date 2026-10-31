@@ -14,6 +14,9 @@ on:
       - tsconfig*.json
       - src/main/config.ts
       - src/main/app-plugins.ts
+      - src/main/automation-driver.ts
+      - test/smoke/**
+      - test/fixtures/**
       - .github/workflows/package.yml
       - .github/workflows/release.yml
   workflow_dispatch:
@@ -42,14 +45,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run dist:mac
-      - run: npm run build:smoke
       - name: Smoke the app from the mounted dmg
         run: |
           dmg=$(ls dist/*.dmg | head -1)
           volume=$(hdiutil attach -nobrowse -readonly "$dmg" | grep -o '/Volumes/.*' | head -1)
           trap 'hdiutil detach "$volume" || true' EXIT
-          SMOKE_TEST_ROOT="$PWD/out/test/smoke" SMOKE_PHASE=memory SMOKE_OUT="$RUNNER_TEMP/viva-smoke" SMOKE_FIXTURES="$PWD/test/fixtures" DEEPSEEK_API_KEY=smoke-fake-key \
-            "$volume/Viva.app/Contents/MacOS/Viva"
+          VIVA_SMOKE_EXECUTABLE="$volume/Viva.app/Contents/MacOS/Viva" npm run smoke:package
       # What a release attaches: the installer and the notices for what it carries.
       - uses: actions/upload-artifact@v4
         with:
@@ -58,11 +59,14 @@ jobs:
             dist/*.dmg
             dist/THIRD_PARTY_NOTICES-darwin.txt
           retention-days: 14
-      - if: failure()
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mac-smoke
-          path: ${{ runner.temp }}/viva-smoke/*.png
+          path: |
+            smoke/test-results
+            smoke/report
+            smoke/junit.xml
 
   windows:
     runs-on: windows-latest
@@ -87,4 +91,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-report
-          path: smoke/windows-report
+          path: |
+            smoke/windows-report
+            smoke/test-results
+            smoke/report
+            smoke/junit.xml

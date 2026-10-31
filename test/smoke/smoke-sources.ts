@@ -26,10 +26,10 @@ const clickButton = (scope: string, text: string) =>
 
 /** @returns failures */
 export async function checkSources(win: SmokeWindow, outDir: string, { userData, fixtures, pick }: {
-  userData: string, fixtures: string, pick: (dir: string) => void
+  userData: string, fixtures: string, pick: (dir: string) => Promise<void>
 }): Promise<string[]> {
   const failures: string[] = []
-  pick(path.join(fixtures, 'sources', 'fake-alerts'))
+  await pick(path.join(fixtures, 'sources', 'fake-alerts'))
   await run(win, clickButton(SECTION, '安装消息源…'))
   await until(win, q(`${SECTION} .source-pending`), 'the chosen folder shown for a yes')
   const offer = await run(win, `${q(`${SECTION} .source-pending`)}.textContent`)

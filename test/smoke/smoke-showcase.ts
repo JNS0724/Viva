@@ -1,11 +1,12 @@
+import type { SmokeDesk } from './smoke-kit.ts'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { BrowserWindow } from 'electron'
+import type { SmokeAppWindow } from './smoke-kit.ts'
 import { capture, finishTurn, newTopic, report, run, UI_WAIT_MS, until, wait, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { composeDesk, deskInput, deskWaiting } from './smoke-showcase-desk.ts'
 
 /**
- * The README's pictures and demo (npm run showcase, scripts/showcase.mjs), made by the app itself on the real dsh
+ * The README's pictures and demo (npm run showcase, scripts/showcase.ts), made by the app itself on the real dsh
  * with the fake model's showcase answers (test/fixtures/showcase-llm.js), so they can be made again whenever the
  * look changes. Not a check: it stages each scene and captures it. The demo is a run of frames, taken while the
  * follow-up's whole way plays out: asked, proposed, followed up, prepared in the background, taken up.
@@ -81,12 +82,8 @@ async function seedWorkspace(cwd: string) {
 }
 
 /** What was there before the demo: a draft prepared overnight and a mail that needs the user, for 今天. */
-function seedFollowups(hooks: SmokeHooks) {
-  const { store } = hooks.followups()
-  const review = store.add({ title: '设计评审意见', ask: '汇总设计稿 v3 的评审意见，列出要改的地方', origin: { kind: 'manual' }, prepareBy: Date.now() + HOUR_MS })
-  store.moveStatus(review.id, 'scheduled', 'preparing')
-  store.finishPreparing(review.id, '## 设计稿 v3 评审意见\n\n- 首页卡片间距偏大，建议 16px\n- 后台页的分组标题对比度不足\n\n**要你定的**：深色模式是否默认开启。', [])
-  hooks.seedMail()
+async function seedFollowups(hooks: SmokeHooks) {
+  await hooks.seedShowcase()
 }
 
 async function openSettings(win: SmokeWindow) {
@@ -116,7 +113,7 @@ async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   await wait(PAUSE_MS)
   await run(win, `${q('#thread .fu-card .fu-preset')}.click()`)
   await wait(PAUSE_MS * 1.5)
-  hooks.openTasksPage()
+  await hooks.openTasksPage()
   await until(win, `[...document.querySelectorAll('#tasks-page .fu-row .tp-name')].some((el) => el.textContent === '周报')`, 'the follow-up on the 后台 page')
   await run(win, `[...document.querySelectorAll('#tasks-page .fu-row')].find((el) => el.textContent.includes('周报')).click()`)
   await wait(PAUSE_MS)
@@ -134,7 +131,7 @@ async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   await run(win, setInput(''))
 }
 
-async function chatScenes(win: SmokeWindow, outDir: string, desk: any) {
+async function chatScenes(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
   await newTopic(win)
   await wait(UI_WAIT_MS)
   await run(win, setInput(PROMPTS.report))
@@ -172,7 +169,7 @@ async function chatScenes(win: SmokeWindow, outDir: string, desk: any) {
 }
 
 async function suggestionScene(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
-  hooks.openTasksPage()
+  await hooks.openTasksPage()
   await until(win, q('#tasks-page .fu-row[data-status="suggested"]'), 'the suggested mail')
   await run(win, `${q('#tasks-page .fu-row[data-status="suggested"]')}.click()`)
   await until(win, q('#tasks-page .fu-message'), 'the mail and why')
@@ -184,7 +181,7 @@ async function suggestionScene(win: SmokeWindow, outDir: string, hooks: SmokeHoo
 async function settingsScenes(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   await openSettings(win)
   const section = '#settings-root section[aria-label="消息源"]'
-  hooks.pickSourceFolder(path.join(hooks.fixtures, 'sources', 'showcase-mail'))
+  await hooks.pickSourceFolder(path.join(hooks.fixtures, 'sources', 'showcase-mail'))
   await run(win, clickText(section, '安装消息源…'))
   await until(win, q(`${section} .source-pending`), 'the mail source offered')
   await run(win, clickText(`${section} .source-pending`, '安装'))
@@ -217,13 +214,13 @@ async function filesScene(win: SmokeWindow, outDir: string) {
 }
 
 /** Every scene, in an order where each leaves what the next needs. */
-export async function runShowcase(win: BrowserWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
-  win.setSize(WIDTH, HEIGHT)
-  win.center()
+export async function runShowcase(win: SmokeAppWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
+  await win.setSize(WIDTH, HEIGHT)
+  await win.center()
   await seedWorkspace(hooks.cwd)
   await wait(UI_WAIT_MS)
   await run(win, clickText('#home', '以后再说'))
-  seedFollowups(hooks)
+  await seedFollowups(hooks)
   await until(win, q('#home .home-today'), 'the 今天 card on the home page')
   await wait(PAUSE_MS)
   await capture(win, outDir, 'home')
@@ -234,6 +231,6 @@ export async function runShowcase(win: BrowserWindow, outDir: string, hooks: Smo
   await settingsScenes(win, outDir, hooks)
   await filesScene(win, outDir)
   await deskInput(outDir, hooks.desk?.())
-  await composeDesk(outDir)
+  await composeDesk(outDir, hooks)
   return []
 }

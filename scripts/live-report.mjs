@@ -1,4 +1,4 @@
-// The live check's report (scripts/live.mjs, docs/live-check.md): the two launches' reports put together, one
+// The live check's report (scripts/live.ts, docs/live-check.md): the two launches' reports put together, one
 // line per scenario, what failed first, compared with the last run when there is one.
 
 const seconds = (ms) => `${Math.round(ms / 1000)} s`

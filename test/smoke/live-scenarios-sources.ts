@@ -50,7 +50,7 @@ async function withSource(ctx: LiveContext, body: () => Promise<void>) {
   const { win, expect } = ctx
   const { dir, id } = liveSource(ctx)
   const scope = sourceScope(id)
-  ctx.hooks.pickSourceFolder(dir)
+  await ctx.hooks.pickSourceFolder(dir)
   await openSettings(win)
   try {
     await run(win, clickIn(SECTION, '安装消息源…'))
@@ -112,7 +112,7 @@ const sourcesInjection: LiveScenario = {
 
 /** Rows on the 后台 page suggested from messages, as shown. */
 async function suggestedRows(ctx: LiveContext): Promise<string[]> {
-  ctx.hooks.openTasksPage()
+  await ctx.hooks.openTasksPage()
   await until(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`, 'the 后台 page')
   await wait(UI_WAIT_MS)
   return run(ctx.win, `[...document.querySelectorAll('#tasks-page .fu-row[data-status="suggested"]')].map((row) => row.textContent)`)

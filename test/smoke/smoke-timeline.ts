@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { BrowserWindow } from 'electron'
+import type { SmokeAppWindow } from './smoke-kit.ts'
 import { openHistoryDb } from '../../src/main/history-db.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
@@ -110,13 +110,13 @@ const FOCUS = `(() => {
   }
 })()`
 
-const hoverMiddleDot = async (win: BrowserWindow) => {
+const hoverMiddleDot = async (win: SmokeAppWindow) => {
   const at = await run(win, `(() => {
     const dots = document.querySelectorAll('#turn-rail .turn-topic')
     const box = dots[Math.floor(dots.length / 2)].getBoundingClientRect()
     return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) }
   })()`)
-  win.webContents.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y })
+  await win.webContents.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y })
 }
 
 /** How many questions a long topic is given to see that every mark of the rail stays in the window. */
@@ -145,7 +145,7 @@ const MANY_MARKS = `(async () => {
 })()`
 
 /** Scrolling up, folded topics and the rail; one opened; a star put on a message of the conversation on screen. */
-async function checkFolded(win: BrowserWindow, outDir: string, expect: Expect) {
+async function checkFolded(win: SmokeAppWindow, outDir: string, expect: Expect) {
   const seen = await until(win, `(() => { const seen = ${TIMELINE}; return seen.folded >= 5 && seen })()`, 'the earlier topics folded above the conversation')
   expect(seen.open === 0 && seen.titles.some((title: string) => title.includes('把这周的进展整理一下')), 'earlier topics should be folded to a line named by their first question', seen)
   expect(seen.more?.includes('回顾'), 'past the recent days, the top should point to 回顾 instead of reading further back', seen)
@@ -180,7 +180,7 @@ const clickTopic = (words: string) => `[...document.querySelectorAll('#history-l
 const AGENT = `window.agent.getInfo().then((info) => ({ sessionId: info.sessionId ?? null, cwd: info.cwd ?? null }))`
 
 /** 回顾: topics by when last talked in, filtered over whole topics, a topic read in place, the starred messages. */
-async function checkReview(win: BrowserWindow, outDir: string, expect: Expect) {
+async function checkReview(win: SmokeAppWindow, outDir: string, expect: Expect) {
   await run(win, `document.querySelector('#earlier .timeline-more').click()`)
   const listed = await until(win, `(() => { const seen = ${REVIEW}; return seen.topics.length >= 9 && seen })()`, '回顾 listing the topics')
   expect(listed.page === 'true' && listed.months.length >= 2 && listed.months.length <= 3 && listed.days.includes('今天') && listed.days.includes('昨天'),
@@ -228,7 +228,7 @@ async function checkReview(win: BrowserWindow, outDir: string, expect: Expect) {
  * 详情 on a search hit five weeks back, far past what the timeline has read: read straight where it is kept, at the
  * top of the results, with 继续这个话题; nothing more read into the timeline, and the agent left as it was.
  */
-async function checkFarHit(win: BrowserWindow, outDir: string, expect: Expect) {
+async function checkFarHit(win: SmokeAppWindow, outDir: string, expect: Expect) {
   const FOLDED = `document.querySelectorAll('#earlier .topic-old').length`
   const before = await run(win, FOLDED)
   const agent = await run(win, AGENT)
@@ -260,7 +260,7 @@ const RESUME_SHEET = `(() => {
 })()`
 
 /** 回顾 opened, a topic read, 继续这个话题 pressed: the dialog it brings up. */
-async function continueFromReview(win: BrowserWindow, words: string) {
+async function continueFromReview(win: SmokeAppWindow, words: string) {
   // 回顾 is the page with nothing typed: what a search before left in the field is cleared.
   await run(win, `(() => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))
@@ -281,7 +281,7 @@ async function continueFromReview(win: BrowserWindow, words: string) {
  * 继续这个话题 in the window: another folder said before switching (and nothing switched on 取消); a folder gone asks
  * for another; a session gone (the seeds have none) goes on from the topic's records in a new conversation.
  */
-async function checkResume(win: BrowserWindow, outDir: string, expect: Expect) {
+async function checkResume(win: SmokeAppWindow, outDir: string, expect: Expect) {
   const agent = await run(win, AGENT)
   const other = await continueFromReview(win, '周会的会议室')
   expect(other.title === '换到这个话题的目录接着聊' && other.dir?.endsWith('other-project'), 'another folder should be said before switching to it', other)
@@ -310,7 +310,7 @@ async function checkResume(win: BrowserWindow, outDir: string, expect: Expect) {
 }
 
 /** @returns failures */
-export async function checkTimeline(win: BrowserWindow, outDir: string): Promise<string[]> {
+export async function checkTimeline(win: SmokeAppWindow, outDir: string): Promise<string[]> {
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`timeline: ${message}: ${JSON.stringify(seen)}`) }
   await checkFolded(win, outDir, expect)

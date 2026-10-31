@@ -1,3 +1,4 @@
+import type { SmokeDesk } from './smoke-kit.ts'
 import { MISSING } from '../../src/main/island-files.ts'
 import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
@@ -58,17 +59,17 @@ const STEERED_IN_THREAD = `(() => {
 })()`
 
 /** @returns {Promise<string[]>} failures */
-export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: any) {
+export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
   if (!desk) return ['the desktop island was not created']
-  desk.force(true)
+  await desk.force(true)
   try {
-    if (!desk.openInput()) return ['the desktop island would not open its input']
-    const page = { webContents: desk.webContents() }
+    if (!(await desk.openInput())) return ['the desktop island would not open its input']
+    const page = { webContents: (await desk.webContents()) }
     const logged: string[] = []
     page.webContents.on('console-message', (event: { level: string, message: string }) => logged.push(`${event.level}: ${event.message}`))
     const opened = await until(page, INPUT_STATE, 'the island input opening').catch(async (err) => {
       const shown = await run(page, `document.querySelector('.isl')?.dataset.form ?? null`)
-      throw new Error(`${err.message}; input open: ${desk.inputOpen()}, island showing ${shown}, logged ${JSON.stringify(logged)}`)
+      throw new Error(`${err.message}; input open: ${(await desk.inputOpen())}, island showing ${shown}, logged ${JSON.stringify(logged)}`)
     })
     await wait(UI_WAIT_MS)
     await capture(page, outDir, 'desk-input')
@@ -98,13 +99,13 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: any) 
     await run(page, typeAndSend(QUESTION))
     await until(win, ASKED_IN_THREAD, 'the question asked on the island in the thread')
     await until(page, `document.querySelector('.isl')?.dataset.form !== 'input'`, 'the island input closing once it was sent')
-    desk.openInput()
+    await desk.openInput()
     const steering = await until(page, STEERING, 'the island input taking words for the turn while the agent works')
     await wait(UI_WAIT_MS)
     await capture(page, outDir, 'desk-steer')
     await run(page, typeAndSend(STEER))
     await until(win, STEERED_IN_THREAD, 'the words said on the island in the thread, into the running turn')
-    desk.closeInput()
+    await desk.closeInput()
     await finishTurn(win)
     await capture(win, outDir, 'desk-asked')
     report(`desk input: ${JSON.stringify({ opened, composition, drop, refused, steering })}`)
@@ -116,7 +117,7 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: any) 
     if (refused !== MISSING) failures.push(`a dropped file without a path should be refused with "${MISSING}", was "${refused}"`)
     return failures
   } finally {
-    desk.closeInput()
-    desk.force(false)
+    await desk.closeInput()
+    await desk.force(false)
   }
 }
