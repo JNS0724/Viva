@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-10-30",
+  "reviewedOn": "2026-10-31",
   "pairs": [
     {
       "en": "README.md",
@@ -136,12 +136,12 @@
     {
       "path": "docs/project-handoff-20261030.md",
       "locale": "zh-CN",
-      "sha256": "c0c986673ac6d44b8a12ac2ce099acf1ebc1731c65d4c9e3e5d724a9dad01f7f"
+      "sha256": "5c0d2a96f70bb9532b537d745980071c1d7b373081dc1a666bde15004019748b"
     },
     {
       "path": "docs/qa-background-scroll-20261029.md",
       "locale": "zh-CN",
-      "sha256": "b20654f77510cc13b1977efa9c298451604bb583d953ea4dc2d779d511e1a3ba"
+      "sha256": "41f3137899f968652044220180ba358f291438e2a3641c8bd39b40d683c1c7ae"
     },
     {
       "path": "docs/qa-etl-metadata-20261029.md",
@@ -197,6 +197,16 @@
       "path": "docs/qa-titlebar-scope-20261030.md",
       "locale": "zh-CN",
       "sha256": "4c457f58bac9b0aef7d7d6392dc839f6c1e6bd32de1f01919fff494a8bdc5cd3"
+    },
+    {
+      "path": "docs/qa-handoff-remediation-20261031.md",
+      "locale": "zh-CN",
+      "sha256": "c8ff1445ab6eba3f36356d3c4e994b65a1e1b09ceb9942c26d17ef9d9462fff7"
+    },
+    {
+      "path": "docs/qa-remote-comparison-20261031.md",
+      "locale": "zh-CN",
+      "sha256": "232c7a466cd8433b6d30c86cc531be706c04bcf85591e2c24b931f528c4fdc87"
     }
   ]
 }
