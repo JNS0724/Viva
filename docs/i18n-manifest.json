@@ -121,6 +121,12 @@
       "zh": "docs/releases/v0.4.0-beta.6.zh-CN.md",
       "enHash": "6b5d41597fddc0c4229f7dff27cc75de263ed244a830e0669661158ab71b60d5",
       "zhHash": "c615a6c5f95b307ad49905dede55c869e0ca30c0f517ff3128e577f9bbe51c59"
+    },
+    {
+      "en": "docs/releases/v0.4.0-beta.7.md",
+      "zh": "docs/releases/v0.4.0-beta.7.zh-CN.md",
+      "enHash": "a1253c7be5a01e0920760807f54a64f0171144a2af52fa4d1eb0435933707746",
+      "zhHash": "d6edd57c1ea73dd35238843b12a525573aeca3c048ea4fbd5c2e761dac987ea8"
     }
   ],
   "bilingual": [
