@@ -1,9 +1,9 @@
 import { checkReadingLanguage } from './smoke-language-reading.ts'
-import type { BrowserWindow } from 'electron'
+import type { SmokeAppWindow } from './smoke-kit.ts'
 import { capture, run, until, type SmokeHooks } from './smoke-kit.ts'
 
 /** Runs against an isolated profile; no real model or user credentials are needed. */
-export async function checkLanguage(win: BrowserWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
+export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
   const problems: string[] = []
   await until(win, `!document.documentElement.hasAttribute('data-language-loading')`, 'language initialization')
   const before = await run(win, `window.agent.getInfo()`)
@@ -23,7 +23,7 @@ export async function checkLanguage(win: BrowserWindow, outDir: string, hooks: S
   await run(win, `(() => { const select = document.querySelector('select[name="language"]'); select.value = 'en'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`)
   await until(win, `document.getElementById('settings-title')?.textContent === 'Settings'`, 'English language control')
   await capture(win, outDir, 'language-en-settings')
-  win.setSize(921, 648)
+  await win.setSize(921, 648)
   await until(win, `window.innerWidth <= 921`, 'narrow English window')
   await capture(win, outDir, 'language-en-narrow')
   const overflow = await run(win, `document.documentElement.scrollWidth > document.documentElement.clientWidth`)
@@ -85,16 +85,16 @@ export async function checkLanguage(win: BrowserWindow, outDir: string, hooks: S
   if (before.sessionId !== after.sessionId || before.mode !== after.mode) problems.push('Changing language changed the agent session')
   const desk = hooks.desk?.()
   if (desk) {
-    desk.force(true)
-    desk.openInput()
-    const page = { webContents: desk.webContents() }
+    await desk.force(true)
+    await desk.openInput()
+    const page = { webContents: (await desk.webContents()) }
     await until(page, `document.documentElement.lang === 'en' && document.querySelector('.isl-field')?.getAttribute('aria-label') === 'Ask Viva…'`, 'English desktop island text')
     await run(page, `document.querySelector('.isl-field').value = 'island draft'`)
     await run(win, `window.agent.setLanguage('zh-CN')`)
     await until(page, `document.documentElement.lang === 'zh-CN'`, 'desktop island language broadcast')
     await until(page, `document.querySelector('.isl-field')?.getAttribute('aria-label') === '问 Viva…'`, 'Chinese desktop island text')
     if (await run(page, `document.querySelector('.isl-field')?.value !== 'island draft'`)) problems.push('Desktop island lost its draft during language switching')
-    desk.force(false)
+    await desk.force(false)
   } else problems.push('Desktop island missing from language smoke')
   problems.push(...await checkReadingLanguage(win))
   return problems

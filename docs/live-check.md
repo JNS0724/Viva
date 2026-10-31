@@ -8,7 +8,7 @@ Unit and smoke tests use fake models. They validate UI and control flow, but onl
 
 1. Install dependencies with `npm ci` using Node 22+. Some scenarios launch test MCP/source programs with Node.
 2. Set `DEEPSEEK_API_KEY` or put one `DEEPSEEK_API_KEY=sk-...` line in `~/.config/viva/live-test.env`. On macOS, `chmod 600` is required or the runner refuses the file.
-3. Quit Viva. The suite launches its own app with `smoke/userData-live`, separate from personal history/keys.
+3. Quit Viva. The suite launches its own app with a unique temporary profile, separate from personal history/keys.
 4. Do not interact with the test window while it runs.
 
 The key is passed only to the tested app, not printed or included in reports/screenshots.
@@ -86,4 +86,4 @@ Run on both macOS and Windows before release:
 
 ## Adding scenarios
 
-Add model-dependent features in `src/main/live-scenarios-*.ts`. The existing stable `feature` labels map to Chinese source headings in `features.zh-CN.md`; `test/live.test.js` verifies every mapping. The English feature guide retains compatible explicit anchors. The runner is `live.ts`, shared actions are `live-kit.ts`, launch orchestration is `scripts/live.mjs`, and reporting is `scripts/live-report.mjs`.
+Add model-dependent features in `test/smoke/live-scenarios-*.ts`. The existing stable `feature` labels map to Chinese source headings in `features.zh-CN.md`; `test/live.test.ts` verifies every mapping. The English feature guide retains compatible explicit anchors. The runner is `live.ts`, shared actions are `live-kit.ts`, launch orchestration is `scripts/live.ts`, and reporting is `scripts/live-report.mjs`.

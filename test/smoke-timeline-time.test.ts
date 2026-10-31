@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { timelineSeedTime } from '../src/main/smoke-timeline.ts'
+import { timelineSeedTime } from './smoke/smoke-timeline.ts'
 
 test('the latest timeline fixture stays today even during the first half hour after midnight', () => {
   for (const minute of [0, 1, 24, 29, 30, 59]) {

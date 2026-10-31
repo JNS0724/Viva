@@ -14,7 +14,7 @@
 2. 准备 DeepSeek API key，二选一：
    - 环境变量 `DEEPSEEK_API_KEY`；
    - 或者写在 `~/.config/viva/live-test.env`，一行 `DEEPSEEK_API_KEY=sk-...`。macOS 上先 `chmod 600` 这个文件，不然脚本拒绝读。
-3. 退出正在运行的 Viva（验证会自己启动一个，数据放在 `smoke/userData-live`，不碰你自己的历史和 key）。
+3. 退出正在运行的 Viva（验证会自己启动一个，数据放在 唯一临时资料目录，不碰你自己的历史和 key）。
 4. 跑的时候会弹出 Viva 窗口，**不要去点它**；可以把它放到一边做别的。
 
 key 只交给被测的应用，不打印、不写进报告和截图。
@@ -111,6 +111,6 @@ npm run live -- --app "/Applications/Viva.app/Contents/MacOS/Viva"   # 测装好
 
 ## 加新功能时
 
-新功能合进来时，如果它的效果取决于模型，就在 `src/main/live-scenarios-*.ts` 里加一个场景，`feature` 写 features.md 里对应的章节名。`test/live.test.js` 会检查每个场景都对得上 features.md 的一节。
+新功能合进来时，如果它的效果取决于模型，就在 `test/smoke/live-scenarios-*.ts` 里加一个场景，`feature` 写 features.md 里对应的章节名。`test/live.test.ts` 会检查每个场景都对得上 features.md 的一节。
 
-代码在 `src/main/live.ts`（选场景、重复、写报告）、`src/main/live-kit.ts`（等一轮结束、处理卡片等公用部分）、`src/main/live-scenarios-*.ts`（场景本身）、`scripts/live.mjs`（命令行，启动两次应用）、`scripts/live-report.mjs`（汇总报告）。
+代码在 `test/smoke/live.ts`（选场景、重复、写报告）、`test/smoke/live-kit.ts`（等一轮结束、处理卡片等公用部分）、`test/smoke/live-scenarios-*.ts`（场景本身）、`scripts/live.ts`（命令行，启动两次应用）、`scripts/live-report.mjs`（汇总报告）。

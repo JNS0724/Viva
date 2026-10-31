@@ -49,9 +49,9 @@ scripts/after-pack.cjs corrects electron-builder’s missing peers and excess pa
 
 Historical macOS size: about 152 MB DMG (previously 259 MB), 388 MB unpacked, mostly Electron. These are dated measurements, not promises for every build.
 
-**Verify outside the repository:** running from dist/ can accidentally resolve missing packages from the parent node_modules. Point SMOKE_FIXTURES to test/fixtures and SMOKE_OUT to an isolated output folder.
+**Verify outside the repository:** running from dist/ can accidentally resolve missing packages from the parent node_modules. Set VIVA_SMOKE_EXECUTABLE to the installed binary and run npm run smoke:package from the checkout; its child starts with an owned profile and working directory outside the repo.
 
-- macOS: mount the DMG read-only using hdiutil attach -nobrowse -readonly, then run its executable with SMOKE_PHASE=memory, a fake key, fixture path, and output path.
+- macOS: mount the DMG read-only using hdiutil attach -nobrowse -readonly, then set VIVA_SMOKE_EXECUTABLE to its Contents/MacOS/Viva executable and run npm run smoke:package.
 - Windows: scripts/verify-windows.ps1 -Package builds, silently installs to a temporary directory outside the repository, smokes the installed executable, and uninstalls.
 
 scripts/third-party-notices.cjs generates notices from the actual platform dependency set. Attach both platforms’ THIRD_PARTY_NOTICES files to releases. Signing/notarization, auto-update, Intel Mac, and Windows ARM packages remain open work.
@@ -91,37 +91,35 @@ See [Cat character](cat-character.md). Transparent 512 px busts and 256 px heads
 
 ## Tests
 
-```bash
-npm run typecheck
-npm test
-npm run coverage
-npm run smoke
-npm run smoke:language
-```
+`npm test` runs source unit/integration tests under Electron's Node; `npm run typecheck` checks all production and test TypeScript. Use Node.js 24, matching CI.
 
-The combined smoke runs five phases:
+The external Playwright runner in `test/smoke/` owns launch, isolated profiles, fake services, readiness, assertions, diagnostics, and teardown. Production never imports a scenario or loads a test file from a supplied path. An explicit `--enable-smoke-test-driver` requires `--user-data-dir` and exposes a narrow main-process control surface for legacy integration checks. Public UI smoke uses normal controls. The runner passes a minimal OS environment, never inherited model keys or Node hooks; the fake provider is added through the ordinary Settings form.
 
-| Phase | Coverage |
-|---|---|
-| setup | Missing-key guide, disabled composer, Settings navigation; source install, bad/good credentials, enable, fetch, remove |
-| walkthrough | Approval-state island/title bar at normal and 880 px widths, platform layout, overlay drawer, long-task scrolling, file previews |
-| relaunch | Same-profile history/session recovery; search/highlights, topic opening, rename/delete/undo, safe Markdown, navigation prevention, island questions/images, topics/permissions |
-| memory | Real dsh with fake model: introduction, remember, keywords, name recall, injected activity, questions and remembered answer, plugin status, MCP setup, follow-up/prepare/continue, message suggestions, added provider without losing conversation |
-| resume | Kill dsh and verify automatic reconnection to the same conversation |
+| Command | Coverage |
+| --- | --- |
+| `npm run smoke` | Builds, then runs public UI smoke and all seven integration phases |
+| `npm run smoke:core` | Fresh setup; real embedded dsh with local fake model, answer and persisted restart |
+| `smoke:setup` | Setup navigation and source install/credentials/fetch/removal |
+| `smoke:walkthrough` / `smoke:relaunch` | One self-contained test: approval, desktop island, layouts, scrolling, files; restart, history, Markdown, topics, images, permissions and IME |
+| `smoke:memory` / `smoke:resume` | One self-contained test: real dsh, local fake model, memory injection/reasons, questions, MCP, provider switching, crash recovery, tasks and follow-ups; restart acceptance |
+| `smoke:timeline` | Seeded long history, search, review, stars and resume paths |
+| `smoke:language` | English/Chinese, input/focus/selection, IME and open reading state |
+| `smoke:package` | Installed artifact, real embedded dsh, local fake model, memory and restart; requires `VIVA_SMOKE_EXECUTABLE` |
+| `smoke:perf` | Separate performance project with full accessibility, original budgets and no trace overhead |
 
-The separate language smoke uses no real model or credentials: English setup, language selector, Chinese/English Settings, retained unsaved input/focus/selection, unchanged session, and desktop-island broadcast.
+Run `npm run build` before an individual source suite. Relaunch/resume aliases run their complete logical scenario; tests never depend on another test's files. Profiles use unique owned temporary directories; deletion checks canonical paths and an ownership marker. Successful runs remove their profile. Failed synthetic profiles remain locally for diagnosis, outside CI upload paths.
 
-Real-model validation defaults to 26 scenarios, three attempts each; core is available. Reports go to smoke/live/report.md. Counts in older documentation (for example 595 unit/integration tests) are historical; use the actual runner’s discovered count.
+Retries are zero and workers are one. Reports: `smoke/report` (HTML), `smoke/junit.xml`, `smoke/test-results` (launch receipts/logs, assertions and failure diagnostics). Failure traces retain operations and screenshots. Public UI smoke also records DOM snapshots; legacy integration disables snapshot-script injection into the deliberately scriptless search iframe. Neither real-model checks nor performance runs record traces. Profiles and credentials are never uploaded. Use `npx playwright show-trace <trace.zip>` for a retained trace.
 
-On Windows run powershell -ExecutionPolicy Bypass -File scripts/verify-windows.ps1. Logs/screenshots go to smoke/windows-report. -Live with DEEPSEEK_API_KEY adds real-model checks without writing the key to the report. PR CI runs typecheck/build/test/smoke on macOS and Windows; packaging changes additionally build and verify installed apps outside the repo.
+`scripts/verify-windows.ps1 -Package` installs into a unique temporary directory, drives the installed executable externally, verifies licenses, and uninstalls in finally. PR CI runs the complete source suite on macOS and Windows; package CI runs memory/restart on both installed artifacts. These checks do not replace physical UI, signing, upgrade or fast-scroll acceptance.
 
-Physical checks are needed for releases, Windows-specific UI/tray/island/installer/path changes, and bugs not reproduced on CI. On macOS, run checks locally before submitting changes. Windows release checks include -Package and manual 4K screenshots; CI alone cannot establish real-screen behavior.
+`npm run live` remains opt-in: 26 real-model scenarios, three attempts each by default; `--set core`, `--only`, `--repeat`, `--app` and `--dry` remain available. The key is passed explicitly to the owned child, never logged. See [Live checks](live-check.md). Fake-model passes do not establish real-model behavior.
 
-Smoke profiles are isolated from user history/keys. Memory tests use real dsh with test/fixtures/fake-llm.js; other tests use fake-dsh.js speaking real ACP, including a scripted 16-tool long task. These exercise the production paths without a real model; they are not proof of real-model behavior.
+The design follows [Electron automated testing](https://www.electronjs.org/docs/latest/tutorial/automated-testing), [Playwright fixtures/isolation](https://playwright.dev/docs/test-fixtures), and [VS Code's external Electron runner](https://github.com/microsoft/vscode/blob/main/test/automation/src/playwrightElectron.ts). Playwright's Electron API remains experimental; this repository pins Playwright 1.64.1 with Electron 44.7.0 and verifies source and packaged applications.
 
 ## Captures and promotional video
 
-npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture Today, chat, follow-ups, preparation, suggestions, approvals, sources, schedules, files, and island. The isolated profile is smoke/showcase/userData-showcase. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Copy media to promo/public and write duration to promo/src/demo-meta.json. Review captures after UI changes.
+npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture Today, chat, follow-ups, preparation, suggestions, approvals, sources, schedules, files, and island. The runner owns a unique temporary profile. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Copy media to promo/public and write duration to promo/src/demo-meta.json. Review captures after UI changes.
 
 promo/ is a separate Remotion project, excluded from installers. Generate assets first, then npm install, npm run studio, and npm run render in promo/. Output is promo/out/viva-promo.mp4 at 1920×1080/30 fps. Scenes, timing, and theme live in promo/src/scenes, timeline.ts, and theme.ts. Current legacy captures use Chinese; localized capture sets must be verified before being represented as English product media.
 

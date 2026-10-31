@@ -34,7 +34,7 @@ async function accept(win: SmokeWindow) {
 /** Opens the 后台 page and returns the names of its follow-ups, as shown. */
 async function followupRows(ctx: LiveContext): Promise<string[]> {
   // A diagnostic read must not reopen the page and reset the item the scenario just selected.
-  if (!await run(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`)) ctx.hooks.openTasksPage()
+  if (!await run(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`)) await ctx.hooks.openTasksPage()
   await until(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`, 'the 后台 page')
   await wait(UI_WAIT_MS)
   return run(ctx.win, `[...document.querySelectorAll('${PAGE} .fu-row')].map((row) => row.textContent)`)

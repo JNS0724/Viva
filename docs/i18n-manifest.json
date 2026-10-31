@@ -35,8 +35,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "b0a230a58d0716f07d4fe6c6dcd37b5969eeb6ba8c6f25def050a990296050bb",
-      "zhHash": "260bf42c2bbe8522e68f7706cb36230e8e316d9b5f21a9769c8737bc54466b8f"
+      "enHash": "9e5ccdbba7069180edcbff2d7fc1014d35cd6ac0d12189e6ce3e2f6df828223f",
+      "zhHash": "10122b18d2916f1ac6fb77d4e28d91cfc7f001e60eb43f0c55fe10717d72a3b3"
     },
     {
       "en": "docs/dsh-upgrade-validation-20261026.md",
@@ -59,8 +59,8 @@
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "82dd4712baa5a0f4c105ab4dc9c37e986649556f486ed234fdab884487e11120",
-      "zhHash": "437c808dccdd549b3049f03f3fe1185d1265e6e2b3dcf45fec79ef56e900f9e5"
+      "enHash": "3b95fe9ada843f0660aee88ed1ac0cf43a5a60da7622e0789ce51d89b92db880",
+      "zhHash": "5e384d3125bc658461e162a87c4b0b19515110e116f86686230818a2bb783940"
     },
     {
       "en": "docs/memory.md",
@@ -137,7 +137,7 @@
     {
       "path": "docs/project-handoff-20261030.md",
       "locale": "zh-CN",
-      "sha256": "e049bc510c0983baeb52d5eddb3af8bfac8356b3d41ef0e3b60d99b5454be9ec"
+      "sha256": "e4b2c6f28c123d5230757df62550dc38edcfec8f66ee6fbf8fa4a9a926cb803c"
     }
   ]
 }

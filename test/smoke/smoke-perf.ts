@@ -1,6 +1,6 @@
 import path from 'node:path'
-import type { BrowserWindow } from 'electron'
-import { openHistoryDb } from './history-db.ts'
+import type { SmokeAppWindow } from './smoke-kit.ts'
+import { openHistoryDb } from '../../src/main/history-db.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
 /**
@@ -165,7 +165,7 @@ const openHitTimed = (words: string) => `(async () => {
   return null
 })()`
 
-async function openHit(win: BrowserWindow, words: string) {
+async function openHit(win: SmokeAppWindow, words: string) {
   await run(win, openSearch(words))
   await until(win, `Boolean(${hitWith(words)})`, `the search finding 「${words}」`)
   return run(win, openHitTimed(words))
@@ -190,7 +190,7 @@ const READ_ON_KEEPS_PLACE = `(async () => {
 })()`
 
 /** The conversation on screen, a thousand turns: drawn bounded, scrolled to the top and through what is read back. */
-async function checkConversation(win: BrowserWindow, outDir: string, expect: Expect, seen: Record<string, unknown>) {
+async function checkConversation(win: SmokeAppWindow, outDir: string, expect: Expect, seen: Record<string, unknown>) {
   const drawn = await until(win, `document.querySelectorAll('#thread [data-msg]').length`, 'the conversation drawn')
   const rest = await run(win, `document.querySelector('#thread .thread-rest')?.textContent ?? null`)
   expect(drawn <= BUDGET.drawn && rest?.includes('在回顾里看'), `a ${LONG_TURNS}-turn conversation should draw at most ${BUDGET.drawn} messages, the rest in 回顾`, { drawn, rest })
@@ -215,7 +215,7 @@ async function checkConversation(win: BrowserWindow, outDir: string, expect: Exp
 }
 
 /** 回顾: the earlier thousand-turn topic read from a message in its middle, to its start and its end. */
-async function checkReader(win: BrowserWindow, outDir: string, expect: Expect, seen: Record<string, unknown>) {
+async function checkReader(win: SmokeAppWindow, outDir: string, expect: Expect, seen: Record<string, unknown>) {
   const heapBefore = await run(win, HEAP_MB)
   const hit = await openHit(win, LONG_WORDS)
   expect(hit?.inView, 'a message in the middle of a long topic should be read at once, in view', hit)
@@ -257,7 +257,7 @@ function judge(expect: Expect, seen: Record<string, any>, platform: string) {
 }
 
 /** @returns failures */
-export async function checkPerf(win: BrowserWindow, outDir: string): Promise<string[]> {
+export async function checkPerf(win: SmokeAppWindow, outDir: string): Promise<string[]> {
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`perf: ${message}: ${JSON.stringify(seen)}`) }
   const seen: Record<string, any> = { platform: process.platform }

@@ -10,10 +10,10 @@ import { report, run, until, type SmokeHooks, type SmokeWindow } from './smoke-k
 
 /**
  * The live check (docs/live-check.md): the app as users get it, on the real model, through every feature in
- * docs/features.md that depends on what the model does. Run by scripts/live.mjs as two launches on one profile:
+ * docs/features.md that depends on what the model does. Run by scripts/live.ts as two launches on one profile:
  * `live` runs the scenarios, `live-resume` what needs the app started again. Each scenario runs LIVE_REPEAT
  * times (3 by default) and passes only if every attempt does; LIVE_SET=core runs the ones marked core, LIVE_ONLY
- * the ids it lists. Each launch writes smoke/live/report-<phase>.json, which scripts/live.mjs puts together.
+ * the ids it lists. Each launch writes smoke/live/report-<phase>.json, which scripts/live.ts puts together.
  */
 export const LIVE_SCENARIOS: readonly LiveScenario[] = [...CHAT_SCENARIOS, ...MEMORY_SCENARIOS, ...FOLLOWUP_SCENARIOS, ...SOURCE_SCENARIOS, ...APP_SCENARIOS]
 

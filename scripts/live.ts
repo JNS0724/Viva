@@ -1,5 +1,5 @@
 // npm run live: the live check before a release (docs/live-check.md). Starts Viva twice on one fresh profile with
-// the real DeepSeek model (SMOKE_PHASE=live, then live-resume; src/main/live.ts), then writes smoke/live/report.md.
+// the real DeepSeek model (external phases live, then live-resume; test/smoke/live.ts), then writes smoke/live/report.md.
 //
 //   npm run live                          all 26 scenarios, 3 times each
 //   npm run live -- --set core            the core ones (every beta)
@@ -9,15 +9,17 @@
 //   npm run live -- --dry                 the fake model: tries the check itself, not the model (most scenarios fail)
 //
 // The key comes from DEEPSEEK_API_KEY, or else from LIVE_ENV (default ~/.config/viva/live-test.env, one line
-// DEEPSEEK_API_KEY=...), as for npm run live:memory; it is never printed or written to the report. Everything the
-// app keeps goes to smoke/userData-live; the user's own Viva data and ~/.dsh are not touched.
-import { spawnSync } from 'node:child_process'
+// DEEPSEEK_API_KEY=...), as for npm run live:memory; it is never printed or written to the report.
+// Each run uses an owned temporary profile; the report stays in smoke/live.
 import fs from 'node:fs'
-import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { summarize } from './live-report.mjs'
+import { runExternalScenario } from '../test/smoke/run-external.ts'
+import type { PhaseReport } from '../test/smoke/live.ts'
+import type { SmokePhase } from '../test/smoke/fixtures.ts'
+import { repeatOf, selectScenarios } from '../test/smoke/live.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const ENV_FILE = process.env.LIVE_ENV || path.join(os.homedir(), '.config', 'viva', 'live-test.env')
@@ -35,7 +37,7 @@ const { values: args } = parseArgs({
   },
 })
 
-function fail(message) {
+function fail(message: string): never {
   console.error(`[live] ${message}`)
   process.exit(2)
 }
@@ -53,55 +55,39 @@ function readKey() {
   return key
 }
 
-/** This checkout's Electron on the built code, or the installed app. */
-function appCommand() {
-  if (args.app) {
-    if (!fs.existsSync(args.app)) fail(`找不到 ${args.app}`)
-    return { command: args.app, argv: [] }
-  }
-  if (!fs.existsSync(path.join(ROOT, 'out', 'src', 'main', 'main.js'))) fail('先运行 npm run build（npm run live 会自己先构建）')
-  return { command: createRequire(import.meta.url)('electron'), argv: ['.'] }
-}
-
-const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null)
+const readJson = <T>(file: string): T | null => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as T : null
 
 const out = path.resolve(args.out)
 const liveDir = path.join(out, 'live')
 const key = args.dry ? DRY_KEY : readKey()
-const { command, argv } = appCommand()
 // The last run's results, to compare with; then a clean folder for this one.
-const baseline = readJson(args.baseline ? path.resolve(args.baseline) : path.join(liveDir, 'report.json'))
-fs.rmSync(liveDir, { recursive: true, force: true })
+const baseline = readJson<Parameters<typeof summarize>[1]>(args.baseline ? path.resolve(args.baseline) : path.join(liveDir, 'report.json'))
 fs.mkdirSync(liveDir, { recursive: true })
+for (const phase of ['live', 'live-resume']) fs.rmSync(path.join(liveDir, `report-${phase}.json`), { force: true })
 if (baseline) fs.writeFileSync(path.join(out, 'live-baseline.json'), JSON.stringify(baseline, null, 2))
 
 const only = args.only?.split(',').map((id) => id.trim()).filter(Boolean)
 // The second launch is only for what needs the app started again (the history scenario).
-const phases = !only || only.includes('history') ? ['live', 'live-resume'] : ['live']
+const phases: SmokePhase[] = !only || only.includes('history') ? ['live', 'live-resume'] : ['live']
 const started = Date.now()
 const exits = []
-for (const phase of phases) {
-  console.log(`[live] ${phase}: ${args.app ?? 'this checkout'}${args.dry ? ' (dry, fake model)' : ''}`)
-  const result = spawnSync(command, argv, {
-    cwd: ROOT,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      SMOKE_PHASE: phase,
-      SMOKE_OUT: out,
-      // The installed app has no test folder: the scenarios' fixtures (an MCP server) come from here.
-      SMOKE_FIXTURES: path.join(ROOT, 'test', 'fixtures'),
-      DEEPSEEK_API_KEY: key,
-      LIVE_SET: args.set,
-      LIVE_REPEAT: args.repeat,
-      ...(only ? { LIVE_ONLY: only.join(',') } : {}),
-      ...(args.dry ? { LIVE_DRY: '1' } : {}),
-    },
-  })
-  exits.push({ phase, status: result.status, error: result.error?.message })
+process.env.LIVE_SET = args.set
+process.env.LIVE_REPEAT = args.repeat
+if (only) process.env.LIVE_ONLY = only.join(',')
+else delete process.env.LIVE_ONLY
+process.env.DEEPSEEK_API_KEY = key
+repeatOf(process.env)
+selectScenarios(process.env)
+for (const name of ['SMOKE_PHASE', 'SMOKE_TEST_ROOT', 'SMOKE_FIXTURES']) delete process.env[name]
+let problems: string[] = []
+try {
+  problems = await runExternalScenario({ phases, outputDirectory: out, executable: args.app, apiKey: args.dry ? undefined : key })
+  exits.push(...phases.map(phase => ({ phase, status: problems.length ? 1 : 0, error: undefined as string | undefined })))
+} catch (error) {
+  exits.push(...phases.map(phase => ({ phase, status: 1, error: error instanceof Error ? error.message : String(error) })))
 }
 
-const reports = phases.map((phase) => readJson(path.join(liveDir, `report-${phase}.json`))).filter(Boolean)
+const reports = phases.map((phase) => readJson<PhaseReport>(path.join(liveDir, `report-${phase}.json`))).filter((report): report is PhaseReport => report !== null)
 const { markdown, json } = summarize(reports, baseline)
 const missing = exits.filter((e) => !reports.some((r) => r.phase === e.phase))
 const notes = missing.map((e) => `- ⚠️ ${e.phase} 这次启动没有写出报告（退出码 ${e.status ?? '无'}${e.error ? `，${e.error}` : ''}），看上面的输出。`)
@@ -109,4 +95,4 @@ const text = [markdown, ...(notes.length ? ['## 启动问题', '', ...notes, '']
 fs.writeFileSync(path.join(liveDir, 'report.md'), text)
 fs.writeFileSync(path.join(liveDir, 'report.json'), JSON.stringify(json, null, 2))
 console.log(`[live] 通过 ${json.totals.passed} / ${json.totals.scenarios}；报告：${path.join(liveDir, 'report.md')}`)
-process.exit(json.totals.failed === 0 && missing.length === 0 ? 0 : 1)
+process.exit(json.totals.failed === 0 && missing.length === 0 && problems.length === 0 && exits.every(e => e.status === 0) ? 0 : 1)

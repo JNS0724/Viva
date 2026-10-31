@@ -20,23 +20,25 @@
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.{js,ts}\"",
     "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.{js,ts}\"",
     "presmoke": "npm run build",
-    "smoke": "npm run smoke:setup && npm run smoke:walkthrough && npm run smoke:relaunch && npm run smoke:memory && npm run smoke:resume && npm run smoke:timeline",
-    "smoke:setup": "cross-env SMOKE_PHASE=setup DEEPSEEK_API_KEY= electron .",
-    "smoke:walkthrough": "cross-env SMOKE_PHASE=walkthrough DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
-    "smoke:relaunch": "cross-env SMOKE_PHASE=relaunch DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
-    "smoke:memory": "cross-env SMOKE_PHASE=memory DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
-    "smoke:resume": "cross-env SMOKE_PHASE=resume DEEPSEEK_API_KEY=smoke-fake-key SMOKE_LLM_PORT=47815 electron .",
-    "smoke:timeline": "cross-env SMOKE_PHASE=timeline DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
-    "smoke:perf": "cross-env SMOKE_PHASE=perf DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
+    "smoke": "playwright test -c test/smoke/playwright.config.ts --project=smoke --project=integration",
+    "smoke:core": "playwright test -c test/smoke/playwright.config.ts --project=smoke",
+    "smoke:setup": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @setup",
+    "smoke:walkthrough": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @walkthrough",
+    "smoke:relaunch": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @relaunch",
+    "smoke:memory": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @memory",
+    "smoke:resume": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @resume",
+    "smoke:timeline": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @timeline",
+    "smoke:perf": "playwright test -c test/smoke/playwright.config.ts --project=performance",
+    "smoke:package": "playwright test -c test/smoke/playwright.config.ts --project=package",
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
     "prelive": "npm run build",
-    "live": "node scripts/live.mjs",
-    "showcase": "npm run build && node scripts/showcase.mjs",
+    "live": "node scripts/live.ts",
+    "showcase": "npm run build && node scripts/showcase.ts",
     "predist:mac": "npm run build",
     "dist:mac": "electron-builder --mac dmg --publish never",
     "predist:win": "npm run build",
     "dist:win": "electron-builder --win nsis --publish never",
-    "smoke:language": "npm run build && cross-env SMOKE_PHASE=language DEEPSEEK_API_KEY= electron .",
+    "smoke:language": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @language",
     "check:i18n": "node scripts/check-i18n.ts"
   },
   "dependencies": {
@@ -52,11 +54,13 @@
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@playwright/test": "1.64.1",
     "@types/node": "24.19.2",
     "cross-env": "7.0.3",
     "electron": "44.7.0",
     "electron-builder": "26.17.0",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "@electron/asar": "3.4.1"
   },
   "build": {
     "appId": "app.viva.desktop",
@@ -66,7 +70,8 @@
     },
     "files": [
       "package.json",
-      "out/**/*"
+      "out/**/*",
+      "!out/test/**/*"
     ],
     "asar": true,
     "npmRebuild": false,

@@ -21,14 +21,6 @@ export const { codeRoot: CODE_ROOT, appRoot: APP_ROOT } = rootsOf(fileURLToPath(
 /** dsh's own entry point; running it directly avoids the `.bin/dsh(.cmd)` shim, which Windows won't spawn without a shell. */
 const DEFAULT_DSH_ENTRY = path.join(APP_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs'])
-/**
- * Automated runs: `walkthrough` uses a fresh profile, `relaunch` reopens it, `setup` starts without a key,
- * `memory` runs the real dsh with the memory plugin against a fake model, and `resume` reopens what it left
- * (a task still going in the background when it quit). `live` and `live-resume` are the live check on the real
- * model (live.ts, docs/live-check.md), the second reopening what the first left. `timeline` opens on a history
- * weeks long written before it starts (smoke-timeline.ts); `perf` on one far longer, to measure reading it (smoke-perf.ts).
- */
-const SMOKE_PHASES = new Set(['language', 'walkthrough', 'relaunch', 'setup', 'memory', 'resume', 'showcase', 'live', 'live-resume', 'timeline', 'perf'])
 
 /** The app's own dsh profile: the ACP template plus the memory plugin; see dsh-profile.js. */
 export const DSH_PROFILE = 'viva'
@@ -62,9 +54,6 @@ export interface LaunchConfig {
   keySource: 'saved' | 'env' | null
   problem: 'no-key' | 'no-dsh' | null
   dshHome: string | null
-  smoke: boolean
-  smokePhase: string | null
-  smokeOut: string
 }
 
 /**
@@ -85,8 +74,6 @@ export function resolveConfig(
   // A relative path is taken from where the app was launched, not from the agent's workspace.
   const dshBin = env.DSH_BIN ? resolveIfPath(env.DSH_BIN) : DEFAULT_DSH_ENTRY
   const apiKey = savedKey || env.DEEPSEEK_API_KEY || ''
-  const phase = env.SMOKE_PHASE
-  const smokePhase = phase && SMOKE_PHASES.has(phase) ? phase : null
   const runtime = dshRuntime({ env, execPath: app.execPath ?? process.execPath })
   return {
     dshBin,
@@ -97,8 +84,5 @@ export function resolveConfig(
     keySource: savedKey ? 'saved' : env.DEEPSEEK_API_KEY ? 'env' : null,
     problem: problemFor(Boolean(apiKey) || hasProviders, dshBin, exists),
     dshHome: app.userData ? dshHomeFor(app.userData) : null,
-    smoke: smokePhase !== null,
-    smokePhase,
-    smokeOut: path.resolve(env.SMOKE_OUT || path.join(APP_ROOT, 'smoke')),
   }
 }

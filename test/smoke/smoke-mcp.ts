@@ -60,11 +60,10 @@ async function editSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks
 }
 
 async function importSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
-  const dshHome = path.join(outDir, 'dsh-import')
+  const dshHome = hooks.importHome
   fs.mkdirSync(path.join(dshHome, 'profiles', 'web'), { recursive: true })
   fs.writeFileSync(path.join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), PATCH)
-  process.env.DSH_HOME = dshHome
-  process.env.SMOKE_IMPORT_TOKEN = IMPORT_KEY
+  fs.writeFileSync(path.join(dshHome, '.env'), `SMOKE_IMPORT_TOKEN=${IMPORT_KEY}\n`)
   try {
     // Settings read where dsh's home is when they open: open them again to see the fixture's.
     await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
@@ -90,8 +89,7 @@ async function importSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
     const sent = JSON.stringify(hooks.model?.()?.requests ?? [])
     expect(!sent.includes(IMPORT_KEY), 'the imported key should never reach the model', sent.length)
   } finally {
-    delete process.env.DSH_HOME
-    delete process.env.SMOKE_IMPORT_TOKEN
+    fs.rmSync(path.join(dshHome, '.env'))
   }
 }
 

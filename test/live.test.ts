@@ -2,18 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { resolveConfig } from '../src/main/config.ts'
-import { digitsOf, hasHan, latinShare } from '../src/main/live-kit.ts'
-import { LIVE_SCENARIOS, repeatOf, selectScenarios } from '../src/main/live.ts'
-import { RAW_ERROR } from '../src/main/live-scenarios-app.ts'
+import { digitsOf, hasHan, latinShare } from './smoke/live-kit.ts'
+import { LIVE_SCENARIOS, repeatOf, selectScenarios } from './smoke/live.ts'
+import { RAW_ERROR } from './smoke/live-scenarios-app.ts'
 import { summarize } from '../scripts/live-report.mjs'
 
-const never = () => false
 const FEATURES = fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', 'features.zh-CN.md'), 'utf8')
-
-test('the live check runs as two smoke phases', () => {
-  assert.deepEqual([resolveConfig({ SMOKE_PHASE: 'live' }, never).smokePhase, resolveConfig({ SMOKE_PHASE: 'live-resume' }, never).smokePhase], ['live', 'live-resume'])
-})
 
 test('there are 26 scenarios, each named once, each covering a section of features.md', () => {
   const ids = LIVE_SCENARIOS.map((scenario) => scenario.id)

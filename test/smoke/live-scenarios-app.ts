@@ -94,7 +94,7 @@ const modelOpenai: LiveScenario = {
     const name = `验收网关-${tag}`
     const before = await currentModel(win)
     try {
-      const said = await addProvider(win, { name, url: OPENAI_URL, model: OPENAI_MODEL, key: process.env.LIVE_OPENAI_KEY || process.env.DEEPSEEK_API_KEY || '' })
+      const said = await addProvider(win, { name, url: ctx.hooks.model()?.url || OPENAI_URL, model: OPENAI_MODEL, key: ctx.hooks.model() ? 'smoke-fake-key' : process.env.LIVE_OPENAI_KEY || process.env.DEEPSEEK_API_KEY || '' })
       expect(said.includes(`已添加「${name}」`), 'the provider should be added', said)
       await pickModel(win, { group: name })
       await fresh(win)
@@ -165,10 +165,10 @@ const desk: LiveScenario = {
     if (!island) return
     const file = writeWorkspace(ctx, `会议-${tag}.txt`, `会议改到周四下午 4 点，地点 3 楼大会议室。会议编号 ${code}。\n`)
     await fresh(win)
-    island.force(true)
+    await island.force(true)
     try {
-      expect(island.openInput(), 'the island should open its input')
-      const page = { webContents: island.webContents() }
+      expect((await island.openInput()), 'the island should open its input')
+      const page = { webContents: (await island.webContents()) }
       await until(page, DESK_INPUT, 'the island input open')
       // As a drop hands them over: by their paths, checked by the app before they go.
       const sent = await run(page, `window.desk.ask('总结这个文件的要点，并告诉我会议编号', [${JSON.stringify(file)}])`)
@@ -177,13 +177,13 @@ const desk: LiveScenario = {
         const last = [...document.querySelectorAll('#thread .msg-user')].at(-1)
         return Boolean(last?.textContent.includes('总结这个文件') && document.querySelector('#thread .msg-via'))
       })()`, 'the question asked on the island in the conversation')
-      island.closeInput()
+      await island.closeInput()
       const out = await settle(win, { permission: 'allow' })
       expect(out.answer.includes(code), 'the answer should carry what the file says', clip(out.answer, 300))
       await ctx.shot('desk-asked')
     } finally {
-      island.closeInput()
-      island.force(false)
+      await island.closeInput()
+      await island.force(false)
     }
   },
 }
