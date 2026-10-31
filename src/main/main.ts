@@ -1066,9 +1066,20 @@ function createWindow(config: Config) {
       powerSaveBlocker.start('prevent-app-suspension')
       // A smoke run ends as quitting does: dsh stopped first. Left to app.exit, dsh could outlive the app
       // (Windows keeps a child running) and hold the session the next phase takes over.
+      // Keep the exit boundary visible when a hosted runner stalls after assertions passed.
+      const exitStage = (stage: string) => {
+        try { fs.writeSync(1, `[smoke-exit] ${stage}\n`) } catch { /* A closed diagnostic pipe must not change quitting. */ }
+      }
+      app.once('quit', (_event, code) => exitStage(`app quit (${code})`))
+      process.once('exit', code => exitStage(`process exit (${code})`))
       const quitSmoke = (code: number) => {
         quitting = true
-        stopBridgeInTime().finally(() => app.exit(code))
+        exitStage(`stopping runtime (${code})`)
+        stopBridgeInTime().finally(() => {
+          exitStage('runtime stop wait complete; calling app.exit')
+          app.exit(code)
+          exitStage('app.exit returned')
+        })
       }
       runSmoke(created, config, quitSmoke, {
         agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
