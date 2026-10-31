@@ -1074,11 +1074,17 @@ function createWindow(config: Config) {
       process.once('exit', code => exitStage(`process exit (${code})`))
       const quitSmoke = (code: number) => {
         quitting = true
-        exitStage(`stopping runtime (${code})`)
-        stopBridgeInTime().finally(() => {
-          exitStage('runtime stop wait complete; calling app.exit')
+        // The existing will-quit handler closes stores, schedulers and native resources first.
+        // Preserve failures too: app.quit() alone does not carry the smoke run's exit code.
+        app.once('will-quit', () => {
+          exitStage('normal cleanup complete; calling app.exit')
           app.exit(code)
           exitStage('app.exit returned')
+        })
+        exitStage(`stopping runtime (${code})`)
+        stopBridgeInTime().finally(() => {
+          exitStage('runtime stop wait complete; requesting app.quit')
+          app.quit()
         })
       }
       runSmoke(created, config, quitSmoke, {
