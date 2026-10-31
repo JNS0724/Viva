@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { BrowserWindow } from 'electron'
-import { openHistoryDb } from './history-db.ts'
+import { openHistoryDb } from '../../src/main/history-db.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
 /**

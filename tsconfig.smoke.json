@@ -1,0 +1,6 @@
+// Smoke scenarios are compiled only on demand; package.json excludes out/test from installers.
+{
+  "extends": "./tsconfig.build.json",
+  "include": ["test/smoke/**/*.ts"],
+  "exclude": []
+}

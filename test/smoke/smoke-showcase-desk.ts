@@ -4,7 +4,7 @@ import { BrowserWindow, screen } from 'electron'
 import { report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
- * The desktop island for the README (src/main/smoke-showcase.ts): asking to allow a step, and its input as after
+ * The desktop island for the README (test/smoke/smoke-showcase.ts): asking to allow a step, and its input as after
  * ⌘⇧Space, each cut out of its window with room for its shadow, then laid side by side on a backdrop with a line
  * under each. The layout is a page of its own, so the words are in the app's fonts (the ffmpeg at hand may have
  * no text filter).

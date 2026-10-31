@@ -42,12 +42,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run dist:mac
+      - run: npm run build:smoke
       - name: Smoke the app from the mounted dmg
         run: |
           dmg=$(ls dist/*.dmg | head -1)
           volume=$(hdiutil attach -nobrowse -readonly "$dmg" | grep -o '/Volumes/.*' | head -1)
           trap 'hdiutil detach "$volume" || true' EXIT
-          SMOKE_PHASE=memory SMOKE_OUT="$RUNNER_TEMP/viva-smoke" SMOKE_FIXTURES="$PWD/test/fixtures" DEEPSEEK_API_KEY=smoke-fake-key \
+          SMOKE_TEST_ROOT="$PWD/out/test/smoke" SMOKE_PHASE=memory SMOKE_OUT="$RUNNER_TEMP/viva-smoke" SMOKE_FIXTURES="$PWD/test/fixtures" DEEPSEEK_API_KEY=smoke-fake-key \
             "$volume/Viva.app/Contents/MacOS/Viva"
       # What a release attaches: the installer and the notices for what it carries.
       - uses: actions/upload-artifact@v4

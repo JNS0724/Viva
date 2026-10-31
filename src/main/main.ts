@@ -4,7 +4,6 @@ import { registerLanguageIpc } from './language-ipc.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
@@ -52,9 +51,7 @@ import { openFollowups, type Followups } from './followups-main.ts'
 import type { Notice } from './notice-plan.ts'
 import type { ProposalView } from './followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
-import { runSmoke } from './smoke.ts'
-import { seedTimeline } from './smoke-timeline.ts'
-import { seedPerf } from './smoke-perf.ts'
+import { loadSmokeHarness, type SmokeModel } from './smoke-entry.ts'
 import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
@@ -159,9 +156,9 @@ function isolateSmokeUserData() {
   const dir = path.join(smokeOut, shared ? 'userData' : `userData-${reopens[smokePhase as string] ?? smokePhase}`)
   if (smokePhase !== 'relaunch' && !reopens[smokePhase as string]) removeTree(dir)
   // `timeline` opens on a history weeks long, written before the app reads it.
-  if (smokePhase === 'timeline') seedTimeline(dir)
+  if (smokePhase === 'timeline') smokeHarness?.seed(smokePhase, dir)
   // `perf` opens on one far longer than anyone's, to measure what reading it costs.
-  if (smokePhase === 'perf') seedPerf(dir)
+  if (smokePhase === 'perf') smokeHarness?.seed(smokePhase, dir)
   // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too; so is the workspace,
   // so a smoke run never writes into the developer's.
   app.setPath('userData', dir)
@@ -1087,39 +1084,21 @@ function createWindow(config: Config) {
           app.quit()
         })
       }
-      runSmoke(created, config, quitSmoke, {
-        agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
+      void smokeHarness!.run(created, config, quitSmoke, {
+        agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd,
+        userData: app.getPath('userData'), model: () => smokeModel,
         fixtures: process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures'),
         pickSourceFolder: (dir: string) => { smokeSourcePick = dir },
-        openTasksPage,
-        // A message the judge found urgent, as if a window had passed (judging waits for one).
-        seedSuggestion: () => {
-          sources?.db.save('smoke-mail', [{ id: 'm1', at: Date.now(), from: '[发件人]', title: '合同明天到期', text: '请今天内回复确认是否续签' }], 'c1')
-          sources?.db.markJudged([{ source: 'smoke-mail', id: 'm1' }])
-          followups?.store.addSuggestion({ source: 'smoke-mail', messageId: 'm1', sender: '[发件人]', title: '合同续签', ask: '起草回复，确认续签', why: '明天到期', remindAt: null })
-          followups?.notifier.refresh()
-        },
-        // The live check judges the messages it brought in at once, as the next window would (live-scenarios-sources.ts).
-        judgeMessages: () => followups?.judge?.run(new AbortController().signal) ?? Promise.resolve(null),
-        // The showcase stages what was there before its scenes: follow-ups, and mail the judge found urgent.
-        followups: () => followups,
-        seedMail: () => {
-          const now = Date.now()
-          const mails = [
-            { id: 'm1', at: now - 17 * 60_000, from: '法务部', title: '服务合同明天到期，请确认是否续签', text: '您好，贵司与供应商的年度服务合同将于明天到期。如需续签，请在今天下班前回复确认，并附上采购部的审批单。' },
-            { id: 'm2', at: now - 34 * 60_000, from: '王五', title: '周会纪要（10/24）', text: '本周对账系统按计划推进，退款回归测试由李四负责，周三前补齐。' },
-          ]
-          sources?.db.save('company-mail', mails, '2')
-          sources?.db.markJudged(mails.map((mail) => ({ source: 'company-mail', id: mail.id })))
-          followups?.store.addSuggestion({ source: 'company-mail', messageId: 'm1', sender: '法务部', title: '合同续签', ask: '起草续签确认的回复，发不发由你', why: '明天到期，要你回复确认', remindAt: new Date(now).setHours(24 + 10, 0, 0, 0) }) // tomorrow 10:00
-          followups?.notifier.refresh()
-        },
+        openTasksPage, sources: () => sources, followups: () => followups,
       })
     }
   })
   created.loadFile(path.join(CODE_ROOT, 'src', 'renderer', 'index.html'))
 }
 
+const smokeHarness = await loadSmokeHarness({
+  enabled: resolveConfig(process.env, fs.existsSync).smoke, codeRoot: CODE_ROOT, packaged: app.isPackaged,
+})
 isolateSmokeUserData()
 // Windows shows a notification only for the app its Start menu shortcut names (the installer's, electron-builder appId).
 if (process.platform === 'win32') app.setAppUserModelId('app.viva.desktop')
@@ -1131,23 +1110,16 @@ app.on('second-instance', () => showWindow())
 // macOS: clicking the Dock icon brings back a window closed to the tray.
 app.on('activate', () => showWindow())
 
-/** The memory smoke run's stand-in model, kept so the run can check what the model was sent. */
-let smokeModel: { url: string, [field: string]: any } | null = null
+/** The test harness owns the stand-in model; the host only passes its address to dsh. */
+let smokeModel: SmokeModel | null = null
 
-/** The memory smoke run talks to the real dsh, which calls a local stand-in for the DeepSeek API. */
 async function startSmokeModel() {
-  // A file URL: import() takes `C:\...` for a URL scheme on Windows.
-  // The installed app has no test folder; SMOKE_FIXTURES points a smoke run of it at the repository's.
-  const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
-  const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
-  // The showcase (README pictures and demo) gets answers that read like real use.
-  const decideFirst = currentConfig().smokePhase === 'showcase'
-    ? (await import(pathToFileURL(path.join(fixtures, 'showcase-llm.js')).href)).showcaseDecide
-    : null
-  // `resume` reopens the profile `memory` left, whose models point at the stand-in: the same port both times.
-  const model = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0, decideFirst })
-  smokeModel = model
-  process.env.DEEPSEEK_BASE_URL = model.url
+  smokeModel = await smokeHarness!.startModel({
+    phase: currentConfig().smokePhase,
+    fixtures: process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures'),
+    port: Number(process.env.SMOKE_LLM_PORT) || 0,
+  })
+  process.env.DEEPSEEK_BASE_URL = smokeModel.url
 }
 
 /** Conversations and memories kept under the app's old name, my-agent, come along on the first launch as Viva. */

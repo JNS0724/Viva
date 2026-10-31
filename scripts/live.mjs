@@ -1,5 +1,5 @@
 // npm run live: the live check before a release (docs/live-check.md). Starts Viva twice on one fresh profile with
-// the real DeepSeek model (SMOKE_PHASE=live, then live-resume; src/main/live.ts), then writes smoke/live/report.md.
+// the real DeepSeek model (SMOKE_PHASE=live, then live-resume; test/smoke/live.ts), then writes smoke/live/report.md.
 //
 //   npm run live                          all 26 scenarios, 3 times each
 //   npm run live -- --set core            the core ones (every beta)
@@ -91,6 +91,7 @@ for (const phase of phases) {
       SMOKE_OUT: out,
       // The installed app has no test folder: the scenarios' fixtures (an MCP server) come from here.
       SMOKE_FIXTURES: path.join(ROOT, 'test', 'fixtures'),
+      SMOKE_TEST_ROOT: path.join(ROOT, 'out', 'test', 'smoke'),
       DEEPSEEK_API_KEY: key,
       LIVE_SET: args.set,
       LIVE_REPEAT: args.repeat,

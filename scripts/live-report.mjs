@@ -34,7 +34,7 @@ function compared(scenario, baseline) {
 }
 
 /**
- * @param phases the launches' reports (src/main/live.ts PhaseReport), in order
+ * @param phases the launches' reports (test/smoke/live.ts PhaseReport), in order
  * @param {{scenarios: Array<{id: string, passed: number, attempts: number, ms: number}>} | null} baseline the last run's report.json, or null
  * @returns the report as Markdown, and as JSON to compare the next run with
  */

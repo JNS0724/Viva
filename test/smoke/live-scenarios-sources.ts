@@ -24,7 +24,7 @@ function liveSource(ctx: LiveContext): { dir: string, id: string } {
     contract: 1, id, name: `验收邮箱 ${ctx.tag}`, kind: 'mail', run: ['node', 'index.js'], reads: '发件人、标题、正文', everyMinutes: 60, config: {},
   }, null, 2))
   const minutesAgo = (n: number) => `Date.now() - ${n} * 60_000`
-  fs.writeFileSync(path.join(dir, 'index.js'), `// Written by the live check (src/main/live-scenarios-sources.ts) for one attempt.
+  fs.writeFileSync(path.join(dir, 'index.js'), `// Written by the live check (test/smoke/live-scenarios-sources.ts) for one attempt.
 let input = ''
 process.stdin.on('data', (chunk) => { input += chunk })
 process.stdin.on('end', () => {

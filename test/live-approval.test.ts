@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mayAutoApprove } from '../src/main/live-approval.ts'
+import { mayAutoApprove } from './smoke/live-approval.ts'
 
 test('live acceptance does not automatically approve OS security or ACL changes', () => {
   for (const text of ['pwsh Set-Acl E:\\fixture', 'icacls.exe E:\\fixture /grant', 'takeown /F E:\\fixture', 'diagnose-windows-sandbox-acl.ps1', 'Set-MpPreference -DisableRealtimeMonitoring $true']) {

@@ -1,4 +1,4 @@
-// npm run showcase: the README's pictures and demo, made by the app itself (src/main/smoke-showcase.ts) on the
+// npm run showcase: the README's pictures and demo, made by the app itself (test/smoke/smoke-showcase.ts) on the
 // real dsh with the fake model's showcase answers, then fitted for the docs with ffmpeg:
 //   docs/images/*.png      the scenes, 1600 px wide
 //   docs/images/demo.gif   the follow-up's whole way, for the README
@@ -28,7 +28,7 @@ function runApp() {
   const ran = spawnSync(electron, ['.'], {
     cwd: ROOT,
     stdio: 'inherit',
-    env: { ...process.env, SMOKE_PHASE: 'showcase', SMOKE_OUT: OUT, DEEPSEEK_API_KEY: 'smoke-fake-key', SMOKE_LLM_PORT: '47816' },
+    env: { ...process.env, SMOKE_TEST_ROOT: path.join(ROOT, 'out', 'test', 'smoke'), SMOKE_PHASE: 'showcase', SMOKE_OUT: OUT, DEEPSEEK_API_KEY: 'smoke-fake-key', SMOKE_LLM_PORT: '47816' },
   })
   if (ran.status !== 0) throw new Error(`the showcase run failed (${ran.status}); see smoke/showcase for what it captured`)
 }

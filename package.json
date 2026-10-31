@@ -19,7 +19,7 @@
     "typecheck": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.plugins.json && tsc -p tsconfig.test.json",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.{js,ts}\"",
     "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.{js,ts}\"",
-    "presmoke": "npm run build",
+    "presmoke": "npm run build:smoke",
     "smoke": "npm run smoke:setup && npm run smoke:walkthrough && npm run smoke:relaunch && npm run smoke:memory && npm run smoke:resume && npm run smoke:timeline",
     "smoke:setup": "cross-env SMOKE_PHASE=setup DEEPSEEK_API_KEY= electron .",
     "smoke:walkthrough": "cross-env SMOKE_PHASE=walkthrough DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
@@ -29,15 +29,16 @@
     "smoke:timeline": "cross-env SMOKE_PHASE=timeline DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "smoke:perf": "cross-env SMOKE_PHASE=perf DEEPSEEK_API_KEY=smoke-fake-key DSH_BIN=test/fixtures/fake-dsh.js electron .",
     "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
-    "prelive": "npm run build",
+    "prelive": "npm run build:smoke",
     "live": "node scripts/live.mjs",
-    "showcase": "npm run build && node scripts/showcase.mjs",
+    "showcase": "npm run build:smoke && node scripts/showcase.mjs",
     "predist:mac": "npm run build",
     "dist:mac": "electron-builder --mac dmg --publish never",
     "predist:win": "npm run build",
     "dist:win": "electron-builder --win nsis --publish never",
-    "smoke:language": "npm run build && cross-env SMOKE_PHASE=language DEEPSEEK_API_KEY= electron .",
-    "check:i18n": "node scripts/check-i18n.ts"
+    "smoke:language": "npm run build:smoke && cross-env SMOKE_PHASE=language DEEPSEEK_API_KEY= electron .",
+    "check:i18n": "node scripts/check-i18n.ts",
+    "build:smoke": "npm run build && tsc -p tsconfig.smoke.json"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.9.0",
@@ -66,7 +67,8 @@
     },
     "files": [
       "package.json",
-      "out/**/*"
+      "out/**/*",
+      "!out/test/**/*"
     ],
     "asar": true,
     "npmRebuild": false,

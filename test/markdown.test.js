@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { safeHref } from '../src/renderer/view/markdown.ts'
 
-/** The DOM side is checked by the relaunch smoke run (src/main/smoke.js checkMarkdown). */
+/** The DOM side is checked by the relaunch smoke run (test/smoke/smoke.ts checkMarkdown). */
 test('an answer may link only to web and mail addresses', () => {
   assert.equal(safeHref('https://example.com/spec'), 'https://example.com/spec')
   assert.equal(safeHref('mailto:a@example.com'), 'mailto:a@example.com')

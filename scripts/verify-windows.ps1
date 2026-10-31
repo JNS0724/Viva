@@ -50,7 +50,7 @@ if (-not $PackageOnly) {
   Step 'install' { npm ci }
   Step 'test' { npm test }
   # The app runs from out/ (scripts/build.mjs); the phases below start it one by one, without npm's presmoke.
-  Step 'build' { npm run build }
+  Step 'build' { npm run build:smoke }
   Step 'smoke-setup' { npm run smoke:setup }
   Step 'smoke-walkthrough' { npm run smoke:walkthrough }
   Step 'smoke-relaunch' { npm run smoke:relaunch }
@@ -78,17 +78,19 @@ function SmokeApp($exe, $name) {
   $out = Join-Path $report $name
   New-Item -ItemType Directory -Force -Path $out | Out-Null
   $env:SMOKE_PHASE = 'memory'; $env:SMOKE_OUT = $out; $env:SMOKE_FIXTURES = Join-Path $root 'test\fixtures'; $env:DEEPSEEK_API_KEY = 'smoke-fake-key'
+  $env:SMOKE_TEST_ROOT = Join-Path $root 'out\test\smoke'
   try {
-    $app = Start-Process -FilePath $exe -Wait -PassThru -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
+    $app = Start-Process -FilePath $exe -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput (Join-Path $out 'stdout.log') -RedirectStandardError (Join-Path $out 'stderr.log')
     Get-Content (Join-Path $out 'stdout.log'), (Join-Path $out 'stderr.log') -Encoding UTF8
     cmd /c exit $app.ExitCode
   } finally {
-    Remove-Item env:SMOKE_PHASE, env:SMOKE_OUT, env:SMOKE_FIXTURES, env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+    Remove-Item env:SMOKE_PHASE, env:SMOKE_OUT, env:SMOKE_FIXTURES, env:SMOKE_TEST_ROOT, env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
   }
 }
 
 if ($Package) {
   Step 'package' { npm run dist:win }
+  Step 'build-smoke-harness' { npm run build:smoke }
   # Not dist\win-unpacked: inside the repository the app would find packages in the repo's node_modules.
   # The installer itself, as a user gets it: installed silently into a folder of its own, smoked, removed.
   $installer = Get-ChildItem (Join-Path $root 'dist\*-setup.exe') | Select-Object -First 1
