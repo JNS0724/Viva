@@ -129,84 +129,9 @@
   ],
   "sourceReports": [
     {
-      "path": "docs/performance-handoff-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "ede328c2218f075a71def1bbfc1373190c35a6ed99e026ed0cf200e344f5d449"
-    },
-    {
       "path": "docs/project-handoff-20261030.md",
       "locale": "zh-CN",
-      "sha256": "5c0d2a96f70bb9532b537d745980071c1d7b373081dc1a666bde15004019748b"
-    },
-    {
-      "path": "docs/qa-background-scroll-20261029.md",
-      "locale": "zh-CN",
-      "sha256": "41f3137899f968652044220180ba358f291438e2a3641c8bd39b40d683c1c7ae"
-    },
-    {
-      "path": "docs/qa-etl-metadata-20261029.md",
-      "locale": "zh-CN",
-      "sha256": "b5332fdad277a3adc19e3ee63ab7c5b0676701a66da7447ab1907da97ac4d354"
-    },
-    {
-      "path": "docs/qa-installed-performance-20261029.md",
-      "locale": "zh-CN",
-      "sha256": "ab88b014c9ad7b8c06f98c2e88a65eb61d243bf60a389bf5aae9d7b5b4340a4d"
-    },
-    {
-      "path": "docs/qa-layout-and-uia-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "a6c740c2ae12bf55bfa22a9c778d354a872aaa1e30f8438f9998283dac1d6e28"
-    },
-    {
-      "path": "docs/qa-native-feedback-installed-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "eb32ba0b457f36640c65ac333a0b5a4eb72643e9e04f3dd63973e1655f529178"
-    },
-    {
-      "path": "docs/qa-performance-checkpoint-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "a2c87c5fe1670f1d0ab9cb90449cdd80696e2ea658b8efa6a3687cd330cce32e"
-    },
-    {
-      "path": "docs/qa-performance-diagnosis-summary-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "1887ef58928ae5226da6ddb25cec025a2901a253584f6da12e46a0a25cdaaedf"
-    },
-    {
-      "path": "docs/qa-performance-static-handoff-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "319494eedfa2569778bd2ddaf7df1f345d3e8ad86572ce927527f6858410902b"
-    },
-    {
-      "path": "docs/qa-postdriver-cold-and-reboot-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "fad3112844f1f0737387723b6d149e812c55d878cb616c2e057d41762a879f32"
-    },
-    {
-      "path": "docs/qa-rich-input-analysis-20261029.md",
-      "locale": "zh-CN",
-      "sha256": "ffacfc303dca84a3c0ebde026c5998751b4e501c4d199540c18c499c81da92aa"
-    },
-    {
-      "path": "docs/qa-rich-reading-20261029.md",
-      "locale": "zh-CN",
-      "sha256": "732d5c294008a21b1cc0ead03fc9984d96e4e59bb02d9ce3a124736b67d1144a"
-    },
-    {
-      "path": "docs/qa-titlebar-scope-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "4c457f58bac9b0aef7d7d6392dc839f6c1e6bd32de1f01919fff494a8bdc5cd3"
-    },
-    {
-      "path": "docs/qa-handoff-remediation-20261031.md",
-      "locale": "zh-CN",
-      "sha256": "c8ff1445ab6eba3f36356d3c4e994b65a1e1b09ceb9942c26d17ef9d9462fff7"
-    },
-    {
-      "path": "docs/qa-remote-comparison-20261031.md",
-      "locale": "zh-CN",
-      "sha256": "232c7a466cd8433b6d30c86cc531be706c04bcf85591e2c24b931f528c4fdc87"
+      "sha256": "122aaf188aec65670d2194acae396815dcc8d3169f11981bb2e7c84271c24d12"
     }
   ]
 }
