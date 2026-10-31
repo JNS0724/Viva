@@ -16,7 +16,8 @@ const MAX_TITLE_CHARS = 40
 export const taskProblems = (): Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } => ({
   unsaved: t("main.task-ipc.this.message.has.not.been.saved.yet"),
   invalid: t("main.task-ipc.the.current.task.is.not.in.the"),
-  missing: t("main.main.this.conversation.has.ended.try.again.later"),
+  missing: t("handoff.task.no.session"),
+  connecting: t("handoff.task.connecting"),
   unavailable: t("main.task-ipc.this.assistant.version.does.not.support.background"),
   lost: t("main.task-ipc.cannot.resume.previous.record.missing.you.can"),
   gone: t("main.task-ipc.cannot.resume.previous.record.missing.you.can.2"),
@@ -125,6 +126,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     if (!isText(text) || (words !== null && !isText(words))) throw new Error('invalid task request')
     const main = current()
     const { mode, model } = agentInfo()
+    if (mode === 'connecting') return { ok: false, problem: taskProblems().connecting }
     const started = await agent.startTask(words === null ? {} : { words })
     if (!started.ok) return { ok: false, problem: taskProblems()[started.reason] ?? t("main.task-ipc.could.not.start.in.background", { reason: started.reason }) }
     // A conversation with only 后台做 requests has no foreground messages yet. Keep its identity too,

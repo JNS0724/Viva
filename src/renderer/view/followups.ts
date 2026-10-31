@@ -161,7 +161,7 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
     followup.files?.length ? t("followups.will.read.2", { value1: followup.files.join('、') }) : null,
     followup.watching ? t("followups.watching.prepare.when.it.changes", { watching: followup.watching }) : null,
   ].filter(Boolean).join(' · ')
-  const waiting = followup.status === 'preparing' ? t("followups.preparing.in.the.background", { value1: prepare?.queued ? t("followups.more.queued", { queued: prepare.queued }) : '' }) : PREPARE_PROMISE
+  const waiting = followup.status === 'preparing' ? t("followups.preparing.in.the.background", { value1: prepare?.queued ? t("followups.more.queued", { queued: prepare.queued }) : '' }) : prepare?.waiting ? t("handoff.prepare.waiting", { reason: prepare.waiting }) : PREPARE_PROMISE
   return h('div', { class: 'tp-main fu-main', 'data-followup': followup.id },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: followup.title }),
@@ -173,8 +173,9 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
       ready && followup.draft
         ? h('article', { class: 'fu-draft' }, renderMarkdown(followup.draft, { openLink: handlers.openLink }))
         : h('p', { class: 'fu-note', text: waiting }),
-      h('div', { class: 'confirm-actions fu-actions' }, detailActions(followup, handlers)),
-      ready ? h('p', { class: 'fu-note', text: t("followups.continue.puts.the.draft.in.the.input") }) : null))
+      h('div', { class: 'confirm-actions fu-actions' }, detailActions(followup, handlers),
+        !ready && prepare?.waiting ? h('span', { class: 'fu-note', role: 'status', text: t("handoff.prepare.reason", { reason: prepare.waiting }) }) : null),
+      ready ? h('p', { class: 'fu-note', text: t("handoff.prepare.continue.scope") }) : null))
 }
 
 onLocaleChange(() => {

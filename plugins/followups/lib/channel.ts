@@ -12,7 +12,7 @@
  */
 export const MAX_INPUT_CHARS = 120_000
 export const MAX_SYSTEM_CHARS = 8_000
-export const MAX_TOKENS = 4_000
+export const MAX_TOKENS = 8_192
 const MAX_ID_CHARS = 100
 const MAX_ROUTE_CHARS = 200
 

@@ -55,8 +55,9 @@ button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px sol
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---------- shell ---------- */
-/* Windows / Linux: the system draws its caption buttons on the right (titleBarOverlay); env() reports where they start. */
-html:not([data-platform="darwin"]) {
+/* Windows / Linux: the system draws its caption buttons on the right (titleBarOverlay); env() reports where they start.
+   Keep this viewport-dependent value in the title bar so resizing does not invalidate every message's inherited style. */
+html:not([data-platform="darwin"]) .titlebar {
   --reserve-left: 0px;
   --reserve-right: calc(100vw - env(titlebar-area-width, calc(100vw - 140px)));
 }
@@ -136,9 +137,10 @@ html:not([data-platform="darwin"]) {
 .col-grip:hover::after, .col-resizing .col-grip::after, .col-grip:focus-visible::after { opacity: .5; }
 .col-grip:focus-visible { outline: none; }
 .col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
-.scroll { position: relative; flex: 1; width: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
+/* A message's star extends 38px beyond its column. Keep that lane inside the scrollport at narrow widths too. */
+.scroll { position: relative; flex: 1; width: 100%; min-height: 0; padding-inline: 38px; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
 .jump-latest {
-  position: sticky; bottom: 16px; z-index: 5; flex: none; height: 38px; padding: 0 18px; border: none; border-radius: 999px;
+  align-self: center; flex: none; height: 28px; margin: 0 0 4px; padding: 0 14px; border: none; border-radius: 999px;
   background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
 }
 .home { width: 100%; max-width: 1240px; min-height: 100%; padding: 24px 0; box-sizing: border-box; }
@@ -978,8 +980,9 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 42px; flex: none;
   border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel-2); color: var(--ink-3);
 }
-.history-search:focus-within { border-color: var(--accent); color: var(--accent); }
+.history-search:focus-within, .history-search.search-focused { border-color: var(--accent); color: var(--accent); }
 .history-search input { flex: 1; min-width: 0; border: none; outline: none; background: none; color: var(--ink); font: inherit; font-size: 14px; }
+.history-search-frame { flex: 1; min-width: 0; width: 100%; height: 26px; border: none; background: transparent; }
 .history-list { display: flex; flex-direction: column; gap: 12px; }
 .history-list > .label { color: var(--ink-3); padding-left: 4px; }
 .history-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }

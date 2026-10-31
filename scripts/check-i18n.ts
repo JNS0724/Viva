@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 export interface TranslationPair { en: string; zh: string; enHash: string; zhHash: string }
-export interface TranslationManifest { version: 1; reviewedOn: string; pairs: TranslationPair[]; bilingual: string[] }
+export interface SourceReport { path: string; locale: 'en' | 'zh-CN'; sha256: string }
+export interface TranslationManifest { sourceReports?: SourceReport[]; version: 1; reviewedOn: string; pairs: TranslationPair[]; bilingual: string[] }
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const digest = (text: string): string => createHash('sha256').update(text.replaceAll('\r\n', '\n')).digest('hex')
 const slug = (text: string): string => text.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s/g, '-')
@@ -25,6 +26,15 @@ export function checkDocumentation(base = root): string[] {
   const manifest = JSON.parse(fs.readFileSync(path.join(base, 'docs/i18n-manifest.json'), 'utf8')) as TranslationManifest
   const failures: string[] = []
   const registered = new Set(manifest.bilingual)
+  for (const report of manifest.sourceReports ?? []) {
+    if (!/^docs\/(?:qa-|(?:project|performance)-handoff-)[a-zA-Z0-9._-]+\.md$/.test(report.path) || !['en', 'zh-CN'].includes(report.locale)) {
+      failures.push('Invalid source report registration: ' + report.path); continue
+    }
+    registered.add(report.path)
+    const full = path.join(base, report.path)
+    if (!fs.existsSync(full)) failures.push('Missing source report: ' + report.path)
+    else if (digest(fs.readFileSync(full, 'utf8')) !== report.sha256) failures.push('Source report review required: ' + report.path)
+  }
   for (const pair of manifest.pairs) {
     for (const [file, other, expected] of [[pair.en, pair.zh, pair.enHash], [pair.zh, pair.en, pair.zhHash]]) {
       registered.add(file)

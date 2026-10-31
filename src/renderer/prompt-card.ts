@@ -11,8 +11,10 @@ export { PROMPT_HEADS } from './selectors.ts'
 
 let COMMAND_TITLE = t("prompt-card.run.command")
 
-/** A tool call whose only argument is the command it runs. */
-const commandOf = (rawInput: Record<string, any> | null | undefined): string => (typeof rawInput?.command === 'string' && Object.keys(rawInput).length === 1 ? rawInput.command : '')
+/** A command may also carry a description, a working directory or other execution arguments. */
+const COMMAND_ARGUMENTS = new Set(['command', 'description', 'cwd', 'workdir', 'timeout', 'timeout_ms', 'yield_time_ms', 'max_output_tokens', 'shell'])
+const commandOf = (rawInput: Record<string, unknown> | null | undefined): string =>
+  typeof rawInput?.command === 'string' && Object.keys(rawInput).every(key => COMMAND_ARGUMENTS.has(key)) ? rawInput.command : ''
 
 /** Buttons by role: the main one (the first that allows, filled), the others (outlined). */
 export function promptButtons(options: readonly PermissionOption[]): Array<PermissionOption & { role: 'primary' | 'secondary' }> {

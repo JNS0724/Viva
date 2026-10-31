@@ -1227,5 +1227,16 @@ export const en = {
   "main.workspace-files.this.location.is.outside.the.workspace": "This location is outside the workspace",
   "main.workspace-files.this.is.not.a.file": "This is not a file",
   "main.workspace-files.invalid.read.position": "Invalid read position",
+  "handoff.task.no.session": "No conversation is ready yet. Wait for the connection or start a new topic, then retry.",
+  "handoff.task.connecting": "The assistant is connecting. Retry when connected; your request has been kept.",
+  "handoff.prepare.waiting": "Waiting: {reason}. Preparation will continue when this clears.",
+  "handoff.prepare.reason": "Waiting because: {reason}",
+  "handoff.prepare.continue.scope": "Continue puts the draft in the input for you to review and send. Background preparation runs no tools; tools in the continued conversation follow your current permissions.",
+  "handoff.approval.reason": "Description supplied by the tool: {reason}",
+  "handoff.approval.command.scope": "A command can read or write files, access the network, or start programs. Review the complete command before deciding.",
+  "handoff.approval.parameters": "Complete operation arguments",
+  "handoff.error.sandbox.setup": "The command has not run: the restricted workspace environment could not be prepared. Retry in a local folder you own. Application logs contain details.",
+  "handoff.privacy.title": "Local data and deletion scope",
+  "handoff.privacy.scope": "Conversations are stored as plain text on this computer. Removing Viva conversation records does not also erase the underlying assistant session logs, long-term memories, or saved images. These stores have no unified automatic expiry. Forgotten memories can be restored in About you.",
 } as const
 export type MessageKey = keyof typeof en

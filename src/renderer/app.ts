@@ -1,6 +1,6 @@
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
-import { initializeLanguage } from './language.ts'
+import { initializeLanguage, registerLanguageDocument } from './language.ts'
 import { withFiles } from '../shared/attachments.ts'
 import { IMAGE_TYPES } from '../shared/images.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
@@ -13,6 +13,7 @@ import { createSourceActions } from './source-actions.ts'
 import { createFollowupActions } from './followup-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
+import { mountHistorySearchFrame } from './history-search-frame.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
 import { createNewTopicAction, isPreviousTopicEvent } from './new-topic-actions.ts'
@@ -1008,8 +1009,8 @@ function closeTopmost() {
   else if (state.picker) dispatch({ type: 'picker_close' })
 }
 
-function wireDismissal() {
-  document.addEventListener('click', (event) => {
+function wireDismissal(target: Document = document) {
+  target.addEventListener('click', (event) => {
     // The path as it was at the click: a click that opens a menu re-renders its button, so by now the element
     // clicked (the model's name, the folder's) is no longer in the page and contains() would call it outside.
     const path = event.composedPath()
@@ -1021,7 +1022,7 @@ function wireDismissal() {
     if (state.settings.permissionMenu && !within(dom.permArea)) dispatch({ type: 'permission_menu', open: false })
     if (state.files.menu && !event.composedPath().some((el) => el instanceof Element && el.classList.contains('open-split'))) dispatch({ type: 'files_menu', open: false })
   })
-  document.addEventListener('keydown', (event) => {
+  target.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return
     if (isHistoryShortcut(event)) {
       event.preventDefault()
@@ -1056,22 +1057,22 @@ const carriesImages = (event: DragEvent) => {
  * what is wrong with anything else). Pictures dragged onto it go into the input instead. The window says
  * what letting go will do while it is over it.
  */
-function wireFolderDrop() {
+function wireFolderDrop(target: Document = document) {
   const showing = (kind: 'folder' | 'images' | null) => {
     document.body.classList.toggle('drop-folder', kind === 'folder')
     document.body.classList.toggle('drop-images', kind === 'images')
   }
-  document.addEventListener('dragover', (event) => {
+  target.addEventListener('dragover', (event) => {
     if (!event.dataTransfer || !carriesFiles(event)) return
     event.preventDefault()
     const images = carriesImages(event)
     event.dataTransfer.dropEffect = images ? 'copy' : 'link'
     showing(images ? 'images' : 'folder')
   })
-  document.addEventListener('dragleave', (event) => {
+  target.addEventListener('dragleave', (event) => {
     if (!event.relatedTarget) showing(null)
   })
-  document.addEventListener('drop', (event) => {
+  target.addEventListener('drop', (event) => {
     if (!event.dataTransfer || !carriesFiles(event)) return
     event.preventDefault()
     showing(null)
@@ -1147,6 +1148,15 @@ async function boot() {
   wireHub()
   wireDismissal()
   wireFolderDrop()
+  void mountHistorySearchFrame(dom.historySearch).then((searchDocument) => {
+    if (searchDocument) {
+      registerLanguageDocument(searchDocument)
+      const frame = document.getElementById('history-search-frame')
+      if (frame) frame.dataset.i18nTitle = 'shell.search.conversations'
+      wireDismissal(searchDocument)
+      wireFolderDrop(searchDocument)
+    }
+  })
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })

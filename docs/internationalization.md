@@ -22,6 +22,8 @@ English is the default README/document entry point; `.zh-CN.md` holds Chinese. B
 
 `docs/i18n-manifest.json` records reviewed file pairs and normalized SHA-256 hashes. `npm run check:i18n` checks coverage, reciprocal navigation, local file targets, and freshness; the test suite runs it too. After editing a document, review/update its counterpart before recording both new hashes. Do not regenerate hashes to bypass translation review. This check detects changes, not semantic equivalence or remote URL availability.
 
+Historical QA evidence and dated handoffs may be registered under `sourceReports` with their original locale and normalized SHA-256. This preserves original observations without claiming a translated counterpart. Only explicit QA report/handoff paths qualify; changes invalidate their recorded review hash. Product documentation continues to require reviewed language pairs.
+
 ## Source kit and promotion
 
 `viva-source new/test --language en|zh-CN` defaults to English. New-source templates follow the selected language; source-owned names/content remain source data. The package includes both READMEs, both template sets, and compiled shared translation resources. Runtime developer errors use English.
@@ -30,6 +32,6 @@ Promo captions use their own typed React context/resources. `Promo` defaults to 
 
 ## Verification
 
-Run typecheck, all tests, normal five-phase smoke, and `smoke:language`. The language smoke checks setup/settings, unsaved secret draft and selection/focus preservation, repeated switching, IME deferral, a narrow window, unchanged session identity, and desktop-island synchronization. Unit tests cover locale resolution, preferences migration/persistence, IPC validation, catalogs/parameters, plurals, labels, and calendar days. Source-kit tests validate generated templates and CLI languages.
+Run typecheck, all tests, normal six-phase smoke, and `smoke:language`. The language smoke checks setup/settings, unsaved secret draft and selection/focus preservation, repeated switching, IME deferral, a narrow window, unchanged session identity, and desktop-island synchronization. Unit tests cover locale resolution, preferences migration/persistence, IPC validation, catalogs/parameters, plurals, labels, and calendar days. Source-kit tests validate generated templates and CLI languages.
 
 Release acceptance additionally needs macOS, actual installed-package startup/restart, active streaming/approval/error states in both languages, English screenshot/video capture, and real-model bilingual memory/plugin behavior. Do not treat fake-model or typechecking results as those checks.

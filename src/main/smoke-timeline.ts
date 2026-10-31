@@ -233,7 +233,7 @@ async function checkFarHit(win: BrowserWindow, outDir: string, expect: Expect) {
   const before = await run(win, FOLDED)
   const agent = await run(win, AGENT)
   await run(win, `(() => {
-    const field = document.getElementById('history-search')
+    const field = (document.getElementById('history-search-frame')?.contentDocument?.getElementById('history-search') ?? document.getElementById('history-search'))
     field.value = '工单系统'
     field.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
@@ -264,7 +264,7 @@ async function continueFromReview(win: BrowserWindow, words: string) {
   // 回顾 is the page with nothing typed: what a search before left in the field is cleared.
   await run(win, `(() => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))
-    const field = document.getElementById('history-search')
+    const field = (document.getElementById('history-search-frame')?.contentDocument?.getElementById('history-search') ?? document.getElementById('history-search'))
     field.value = ''
     field.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)

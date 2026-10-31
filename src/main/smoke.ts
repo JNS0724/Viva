@@ -17,6 +17,9 @@ import { checkPerf } from './smoke-perf.ts'
 import { runShowcase } from './smoke-showcase.ts'
 import { checkComposition } from './smoke-composition.ts'
 import { checkInputBoundaries } from './smoke-input-boundaries.ts'
+import { checkMarkdownLists } from './smoke-markdown-lists.ts'
+import { checkStarLayouts } from './smoke-star-layout.ts'
+import { checkAnswerExpansion } from './smoke-answer-expansion.ts'
 
 const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
@@ -405,7 +408,10 @@ const MARKDOWN_STATE = `(() => {
 
 /** Markdown in an answer becomes real headings, lists, tables and code; nothing in it runs, loads or navigates. */
 async function checkMarkdown(win: SmokeWindow, outDir: string) {
-  const failures: string[] = []
+  const failures: string[] = await checkMarkdownLists(win)
+  await checkAnswerExpansion(win, (ok, message, seen) => {
+    if (!ok) failures.push(`answer expansion: ${message}: ${JSON.stringify(seen)}`)
+  })
   await newTopic(win)
   await wait(UI_WAIT_MS)
   await submit(win, MARKDOWN_PROMPT)
@@ -448,7 +454,7 @@ const ISLAND_REACHABLE = `(() => {
 })()`
 
 const typeSearch = (text: string) => `(() => {
-  const input = document.getElementById('history-search')
+  const input = (document.getElementById('history-search-frame')?.contentDocument?.getElementById('history-search') ?? document.getElementById('history-search'))
   input.value = ${JSON.stringify(text)}
   input.dispatchEvent(new Event('input'))
 })()`
@@ -494,7 +500,7 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
 
   // ⌘F searches what was said; a hit scrolls the timeline to that message and marks it.
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }))`)
-  const focused = await run(win, 'document.activeElement?.id ?? ""')
+  const focused = await run(win, `(document.getElementById('history-search-frame')?.contentDocument?.activeElement?.id || document.activeElement?.id) ?? ""`)
   expect(focused === 'history-search', '⌘F should put the cursor in the search field', focused)
   await run(win, typeSearch(SEARCH_TEXT))
   await wait(UI_WAIT_MS)
@@ -543,7 +549,7 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
       problems.push(...await checkSources(win, outDir, { userData: hooks.userData, fixtures: hooks.fixtures, pick: hooks.pickSourceFolder }))
     }
     else if (smokePhase === 'relaunch') {
-      problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir))
+      problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir), ...await checkStarLayouts(win, outDir))
       // Last on this profile: they add questions to the conversation the checks above look at.
       problems.push(...await checkDeskAsk(win, outDir, hooks.desk?.()))
       problems.push(...await checkPictures(win, outDir, hooks.desk?.()))

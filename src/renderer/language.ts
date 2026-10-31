@@ -9,15 +9,25 @@ interface LanguageApi {
 let state: LanguageState = { language: 'system', locale: 'zh-CN' }
 let bridge: LanguageApi | null = null
 
-function apply(next: LanguageState): void {
-  state = next
-  setLocale(next.locale)
-  document.documentElement.lang = next.locale
-  for (const el of document.querySelectorAll<HTMLElement>('[data-i18n]')) {
+const extraDocuments = new Set<Document>()
+let observeDocument: ((doc: Document) => void) | null = null
+const languageDocuments = () => [document, ...extraDocuments]
+
+/** The isolated search field still shares language, drafts, focus and IME semantics with its parent. */
+export function registerLanguageDocument(doc: Document): void {
+  if (extraDocuments.has(doc)) return
+  extraDocuments.add(doc)
+  observeDocument?.(doc)
+  applyDocument(doc, state)
+}
+
+function applyDocument(doc: Document, next: LanguageState): void {
+  doc.documentElement.lang = next.locale
+  for (const el of doc.querySelectorAll<HTMLElement>('[data-i18n]')) {
     el.textContent = translate(el.dataset.i18n ?? '')
   }
   for (const attr of ['aria-label', 'title', 'placeholder']) {
-    for (const el of document.querySelectorAll<HTMLElement>(`[data-i18n-${attr}]`)) {
+    for (const el of doc.querySelectorAll<HTMLElement>(`[data-i18n-${attr}]`)) {
       const text = translate(el.getAttribute(`data-i18n-${attr}`) ?? '')
       el.setAttribute(attr, text)
       if (attr === 'placeholder') el.dataset.placeholder = text
@@ -25,24 +35,30 @@ function apply(next: LanguageState): void {
   }
 }
 
+function apply(next: LanguageState): void {
+  state = next
+  setLocale(next.locale)
+  for (const doc of languageDocuments()) applyDocument(doc, next)
+}
+
 export async function initializeLanguage(api: LanguageApi, redraw: () => void): Promise<void> {
   bridge = api
   // Register before fetching so an update during initialization cannot be lost.
   let received = false
   const update = (next: LanguageState) => {
-    const fields = [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select')]
+    const fields = languageDocuments().flatMap(doc => [...doc.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select')])
       .filter(field => (field.id || field.name) && field.name !== 'language')
       .map(field => ({ field, value: field.value, checked: field instanceof HTMLInputElement ? field.checked : false,
-        focused: field === document.activeElement,
+        focused: field === field.ownerDocument.activeElement,
         start: field instanceof HTMLSelectElement ? null : field.selectionStart,
         end: field instanceof HTMLSelectElement ? null : field.selectionEnd,
       }))
-    const scrolls = [...document.querySelectorAll<HTMLElement>('[id]')].filter(el => el.scrollTop || el.scrollLeft)
-      .map(el => ({ id: el.id, top: el.scrollTop, left: el.scrollLeft }))
+    const scrolls = languageDocuments().flatMap(doc => [...doc.querySelectorAll<HTMLElement>('[id]')]).filter(el => el.scrollTop || el.scrollLeft)
+      .map(el => ({ doc: el.ownerDocument, id: el.id, top: el.scrollTop, left: el.scrollLeft }))
     apply(next)
     redraw()
     for (const saved of fields) {
-      const field = saved.field.isConnected ? saved.field : document.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+      const field = saved.field.isConnected ? saved.field : saved.field.ownerDocument.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
         saved.field.id ? `#${CSS.escape(saved.field.id)}` : `[name="${CSS.escape(saved.field.name)}"]`)
       if (!field) continue
       field.value = saved.value
@@ -53,18 +69,21 @@ export async function initializeLanguage(api: LanguageApi, redraw: () => void): 
       }
     }
     for (const saved of scrolls) {
-      const el = document.getElementById(saved.id)
+      const el = saved.doc.getElementById(saved.id)
       if (el) { el.scrollTop = saved.top; el.scrollLeft = saved.left }
     }
   }
-  let composing = false
+  const composing = new Set<Document>()
   let pending: LanguageState | null = null
-  document.addEventListener('compositionstart', () => { composing = true })
-  document.addEventListener('compositionend', () => {
-    composing = false
-    if (pending) { const next = pending; pending = null; update(next) }
-  })
-  api.onLanguage((next) => { received = true; if (composing) pending = next; else update(next) })
+  observeDocument = doc => {
+    doc.addEventListener('compositionstart', () => { composing.add(doc) })
+    doc.addEventListener('compositionend', () => {
+      composing.delete(doc)
+      if (!composing.size && pending) { const next = pending; pending = null; update(next) }
+    })
+  }
+  languageDocuments().forEach(observeDocument)
+  api.onLanguage((next) => { received = true; if (composing.size) pending = next; else update(next) })
   try {
     const initial = await api.getLanguage()
     if (!received) apply(initial)

@@ -170,6 +170,9 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       modelsSection(models, handlers),
       deskSection(settings, handlers),
       imagesSection(settings, handlers),
+      h('section', { class: 'ext', 'aria-label': t("handoff.privacy.title") },
+        h('span', { class: 'profile-heading', text: t("handoff.privacy.title") }),
+        h('p', { class: 'help', text: t("handoff.privacy.scope") })),
       prepareSection(followups, handlers),
       sourcesSection(sources, handlers),
       extensionsSection(extensions, handlers, { connected }))))

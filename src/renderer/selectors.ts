@@ -328,9 +328,9 @@ export function fileItems(state: State) {
 export function permissionDetail(permission: { rawInput?: Record<string, unknown> | null } | null | undefined): string {
   if (!permission?.rawInput) return ''
   const { command } = permission.rawInput
-  if (typeof command === 'string' && Object.keys(permission.rawInput).length === 1) return truncate(command, 600)
+  if (typeof command === 'string' && Object.keys(permission.rawInput).length === 1) return command
   try {
-    return truncate(JSON.stringify(permission.rawInput, null, 2), 600)
+    return JSON.stringify(permission.rawInput, null, 2)
   } catch {
     return t("selectors.arguments.cannot.be.displayed")
   }

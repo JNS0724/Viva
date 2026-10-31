@@ -7,12 +7,12 @@ import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.
 import type { CatMood } from '../selectors.ts'
 import { catFor } from './cat.ts'
 import { h, label } from './dom.ts'
-import { caretHost, renderMarkdown } from './markdown.ts'
+import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { offeredBackground } from '../tasks-state.ts'
-import { cardedTasks, restoredTaskAnchors, taskCard } from './task-card.ts'
+import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
 import { proposalCard } from './followups.ts'
@@ -24,10 +24,33 @@ const AVATAR_CAT_PX = 36
 type CatSlots = Map<string, { key: string, el: HTMLElement }>
 type Look = { latest: boolean, mood: CatMood | 'idle', cats?: CatSlots }
 const containerCats = new WeakMap<HTMLElement, CatSlots>()
+const avatarLooks = new WeakMap<Element, string>()
+
+function avatarMood(message: ThreadMessage, look: Look): CatMood | 'idle' {
+  if (!look.latest) return 'idle'
+  const typing = message.open || (message.shown ?? message.text.length) < message.text.length
+  return typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood
+}
 
 /** A small cat on its disc beside each answer: the latest one shows what the agent does now, earlier ones rest. */
-const avatar = (message: ThreadMessage, look: Look) => h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
-  catFor(look.cats ?? new Map(), message.id, look.latest ? look.mood : 'idle', { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
+function avatar(message: ThreadMessage, look: Look) {
+  const mood = avatarMood(message, look)
+  const slot = h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
+    catFor(look.cats ?? new Map(), message.id, mood, { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
+  avatarLooks.set(slot, `${mood}:${look.latest}`)
+  return slot
+}
+
+/** Status changes update only the portrait, keeping a reader-expanded answer and its nodes intact. */
+function refreshAvatar(view: View, message: ThreadMessage, look: Look) {
+  if (message.role !== 'assistant') return
+  const slot = elementsOf(view)[0]?.querySelector<HTMLElement>('.cat-avatar')
+  if (!slot) return
+  const mood = avatarMood(message, look), key = `${mood}:${look.latest}`
+  if (avatarLooks.get(slot) === key) return
+  reconcileChildren(slot, [catFor(look.cats ?? new Map(), message.id, mood, { size: AVATAR_CAT_PX, frame: true, still: !look.latest })])
+  avatarLooks.set(slot, key)
+}
 
 /** Moods the cat leaves for `typing` while the answer is still being typed out, the agent's own turn over or not. */
 const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
@@ -61,7 +84,7 @@ function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
   const el = renderMarkdown(start, { openLink: handlers.openLink })
   el.append(h('button', {
     class: 'btn btn-outline btn-small answer-more', type: 'button', text: t("thread.expand.remaining", { p0: Math.round((text.length - start.length) / 1000) }),
-    onClick: () => el.replaceChildren(...renderMarkdown(text, { openLink: handlers.openLink }).childNodes),
+    onClick: () => expandMarkdown(el, renderMarkdown(text, { openLink: handlers.openLink })),
   }))
   return el
 }
@@ -73,10 +96,8 @@ function assistantView(message: ThreadMessage, handlers: Handlers, traceReady: b
   const text = answerText(message, handlers)
   text.querySelector('.caret')?.remove()
   if (typing) caretHost(text).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
-  // A request or an error still shows; otherwise the cat types as long as the words come out.
-  const mood = typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood
   return h('div', { class: 'msg-agent' },
-    avatar(message, { ...look, mood }),
+    avatar(message, look),
     h('div', { class: 'msg-body' },
       text,
       hasReceipt(message) && !typing ? receiptButton(message, handlers, traceReady) : null))
@@ -144,11 +165,15 @@ const cardHead = (text: string) => h('div', { class: 'confirm-head' }, h('span',
 /** The conversation's request; a background task's is asked on its card (view/task-card.js). */
 function permissionCard(permission: NonNullable<State['permission']>, handlers: Handlers) {
   const head = PROMPT_HEADS.permission
-  const { title, detail } = cardOf(permission)
+  const { title, detail, command } = cardOf(permission)
   return h('section', { class: 'confirm', 'aria-label': head },
     cardHead(head),
     h('div', { class: 'confirm-title', text: title }),
-    detail ? h('pre', { class: 'confirm-detail', text: detail }) : null,
+    permission.rawInput?.description && typeof permission.rawInput.description === 'string'
+      ? h('p', { class: 'confirm-reason', text: t("handoff.approval.reason", { reason: permission.rawInput.description }) }) : null,
+    command ? h('p', { class: 'confirm-hint', text: t("handoff.approval.command.scope") }) : null,
+    detail ? h('details', { class: 'confirm-parameters', open: true },
+      h('summary', { text: t("handoff.approval.parameters") }), h('pre', { class: 'confirm-detail', text: detail })) : null,
     h('div', { class: 'confirm-actions' },
       promptButtons(permission.options).map((option) => h('button', {
         class: BUTTON[option.role],
@@ -297,19 +322,22 @@ const threadViews = new WeakMap<HTMLElement, Map<string, CachedView>>()
 const sameInputs = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => value === b[i])
 
 /** Cache each row independently, so a new prompt or a streamed chunk never detaches old messages. */
-function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View): View {
+function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean): View {
   inputs = [localeRevision(), ...inputs]
   const previous = cache.get(key)
   if (previous && sameInputs(previous.inputs, inputs)) return previous.view
+  if (previous && sameInputs(previous.inputs.slice(1), inputs.slice(1)) && localize?.(previous.view)) {
+    cache.set(key, { inputs, view: previous.view })
+    return previous.view
+  }
   const view = build()
   cache.set(key, { inputs, view })
   return view
 }
 
-function messageInputs(message: ThreadMessage, traceReady: boolean, look: Look) {
+function messageInputs(message: ThreadMessage, traceReady: boolean) {
   return [message.role, message.text, message.shown, message.open, message.receipt, message.images,
     message.asked, message.steered, message.via, message.failed, message.restored,
-    message.role === 'assistant' && look.latest, message.role === 'assistant' && look.latest ? look.mood : null,
     message.role === 'user' ? null : traceReady]
 }
 
@@ -319,6 +347,21 @@ function messageView(message: ThreadMessage, handlers: Handlers, traceReady: boo
   const [bubble, ...notes] = elementsOf(view)
   // The tools never participate in bubble sizing; busy/idle changes only their visibility.
   return markMessage([h('div', { class: 'msg-user-row' }, rewindBar(message, handlers), bubble), ...notes], message.id)
+}
+
+/** Only translated chrome changes; a finished answer stays exactly where the reader expanded it. */
+function localizeAssistant(view: View, message: ThreadMessage): boolean {
+  if (message.role !== 'assistant') return false
+  const root = elementsOf(view)[0]
+  const markdown = root?.querySelector<HTMLElement>('.markdown')
+  if (!markdown) return false
+  refreshMarkdownLanguage(markdown)
+  const more = markdown.querySelector<HTMLElement>('.answer-more')
+  if (more) more.textContent = t("thread.expand.remaining", { p0: Math.round((message.text.length - answerStart(message.text).length) / 1000) })
+  const receipt = root.querySelector<HTMLElement>('.receipt')
+  if (receipt && message.receipt) receipt.textContent = receipt.tagName === 'BUTTON'
+    ? t("thread.view.activity", { value1: receiptLine(message.receipt) }) : receiptLine(message.receipt)
+  return true
 }
 
 /**
@@ -347,8 +390,8 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   for (const id of cats.keys()) if (!messageIds.has(id)) cats.delete(id)
   const previous = threadViews.get(container) ?? new Map<string, CachedView>()
   const cache = new Map<string, CachedView>()
-  const part = (key: string, inputs: readonly unknown[], build: () => View) => {
-    const view = cachedView(previous, key, inputs, build)
+  const part = (key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean) => {
+    const view = cachedView(previous, key, inputs, build, localize)
     cache.set(key, previous.get(key)!)
     return view
   }
@@ -363,12 +406,14 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
     const look = { latest: message.id === latestAnswer, mood, cats }
-    return part(`message:${message.id}`, messageInputs(message, traceReady, look), () => messageView(message, handlers, traceReady, look))
+    const view = part(`message:${message.id}`, messageInputs(message, traceReady), () => messageView(message, handlers, traceReady, look), view => localizeAssistant(view, message))
+    refreshAvatar(view, message, look)
+    return view
   })
   // A background task's card goes under the words that started it (后台做), or under the message that was last when
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
   const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id,
-    part(`task:${task.id}`, [task, report, Math.floor(now / 60_000)], () => taskCard(task, report, handlers, now))]))
+    part(`task:${task.id}`, taskCardInputs(task, report, now), () => taskCard(task, report, handlers, now))]))
   const anchors = restoredTaskAnchors(state)
   const takeCards = (ids: readonly (string | undefined)[]) => ids.flatMap((id) => {
     const card = id ? cards.get(id) : undefined

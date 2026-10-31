@@ -60,7 +60,7 @@ export function openFollowups(deps: FollowupsDeps) {
       return { skip: t("main.followups-main.you.already.started.a.background.task.from") }
     }
     const { input, readFiles } = materialsFor(followup, { ...deps.materials, message: deps.messages?.message })
-    const result = await deps.prepareText({ system: PREPARE_SYSTEM, input, maxTokens: PREPARE_MAX_TOKENS }, signal)
+    const result = await deps.prepareText({ system: PREPARE_SYSTEM, input, maxTokens: PREPARE_MAX_TOKENS, requireComplete: true }, signal)
     return result.ok ? { ok: true, draft: result.text, readFiles } : { ok: false, problem: result.problem, ...(result.called === false ? { called: false } : {}) }
   }
 

@@ -7,6 +7,7 @@ import type { Lexer as MarkedLexer, Token, Tokens } from 'marked'
 
 const Lexer: typeof MarkedLexer = UntypedLexer
 import { h } from './dom.ts'
+import { takeReaderControl } from './scroll-follow.ts'
 
 /** Where a link goes, and how a host shows a picture (or null to leave it as a link). */
 type Context = { openLink: (url: string) => void, image: ((src: string, alt: string) => HTMLElement | null) | null }
@@ -53,7 +54,14 @@ function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
       case 'link': return link(token.href, inline(token.tokens, ctx), ctx.openLink)
       // In answers images are never loaded: the alt text, linked to where the image is. A host that may
       // show them (the 文件 preview, for pictures in the workspace) passes `image`.
-      case 'image': return ctx.image?.(token.href, token.text) ?? link(token.href, t("files-panel.image", { value1: token.text || token.href }), ctx.openLink)
+      case 'image': {
+        const shown = ctx.image?.(token.href, token.text)
+        if (shown) return shown
+        const label = token.text || token.href
+        const fallback = link(token.href, t("files-panel.image", { value1: label }), ctx.openLink)
+        fallback.dataset.mdImageLabel = label
+        return fallback
+      }
       case 'text': return token.tokens ? inline(token.tokens, ctx) : token.text
       // escape, html and anything newer: what was written, as text
       default: return token.raw
@@ -64,7 +72,7 @@ function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
 function listItem(item: Tokens.ListItem, ctx: Context) {
   return h('li', { class: item.task ? 'md-task' : null },
     item.task ? h('input', { type: 'checkbox', checked: item.checked, disabled: true, 'aria-label': item.checked ? t("island-view.completed") : t("markdown.incomplete") }) : null,
-    blocks(item.tokens.filter((token) => token.type !== 'checkbox'), ctx, { tight: !item.loose }))
+    ...blocks(item.tokens.filter((token) => token.type !== 'checkbox'), ctx, { tight: !item.loose }).flat())
 }
 
 function table(token: Tokens.Table, ctx: Context) {
@@ -80,7 +88,7 @@ function block(token: Token, ctx: Context, { tight }: { tight: boolean }): View 
     case 'heading': return h(HEADING_TAGS[token.depth - 1] ?? 'h5', { class: `md-heading md-h${token.depth}` }, inline(token.tokens, ctx))
     case 'paragraph': return h('p', null, inline(token.tokens, ctx))
     // Inside a tight list item the text is not a paragraph of its own.
-    case 'text': return h(tight ? 'span' : 'p', null, inline(token.tokens ?? [token], ctx))
+    case 'text': return tight ? inline(token.tokens ?? [token], ctx) : h('p', null, inline(token.tokens ?? [token], ctx))
     case 'code': return h('pre', { class: 'md-code' },
       token.lang ? h('span', { class: 'md-code-lang', text: token.lang }) : null,
       h('code', { text: token.text }))
@@ -108,8 +116,34 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
   return h('div', { class: 'msg-text markdown' }, blocks(new Lexer({ gfm: true }).lex(text), { openLink, image }))
 }
 
+/**
+ * Expand a finished answer without detaching its unchanged opening blocks. Parse the whole source first:
+ * reference definitions later in the answer can change an earlier block. Only exactly equal blocks keep
+ * their nodes, links and accessibility identities; everything from the first difference is replaced.
+ * Both renders must use the same handlers (the answer's own openLink closure).
+ */
+export function expandMarkdown(target: HTMLElement, complete: HTMLElement): void {
+  takeReaderControl(target)
+  const previous = [...target.childNodes]
+  const next = [...complete.childNodes]
+  let keep = 0
+  while (keep < previous.length && keep < next.length && previous[keep].isEqualNode(next[keep])) keep++
+  while (target.childNodes.length > keep) target.lastChild?.remove()
+  target.append(...next.slice(keep))
+}
+
 /** Where a typing caret goes: after the last text in the answer, not below it. */
 export function caretHost(root: HTMLElement): Element {
-  const candidates = root.querySelectorAll('p, li > span, h3, h4, h5, pre code, td, th')
+  const candidates = root.querySelectorAll('p, li, h3, h4, h5, pre code, td, th')
   return candidates[candidates.length - 1] ?? root
+}
+
+/** Localize generated labels without detaching source text, selection ranges or accessibility identities. */
+export function refreshMarkdownLanguage(root: HTMLElement): void {
+  for (const checkbox of root.querySelectorAll<HTMLInputElement>('input[type="checkbox"][disabled]')) {
+    checkbox.setAttribute('aria-label', checkbox.checked ? t("island-view.completed") : t("markdown.incomplete"))
+  }
+  for (const image of root.querySelectorAll<HTMLElement>('[data-md-image-label]')) {
+    image.textContent = t("files-panel.image", { value1: image.dataset.mdImageLabel ?? '' })
+  }
 }

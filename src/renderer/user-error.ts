@@ -1,6 +1,9 @@
 import { t } from '../shared/i18n/translate.ts'
 /** UI copy only. Raw provider/RPC errors stay in application state and diagnostic logs, never in a bubble. */
 export function userError(message: string): string {
+  if (/SetNamedSecurityInfoW|grantWrite\(|sandbox.{0,30}(?:prepar|setup)/i.test(message)) {
+    return t("handoff.error.sandbox.setup")
+  }
   // These are bounded status messages produced by the app itself, not provider response bodies.
   const reconnect = /^(?:助手意外退出，(\d+) 秒后自动重新连接…|The assistant exited unexpectedly\. Reconnecting in (\d+) seconds…)$/.exec(message)
   if (reconnect) return t('main.main.the.assistant.exited.unexpectedly.reconnecting.in.seconds', { value1: Number(reconnect[1] ?? reconnect[2]) })

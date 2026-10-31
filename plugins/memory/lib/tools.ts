@@ -1,5 +1,5 @@
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
-import { recallMatches } from './match.ts'
+import { recallCandidates } from './match.ts'
 import { MEMORY_KINDS } from './store.ts'
 import type { Memory } from './store.ts'
 
@@ -61,8 +61,9 @@ export function memoryTools(db: ReturnType<typeof import('./store.ts').openMemor
         query: { type: 'string', required: true, description: '具体关键词，空格分开；明确的对象可以只写一个，例如「常住」。多个词会提高相关性门槛，查不到时减少词再查，不要堆同义词或照抄整句话' },
       },
       run({ query }) {
-        const found = recallMatches(db.allMemories(), assertQuery(query), RECALL_LIMIT)
-        return found.length ? found.map(listLine).join('\n') : '没有找到相关的记忆。不要猜测，如实告诉用户你不知道。'
+        const { found, partial } = recallCandidates(db.allMemories(), assertQuery(query), RECALL_LIMIT)
+        const note = partial ? '以下是分词补查候选，只匹配了部分关键词，不能当成原查询的确定答案；请结合上下文核对。\n' : ''
+        return found.length ? note + found.map(listLine).join('\n') : '没有找到相关的记忆。不要猜测，如实告诉用户你不知道。'
       },
     },
     {

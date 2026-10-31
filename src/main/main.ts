@@ -824,6 +824,10 @@ function openTasksPage() {
 
 /** A follow-up's notice as a system notification; clicked, it opens the 后台 page. */
 function showNotice(notice: Notice) {
+  // Native Windows notifications may register/update a Start-menu shortcut for
+  // our app ID. Automated smoke runs must not point that shortcut at a QA binary.
+  // Notification planning/delivery is tested with injected notifiers separately.
+  if (resolveConfig(process.env, fs.existsSync).smoke) return
   if (!Notification.isSupported()) return
   const shown = new Notification({ title: notice.title, body: notice.body })
   const shownAt = Date.now()
@@ -1062,9 +1066,26 @@ function createWindow(config: Config) {
       powerSaveBlocker.start('prevent-app-suspension')
       // A smoke run ends as quitting does: dsh stopped first. Left to app.exit, dsh could outlive the app
       // (Windows keeps a child running) and hold the session the next phase takes over.
+      // Keep the exit boundary visible when a hosted runner stalls after assertions passed.
+      const exitStage = (stage: string) => {
+        try { fs.writeSync(1, `[smoke-exit] ${stage}\n`) } catch { /* A closed diagnostic pipe must not change quitting. */ }
+      }
+      app.once('quit', (_event, code) => exitStage(`app quit (${code})`))
+      process.once('exit', code => exitStage(`process exit (${code})`))
       const quitSmoke = (code: number) => {
         quitting = true
-        stopBridgeInTime().finally(() => app.exit(code))
+        // The existing will-quit handler closes stores, schedulers and native resources first.
+        // Preserve failures too: app.quit() alone does not carry the smoke run's exit code.
+        app.once('will-quit', () => {
+          exitStage('normal cleanup complete; calling app.exit')
+          app.exit(code)
+          exitStage('app.exit returned')
+        })
+        exitStage(`stopping runtime (${code})`)
+        stopBridgeInTime().finally(() => {
+          exitStage('runtime stop wait complete; requesting app.quit')
+          app.quit()
+        })
       }
       runSmoke(created, config, quitSmoke, {
         agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,

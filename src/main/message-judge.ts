@@ -70,7 +70,7 @@ export function judgeInput(messages: readonly StoredMessage[], { profile, decisi
 }
 
 /** null means the model did not return a usable judgment, distinct from a valid list with none important. */
-function checkedVerdicts(text: string, messages: readonly StoredMessage[], now: number): Verdict[] | null {
+function checkedVerdicts(text: string, messages: readonly StoredMessage[], now: number, requireAll = false): Verdict[] | null {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start < 0 || end <= start) return null
@@ -83,6 +83,11 @@ function checkedVerdicts(text: string, messages: readonly StoredMessage[], now: 
   const checked = verdictSchema.safeParse(data)
   if (!checked.success) return null
   const known = new Map(messages.map((m) => [keyOf(m), m]))
+  // A syntactically valid partial/duplicate response must not acknowledge the entire source batch.
+  if (requireAll) {
+    const ids = checked.data.items.map(item => item.id)
+    if (ids.length !== known.size || new Set(ids).size !== known.size || ids.some(id => !known.has(id))) return null
+  }
   return checked.data.items.flatMap((item) => {
     const message = known.get(item.id)
     if (!item.important || !message) return []
@@ -131,7 +136,7 @@ export function createMessageJudge(deps: JudgeDeps) {
     if (result.ok || result.called !== false) store.logEvent('prepare_call', { kind: 'judge', ok: result.ok, messages: asked.length,
       ...(!result.ok ? { problem: result.problem } : {}) })
     if (!result.ok) return { ok: false, suggested: 0 }
-    const verdicts = checkedVerdicts(result.text, asked, now())
+    const verdicts = checkedVerdicts(result.text, asked, now(), true)
     if (verdicts === null) {
       store.logEvent('judge_invalid', { messages: asked.length })
       return { ok: false, suggested: 0 }
