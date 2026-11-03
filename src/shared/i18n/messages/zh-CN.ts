@@ -940,6 +940,7 @@ export const zhCN = {
   "main.main.no.model.available.yet": "还没有可用的模型",
   "main.main.where.should.images.be.stored": "把图片放到哪里",
   "main.main.viva.could.not.start": "Viva 无法启动",
+  "main.main.backend.stopped": "Viva 意外停止了",
   "main.mcp-config.enter": "请填写{what}",
   "main.mcp-config.is.too.long": "{what}太长了",
   "main.mcp-config.must.use.name.value.one.per.line": "{what}要写成「名称=值」，每行一个：{value2}",

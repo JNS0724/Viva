@@ -8,7 +8,8 @@ import path from 'node:path'
  * `electron` at run time (docs/backend-split-design.md D1, D2). `import type` is erased and does not count.
  */
 const ROOT = path.join(import.meta.dirname, '..')
-const ENTRY = path.join(ROOT, 'src', 'backend', 'compose.ts')
+/** The backend process's entry (server.ts), which loads compose.ts and everything it does. */
+const ENTRY = path.join(ROOT, 'src', 'backend', 'server.ts')
 
 /** The specifiers a module imports at run time: static imports and re-exports that are not type-only. */
 function runtimeImports(file: string): string[] {

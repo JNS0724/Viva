@@ -939,6 +939,7 @@ export const en = {
   "main.main.no.model.available.yet": "No model available yet",
   "main.main.where.should.images.be.stored": "Where should images be stored?",
   "main.main.viva.could.not.start": "Viva could not start",
+  "main.main.backend.stopped": "Viva stopped unexpectedly",
   "main.mcp-config.enter": "Enter {what}",
   "main.mcp-config.is.too.long": "{what} is too long",
   "main.mcp-config.must.use.name.value.one.per.line": "{what} must use NAME=VALUE, one per line: {value2}",

@@ -107,7 +107,7 @@
 
 首次启动还没有可用的模型时，首页会显示「连接模型」卡片，输入框暂时禁用。点卡片上的按钮，在「设置」页里填入 DeepSeek API key，或添加其他模型，就会自动连接。
 
-- key 用系统钥匙串加密（Electron `safeStorage`：macOS 用钥匙串，Windows 用 DPAPI），保存在应用数据目录的 `settings.json` 里（权限 600）；钥匙串不可用时拒绝保存，不会退回明文。
+- key 用 AES-256-GCM 加密，密钥（应用数据目录的 `data-key.bin`）由系统钥匙串保护（Electron `safeStorage`：macOS 用钥匙串，Windows 用 DPAPI），保存在应用数据目录的 `settings.json` 里（权限 600）；旧版直接用钥匙串加密的 key 照样能读，下次保存时换成新格式。钥匙串不可用时拒绝保存，不会退回明文。
 - key 只留在主进程，界面只显示末 4 位；保存或清除后会重启 dsh 连接，并开始一段新对话。
 - 「设置」页里保存的 key 优先于环境变量。
 - 找不到 dsh（安装不完整）时，首页会提示重新运行 `npm install`。

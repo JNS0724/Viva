@@ -1,25 +1,31 @@
 import { t } from '../shared/i18n/translate.ts'
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, screen, shell, Tray } from 'electron'
-import { createBackend } from '../backend/compose.ts'
-import type { HostCapabilities, HostEvent } from '../backend/host.ts'
+import type { FileOptions, FolderOptions, SaveOptions, ShellSettings } from '../backend/host.ts'
+import type { HostCall, HostMethod, Mirror } from '../backend/wire.ts'
+import { setLocale, type LanguageState } from '../shared/i18n/locale.ts'
+import { type BackendProcess, spawnBackend } from './backend-client.ts'
 import { APP_ROOT, CODE_ROOT } from './config.ts'
+import { legacySecrets, loadDataKey } from './data-key.ts'
 import { createDeskIsland } from './desk-island.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { IMAGE_SCHEME_PRIVILEGES, registerImageProtocol } from './image-protocol.ts'
-import { checkedIpc } from './ipc-contract.ts'
+import { type Channel, checkedIpc } from './ipc-contract.ts'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.ts'
 import type { Notice } from './notice-plan.ts'
+import type { Preferences } from './preferences.ts'
 import { createTray } from './tray.ts'
 import { installAutomationDriver } from './automation-driver.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
 
 /**
- * The desktop shell (docs/backend-split-design.md D1, D2): the app's lifecycle, the window, the tray, the desktop
- * island, the shortcut, notifications, dialogs and the system shell, offered to the backend as HostCapabilities
- * (src/backend/host.ts). Everything else is the backend's (src/backend/compose.ts).
+ * The desktop shell (docs/backend-split-design.md D1, D2, D4): the app's lifecycle, the window, the tray, the
+ * desktop island, the shortcut, notifications, dialogs and the system shell. Everything else is the backend's, in
+ * its own process (src/backend/server.ts): the shell starts it, forwards the pages' calls to it, does what it asks
+ * of the desktop, and keeps it told what it reads without waiting (the mirror). The two end together.
  */
 const automationMode = app.commandLine.hasSwitch('enable-smoke-test-driver')
 // A standard alternate profile works for automation and separate user profiles alike.
@@ -38,9 +44,16 @@ const ipcMain = checkedIpc(electronIpcMain, { onRefused: (_channel, problem) => 
 const shownNotices = new Set<Notification>()
 /** How long a shown notification is kept for its click. */
 const NOTICE_KEEP_MS = 60 * 60 * 1000
+/** How often the backend is told how long the user has been away (follow-ups' gaps poll it each minute). */
+const IDLE_MIRROR_MS = 15_000
+/** The backend process (src/backend/server.ts), built to out/ beside this file. */
+const BACKEND_ENTRY = path.join(CODE_ROOT, 'src', 'backend', 'server.js')
 /** Started with the computer (开机启动): the window stays hidden, Viva in the tray. */
 const startedHidden = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
 
+type ShellPreferences = Pick<Preferences, 'deskIsland' | 'deskPlaces' | 'deskCoached'>
+
+let backend: BackendProcess | null = null
 let win: BrowserWindow | null = null
 /** The island on the desktop, shown while the window is in the background (desk-island.ts). */
 let desk: ReturnType<typeof createDeskIsland> | null = null
@@ -52,6 +65,25 @@ let tray: ReturnType<typeof createTray> | null = null
 let pendingFollowups = 0
 /** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
 let shortcutHeld: ReturnType<typeof registerAskShortcut> | null = null
+/** The desktop island's preferences, kept here as the island reads them at once; written through to the backend. */
+let shellPreferences: ShellPreferences = { deskIsland: true, deskPlaces: { last: null, places: {} }, deskCoached: false }
+/** Quitting has begun (or the session ends): the window closes for real, and the backend's end is expected. */
+let quitting = false
+/** The backend is stopping dsh and closing; then quitting goes on. */
+let backendClosing: Promise<void> | null = null
+let backendClosed = false
+let lastInFront = false
+
+/** The backend, for what happens only once it is running. */
+function running(): BackendProcess {
+  if (!backend) throw new Error('the backend is not running')
+  return backend
+}
+
+/** A call the shell makes of the backend and does not wait for; a failure is only logged. */
+function tellBackend(op: string, ...args: unknown[]) {
+  backend?.connection.control(op, ...args).catch((err: Error) => console.error(`[backend] ${op}:`, err.message))
+}
 
 /** The window, for what happens only while it is open: its dialogs, the shortcut's focus, closing it to the tray. */
 function mainWindow(): BrowserWindow {
@@ -69,6 +101,19 @@ function showWindow() {
 }
 
 const windowInFront = () => Boolean(win && !win.isDestroyed() && win.isFocused() && win.isVisible() && !win.isMinimized())
+const shellSettings = (): ShellSettings => ({ shortcut: shortcutHeld === null ? null : { keys: ASK_SHORTCUT, held: shortcutHeld }, openAtLogin: { available: true } })
+
+/** The backend reads these without asking (remote-host.ts); they are sent when they change. */
+function mirror(update: Partial<Mirror>) {
+  tellBackend('mirror', update)
+}
+
+function mirrorInFront() {
+  const now = windowInFront()
+  if (now === lastInFront) return
+  lastInFront = now
+  mirror({ inFront: now })
+}
 
 /** The 后台 page, from a notification or the tray: the window in front, on that page. */
 function openTasksPage() {
@@ -104,52 +149,103 @@ const folderOf = async (options: Electron.OpenDialogOptions) => {
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 
-/** What the backend may ask of this desktop. */
-const host: HostCapabilities = {
-  paths: { userData: app.getPath('userData'), documents: app.getPath('documents'), appData: app.getPath('appData'), home: os.homedir() },
-  packaged: app.isPackaged,
-  automation: automationMode,
-  locale: () => app.getLocale(),
-  secrets: safeStorage,
-  dialogs: {
-    chooseFolder: ({ title, createDirectory = false, defaultPath, showHidden = false }) => folderOf({
-      title, ...(defaultPath ? { defaultPath } : {}),
-      properties: ['openDirectory', ...(createDirectory ? ['createDirectory' as const] : []), ...(showHidden ? ['showHiddenFiles' as const] : [])],
-    }),
-    chooseFiles: async ({ title, multiple = false }) => {
-      const result = await dialog.showOpenDialog(mainWindow(), { title, properties: ['openFile', ...(multiple ? ['multiSelections' as const] : [])] })
-      return result.canceled ? null : result.filePaths
-    },
-    saveFile: async ({ title, defaultPath, filters }) => {
-      const result = await dialog.showSaveDialog(mainWindow(), { title, defaultPath, ...(filters ? { filters } : {}) })
-      return result.canceled ? null : result.filePath ?? null
-    },
-  },
-  shell: {
-    openExternal: (url) => shell.openExternal(url),
-    openPath: (dir) => shell.openPath(dir),
-    showItemInFolder: (file) => shell.showItemInFolder(file),
-    trash: (file) => shell.trashItem(file),
-  },
-  notify: showNotice,
-  power: { idleSeconds: () => powerMonitor.getSystemIdleTime() },
-  window: {
-    send: (event: HostEvent) => {
-      if (win && !win.isDestroyed()) win.webContents.send('agent:event', event)
-    },
-    broadcastLanguage: (state) => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('language:changed', state) },
-    inFront: windowInFront,
-    setPending: (count) => {
-      pendingFollowups = count
-      tray?.setPending(count)
-    },
-    refreshNative: () => tray?.setPending(pendingFollowups),
-  },
-  loginItem: { set: (on) => app.setLoginItemSettings({ openAtLogin: on, ...(process.platform === 'win32' ? { args: ['--hidden'] } : {}) }) },
-  shellSettings: () => ({ shortcut: shortcutHeld === null ? null : { keys: ASK_SHORTCUT, held: shortcutHeld }, openAtLogin: { available: true } }),
+/** The language changed in the backend: the shell's own words (the tray, dialogs) and every window follow. */
+function followLanguage(state: LanguageState) {
+  setLocale(state.locale)
+  tray?.setPending(pendingFollowups)
+  for (const window of BrowserWindow.getAllWindows()) window.webContents.send('language:changed', state)
 }
 
-const backend = createBackend({ host, ipc: ipcMain })
+/** What the backend may ask of this desktop (remote-host.ts): one handler for each of its calls. */
+const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
+  'window.send': (event: unknown) => {
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', event)
+  },
+  'window.broadcastLanguage': (state: LanguageState) => followLanguage(state),
+  'window.setPending': (count: number) => {
+    pendingFollowups = count
+    tray?.setPending(count)
+  },
+  'window.refreshNative': () => tray?.setPending(pendingFollowups),
+  'dialogs.chooseFolder': ({ title, createDirectory = false, defaultPath, showHidden = false }: FolderOptions) => folderOf({
+    title, ...(defaultPath ? { defaultPath } : {}),
+    properties: ['openDirectory', ...(createDirectory ? ['createDirectory' as const] : []), ...(showHidden ? ['showHiddenFiles' as const] : [])],
+  }),
+  'dialogs.chooseFiles': async ({ title, multiple = false }: FileOptions) => {
+    const result = await dialog.showOpenDialog(mainWindow(), { title, properties: ['openFile', ...(multiple ? ['multiSelections' as const] : [])] })
+    return result.canceled ? null : result.filePaths
+  },
+  'dialogs.saveFile': async ({ title, defaultPath, filters }: SaveOptions) => {
+    const result = await dialog.showSaveDialog(mainWindow(), { title, defaultPath, ...(filters ? { filters } : {}) })
+    return result.canceled ? null : result.filePath ?? null
+  },
+  'shell.openExternal': (url: string) => shell.openExternal(url),
+  'shell.openPath': (dir: string) => shell.openPath(dir),
+  'shell.showItemInFolder': (file: string) => shell.showItemInFolder(file),
+  'shell.trash': (file: string) => shell.trashItem(file),
+  notify: (notice: Notice, callbackId: number) => showNotice(notice, (afterMs) => {
+    backend?.connection.callback(callbackId, [afterMs]).catch((err: Error) => console.error('[backend] notice opened:', err.message))
+  }),
+  'loginItem.set': (on: boolean) => app.setLoginItemSettings({ openAtLogin: on, ...(process.platform === 'win32' ? { args: ['--hidden'] } : {}) }),
+}
+
+function runHostCall(call: HostCall): unknown {
+  const handler = Object.hasOwn(HOST, call.method) ? HOST[call.method] : undefined
+  if (!handler) throw new Error(`no host call ${String(call.method)}`)
+  return handler(...call.args)
+}
+
+/** The backend ended on its own: without it there is nothing the window can do. */
+function backendDied(code: number | null, signal: NodeJS.Signals | null) {
+  if (quitting) return
+  console.error(`[viva] the backend ended: ${signal ?? `exit ${code}`}`)
+  dialog.showErrorBox(t("main.main.backend.stopped"), signal ?? `exit ${code}`)
+  app.exit(1)
+}
+
+/** The backend, started with what it reads of the desktop and the keys' data key. */
+async function startBackend(): Promise<BackendProcess> {
+  const userData = app.getPath('userData')
+  const dataKey = loadDataKey({ dir: userData, keychain: safeStorage, onProblem: (message) => console.error('[secrets]', message) })
+  const started = await spawnBackend({
+    entry: BACKEND_ENTRY,
+    onExit: backendDied,
+    start: {
+      type: 'start',
+      token: randomBytes(32).toString('hex'),
+      dataKey: dataKey?.toString('base64') ?? null,
+      legacySecrets: legacySecrets({ dir: userData, keychain: safeStorage }),
+      paths: { userData, documents: app.getPath('documents'), appData: app.getPath('appData'), home: os.homedir() },
+      packaged: app.isPackaged,
+      automation: automationMode,
+      locale: app.getLocale(),
+      mirror: { inFront: false, idleSeconds: powerMonitor.getSystemIdleTime(), shellSettings: shellSettings() },
+    },
+  })
+  setLocale(started.ready.locale)
+  started.connection.listen({
+    host: runHostCall,
+    ended: (err) => { if (!quitting) console.error('[backend] its events ended', err?.message ?? '') },
+  })
+  return started
+}
+
+/** The pages' calls on the backend's channels go to it, after the same check as the shell's own (ipc-contract.ts). */
+function forwardChannels(started: BackendProcess) {
+  for (const { channel, kind } of started.ready.channels) {
+    const name = channel as Channel
+    if (kind === 'handle') ipcMain.handle(name, (_event, ...args: unknown[]) => started.connection.rpc(channel, args))
+    else ipcMain.on(name, (_event, ...args: unknown[]) => { started.connection.rpc(channel, args).catch((err: Error) => console.error(`[ipc] ${channel}:`, err.message)) })
+  }
+}
+
+/** One of the desktop island's preferences: here at once, in the backend's file once it answers. */
+function setShellPreference<K extends keyof ShellPreferences>(key: K, value: ShellPreferences[K]): Promise<unknown> {
+  shellPreferences = { ...shellPreferences, [key]: value }
+  return running().connection.control('preferences-set', key, value)
+}
+
+const logged = (what: string) => (err: Error) => console.error(`[desk] ${what}:`, err.message)
 
 /** The shortcut that opens the island's input, from any app; not in smoke runs, which share the machine. */
 function registerShortcut() {
@@ -160,6 +256,7 @@ function registerShortcut() {
     openInput: () => desk?.openInput() ?? false,
     showWindow,
   })
+  mirror({ shellSettings: shellSettings() })
 }
 
 /** Closing the window keeps Viva running in the tray, with the island on the desktop. */
@@ -194,25 +291,34 @@ function showTray() {
  */
 function attachDeskIsland(window: BrowserWindow) {
   deskAllowed = !automationMode
-  const preferences = backend.preferences()
   desk = createDeskIsland({
     BrowserWindow,
     screen,
     preload: path.join(CODE_ROOT, 'src', 'preload', 'desk-preload.cjs'),
     page: path.join(CODE_ROOT, 'src', 'renderer', 'desk.html'),
     mainWindow: window,
-    enabled: deskAllowed && preferences.get().deskIsland,
-    places: { get: () => preferences.get().deskPlaces, set: (places) => preferences.set('deskPlaces', places) },
-    coach: { get: () => preferences.get().deskCoached, set: () => preferences.set('deskCoached', true) },
+    enabled: deskAllowed && shellPreferences.deskIsland,
+    places: { get: () => shellPreferences.deskPlaces, set: (places) => { setShellPreference('deskPlaces', places).catch(logged('places')) } },
+    coach: { get: () => shellPreferences.deskCoached, set: () => { setShellPreference('deskCoached', true).catch(logged('coached')) } },
   })
   window.on('close', (event) => {
-    if (backend.isQuitting()) return
+    if (quitting) return
     event.preventDefault()
     closeToTray()
   })
   window.on('show', () => desk?.setAway(false))
+  // Whether the window is in front, which the backend reads without asking (follow-ups hold notices then).
+  window.on('focus', mirrorInFront)
+  window.on('blur', mirrorInFront)
+  window.on('show', mirrorInFront)
+  window.on('hide', mirrorInFront)
+  window.on('minimize', mirrorInFront)
+  window.on('restore', mirrorInFront)
   // Windows logging off or shutting down closes the window for real, or it would hold the session up.
-  window.on('session-end', () => backend.markQuitting())
+  window.on('session-end', () => {
+    quitting = true
+    tellBackend('mark-quitting')
+  })
   window.on('closed', () => {
     desk?.destroy()
     desk = null
@@ -220,22 +326,22 @@ function attachDeskIsland(window: BrowserWindow) {
 }
 
 /** The desktop island's switch, from settings or from 关闭桌面岛 in the island's menu. */
-function setDeskIsland(on: boolean) {
-  backend.preferences().set('deskIsland', on)
+function setDeskIsland(on: boolean): Promise<unknown> {
   desk?.setEnabled(on && deskAllowed)
+  return setShellPreference('deskIsland', on)
 }
 
 /** The shell's settings: the desktop island; the backend answers with the settings as they are now. */
 function registerShellSettingsIpc() {
-  ipcMain.handle('settings:set-desk-island', (_event, on) => {
+  ipcMain.handle('settings:set-desk-island', async (_event, on) => {
     if (typeof on !== 'boolean') throw new Error('invalid desk island switch')
-    setDeskIsland(on)
-    return backend.settingsView()
+    await setDeskIsland(on)
+    return running().connection.control('settings-view')
   })
-  ipcMain.handle('settings:reset-desk-place', () => {
+  ipcMain.handle('settings:reset-desk-place', async () => {
     desk?.resetPlace()
-    if (!desk) backend.preferences().set('deskPlaces', { last: null, places: {} })
-    return backend.settingsView()
+    if (!desk) await setShellPreference('deskPlaces', { last: null, places: {} })
+    return running().connection.control('settings-view')
   })
 }
 
@@ -273,11 +379,11 @@ function createWindow() {
     desk?.setAway(true)
   })
   // Coming back to the window is one of the user's gaps.
-  created.on('focus', () => backend.signal({ kind: 'window.foreground' }))
+  created.on('focus', () => tellBackend('signal', { kind: 'window.foreground' }))
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  created.webContents.once('did-finish-load', () => { backend.startBridge() })
+  created.webContents.once('did-finish-load', () => tellBackend('start-bridge'))
   created.loadFile(path.join(CODE_ROOT, 'src', 'renderer', 'index.html'))
 }
 
@@ -294,15 +400,23 @@ app.on('activate', () => showWindow())
 app.whenReady().then(async () => {
   // macOS needs its app menu for ⌘C / ⌘V; elsewhere the hidden title bar has no room for a menu bar.
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
-  backend.open()
-  registerImageProtocol(protocol, backend.images())
+  const started = await startBackend()
+  backend = started
+  forwardChannels(started)
+  shellPreferences = await started.connection.control<Preferences>('preferences-get')
+  registerImageProtocol(protocol, (url) => started.connection.image(url))
   registerShellSettingsIpc()
-  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: () => setDeskIsland(false) })
-  installAutomationDriver(automationMode, { agentPid: backend.agentPid, desk: () => desk, followups: backend.followups })
+  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } })
+  installAutomationDriver(automationMode, {
+    agentPid: () => started.connection.control<number | null>('agent-pid'),
+    desk: () => desk,
+    seedPrepared: (item) => started.connection.control<void>('automation.seed-prepared', item),
+  })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
-  const woke = () => backend.signal({ kind: 'system.woke' })
+  const woke = () => tellBackend('signal', { kind: 'system.woke' })
   powerMonitor.on('resume', woke)
   powerMonitor.on('unlock-screen', woke)
+  setInterval(() => mirror({ idleSeconds: powerMonitor.getSystemIdleTime() }), IDLE_MIRROR_MS).unref()
   createWindow()
   registerShortcut()
 }).catch((err) => {
@@ -313,18 +427,17 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => app.quit())
-/** Quitting waits for dsh to finish (it may still be writing the session), a few seconds at most. */
+/** Quitting waits for the backend to stop dsh (it may still be writing the session) and close, a few seconds at most. */
 app.on('before-quit', (event) => {
-  if (backend.isQuitting() || !backend.hasBridge()) {
-    backend.markQuitting()
-    return
-  }
+  quitting = true
+  if (backendClosed || !backend) return
   event.preventDefault()
-  backend.markQuitting()
-  backend.stop().finally(() => app.quit())
+  backendClosing ??= backend.shutdown().finally(() => {
+    backendClosed = true
+    app.quit()
+  })
 })
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   tray?.destroy()
-  backend.close()
 })

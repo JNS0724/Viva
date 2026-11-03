@@ -24,16 +24,12 @@ export function smokeHooks(runtime: Runtime): SmokeHooks {
       if (await page.locator('#hub').getAttribute('data-open') !== 'true') await page.locator('#open-profile').click()
       await page.locator('.hub-nav[data-page="tasks"]').click()
     },
-    seedShowcase: () => application.evaluate(() => {
-      const driver = globalThis.vivaAutomation!
-      const followups = driver.followups()
-      if (!followups) throw new Error('Followups service is unavailable')
-      const now = Date.now()
-      const review = followups.store.add({ title: '设计评审意见', ask: '汇总设计稿 v3 的评审意见，列出要改的地方', origin: { kind: 'manual' }, prepareBy: now + 3_600_000 })
-      followups.store.moveStatus(review.id, 'scheduled', 'preparing')
-      followups.store.finishPreparing(review.id, '## 设计稿 v3 评审意见\n\n- 首页卡片间距偏大，建议 16px\n- 后台页的分组标题对比度不足\n\n**要你定的**：深色模式是否默认开启。', [])
-      followups.notifier.refresh()
-    }),
+    seedShowcase: () => application.evaluate(() => globalThis.vivaAutomation!.seedPrepared({
+      title: '设计评审意见',
+      ask: '汇总设计稿 v3 的评审意见，列出要改的地方',
+      prepareBy: Date.now() + 3_600_000,
+      draft: '## 设计稿 v3 评审意见\n\n- 首页卡片间距偏大，建议 16px\n- 后台页的分组标题对比度不足\n\n**要你定的**：深色模式是否默认开启。',
+    })),
     scaleFactor: () => application.evaluate(({ screen }) => screen.getPrimaryDisplay().scaleFactor),
     async renderPanel(html, size) {
       const data = await application.evaluate(async ({ BrowserWindow }, options) => {

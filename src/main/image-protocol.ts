@@ -27,6 +27,7 @@ export function imageResponse(url: string, store: PictureFiles): Response {
   return new Response(fs.readFileSync(file), { headers: { 'content-type': mime, 'cache-control': 'max-age=31536000, immutable' } })
 }
 
-export function registerImageProtocol(protocol: Pick<Protocol, 'handle'>, store: PictureFiles): void {
-  protocol.handle(IMAGE_SCHEME, (request) => imageResponse(request.url, store))
+/** viva-image:// answered by `answer` (in the shell: from the backend, which has the pictures folder). */
+export function registerImageProtocol(protocol: Pick<Protocol, 'handle'>, answer: (url: string) => Response | Promise<Response>): void {
+  protocol.handle(IMAGE_SCHEME, (request) => answer(request.url))
 }

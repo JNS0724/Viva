@@ -11,8 +11,8 @@
     {
       "en": "docs/architecture.md",
       "zh": "docs/architecture.zh-CN.md",
-      "enHash": "8805dbd3cdd0e3de953ddacac3b5830f23fc35838b8f2db61e03ab6260fd98ac",
-      "zhHash": "aaed29cb06eebecd1410919959f9dabb3e28c3aa24e2cba973c4b5997c33ee1b"
+      "enHash": "264f0a6be9673166a4e478c864def63f583ec003b04be171be128e16ad84151c",
+      "zhHash": "bcd831e5b06cd939e94fe4faf8c72d187f533a46f63fc5c2724d20ea85e3653e"
     },
     {
       "en": "docs/background-task-tools.md",
@@ -41,8 +41,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "c73f5bc0829f7f1b1e1dfa8c3beec3731177cd251636836e75c65aad74ab61c7",
-      "zhHash": "d29ce262fef74e7294cf791f6782af8e64ce380eb28f0883d134d16578597453"
+      "enHash": "b2f3a91ee375640926a804df924589ee0e794f2651c747d21e8d38f613159aa9",
+      "zhHash": "53a0217c371f42552c0841c813d9710d124688b8067a35242b6fdd438e852392"
     },
     {
       "en": "docs/internationalization.md",
@@ -131,8 +131,8 @@
     {
       "en": "docs/backend-split-design.md",
       "zh": "docs/backend-split-design.zh-CN.md",
-      "enHash": "666061789fae7e51771c92f9662bb830d5b2058d0d6fcaddec495bb429b4e7ad",
-      "zhHash": "6ebc41dcae909d1dac8ae10e41954927c390106d3d0c37817e8d31e2696e5e77"
+      "enHash": "d8e4528dab424bd0e79c0d5e57e81c59228c816ec1dd824a94505d4e8c4a05e5",
+      "zhHash": "edf85c1acea866a231e23c6b23c6324839f95527aa5687126476fc0f3e890ab3"
     }
   ],
   "bilingual": [

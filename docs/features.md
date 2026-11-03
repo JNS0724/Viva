@@ -96,7 +96,7 @@ A request to remind or prepare something at a stated time produces a proposal. O
 <a id="模型和-key"></a>
 ## Models and keys
 
-Without a usable model, home shows Connect model and disables the composer. Add a DeepSeek key or another model in Settings to connect. safeStorage encrypts keys (Keychain on macOS, DPAPI on Windows) in app-data `settings.json` with mode 600 where supported; unavailable secure storage refuses saving instead of plaintext fallback. Only main holds the key; the UI shows the last four characters. Saving/clearing restarts dsh and starts a new conversation. Saved keys override environment values. A missing dsh installation prompts dependency repair.
+Without a usable model, home shows Connect model and disables the composer. Add a DeepSeek key or another model in Settings to connect. Keys are encrypted with AES-256-GCM under a data key (`data-key.bin` in app data) that safeStorage protects (Keychain on macOS, DPAPI on Windows), and kept in app-data `settings.json` with mode 600 where supported; keys saved by an earlier version, encrypted with safeStorage directly, are still read and rewritten in the new form on the next save. Unavailable secure storage refuses saving instead of plaintext fallback. Only the backend process holds the key; the UI shows the last four characters. Saving/clearing restarts dsh and starts a new conversation. Saved keys override environment values. A missing dsh installation prompts dependency repair.
 
 ### Other models
 
