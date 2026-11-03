@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-03",
+  "reviewedOn": "2026-11-04",
   "pairs": [
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "5bc8e1082887b3c77d70fc50d28fd76ceb619162395c93eb209d9985b65fffa8",
-      "zhHash": "1ee9e9862004bcf0788b5193a2b4e7eaad62859c51e94853b8680fbf2b788053"
+      "enHash": "36ef11e8068a2b088271fdfb283565d899e8fa91d325ecd9d443f15807a91e35",
+      "zhHash": "5102f3b34a0e4e78dd6998d1af5e63b06d33509c7991f4de9bd3be3db98fe161"
     },
     {
       "en": "packages/viva-source-kit/README.md",
@@ -27,16 +27,16 @@
       "zhHash": "598312f927f9838386f19c0c52ad90edc2745d867e1645e0d62e16a6d6fa038e"
     },
     {
-      "en": "docs/cat-character.md",
-      "zh": "docs/cat-character.zh-CN.md",
-      "enHash": "19c2085e778bfc006905638535ee53c0be387441654fca00d24039f35fd46bf0",
-      "zhHash": "6098cddad2d0b0973d8b22d8912eedd13690d35419fb8906a9672f75b7970112"
+      "en": "docs/maid-character.md",
+      "zh": "docs/maid-character.zh-CN.md",
+      "enHash": "960cd74b20dabae1d34e410bba1d1b3df3a27fdb77a235a1c55e37f4ec5f2d1c",
+      "zhHash": "538e5876e78015bfa195970cb9a869413734d9da9ee7e5d177fc429e592216ac"
     },
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "9e5ccdbba7069180edcbff2d7fc1014d35cd6ac0d12189e6ce3e2f6df828223f",
-      "zhHash": "10122b18d2916f1ac6fb77d4e28d91cfc7f001e60eb43f0c55fe10717d72a3b3"
+      "enHash": "5a2daf382ad75b17212db56c530916c1f55f230007399d3c0a8e34564295182f",
+      "zhHash": "8f40cdff7141788bce0581c086c0cfb0e3a6a6be9f4629f940abe53a824f72c5"
     },
     {
       "en": "docs/dsh-upgrade-validation-20261026.md",
@@ -47,8 +47,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "1a50a44c2563b4158896dc6b12b6910a33d68c2e82aad6f2ba5b3e3c75a456a7",
-      "zhHash": "7b75ad400227e301a29a60b4fa58e0b432ab99dfc7aee8f0838c70b6ae76f282"
+      "enHash": "da95e98d225005fc80143d467e2e9345248dcb399364976904ba507b428fc452",
+      "zhHash": "4200160b409bf5b9bc0fb61f1a04f7e9c58fea903956a1375e9bb2f1d308ebff"
     },
     {
       "en": "docs/internationalization.md",
@@ -60,7 +60,7 @@
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "3b95fe9ada843f0660aee88ed1ac0cf43a5a60da7622e0789ce51d89b92db880",
-      "zhHash": "5e384d3125bc658461e162a87c4b0b19515110e116f86686230818a2bb783940"
+      "zhHash": "1b846cb2365ed0ab1505b8a049e390685c8da23ed4ea1dcdaec20216b4c38fb3"
     },
     {
       "en": "docs/memory.md",
@@ -131,8 +131,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "0bf2ed5c178e0abb708f103d277f26b487be1efb346218e3915c51ad1064a788",
-      "zhHash": "041843fe1eb9169731a9bc3f0d9a89a658bcbd315fb82d292a5aed86940b3e73"
+      "enHash": "30398aa46f51a504d5b69bd95c4fe46566e8bd1e23cbb19a6556c36d041871b2",
+      "zhHash": "574ac4236f9655892bbf5fa87024a73d8479f8b8b7d1aa0614351ad8781454bd"
     }
   ],
   "bilingual": [

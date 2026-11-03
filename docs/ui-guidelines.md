@@ -2,7 +2,7 @@
 
 English | [简体中文](ui-guidelines.zh-CN.md)
 
-These are the visual and interaction rules of Viva's current interface, taken from `src/renderer/styles.css`, `island.css`, `personal.css` and `src/renderer/view/` (2026-11-03, main `27de6f4`). If this page and the code disagree, the code wins and this page gets fixed. New UI follows this page. Development conventions (layers, DOM, i18n, verification) are in the "Frontend" section of [AGENTS.md](../AGENTS.md). The cat's look is in [Cat character](cat-character.md).
+These are the visual and interaction rules of Viva's current interface, taken from `src/renderer/styles.css`, `island.css`, `personal.css` and `src/renderer/view/` (2026-11-03, main `27de6f4`). If this page and the code disagree, the code wins and this page gets fixed. New UI follows this page. Development conventions (layers, DOM, i18n, verification) are in the "Frontend" section of [AGENTS.md](../AGENTS.md). Her look and states are in [Maid character](maid-character.md).
 
 ## Direction
 
@@ -11,7 +11,7 @@ The code calls it "Plan A · industrial saturated Bento · deep-sea blue":
 - **Dark only.** `color-scheme: dark`. There is no light theme, and it does not follow the system setting.
 - **One accent.** Blue-tinted dark surfaces with a single bright blue, `--accent`. Orange and red appear only when there is a state to show; normally you don't see them.
 - **Flat and geometric.** Depth comes from surface steps and 1px borders. Only things that float (menus, tips, toasts, the open island) get shadows. No gradient backgrounds and no frosted glass: `backdrop-filter` made every repaint behind it stutter, so scrims are translucent solid colors.
-- **The only warm color is the cat.** Its speech bubbles are warm paper (`--cat-bubble*`), matching its cap. Don't reuse that color elsewhere.
+- **The only cream is the maid.** Her pictures come on cream (`--maid-paper`), so her disc is that cream and a round crop shows no square edge. Nothing else in the interface uses it, the way orange is only ever waiting on you.
 
 ## Color
 
@@ -39,11 +39,12 @@ Everything is defined on `:root` in `styles.css`. Use only tokens. If you need a
 | `--user-line` | `#1F2C49` | The border of the user's own messages |
 | `--line-focus` | `#3A4C72` | The composer's border while focused |
 | `--error-ink` | `#FF9AA4` | Error text |
+| `--maid-paper` | `#FAF7F2` | Her disc, and nothing else (view/maid.ts) |
 
 Each color has one meaning, and it stays the same wherever it appears:
 
 - **Blue = you can act / it's ready.** Main buttons, selected tabs, focus rings, `data-tone="done"`.
-- **Orange = waiting on you.** The island's rim, the cat's disc, the confirmation card's edge and pulse dot, and `.btn-primary`. Use an orange button only on a card that waits for the user's decision. A page's ordinary main action is blue, `.btn-accent`.
+- **Orange = waiting on you.** The island's rim and dot, her ring, the confirmation card's edge and pulse dot, and `.btn-primary`. Use an orange button only on a card that waits for the user's decision. A page's ordinary main action is blue, `.btn-accent`.
 - **Red = something went wrong.** Use it for borders, a 3px left bar, or a faint background mixed with `color-mix`. Error text uses `--error-ink`; plain `--red` text doesn't have enough contrast.
 
 Mix alpha variants from the token, for example `color-mix(in srgb, var(--accent) 12%, transparent)` or `color-mix(in srgb, var(--orange) 16%, var(--panel))`, never `rgba(90, 169, 255, .12)`. The black `rgba(0, 0, 0, …)` used for shadows isn't covered by this rule.
@@ -94,11 +95,11 @@ Spacing roughly follows a 2px step. The most common `gap` values, in order, are 
 | 999px | Pills: toasts, jump to latest, the timeline's working directory |
 | 50% | Dots and avatars |
 
-Nested corners should be concentric: inner radius = outer radius − padding. The island's cat head lines up this way (`.isl-cat` in `island.css`). `--radius-tile` (28px) is defined but not used yet.
+Nested corners should be concentric: inner radius = outer radius − padding. The desktop island's picture lines up this way (`.isl-face` in `island.css`). `--radius-tile` (28px) is defined but not used yet.
 
 ## Layout
 
-- **Title bar.** `--titlebar-h` is 56px and the island is `--island-h` 48px, with 4px above and below. It must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
+- **Title bar.** `--titlebar-h` is 56px and the island, `--island-h`, is 36px, centred in it. The title-bar island carries no picture of her, only a dot in the tone of the moment; the desktop island is 80px with her at 72px. It must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
 - **Room for window buttons.** On macOS, `--reserve-left` keeps 84px on the left for the traffic lights. On Windows and Linux, `env(titlebar-area-width)` gives how much to leave on the right. This value is set only on `.titlebar`, so resizing the window doesn't invalidate the inherited style of every message.
 - **Status capsule.** It is always centered on the whole window. When space runs out it shrinks first, so it never covers the buttons on either side.
 - **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail; the right side is the task dock's.
@@ -170,7 +171,7 @@ Motion:
 
 - Hover, opacity and small moves: 0.1–0.15s. Color, border and shadow: 0.3s.
 - The island resizes on a spring curve, `cubic-bezier(.3, 1.3, .5, 1)`, over 0.5s. Don't use springs anywhere else.
-- Looping animation only means "in progress" or "waiting on you": pulse dots, spinners, breathing, the typing caret, the cat's moves.
+- Looping animation only means "in progress" or "waiting on you": pulse dots, spinners, breathing, the typing caret, her animations. Where she may move is set in [Maid character](maid-character.md#display-rules).
 - `prefers-reduced-motion: reduce` turns off all animation and transitions globally. A new looping animation still gets its own reduce rule, with a still state where one is needed (for example, breathing rests at `opacity: .8`).
 
 ## Accessibility and keyboard
