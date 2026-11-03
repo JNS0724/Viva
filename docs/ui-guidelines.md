@@ -56,7 +56,7 @@ Mix alpha variants from the token, for example `color-mix(in srgb, var(--accent)
 | Token | Font | Use |
 | --- | --- | --- |
 | `--font-sans` | Space Grotesk → Noto Sans SC → PingFang SC → Microsoft YaHei | Interface and body text |
-| `--font-mono` | JetBrains Mono → SF Mono / Cascadia Mono / Consolas | Labels, paths, shortcuts, keys, code, times |
+| `--font-mono` | JetBrains Mono → SF Mono / Cascadia Mono / Consolas | Data only: paths, shortcuts, keys, code, times, model names |
 | `--font-dot` | Doto | Large dot-matrix figures, used only for the key status in settings |
 
 Web fonts load from Google Fonts with `display=optional`: if a font can't load, the system font is used and nothing flashes. The CSP allows only fonts.googleapis.com and fonts.gstatic.com, so any new font has to come from there too.
@@ -65,8 +65,8 @@ Sizes:
 
 | Size | Use |
 | --- | --- |
-| 11px | `.label`, times, shortcuts, metadata |
-| 12px | Secondary notes, chips, menu annotations |
+| 11px | Times, shortcuts, metadata |
+| 12px | `.label`, secondary notes, chips, menu annotations |
 | 13px | Control text, menu items, help text, toasts |
 | 14px | Body text, fields, topic titles |
 | 15–16px | Buttons and the composer (the composer is 16px) |
@@ -76,7 +76,7 @@ Sizes:
 
 - Weights are 400 / 500 / 700. Use 600 for titles inside lists (topic names, subheadings). 800 is only for Doto.
 - Line height: 1.6 for body text, 1.7 for help text, 1.2–1.3 for headings, 1 for single-line controls.
-- `.label` is a small uppercase monospace label: mono 11px, weight 500, `letter-spacing: .14em`, `text-transform: uppercase`. Create it with `label()` from `view/dom.ts`.
+- `.label` is a small heading in sentence case: sans 12px, weight 500, no capitals, no tracking, no monospace. Create it with `label()` from `view/dom.ts`. The same goes for every heading-like label (card heads, group heads, menu sections): tracked capitals and monospace for words read as template chrome. Monospace is for data, and data such as dates keeps no tracking either.
 - Half sizes such as 12.5px, 13.5px and 14.5px exist but shouldn't be added. Use the nearest whole size.
 
 ## Spacing and radius
@@ -189,6 +189,8 @@ Motion:
 - In plain language, say three things: **what happened, what became of the user's work, and what to do next.** For example: "This message is too long. The limit is 20,000 characters. Shorten it and try again; your draft has been kept."
 - Don't blame the user. Don't show error codes or stack traces. Avoid empty phrases like "Operation failed".
 - Action buttons are verbs and match what they do ("Start again here", "Edit and resend", "Run in background").
+- No trailing arrows on links and buttons ("View all", not "View all →"), and no leading glyphs like "↗". A path through the menus keeps its arrow ("Settings → Extensions").
+- Don't join a label and what it labels with a middle dot. Set the parts apart with a gap and a quieter color: "This topic: 2 messages", a group's name with its count beside it, what a turn took and then "View activity". Middle dots may still separate data in one line (times, places).
 - Brand names, tool and protocol ids, paths, user input and model output stay as they are and aren't translated.
 
 ## Platforms

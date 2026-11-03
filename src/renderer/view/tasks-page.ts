@@ -31,12 +31,15 @@ export function onPage(state: State): State {
   return picked === state.tasks.page.selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
 }
 
+/** A group's name and how many it holds, set apart by a gap rather than joined by a middle dot. */
+const groupHead = (name: string, count: number) => h('div', { class: 'tp-group' }, name, h('span', { class: 'tp-group-count', text: String(count) }))
+
 /** Messages that may need the user, first: they wait on a decision. */
 function suggestionGroup(state: State, selected: string | null, handlers: Handlers) {
   const open: Untyped[] = state.followups.suggestions.filter((suggestion: Untyped) => suggestion.status === 'open')
   if (!open.length) return []
   return [
-    h('div', { class: 'tp-group', text: t("tasks-page.follow.up", { length: open.length }) }),
+    groupHead(t("tasks-page.follow.up"), open.length),
     ...open.map((suggestion) => h('button', {
       class: 'tp-row fu-row', type: 'button', 'data-status': 'suggested', 'aria-current': `${SUGGESTION_KEY}${suggestion.id}` === selected ? 'page' : null,
       onClick: () => handlers.selectTask(`${SUGGESTION_KEY}${suggestion.id}`),
@@ -52,7 +55,7 @@ function followupGroups(state: State, selected: string | null, handlers: Handler
     const group = list.filter((followup) => followup.status === status)
     if (!group.length) return []
     return [
-      h('div', { class: 'tp-group', text: `${name} · ${group.length}` }),
+      groupHead(name, group.length),
       ...group.map((followup) => h('button', {
         class: 'tp-row fu-row', type: 'button', 'data-status': status, 'aria-current': `${FOLLOWUP_KEY}${followup.id}` === selected ? 'page' : null,
         onClick: () => handlers.selectTask(`${FOLLOWUP_KEY}${followup.id}`),
@@ -104,7 +107,7 @@ function sideView(state: State, handlers: Handlers, now: number) {
     ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
     ...pageGroups(state).flatMap(({ key, tasks }) => [
-      h('div', { class: 'tp-group', text: `${groupNames()[key]} · ${tasks.length}` }),
+      groupHead(groupNames()[key], tasks.length),
       ...tasks.map((task) => h('button', {
         class: 'tp-row', type: 'button', 'aria-current': task.id === selected ? 'page' : null,
         onClick: () => handlers.selectTask(task.id),

@@ -68,7 +68,7 @@ async function manySteps(win: Sized, outDir: string, expect: Expect, start: (tex
   // screenshot shows them as they stay.
   await until(win, `!document.querySelector('.task-card[data-status="running"]')`, 'every task added settling', SETTLE_MS)
   const many = await until(win, `(() => { const seen = ${LAYOUT}; return seen.more && seen })()`, 'the dock with more tasks than it shows')
-  expect(many.tiles === 3 && /^还有 \d+ 件 · 全部 →$/.test(many.more), 'past three rows the dock should say how many more', many)
+  expect(many.tiles === 3 && /^还有 \d+ 件，看全部$/.test(many.more), 'past three rows the dock should say how many more', many)
   expect(many.rail && many.rail.right <= many.composer.left && many.dock.left >= many.composer.right,
     'the rail should be left of the column and the dock right of it', many)
   await capture(win, outDir, 'dock-many')

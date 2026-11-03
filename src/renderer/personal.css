@@ -43,7 +43,7 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .memory-item[data-source="agent"] { border-left: 3px solid var(--accent); }
 .memory-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .memory-text { font-size: 14px; line-height: 1.6; word-break: break-word; }
-.memory-meta { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
+.memory-meta { font-size: 11px; color: var(--ink-3); }
 .memory-delete { width: 30px; height: 30px; border-color: transparent; background: transparent; opacity: .6; }
 .memory-item:hover .memory-delete, .memory-delete:focus-visible { opacity: 1; }
 .memory-invalid { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }

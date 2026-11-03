@@ -33,9 +33,9 @@ function effortRow(info: AgentInfo, handlers: Handlers) {
 
 function menu(info: AgentInfo, handlers: Handlers) {
   return h('div', { class: 'model-menu', role: 'dialog', 'aria-label': t("model-picker.choose.model") },
-    label('MODEL'),
+    label(t("models.model")),
     info.models.map((model: Choice) => modelOption(model, info, handlers)),
-    info.efforts?.length ? [label('REASONING EFFORT'), effortRow(info, handlers)] : null,
+    info.efforts?.length ? [label(t("model-picker.reasoning.effort")), effortRow(info, handlers)] : null,
     h('p', { class: 'model-hint', text: t("model-picker.takes.effect.from.the.next.turn") }))
 }
 

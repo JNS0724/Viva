@@ -116,10 +116,10 @@ test('a task at work or waiting cannot be put away from the dock, only an ended 
 test('the dock shows three cards at most; past that, one line says how many more and leads to all of them', () => {
   assert.equal(MAX_TILES, 3)
   assert.equal(dockMore(MAX_TILES), null, 'all of them shown: no line')
-  assert.equal(dockMore(MAX_TILES + 2), '还有 2 件 · 全部 →')
+  assert.equal(dockMore(MAX_TILES + 2), '还有 2 件，看全部')
   const many = run([started('e', '查一下报销', 10), started('f', '订会议室', 11)], three())
   assert.equal(ids(many)[0], 'asks', 'what waits on the user is among the cards shown')
-  assert.equal(dockMore(ids(many).length), '还有 2 件 · 全部 →')
+  assert.equal(dockMore(ids(many).length), '还有 2 件，看全部')
 })
 
 test('the dock folds and unfolds', () => {

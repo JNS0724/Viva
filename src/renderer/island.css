@@ -108,7 +108,7 @@
 }
 .isl-tag {
   align-self: flex-start; padding: 3px 8px; border-radius: 6px; background: var(--raised); color: var(--ink-2);
-  font: 500 11px var(--font-mono); letter-spacing: .1em;
+  font: 500 12px var(--font-sans);
 }
 .isl-push { margin-left: auto; }
 
@@ -132,7 +132,7 @@
 .isl-task { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--orange); font-size: 12px; font-weight: 600; }
 .isl-panel .isl-task { align-self: flex-start; }
 .isl-bg-list { display: flex; flex-direction: column; gap: 8px; }
-.isl-sect { font-size: 12px; color: var(--ink-3); letter-spacing: .05em; }
+.isl-sect { font-size: 12px; color: var(--ink-3); }
 .isl-sect b { color: var(--ink-2); }
 .isl-bg-list ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
 .isl-bg-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--raised); }
