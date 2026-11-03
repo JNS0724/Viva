@@ -52,8 +52,8 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 - **打包后的处理（`scripts/after-pack.cjs`）**：electron-builder 自己收集依赖时，漏掉了 dsh 各包之间的 peer 依赖，又带上了 dsh 为其他 profile 准备的包。打包后的钩子把 electron-builder 打出的 asar 解开，按闭包增删包，删掉无用文件，写入许可文件，再按自己的解包规则重新打成 asar；还缺包就让打包失败。重打包后，在签名前按最终 ASAR 头刷新 Windows 可执行文件和 macOS plist 的完整性记录；不改变 Electron fuse 设置。
 - **工作区**：打包后的应用目录是只读的，工作区放在应用数据目录下的 `workspace/`；开发时（`npm start`）仍是仓库里的 `workspace/`。
 - **体积**：macOS 的 dmg 约 152MB（裁剪前 259MB），应用解开后约 388MB，大头是 Electron 本身。
-- **验证打包产物**：必须在仓库之外运行。在仓库里（`dist/` 下）运行时，Node 会顺着上级目录找到仓库自己的 `node_modules`，缺包也看不出来。对打包后的应用跑 memory 阶段的 smoke，用 `SMOKE_FIXTURES` 指向仓库的 `test/fixtures`（应用里没有测试目录）、`SMOKE_OUT` 指向输出目录：
-  - macOS：只读挂载 dmg，运行里面的应用：`hdiutil attach -nobrowse -readonly dist/Viva-*.dmg`，然后 `SMOKE_PHASE=memory SMOKE_OUT=/tmp/viva-smoke SMOKE_FIXTURES=$PWD/test/fixtures DEEPSEEK_API_KEY=smoke-fake-key "/Volumes/Viva x.y.z/Viva.app/Contents/MacOS/Viva"`。
+- **验证打包产物**：必须在仓库之外运行。在仓库里（`dist/` 下）运行时，Node 会顺着上级目录找到仓库自己的 `node_modules`，缺包也看不出来。在仓库里把 `VIVA_SMOKE_EXECUTABLE` 指向已安装程序，再运行 `npm run smoke:package`；子进程的资料目录和工作目录都在仓库之外：
+  - macOS：只读挂载 dmg，运行里面的应用：`hdiutil attach -nobrowse -readonly dist/Viva-*.dmg`，然后 `VIVA_SMOKE_EXECUTABLE="/Volumes/Viva x.y.z/Viva.app/Contents/MacOS/Viva" npm run smoke:package`。
   - Windows：`scripts\verify-windows.ps1 -Package` 打安装包，静默安装到临时目录，对装好的 `Viva.exe` 跑 smoke，再卸载。
 - **第三方许可证**：`THIRD_PARTY_NOTICES.txt` 由 `scripts/third-party-notices.cjs` 在打包时按实际打进去的依赖生成（各平台的依赖不完全相同），发布时随 Release 附上两个平台的版本。
 - **还没做**：代码签名和公证、自动更新、Intel Mac 和 Windows ARM 的包。
@@ -112,35 +112,31 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 
 ## 测试
 
-```bash
-npm test            # 595 个单元 / 集成测试，用 Electron 自带的 Node 运行，和应用的运行时一致
-npm run coverage    # 覆盖率
-npm run smoke       # 真的启动 Electron，分五次：
-                    #   setup：没有 key，检查引导卡片、输入框禁用、按钮能打开设置；
-                    #     再走一遍消息源：选文件夹安装 → 测试连接（错的令牌、对的令牌）→ 打开 → 收到消息 → 移除；
-                    #   walkthrough：等待确认卡片时的状态胶囊浮层和标题栏布局（macOS 和模拟的 Windows，各在正常宽度和最窄
-                    #     880px 下检查胶囊居中、不和按钮重叠，窄窗口抽屉浮层），长任务时过程抽屉和对话的滚动，文件页的预览；
-                    #   relaunch：同一份数据再启动，检查上次的对话完整回来、助手接回会话，再走一遍历史面板
-                    #     （⌘K、第二段对话、搜索高亮、打开旧对话、重命名、删除和撤销），最后检查 Markdown 渲染
-                    #     和其中不该生效的脚本、链接、图片，以及页面不能跳转；再看桌面岛上提问、发图片、新话题和换权限；
-                    #   memory：真实的 dsh 加记忆插件，配假模型：引导、「记住」、关于你页面里的关键词、
-                    #     提到名称时带上记忆、「过程」里的「带上记忆」，助手反问城市（卡片、点选回答、回答记进记忆），
-                    #     设置页的插件状态，在对话里接入 MCP；
-                    #     主动跟进：建议卡片 → 跟进 → 选时段 → 现在就准备 → 草稿 → 接着做，以及消息建议 → 跟进；
-                    #     再在设置里添加一个模型提供方，从模型菜单选中它并对话（当前对话保留）；
-                    #   resume：直接杀掉 dsh，检查提示重连、自动重启并接回同一段对话
-```
+`npm test` 用 Electron 自带的 Node 直接运行源码单元/集成测试；`npm run typecheck` 检查产品和测试 TypeScript。与 CI 一样使用 Node.js 24。
 
-- **真模型验证（发版前）**：`npm run live` 用真实的 DeepSeek 模型把 26 个取决于模型的场景各跑 3 次，`--set core` 只跑核心的；报告在 `smoke/live/report.md`。怎么跑、场景清单和自动化测不了的人工检查项见 [live-check.md](live-check.zh-CN.md)。
-- **在 Windows 上验证**：在 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1`，依次安装依赖、跑单元测试和五个阶段的 smoke，结果、日志和截图收在 `smoke\windows-report`；加 `-Live` 并设置 `DEEPSEEK_API_KEY` 环境变量，会再用真实模型跑一次记忆测试（key 不写进报告）。
-- **GitHub 上的自动检查**（`.github/workflows/`）：每个 PR 都在 macOS 和 Windows 上各跑一遍类型检查、构建、单元测试和全部 smoke 阶段（`check.yml`）；改到构建或打包相关的文件时（也可在 Actions 页面手动运行），再在两个平台上打出安装包、装到仓库之外、对装好的应用跑 memory 阶段，Windows 上最后卸载（`package.yml`）。
-- **什么时候在真机上测**：GitHub 的机器是虚拟机，看不到真实屏幕上的样子。
-  - macOS：每次改动，提交前在真机上跑完类型检查、单元测试和全部 smoke。
-  - Windows 真机，只在这几种时候：每次发版前（beta 和正式版），跑完整的 `verify-windows.ps1 -Package`，并在 4K 屏上人工看一遍界面、留截图；改到 Windows 上特有的东西时（标题栏右上角的系统按钮、托盘、桌面岛、安装和卸载、文件路径和权限）；GitHub 上的检查通过、但用户在 Windows 上遇到问题时，去真机复现。
-  - 其余改动只靠 GitHub 上的 Windows 检查。
-- **数据隔离**：smoke 用 `smoke/userData` 作为独立的数据目录，不会碰你自己的历史记录和 key。
-- **假模型**：记忆相关的测试和 smoke 用真实的 dsh，把 `DEEPSEEK_BASE_URL` 指向 `test/fixtures/fake-llm.js`。它记录 dsh 发给模型的每个请求，并按固定规则回复（「记住：…」会调用 `memory_remember`），不需要 key。
-- **假 dsh**：其余 smoke 和集成测试里的 dsh 换成 `test/fixtures/fake-dsh.js`。它讲真实的 ACP 协议，按固定剧本回复：提问里带「长任务」会连续调用 16 次工具，再输出长回复。这样走的是和真实使用完全相同的代码路径，只是不调用模型。应用里没有演示模式。
+`test/smoke/` 中的外部 Playwright runner 管理启动、独立资料目录、假服务、就绪条件、断言、诊断和退出。产品不导入场景，也不按外部路径加载测试文件。显式 `--enable-smoke-test-driver` 必须同时提供 `--user-data-dir`，只为原有集成场景暴露有限的主进程控制面；公共 UI 冒烟使用正常界面控件。子进程仅接收最小系统环境，不继承模型密钥或 Node 注入参数；本地假模型通过正式设置表单接入。
+
+| 命令 | 覆盖 |
+| --- | --- |
+| `npm run smoke` | 自动构建，再跑公共 UI 冒烟和全部七阶段集成测试 |
+| `npm run smoke:core` | 无模型引导；真实内嵌 dsh 加本地假模型，回答及重启持久化 |
+| `smoke:setup` | 设置导航、消息源安装/凭据/拉取/移除 |
+| `smoke:walkthrough` / `smoke:relaunch` | 同一个独立测试：权限、桌面岛、布局、滚动、文件；重启、历史、Markdown、话题、图片、权限和 IME |
+| `smoke:memory` / `smoke:resume` | 同一个独立测试：真实 dsh、本地假模型、记忆注入与原因、反问、MCP、模型切换、崩溃恢复、后台任务和跟进；重启验收 |
+| `smoke:timeline` | 长历史、搜索、回顾、收藏及恢复路径 |
+| `smoke:language` | 中英文、输入/焦点/选区、IME 和展开阅读状态 |
+| `smoke:package` | 安装产物的真实内嵌 dsh、本地假模型、记忆与重启；需指定 `VIVA_SMOKE_EXECUTABLE` |
+| `smoke:perf` | 独立性能项目，完整 AX、原有预算，不记录 trace |
+
+单跑源码阶段前先 `npm run build`。relaunch/resume 别名会运行完整逻辑场景，各测试不依赖其他测试文件。每个场景新建带所有权标记的临时资料目录；删除前检查规范路径和标记，成功后删除。失败的合成资料目录只留本机，位于 CI 上传路径之外。
+
+自动重试为 0，worker 为 1。报告在 `smoke/report`（HTML）、`smoke/junit.xml`、`smoke/test-results`（启动回执/日志、断言及失败诊断）。失败时保留操作和截图 trace。公共 UI 冒烟还记录 DOM 快照；原有集成场景关闭向无脚本搜索 iframe 注入快照脚本。真模型和性能测试不录 trace；不上传原始资料目录或凭据。用 `npx playwright show-trace <trace.zip>` 查看保留的 trace。
+
+`scripts/verify-windows.ps1 -Package` 安装到唯一临时目录，由外部 runner 驱动已安装程序、检查许可证，并在 finally 卸载。PR CI 在 macOS、Windows 跑完整源码套件；打包 CI 验证双平台安装产物的记忆与重启。这些自动测试不替代实机、签名、升级或物理快滚验收。
+
+`npm run live` 仍需主动执行：默认 26 个真模型场景各 3 次，保留 `--set core`、`--only`、`--repeat`、`--app`、`--dry`。密钥只显式传给独立子进程，不写日志。详见[真模型验证](live-check.zh-CN.md)。假模型通过不代表真模型行为通过。
+
+设计参考 [Electron 自动化测试](https://www.electronjs.org/docs/latest/tutorial/automated-testing)、[Playwright fixture 与隔离](https://playwright.dev/docs/test-fixtures)、[VS Code 外部 Electron runner](https://github.com/microsoft/vscode/blob/main/test/automation/src/playwrightElectron.ts)。Playwright Electron API 仍为实验性；仓库固定 Playwright 1.64.1 与 Electron 44.7.0，并验证源码和安装产物。
 
 ## README 的图和宣传片
 
@@ -150,7 +146,7 @@ README 和这份文档里的截图、动图，都是应用自己拍的，不是�
 npm run showcase    # 需要 ffmpeg
 ```
 
-- 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `src/main/smoke-showcase.ts` 的剧本走一遍：首页的「今天」、对话、跟进卡片、后台准备、消息建议、确认卡片、消息源、后台准备时段、文件、桌面岛。数据目录是 `smoke/showcase/userData-showcase`，不碰你自己的数据。
+- 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `test/smoke/smoke-showcase.ts` 的剧本走一遍：首页的「今天」、对话、跟进卡片、后台准备、消息建议、确认卡片、消息源、后台准备时段、文件、桌面岛。runner 新建唯一临时资料目录，不碰你自己的数据。
 - 跟进的全过程按每秒 10 帧录下来，ffmpeg 做成 `docs/images/demo.gif`；截图缩到 1600px 宽放进 `docs/images/`。
 - 同一份录像和截图复制到 `promo/public/`，录像的长度写进 `promo/src/demo-meta.json`。
 

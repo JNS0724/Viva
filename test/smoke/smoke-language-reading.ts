@@ -1,8 +1,8 @@
-import type { BrowserWindow } from 'electron'
+import type { SmokeAppWindow } from './smoke-kit.ts'
 import { run } from './smoke-kit.ts'
 
 /** Actual DOM regression: locale changes retain reader-expanded answers and a task's live draft. */
-export async function checkReadingLanguage(win: BrowserWindow): Promise<string[]> {
+export async function checkReadingLanguage(win: SmokeAppWindow): Promise<string[]> {
   return await run(win, `(async()=>{
     const {setLocale,getLocale}=await import('../shared/i18n/locale.js');
     const {t}=await import('../shared/i18n/translate.js');

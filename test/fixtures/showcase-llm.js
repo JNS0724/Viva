@@ -1,5 +1,5 @@
 /**
- * What the fake model says in the showcase run (src/main/smoke-showcase.ts), which makes the README's pictures
+ * What the fake model says in the showcase run (test/smoke/smoke-showcase.ts), which makes the README's pictures
  * and demo: answers that read like real use, on a few fixed prompts. Anything else falls back to fake-llm.js's
  * rules. Background preparation is slowed down a little, so the demo can show it at work.
  */

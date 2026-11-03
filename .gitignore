@@ -1,6 +1,6 @@
 node_modules/
 workspace/
-smoke/
+/smoke/
 smoke.log
 .DS_Store
 .ruff_cache/

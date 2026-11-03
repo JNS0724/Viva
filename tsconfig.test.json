@@ -6,5 +6,5 @@
     "types": ["node"],
     "checkJs": false
   },
-  "include": ["test/**/*.ts", "src/renderer/globals.d.ts"]
+  "include": ["test/**/*.ts", "scripts/live.ts", "scripts/showcase.ts", "src/renderer/globals.d.ts"]
 }

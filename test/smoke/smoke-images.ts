@@ -1,3 +1,4 @@
+import type { SmokeDesk } from './smoke-kit.ts'
 import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
@@ -52,7 +53,7 @@ const ISLAND_SENT = `(() => {
 })()`
 
 /** @returns {Promise<string[]>} failures */
-export async function checkPictures(win: SmokeWindow, outDir: string, desk: any) {
+export async function checkPictures(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
   const failures: string[] = []
   await run(win, pasteInto('#composer-input', true))
   const draft = await until(win, DRAFT, 'the pasted picture shown in the input')
@@ -97,11 +98,11 @@ export async function checkPictures(win: SmokeWindow, outDir: string, desk: any)
   return failures
 }
 
-async function islandPicture(win: SmokeWindow, outDir: string, desk: any) {
-  desk.force(true)
+async function islandPicture(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
+  await desk.force(true)
   try {
-    if (!desk.openInput()) return ['the desktop island would not open its input for a picture']
-    const page = { webContents: desk.webContents() }
+    if (!(await desk.openInput())) return ['the desktop island would not open its input for a picture']
+    const page = { webContents: (await desk.webContents()) }
     await until(page, `document.querySelector('.isl')?.dataset.form === 'input'`, 'the island input opening')
     await run(page, pasteInto('.isl-field', false))
     await until(page, ISLAND_CHIP, 'the picture pasted on the island shown as a chip')
@@ -117,7 +118,7 @@ async function islandPicture(win: SmokeWindow, outDir: string, desk: any) {
     await finishTurn(win)
     return []
   } finally {
-    desk.closeInput()
-    desk.force(false)
+    await desk.closeInput()
+    await desk.force(false)
   }
 }

@@ -1,7 +1,8 @@
+import type { SmokeDesk } from './smoke-kit.ts'
 import { checkLanguage } from './smoke-language.ts'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { BrowserWindow } from 'electron'
+import type { SmokeAppWindow } from './smoke-kit.ts'
 import { checkDeskAsk } from './smoke-desk.ts'
 import { checkPictures } from './smoke-images.ts'
 import { checkTopics } from './smoke-topics.ts'
@@ -21,7 +22,6 @@ import { checkMarkdownLists } from './smoke-markdown-lists.ts'
 import { checkStarLayouts } from './smoke-star-layout.ts'
 import { checkAnswerExpansion } from './smoke-answer-expansion.ts'
 
-const BOOT_WAIT_MS = 1500
 const DRAWER_PARK_AFTER_MS = 2200
 const DRAWER_HOLD_MS = 1500
 const LONG_ANSWER_WAIT_MS = 5500
@@ -85,16 +85,16 @@ async function checkOffer(win: SmokeWindow, outDir: string) {
 }
 
 /** Long run: the reader parks the trace mid-way, then a long answer streams in. Returns failed expectations. */
-async function checkLongTask(win: BrowserWindow, outDir: string) {
-  const size = win.getSize()
+async function checkLongTask(win: SmokeAppWindow, outDir: string) {
+  const size = (await win.getSize())
   // A tall desktop hides anchoring regressions because the preceding turn does not need to scroll.
   // Exercise the short CI/laptop viewport on every machine, without changing the 0–80px expectation.
-  win.setSize(Math.min(size[0], 921), Math.min(size[1], 648))
+  await win.setSize(Math.min(size[0], 921), Math.min(size[1], 648))
   try {
     await wait(UI_WAIT_MS)
     return await longTaskAtCurrentSize(win, outDir)
   } finally {
-    win.setSize(size[0], size[1])
+    await win.setSize(size[0], size[1])
     await wait(UI_WAIT_MS)
   }
 }
@@ -168,12 +168,12 @@ async function checkTitlebarOn(win: SmokeWindow, platform: string) {
 }
 
 /** Both platforms (Windows simulated) at full and narrowest width, plus the floating drawer when narrow. */
-async function checkLayouts(win: BrowserWindow, outDir: string) {
+async function checkLayouts(win: SmokeAppWindow, outDir: string) {
   const realPlatform = await run(win, 'document.documentElement.dataset.platform')
-  const [width, height] = win.getSize()
+  const [width, height] = (await win.getSize())
   const failures: string[] = []
   for (const size of [[width, height] as const, NARROW_SIZE]) {
-    win.setSize(...size)
+    await win.setSize(...size)
     for (const platform of ['darwin', 'win32']) {
       failures.push(...await checkTitlebarOn(win, platform))
       await capture(win, outDir, `layout-${platform}-${size[0]}`)
@@ -186,7 +186,7 @@ async function checkLayouts(win: BrowserWindow, outDir: string) {
   await capture(win, outDir, 'layout-narrow-drawer')
   await click(win, 'toggle-drawer')
   await run(win, `document.documentElement.dataset.platform = ${JSON.stringify(realPlatform)}`)
-  win.setSize(width, height)
+  await win.setSize(width, height)
   await wait(UI_WAIT_MS)
   return failures
 }
@@ -261,12 +261,12 @@ const DESK_ISLAND_STATE = `(() => {
  * With the window away, the desktop island shows what waits on the user, and allowing it there goes
  * through to the window: the card in the thread goes and the turn carries on.
  */
-async function checkDeskIsland(win: SmokeWindow, outDir: string, desk: any) {
+async function checkDeskIsland(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
   if (!desk) return ['the desktop island was not created']
-  desk.force(true)
+  await desk.force(true)
   try {
     // The smoke helpers drive a window through its webContents.
-    const contents = desk.webContents()
+    const contents = (await desk.webContents())
     if (!contents) return ['the desktop island did not open']
     const page = { webContents: contents }
     const logged: string[] = []
@@ -282,7 +282,7 @@ async function checkDeskIsland(win: SmokeWindow, outDir: string, desk: any) {
     await until(win, `!document.querySelector('.confirm:not(.ask)')`, 'the card going after allowing on the desktop island')
     return seen.title === '写入 summary.md' ? [] : [`the desktop island should name what it asks to allow: ${JSON.stringify(seen)}`]
   } finally {
-    desk.force(false)
+    await desk.force(false)
   }
 }
 
@@ -290,7 +290,7 @@ async function checkDeskIsland(win: SmokeWindow, outDir: string, desk: any) {
  * Tour from a clean profile on the fake dsh: an answer waiting on a permission card, the layouts around it,
  * allowing it from the desktop island, the island's steps, the long task.
  */
-async function walkthrough(win: BrowserWindow, outDir: string, hooks: SmokeHooks) {
+async function walkthrough(win: SmokeAppWindow, outDir: string, hooks: SmokeHooks) {
   await capture(win, outDir, 'home')
   await submit(win, SMOKE_PROMPT)
   await until(win, `Boolean(document.querySelector('.confirm .btn-primary'))`, 'the permission card')
@@ -534,14 +534,14 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
  * `memory`) and screenshots each step into `smokeOut`.
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
-export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhase }: { smokeOut: string, smokePhase: string | null }, quit: (code: number) => void, hooks: SmokeHooks = {}) {
+export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePhase }: { smokeOut: string, smokePhase: string | null }, hooks: SmokeHooks): Promise<string[]> {
   const problems: string[] = []
   win.webContents.on('console-message', (event: { level: string, message: string }) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)
   })
   try {
     await fs.mkdir(outDir, { recursive: true })
-    await wait(BOOT_WAIT_MS)
+    await until(win, `document.readyState === 'complete' && document.documentElement.dataset.languageLoading !== 'true' && Boolean(document.getElementById('composer-input'))`, 'the application UI ready')
     if (smokePhase === 'language') problems.push(...await checkLanguage(win, outDir, hooks))
     else if (smokePhase === 'setup') {
       problems.push(...await checkSetup(win, outDir))
@@ -569,6 +569,6 @@ export async function runSmoke(win: BrowserWindow, { smokeOut: outDir, smokePhas
     problems.push(`smoke: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
     report(problems.length ? `problems:\n${problems.join('\n')}` : `${smokePhase}: no console warnings or errors; checks passed`)
-    quit(problems.length ? 1 : 0)
   }
+  return problems
 }

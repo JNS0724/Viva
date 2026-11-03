@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { BrowserWindow } from 'electron'
+import type { Rectangle, WebContents } from 'electron'
+import type { createMessageJudge } from '../../src/main/message-judge.ts'
 
 /** How the smoke runs (smoke.js, smoke-memory.js) drive the window: run page code, wait for what it shows. */
 export const UI_WAIT_MS = 600
@@ -8,11 +9,47 @@ export const TURN_TIMEOUT_MS = 60_000
 const POLL_MS = 200
 
 /** A window the smoke run drives: the app's, or the desktop island's. */
-export type SmokeWindow = Pick<BrowserWindow, 'webContents'>
+export interface SmokeContents {
+  executeJavaScript: (code: string) => Promise<unknown>
+  capturePage: (rect?: Rectangle) => Promise<{ toPNG: () => Buffer }>
+  sendInputEvent: (event: Parameters<WebContents['sendInputEvent']>[0]) => Promise<void>
+  getZoomFactor: () => Promise<number>
+  setZoomFactor: (factor: number) => Promise<void>
+  on: (event: 'console-message', listener: (event: { level: string, message: string }) => void) => void
+}
+export interface SmokeWindow { webContents: SmokeContents }
+export interface SmokeAppWindow extends SmokeWindow {
+  getSize: () => Promise<[number, number]>
+  setSize: (width: number, height: number) => Promise<void>
+  center: () => Promise<void>
+}
+export interface SmokeDesk {
+  force: (on: boolean) => Promise<void>
+  openInput: () => Promise<boolean>
+  closeInput: () => Promise<void>
+  inputOpen: () => Promise<boolean>
+  webContents: () => Promise<SmokeContents>
+}
 /** What a check finds: what looked wrong, and what was seen. */
 export type Expect = (ok: unknown, message: string, seen?: unknown) => void
 /** What main.ts lends a smoke run: the desktop island, the fake model, the agent to crash, and so on. */
-export type SmokeHooks = { desk?: () => any, [hook: string]: any }
+export interface SmokeModel { url: string, requests: object[], close: () => Promise<void> }
+export interface SmokeHooks {
+  desk: () => SmokeDesk
+  model: () => SmokeModel | null
+  agentPid: () => Promise<number | null>
+  cwd: string
+  userData: string
+  fixtures: string
+  importHome: string
+  openTasksPage: () => Promise<void>
+  pickSourceFolder: (dir: string) => Promise<void>
+  seedSuggestion: () => Promise<void>
+  seedShowcase: () => Promise<void>
+  judgeMessages: () => Promise<Awaited<ReturnType<ReturnType<typeof createMessageJudge>['run']>> | null>
+  scaleFactor: () => Promise<number>
+  renderPanel: (html: string, size: { width: number, height: number }) => Promise<Buffer>
+}
 
 export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /** What the page code returns; the code is the smoke run's own, so what comes back is what it was written to return. */

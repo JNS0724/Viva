@@ -32,7 +32,7 @@ export async function checkFollowups(win: SmokeWindow, outDir: string, hooks: Sm
   await run(win, `${q(`${CARD} .fu-preset`)}.click()`)
   await until(win, anyText(`${CARD} .fu-note`, '每天三次'), 'the windows chosen')
 
-  hooks.openTasksPage()
+  await hooks.openTasksPage()
   await until(win, q(`${PAGE} .fu-row[data-status="scheduled"]`), 'the follow-up on the 后台 page, scheduled')
   await run(win, `${q(`${PAGE} .fu-row[data-status="scheduled"]`)}.click()`)
   await until(win, q(`${PAGE} .fu-main`), 'its detail')
@@ -53,8 +53,8 @@ export async function checkFollowups(win: SmokeWindow, outDir: string, hooks: Sm
 
 async function checkSuggestion(win: SmokeWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
   const failures: string[] = []
-  hooks.seedSuggestion()
-  hooks.openTasksPage()
+  await hooks.seedSuggestion()
+  await hooks.openTasksPage()
   await until(win, q(`${PAGE} .fu-row[data-status="suggested"]`), 'the suggested message on the 后台 page')
   await run(win, `${q(`${PAGE} .fu-row[data-status="suggested"]`)}.click()`)
   await until(win, q(`${PAGE} .fu-message`), 'the message and why')

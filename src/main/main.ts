@@ -4,9 +4,8 @@ import { registerLanguageIpc } from './language-ipc.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
@@ -52,12 +51,20 @@ import { openFollowups, type Followups } from './followups-main.ts'
 import type { Notice } from './notice-plan.ts'
 import type { ProposalView } from './followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
-import { runSmoke } from './smoke.ts'
-import { seedTimeline } from './smoke-timeline.ts'
-import { seedPerf } from './smoke-perf.ts'
+import { installAutomationDriver } from './automation-driver.ts'
 import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
+
+const automationMode = app.commandLine.hasSwitch('enable-smoke-test-driver')
+// A standard alternate profile works for automation and separate user profiles alike.
+const profileDirectory = app.commandLine.getSwitchValue('user-data-dir')
+if (automationMode && !profileDirectory) throw new Error('External automation requires an explicit --user-data-dir')
+if (profileDirectory) {
+  const directory = path.resolve(profileDirectory)
+  fs.mkdirSync(directory, { recursive: true })
+  app.setPath('userData', directory)
+}
 
 const MAX_KEY_CHARS = 1_000
 /** dsh's stock ACP profile: used, without memory, when the app's own profile can't be written. */
@@ -147,26 +154,6 @@ let quitting = false
 const QUIT_WAIT_MS = 5_000
 /** What the window is told of the agent (session-info.ts, acp-bridge.ts): mode, model, session, what it remembers. */
 let lastInfo: { mode: string, model: string, cwd: string, reason?: string, [field: string]: any } = { mode: 'connecting', model: '', cwd: '', reason: '' }
-
-/** Smoke runs get their own userData, so they never read or overwrite the real history and key. */
-function isolateSmokeUserData() {
-  const { smoke, smokePhase, smokeOut } = resolveConfig(process.env, fs.existsSync)
-  if (!smoke) return
-  // `relaunch` reopens what `walkthrough` left, `resume` what `memory` left, `live-resume` what `live` left;
-  // the others start from nothing.
-  const shared = smokePhase === 'walkthrough' || smokePhase === 'relaunch'
-  const reopens: Record<string, string> = { resume: 'memory', 'live-resume': 'live' }
-  const dir = path.join(smokeOut, shared ? 'userData' : `userData-${reopens[smokePhase as string] ?? smokePhase}`)
-  if (smokePhase !== 'relaunch' && !reopens[smokePhase as string]) removeTree(dir)
-  // `timeline` opens on a history weeks long, written before the app reads it.
-  if (smokePhase === 'timeline') seedTimeline(dir)
-  // `perf` opens on one far longer than anyone's, to measure what reading it costs.
-  if (smokePhase === 'perf') seedPerf(dir)
-  // dsh's home is inside userData (dsh-runtime.js), so it is the smoke run's own too; so is the workspace,
-  // so a smoke run never writes into the developer's.
-  app.setPath('userData', dir)
-  process.env.AGENT_CWD ||= path.join(dir, 'workspace')
-}
 
 /** What the window is told of the agent (renderer app.ts onEvent): its type, and what that type carries. */
 type AgentEvent = { type: string, [field: string]: any }
@@ -379,12 +366,11 @@ function createBridge(config: Config, cwd: string) {
   })
 }
 
-/** What the app hands dsh: the keys, and in the memory smoke run the fake model's address. */
+/** Only the app's selected provider credentials reach dsh; inherited endpoints remain isolated. */
 function dshSettings(config: Config) {
   return {
     DEEPSEEK_API_KEY: config.apiKey,
     ...providerEnv(modelStore.list()),
-    ...(config.smoke && process.env.DEEPSEEK_BASE_URL ? { DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL } : {}),
   }
 }
 
@@ -497,7 +483,7 @@ function settingsView() {
 }
 
 /** Only the installed app may start with the computer: in development it would register Electron itself. */
-const canOpenAtLogin = () => app.isPackaged && !currentConfig().smoke
+const canOpenAtLogin = () => app.isPackaged && !automationMode
 
 /** 开机启动: off unless the user turns it on; started so, Viva stays in the tray (startedHidden). */
 function setOpenAtLogin(on: boolean) {
@@ -618,7 +604,7 @@ function mainWindow(): BrowserWindow {
 
 /** The shortcut that opens the island's input, from any app; not in smoke runs, which share the machine. */
 function registerShortcut(config: Config) {
-  if (config.smoke) return
+  if (automationMode) return
   shortcutHeld = registerAskShortcut(globalShortcut, {
     foreground: windowInFront,
     focusComposer: () => mainWindow().webContents.send('composer:focus'),
@@ -655,10 +641,10 @@ function showTray() {
 
 /**
  * The desktop island comes out when the window is closed to the tray and goes when it is shown again; a smoke
- * run turns it on only when it checks it, and closes the window for real.
+ * run turns it on only when it checks it. Closing still follows the normal tray lifecycle.
  */
 function attachDeskIsland(config: Config, window: BrowserWindow) {
-  deskAllowed = !config.smoke
+  deskAllowed = !automationMode
   desk = createDeskIsland({
     BrowserWindow,
     screen,
@@ -670,7 +656,7 @@ function attachDeskIsland(config: Config, window: BrowserWindow) {
     coach: { get: () => preferences.get().deskCoached, set: () => preferences.set('deskCoached', true) },
   })
   window.on('close', (event) => {
-    if (quitting || config.smoke) return
+    if (quitting) return
     event.preventDefault()
     closeToTray()
   })
@@ -827,7 +813,7 @@ function showNotice(notice: Notice) {
   // Native Windows notifications may register/update a Start-menu shortcut for
   // our app ID. Automated smoke runs must not point that shortcut at a QA binary.
   // Notification planning/delivery is tested with injected notifiers separately.
-  if (resolveConfig(process.env, fs.existsSync).smoke) return
+  if (automationMode) return
   if (!Notification.isSupported()) return
   const shown = new Notification({ title: notice.title, body: notice.body })
   const shownAt = Date.now()
@@ -845,12 +831,8 @@ function showNotice(notice: Notice) {
   shown.show()
 }
 
-/** A smoke run cannot click through the folder dialog; it says here which folder the user would pick. */
-let smokeSourcePick: string | null = null
-
 /** 安装消息源: a folder with a viva-source.json in it. */
 async function chooseSourceFolder(): Promise<string | null> {
-  if (smokeSourcePick) return smokeSourcePick
   const result = await dialog.showOpenDialog(mainWindow(), { title: t("main.main.choose.a.source.folder.containing.viva.source"), properties: ['openDirectory'] })
   return result.canceled ? null : result.filePaths[0] ?? null
 }
@@ -1043,13 +1025,13 @@ function createWindow(config: Config) {
       nodeIntegration: false,
       sandbox: true,
       // A smoke run goes on unwatched in the background, where the page and timers would be slowed down.
-      backgroundThrottling: !config.smoke,
+      backgroundThrottling: !automationMode,
     },
   })
   win = created
   attachDeskIsland(config, created)
   created.once('ready-to-show', () => {
-    if (!startedHidden || config.smoke) return created.show()
+    if (!startedHidden || automationMode) return created.show()
     // Started with the computer: in the tray, the island on the desktop, until the user opens it.
     showTray()
     desk?.setAway(true)
@@ -1059,68 +1041,10 @@ function createWindow(config: Config) {
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  created.webContents.once('did-finish-load', () => {
-    startBridge()
-    if (config.smoke) {
-      // Nor may macOS App Nap suspend the app (and the fake model it serves) while nobody looks.
-      powerSaveBlocker.start('prevent-app-suspension')
-      // A smoke run ends as quitting does: dsh stopped first. Left to app.exit, dsh could outlive the app
-      // (Windows keeps a child running) and hold the session the next phase takes over.
-      // Keep the exit boundary visible when a hosted runner stalls after assertions passed.
-      const exitStage = (stage: string) => {
-        try { fs.writeSync(1, `[smoke-exit] ${stage}\n`) } catch { /* A closed diagnostic pipe must not change quitting. */ }
-      }
-      app.once('quit', (_event, code) => exitStage(`app quit (${code})`))
-      process.once('exit', code => exitStage(`process exit (${code})`))
-      const quitSmoke = (code: number) => {
-        quitting = true
-        // The existing will-quit handler closes stores, schedulers and native resources first.
-        // Preserve failures too: app.quit() alone does not carry the smoke run's exit code.
-        app.once('will-quit', () => {
-          exitStage('normal cleanup complete; calling app.exit')
-          app.exit(code)
-          exitStage('app.exit returned')
-        })
-        exitStage(`stopping runtime (${code})`)
-        stopBridgeInTime().finally(() => {
-          exitStage('runtime stop wait complete; requesting app.quit')
-          app.quit()
-        })
-      }
-      runSmoke(created, config, quitSmoke, {
-        agentPid: () => bridge?.pid() ?? null, desk: () => desk, cwd: config.cwd, userData: app.getPath('userData'), model: () => smokeModel,
-        fixtures: process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures'),
-        pickSourceFolder: (dir: string) => { smokeSourcePick = dir },
-        openTasksPage,
-        // A message the judge found urgent, as if a window had passed (judging waits for one).
-        seedSuggestion: () => {
-          sources?.db.save('smoke-mail', [{ id: 'm1', at: Date.now(), from: '[发件人]', title: '合同明天到期', text: '请今天内回复确认是否续签' }], 'c1')
-          sources?.db.markJudged([{ source: 'smoke-mail', id: 'm1' }])
-          followups?.store.addSuggestion({ source: 'smoke-mail', messageId: 'm1', sender: '[发件人]', title: '合同续签', ask: '起草回复，确认续签', why: '明天到期', remindAt: null })
-          followups?.notifier.refresh()
-        },
-        // The live check judges the messages it brought in at once, as the next window would (live-scenarios-sources.ts).
-        judgeMessages: () => followups?.judge?.run(new AbortController().signal) ?? Promise.resolve(null),
-        // The showcase stages what was there before its scenes: follow-ups, and mail the judge found urgent.
-        followups: () => followups,
-        seedMail: () => {
-          const now = Date.now()
-          const mails = [
-            { id: 'm1', at: now - 17 * 60_000, from: '法务部', title: '服务合同明天到期，请确认是否续签', text: '您好，贵司与供应商的年度服务合同将于明天到期。如需续签，请在今天下班前回复确认，并附上采购部的审批单。' },
-            { id: 'm2', at: now - 34 * 60_000, from: '王五', title: '周会纪要（10/24）', text: '本周对账系统按计划推进，退款回归测试由李四负责，周三前补齐。' },
-          ]
-          sources?.db.save('company-mail', mails, '2')
-          sources?.db.markJudged(mails.map((mail) => ({ source: 'company-mail', id: mail.id })))
-          followups?.store.addSuggestion({ source: 'company-mail', messageId: 'm1', sender: '法务部', title: '合同续签', ask: '起草续签确认的回复，发不发由你', why: '明天到期，要你回复确认', remindAt: new Date(now).setHours(24 + 10, 0, 0, 0) }) // tomorrow 10:00
-          followups?.notifier.refresh()
-        },
-      })
-    }
-  })
+  created.webContents.once('did-finish-load', () => { startBridge() })
   created.loadFile(path.join(CODE_ROOT, 'src', 'renderer', 'index.html'))
 }
 
-isolateSmokeUserData()
 // Windows shows a notification only for the app its Start menu shortcut names (the installer's, electron-builder appId).
 if (process.platform === 'win32') app.setAppUserModelId('app.viva.desktop')
 // Before the app is ready: the pages load pasted pictures by name from viva-image:// (image-protocol.js).
@@ -1130,25 +1054,6 @@ if (!app.requestSingleInstanceLock()) app.exit(0)
 app.on('second-instance', () => showWindow())
 // macOS: clicking the Dock icon brings back a window closed to the tray.
 app.on('activate', () => showWindow())
-
-/** The memory smoke run's stand-in model, kept so the run can check what the model was sent. */
-let smokeModel: { url: string, [field: string]: any } | null = null
-
-/** The memory smoke run talks to the real dsh, which calls a local stand-in for the DeepSeek API. */
-async function startSmokeModel() {
-  // A file URL: import() takes `C:\...` for a URL scheme on Windows.
-  // The installed app has no test folder; SMOKE_FIXTURES points a smoke run of it at the repository's.
-  const fixtures = process.env.SMOKE_FIXTURES || path.join(APP_ROOT, 'test', 'fixtures')
-  const { startFakeLlm } = await import(pathToFileURL(path.join(fixtures, 'fake-llm.js')).href)
-  // The showcase (README pictures and demo) gets answers that read like real use.
-  const decideFirst = currentConfig().smokePhase === 'showcase'
-    ? (await import(pathToFileURL(path.join(fixtures, 'showcase-llm.js')).href)).showcaseDecide
-    : null
-  // `resume` reopens the profile `memory` left, whose models point at the stand-in: the same port both times.
-  const model = await startFakeLlm({ port: Number(process.env.SMOKE_LLM_PORT) || 0, decideFirst })
-  smokeModel = model
-  process.env.DEEPSEEK_BASE_URL = model.url
-}
 
 /** Conversations and memories kept under the app's old name, my-agent, come along on the first launch as Viva. */
 function bringLegacyData() {
@@ -1191,8 +1096,6 @@ app.whenReady().then(async () => {
     file: path.join(app.getPath('userData'), 'preferences.json'),
     onError: (err) => console.error('[preferences] could not read them, using the defaults:', err.message),
   })
-  // Existing smoke fixtures assert Chinese copy, independent of the host OS language.
-  if (resolveConfig(process.env, fs.existsSync).smoke && process.env.SMOKE_PHASE !== 'language') preferences.set('language', 'zh-CN')
   registerLanguageIpc(ipcMain, {
     getLanguage: () => preferences.get().language,
     saveLanguage: (language) => { preferences.set('language', language) },
@@ -1235,15 +1138,16 @@ app.whenReady().then(async () => {
     switchTo: switchWorkDir,
     reveal: (dir) => shell.openPath(dir),
   })
-  // The live check talks to the real model; LIVE_DRY (scripts/live.mjs --dry) tries the check itself on the fake one.
-  const dryLive = config.smokePhase?.startsWith('live') && process.env.LIVE_DRY === '1'
-  if (config.smokePhase === 'memory' || config.smokePhase === 'resume' || config.smokePhase === 'showcase' || dryLive) await startSmokeModel()
-  if (!config.smoke) {
+  if (!automationMode) {
     bringLegacyData()
     bringDshData(config)
   }
   openHistory(config)
   openPersonal(config)
+  installAutomationDriver(automationMode, {
+    agentPid: () => bridge?.pid() ?? null, desk: () => desk,
+    sources: () => sources, followups: () => followups,
+  })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
   // Timers slept with the computer: preparation and the sources look again from now.
   const woke = () => {

@@ -19,7 +19,7 @@ const EXTRA_TASKS = ['帮我核对一下这个月的发票', '帮我整理一下
 const SETTLE_MS = 30_000
 
 /** A window that can be resized: the app's own (BrowserWindow), as the memory run is given. */
-type Sized = SmokeWindow & { getSize(): number[], setSize(width: number, height: number): void }
+type Sized = SmokeWindow & { getSize(): Promise<[number, number]>, setSize(width: number, height: number): Promise<void> }
 const sized = (win: SmokeWindow): win is Sized => typeof (win as Partial<Sized>).setSize === 'function'
 
 const LAYOUT = `(() => {
@@ -77,11 +77,11 @@ async function manySteps(win: Sized, outDir: string, expect: Expect, start: (tex
   const mark = await run(win, MIDDLE_MARK)
   expect(mark, 'the turn rail should be there', mark)
   if (!mark) return
-  win.webContents.sendInputEvent({ type: 'mouseMove', x: mark.x, y: mark.y })
+  await win.webContents.sendInputEvent({ type: 'mouseMove', x: mark.x, y: mark.y })
   await wait(UI_WAIT_MS)
   expect(await run(win, tipShown), 'a rail mark pointed at should show its tip', mark)
   await capture(win, outDir, 'rail-left-tip')
-  win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(WIDE[0] / 2), y: 200 })
+  await win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(WIDE[0] / 2), y: 200 })
 }
 
 /** The column dragged as wide as it goes: it stops at the rail's lane; the dock, without room, steps away. */
@@ -101,9 +101,9 @@ async function widestSteps(win: Sized, outDir: string, expect: Expect) {
 
 export async function dockSteps(win: SmokeWindow, outDir: string, expect: Expect, start: (text: string) => Promise<unknown>) {
   if (!sized(win)) return expect(false, 'the dock steps need the app window to resize')
-  const [width, height] = win.getSize()
+  const [width, height] = (await win.getSize())
   if (await run(win, drawerOpen)) await run(win, toggleDrawer)
-  win.setSize(...WIDE)
+  await win.setSize(...WIDE)
   try {
     await wait(UI_WAIT_MS)
     // Unfolded, if an earlier step or launch left it folded.
@@ -141,7 +141,7 @@ export async function dockSteps(win: SmokeWindow, outDir: string, expect: Expect
     expect(away.hidden, 'with no room and nothing waiting the dock should step away', away)
     await run(win, toggleDrawer)
   } finally {
-    win.setSize(width, height)
+    await win.setSize(width, height)
     await wait(UI_WAIT_MS)
   }
 }
@@ -152,8 +152,8 @@ export async function dockSteps(win: SmokeWindow, outDir: string, expect: Expect
  */
 export async function dockPendingSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   if (!sized(win)) return expect(false, 'the dock steps need the app window to resize')
-  const [width, height] = win.getSize()
-  win.setSize(...WIDE)
+  const [width, height] = (await win.getSize())
+  await win.setSize(...WIDE)
   try {
     await wait(UI_WAIT_MS)
     await run(win, `document.querySelector('#task-dock .dock-tag')?.click()`)
@@ -192,14 +192,14 @@ export async function dockPendingSteps(win: SmokeWindow, outDir: string, expect:
     await until(win, `(${LAYOUT}).tiles > 0`, 'the dock unfolded again by its tag', 5_000)
 
     // A narrow window: the same clear tag in the corner, the conversation first.
-    win.setSize(...NARROW)
+    await win.setSize(...NARROW)
     const narrow = await until(win, `(() => { const seen = ${LAYOUT}; return seen.folded === 'true' && !seen.hidden && seen })()`, 'the pending tag in a narrow window', 5_000)
       .catch(async () => run(win, LAYOUT))
     expect(narrow.tone === 'waits', 'in a narrow window a task waiting should keep its tag', narrow)
     await wait(UI_WAIT_MS)
     await capture(win, outDir, 'dock-narrow')
   } finally {
-    win.setSize(width, height)
+    await win.setSize(width, height)
     await wait(UI_WAIT_MS)
   }
 }

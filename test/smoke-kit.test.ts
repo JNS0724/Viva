@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { submit, type SmokeWindow } from '../src/main/smoke-kit.ts'
+import { submit, type SmokeWindow } from './smoke/smoke-kit.ts'
 
 test('smoke submission waits for readiness before writing or sending the prompt', async () => {
   let ready = false

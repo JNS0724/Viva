@@ -1,9 +1,9 @@
-import type { BrowserWindow } from 'electron'
+import type { SmokeAppWindow } from './smoke-kit.ts'
 import { capture, report, run, wait, UI_WAIT_MS } from './smoke-kit.ts'
 
 /** Hover and persistent stars must remain reachable without making the timeline scroll sideways. */
-export async function checkStarLayouts(win: BrowserWindow, outDir: string): Promise<string[]> {
-  const size = win.getSize(), zoom = win.webContents.getZoomFactor()
+export async function checkStarLayouts(win: SmokeAppWindow, outDir: string): Promise<string[]> {
+  const size = (await win.getSize()), zoom = (await win.webContents.getZoomFactor())
   const failures: string[] = []
   try {
     await run(win, `(async()=>{
@@ -25,8 +25,8 @@ export async function checkStarLayouts(win: BrowserWindow, outDir: string): Prom
       return true
     })()`)
     for (const [width, height, factor] of [[1360, 860, 1], [880, 640, 1], [880, 640, 1.5]]) {
-      win.setSize(width, height)
-      win.webContents.setZoomFactor(factor)
+      await win.setSize(width, height)
+      await win.webContents.setZoomFactor(factor)
       await wait(UI_WAIT_MS)
       const seen = await run(win, `(()=>{
         const pane=document.getElementById('scroll'),fixture=document.getElementById('smoke-star-layout').shadowRoot,bounds=pane.getBoundingClientRect()
@@ -44,8 +44,8 @@ export async function checkStarLayouts(win: BrowserWindow, outDir: string): Prom
     }
   } finally {
     await run(win, `document.getElementById('smoke-star-layout')?.remove();true`)
-    win.webContents.setZoomFactor(zoom)
-    win.setSize(size[0], size[1])
+    await win.webContents.setZoomFactor(zoom)
+    await win.setSize(size[0], size[1])
     await wait(UI_WAIT_MS)
   }
   return failures

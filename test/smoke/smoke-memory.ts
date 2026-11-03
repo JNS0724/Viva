@@ -154,14 +154,14 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   await run(win, `document.querySelector('.ext').scrollIntoView()`)
   await capture(win, outDir, 'memory-settings')
   await mcpSteps(win, outDir, expect, hooks)
-  await modelSteps(win, outDir, expect)
+  await modelSteps(win, outDir, expect, hooks)
 }
 
 /**
  * Adds a provider through the form (the fake model's address, speaking Anthropic Messages like it does),
  * then picks its model and talks to it. The conversation on screen has to survive the restart.
  */
-async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect) {
+async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
   await run(win, `document.getElementById('add-model').click()`)
   await wait(UI_WAIT_MS)
@@ -169,7 +169,7 @@ async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     const field = (name) => document.querySelector('[name="' + name + '"]')
     field('model-name').value = ${JSON.stringify(PROVIDER)}
     field('model-api').value = 'anthropic-messages'
-    field('model-url').value = ${JSON.stringify(process.env.DEEPSEEK_BASE_URL ?? '')}
+    field('model-url').value = ${JSON.stringify(hooks.model()?.url ?? '')}
     field('model-ids').value = ${JSON.stringify(PROVIDER_MODEL)}
     field('model-key').value = 'sk-smoke-provider-0001'
     field('model-name').closest('form').requestSubmit()
@@ -203,7 +203,7 @@ async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect) {
 
 /** dsh is killed mid-conversation: the app says it reconnects, starts dsh again on the same conversation, and it answers. */
 async function crashSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
-  const pid = hooks.agentPid?.()
+  const pid = await hooks.agentPid()
   expect(Boolean(pid), 'dsh should be running', pid)
   if (!pid) return
   const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
@@ -214,8 +214,12 @@ async function crashSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
   const notice = await until(win, `(() => { const text = document.querySelector('.msg-error')?.textContent ?? ''; return text.includes('自动重新连接') ? text : null })()`, 'the reconnect notice')
   expect(notice.includes('秒后自动重新连接'), 'the window should say the agent reconnects', notice)
   const deadline = Date.now() + TURN_TIMEOUT_MS
-  while (!(hooks.agentPid() && hooks.agentPid() !== pid) && Date.now() < deadline) await wait(POLL_MS)
-  expect(Boolean(hooks.agentPid()) && hooks.agentPid() !== pid, 'a new dsh should be running', hooks.agentPid())
+  let restarted = await hooks.agentPid()
+  while (!(restarted && restarted !== pid) && Date.now() < deadline) {
+    await wait(POLL_MS)
+    restarted = await hooks.agentPid()
+  }
+  expect(Boolean(restarted) && restarted !== pid, 'a new dsh should be running', restarted)
   await until(win, `!document.getElementById('model-btn').disabled && !document.querySelector('.msg-error')`, 'the agent coming back')
 
   await submit(win, '还在吗')
@@ -376,7 +380,7 @@ async function dropSteps(win: SmokeWindow, outDir: string, expect: Expect) {
 }
 
 /** @returns failed expectations */
-export async function checkMemory(win: SmokeWindow, outDir: string, hooks: SmokeHooks = {}): Promise<string[]> {
+export async function checkMemory(win: SmokeWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
   try {
