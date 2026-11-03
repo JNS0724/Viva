@@ -206,3 +206,14 @@ Each phase can be reviewed and merged on its own. P3 and P5 are major architectu
 - [Architecture](architecture.md): the current state.
 - [Long-term research: the workspace as a replaceable execution world](remote-workspace-research-20261104.md).
 - The validation code is kept locally and is not in the repository: `spike/remote-workspace/`, `spike/plugin-layering/`.
+
+## 12. Implementation notes
+
+What each phase actually did, and where it differs from the design above.
+
+| Phase | What was done | Differences from the design, and what is not covered |
+|---|---|---|
+| P1 | Removed per §8, including the "suggestions" entry on follow-up cards; the `task-background` live scenario moved to `test/smoke/live-scenarios-tasks.ts` | Message-source data in old databases is neither migrated nor cleaned up (decided: no compatibility) |
+| P2 | Viva's rows are written to `$DSH_HOME/viva.patch.yml` and layered on top with `--patch`; the profile's own `cordis.patch.yml` is left to the plugin manager; pnpm 11.28.10 ships with the app and runs under Electron as node (`src/main/pnpm-launcher.ts`) | Installs from the conversation go through dsh's own `tool-plugin-manager`, without a separate confirmation card; the Windows package was not checked locally |
+| P3 | Backend composition in `src/backend/compose.ts`, host capabilities in `src/backend/host.ts`; `test/backend-boundary.test.ts` checks that the backend module tree has no runtime `electron` import | The shell entry stays at `src/main/main.ts` instead of D1's `src/shell/main.ts`: moving it only changes paths, but packaging, smoke tests and docs would all have to follow, which costs more than it gains |
+| P4 | `src/backend/app-db.ts` creates `app.db` (`app_events`, `meta`); the three follow-up tables move in from `followups.db`, and the old file is kept as `.migrated`; `src/backend/event-core.ts` implements signals, routes, `apply` and `since`; follow-up writes, the reminder and preparation timers, the gap watch, wake, window foreground, chat input and turn/task ends all go through signals | History, tasks and memory are not in `app.db` yet, so their writes have no events; Settings and other UI actions are still direct IPC; signals record only their kind and shape, never what the user said |

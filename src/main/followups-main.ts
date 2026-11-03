@@ -1,9 +1,10 @@
 import { t } from '../shared/i18n/translate.ts'
 import path from 'node:path'
+import type { DatabaseSync } from 'node:sqlite'
 import type { PrepareCall, Prepared as PreparedText, ProposalView } from './followup-channel.ts'
 import { createFileWatch } from './file-watch.ts'
 import { createFollowupNotifier, createGapWatch } from './followup-notifier.ts'
-import { openFollowupStore, type Followup } from './followup-store.ts'
+import { openFollowupStore, type Followup, type FollowupStore } from './followup-store.ts'
 import { registerFollowupsIpc } from './followups-ipc.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
 import type { Notice } from './notice-plan.ts'
@@ -43,11 +44,41 @@ export interface FollowupsDeps {
   onState: (state: PrepareState) => void
   /** What went wrong in the background (a timer, a batch), for the log. */
   onError: (err: unknown) => void
+  /** The backend's app database (src/backend/app-db.ts) to keep the follow-ups in; followups.db of their own without it. */
+  db?: DatabaseSync
+  /** The event core's apply (src/backend/event-core.ts): every change of a follow-up written with its event. */
+  apply?: <T>(kind: string, data: Record<string, unknown>, write: () => T) => { value: T }
+  /** The event core's signals for what comes due on its own: reminders, preparation, the user back at the computer. */
+  signal?: (kind: 'clock.reminder_due' | 'clock.prepare_window' | 'system.user_returned') => void
+}
+
+/** The store's writes, each a change the event core records (apply); reads go straight through. */
+const WRITES = Object.freeze(['add', 'setStatus', 'saveDraft', 'finishPreparing', 'moveStatus', 'markReminded', 'reschedule', 'setWatchMtime', 'rearm', 'remove', 'logNotice', 'logEvent'] as const)
+const MAX_RECORDED_CHARS = 120
+
+/** What of a write's arguments the event records: ids, statuses and times; long text only by its length. */
+function recorded(value: unknown): unknown {
+  if (typeof value === 'string') return value.length > MAX_RECORDED_CHARS ? { chars: value.length } : value
+  if (Array.isArray(value)) return { items: value.length }
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, typeof item === 'object' && item !== null ? '…' : recorded(item)]))
+  return value
+}
+
+function journaled(store: FollowupStore, apply: NonNullable<FollowupsDeps['apply']>): FollowupStore {
+  const writes = Object.fromEntries(WRITES.map((name) => {
+    const write = store[name] as (...args: unknown[]) => unknown
+    return [name, (...args: unknown[]) => apply(`followup.${name}`, { args: args.map(recorded) }, () => write(...args)).value]
+  }))
+  return { ...store, ...writes } as FollowupStore
 }
 
 export function openFollowups(deps: FollowupsDeps) {
-  const store = openFollowupStore({ file: path.join(deps.userData, 'followups.db') })
-  const notifier = createFollowupNotifier({ store, notify: deps.notify, windowInFront: deps.windowInFront, onPending: deps.onPending, onError: deps.onError })
+  const opened = openFollowupStore(deps.db ? { db: deps.db } : { file: path.join(deps.userData, 'followups.db') })
+  const store = deps.apply ? journaled(opened, deps.apply) : opened
+  const notifier = createFollowupNotifier({
+    store, notify: deps.notify, windowInFront: deps.windowInFront, onPending: deps.onPending, onError: deps.onError,
+    ...(deps.signal ? { onTimer: () => deps.signal!('clock.reminder_due') } : {}),
+  })
   const schedule = () => scheduleOf(deps.loadSchedule())
 
   async function prepare(followup: Followup, signal: AbortSignal): Promise<Prepared> {
@@ -68,8 +99,9 @@ export function openFollowups(deps: FollowupsDeps) {
     onState: deps.onState,
     onReady: () => notifier.refresh(),
     onError: deps.onError,
+    ...(deps.signal ? { onTimer: () => deps.signal!('clock.prepare_window') } : {}),
   })
-  const watch = createGapWatch({ idleSeconds: deps.idleSeconds, onGap: notifier.gap, onError: deps.onError })
+  const watch = createGapWatch({ idleSeconds: deps.idleSeconds, onGap: deps.signal ? () => deps.signal!('system.user_returned') : notifier.gap, onError: deps.onError })
   // A file the user named changed and settled: prepared again in the next window.
   const files = createFileWatch({
     store,

@@ -20,13 +20,15 @@ Plugins and the app cooperate through versioned contracts: SQLite for durable da
 
 The main process writes the app’s `viva` profile and starts dsh over ACP stdio. Persona patches configure `system-prompt`; memory and trace use `memory.db` and `trace.db`. Question/configuration/follow-up/message/stream/task channels connect plugins with main-process services. The renderer uses a validated preload API rather than directly opening these databases or talking to plugins.
 
+The main process is split in two (see [Design: frontend/backend split](backend-split-design.md)): the shell (`src/main/main.ts`) owns windows, the tray, the desk island and the other Electron APIs, and hands them to the backend through `HostCapabilities` (`src/backend/host.ts`); the backend (`src/backend/compose.ts`) holds everything else and has no runtime `electron` import. Inputs to the backend are signals of a closed set of kinds (`src/backend/event-core.ts`), each with a route. Changes go through `apply`, which writes the change and a numbered row in `app_events` of `app.db` in one transaction, and every push to the window carries that number.
+
 | Plugin | Contract | Plugin responsibility | App responsibility |
 |---|---|---|---|
 | viva-memory | memory@1 | Memories, session state, injection records, synthesized profiles | Read/write profile and memories, write habits, display injection traces |
 | viva-trace | trace@1 | Per-turn thoughts and tool calls | Read traces when reopening conversations |
 | viva-policy | policy@1 | Behavior only: intercept execution | No shared data |
 | viva-questions | questions@1 IPC | Forward model questions from dsh’s tool-ask-user | Show cards, return answers |
-| viva-followups | followups@1 IPC | Propose follow-ups; return tool-free preparation results | Require user acceptance, store followups.db, schedule preparation, receive drafts |
+| viva-followups | followups@1 IPC | Propose follow-ups; return tool-free preparation results | Require user acceptance, store them in app.db, schedule preparation, receive drafts |
 | viva-plugins | plugins@1 IPC | Answers from dsh's plugin manager | The Settings → Plugins list, lookup, install, switch, removal (src/main/plugins-ipc.ts), all through dsh's plugin manager |
 | viva-config | config@1 IPC | Request MCP/skill configuration after approval | Validate and apply; collect secrets in the window, encrypt, never return them to dsh |
 | viva-stream | stream@1 IPC | Live text/thought deltas and committed visible content | Select source per call; reconcile attempts, withdrawals, and final content; ACP still handles tools, usage, approvals |

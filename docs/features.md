@@ -91,7 +91,7 @@ A request to remind or prepare something at a stated time produces a proposal. O
 - **Today:** the first gap with relevant activity shows one daily summary of ready drafts and reminders due. It counts toward the cap and replaces separate ready announcements. The home card opens the background page; empty days show nothing.
 - **Watch a file:** an accepted `watch_file` proposal records mtime. Polling every minute avoids platform/network filesystem event differences. A change followed by ten quiet minutes schedules preparation in the next window, reading that file. Continuing does not stop the watch; deletion does.
 - **Visibility:** she sleeps during preparation while you are idle; the island shows preparation/readiness, tray counts waiting items, and notifications open the background page. Optional launch-at-login is off by default and available only when installed; it starts in the tray.
-- **Local data:** `followups.db` stores follow-ups, notification bookkeeping, and weekly events. Settings shows acceptance rate, median notification-open delay, daily calls, calls per accepted proposal, and missed preparation. Windows notifications use installer AppUserModelID `app.viva.desktop`.
+- **Local data:** `app.db` (migrated from the earlier `followups.db`) stores follow-ups, notification bookkeeping, and weekly events. Settings shows acceptance rate, median notification-open delay, daily calls, calls per accepted proposal, and missed preparation. Windows notifications use installer AppUserModelID `app.viva.desktop`.
 
 <a id="模型和-key"></a>
 ## Models and keys

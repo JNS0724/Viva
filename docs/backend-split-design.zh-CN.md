@@ -206,3 +206,14 @@ interface HostCapabilities {
 - [架构](architecture.zh-CN.md)：现状。
 - [远期调研：workspace 作为可替换的执行环境](remote-workspace-research-20261104.zh-CN.md)。
 - 验证代码只保存在本地，没有进仓库：`spike/remote-workspace/`、`spike/plugin-layering/`。
+
+## 12. 实施记录
+
+按阶段记录实际做法和与上文的偏差。
+
+| 阶段 | 实际做法 | 与设计的偏差、没覆盖的 |
+|---|---|---|
+| P1 | 按 §8 删除；跟进卡片的「建议」入口一并删除；`task-background` 实景场景移到 `test/smoke/live-scenarios-tasks.ts` | 旧库里的消息源数据不迁移、不清理（已定：不做兼容） |
+| P2 | Viva 的行写在 `$DSH_HOME/viva.patch.yml`，用 `--patch` 叠在最上层；profile 自己的 `cordis.patch.yml` 留给插件管理器；pnpm 11.28.10 随包附带，由 Electron 以 node 身份运行（`src/main/pnpm-launcher.ts`） | 对话里的安装走 dsh 自带的 `tool-plugin-manager`，没有单独的确认卡片；Windows 打包产物没有在本地验证 |
+| P3 | 后端组装入口 `src/backend/compose.ts`，宿主能力接口 `src/backend/host.ts`；`test/backend-boundary.test.ts` 检查后端模块树不在运行时导入 electron | 外壳入口留在 `src/main/main.ts`，没有搬到 D1 写的 `src/shell/main.ts`：搬目录只改路径，打包配置、冒烟测试和文档都要跟着改，收益不抵成本 |
+| P4 | `src/backend/app-db.ts` 建 `app.db`（`app_events`、`meta`），跟进的三张表从 `followups.db` 迁入，旧文件改名为 `.migrated` 留存；`src/backend/event-core.ts` 实现信号、路由、`apply`、`since`；跟进的写操作、提醒和准备的定时器、空档检测、唤醒、窗口回到前台、对话输入、轮次和任务结束都改走信号 | 历史记录、任务、记忆还没迁进 `app.db`，它们的写操作没有事件；设置页等其余界面操作仍是直接 IPC；信号只记录种类和形状，不记录用户说的话 |

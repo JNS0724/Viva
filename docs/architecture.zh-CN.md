@@ -43,12 +43,14 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | `viva-trace`（`plugins/trace`） | `trace@1`：`trace.db` | 每轮的思考和工具调用 | 重新打开对话时读，用于「过程」 |
 | `viva-policy`（`plugins/policy`） | `policy@1`：无数据，只有行为 | — | — |
 | `viva-questions`（`plugins/questions`） | `questions@1`：IPC 消息（见 `plugins/questions/lib/channel.js`） | 模型的问题 | 显示提问卡片，回传回答；同时在 profile 里打开 dsh 的 `tool-ask-user` |
-| `viva-followups`（`plugins/followups`） | `followups@1`：IPC 消息（见 `plugins/followups/lib/channel.ts`） | 模型提出的跟进建议；后台准备的不带工具的模型调用的结果 | 建议显示成卡片，用户点了才建跟进（`followups.db`）；按时段请它准备，只拿回草稿 |
+| `viva-followups`（`plugins/followups`） | `followups@1`：IPC 消息（见 `plugins/followups/lib/channel.ts`） | 模型提出的跟进建议；后台准备的不带工具的模型调用的结果 | 建议显示成卡片，用户点了才建跟进（`app.db`）；按时段请它准备，只拿回草稿 |
 | `viva-plugins`（`plugins/plugins`） | `plugins@1`：IPC 消息（见 `plugins/plugins/lib/channel.ts`） | dsh 插件管理器的回答 | 设置「插件」页的列出、查看、安装、启停、删除（`src/main/plugins-ipc.ts`），都经 dsh 的插件管理器 |
 | `viva-config`（`plugins/config`） | `config@1`：IPC 消息（见 `plugins/config/lib/channel.js`） | 模型要接入或移除的 MCP 服务器、要新建或安装的 skill（审批卡片通过之后） | 校验后执行（`src/main/config-channel.js`），需要密钥时由窗口请用户填写，加密保存，不回传给 dsh |
 | `viva-stream`（`plugins/stream`） | `stream@1`：IPC 消息 | 真实文本/思考增量，以及最终提交的可见内容 | 每次调用先选择输出来源；按尝试替换、撤回和最终校准，ACP 继续承载工具、用量和授权 |
 
 人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/main/app-plugins.js` 的 `PERSONA`。
+
+主进程分成两半（见 [设计：前后端拆分](backend-split-design.zh-CN.md)）：外壳（`src/main/main.ts`）管窗口、托盘、桌面小岛和其他 Electron 接口，通过 `HostCapabilities`（`src/backend/host.ts`）交给后端；后端（`src/backend/compose.ts`）管其余的一切，运行时不导入 `electron`。进入后端的输入都是种类固定的信号（`src/backend/event-core.ts`），每种有自己的路由。状态的改动走 `apply`：改动和 `app.db` 里 `app_events` 的一行带序号的记录在同一个事务里写入，推给窗口的每条消息都带这个序号。
 
 ## 3. 插件清单与约定版本
 

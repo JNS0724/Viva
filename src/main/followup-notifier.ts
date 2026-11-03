@@ -27,6 +27,8 @@ export interface NotifierDeps {
   onPending?: (count: number) => void
   /** What went wrong deciding or sending, for the log. */
   onError?: (err: unknown) => void
+  /** A reminder's time came: the event core's signal (clock.reminder_due), whose route calls `fire`; `fire` itself when absent. */
+  onTimer?: () => void
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => Timer
   clearTimer?: (timer: Timer) => void
@@ -44,7 +46,7 @@ function toldSet(followups: readonly Followup[], lastToldAt: (id: string) => num
 }
 
 export function createFollowupNotifier(deps: NotifierDeps) {
-  const { store, notify, windowInFront, onPending = () => {}, onError = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
+  const { store, notify, windowInFront, onPending = () => {}, onError = () => {}, onTimer = null, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
   let timer: Timer | null = null
   let stopped = false
 
@@ -96,14 +98,20 @@ export function createFollowupNotifier(deps: NotifierDeps) {
     if (next === null) return
     timer = setTimer(() => {
       timer = null
-      try {
-        check({ atGap: false })
-      } catch (err) {
-        onError(err)
-        // Looked at again in a minute, so one failure does not end the reminders.
-        timer = setTimer(() => refresh(), MINUTE_MS)
-      }
+      if (onTimer) onTimer()
+      else fire()
     }, Math.min(Math.max(0, next - now()), MAX_TIMER_MS))
+  }
+
+  /** What a reminder's time does: decide and send; after a failure, look again in a minute. */
+  function fire() {
+    try {
+      check({ atGap: false })
+    } catch (err) {
+      onError(err)
+      // Looked at again in a minute, so one failure does not end the reminders.
+      timer = setTimer(() => refresh(), MINUTE_MS)
+    }
   }
 
   return {
@@ -112,6 +120,7 @@ export function createFollowupNotifier(deps: NotifierDeps) {
     /** Launched, or the computer is back from sleep: reminders missed meanwhile go out, merged. */
     wake: () => check({ atGap: false }),
     refresh,
+    fire,
     stop() {
       stopped = true
       if (timer) clearTimer(timer)

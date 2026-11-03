@@ -273,7 +273,7 @@ function createWindow() {
     desk?.setAway(true)
   })
   // Coming back to the window is one of the user's gaps.
-  created.on('focus', () => backend.gap())
+  created.on('focus', () => backend.signal({ kind: 'window.foreground' }))
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -300,8 +300,9 @@ app.whenReady().then(async () => {
   registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: () => setDeskIsland(false) })
   installAutomationDriver(automationMode, { agentPid: backend.agentPid, desk: () => desk, followups: backend.followups })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
-  powerMonitor.on('resume', backend.woke)
-  powerMonitor.on('unlock-screen', backend.woke)
+  const woke = () => backend.signal({ kind: 'system.woke' })
+  powerMonitor.on('resume', woke)
+  powerMonitor.on('unlock-screen', woke)
   createWindow()
   registerShortcut()
 }).catch((err) => {

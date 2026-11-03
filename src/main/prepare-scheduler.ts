@@ -48,6 +48,8 @@ export interface SchedulerDeps {
   /** What went wrong in a batch, for the log; the batch is tried again later. */
   onError?: (err: unknown) => void
   now?: () => number
+  /** Something came due: the event core's signal (clock.prepare_window), whose route calls `fire`; `fire` itself when absent. */
+  onTimer?: () => void
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
 }
@@ -55,7 +57,7 @@ export interface SchedulerDeps {
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
 
 export function createPrepareScheduler(deps: SchedulerDeps) {
-  const { store, schedule, busy, prepare, onState = () => {}, onReady = () => {}, onError = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
+  const { store, schedule, busy, prepare, onState = () => {}, onReady = () => {}, onError = () => {}, onTimer = null, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = deps
   let timer: ReturnType<typeof setTimeout> | null = null
   let running: AbortController | null = null
   /** The follow-up being prepared now. */
@@ -90,7 +92,8 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
     if (timer) clearTimer(timer)
     timer = setTimer(() => {
       timer = null
-      tick()
+      if (onTimer) onTimer()
+      else tick()
     }, Math.min(Math.max(0, at - now()), MAX_TIMER_MS))
   }
 
@@ -192,6 +195,8 @@ export function createPrepareScheduler(deps: SchedulerDeps) {
   }
 
   return {
+    /** What a due time does: look at what is due and run it, or wait. */
+    fire: () => tick(),
     /** Launch: what was halfway when Viva quit is due again; then the first look. */
     start() {
       store.list().filter((f) => f.status === 'preparing').forEach((f) => store.setStatus(f.id, 'scheduled'))

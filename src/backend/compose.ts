@@ -46,6 +46,9 @@ import type { ProposalView } from '../main/followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from '../main/skills.ts'
 import { ResumeError } from '../main/resume-failure.ts'
 import { historyRecall } from '../main/history-recall.ts'
+import { openFollowupStore } from '../main/followup-store.ts'
+import { migrateFollowups, openAppDb, type AppDb } from './app-db.ts'
+import { createEventCore, type EventCore, type Signal } from './event-core.ts'
 import type { HostCapabilities, HostEvent } from './host.ts'
 
 /**
@@ -106,6 +109,9 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
   const userData = host.paths.userData
   // The stores and databases are opened once at launch (open, openHistory, openPersonal), before any window or
   // handler can reach them: `!` says so. What may be absent at any time says `| null`.
+  /** The backend's database and its event core (app-db.ts, event-core.ts), opened first. */
+  let appDb!: AppDb
+  let core: EventCore | null = null
   let settingsStore!: ReturnType<typeof createSettingsStore>
   /** Switches from settings, such as the desktop island (preferences.ts). */
   let preferences!: ReturnType<typeof createPreferences>
@@ -162,10 +168,18 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
     }
   } })
 
+  /** A push for the window, numbered by the event core (a transient one: what changes state goes through apply). */
   function emitToRenderer(event: HostEvent) {
     if (event.type === 'ready') lastInfo = event.info
     if (event.type === 'config') lastInfo = { ...lastInfo, ...event.info }
-    host.window.send(event)
+    if (core) core.transient(event)
+    else host.window.send({ ...event, seq: 0, transient: true })
+  }
+
+  /** One input to the backend (event-core.ts): recorded, then routed. */
+  const signal = (input: Signal) => {
+    if (!core) throw new Error(`signal ${input.kind} before the backend opened`)
+    return core.signal(input)
   }
 
   const currentConfig = () => resolveConfig(process.env, fs.existsSync, settingsStore.getApiKey(), modelStore.list().length > 0, {
@@ -328,18 +342,13 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
       taskRead: (request, sessionId) => taskRegistry.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
       emit: (event) => {
         if (generation !== bridgeGeneration) return
-        if (event.type === 'followup_propose') {
-          // The same suggestion turned down lately is not shown again.
-          const proposal = followups?.admitProposal(event.proposal as ProposalView)
-          if (proposal) emitToRenderer({ ...event, proposal })
-          return
-        }
+        if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
         emitToRenderer(event)
         taskRegistry.receive(event)
-        // A turn of the user's, or a task of theirs, just ended: a gap, where what is ready may be told.
-        if (event.type === 'turn_end' || event.type === 'task_end') followups?.gap()
-        if (event.type === 'turn_end' || event.type === 'error') reportTurnMemories()
-        if (event.type === 'turn_end' && mcpReloadDue) reloadMcpAfterTurn()
+        if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
+        if (event.type === 'task_end') return signal({ kind: 'agent.task_ended' })
+        if (event.type === 'error') reportTurnMemories()
+        return undefined
       },
       onExit: (exit) => {
         if (generation === bridgeGeneration) recoverFromCrash(exit)
@@ -495,19 +504,7 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
       // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
       // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
       if (agent.isSwitching()) throw new Error(switchingMessage())
-      try {
-        personal.habits()
-      } catch (err: any) {
-        console.error('[memory] could not update the habits:', err.message)
-      }
-      turn = { active: true, startedAt: Date.now() }
-      // The user's turn comes first: background preparation stops after the item at hand.
-      followups?.scheduler.yieldToUser()
-      // A topic gone on from its saved records (history-ipc.ts continue-from-records): they go with the first question,
-      // as background only; the window shows (and the history keeps) the question as it was typed.
-      const carried = carry && carry.conversationId === conversation.id ? carry.text : null
-      carry = null
-      return agent.prompt(carried ? `${carried}\n\n${question}` : question, pictures)
+      return signal({ kind: 'chat.said', text: question, images: pictures })
     })
     /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
     ipcMain.handle('agent:steer', (_event, text) => {
@@ -552,6 +549,48 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
       const id = assertText(requestId, 'requestId', 200)
       if (values !== null && (typeof values !== 'object' || Array.isArray(values))) throw new Error('invalid secrets')
       return bridge?.provideSecrets(id, values) ?? false
+    })
+  }
+
+  /** chat.said's route: the question goes to the conversation on screen. */
+  function sayInChat(question: string, pictures: ReturnType<typeof imagesForPrompt>) {
+    const agent = requireBridge()
+    try {
+      personal.habits()
+    } catch (err: any) {
+      console.error('[memory] could not update the habits:', err.message)
+    }
+    turn = { active: true, startedAt: Date.now() }
+    // The user's turn comes first: background preparation stops after the item at hand.
+    followups?.scheduler.yieldToUser()
+    // A topic gone on from its saved records (history-ipc.ts continue-from-records): they go with the first question,
+    // as background only; the window shows (and the history keeps) the question as it was typed.
+    const carried = carry && carry.conversationId === conversation.id ? carry.text : null
+    carry = null
+    return agent.prompt(carried ? `${carried}\n\n${question}` : question, pictures)
+  }
+
+  /** Where each kind of signal goes (event-core.ts Routes): a route for every kind, or the type check fails. */
+  function routeSignals(events: EventCore) {
+    events.route({
+      'chat.said': ({ text, images }) => sayInChat(text, images as ReturnType<typeof imagesForPrompt>),
+      // A turn of the user's just ended: a gap, where what is ready may be told; memories saved in it are reported.
+      'agent.turn_ended': () => {
+        followups?.gap()
+        reportTurnMemories()
+        if (mcpReloadDue) reloadMcpAfterTurn()
+      },
+      'agent.task_ended': () => followups?.gap(),
+      // The same proposal turned down lately is not shown again.
+      'agent.followup_proposed': ({ event }) => {
+        const proposal = followups?.admitProposal(event.proposal as ProposalView)
+        if (proposal) emitToRenderer({ ...event, proposal })
+      },
+      'clock.reminder_due': () => followups?.notifier.fire(),
+      'clock.prepare_window': () => followups?.scheduler.fire(),
+      'system.woke': () => woke(),
+      'system.user_returned': () => followups?.notifier.gap(),
+      'window.foreground': () => followups?.gap(),
     })
   }
 
@@ -691,6 +730,9 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
     followups = openFollowups({
       userData,
       ipcMain,
+      db: appDb.db,
+      apply: (kind, data, write) => core!.apply(kind, data, write),
+      signal: (kind) => { signal({ kind }) },
       notify: showNotice,
       windowInFront: host.window.inFront,
       onPending: (count) => {
@@ -824,6 +866,12 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
 
   /** Opens the stores and registers the backend's channels, before the window loads. */
   function open() {
+    appDb = openAppDb({ file: path.join(userData, 'app.db') })
+    core = createEventCore({ app: appDb, publish: host.window.send })
+    // The follow-ups moved into the app database: their tables first, then what an earlier version kept apart.
+    openFollowupStore({ db: appDb.db })
+    const moved = migrateFollowups(appDb, path.join(userData, 'followups.db'))
+    if (moved) process.stdout.write(`[viva] moved ${moved} follow-up(s) into app.db\n`)
     settingsStore = createSettingsStore({
       file: path.join(userData, 'settings.json'), crypto: host.secrets,
       onError: (err) => console.error('[settings] could not read saved settings:', err.message),
@@ -874,6 +922,7 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
     }
     openHistory(config)
     openPersonal(config)
+    routeSignals(core)
   }
 
   /** The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one; preparation looks again. */
@@ -885,6 +934,7 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
   function close() {
     clearInterval(lateMemoryTimer)
     followups?.close()
+    appDb?.close()
     historyDb?.close()
     memoryDb?.close()
     traceDb?.close()
@@ -898,9 +948,10 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
   return {
     open,
     startBridge,
-    /** A gap of the user's (the window came back to the front). */
-    gap: () => followups?.gap(),
-    woke,
+    /** One input from the shell (the window came to the front, the computer woke): recorded, then routed. */
+    signal,
+    /** The stored events after `seq`, for a shell that missed them (event-core.ts). */
+    since: (seq: number) => core?.since(seq) ?? [],
     settingsView,
     preferences: () => preferences,
     images: () => imageStore,
