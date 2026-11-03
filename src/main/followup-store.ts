@@ -141,10 +141,15 @@ function checkNew(input: NewFollowup) {
   return { title, ask }
 }
 
-export function openFollowupStore({ file, now = Date.now }: { file: string, now?: () => number }) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const db = new DatabaseSync(file)
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
+/**
+ * The follow-ups' tables, in their own file (`file`), or in a database the caller holds (`db`, the backend's app
+ * database, src/backend/app-db.ts), which closing the store leaves open.
+ */
+export function openFollowupStore({ file, db: given, now = Date.now }: { file?: string, db?: DatabaseSync, now?: () => number }) {
+  if (!given && !file) throw new Error('openFollowupStore needs a file or a database')
+  if (!given) fs.mkdirSync(path.dirname(file!), { recursive: true })
+  const db = given ?? new DatabaseSync(file!)
+  if (!given) db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
   db.exec(SCHEMA)
   for (const [table, column, type] of ADDED_COLUMNS) {
     const has = (db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).some((info) => info.name === column)
@@ -281,7 +286,7 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     return Number((db.prepare('SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?').get(kind, since) as Row).n)
   }
 
-  return { add, get, list, setStatus, saveDraft, finishPreparing, moveStatus, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, logEvent, declinedSince, eventsSince, countEvents, close: () => db.close() }
+  return { add, get, list, setStatus, saveDraft, finishPreparing, moveStatus, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, logEvent, declinedSince, eventsSince, countEvents, close: () => { if (!given) db.close() } }
 }
 
 export type FollowupStore = ReturnType<typeof openFollowupStore>

@@ -2,5 +2,5 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": { "lib": ["ES2023"], "types": ["node"] },
-  "include": ["src/main/**/*.js", "src/main/**/*.ts", "src/shared/**/*.js", "src/shared/**/*.ts"]
+  "include": ["src/main/**/*.js", "src/main/**/*.ts", "src/backend/**/*.ts", "src/shared/**/*.js", "src/shared/**/*.ts"]
 }

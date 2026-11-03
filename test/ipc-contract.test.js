@@ -14,10 +14,13 @@ const sentByPages = () => channelsIn(
   /ipcRenderer\.(?:invoke|send)\('([^']+)'/g,
 )
 
-/** What the main process registers: ipcMain.handle / on, and the `handle('…'` shorthand of the register*Ipc modules. */
+/**
+ * What the main process registers, the shell's and the backend's together (src/main, src/backend): ipcMain.handle /
+ * on, and the `handle('…'` shorthand of the register*Ipc modules.
+ */
 const registeredByMain = () => {
-  const dir = path.join(ROOT, 'src', 'main')
-  const sources = fs.readdirSync(dir).filter((name) => /\.[jt]s$/.test(name)).map((name) => read(path.join('src', 'main', name))).join('\n')
+  const sources = ['main', 'backend'].flatMap((folder) => fs.readdirSync(path.join(ROOT, 'src', folder))
+    .filter((name) => /\.[jt]s$/.test(name)).map((name) => read(path.join('src', folder, name)))).join('\n')
   return channelsIn(sources, /(?:ipcMain\.(?:handle|on)|\bhandle)\('([^']+)'/g)
 }
 
