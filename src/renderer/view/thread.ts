@@ -77,9 +77,14 @@ const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
 /** A restored message links to the trace only once it has been read back from dsh's logs. */
 function receiptButton(message: ThreadMessage & { receipt: Receipt }, handlers: Handlers, traceReady: boolean) {
   if (message.restored && !traceReady) return h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) })
-  return h('button', { class: 'receipt', onClick: () => handlers.openDrawer('trace') },
-    t("thread.view.activity", { value1: receiptLine(message.receipt) }))
+  return h('button', { class: 'receipt', onClick: () => handlers.openDrawer('trace') }, ...receiptParts(message.receipt))
 }
+
+/** What the turn took, then 查看过程: two parts with a gap between them, not one line joined by a dot. */
+const receiptParts = (receipt: Receipt) => [
+  h('span', { class: 'receipt-line', text: receiptLine(receipt) }),
+  h('span', { class: 'receipt-act', text: t("thread.view.activity") }),
+]
 
 function historyDivider(note: { when: string, memory: string }) {
   return h('div', { class: 'history-divider', role: 'separator' },
@@ -379,8 +384,10 @@ function localizeAssistant(view: View, message: ThreadMessage): boolean {
   const more = markdown.querySelector<HTMLElement>('.answer-more')
   if (more) more.textContent = t("thread.expand.remaining", { p0: Math.round((message.text.length - answerStart(message.text).length) / 1000) })
   const receipt = root.querySelector<HTMLElement>('.receipt')
-  if (receipt && message.receipt) receipt.textContent = receipt.tagName === 'BUTTON'
-    ? t("thread.view.activity", { value1: receiptLine(message.receipt) }) : receiptLine(message.receipt)
+  if (receipt && message.receipt) {
+    if (receipt.tagName === 'BUTTON') receipt.replaceChildren(...receiptParts(message.receipt))
+    else receipt.textContent = receiptLine(message.receipt)
+  }
   return true
 }
 

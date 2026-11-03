@@ -50,7 +50,7 @@ export async function checkTopics(win: SmokeWindow, outDir: string) {
   await capture(win, outDir, 'topic-new')
   expect(fresh.start?.includes('新话题'), 'the new topic should say where it starts', fresh)
   expect(fresh.note?.includes('重新开始'), 'it should say the assistant starts afresh', fresh)
-  expect(fresh.label?.includes('本话题 · 0 条'), 'the label should go back to nothing', fresh)
+  expect(fresh.label?.includes('本话题 0 条'), 'the label should go back to nothing', fresh)
 
   await run(win, `document.querySelector('#earlier .topic-start .topic-back').click()`)
   const undone = await timelineWhen(win, '!seen.start && !seen.switching', 'the new topic undone')

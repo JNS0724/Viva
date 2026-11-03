@@ -54,7 +54,8 @@ button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px sol
 .block { display: block; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.label { font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; }
+/* A small heading in sentence case: no capitals, no tracking, no monospace (docs/ui-guidelines.md, Type). */
+.label { font-family: var(--font-sans); font-size: 12px; font-weight: 500; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 10px; border: 3px solid var(--bg); }
@@ -161,7 +162,7 @@ html:not([data-platform="darwin"]) .titlebar {
 .timeline-more:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
 .timeline-more:disabled { cursor: default; opacity: .7; }
 .timeline-day {
-  display: flex; align-items: center; gap: 12px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; color: var(--ink-3);
+  display: flex; align-items: center; gap: 12px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3);
 }
 .timeline-day::before, .timeline-day::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 .timeline-workdir {
@@ -390,7 +391,7 @@ html:not([data-platform="darwin"]) .titlebar {
   width: auto; bottom: 8px; align-items: flex-end; padding: 0; border: none; background: none; box-shadow: none;
 }
 .dock-head { display: flex; align-items: center; gap: 6px; padding: 2px 2px 4px 8px; font-size: 12px; color: var(--ink-3); }
-.dock-title { flex: 1; font-weight: 700; letter-spacing: .04em; }
+.dock-title { flex: 1; font-weight: 700; }
 .dock-all { height: 26px; padding: 0 6px; font-size: 12px; }
 .dock-fold { width: 26px; height: 26px; font-size: 16px; border: none; background: none; }
 .dock-tile {
@@ -539,7 +540,7 @@ html:not([data-platform="darwin"]) .titlebar {
 .markdown .md-code-inline { font-family: var(--font-mono); font-size: .88em; padding: .1em .4em; border-radius: 6px; background: var(--raised); border: 1px solid var(--line); }
 .markdown .md-code { position: relative; margin: 0 0 .9em; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); overflow-x: auto; }
 .markdown .md-code code { font-family: var(--font-mono); font-size: 13.5px; line-height: 1.65; white-space: pre; color: var(--ink); }
-.markdown .md-code-lang { display: block; margin-bottom: 8px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
+.markdown .md-code-lang { display: block; margin-bottom: 8px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
 .markdown blockquote { margin: 0 0 .9em; padding: 2px 0 2px 14px; border-left: 3px solid var(--line-2); color: var(--ink-2); }
 .markdown hr { margin: 1.2em 0; border: none; border-top: 1px solid var(--line); }
 .markdown .md-table-wrap { margin: 0 0 .9em; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
@@ -553,8 +554,10 @@ html:not([data-platform="darwin"]) .titlebar {
 .msg-note { margin-left: 62px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .receipt {
   align-self: flex-start; display: flex; align-items: center; gap: 8px; padding: 4px 0; border: none; background: none;
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; color: var(--ink-3); cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--ink-3); cursor: pointer;
 }
+/* What it took, then where to see it: two parts, a gap between, not joined by a dot (view/thread.ts receiptParts). */
+.receipt-act { margin-left: 6px; color: var(--ink-2); }
 .receipt::before { content: ''; width: 6px; height: 6px; border-radius: 1px; background: var(--accent); }
 .receipt:hover { color: var(--ink); }
 .receipt-static { cursor: default; }
@@ -563,7 +566,7 @@ html:not([data-platform="darwin"]) .titlebar {
   display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-3);
 }
 .history-divider::before, .history-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
-.history-when { font-family: var(--font-mono); letter-spacing: .12em; color: var(--ink-2); }
+.history-when { font-family: var(--font-mono); color: var(--ink-2); }
 .msg-working { display: flex; align-items: center; gap: 14px; font-size: 14px; color: var(--ink-2); }
 .msg-working-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-error {
@@ -577,7 +580,7 @@ html:not([data-platform="darwin"]) .titlebar {
   margin-left: 62px; background: var(--panel); color: var(--ink); border: 1.5px solid var(--orange); border-radius: 22px; padding: 22px;
   display: flex; flex-direction: column; gap: 16px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--orange) 8%, transparent);
 }
-.confirm-head { display: flex; align-items: center; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .14em; color: var(--orange); }
+.confirm-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 500; color: var(--orange); }
 .pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--orange); animation: pulse 1.6s ease-out infinite; }
 .confirm-title { font-size: 28px; font-weight: 700; line-height: 1.2; word-break: break-word; }
 .confirm-detail {
@@ -596,7 +599,7 @@ html:not([data-platform="darwin"]) .titlebar {
 .secret .field { background: var(--bg); }
 /* the agent's question: same card, a question per block */
 .ask-item { display: flex; flex-direction: column; gap: 10px; }
-.ask-header { align-self: flex-start; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .1em; padding: 3px 8px; border-radius: 6px; background: var(--raised); color: var(--ink-2); }
+.ask-header { align-self: flex-start; font-size: 12px; font-weight: 500; padding: 3px 8px; border-radius: 6px; background: var(--raised); color: var(--ink-2); }
 .ask-question { font-size: 22px; font-weight: 700; line-height: 1.3; word-break: break-word; }
 .ask-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .ask-option { height: 40px; padding: 0 18px; font-size: 14px; }
@@ -754,7 +757,7 @@ html:not([data-platform="darwin"]) .titlebar {
 @media (max-width: 720px) {
   .workdir-menu { left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); }
 }
-.workdir-head { padding: 8px 10px 4px; font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-3); }
+.workdir-head { padding: 8px 10px 4px; font-size: 12px; color: var(--ink-3); }
 .workdir-item {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: none; border-radius: 8px;
   background: none; color: var(--ink); font-size: 13px; text-align: left; cursor: pointer;
@@ -909,7 +912,9 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box; text-align: center;
   background: var(--orange); color: var(--bg); font: 700 11px/18px var(--font-mono);
 }
-.tp-group { font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; color: var(--ink-3); padding: 12px 12px 4px; }
+.tp-group { font-size: 12px; font-weight: 500; color: var(--ink-3); padding: 12px 12px 4px; }
+/* A group's count, set apart by a gap rather than a middle dot (view/tasks-page.ts groupHead). */
+.tp-group-count { margin-left: 6px; font-weight: 400; }
 .tp-row {
   position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: none; border-radius: 10px;
   background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer;
@@ -972,7 +977,7 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 }
 .search-hit:hover { background: var(--panel-2); border-color: var(--line-2); }
 .hit-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.history-meta { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
+.history-meta { font-size: 11px; color: var(--ink-3); }
 .history-title { margin-right: 8px; font-family: var(--font-sans); font-size: 12px; font-weight: 700; color: var(--ink-2); letter-spacing: 0; }
 .hit-lines { display: flex; flex-direction: column; gap: 3px; padding-left: 12px; border-left: 2px solid var(--line-2); }
 .hit-context { font-size: 13px; line-height: 1.6; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1005,7 +1010,7 @@ body.drop-folder::after, body.drop-images::after {
 .review-month { display: flex; flex-direction: column; gap: 14px; margin-bottom: 26px; }
 .review-month-head { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
 .review-day { display: flex; flex-direction: column; gap: 8px; }
-.review-day-head { font-size: 12px; color: var(--ink-3); letter-spacing: .04em; }
+.review-day-head { font-size: 12px; color: var(--ink-3); }
 .review-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .review-topic { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
 .review-topic[data-open="true"] { border-color: var(--line-2); }

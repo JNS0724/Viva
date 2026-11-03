@@ -222,7 +222,7 @@ async function followUpSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await capture(win, outDir, 'tasks-follow-up')
   await run(win, escape)
   const card = await until(win, `(() => { const card = ${cardState(BIG_ASK)}; return card?.status === 'done' && card.text.includes(${JSON.stringify(FOLLOW_UP)}) && card })()`, 'the line after the follow-up')
-  expect(card.text.includes('看结果 →'), 'asked again, the task should report back once more on its line', card)
+  expect(card.text.includes('看结果'), 'asked again, the task should report back once more on its line', card)
   const asked = await run(win, userTexts)
   expect(!asked.some((text: string) => text.includes(FOLLOW_UP)), 'the follow-up should not land in the conversation on screen', asked)
 }
@@ -233,7 +233,7 @@ async function followUpSteps(win: SmokeWindow, outDir: string, expect: Expect) {
  */
 async function reportSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   const report = await until(win, doneCard(BIG_ASK), 'the task\'s report')
-  expect(report.text.includes('做完了') && report.text.includes('看结果 →') && report.buttons.length === 0,
+  expect(report.text.includes('做完了') && report.text.includes('看结果') && report.buttons.length === 0,
     'the ended task\'s line should say so and lead to its result, with no buttons of its own', report)
   await run(win, `(${cardOf(BIG_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
@@ -269,7 +269,7 @@ const ASKS_LATER = '接入演示服务，再问我城市'
 async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await startInBackground(win, ASKS_LATER)
   const asking = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card })()`, 'the task waiting on its approval')
-  expect(asking.text.includes('等你处理') && asking.text.includes('去处理 →') && asking.buttons.length === 0,
+  expect(asking.text.includes('等你处理') && asking.text.includes('去处理') && asking.buttons.length === 0,
     'the task\'s line should say it waits and lead to where it is answered, with no buttons of its own', asking)
   await run(win, `(${cardOf(ASKS_LATER)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
