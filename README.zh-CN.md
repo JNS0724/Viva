@@ -196,7 +196,7 @@ npm run smoke       # 真的启动 Electron，走一遍主要流程
 npm run showcase    # 重新拍 README 里的截图和动图（需要 ffmpeg）
 ```
 
-打包、测试、内嵌 dsh 和宣传片（`promo/`，Remotion）的细节，见 [docs/development.md](docs/development.zh-CN.md)。
+打包、测试和内嵌 dsh 的细节，见 [docs/development.md](docs/development.zh-CN.md)。
 
 ## 文档
 

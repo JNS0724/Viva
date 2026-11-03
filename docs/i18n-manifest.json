@@ -5,8 +5,8 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "36ef11e8068a2b088271fdfb283565d899e8fa91d325ecd9d443f15807a91e35",
-      "zhHash": "5102f3b34a0e4e78dd6998d1af5e63b06d33509c7991f4de9bd3be3db98fe161"
+      "enHash": "3df07fd49cb5282e4f53911266dbd3cf77290c792eea466684f1e3489c03e0aa",
+      "zhHash": "2a0e1a8fb2e14d1394756d93e3c5a73d305a7498206ee96c426763aabf32a713"
     },
     {
       "en": "packages/viva-source-kit/README.md",
@@ -29,14 +29,14 @@
     {
       "en": "docs/maid-character.md",
       "zh": "docs/maid-character.zh-CN.md",
-      "enHash": "b5819fb37553f2b9b0ab7224dd1e6b392eaf171f869eb66407ba788768fbbeeb",
-      "zhHash": "2f97324c31f751ffe68f8190cbf20775f113b3aecf5b42c6b32e33f66e7b983d"
+      "enHash": "060929f17c34468c9691cbca95c1f90b01bf254de79a2895b23698e386963c50",
+      "zhHash": "01dbd066a9a16ae1b2e2604a60f05805a8d27b5c6bc773281145e9bb9225e927"
     },
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "5a2daf382ad75b17212db56c530916c1f55f230007399d3c0a8e34564295182f",
-      "zhHash": "8f40cdff7141788bce0581c086c0cfb0e3a6a6be9f4629f940abe53a824f72c5"
+      "enHash": "9bb3bb5de53ddf7dccae3d4c45ac0575c87c59cb602ac160fd8edb7891511a80",
+      "zhHash": "08bf006ea309d81fe9495bfebc8c2b251b06126816d1cc334f624c232df8bc33"
     },
     {
       "en": "docs/dsh-upgrade-validation-20261026.md",
@@ -53,8 +53,8 @@
     {
       "en": "docs/internationalization.md",
       "zh": "docs/internationalization.zh-CN.md",
-      "enHash": "3dd249b17a4e587da36dcb3da18721a7ff43b2c65e804356c1c6a4b6eb32c6f8",
-      "zhHash": "5f4d8bb7bc883add24fb99510ef9e0bbdcba6d08ecb38bb2f044784af81ef5d6"
+      "enHash": "7cf24857ce30c72738b7a056700b9b74b349eaa0599661d8686f632c72e32722",
+      "zhHash": "5f88d409c53c234e05f42e3524304104d41a5514e4f94cdcc0f18ee7229c83c8"
     },
     {
       "en": "docs/live-check.md",
