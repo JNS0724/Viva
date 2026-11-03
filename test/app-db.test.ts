@@ -6,14 +6,19 @@ import path from 'node:path'
 import { migrateFollowups, openAppDb } from '../src/backend/app-db.ts'
 import { openFollowupStore } from '../src/main/followup-store.ts'
 
-function folder(t: TestContext) {
+/** A fresh folder with the app database open in it; closed before the folder goes (Windows keeps an open file). */
+function appDbIn(t: TestContext) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-app-db-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
-  return dir
+  const app = openAppDb({ file: path.join(dir, 'app.db') })
+  t.after(() => {
+    app.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  return { dir, app }
 }
 
 test('the follow-ups an earlier version kept in followups.db move into app.db once, and the old file is kept aside', (t) => {
-  const dir = folder(t)
+  const { dir, app } = appDbIn(t)
   const legacyFile = path.join(dir, 'followups.db')
   const legacy = openFollowupStore({ file: legacyFile })
   const kept = legacy.add({ title: '周报', ask: '起草周报', origin: { kind: 'chat', conversationId: 'c1' }, remindAt: Date.now() + 60_000 })
@@ -21,8 +26,6 @@ test('the follow-ups an earlier version kept in followups.db move into app.db on
   legacy.logNotice('ready', [kept.id], true)
   legacy.close()
 
-  const app = openAppDb({ file: path.join(dir, 'app.db') })
-  t.after(() => app.close())
   const store = openFollowupStore({ db: app.db })
   assert.equal(migrateFollowups(app, legacyFile), 1)
   assert.deepEqual(store.list().map((followup) => [followup.id, followup.title, followup.origin.conversationId]), [[kept.id, '周报', 'c1']])
@@ -39,9 +42,7 @@ test('the follow-ups an earlier version kept in followups.db move into app.db on
 })
 
 test('without an old file there is nothing to move, and the app database starts with its tables', (t) => {
-  const dir = folder(t)
-  const app = openAppDb({ file: path.join(dir, 'app.db') })
-  t.after(() => app.close())
+  const { dir, app } = appDbIn(t)
   assert.equal(migrateFollowups(app, path.join(dir, 'followups.db')), 0)
   const tables = (app.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
   assert.ok(tables.includes('app_events') && tables.includes('meta'))

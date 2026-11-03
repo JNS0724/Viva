@@ -104,7 +104,8 @@ test('what the backend asks of the desktop waits for the shell, keeps its order,
   remote.host.window.send({ type: 'ready', seq: 0 })
   const folder = remote.host.dialogs.chooseFolder({ title: 'Pick' })
   remote.host.window.send({ type: 'update', seq: 0 })
-  const refused = remote.host.shell.openPath('/nowhere')
+  // Its handler goes on now: the refusal can come before the folder's answer is awaited.
+  const refused = assert.rejects(remote.host.shell.openPath('/nowhere'), /no such folder/)
   let opened = -1
   remote.host.notify({ kind: 'ready', title: 'T', body: 'B' } as never, (afterMs) => { opened = afterMs })
 
@@ -124,7 +125,7 @@ test('what the backend asks of the desktop waits for the shell, keeps its order,
     })
   })
   assert.equal(await folder, '/picked')
-  await assert.rejects(refused, /no such folder/)
+  await refused
   assert.deepEqual(seen.map((call) => call.method), ['window.send', 'dialogs.chooseFolder', 'window.send', 'shell.openPath', 'notify'], 'what waited, in order')
   assert.deepEqual(replayed.map((event) => event.seq), [1, 2], 'the stored events after the number, first')
   assert.equal(opened, 1500)

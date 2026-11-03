@@ -31,8 +31,15 @@ test('Electron runs as Node in the launcher; quotes in paths are kept', () => {
 })
 
 test('pnpm is read from outside app.asar when the package was unpacked there, and missing pnpm gives none', (t) => {
+  // Electron's fs reads a folder named app.asar as an archive (and on Windows will not make one): a plain folder here.
+  const electron = process as { noAsar?: boolean }
+  const noAsar = electron.noAsar
+  electron.noAsar = true
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-pnpm-asar-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  t.after(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+    electron.noAsar = noAsar
+  })
   const asar = path.join(dir, 'app.asar')
   fs.mkdirSync(path.join(asar, 'node_modules', 'pnpm', 'bin'), { recursive: true })
   fs.writeFileSync(path.join(asar, 'node_modules', 'pnpm', 'package.json'), JSON.stringify({ bin: { pnpm: 'bin/pnpm.mjs' } }))
