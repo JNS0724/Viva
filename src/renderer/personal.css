@@ -92,7 +92,7 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .ext-actions { display: flex; gap: 8px; flex: none; }
 .ext-import-note {
   margin: 0; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; color: var(--ink);
-  background: rgba(90, 169, 255, .08); border: 1px solid rgba(90, 169, 255, .28);
+  background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 /* 从 dsh 导入: the button and its menu of where from (the menu borrows the folder menu's look). */

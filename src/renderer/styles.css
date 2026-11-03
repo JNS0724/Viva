@@ -15,6 +15,15 @@
   --white: #EEF3FF;
   --orange: #FF8A3D;
   --red: #FF4D5E;
+  /* Surfaces a step off --bg: the drawer beside the conversation, and the island. */
+  --drawer-bg: #0A1120;
+  --island-bg: #070C18;
+  /* Borders for their places: dashed and outlined (empty states, .btn-outline), the user's own messages, the focused composer. */
+  --line-3: #2E3D5E;
+  --user-line: #1F2C49;
+  --line-focus: #3A4C72;
+  /* Error words: --red as text is too dark on these surfaces. */
+  --error-ink: #FF9AA4;
   /* The cat's speech bubbles (view/cat.ts): warm paper, like the cap. */
   --cat-bubble: #FFF8E9;
   --cat-bubble-ink: #332E28;
@@ -227,9 +236,9 @@ html:not([data-platform="darwin"]) .titlebar {
 /* ---------- composer ---------- */
 .composer {
   width: 100%; max-width: var(--col, 760px); margin-top: 12px; background: var(--panel); border: 1px solid var(--line-2);
-  border-radius: 22px; padding: 16px 12px 12px 18px; box-shadow: 0 0 0 4px rgba(90, 169, 255, .08), 0 20px 50px rgba(0, 0, 0, .45);
+  border-radius: 22px; padding: 16px 12px 12px 18px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 8%, transparent), 0 20px 50px rgba(0, 0, 0, .45);
 }
-.composer:focus-within { border-color: #3A4C72; }
+.composer:focus-within { border-color: var(--line-focus); }
 .composer textarea {
   width: 100%; border: none; resize: none; outline: none; background: transparent; color: var(--ink);
   font: inherit; font-size: 16px; line-height: 1.6; max-height: 220px;
@@ -335,7 +344,7 @@ html:not([data-platform="darwin"]) .titlebar {
 
 /* ---------- thread ---------- */
 .msg-user {
-  align-self: flex-end; max-width: 80%; background: var(--raised); border: 1px solid #1F2C49; padding: 14px 18px;
+  align-self: flex-end; max-width: 80%; background: var(--raised); border: 1px solid var(--user-line); padding: 14px 18px;
   border-radius: 20px 20px 6px 20px; font-size: 16px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
 }
 /* Files handed over with a question (from the desktop island): chips above its text. */
@@ -372,10 +381,10 @@ html:not([data-platform="darwin"]) .titlebar {
   height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: none; color: var(--ink-2);
   font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer;
 }
-.rewind-act:hover, .rewind-act:focus-visible { background: rgba(90, 169, 255, .14); color: var(--accent); }
+.rewind-act:hover, .rewind-act:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .rewind-editor {
   align-self: flex-end; width: min(80%, 620px); display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;
-  background: var(--panel); border: 1.5px solid var(--accent); border-radius: 20px 20px 6px 20px; box-shadow: 0 0 0 3px rgba(90, 169, 255, .15);
+  background: var(--panel); border: 1.5px solid var(--accent); border-radius: 20px 20px 6px 20px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .rewind-field {
   width: 100%; min-height: 52px; resize: vertical; border: none; outline: none; background: none; color: var(--ink);
@@ -508,25 +517,25 @@ html:not([data-platform="darwin"]) .titlebar {
 .fold-tag { max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
 .fold-status { color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* Before going back over files written or commands run (view/rewind.js renderRewindConfirm). */
-.rewind-sheet { border-color: rgba(255, 138, 61, .6); }
+.rewind-sheet { border-color: color-mix(in srgb, var(--orange) 60%, transparent); }
 .rewind-effects {
   list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
   background: var(--raised); border-radius: 10px; font-size: 13px; color: var(--ink-3);
 }
 .rewind-effects li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .rewind-effects code { font-family: var(--font-mono); font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
-.rewind-effect-kind { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--orange, #FF8A3D); }
+.rewind-effect-kind { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--orange); }
 .fold-act {
   height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: none; color: var(--accent);
   font: inherit; font-size: 12px; cursor: pointer;
 }
-.fold-act:hover, .fold-act:focus-visible { background: rgba(90, 169, 255, .12); }
+.fold-act:hover, .fold-act:focus-visible { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 /* A folded path opened in place: read-only, set off from the conversation it hangs in. */
 .fold-body {
   display: flex; flex-direction: column; gap: 22px; margin-top: -14px; padding: 18px 16px 18px 20px;
   border: 1px dashed var(--line-2); border-top: none; border-radius: 0 0 12px 12px; opacity: .7;
 }
-.msg-via-failed { color: #FF9AA4; }
+.msg-via-failed { color: var(--error-ink); }
 /* A file: a white page with two blue lines. */
 .doc-ico { position: relative; flex: none; width: 14px; height: 17px; border-radius: 3px; background: var(--ink); }
 .doc-ico::after { content: ''; position: absolute; left: 3px; right: 3px; top: 5px; height: 6px; border-top: 2px solid var(--accent); border-bottom: 2px solid var(--accent); box-sizing: border-box; }
@@ -558,7 +567,7 @@ html:not([data-platform="darwin"]) .titlebar {
 .markdown .md-task input { margin: 0 .5em 0 0; vertical-align: -0.1em; accent-color: var(--accent); }
 .markdown strong { font-weight: 700; color: var(--ink); }
 .markdown del { color: var(--ink-3); }
-.markdown .md-link { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(90, 169, 255, .4); cursor: pointer; word-break: break-all; }
+.markdown .md-link { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); cursor: pointer; word-break: break-all; }
 .markdown .md-link:hover { text-decoration-color: var(--accent); }
 .markdown .md-code-inline { font-family: var(--font-mono); font-size: .88em; padding: .1em .4em; border-radius: 6px; background: var(--raised); border: 1px solid var(--line); }
 .markdown .md-code { position: relative; margin: 0 0 .9em; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); overflow-x: auto; }
@@ -591,15 +600,15 @@ html:not([data-platform="darwin"]) .titlebar {
 .msg-working { display: flex; align-items: center; gap: 14px; font-size: 14px; color: var(--ink-2); }
 .msg-working-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-error {
-  margin-left: 44px; display: flex; flex-direction: column; gap: 6px; border: 1px solid rgba(255, 77, 94, .5);
-  background: rgba(255, 77, 94, .08); border-radius: 14px; padding: 14px 16px; font-size: 14px; color: #FF9AA4; word-break: break-word;
+  margin-left: 44px; display: flex; flex-direction: column; gap: 6px; border: 1px solid color-mix(in srgb, var(--red) 50%, transparent);
+  background: color-mix(in srgb, var(--red) 8%, transparent); border-radius: 14px; padding: 14px 16px; font-size: 14px; color: var(--error-ink); word-break: break-word;
 }
 
 /* ---------- confirmation card ---------- */
 /* What waits on the user is orange wherever it shows (the island's rim, the cat's disc, the dot): here a dark card with an orange edge. */
 .confirm {
   margin-left: 44px; background: var(--panel); color: var(--ink); border: 1.5px solid var(--orange); border-radius: 22px; padding: 22px;
-  display: flex; flex-direction: column; gap: 16px; box-shadow: 0 0 0 4px rgba(255, 138, 61, .08);
+  display: flex; flex-direction: column; gap: 16px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--orange) 8%, transparent);
 }
 .confirm-head { display: flex; align-items: center; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .14em; color: var(--orange); }
 .pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--orange); animation: pulse 1.6s ease-out infinite; }
@@ -630,10 +639,10 @@ html:not([data-platform="darwin"]) .titlebar {
 .btn-secondary:hover { border-color: var(--ink-3); }
 .btn-text { padding: 0 6px; background: none; color: var(--ink-2); border: none; font-weight: 500; }
 .btn-text:hover { color: var(--ink); }
-.btn-outline { height: 40px; background: transparent; color: var(--ink); border: 1px solid #2E3D5E; font-size: 13px; }
+.btn-outline { height: 40px; background: transparent; color: var(--ink); border: 1px solid var(--line-3); font-size: 13px; }
 
 /* ---------- drawer ---------- */
-.drawer { flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: #0A1120; }
+.drawer { flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--drawer-bg); }
 .drawer[data-open="true"] { width: var(--drawer-width); }
 .drawer[data-open="false"] { width: 0; border-left: none; }
 .drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
@@ -726,7 +735,7 @@ html:not([data-platform="darwin"]) .titlebar {
 }
 .list-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 13px; min-width: 0; }
 .list-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.empty { border: 1px dashed #2E3D5E; border-radius: 16px; padding: 26px 18px; text-align: center; color: var(--ink-3); font-size: 13px; line-height: 1.7; }
+.empty { border: 1px dashed var(--line-3); border-radius: 16px; padding: 26px 18px; text-align: center; color: var(--ink-3); font-size: 13px; line-height: 1.7; }
 
 /* ---------- streaming caret ---------- */
 .caret { display: inline-block; width: .55em; height: 1.05em; margin-left: 2px; vertical-align: -0.15em; border-radius: 2px; background: var(--accent); animation: caret 1s steps(1) infinite; }
@@ -758,10 +767,10 @@ html:not([data-platform="darwin"]) .titlebar {
 .perm-item:hover, .perm-item[aria-checked="true"] { background: var(--raised); }
 .perm-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
 .perm-item[aria-checked="true"] .perm-name::after { content: '✓'; margin-left: auto; color: var(--accent); font-weight: 400; }
-.perm-tag { padding: 0 6px; border-radius: 6px; background: rgba(90, 169, 255, .15); color: var(--accent); font-size: 10px; font-weight: 500; }
+.perm-tag { padding: 0 6px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); font-size: 10px; font-weight: 500; }
 .perm-help { font-size: 12px; line-height: 1.5; color: var(--ink-3); }
 .workdir-chip:hover:not(:disabled), .workdir-chip[aria-expanded="true"] { border-color: var(--line-2); }
-.workdir-chip[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 169, 255, .15); }
+.workdir-chip[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
 .workdir-chip:disabled { cursor: default; opacity: .6; }
 .workdir-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The menus' chevron, alike on the model's button and the folder's chip. */
@@ -780,7 +789,7 @@ html:not([data-platform="darwin"]) .titlebar {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: none; border-radius: 8px;
   background: none; color: var(--ink); font-size: 13px; text-align: left; cursor: pointer;
 }
-.workdir-item:hover, .workdir-item.is-current { background: rgba(90, 169, 255, .12); }
+.workdir-item:hover, .workdir-item.is-current { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .workdir-check { width: 14px; flex: none; color: var(--accent); }
 .workdir-item-name { flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workdir-item-path { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ink-3); }
@@ -861,13 +870,13 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .pref-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .switch { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .form-error, .form-notice { margin: 0; font-size: 13px; line-height: 1.6; }
-.form-error { color: #FF9AA4; }
+.form-error { color: var(--error-ink); }
 .form-notice { color: var(--accent); }
 
 /* ---------- motion ---------- */
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 96% { transform: scaleY(.1); } }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255, 138, 61, .55); } 100% { box-shadow: 0 0 0 12px rgba(255, 138, 61, 0); } }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--orange) 55%, transparent); } 100% { box-shadow: 0 0 0 12px color-mix(in srgb, var(--orange) 0%, transparent); } }
 @keyframes caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -1002,18 +1011,17 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   font-size: 14px; line-height: 1.6; color: var(--ink); word-break: break-word;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.history-snippet mark { background: rgba(90, 169, 255, .22); color: var(--ink); border-radius: 3px; padding: 0 2px; }
+.history-snippet mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); border-radius: 3px; padding: 0 2px; }
 .hit-open { flex: none; white-space: nowrap; }
-/* A folder held over the window (app.js wireFolderDrop): letting go works there. */
+/* A folder held over the window (app.ts wireFolderDrop): letting go works there, or for pictures, they go into the input.
+   The words are the body's data-drop-hint, in the interface language. */
 body.drop-folder::after, body.drop-images::after {
-  content: '松开，在这个文件夹里工作'; position: fixed; inset: 12px; z-index: 90; pointer-events: none;
+  content: attr(data-drop-hint); position: fixed; inset: 12px; z-index: 90; pointer-events: none;
   display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 500; color: var(--ink);
-  border: 2px dashed rgba(90, 169, 255, .8); border-radius: 18px; background: color-mix(in srgb, var(--raised) 90%, transparent);
+  border: 2px dashed color-mix(in srgb, var(--accent) 80%, transparent); border-radius: 18px; background: color-mix(in srgb, var(--raised) 90%, transparent);
 }
-/* Pictures held over the window: they go into the input. */
-body.drop-images::after { content: '松开，把图片放进输入框'; }
 /* The message search jumped to, marked for a moment (app.js revealMessage). */
-.msg-found { outline: 2px solid rgba(90, 169, 255, .7); outline-offset: 4px; border-radius: 12px; transition: outline-color .6s; }
+.msg-found { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 4px; border-radius: 12px; transition: outline-color .6s; }
 .history-hint { padding: 12px; color: var(--ink-3); font-size: 13px; }
 
 /* ---------- 回顾 (view/review.js): the timeline by month and day, a topic a line ---------- */
@@ -1113,7 +1121,7 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
 .fu-presets { display: flex; flex-wrap: wrap; gap: 8px; }
 .fu-preset { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: auto; padding: 8px 14px; }
 .fu-preset .mono { font-size: 11px; opacity: .8; }
-.fu-late { align-self: flex-start; font-size: 12px; padding: 3px 10px; border-radius: 8px; background: rgba(255, 138, 61, .14); color: var(--orange); }
+.fu-late { align-self: flex-start; font-size: 12px; padding: 3px 10px; border-radius: 8px; background: color-mix(in srgb, var(--orange) 14%, transparent); color: var(--orange); }
 .fu-scroll { display: flex; flex-direction: column; gap: 12px; padding: 16px 32px 32px; }
 .fu-draft { padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); }
 .fu-actions { margin-top: 4px; }

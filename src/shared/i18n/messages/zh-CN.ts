@@ -159,6 +159,8 @@ export const zhCN = {
   "app.the.island.question.was.not.sent.the": "Viva 岛上的问题没有送出：助手现在还不能接收",
   "app.the.assistant.is.working.send.images.after": "助手正在工作，图片等这一轮结束再发",
   "app.images.can.only.be.sent.to.this": "图片只能发在这里的对话里，不能交给后台任务",
+  "app.drop.folder.hint": "松开，在这个文件夹里工作",
+  "app.drop.images.hint": "松开，把图片放进输入框",
   "app.this.question.has.ended.your.answer.was": "这个问题已经结束，回答没有送出",
   "app.this.connection.request.has.ended": "这次接入已经结束了",
   "app.images.cleared": "图片已清空",

@@ -8,6 +8,24 @@
 - 外部工具要求的 CommonJS 入口、对外发布的 JavaScript 模板和生成产物保留其必要格式；如迁移相关源文件，同时验证构建、打包和下游调用。
 - 验证改动时运行相关测试及 `npm run typecheck`；测试入口或构建配置改变后，确认完整测试集合仍被发现。
 
+## 前端（`src/renderer`）
+
+- 视觉与交互照 [界面规范](docs/ui-guidelines.zh-CN.md) 做；改了其中的规则，同时更新中英两份文档。
+- 渲染器是原生 TypeScript 加 DOM，不引入前端框架、打包器或 CSS 预处理器。第三方模块按文件路径导入（参考 `view/markdown.ts`）。新增运行时依赖要先说明理由。
+- 分层：`*-state.ts` 是纯函数且不可变，返回新对象，初始值用 `Object.freeze`，由 `state.ts` 合进 reducer；`*-actions.ts` 负责 IPC 和副作用，依赖通过 `create…Actions({ api, getState, dispatch, … })` 传入；`view/*.ts` 只按 state 构建 DOM、绑定 handlers，不直接调用 IPC。
+- DOM 用 `view/dom.ts` 的 `h()` 构建，字符串一律成为文本节点。不用 `innerHTML`、`insertAdjacentHTML` 或 `outerHTML` 写入字符串，唯一例外是主进程 highlight.js 已转义的代码（`view/files-panel.ts`）。模型输出的 Markdown 走 `view/markdown.ts`，链接经 `safeHref` 和 `openLink` 打开。不放宽 `index.html` 的 CSP。
+- 重绘：用 `reconcileChildren` 保留没变的节点，不整块替换对话；重建带表单的区域时用 `keepingInput` 保留输入、焦点和光标；读取布局的代码交给 `queueLayout`，同一帧内先统一读、再统一写，不在写完 DOM 后立即同步读取几何。
+- 样式：颜色、字体、尺寸只用 `:root` 的 token，需要新值先加 token；状态写在 `aria-*` / `data-*` 上，不加状态类；先复用已有组件类。新 class 放进 `styles.css` 对应的区块，注释写明哪个 view 文件在用。不用 `backdrop-filter`；循环动画要有 `prefers-reduced-motion` 规则。
+- 文案：界面上的字（包括 `aria-label`、`title`、占位符、空态和错误）同时加进 `src/shared/i18n/messages/en.ts` 和 `zh-CN.ts`，用 `t()` 取。静态 HTML 用 `data-i18n` / `data-i18n-*`；模块级缓存的文案在 `onLocaleChange` 里刷新。CSS 的 `content` 不放文字。
+- 键盘与无障碍：处理按键先跳过输入法组合（`event.isComposing || event.keyCode === 229`）；纯图标按钮带 `aria-label`；不关闭或削弱 AX。
+- 验证：state 和 actions 的逻辑补单元测试。本地运行 `npm run typecheck`、`npm test`，改了文档再运行 `npm run check:i18n`。视觉改动在 PR 里附截图；涉及标题栏、岛或窗口尺寸的改动，macOS 和 Windows 都要看过。
+
+## 冒烟测试
+
+- 提 PR 时冒烟测试交给线上 CI：`check.yml` 会在 macOS 和 Windows 上运行完整的 `npm run smoke`，结果以 PR 当前提交的 CI 为准，本地不必先跑。
+- 重大架构变更（主进程与 dsh 的生命周期、IPC 或 preload、会话与存储、构建和打包、冒烟测试工程本身）在提 PR 前先本地 `npm run build` 并运行 `npm run smoke`。排查 CI 失败时，也在本地运行对应阶段（如 `npm run smoke:memory`）。
+- CI 失败不能靠重跑掩盖：先看上传的 trace、截图和日志，确认是偶发问题才重跑，并在 PR 里写明。
+
 ## Development conventions (English)
 
 The Chinese and English sections describe the same rules.
@@ -19,3 +37,21 @@ The Chinese and English sections describe the same rules.
 - During migration, test and coverage discovery must include both `.test.ts` and remaining `.test.js`; remove migrated duplicates.
 - Keep formats required by external tools, published JavaScript templates, and generated outputs. Validate build, packaging, and downstream invocation when migrating their sources.
 - Run relevant tests and `npm run typecheck`. After changing discovery/build configuration, verify the full test collection is still discovered.
+
+### Frontend (`src/renderer`)
+
+- Follow the [UI guidelines](docs/ui-guidelines.md) for visuals and interaction. When you change one of their rules, update both language versions.
+- The renderer is plain TypeScript and DOM: no frontend framework, bundler or CSS preprocessor. Import third-party modules by file path (see `view/markdown.ts`). Explain why before adding a runtime dependency.
+- Layers: `*-state.ts` is pure and immutable, returning new objects, with initial values under `Object.freeze`, merged into the reducer by `state.ts`. `*-actions.ts` does IPC and side effects, with dependencies passed into `create…Actions({ api, getState, dispatch, … })`. `view/*.ts` only builds DOM from state and wires handlers; it never calls IPC directly.
+- Build DOM with `h()` from `view/dom.ts`, which always turns strings into text nodes. Don't write strings through `innerHTML`, `insertAdjacentHTML` or `outerHTML`. The one exception is code already escaped by highlight.js in the main process (`view/files-panel.ts`). Model Markdown goes through `view/markdown.ts`, and links open through `safeHref` and `openLink`. Don't loosen the CSP in `index.html`.
+- Redrawing: keep unchanged nodes with `reconcileChildren` instead of replacing the conversation wholesale. When rebuilding a region with form fields, use `keepingInput` to keep input, focus and caret. Hand layout reads to `queueLayout`, so each frame does all reads before all writes; never read geometry synchronously right after writing DOM.
+- Styles: colors, fonts and sizes come only from `:root` tokens; add a token before using a new value. Put state in `aria-*` / `data-*`, not state classes, and reuse existing component classes first. Put a new class in the matching section of `styles.css`, with a comment naming the view file that uses it. Don't use `backdrop-filter`. Looping animations need a `prefers-reduced-motion` rule.
+- Copy: interface text, including `aria-label`, `title`, placeholders, empty states and errors, goes into both `src/shared/i18n/messages/en.ts` and `zh-CN.ts` and is read with `t()`. Static HTML uses `data-i18n` / `data-i18n-*`. Refresh module-level cached strings in `onLocaleChange`. Don't put text in CSS `content`.
+- Keyboard and accessibility: skip key handling during IME composition (`event.isComposing || event.keyCode === 229`). Icon-only buttons have an `aria-label`. Never turn off or weaken AX.
+- Verification: add unit tests for state and actions logic. Run `npm run typecheck` and `npm test` locally, and `npm run check:i18n` after documentation changes. Attach screenshots to PRs with visual changes, and check changes to the title bar, island or window sizing on both macOS and Windows.
+
+### Smoke tests
+
+- For a PR, leave the smoke tests to CI: `check.yml` runs the full `npm run smoke` on macOS and Windows. The CI result for the PR's current commit is what counts; you don't need to run it locally first.
+- For major architectural changes (the main process and dsh lifecycle, IPC or preload, sessions and storage, build and packaging, the smoke test project itself), run `npm run build` and `npm run smoke` locally before opening the PR. When investigating a CI failure, run the matching stage locally too (for example `npm run smoke:memory`).
+- Don't hide a CI failure by rerunning it. Read the uploaded trace, screenshots and logs first; rerun only after confirming it is intermittent, and say so in the PR.
