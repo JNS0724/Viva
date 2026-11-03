@@ -5,7 +5,8 @@ import { optionName } from '../approval.ts'
 import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.ts'
 import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.ts'
 import type { CatMood } from '../selectors.ts'
-import { catFor } from './cat.ts'
+import { maidFor, maidMood } from './maid.ts'
+import type { MaidMood, MaidSlots } from './maid.ts'
 import { h, label } from './dom.ts'
 import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
@@ -18,41 +19,59 @@ import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } f
 import { proposalCard } from './followups.ts'
 import { userError } from '../user-error.ts'
 
-const AVATAR_CAT_PX = 36
+const AVATAR_PX = 48
+/** The card that waits on the user carries her, whole and moving (withMaid). */
+const CARD_MAID_PX = 96
+/** While a card waits on the user she is on the card, not also beside the answer. */
+const ON_THE_CARD: ReadonlySet<MaidMood> = new Set(['confirm', 'ask'])
 
-/** Whether a message is the answer of the turn in progress or just finished, and what the cat is doing. */
-type CatSlots = Map<string, { key: string, el: HTMLElement }>
-type Look = { latest: boolean, mood: CatMood | 'idle', cats?: CatSlots }
-const containerCats = new WeakMap<HTMLElement, CatSlots>()
+/** Whether a message is the answer of the turn in progress or just finished, and what Viva is doing. */
+type Look = { latest: boolean, mood: CatMood | 'idle', maids?: MaidSlots }
+const containerMaids = new WeakMap<HTMLElement, MaidSlots>()
 const avatarLooks = new WeakMap<Element, string>()
 
-function avatarMood(message: ThreadMessage, look: Look): CatMood | 'idle' {
-  if (!look.latest) return 'idle'
+function avatarMood(message: ThreadMessage, look: Look): MaidMood {
   const typing = message.open || (message.shown ?? message.text.length) < message.text.length
-  return typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood
+  return maidMood(typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood)
 }
 
-/** A small cat on its disc beside each answer: the latest one shows what the agent does now, earlier ones rest. */
-function avatar(message: ThreadMessage, look: Look) {
+/** Her face beside the latest answer, saying what she does now; earlier answers keep the room and show no one. */
+function portrait(message: ThreadMessage, look: Look): HTMLElement[] {
+  if (!look.latest) return []
   const mood = avatarMood(message, look)
-  const slot = h('span', { class: 'cat-avatar', 'aria-hidden': 'true' },
-    catFor(look.cats ?? new Map(), message.id, mood, { size: AVATAR_CAT_PX, frame: true, still: !look.latest }))
-  avatarLooks.set(slot, `${mood}:${look.latest}`)
+  if (ON_THE_CARD.has(mood)) return []
+  return [maidFor(look.maids ?? new Map(), message.id, mood, { size: AVATAR_PX, framing: 'face', moving: true })]
+}
+
+const lookKey = (message: ThreadMessage, look: Look) => (look.latest ? avatarMood(message, look) : 'none')
+
+function avatar(message: ThreadMessage, look: Look) {
+  const slot = h('span', { class: 'maid-avatar', 'aria-hidden': 'true' }, ...portrait(message, look))
+  avatarLooks.set(slot, lookKey(message, look))
   return slot
 }
 
 /** Status changes update only the portrait, keeping a reader-expanded answer and its nodes intact. */
 function refreshAvatar(view: View, message: ThreadMessage, look: Look) {
   if (message.role !== 'assistant') return
-  const slot = elementsOf(view)[0]?.querySelector<HTMLElement>('.cat-avatar')
+  const slot = elementsOf(view)[0]?.querySelector<HTMLElement>('.maid-avatar')
   if (!slot) return
-  const mood = avatarMood(message, look), key = `${mood}:${look.latest}`
+  const key = lookKey(message, look)
   if (avatarLooks.get(slot) === key) return
-  reconcileChildren(slot, [catFor(look.cats ?? new Map(), message.id, mood, { size: AVATAR_CAT_PX, frame: true, still: !look.latest })])
+  reconcileChildren(slot, portrait(message, look))
   avatarLooks.set(slot, key)
 }
 
-/** Moods the cat leaves for `typing` while the answer is still being typed out, the agent's own turn over or not. */
+const cardMaids: MaidSlots = new Map()
+
+/** A card that waits on the user, with her beside what it asks: handing over the clipboard, or listening. */
+function withMaid(className: string, label: string, mood: MaidMood, ...body: unknown[]) {
+  return h('section', { class: `${className} confirm-maid`, 'aria-label': label },
+    maidFor(cardMaids, className, mood, { size: CARD_MAID_PX, moving: true }),
+    h('div', { class: 'confirm-body' }, ...body))
+}
+
+/** Moods Viva leaves for `typing` while the answer is still being typed out, the agent's own turn over or not. */
 const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
 
 /** A restored message links to the trace only once it has been read back from dsh's logs. */
@@ -166,7 +185,7 @@ const cardHead = (text: string) => h('div', { class: 'confirm-head' }, h('span',
 function permissionCard(permission: NonNullable<State['permission']>, handlers: Handlers) {
   const head = PROMPT_HEADS.permission
   const { title, detail, command } = cardOf(permission)
-  return h('section', { class: 'confirm', 'aria-label': head },
+  return withMaid('confirm', head, 'confirm',
     cardHead(head),
     h('div', { class: 'confirm-title', text: title }),
     permission.rawInput?.description && typeof permission.rawInput.description === 'string'
@@ -208,7 +227,7 @@ function questionItem(item: QuestionItem, question: AskedQuestion, handlers: Han
 function questionCard(question: AskedQuestion, handlers: Handlers) {
   const head = PROMPT_HEADS.question
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
-  return h('section', { class: 'confirm ask', 'aria-label': head },
+  return withMaid('confirm ask', head, 'ask',
     cardHead(head),
     question.questions.map((item) => questionItem(item, question, handlers)),
     h('div', { class: 'confirm-actions' },
@@ -242,12 +261,13 @@ function offerRow(state: State, handlers: Handlers) {
     h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: t("island-dom.move.to.background"), onClick: () => handlers.moveToBackground() }))
 }
 
-const workingCats = new Map<string, { key: string, el: HTMLElement }>()
+const workingMaids: MaidSlots = new Map()
 
-/** Where the next answer will appear: the cat at work and what it is doing now (the island keeps the time). */
+/** Where the next answer will appear: Viva at work and what she is doing now (the island keeps the time). */
 function workingRow(state: State) {
   return h('div', { class: 'msg-working', role: 'status' },
-    h('span', { class: 'cat-avatar', 'aria-hidden': 'true' }, catFor(workingCats, 'working', catMood(state), { size: AVATAR_CAT_PX, frame: true })),
+    h('span', { class: 'maid-avatar', 'aria-hidden': 'true' },
+      maidFor(workingMaids, 'working', maidMood(catMood(state)), { size: AVATAR_PX, framing: 'face', moving: true })),
     h('span', { class: 'msg-working-text', text: `${currentAction(state)}…` }))
 }
 
@@ -384,10 +404,10 @@ function restLine(state: State, start: number, handlers: Handlers) {
 
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container: HTMLElement, state: State, handlers: Handlers, now: number) {
-  const cats = containerCats.get(container) ?? new Map()
-  containerCats.set(container, cats)
+  const maids = containerMaids.get(container) ?? new Map()
+  containerMaids.set(container, maids)
   const messageIds = new Set(state.messages.map(message => message.id))
-  for (const id of cats.keys()) if (!messageIds.has(id)) cats.delete(id)
+  for (const id of maids.keys()) if (!messageIds.has(id)) maids.delete(id)
   const previous = threadViews.get(container) ?? new Map<string, CachedView>()
   const cache = new Map<string, CachedView>()
   const part = (key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean) => {
@@ -405,7 +425,7 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   // Only what is drawn is built: the messages before `start` are neither drawn nor kept.
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
-    const look = { latest: message.id === latestAnswer, mood, cats }
+    const look = { latest: message.id === latestAnswer, mood, maids }
     const view = part(`message:${message.id}`, messageInputs(message, traceReady), () => messageView(message, handlers, traceReady, look), view => localizeAssistant(view, message))
     refreshAvatar(view, message, look)
     return view

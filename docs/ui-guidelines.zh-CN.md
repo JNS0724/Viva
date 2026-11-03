@@ -2,7 +2,7 @@
 
 [English](ui-guidelines.md) | 简体中文
 
-Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`island.css`、`personal.css` 与 `src/renderer/view/` 提取（2026-11-03，main `27de6f4`）。本文与代码不一致时以代码为准，同时修正本文；新界面照本文做。开发约定（分层、DOM、国际化、验证）见 [AGENTS.md](../AGENTS.md) 的「前端」一节，猫的形象见 [猫角色设定](cat-character.zh-CN.md)。
+Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`island.css`、`personal.css` 与 `src/renderer/view/` 提取（2026-11-03，main `27de6f4`）。本文与代码不一致时以代码为准，同时修正本文；新界面照本文做。开发约定（分层、DOM、国际化、验证）见 [AGENTS.md](../AGENTS.md) 的「前端」一节，她的形象和状态见 [女仆角色设定](maid-character.zh-CN.md)。
 
 ## 基调
 
@@ -11,7 +11,7 @@ Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`isl
 - **只有深色**。`color-scheme: dark`，没有浅色主题，也不跟随系统切换。
 - **一个强调色**。蓝调深底，搭一个亮蓝 `--accent`。橙和红只在出现状态时使用，平时界面上看不到。
 - **平面、几何**。层次靠底色深浅和 1px 描边区分。阴影只给浮起来的东西（菜单、提示、toast、展开的岛）。不用渐变底，不用毛玻璃：`backdrop-filter` 会让背后每次重绘都卡顿，所以遮罩用半透明纯色。
-- **唯一的暖色是猫**。猫的对话气泡是暖纸色（`--cat-bubble*`），和船长帽同色，不挪作他用。
+- **米白只代表她**。她的素材自带米白底（`--maid-paper`），所以她的圆底就是这个米白，裁成圆形也看不出方边。界面其他地方不用米白，就像橙色只表示在等你一样。
 
 ## 颜色
 
@@ -39,11 +39,12 @@ Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`isl
 | `--user-line` | `#1F2C49` | 用户自己消息的边 |
 | `--line-focus` | `#3A4C72` | 输入区聚焦时的边 |
 | `--error-ink` | `#FF9AA4` | 错误文字 |
+| `--maid-paper` | `#FAF7F2` | 她的圆底，别处不用（view/maid.ts） |
 
 颜色的语义固定，不同位置要一致：
 
 - **蓝 = 你可以点 / 已经好了**。主按钮、选中的标签、焦点环、`data-tone="done"`。
-- **橙 = 在等你**。在岛的边、猫的圆底、确认卡片的边和脉冲点，以及 `.btn-primary` 上出现。橙色按钮只用在「等用户决定」的卡片里，一般页面的主操作用蓝色 `.btn-accent`。
+- **橙 = 在等你**。在岛的边和圆点、她的描边、确认卡片的边和脉冲点，以及 `.btn-primary` 上出现。橙色按钮只用在「等用户决定」的卡片里，一般页面的主操作用蓝色 `.btn-accent`。
 - **红 = 出错了**。边框、左侧 3px 色条，或 `color-mix` 调出的淡底色。错误文字用 `--error-ink`，直接用 `--red` 写字对比度不够。
 
 透明度变体从 token 混出来，例如 `color-mix(in srgb, var(--accent) 12%, transparent)` 或 `color-mix(in srgb, var(--orange) 16%, var(--panel))`，不写 `rgba(90, 169, 255, .12)`。阴影用的黑色 `rgba(0, 0, 0, …)` 不在此列。
@@ -94,11 +95,11 @@ Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`isl
 | 999px | 胶囊：toast、回到最新、时间线上的工作目录 |
 | 50% | 圆点、头像 |
 
-嵌套圆角要同心：内层圆角 = 外层圆角 − 内边距。岛的猫头就是这样对齐的（`island.css` 的 `.isl-cat`）。`--radius-tile`（28px）定义了但目前没有使用。
+嵌套圆角要同心：内层圆角 = 外层圆角 − 内边距。桌面岛上她的图就是这样对齐的（`island.css` 的 `.isl-face`）。`--radius-tile`（28px）定义了但目前没有使用。
 
 ## 布局
 
-- **标题栏**：`--titlebar-h` 56px，岛高 `--island-h` 48px，上下各留 4px。主进程 `window-options.ts` 的 `TITLEBAR_HEIGHT` 和这个值必须一致。
+- **标题栏**：`--titlebar-h` 56px，岛高 `--island-h` 36px，在标题栏里居中。标题栏的岛不放她，只用状态色圆点；桌面岛高 80px，她占 72px。主进程 `window-options.ts` 的 `TITLEBAR_HEIGHT` 和这个值必须一致。
 - **窗口按钮的留白**：macOS 左侧留 `--reserve-left` 84px 给红绿灯；Windows / Linux 用 `env(titlebar-area-width)` 算出右侧要让出的宽度。这个值只写在 `.titlebar` 上，避免窗口缩放时让所有消息的继承样式失效。
 - **状态胶囊**：始终按整个窗口居中，空间不够时先收缩，不压到两侧按钮。
 - **对话列**：`--col` 默认 760px，可以拖动边缘调整。左侧 `--rail-lane` 40px 留给轮次刻度，右侧留给任务栏。
@@ -170,7 +171,7 @@ Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`isl
 
 - 悬停、透明度、小位移：0.1–0.15s。颜色、边框、阴影：0.3s。
 - 岛的伸缩用回弹曲线：`cubic-bezier(.3, 1.3, .5, 1)`，0.5s。其他地方不要用回弹。
-- 循环动画只用来表示「正在进行」和「在等你」：脉冲点、转圈、呼吸、打字光标、猫的动作。
+- 循环动画只用来表示「正在进行」和「在等你」：脉冲点、转圈、呼吸、打字光标、她的动图。她在哪里可以动，见[女仆角色设定](maid-character.zh-CN.md#显示规则)。
 - `prefers-reduced-motion: reduce` 时全局关闭动画和过渡。新增的循环动画仍要单独写一条 reduce 规则，在需要时给一个静止状态（例如呼吸停在 `opacity: .8`）。
 
 ## 无障碍与键盘

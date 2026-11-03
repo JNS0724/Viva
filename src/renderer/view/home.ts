@@ -1,15 +1,32 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { isProfileEmpty } from '../personal-state.ts'
 import { catMood, greeting, setupView, statusView } from '../selectors.ts'
-import { catFor } from './cat.ts'
+import { maidFor, maidMood } from './maid.ts'
+import type { MaidMood, MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
 
-const HERO_CAT_PX = 64
-const heroCats = new Map<string, { key: string, el: HTMLElement }>()
+const HERO_PX = 200
+/** One wave (greeting-motion.webp plays once), the first time the home page shows after launch. */
+const GREETING_MS = 1400
+let greetingEnds: number | null = null
+const heroMaids: MaidSlots = new Map()
 
-/** The cat's head on its brand-blue disc (orange while it waits on the user), above the greeting. */
-const heroCat = (state: State, tone: string) => h('div', { class: 'cat-hero', 'data-tone': tone },
-  catFor(heroCats, 'hero', catMood(state), { size: HERO_CAT_PX, frame: true, variant: 'head' }))
+const hasReady = (state: State) => state.followups.followups.some((f: Untyped) => f.status === 'ready')
+
+/** She waves once, then rests: holding up the ✓ card while something is ready, offline until a model is connected. */
+function heroMood(state: State, tone: string, now: number): { mood: MaidMood, moving: boolean } {
+  const mood = maidMood(catMood(state), tone)
+  if (mood !== 'idle') return { mood, moving: true }
+  greetingEnds ??= now + GREETING_MS
+  if (now < greetingEnds) return { mood: 'greeting', moving: true }
+  return { mood: hasReady(state) ? 'done' : 'idle', moving: false }
+}
+
+/** The maid, whole, on her cream with a saucer's rim around it: the one bold thing on the page. */
+function heroMaid(state: State, tone: string, now: number) {
+  const { mood, moving } = heroMood(state, tone, now)
+  return h('div', { class: 'maid-hero' }, maidFor(heroMaids, 'hero', mood, { size: HERO_PX, moving }))
+}
 
 /** What the greeting says under it: the setup, the background at work, or the usual question. */
 function subtitle(state: State) {
@@ -20,7 +37,7 @@ function subtitle(state: State) {
 
 function hero(state: State, now: number) {
   return h('section', { class: 'home-hero', 'aria-label': t("home.assistant") },
-    heroCat(state, statusView(state, now).tone),
+    heroMaid(state, statusView(state, now).tone, now),
     h('div', { class: 'hero-copy' },
       h('h1', { class: 'greeting', text: greeting(new Date(now)) }),
       h('p', { class: 'greeting-sub', text: subtitle(state) })))
@@ -67,7 +84,7 @@ const introCard = (handlers: Handlers) => h('section', { class: 'home-card tile-
 
 const wantsIntro = (memory: State['memory']) => memory.loaded && memory.onboarding === 'pending' && isProfileEmpty(memory)
 
-/** Before the first message: the cat and a greeting, and a card only when something needs doing first. */
+/** Before the first message: the maid and a greeting, and a card only when something needs doing first. */
 export function renderHome(container: HTMLElement, state: State, handlers: Handlers, now: number) {
   const setup = setupView(state.info)
   const card = setup ? setupCard(setup, handlers) : wantsIntro(state.memory) ? introCard(handlers) : todayCard(state, handlers, now)

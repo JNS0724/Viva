@@ -4,7 +4,14 @@ import { t } from '../../shared/i18n/translate.ts'
 import { formatHM } from '../selectors.ts'
 import type { ProposalCard } from '../followup-state.ts'
 import { h } from './dom.ts'
+import { maidFor } from './maid.ts'
+import type { MaidSlots } from './maid.ts'
 import { renderMarkdown } from './markdown.ts'
+
+/** A follow-up's page heads with her, still: this page is for reading (docs/ui-guidelines.md, motion). */
+const DETAIL_MAID_PX = 64
+const detailMaids: MaidSlots = new Map()
+const detailMood = (status: string) => (status === 'ready' ? 'done' : status === 'preparing' ? 'typing' : 'idle')
 
 /**
  * Follow-ups in the window: the card a proposal puts under the conversation (要我跟进吗？: what will be prepared
@@ -164,6 +171,7 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
   const waiting = followup.status === 'preparing' ? t("followups.preparing.in.the.background", { value1: prepare?.queued ? t("followups.more.queued", { queued: prepare.queued }) : '' }) : prepare?.waiting ? t("handoff.prepare.waiting", { reason: prepare.waiting }) : PREPARE_PROMISE
   return h('div', { class: 'tp-main fu-main', 'data-followup': followup.id },
     h('header', { class: 'tp-head' },
+      maidFor(detailMaids, 'detail', detailMood(followup.status), { size: DETAIL_MAID_PX }),
       h('h2', { class: 'tp-title', text: followup.title }),
       h('span', { class: 'tp-status', text: followupStanding(followup, now) })),
     h('div', { class: 'tp-scroll fu-scroll' },

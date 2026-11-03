@@ -24,18 +24,15 @@
   --line-focus: #3A4C72;
   /* Error words: --red as text is too dark on these surfaces. */
   --error-ink: #FF9AA4;
-  /* The cat's speech bubbles (view/cat.ts): warm paper, like the cap. */
-  --cat-bubble: #FFF8E9;
-  --cat-bubble-ink: #332E28;
-  --cat-bubble-dot: #645B50;
-  --cat-sparkle: #FFDA88;
+  /* The maid's own cream (view/maid.ts): her pictures come on it, so her disc is it. Used for her and nothing else. */
+  --maid-paper: #FAF7F2;
   --font-sans: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
   --font-dot: 'Doto', 'JetBrains Mono', ui-monospace, monospace;
   --radius-tile: 28px;
-  /* The island (48px) with 4px above and below; main's window-options.ts TITLEBAR_HEIGHT matches it. */
+  /* main's window-options.ts TITLEBAR_HEIGHT matches it; the island (36px, view/island-dom.ts) is centred in it. */
   --titlebar-h: 56px;
-  --island-h: 48px;
+  --island-h: 36px;
   --titlebar-gutter: 12px;
   /* 2 title bar buttons (36px) with a 6px gap */
   --titlebar-actions: 78px;
@@ -259,7 +256,8 @@ html:not([data-platform="darwin"]) .titlebar {
 .disclaimer { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); }
 
 /* ---------- home: the cat, a greeting, and a card only when something needs doing ---------- */
-.home-simple { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 36px; }
+/* Centred while it fits; taller than the window it starts at the top and scrolls, never cut off under the title bar. */
+.home-simple { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 36px; }
 .home-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 22px; }
 .hero-copy { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .greeting { margin: 0; font-size: 48px; font-weight: 700; line-height: 1; letter-spacing: -.01em; }
@@ -279,62 +277,31 @@ html:not([data-platform="darwin"]) .titlebar {
   .home-card { flex-direction: column; align-items: stretch; }
 }
 
-/* ---------- the cat (view/cat.js) ---------- */
-.cat { position: relative; display: block; flex: none; isolation: isolate; }
-.cat-disc { position: absolute; inset: 0; border-radius: 50%; background: var(--accent); transition: background .3s, box-shadow .3s; }
-.cat-art { position: absolute; inset: 0; transform-origin: 50% 86%; }
-.cat-image { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
-/* Small cats are the head close-ups (view/cat.ts); both sets share one frame and the disc's round lower edge. */
-.cat-compact .cat-disc { box-shadow: none; }
-.cat-hero { position: relative; flex: none; }
-.cat-hero[data-tone="waiting"] .cat-disc { background: var(--orange); }
-.cat-hero[data-tone="error"] .cat-disc { background: var(--red); box-shadow: none; }
-.cat-hero[data-tone="pending"] .cat-disc { background: var(--mute); box-shadow: none; }
-.cat-avatar { flex: none; margin-top: 2px; }
-
-/* typing: the face and keyboard stay; the two paws take turns striking it. The keyboard is meant to be big,
-   wider than the head and out past the disc (docs/cat-character.md). */
-.cat-typing-paw { animation: cat-type-paw .56s ease-in-out infinite; transform-origin: 50% 78%; }
-.cat-typing-paw-right { animation-delay: -.28s; }
-.cat-typing-workstation { position: absolute; inset: 0; transform: translateY(4%) scale(1.65); transform-origin: 50% 85%; pointer-events: none; }
-.cat-typing-keyboard { clip-path: polygon(23% 77.6%, 77% 77.6%, 81% 82%, 83% 93%, 17% 93%, 19% 82%); }
-.cat-typing-mini { position: absolute; width: 170%; height: 48%; bottom: -25%; left: -35%; overflow: hidden; pointer-events: none; }
-.cat-mini-layer { position: absolute; width: 100%; height: auto; bottom: 0; left: 0; }
-@keyframes cat-type-paw {
-  0%, 12%, 100% { transform: translateY(0); }
-  38%, 55% { transform: translateY(-2.8%); }
-  72% { transform: translateY(.5%); }
+/* ---------- Viva (view/maid.ts): her picture on its own cream, ringed in the tone of the moment ---------- */
+.maid {
+  --maid-ring: var(--line-2);
+  position: relative; display: block; flex: none; border-radius: 50%; background: var(--maid-paper);
+  box-shadow: 0 0 0 2px var(--maid-ring); transition: box-shadow .3s;
 }
-
-/* What the picture cannot say: the thought dots, ! or ?, a finished turn's sparkles. */
-.cat-signal {
-  position: absolute; z-index: 1; right: 0; top: -5%; display: flex; align-items: center; justify-content: center;
-  background: var(--cat-bubble); color: var(--cat-bubble-ink); border-radius: 50%; box-shadow: 0 1px 5px rgba(0, 0, 0, .13);
+.maid[data-ring="blue"] { --maid-ring: var(--accent); }
+.maid[data-ring="orange"] { --maid-ring: var(--orange); }
+.maid[data-ring="red"] { --maid-ring: var(--red); }
+.maid[data-ring="gray"] { --maid-ring: var(--ink-3); }
+.maid-art { position: absolute; inset: 0; overflow: hidden; border-radius: 50%; }
+.maid-image { position: absolute; display: block; pointer-events: none; user-select: none; }
+/* What her props cannot say once she is small (view/maid.ts badgeOf). */
+.maid-badge {
+  position: absolute; right: -2px; top: -2px; width: 20px; height: 20px; border-radius: 50%; background: var(--maid-ring);
+  color: var(--bg); font: 700 12px/20px var(--font-sans); text-align: center; box-shadow: 0 0 0 2px var(--island-bg);
 }
-.cat-thought { width: 28%; height: 18%; gap: 8%; border-radius: 999px; animation: cat-bounce 2s ease-in-out infinite; }
-.cat-thought::after { content: ''; position: absolute; width: 15%; height: 22%; left: 12%; bottom: -18%; border-radius: 50%; background: var(--cat-bubble); }
-.cat-dot { width: 12%; aspect-ratio: 1; border-radius: 50%; background: var(--cat-bubble-dot); animation: cat-dot 1.2s ease-in-out infinite; }
-.cat-dot:nth-child(2) { animation-delay: .2s; }
-.cat-dot:nth-child(3) { animation-delay: .4s; }
-@keyframes cat-dot { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
-.cat-question { width: 22%; height: 22%; font: 800 24px/1 var(--font-sans); animation: cat-bounce 2s ease-in-out infinite; }
-.cat-compact .cat-question { font-size: 10px; width: 34%; height: 34%; right: -8%; }
-.cat-compact .cat-thought { width: 46%; height: 28%; right: -10%; }
-@keyframes cat-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8%); } }
-.cat-sparkles { position: absolute; inset: 0; pointer-events: none; }
-.cat-sparkle { position: absolute; width: 11%; height: 11%; color: var(--cat-sparkle); animation: cat-twinkle 1.2s ease-in-out 3 both; }
-.cat-sparkle:nth-child(1) { left: -2%; top: 30%; }
-.cat-sparkle:nth-child(2) { right: 0; top: 0; animation-delay: .2s; }
-.cat-sparkle:nth-child(3) { right: -3%; top: 48%; width: 7%; height: 7%; animation-delay: .4s; }
-/* A small cat's face fills its disc: one sparkle, up and out at the corner, keeps clear of it. */
-.cat-compact .cat-sparkle:nth-child(2) { width: 34%; height: 34%; right: -12%; top: -12%; }
-.cat-compact .cat-sparkle:not(:nth-child(2)) { display: none; }
-/* Sparkles twinkle three times after a turn, then go. */
-@keyframes cat-twinkle { 0% { transform: scale(.4); opacity: 0; } 50% { transform: scale(1); opacity: 1; } 100% { transform: scale(.4); opacity: 0; } }
-.cat-still * { animation: none !important; }
-@media (prefers-reduced-motion: reduce) {
-  .cat * { animation: none !important; }
-}
+/* The home page's one bold thing: a saucer's rim around her cream (view/home.ts). */
+.maid-hero { flex: none; }
+/* Shorter windows keep the greeting, the card and the input in view: 200px becomes 120px, then 90px. */
+@media (max-height: 820px) { .maid-hero { zoom: .6; } }
+@media (max-height: 680px) { .maid-hero { zoom: .45; } }
+.maid-hero .maid { box-shadow: 0 0 0 2px var(--maid-ring), 0 0 0 13px var(--panel), 0 0 0 14px color-mix(in srgb, var(--maid-paper) 26%, transparent); }
+/* Beside the latest answer only; earlier answers keep the room so nothing shifts when she moves down (view/thread.ts). */
+.maid-avatar { flex: none; width: 48px; min-height: 48px; }
 
 .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--mute); }
 .dot[data-tone="working"] { background: var(--white); }
@@ -583,7 +550,7 @@ html:not([data-platform="darwin"]) .titlebar {
 .markdown .md-table tbody tr:nth-child(even) td { background: rgba(255, 255, 255, .015); }
 .markdown .md-table .md-align-center { text-align: center; }
 .markdown .md-table .md-align-right { text-align: right; }
-.msg-note { margin-left: 44px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--ink-2); }
+.msg-note { margin-left: 62px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .receipt {
   align-self: flex-start; display: flex; align-items: center; gap: 8px; padding: 4px 0; border: none; background: none;
   font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; color: var(--ink-3); cursor: pointer;
@@ -600,14 +567,14 @@ html:not([data-platform="darwin"]) .titlebar {
 .msg-working { display: flex; align-items: center; gap: 14px; font-size: 14px; color: var(--ink-2); }
 .msg-working-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-error {
-  margin-left: 44px; display: flex; flex-direction: column; gap: 6px; border: 1px solid color-mix(in srgb, var(--red) 50%, transparent);
+  margin-left: 62px; display: flex; flex-direction: column; gap: 6px; border: 1px solid color-mix(in srgb, var(--red) 50%, transparent);
   background: color-mix(in srgb, var(--red) 8%, transparent); border-radius: 14px; padding: 14px 16px; font-size: 14px; color: var(--error-ink); word-break: break-word;
 }
 
 /* ---------- confirmation card ---------- */
-/* What waits on the user is orange wherever it shows (the island's rim, the cat's disc, the dot): here a dark card with an orange edge. */
+/* What waits on the user is orange wherever it shows (the island's rim and dot, her ring): here a dark card with an orange edge. */
 .confirm {
-  margin-left: 44px; background: var(--panel); color: var(--ink); border: 1.5px solid var(--orange); border-radius: 22px; padding: 22px;
+  margin-left: 62px; background: var(--panel); color: var(--ink); border: 1.5px solid var(--orange); border-radius: 22px; padding: 22px;
   display: flex; flex-direction: column; gap: 16px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--orange) 8%, transparent);
 }
 .confirm-head { display: flex; align-items: center; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .14em; color: var(--orange); }
@@ -617,6 +584,9 @@ html:not([data-platform="darwin"]) .titlebar {
   margin: 0; background: var(--raised); color: var(--ink-2); border-radius: 14px; padding: 12px 14px; font-family: var(--font-mono);
   font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto;
 }
+/* The conversation's own requests carry her (view/thread.ts withMaid): 96px, whole, at the card's left, the card the column's width. */
+.confirm-maid { margin-left: 0; flex-direction: row; align-items: flex-start; gap: 22px; }
+.confirm-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 .confirm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .confirm-hint { margin-left: auto; font-size: 12px; color: var(--ink-3); }
 .secret-field { display: flex; flex-direction: column; gap: 6px; }
@@ -1131,11 +1101,10 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
 @media (prefers-reduced-motion: reduce) { .fu-card .pulse-dot { animation: none; } }
 .fu-message { display: flex; flex-direction: column; gap: 6px; }
 .fu-row[data-status="suggested"] .tp-meta { color: var(--accent); }
-/* Asleep while background preparation goes on (view/cat.ts): the cat breathes, its bubble dreams slowly. */
-.cat[data-mood="sleeping"] .cat-art { animation: cat-sleep 4.2s ease-in-out infinite; transform-origin: 50% 90%; }
-.cat-dream .cat-dot { animation-duration: 2.8s; }
-@keyframes cat-sleep { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
-@media (prefers-reduced-motion: reduce) { .cat[data-mood="sleeping"] .cat-art { animation: none; } }
+/* Asleep while background preparation goes on (view/maid.ts): she breathes. */
+.maid[data-mood="sleeping"] .maid-art { animation: maid-sleep 4.2s ease-in-out infinite; transform-origin: 50% 90%; }
+@keyframes maid-sleep { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+@media (prefers-reduced-motion: reduce) { .maid[data-mood="sleeping"] .maid-art { animation: none; } }
 .home-today { border-color: var(--accent); }
 
 /* Reveal only after the persisted interface language is available. */

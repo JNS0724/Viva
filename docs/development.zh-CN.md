@@ -106,9 +106,9 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 - **状态** 全部在 `state.js` 的纯 reducer 里不可变更新；视图只读 `selectors.js`，所有文本都走 `textContent`。
 - **安全**：`contextIsolation` + `sandbox`，preload 只暴露 `window.agent` 上的方法和平台名（桌面岛的页面另有一个只能收内容、发点击的 `window.desk`），主进程校验 IPC 入参（包括渲染进程提交的历史消息），页面有 CSP。
 
-## 猫形象素材
+## 形象素材
 
-角色和素材规范见 [猫角色设定](cat-character.zh-CN.md)。应用从 `src/assets/cat/bust/` 加载：首页等大尺寸用半身图（512px），48px 及以下用同名 `-head.png` 头部特写（256px），都是从 1024px 原图缩小导出的透明 PNG；原图和生成提示词不放进仓库。换图后在首页、36px 对话头像、标题栏和桌面岛上各看一遍。
+角色和素材规范见 [女仆角色设定](maid-character.zh-CN.md)。应用从 `src/assets/maid/` 加载：每个状态一张 400px 静图，五个状态另有动图，都是 WebP，从 dsh-personal-agent 的原图缩小导出；原始 GIF 和生成提示词不放进仓库。换图后在首页、对话、确认卡片、跟进详情和桌面岛上各看一遍。
 
 ## 测试
 

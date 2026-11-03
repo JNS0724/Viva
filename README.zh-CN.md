@@ -95,7 +95,7 @@ https://github.com/user-attachments/assets/14a56fd5-5b57-40f5-b02c-e2868b5dbf91
 </tr>
 </table>
 
-关掉窗口后，Viva 留在托盘里，屏幕顶部有一座小岛：助手在做什么、要你确认什么、几件准备好了，一眼就能看到。在任何程序里按 `⌘⇧Space`（Windows 上是 `Ctrl+Shift+Space`）就能提问，也可以把文件拖给猫。
+关掉窗口后，Viva 留在托盘里，屏幕顶部有一座小岛：助手在做什么、要你确认什么、几件准备好了，一眼就能看到。在任何程序里按 `⌘⇧Space`（Windows 上是 `Ctrl+Shift+Space`）就能提问，也可以把文件拖给她。
 
 <img src="docs/images/desk-island.png" alt="桌面上的 Viva 岛：左边在等你确认运行一条命令，可以直接点允许或拒绝；右边是按快捷键打开的输入框">
 

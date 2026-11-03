@@ -85,9 +85,9 @@ Scrolling follows new content until the latest question is near the top; longer 
 
 Migration from my-agent copies history, memory, and trace data to the Viva directory and leaves the old folder as backup. Keychain entries tied to the old app name cannot migrate; re-enter the key or use the environment variable. contextIsolation, sandbox, CSP, limited window.agent/window.desk APIs, and main-process argument validation form the UI boundary. Translated text uses text nodes/attributes, never arbitrary translated HTML.
 
-## Cat assets
+## Character assets
 
-See [Cat character](cat-character.md). Transparent 512 px busts and 256 px heads derive from 1024 px originals retained outside the repository. Heads are automatic at 48 px or smaller; the home page explicitly uses a 64 px head. Inspect home, 36 px avatars, title-bar island, and desktop island after changing assets.
+See [Maid character](maid-character.md). Each state has a 400 px still and five states also have an animation, all WebP, scaled down from the dsh-personal-agent originals; the original GIFs and prompts stay outside the repository. After changing assets, check the home page, conversation, approval cards, follow-up details and desktop island.
 
 ## Tests
 

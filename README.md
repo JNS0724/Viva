@@ -75,7 +75,7 @@ Confirmation cards explain actions that require approval. Choose **Read only**, 
 |---|---|
 | ![Answer containing tables and task lists](docs/images/chat.png) | ![Workspace tree and a Markdown file preview](docs/images/files.png) |
 
-Closing the window leaves Viva in the tray. The desktop island shows work, approvals, and prepared drafts. Press `⌘⇧Space` on macOS or `Ctrl+Shift+Space` on Windows from any app to ask a question, or drop files onto the cat.
+Closing the window leaves Viva in the tray. The desktop island shows work, approvals, and prepared drafts. Press `⌘⇧Space` on macOS or `Ctrl+Shift+Space` on Windows from any app to ask a question, or drop files onto her.
 
 ![Desktop island with an inline approval and an input opened by the global shortcut](docs/images/desk-island.png)
 

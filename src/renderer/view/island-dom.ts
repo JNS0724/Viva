@@ -1,7 +1,8 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { localeRevision } from '../../shared/i18n/locale.ts'
 import { formatElapsed } from '../selectors.ts'
-import { catFor } from './cat.ts'
+import { maidFor, maidMood } from './maid.ts'
+import type { MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
 import { queueLayout } from './reconcile.ts'
 import { INPUT_FORMS } from './island-input.ts'
@@ -31,9 +32,13 @@ const NS = 'http://www.w3.org/2000/svg'
 /** The island's border, on both sides: its content is this much narrower than the shape. */
 const BORDER = 3
 type Host = 'bar' | 'desk'
-const SIZES: Record<Host, { head: number, panel: number, maxHead: number, cat: number, input?: number }> = {
-  bar: { head: 48, panel: 360, maxHead: 360, cat: 36 },
-  desk: { head: 48, panel: 392, maxHead: 420, cat: 36, input: 560 },
+/**
+ * In the title bar the island carries no picture of her, only a dot in the tone of the moment: the conversation's
+ * latest answer shows her already. On the desktop she is the island, large enough to read her expression.
+ */
+const SIZES: Record<Host, { head: number, panel: number, maxHead: number, maid: number, input?: number }> = {
+  bar: { head: 36, panel: 360, maxHead: 360, maid: 0 },
+  desk: { head: 80, panel: 420, maxHead: 460, maid: 72, input: 560 },
 }
 
 /** Forms that need the user; on the desktop their panel opens by itself, as does the first-time note. */
@@ -210,14 +215,15 @@ export function islandSignatures(view: IslandShown, open: boolean, showTools: bo
 /** options: the desktop's input, and the ask shortcut as the user presses it */
 export function createIsland(host: Host, act: IslandAct, { input = null as ReturnType<typeof createIslandInput> | null, shortcut = '' } = {}) {
   const size = SIZES[host]
-  const cats = new Map<string, { key: string, el: HTMLElement }>()
-  const cat = h('span', { class: 'isl-cat', 'aria-hidden': 'true' })
+  const maids: MaidSlots = new Map()
+  const face = h('span', { class: 'isl-face', 'aria-hidden': 'true' })
+  const dot = h('span', { class: 'isl-dot' })
   const head = h('button', { type: 'button', class: 'isl-head' })
   const tools = h('span', { class: 'isl-tools' })
   const row = h('div', { class: 'isl-row' }, head, tools)
   const panel = h('div', { class: 'isl-panel' })
   const clip = h('div', { class: 'isl-clip' }, row, panel)
-  const el = h('div', { class: 'isl', 'data-host': host }, clip, cat)
+  const el = h('div', { class: 'isl', 'data-host': host }, clip, face)
   let last: { view: IslandShown, now: number, pinned: boolean } | null = null
   let signature = { panel: '', row: '' }
   let hovered = false
@@ -282,7 +288,9 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
     // The panel fades in as it opens; redrawn while open (a step every second as the agent works) it stays put.
     const wasOpen = el.dataset.open === 'true'
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
-    cat.replaceChildren(catFor(cats, 'island', view.form === 'mini' ? 'idle' : view.mood, { size: size.cat, frame: true }))
+    // Files held over the island: she listens. Moving only while the island is open in front of the user.
+    const mood = view.form === 'drop' ? 'listening' : maidMood(view.form === 'mini' ? 'idle' : view.mood, view.tone)
+    face.replaceChildren(size.maid ? maidFor(maids, 'island', mood, { size: size.maid, moving: open, badge: true }) : dot)
     const tail = tailCell(view)
     const parts = view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tail]
     head.replaceChildren(...parts.filter((part): part is NonNullable<typeof part> => Boolean(part)))

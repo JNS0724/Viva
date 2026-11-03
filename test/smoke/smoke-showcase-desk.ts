@@ -15,7 +15,7 @@ const PANEL = Object.freeze({ width: 1600, height: 330 })
 const ASK = '把桌面上这份合同的要点列一下'
 const CAPTIONS = Object.freeze({
   waiting: '关掉窗口后，要你确认的事直接在岛上处理',
-  input: '在任何程序里按 ⌘⇧Space 提问，或者把文件拖给猫',
+  input: '在任何程序里按 ⌘⇧Space 提问，或者把文件拖给 Viva',
 })
 
 /** The island alone: the window around it is mostly clear. */

@@ -242,7 +242,7 @@ test('native topmost loss after activation is repaired without taking focus', (t
   t.mock.timers.tick(100)
 })
 
-test('dragged, the island shrinks to the cat, follows the pointer at each frame, and is remembered where it is let go', (t) => {
+test('dragged, the island shrinks to its head, follows the pointer at each frame, and is remembered where it is let go', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
   const desk = deskIsland(env)
@@ -250,14 +250,14 @@ test('dragged, the island shrinks to the cat, follows the pointer at each frame,
   const [win] = env.windows
   win.handlers['did-finish-load']()
   desk.startDrag()
-  assert.deepEqual([win.lastView().dragging, win.bounds], [true, { x: -12, y: 13, width: 72, height: 72 }], 'just the cat, under the pointer, kept on the screen')
+  assert.deepEqual([win.lastView().dragging, win.bounds], [true, { x: -12, y: 13, width: 104, height: 104 }], 'just the island, under the pointer, kept on the screen')
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
   t.mock.timers.tick(200)
   assert.equal(win.bounds.x, -12, 'no timer moves it: the page\'s frames do')
   desk.dragMove()
-  assert.deepEqual(win.bounds, { x: 1044, y: 645, width: 72, height: 72 })
+  assert.deepEqual(win.bounds, { x: 1028, y: 629, width: 104, height: 104 })
   desk.endDrag()
-  assert.deepEqual([win.bounds.width, win.bounds.height, win.lastView().dir], [600, 320, 'up'], 'its full size again, opening upwards')
+  assert.deepEqual([win.bounds.width, win.bounds.height, win.lastView().dir], [600, 352, 'up'], 'its full size again, opening upwards')
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 0.75, fy: 0.75 } } })
   assert.equal(win.lastView().dragging, false)
   desk.resetPlace()

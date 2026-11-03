@@ -16,7 +16,7 @@ export async function checkStarLayouts(win: SmokeAppWindow, outDir: string): Pro
       const loaded=new Promise((resolve,reject)=>{sheet.onload=resolve;sheet.onerror=()=>reject(new Error('Star fixture stylesheet did not load'))});shadow.append(sheet);await loaded
       const fixture=h('div',{class:'thread'});shadow.append(fixture)
       fixture.append(
-        h('div',{class:'msg-agent','data-msg':'star-assistant'},h('span',{class:'cat-avatar'}),h('div',{class:'msg-body'},h('p',{class:'msg-text',text:'助手消息的完整正文，收藏按钮应在右侧独立空间。'}))),
+        h('div',{class:'msg-agent','data-msg':'star-assistant'},h('span',{class:'maid-avatar'}),h('div',{class:'msg-body'},h('p',{class:'msg-text',text:'助手消息的完整正文，收藏按钮应在右侧独立空间。'}))),
         h('div',{class:'msg-user-row','data-msg':'star-user-row'},h('div',{class:'msg-user',text:'当前话题用户消息'})),
         h('div',{class:'msg-user','data-msg':'star-past-user',text:'旧话题用户消息'}))
       const starred=new Set(),controller=attachStars(fixture,{placeOf:el=>({segmentId:'smoke-stars',seq:[...fixture.children].indexOf(el)}),isStarred:place=>starred.has(place.seq),toggle:(place,on)=>{if(on)starred.add(place.seq);else starred.delete(place.seq);controller.sync()}})
