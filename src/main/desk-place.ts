@@ -7,19 +7,19 @@
  * The island's window is larger than the island (DESK_SIZE); the island sits at the top or the bottom of it
  * (`dir`), at its left, centre or right (`align`), with STAGE_PAD around (island.css .desk-stage).
  */
-export const DESK_SIZE = Object.freeze({ width: 600, height: 320 })
+export const DESK_SIZE = Object.freeze({ width: 600, height: 352 })
 /** The island's head (island-dom.js SIZES.desk.head) and the room around it in the window. */
-const HEAD = 48
+const HEAD = 80
 export const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
 /** The home place: this far below the top of the work area. */
 const TOP_GAP = 6
 /** Dropped this close to home, the island goes home. */
 const SNAP_PX = 48
 /**
- * While dragged the window shrinks to the cat and a little room for its shadow (island.css data-dragging):
+ * While dragged the window shrinks to the island (80px, her picture) and a little room for its shadow (island.css data-dragging):
  * a transparent window costs in proportion to its area every time it moves, so the smaller the better.
  */
-export const DRAG_SIZE = Object.freeze({ width: 72, height: 72 })
+export const DRAG_SIZE = Object.freeze({ width: 104, height: 104 })
 
 export interface Area { x: number, y: number, width: number, height: number }
 /** The centre of the island's head, on the screen. */

@@ -1,7 +1,7 @@
 /* ---------- Viva island (view/island-dom.js): the title bar's and the desktop's ---------- */
 .isl {
-  /* Title bar and desktop alike: a 36px cat with the same gap all round (view/island-dom.ts SIZES). */
-  --isl-head: 48px; --isl-pad: 52px; --isl-rim: var(--line);
+  /* The title bar's: 36px, a dot in the tone of the moment, no picture of her (view/island-dom.ts SIZES). */
+  --isl-head: 36px; --isl-pad: 30px; --isl-rim: var(--line); --isl-dot: var(--accent);
   position: relative; box-sizing: border-box; width: 120px; height: var(--isl-head); flex: none;
   border: 1.5px solid var(--isl-rim); border-radius: calc(var(--isl-head) / 2);
   background: var(--island-bg); color: var(--ink); font-family: var(--font-sans);
@@ -10,20 +10,25 @@
 }
 /* In the title bar it never grows past the room left between the window's buttons. */
 .isl[data-host="bar"] { max-width: 100%; }
-.isl[data-host="desk"] { --isl-head: 48px; --isl-pad: 52px; }
+/* The desktop's: she is the island, 72px and whole, so her expression reads from another app (view/maid.ts). */
+.isl[data-host="desk"] { --isl-head: 80px; --isl-pad: 86px; }
 .isl[data-open="true"] { border-radius: calc(var(--isl-head) / 2); box-shadow: 0 24px 60px rgba(0, 0, 0, .6); }
-.isl[data-tone="pending"] { --isl-rim: var(--line-2); }
-.isl[data-tone="waiting"] { --isl-rim: var(--orange); }
-.isl[data-tone="error"] { --isl-rim: var(--red); }
+.isl[data-tone="idle"] { --isl-dot: var(--ink-3); }
+.isl[data-tone="pending"] { --isl-rim: var(--line-2); --isl-dot: var(--ink-3); }
+.isl[data-tone="waiting"] { --isl-rim: var(--orange); --isl-dot: var(--orange); }
+.isl[data-tone="error"] { --isl-rim: var(--red); --isl-dot: var(--red); }
 .isl[data-tone="done"] { --isl-rim: var(--accent); }
 /* The input (island-input.js) and files dragged over the island: a blue rim with a soft glow. */
 .isl[data-form="input"], .isl[data-form="drop"] { --isl-rim: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent), 0 24px 60px rgba(0, 0, 0, .6); }
 .isl[data-form="drop"] { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent), 0 24px 60px rgba(0, 0, 0, .6); }
 
-/* The content is clipped to the shape; the cat is not, so its ears may rise over the edge. */
+/* The content is clipped to the shape; her picture is not, so its ring and badge stay whole. */
 .isl-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
 /* Concentric with the capsule's rounded end: the same gap all round. */
-.isl-cat { position: absolute; left: 4.5px; top: 4.5px; pointer-events: none; }
+.isl-face { position: absolute; left: 12.5px; top: 12.5px; pointer-events: none; }
+.isl[data-host="desk"] .isl-face { left: 2.5px; top: 2.5px; }
+.isl-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--isl-dot); transition: background .3s; }
+.isl[data-tone="waiting"] .isl-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 25%, transparent); }
 
 /* The head and, on the desktop under a resting pointer, its tools (view/island-dom.js deskTools). */
 .isl-row { display: flex; align-items: center; height: calc(var(--isl-head) - 3px); }
@@ -195,7 +200,7 @@
 .isl[data-dir="up"] .isl-entry { left: var(--isl-pad); }
 .isl[data-dir="up"] .isl-panel { top: auto; bottom: calc(var(--isl-head) - 3px); }
 .isl[data-host="desk"][data-dir="up"] .isl-panel { padding: 16px 16px 4px var(--isl-pad); }
-.isl[data-dir="up"] .isl-cat { top: auto; bottom: 4.5px; }
+.isl[data-host="desk"][data-dir="up"] .isl-face { top: auto; bottom: 2.5px; }
 
 /* The desktop island's own page (desk.html): a transparent window with the island at its top or bottom
    (data-dir), left, centre or right (data-align), as desk-place.js places it; the padding is its STAGE_PAD. */

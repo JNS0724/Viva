@@ -6,15 +6,15 @@ const mac = { x: 0, y: 25, width: 1440, height: 875 }
 const left = { x: -1920, y: 0, width: 1920, height: 1040 }
 
 test('by default the island sits at the top centre of the screen', () => {
-  assert.deepEqual(deskLayout(homePoint(mac), mac), { bounds: { x: 420, y: 31, width: 600, height: 320 }, align: 'center', dir: 'down' })
-  assert.deepEqual(deskLayout(homePoint(left), left).bounds, { x: -1260, y: 6, width: 600, height: 320 }, 'on a display left of the main one too')
+  assert.deepEqual(deskLayout(homePoint(mac), mac), { bounds: { x: 420, y: 31, width: 600, height: 352 }, align: 'center', dir: 'down' })
+  assert.deepEqual(deskLayout(homePoint(left), left).bounds, { x: -1260, y: 6, width: 600, height: 352 }, 'on a display left of the main one too')
 })
 
 test('in the lower half it unfolds upwards, its head staying where it was put', () => {
   const { bounds, dir } = deskLayout({ x: 720, y: 800 }, mac)
   assert.equal(dir, 'up')
-  assert.equal(bounds.y + bounds.height, 800 + 24 + 10, 'the window ends just below the head')
-  assert.equal(deskLayout({ x: 720, y: 880 }, mac).bounds.y + 320 <= mac.y + mac.height, true, 'and never below the screen')
+  assert.equal(bounds.y + bounds.height, 800 + 40 + 10, 'the window ends just below the head')
+  assert.equal(deskLayout({ x: 720, y: 880 }, mac).bounds.y + 352 <= mac.y + mac.height, true, 'and never below the screen')
 })
 
 test('near a side it keeps to that side, so what it unfolds stays on the screen', () => {
@@ -24,8 +24,8 @@ test('near a side it keeps to that side, so what it unfolds stays on the screen'
   assert.deepEqual([nearRight.align, nearRight.bounds.x], ['end', 1440 - 600])
 })
 
-test('dragged, the window is just the cat, centred under the pointer', () => {
-  assert.deepEqual(dragBounds({ x: 100, y: 300.4 }), { x: 64, y: 264, ...DRAG_SIZE })
+test('dragged, the window is just the island, centred under the pointer', () => {
+  assert.deepEqual(dragBounds({ x: 100, y: 300.4 }), { x: 48, y: 248, ...DRAG_SIZE })
 })
 
 test('dropped near home it goes home; elsewhere it is kept as fractions of the screen', () => {
@@ -39,8 +39,8 @@ test('dropped near home it goes home; elsewhere it is kept as fractions of the s
 })
 
 test('the head is never off the screen', () => {
-  assert.deepEqual(keepInside({ x: -50, y: 2000 }, mac), { x: 24, y: 900 - 24 })
-  assert.deepEqual(pointOf({ fx: 1, fy: 0 }, mac), { x: 1440 - 24, y: 25 + 24 })
+  assert.deepEqual(keepInside({ x: -50, y: 2000 }, mac), { x: 40, y: 900 - 40 })
+  assert.deepEqual(pointOf({ fx: 1, fy: 0 }, mac), { x: 1440 - 40, y: 25 + 40 })
 })
 
 test('what preferences.json holds is checked; a place per display, the last one dragged to', () => {
