@@ -8,10 +8,15 @@
  * Views are rebuilt often (every second for the clock, every frame while an answer streams), so a picture is
  * kept per slot and reused while its look stays the same: a rebuilt node would restart its animation.
  */
-export const MAID_MOODS = Object.freeze(['greeting', 'idle', 'thinking', 'typing', 'ask', 'confirm', 'done', 'error', 'offline', 'sleeping'] as const)
+export const MAID_MOODS = Object.freeze(['greeting', 'idle', 'thinking', 'typing', 'ask', 'listening', 'confirm', 'done', 'error', 'offline', 'sleeping'] as const)
 export type MaidMood = typeof MAID_MOODS[number]
 /** The moods that have an animation of their own. */
-export const MOVING_MOODS: ReadonlySet<MaidMood> = new Set(['greeting', 'thinking', 'typing', 'ask', 'confirm'])
+export const MOVING_MOODS: ReadonlySet<MaidMood> = new Set(['greeting', 'thinking', 'typing', 'ask', 'listening', 'confirm'])
+/**
+ * Moods drawn with another mood's pictures. Files held over the desktop island: she listens, as when she asks,
+ * but nothing waits on the user, so the ring is blue and there is no badge.
+ */
+const PICTURES: Readonly<Partial<Record<MaidMood, MaidMood>>> = Object.freeze({ listening: 'ask' })
 /** `face` framing: how far in on her face, centred. */
 export const FACE_ZOOM = 1.6
 
@@ -19,7 +24,7 @@ export type Framing = 'whole' | 'face'
 export type Ring = 'quiet' | 'blue' | 'orange' | 'red' | 'gray'
 
 const RINGS: Readonly<Record<MaidMood, Ring>> = Object.freeze({
-  greeting: 'blue', idle: 'quiet', thinking: 'blue', typing: 'blue', ask: 'orange',
+  greeting: 'blue', idle: 'quiet', thinking: 'blue', typing: 'blue', ask: 'orange', listening: 'blue',
   confirm: 'orange', done: 'blue', error: 'red', offline: 'gray', sleeping: 'quiet',
 })
 /** What her props cannot say once the picture is small. */
@@ -34,7 +39,10 @@ export function maidMood(mood: string, tone?: string): MaidMood {
 }
 
 /** The file in src/assets/maid: the animation only for a mood that has one. */
-export const pictureOf = (mood: MaidMood, moving: boolean) => (moving && MOVING_MOODS.has(mood) ? `${mood}-motion.webp` : `${mood}.webp`)
+export function pictureOf(mood: MaidMood, moving: boolean): string {
+  const name = PICTURES[mood] ?? mood
+  return moving && MOVING_MOODS.has(mood) ? `${name}-motion.webp` : `${name}.webp`
+}
 
 export const badgeOf = (mood: MaidMood): string | null => BADGES[mood] ?? null
 

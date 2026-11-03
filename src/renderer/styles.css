@@ -256,7 +256,8 @@ html:not([data-platform="darwin"]) .titlebar {
 .disclaimer { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); }
 
 /* ---------- home: the cat, a greeting, and a card only when something needs doing ---------- */
-.home-simple { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 36px; }
+/* Centred while it fits; taller than the window it starts at the top and scrolls, never cut off under the title bar. */
+.home-simple { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 36px; }
 .home-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 22px; }
 .hero-copy { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .greeting { margin: 0; font-size: 48px; font-weight: 700; line-height: 1; letter-spacing: -.01em; }
@@ -295,6 +296,9 @@ html:not([data-platform="darwin"]) .titlebar {
 }
 /* The home page's one bold thing: a saucer's rim around her cream (view/home.ts). */
 .maid-hero { flex: none; }
+/* Shorter windows keep the greeting, the card and the input in view: 200px becomes 120px, then 90px. */
+@media (max-height: 820px) { .maid-hero { zoom: .6; } }
+@media (max-height: 680px) { .maid-hero { zoom: .45; } }
 .maid-hero .maid { box-shadow: 0 0 0 2px var(--maid-ring), 0 0 0 13px var(--panel), 0 0 0 14px color-mix(in srgb, var(--maid-paper) 26%, transparent); }
 /* Beside the latest answer only; earlier answers keep the room so nothing shifts when she moves down (view/thread.ts). */
 .maid-avatar { flex: none; width: 48px; min-height: 48px; }

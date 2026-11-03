@@ -16,7 +16,14 @@ test('only the moods that have an animation move; the others stay still when ask
   assert.equal(pictureOf('typing', true), 'typing-motion.webp')
   assert.equal(pictureOf('typing', false), 'typing.webp')
   assert.equal(pictureOf('done', true), 'done.webp')
-  assert.deepEqual([...MOVING_MOODS].sort(), ['ask', 'confirm', 'greeting', 'thinking', 'typing'])
+  assert.deepEqual([...MOVING_MOODS].sort(), ['ask', 'confirm', 'greeting', 'listening', 'thinking', 'typing'])
+})
+
+test('listening to files held over the island uses the asking pictures, but in blue and without a badge: nothing waits on the user', () => {
+  assert.equal(pictureOf('listening', false), 'ask.webp')
+  assert.equal(pictureOf('listening', true), 'ask-motion.webp')
+  assert.equal(ringOf('listening'), 'blue')
+  assert.equal(badgeOf('listening'), null)
 })
 
 test('a mood the maid has no picture for rests, and an island still connecting shows her offline', () => {

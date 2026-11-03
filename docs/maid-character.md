@@ -19,7 +19,7 @@ Her hair and navy dress are exactly Viva's accent and background, so the change 
 Assets live in `src/assets/maid/`:
 
 - One still per state, `<state>.webp`, 400×400, scaled down from the 512 px originals.
-- Greeting, thinking, typing, asking and confirm also have an animation, `<state>-motion.webp`. Greeting is 400 px and plays once; the others are 256 px and loop.
+- Greeting, thinking, typing, asking (also used for listening) and confirm also have an animation, `<state>-motion.webp`. Greeting is 400 px and plays once; the others are 256 px and loop.
 - The original GIFs, frame sheets and generation prompts stay in the dsh-personal-agent repository, not in Viva.
 
 The pictures come on a cream background, `#FAF7F2`, with no alpha channel. Her disc uses the same cream (`--maid-paper`), so cropping to a circle shows no square edge. This cream is hers alone; nothing else in the interface uses it.
@@ -32,7 +32,8 @@ The pictures come on a cream background, `#FAF7F2`, with no alpha channel. Her d
 | `idle` | Holding a teacup | No | Quiet | Nothing is going on |
 | `thinking` | Pencil to her chin, eyes up | Yes | Blue | A question arrived and writing hasn't started |
 | `typing` | Square glasses, typing | Yes | Blue | Streaming an answer, running tools |
-| `ask` | Hand on her headset, listening | Yes | Orange | The assistant is asking you; also while files are held over the desktop island |
+| `ask` | Hand on her headset, listening | Yes | Orange | The assistant is asking you |
+| `listening` | The asking pictures | Yes | Blue | Files are held over the desktop island; nothing waits on you, so blue and no badge |
 | `confirm` | Handing over a clipboard | Yes | Orange | Approval cards, the desktop island |
 | `done` | Holding up a check card | No | Blue | A turn finished, something is ready |
 | `error` | Checking with a wrench | No | Red | An answer failed |

@@ -289,7 +289,7 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
     const wasOpen = el.dataset.open === 'true'
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     // Files held over the island: she listens. Moving only while the island is open in front of the user.
-    const mood = view.form === 'drop' ? 'ask' : maidMood(view.form === 'mini' ? 'idle' : view.mood, view.tone)
+    const mood = view.form === 'drop' ? 'listening' : maidMood(view.form === 'mini' ? 'idle' : view.mood, view.tone)
     face.replaceChildren(size.maid ? maidFor(maids, 'island', mood, { size: size.maid, moving: open, badge: true }) : dot)
     const tail = tailCell(view)
     const parts = view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tail]
