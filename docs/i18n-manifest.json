@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-10-31",
+  "reviewedOn": "2026-11-03",
   "pairs": [
     {
       "en": "README.md",
@@ -127,6 +127,12 @@
       "zh": "docs/releases/v0.4.0-beta.7.zh-CN.md",
       "enHash": "a1253c7be5a01e0920760807f54a64f0171144a2af52fa4d1eb0435933707746",
       "zhHash": "d6edd57c1ea73dd35238843b12a525573aeca3c048ea4fbd5c2e761dac987ea8"
+    },
+    {
+      "en": "docs/ui-guidelines.md",
+      "zh": "docs/ui-guidelines.zh-CN.md",
+      "enHash": "afc065fb295d38f596a191eee120b289ac20d9e2b852d9e080a706e913f5d810",
+      "zhHash": "d5ffc748043a1bf9fa0efc3a70d243cc5777367b1073860c3790342ff30e2262"
     }
   ],
   "bilingual": [
