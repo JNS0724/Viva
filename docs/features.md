@@ -67,6 +67,16 @@ Import from dsh accepts `DSH_HOME` (default `~/.dsh`), the last folder, or anoth
 
 Literal secrets are copied. Restricted `!!js process.env.X` and environment-based bearer templates resolve from the login-shell environment, app environment, then dsh `.env`. Other JavaScript is never executed. Missing variables do not abort import: the server is marked for secret completion. Case-insensitive duplicate names are skipped and reported. Editing prepopulates nonsecret fields; stored secrets show names only, blanks retain values, and entries can be added/removed. Saving reconnects the session. Chat-based updates require approval and use the same secure form.
 
+<a id="插件"></a>
+## Plugins
+
+Settings → Plugins manages the dsh plugins users install themselves, which add tools and abilities to the assistant: search, context compaction, vision and more.
+
+- **Install:** enter an npm package name, a git address or a local folder and choose Look up first. Viva shows the package and its version and warns that a plugin runs inside the assistant with your permissions and can read your model keys and memories; nothing is installed until you choose Install. dsh's own plugin manager installs it with the pnpm Viva ships (no Node or pnpm of your own needed) and checks compatibility with dsh's version. If dependencies want to run build scripts, they are listed first and run only after Allow and install.
+- **Switch and remove:** switches and removal take effect at once, in new conversations, without a restart, and switches survive a relaunch. Viva's own plugins, persona and safety settings are unaffected by these switches and plugins.
+- **Visibility:** each plugin shows its version, description and whether it is on; a note says when part of it is an interface for dsh's Web client (Viva does not show that part; the rest works), and parts that did not start or stock dsh settings it changes are listed.
+- **In conversation:** the model can propose installing a plugin, approved by you on an approval card.
+
 <a id="主动跟进"></a>
 ## Proactive follow-ups
 

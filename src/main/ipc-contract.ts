@@ -130,6 +130,12 @@ export const IPC_ARGS = Object.freeze({
   'ext:import-dsh': z.tuple([z.enum(['default', 'last', 'choose'])]),
   'ext:remove-skill': z.tuple([id]),
 
+  'plugins:get': none,
+  'plugins:inspect': z.tuple([path]),
+  'plugins:install': z.tuple([path, z.array(id).max(50).optional()]),
+  'plugins:remove': z.tuple([id]),
+  'plugins:set-enabled': z.tuple([id, z.boolean()]),
+
   'followups:get': none,
   'followups:accept': z.tuple([record]),
   'followups:decline': z.tuple([record]),

@@ -15,6 +15,7 @@ import { createHistoryActions } from './history-actions.ts'
 import { mountHistorySearchFrame } from './history-search-frame.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
+import { createPluginActions } from './plugin-actions.ts'
 import { createNewTopicAction, isPreviousTopicEvent } from './new-topic-actions.ts'
 import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
@@ -584,6 +585,7 @@ const followupActions = createFollowupActions({
   startTask: (text) => taskActions.startTask(text),
 })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
+const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
 /** Emptying or moving the pictures folder; null back means the user picked no folder. */
@@ -640,6 +642,7 @@ const handlers = {
   ...extensionActions,
   ...followupActions,
   ...modelActions,
+  ...pluginActions,
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
@@ -782,6 +785,7 @@ const handlers = {
     extensionActions.loadExtensions()
     followupActions.loadFollowups()
     modelActions.loadModels()
+    pluginActions.loadPlugins()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })
     } catch (err) {

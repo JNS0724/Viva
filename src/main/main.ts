@@ -15,9 +15,11 @@ import { createDeskIsland } from './desk-island.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from './dsh-migrate.ts'
 import { expandHome, importDshServers, importSummary, userDshHome } from './dsh-mcp-import.ts'
-import { ensureDshProfile } from './dsh-profile.ts'
+import { ensureDshProfile, vivaLayerFile } from './dsh-profile.ts'
+import { pnpmLauncher } from './pnpm-launcher.ts'
 import { dshEnv, restartDelay } from './dsh-runtime.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
+import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb } from './history-db.ts'
 import { imagesForPrompt, registerImageIpc } from './image-ipc.ts'
@@ -216,21 +218,23 @@ function reportTurnMemories() {
 }
 
 /**
- * Writes the app's dsh profile: the persona and the plugins that pass the compatibility check. Without it
- * dsh still runs on its stock profile, with no memory, trace or policy.
+ * Writes the app's dsh profile: the persona and the plugins that pass the compatibility check, in the app's layer
+ * given to dsh over the profile (dsh-profile.ts). Without it dsh still runs on its stock profile, with no memory,
+ * trace or policy, and without the app's layer.
  */
-function prepareProfile(config: Config) {
+function prepareProfile(config: Config): { profile: string, overlay: string | null } {
   try {
     const { plugins, problems } = resolvePlugins({
       codeRoot: CODE_ROOT, userData: app.getPath('userData'), dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
     })
     pluginProblems = problems
     problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
-    ensureDshProfile({ dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir() })
-    return DSH_PROFILE
+    const pnpmCommand = pnpmLauncher({ dir: path.join(app.getPath('userData'), 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
+    ensureDshProfile({ dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand })
+    return { profile: DSH_PROFILE, overlay: vivaLayerFile(dshHomeOf(config)) }
   } catch (err: any) {
     console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
-    return FALLBACK_PROFILE
+    return { profile: FALLBACK_PROFILE, overlay: null }
   }
 }
 
@@ -333,7 +337,7 @@ function createBridge(config: Config, cwd: string) {
     prewarmSessions: true,
     dshBin: config.dshBin,
     nodeBin: config.nodeBin,
-    profile: prepareProfile(config),
+    ...prepareProfile(config),
     cwd,
     env: dshEnv({ base: process.env, dshHome: dshHomeOf(config), runtime: config.runtime, settings: dshSettings(config) }),
     mcpServers: () => personal.mcpServers(),
@@ -835,6 +839,11 @@ function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createM
     chooseDocs: () => pickFiles({ title: t("main.main.choose.reference.documents"), properties: ['openFile', 'multiSelections'] }),
   })
   registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
+  // The 插件 section: dsh's plugin manager, inside the running dsh (viva-plugins); nothing to ask while it is down.
+  registerPluginsIpc(ipcMain, {
+    call: (op, args) => (bridge ? bridge.plugins(op, args) : Promise.resolve({ ok: false as const, problem: 'disconnected' })),
+    profileDir: () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE),
+  })
   registerExtensionsIpc(ipcMain, {
     store: mcpStore,
     roots: () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd }),

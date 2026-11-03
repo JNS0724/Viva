@@ -11,8 +11,8 @@
     {
       "en": "docs/architecture.md",
       "zh": "docs/architecture.zh-CN.md",
-      "enHash": "b5d4bdda03b2c5827323071510c5a02ac1794ee36f16dfdeacef108333c760f6",
-      "zhHash": "71a3bf3426b16da014c2af1a900674b9c233806e861a44d1cc96113ba945da26"
+      "enHash": "4b2d280fd6c7cfbf8bcf3245a6a4e7b512463e776b7fbcde9f06e20e26e92e96",
+      "zhHash": "85ee3834f6395650b2e92189d7528909bc99a523f183d95b75ef5dacf1e0d1ec"
     },
     {
       "en": "docs/background-task-tools.md",
@@ -41,8 +41,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "21a1162004dc0b7391ea80e7f197e3bf5c332be3e07785c3323162efd798ec78",
-      "zhHash": "b0c1122efcce8cb2c98ca30248b755899a7fd0f3c8b1808a92da150f848bd36d"
+      "enHash": "2e328fa8a86a1ba525322a0875ae54f05b67b38ceec1cbf4288fcc11e976702c",
+      "zhHash": "3d56e152ddbc03a92cf8fa608512d903b50252ac68ffaa111c6659046d511771"
     },
     {
       "en": "docs/internationalization.md",

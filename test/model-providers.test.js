@@ -112,7 +112,8 @@ test('the profile offers the providers, drops DeepSeek without a key and names t
   assert.match(patch, /^- id: acp\n {2}config: \{"provider":"custom-a","model":"m1"\}$/m)
 
   const stock = patchFor({ plugins: [], models: { providers: {}, deepseek: true, defaultModel: null } })
-  assert.doesNotMatch(stock, /llm-pi-ai|disabled|id: acp/)
+  // The model rows only: the app's layer always has rows of its own (HMR, the plugin manager, safety rows).
+  assert.doesNotMatch(stock, /llm-pi-ai|llm-deepseek|^- id: acp$/m)
 })
 
 test('a provider is enough to start without a DeepSeek key', () => {

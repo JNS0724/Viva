@@ -8,6 +8,7 @@ import { REVIEW_ACTIONS, initialReview } from './review-state.ts'
 import { RESUME_ACTIONS, initialResume } from './resume-state.ts'
 import { closeHub, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
+import { initialPlugins, PLUGIN_ACTIONS } from './plugins-state.ts'
 import { QUESTION_ACTIONS } from './question-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
 import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
@@ -77,6 +78,8 @@ export const initialState = Object.freeze({
   /** Cards for the follow-ups the model proposed in this conversation (followup-state.ts ProposalCard). */
   proposals: [] as Untyped[],
   models: initialModels,
+  /** The 插件 section of settings (plugins-state.ts). */
+  plugins: initialPlugins,
   toast: null as Untyped,
   /** A new or reopened conversation is on its way; sending now would land in the one being replaced. */
   switching: false,
@@ -453,6 +456,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,
+  ...PLUGIN_ACTIONS,
   ...QUESTION_ACTIONS,
   ...FILES_ACTIONS,
   ...SECRET_ACTIONS,

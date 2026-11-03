@@ -29,11 +29,11 @@ export const DSH_PROFILE = 'viva'
  * How to start dsh in ACP mode. A JavaScript entry runs under `nodeBin` (the app's own executable as Node,
  * see dsh-runtime.ts); anything else is executed directly.
  */
-export function dshLaunch(dshBin: string, nodeBin: string, profile = DSH_PROFILE): { command: string, args: string[] } {
+export function dshLaunch(dshBin: string, nodeBin: string, profile = DSH_PROFILE, overlay: string | null = null): { command: string, args: string[] } {
   const extension = path.extname(dshBin.replaceAll('\\', '/')).toLowerCase()
-  return SCRIPT_EXTENSIONS.has(extension)
-    ? { command: nodeBin, args: [dshBin, '--profile', profile] }
-    : { command: dshBin, args: ['--profile', profile] }
+  // The app's layer (dsh-profile.ts vivaLayerFile) goes over the profile's own for this launch only.
+  const options = ['--profile', profile, ...(overlay ? ['--patch', overlay] : [])]
+  return SCRIPT_EXTENSIONS.has(extension) ? { command: nodeBin, args: [dshBin, ...options] } : { command: dshBin, args: options }
 }
 
 const resolveIfPath = (value: string) => (/[\\/]/.test(value) ? path.resolve(value) : value)

@@ -12,7 +12,7 @@ This document explains which capabilities belong in DeepSeek Harness plugins, th
 | ACP, independent of a specific agent | Session lifecycle, streaming, approval requests, MCP declarations | User MCP servers, approval cards |
 | Electron app | Presentation, local data, OS integration | About you, history, system-keychain credentials |
 
-Use a plugin only when a capability needs agent internals: injection before steps, session-bound state, native tools without approvals, reusing the model, or interception before execution. Keep the rest in ACP or the app. dsh is still a 0.2.0 release candidate; plugins use its own APIs and increase the cost of switching ACP agents.
+Use a plugin only when a capability needs agent internals: injection before steps, session-bound state, native tools without approvals, reusing the model, or interception before execution. Keep the rest in ACP or the app. dsh is still a 0.2.0 release candidate; plugins use its own APIs and increase the cost of switching ACP agents. This rule covers the app's own plugins. The dsh plugins users install themselves (Settings → Plugins, section 4) are a different matter: the app is now tied to dsh's plugin ecosystem on purpose; see [Design: frontend/backend split, event core and open plugins](backend-split-design.md).
 
 Plugins and the app cooperate through versioned contracts: SQLite for durable data, separate IPC channels for questions, configuration, and streaming events.
 
@@ -27,6 +27,7 @@ The main process writes the app’s `viva` profile and starts dsh over ACP stdio
 | viva-policy | policy@1 | Behavior only: intercept execution | No shared data |
 | viva-questions | questions@1 IPC | Forward model questions from dsh’s tool-ask-user | Show cards, return answers |
 | viva-followups | followups@1 IPC | Propose follow-ups; return tool-free preparation results | Require user acceptance, store followups.db, schedule preparation, receive drafts |
+| viva-plugins | plugins@1 IPC | Answers from dsh's plugin manager | The Settings → Plugins list, lookup, install, switch, removal (src/main/plugins-ipc.ts), all through dsh's plugin manager |
 | viva-config | config@1 IPC | Request MCP/skill configuration after approval | Validate and apply; collect secrets in the window, encrypt, never return them to dsh |
 | viva-stream | stream@1 IPC | Live text/thought deltas and committed visible content | Select source per call; reconcile attempts, withdrawals, and final content; ACP still handles tools, usage, approvals |
 | viva-tasks | tasks@1 IPC | Read-only application-task queries | Scope and session checks, live registry, bounded request/output previews |
@@ -41,15 +42,23 @@ Before startup, `resolvePlugins` verifies existence, readable package.json, matc
 
 ## 4. Writing the profile
 
-`src/main/dsh-profile.ts` writes `<userData>/dsh/profiles/viva` before launch, changing only files whose contents differ:
+`src/main/dsh-profile.ts` writes `<userData>/dsh/profiles/viva` before launch, changing only files whose contents differ. The profile has three layers; later ones win:
 
-- The package composition follows dsh’s bundled ACP template.
-- `cordis.patch.yml` configures system-prompt and plugin insertion/configuration. Patching by ID replaces the configuration, so both persona prefix and suffix must be supplied.
-- Model providers use dsh’s `llm-pi-ai`. Without a DeepSeek key, disable `llm-deepseek` and `llm-deepseek-account`. New-session defaults override the ACP provider/model. Keys enter the dsh process through environment variables, not the profile.
-- Each plugin uses a `link:` dependency whose `node_modules/viva-*` package re-exports the plugin’s file URL. Plugins remain inside the app (including app.asar when installed); their imports resolve there. No symlinks or junctions are required in user profiles.
-- Remove dependencies and forwarding packages for retired viva-* plugins.
+| Layer | Owner | Contents |
+|---|---|---|
+| Bundles | dsh and the plugins the user installs | The bundles of dsh's bundled ACP template, plus those the user installs under Plugins |
+| The profile's `cordis.patch.yml` | The user and dsh's plugin manager | Plugin switches. The app only writes an empty `[]` when the file is missing, or empties what an earlier version of the app wrote there |
+| The app's layer: `<dsh home>/viva.patch.yml`, given to dsh with `--patch` at launch | The app, rewritten at every launch | See below |
 
-Normal operation does not read or write the user’s own `~/.dsh`. Explicit import and legacy migration are separate flows. If the profile cannot be written, fall back to bundled ACP without app plugins/persona.
+The app's layer holds:
+
+- system-prompt and plugin insertion/configuration. Patching by ID replaces the configuration, so both persona prefix and suffix must be supplied.
+- Model providers use dsh's `llm-pi-ai`. Without a DeepSeek key, disable `llm-deepseek` and `llm-deepseek-account`. New-session defaults override the ACP provider/model. Keys enter the dsh process through environment variables, not the profile.
+- Each plugin's `name` is its entry file's file URL. Plugins remain inside the app (including app.asar when installed); their imports resolve there. The profile's package.json does not list them, so pnpm leaves them alone when the user installs a plugin. `link:` dependencies and `node_modules/viva-*` forwarders left by earlier versions are removed.
+- `hmr` switched on (`dsh-acp-app` switches it off, and a patch by ID keeps the lower layer's `disabled`, so it states `disabled: false`), so the user's plugins switch while dsh runs; `tool-plugin-manager` switched on, so the model can propose installing a plugin in conversation, each call approved by the user on an approval card; `plugin-manager`'s `pnpmCommand` pointing at the pnpm the app ships (a launcher `src/main/pnpm-launcher.ts` writes, run on the app's own runtime).
+- The dsh-base rows the app relies on for safety (`sandbox-policy`, `approval`, `permission`) restated whole, so neither a bundle nor the user's layer can change them; `test/dsh-profile.test.ts` keeps them word for word equal to dsh-base.
+
+Normal operation does not read or write the user's own `~/.dsh`. Explicit import and legacy migration are separate flows. If the profile cannot be written, fall back to bundled ACP without app plugins/persona and without the app's layer.
 
 ## 5. dsh interfaces and lifecycle
 
@@ -60,6 +69,7 @@ Normal operation does not read or write the user’s own `~/.dsh`. Explicit impo
 | policy | tools/pre-execute, before approval; deny with an explanation |
 | followups | tools.register and llm.stream without tools |
 | stream | agent/assistant-stream, session/event, agent/disposed |
+| plugins | ctx.pluginManager (dsh-plugin-manager: listBundles, listPlugins, inspect, installBundle, removeBundle, setBundleEnabled, setPluginEnabled) |
 
 viva-stream depends on dsh internals, not a general ACP extension. dsh is pinned to `0.2.0-rc.2`, whose ACP adapter forwards committed whole blocks rather than actual deltas. On upgrades, rerun `test/stream-runtime.test.js` with real dsh and delayed SSE: first text must precede response completion and cancellation must preserve the committed prefix. Inspect event/block structures. If the plugin is unavailable, use ACP. If a selected streaming channel fails mid-call, withdraw that call’s provisional content before restoring complete ACP output to avoid omissions or duplicate appends.
 

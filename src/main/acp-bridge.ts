@@ -14,6 +14,7 @@ import { createForkDesk } from './fork-channel.ts'
 import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
+import { createPluginsDesk, type PluginsOp, type PluginsResult } from './plugins-channel.ts'
 import type { TaskRead } from './tasks-channel.ts'
 import { createQuestionDesk } from './question-channel.ts'
 import { ResumeError, resumeReason } from './resume-failure.ts'
@@ -84,12 +85,14 @@ const isRunning = (target: Pick<ChildProcess, 'exitCode' | 'signalCode'>) => (ta
  * so the owner can start it again.
  */
 export function createAcpBridge({
-  dshBin, nodeBin = 'node', profile, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
+  dshBin, nodeBin = 'node', profile, overlay = null as string | null, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming,
 }: {
-  dshBin: string, nodeBin?: string, profile: string, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
+  dshBin: string, nodeBin?: string, profile: string,
+  /** The app's layer over the profile (dsh-profile.ts vivaLayerFile); none for the stock fallback profile. */
+  overlay?: string | null, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
   onExit?: ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
@@ -142,6 +145,8 @@ export function createAcpBridge({
     if (event.type === 'followup_propose' && event.sessionId !== sessionId && !tasks.has(String(event.sessionId))) return
     emit(event)
   } })
+  // The plugins page, through dsh's plugin manager (viva-plugins).
+  const pluginsDesk = createPluginsDesk({ send: toPlugins })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, authorized: id => id === sessionId || tasks.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || tasks.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
@@ -183,7 +188,7 @@ export function createAcpBridge({
   }
 
   function spawnRuntime() {
-    const { command, args } = dshLaunch(dshBin, nodeBin, profile)
+    const { command, args } = dshLaunch(dshBin, nodeBin, profile, overlay)
     const proc = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
     child = proc
     proc.on('message', (message) => {
@@ -194,6 +199,7 @@ export function createAcpBridge({
       followupDesk.receive(message)
       tasksDesk.receive(message)
       historyDesk.receive(message)
+      pluginsDesk.receive(message)
       streams.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
@@ -204,6 +210,7 @@ export function createAcpBridge({
       fresh.dispose()
       streams.close()
       followupDesk.close()
+      pluginsDesk.close()
       if (disposed) return
       const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
       if (onExit) onExit({ code, signal, message })
@@ -709,6 +716,7 @@ export function createAcpBridge({
     broker.cancelAll()
     steering.closeAll()
     followupDesk.close()
+    pluginsDesk.close()
     if (!child || !isRunning(child)) return Promise.resolve()
     const target = child
     const exited = new Promise((resolve) => target.once('exit', resolve))
@@ -725,6 +733,12 @@ export function createAcpBridge({
   }
 
   /** Background preparation: one model call with no tools, from the followups plugin; nothing while dsh is down. */
+  /** One call to dsh's plugin manager for the plugins page; refused while dsh is not running. */
+  function plugins(op: PluginsOp, args: Record<string, unknown> = {}): Promise<PluginsResult> {
+    if (!child?.connected) return Promise.resolve({ ok: false, problem: 'disconnected' })
+    return pluginsDesk.call(op, args)
+  }
+
   function prepareText(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
     if (!child?.connected) return Promise.resolve({ ok: false, problem: t("main.acp-bridge.the.assistant.is.not.ready.yet"), called: false })
     return followupDesk.prepare(call, signal)
@@ -735,5 +749,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }

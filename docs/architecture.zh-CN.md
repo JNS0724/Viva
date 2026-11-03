@@ -17,6 +17,8 @@
 - dsh 还是 0.2.0-rc，插件用到的都是它自己的接口；
 - 每多一个插件，app 就离「换成别的 ACP agent 也能用」更远一步。
 
+这条标准管的是 app 自己写的插件。用户自己装的 dsh 插件（设置「插件」，第 4 节）是另一回事：app 从此和 dsh 的插件生态绑在一起，这是有意的取舍，见 [设计：前后端拆分、事件内核与插件开放](backend-split-design.zh-CN.md)。
+
 插件和 app 通过版本化的数据约定协作：持久数据使用 SQLite；问题、配置和实时输出等瞬时事件使用独立 IPC 通道。
 
 ## 2. 组成
@@ -42,6 +44,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | `viva-policy`（`plugins/policy`） | `policy@1`：无数据，只有行为 | — | — |
 | `viva-questions`（`plugins/questions`） | `questions@1`：IPC 消息（见 `plugins/questions/lib/channel.js`） | 模型的问题 | 显示提问卡片，回传回答；同时在 profile 里打开 dsh 的 `tool-ask-user` |
 | `viva-followups`（`plugins/followups`） | `followups@1`：IPC 消息（见 `plugins/followups/lib/channel.ts`） | 模型提出的跟进建议；后台准备的不带工具的模型调用的结果 | 建议显示成卡片，用户点了才建跟进（`followups.db`）；按时段请它准备，只拿回草稿 |
+| `viva-plugins`（`plugins/plugins`） | `plugins@1`：IPC 消息（见 `plugins/plugins/lib/channel.ts`） | dsh 插件管理器的回答 | 设置「插件」页的列出、查看、安装、启停、删除（`src/main/plugins-ipc.ts`），都经 dsh 的插件管理器 |
 | `viva-config`（`plugins/config`） | `config@1`：IPC 消息（见 `plugins/config/lib/channel.js`） | 模型要接入或移除的 MCP 服务器、要新建或安装的 skill（审批卡片通过之后） | 校验后执行（`src/main/config-channel.js`），需要密钥时由窗口请用户填写，加密保存，不回传给 dsh |
 | `viva-stream`（`plugins/stream`） | `stream@1`：IPC 消息 | 真实文本/思考增量，以及最终提交的可见内容 | 每次调用先选择输出来源；按尝试替换、撤回和最终校准，ACP 继续承载工具、用量和授权 |
 
@@ -60,15 +63,23 @@ app（Electron 主进程）                                   dsh 进程：--pro
 
 ## 4. profile 的写法
 
-`src/main/dsh-profile.js` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`（dsh 内嵌在应用里，home 是应用自己的，见 README「内嵌的 dsh」），只写有变化的文件：
+`src/main/dsh-profile.ts` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`（dsh 内嵌在应用里，home 是应用自己的，见 README「内嵌的 dsh」），只写有变化的文件。profile 分三层，后面的优先：
 
-- 组合包和 dsh 自带的 `acp` 模板相同；
-- `cordis.patch.yml` 写入 `system-prompt`（人设前后缀，按 id 打补丁会整体替换配置，所以两部分都要写）和每个插件的插入项与配置；
-- 同一个文件里还写模型（`src/main/model-providers.js`）：用户添加的提供方作为 dsh 自带 `llm-pi-ai` 插件的 `providers`；没有 DeepSeek key 时关掉 `llm-deepseek` 和 `llm-deepseek-account`；新会话的默认模型覆盖 `acp` 一项的 `provider` / `model`。key 不进 profile，只以环境变量交给 dsh 进程；
-- 每个插件以 `link:` 依赖挂入，`node_modules/viva-*` 是一个转发包（`export * from '<插件入口的文件 URL>'`）：插件留在应用里（安装后在 app.asar 内），它的 import 在应用的包里解析，不需要符号链接或 junction；
-- 清单里已经没有的 `viva-*` 插件，链接和依赖都会被移除，dsh 就不再加载它。
+| 层 | 归谁 | 内容 |
+|---|---|---|
+| 组合包 | dsh 与用户装的插件 | 和 dsh 自带的 `acp` 模板相同的组合包，加上用户在「插件」里装的 |
+| profile 的 `cordis.patch.yml` | 用户与 dsh 的插件管理器 | 插件的启停开关。app 只在它不存在时写一个空的 `[]`，或清掉旧版本 app 写在这里的内容 |
+| app 的层：`<dsh home>/viva.patch.yml`，启动时以 `--patch` 交给 dsh | app，每次启动重写 | 见下 |
 
-用户自己的 `~/.dsh` 不会被读写。profile 写不了时，退回 dsh 自带的 `acp` profile，助手照常可用，只是没有 app 的插件和人设。
+app 的层写的是：
+
+- `system-prompt`（人设前后缀，按 id 打补丁会整体替换配置，所以两部分都要写）和每个插件的插入项与配置；
+- 模型（`src/main/model-providers.ts`）：用户添加的提供方作为 dsh 自带 `llm-pi-ai` 插件的 `providers`；没有 DeepSeek key 时关掉 `llm-deepseek` 和 `llm-deepseek-account`；新会话的默认模型覆盖 `acp` 一项的 `provider` / `model`。key 不进 profile，只以环境变量交给 dsh 进程；
+- 每个插件的 `name` 是它入口文件的 file URL：插件留在应用里（安装后在 app.asar 内），它的 import 在应用的包里解析；profile 的 `package.json` 里不列 app 的插件，所以用户装插件时 pnpm 不会动它们。旧版本留下的 `link:` 依赖和 `node_modules/viva-*` 转发包会被移除；
+- 打开 `hmr`（`dsh-acp-app` 把它关了，按 id 打补丁会保留下层的 `disabled`，所以写 `disabled: false`），用户的插件运行中就能启停；打开 `tool-plugin-manager`，模型可以在对话里提出装插件，每次由用户在授权卡片上批准；`plugin-manager` 的 `pnpmCommand` 指向 app 自带的 pnpm（`src/main/pnpm-launcher.ts` 写的启动脚本，用 app 自己的运行时）；
+- dsh-base 里 app 依赖的安全相关行（`sandbox-policy`、`approval`、`permission`）原样重述，组合包和用户层都改不掉；`test/dsh-profile.test.ts` 检查它们和 dsh-base 逐字一致。
+
+用户自己的 `~/.dsh` 不会被读写。profile 写不了时，退回 dsh 自带的 `acp` profile，也不传 app 的层，助手照常可用，只是没有 app 的插件和人设。
 
 ## 5. 各插件的 dsh 接口
 
@@ -79,6 +90,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | policy | `tools/pre-execute`（先于授权执行，返回 `deny` 时附带给模型看的原因） |
 | followups | `tools.register`（`viva_followup_propose`，只把建议交给应用）、`llm.stream`（后台准备：不传 `tools`，模型只能写） |
 | stream | `agent/assistant-stream`（实时流帧）、`session/event`（最终内容）、`agent/disposed`（清理绑定） |
+| plugins | `ctx.pluginManager`（dsh-plugin-manager：`listBundles`、`listPlugins`、`inspect`、`installBundle`、`removeBundle`、`setBundleEnabled`、`setPluginEnabled`） |
 
 `viva-stream` 依赖 dsh 内部事件结构，并非通用 ACP 扩展。当前固定为 dsh `0.2.0-rc.2`：该版本的 ACP 适配器只转发已提交的完整块，所以需要独立插件接收真实增量。升级 dsh 时须重跑 `test/stream-runtime.test.js`（实际 dsh + 延迟 SSE），确认首段早于响应结束、取消保留已提交前缀，并检查事件与内容块结构。插件不可用时使用 ACP；已选流式的调用若通道失效，先撤回该调用的临时内容，再恢复完整 ACP 输出，避免丢字或重复追加。
 

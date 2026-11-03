@@ -146,7 +146,8 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   const ext = await run(win, `({
     memoryProblem: document.querySelector('.ext-memory')?.textContent ?? '',
     hint: document.querySelector('.ext-hint')?.textContent ?? '',
-    form: Boolean(document.querySelector('.ext-form, #add-mcp, #import-skill')),
+    // In the MCP and skills section only: the 插件 section below it has its own install form.
+    form: Boolean(document.querySelector('.ext-hint')?.closest('section')?.querySelector('.ext-form, #add-mcp, #import-skill')),
     servers: [...document.querySelectorAll('.ext-item .ext-name')].map((el) => el.textContent),
   })`)
   expect(!ext.memoryProblem && ext.hint.includes('帮我接入 GitHub') && !ext.form, 'settings should say MCP and skills are set up in the conversation, with no form', ext)

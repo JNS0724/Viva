@@ -21,6 +21,11 @@ const UNUSED_FILE = /(\.map|\.d\.[mc]?ts|(?<!\.d)\.[mc]?ts|\.tsbuildinfo)$/i
 const UNUSED_DOC = /^(readme|changelog|history|contributing|code_of_conduct)(\.(md|markdown|txt))?$/i
 const UNUSED_DIRS = new Set(['test', 'tests', '__tests__', '.github', 'example', 'examples'])
 const NATIVE_EXT = /\.(node|dylib|so|dll|exe)$|\.so\.\d/i
+/**
+ * Packages a child process runs from their own files: pnpm, which dsh's plugin manager starts for the user's plugins
+ * (src/main/pnpm-launcher.ts). Its native parts sit in its own node_modules, which hasNative does not look into.
+ */
+const ALWAYS_UNPACKED = ['node_modules/pnpm']
 /** Mach-O (thin and fat), ELF, PE: a program or library, whatever its name. */
 const NATIVE_MAGIC = ['cffaedfe', 'cefaedfe', 'cafebabe', '7f454c46']
 
@@ -110,7 +115,8 @@ exports.default = async function afterPack(context) {
   fs.copyFileSync(path.join(projectDir, 'LICENSE'), path.join(resources, 'LICENSE'))
   fs.writeFileSync(path.join(context.outDir, `THIRD_PARTY_NOTICES-${context.electronPlatformName}.txt`), notices)
 
-  const unpacked = keep.filter((dir) => hasNative(path.join(target, dir))).map((dir) => dir.split(path.sep).join('/'))
+  const unpacked = keep.map((dir) => dir.split(path.sep).join('/'))
+    .filter((dir) => ALWAYS_UNPACKED.includes(dir) || hasNative(path.join(target, dir)))
   const files = countFiles(target)
   await asar.createPackageWithOptions(target, archive, { unpackDir: `{${unpacked.join(',')}}` })
   // electron-builder embeds integrity BEFORE afterPack. This hook replaces the archive, so refresh the

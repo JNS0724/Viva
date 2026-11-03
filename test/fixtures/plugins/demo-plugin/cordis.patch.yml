@@ -1,0 +1,4 @@
+# The bundle layer this fixture adds, like a community plugin's (test/plugins-plugin.test.ts).
+- insert:
+    - id: demo-dsh-tool
+      name: demo-dsh-plugin

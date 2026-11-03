@@ -4,14 +4,24 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 /**
- * The app's own dsh profile: the stock ACP composition, the app's persona, and the app's plugins
- * (app-plugins.js). It is written before every launch, so a moved app or data file is picked up, and only
- * files that changed are touched. The user's other profiles (including `acp`) are never read or written.
+ * The app's own dsh profile, in layers dsh applies one over the other:
+ * - the bundles: the stock ACP composition, then the plugins the user installed (dsh's plugin manager adds them);
+ * - the profile's cordis.patch.yml: the user's layer, where the plugin manager keeps its switches. The app never
+ *   writes it, except to start it empty (or to empty what an earlier version of the app wrote there);
+ * - the app's layer (viva.patch.yml beside the profiles, given to dsh with --patch at launch, so it wins): the
+ *   persona, the models, the app's plugins by file URL, HMR and the plugin manager switched on, and the stock rows
+ *   the app relies on for safety restated whole, so neither the user's layer nor a bundle can change them.
+ * It is written before every launch, so a moved app or data file is picked up, and only files that changed are
+ * touched. The user's other profiles (including `acp`) are never read or written.
  */
 /** The app's plugins are all named like this, so ones dropped from the list can be told apart and removed. */
 export const APP_PLUGIN_PREFIX = 'viva-'
 /** Same bundles as dsh's own `acp` template (`dsh --from-default-profile acp`). */
 const BUNDLES = Object.freeze(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'])
+/** The app's layer, written on every launch (vivaLayerFile). */
+export const VIVA_LAYER_MARK = '# Written by Viva on every launch; edits here are replaced.'
+/** The user's layer when there is nothing in it yet: dsh refuses an empty or comment-only patch file. */
+const EMPTY_LAYER = '[]\n'
 const ROOT_CONFIG = `# dsh profile root — an empty entry list; the bundles and cordis.patch.yml compose the app.
 []
 `
@@ -24,6 +34,50 @@ autoInstallPeers: false
 
 /** A plugin of the app, as the profile lists it (app-plugins.ts): its config written into the patch. */
 type ProfilePlugin = { name: string, dir: string, config?: Readonly<Record<string, unknown>>, stock?: ReadonlyArray<{ id: string, name: string }> }
+
+/**
+ * dsh-base's rows the app relies on for safety, restated whole (as dsh-base writes them, test/dsh-profile.test.js
+ * keeps them in step) so a bundle or the user's layer cannot loosen them: the sandbox mode, when to ask, and the
+ * permission presets. Patches by id keep the lower layer's `disabled`, so it is stated too.
+ */
+export const SAFETY_ROWS = `- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  disabled: false
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.cwd()
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  disabled: false
+  config:
+    policy: !!js "(process.env.DSH_PERMISSION_MODE ?? 'workspace-write') === 'danger-full-access' ? 'never' : 'ask'"
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  disabled: false
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+`
+
+/**
+ * Plugins the user adds come and go while dsh runs (HMR, which the ACP bundle switches off), through dsh's plugin
+ * manager, which runs the given pnpm; its agent tool lets the model ask for the same, each call approved by the user.
+ */
+function pluginManagerLines(pnpmCommand: string | null) {
+  return [
+    '- id: hmr', "  name: '@deepseek-ai/dsh-hmr'", '  disabled: false', '  config:', '    root: []',
+    ...(pnpmCommand ? jsonEntry('plugin-manager', { pnpmCommand }) : []),
+    '- id: tool-plugin-manager', '  disabled: false',
+  ]
+}
 /** Which models dsh offers (model-providers.ts): the user's providers, DeepSeek with a key, the one to start with. */
 type ProfileModels = { providers: Record<string, object>, deepseek: boolean, defaultModel: { provider: string, model: string } | null }
 type Persona = { prefix: string, suffix: string }
@@ -65,10 +119,10 @@ function modelLines({ providers, deepseek, defaultModel }: ProfileModels) {
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
  * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
-export function patchFor({ plugins, persona, models, imagesDir = null }: {
-  plugins: readonly ProfilePlugin[], persona?: Persona | null, models?: ProfileModels | null, imagesDir?: string | null,
+export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null }: {
+  plugins: readonly ProfilePlugin[], persona?: Persona | null, models?: ProfileModels | null, imagesDir?: string | null, pnpmCommand?: string | null,
 }) {
-  const lines = ['# Written by Viva on every launch; edits here are replaced.']
+  const lines = [VIVA_LAYER_MARK]
   if (persona) {
     lines.push('- id: system-prompt', '  config:', `    personaPrefix: ${yamlString(persona.prefix)}`, `    personaSuffix: ${yamlString(persona.suffix)}`)
   }
@@ -78,10 +132,13 @@ export function patchFor({ plugins, persona, models, imagesDir = null }: {
   if (imagesDir) lines.push(`- id: ${ATTACHMENT_ENTRY.id}`, `  name: ${yamlString(ATTACHMENT_ENTRY.name)}`, '  config:', `    dshHome: ${yamlString(imagesDir)}`)
   if (plugins.length) {
     lines.push('- insert:')
-    for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${plugin.name}`, ...configLines(plugin.config, '      '))
+    // By file URL: the plugins stay where the app keeps them (inside app.asar when installed), so their imports
+    // resolve among the app's packages, and the profile's package manager never sees them.
+    for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${yamlString(pathToFileURL(pluginEntry(plugin.dir)).href)}`, ...configLines(plugin.config, '      '))
     for (const entry of plugins.flatMap((plugin) => plugin.stock ?? [])) lines.push(`    - id: ${entry.id}`, `      name: ${yamlString(entry.name)}`)
   }
-  return `${lines.join('\n')}\n`
+  lines.push(...pluginManagerLines(pnpmCommand))
+  return `${lines.join('\n')}\n${SAFETY_ROWS}`
 }
 
 /** Writes `text` unless the file already says exactly that. */
@@ -101,33 +158,24 @@ function readManifest(file: string): Manifest {
 
 const isOurs = (name: string) => name.startsWith(APP_PLUGIN_PREFIX)
 
-/** Keeps whatever else the manifest declares; the app's plugin dependencies are exactly the given ones. */
-function manifestFor(current: Manifest, plugins: readonly ProfilePlugin[]) {
+/**
+ * Keeps whatever else the manifest declares (the plugins the user installed, their bundles); the app's own plugins
+ * are no dependencies (they load by file URL), so the ones an earlier version listed go.
+ */
+function manifestFor(current: Manifest) {
   const bundles = current.dsh?.profile?.bundles?.length ? current.dsh.profile.bundles : BUNDLES
   const others = Object.fromEntries(Object.entries(current.dependencies ?? {}).filter(([name]) => !isOurs(name)))
-  const ours = Object.fromEntries(plugins.map((plugin) => [plugin.name, `link:${plugin.dir}`]))
   return {
     name: 'dsh-profile-viva',
     ...current,
     private: true,
-    dependencies: { ...others, ...ours },
+    dependencies: others,
     dsh: { ...current.dsh, profile: { ...current.dsh?.profile, bundles } },
   }
 }
 
 /** First line of every forwarding package the app writes, so it knows which folders are its own. */
 const SHIM_MARK = '// Written by Viva: forwards to the plugin inside the app.'
-
-/** The plugin's manifest, kept as it is (dsh checks its peer versions), pointing at the forwarder. */
-function shimManifest({ name, dir }: Pick<ProfilePlugin, 'name' | 'dir'>) {
-  let manifest = {}
-  try {
-    manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
-  } catch {
-    // a plugin folder without a manifest (tests): the name is enough
-  }
-  return { ...manifest, name, type: 'module', main: 'index.js', exports: { '.': './index.js', './package.json': './package.json' }, vivaPlugin: dir }
-}
 
 /**
  * The file dsh loads a plugin from: its TypeScript source where it has one (the repository, as the tests run it:
@@ -146,47 +194,42 @@ const isShim = (folder: string) => {
 }
 
 /**
- * Puts a small forwarding package at `node_modules/<name>`: its index re-exports the plugin by file URL.
- * The plugin stays where the app keeps it (inside app.asar when installed, where a link cannot point),
- * so its own imports resolve among the app's packages; and no junction is needed on Windows. A link left
- * by an earlier version is replaced; a folder the app did not write is reported, never deleted.
+ * The forwarding packages an earlier version put at `node_modules/viva-*` go (links too); a folder the app did not
+ * write is left alone.
  */
-function writeShim(modules: string, plugin: ProfilePlugin) {
-  const folder = path.join(modules, plugin.name)
-  const existing = fs.lstatSync(folder, { throwIfNoEntry: false })
-  if (existing?.isSymbolicLink()) fs.unlinkSync(folder)
-  else if (existing && !isShim(folder)) throw new Error(t("main.dsh-profile.is.not.a.plugin.entry.created.by", { folder: folder }))
-  fs.mkdirSync(folder, { recursive: true })
-  writeIfChanged(path.join(folder, 'package.json'), `${JSON.stringify(shimManifest(plugin), null, 2)}\n`)
-  writeIfChanged(path.join(folder, 'index.js'), `${SHIM_MARK}\nexport * from ${JSON.stringify(pathToFileURL(pluginEntry(plugin.dir)).href)}\n`)
-}
-
-/** Entries for app plugins no longer in the list go, so dsh stops loading them. */
-function removeDropped(modules: string, plugins: readonly ProfilePlugin[]) {
-  const keep = new Set(plugins.map((plugin) => plugin.name))
-  for (const name of fs.readdirSync(modules).filter((entry) => isOurs(entry) && !keep.has(entry))) {
+function removeForwarders(modules: string) {
+  if (!fs.existsSync(modules)) return
+  for (const name of fs.readdirSync(modules).filter(isOurs)) {
     const folder = path.join(modules, name)
     if (fs.lstatSync(folder).isSymbolicLink()) fs.unlinkSync(folder)
     else if (isShim(folder)) fs.rmSync(folder, { recursive: true, force: true })
   }
 }
 
+/** The app's layer, beside the profiles; dsh gets it with --patch (config.ts dshLaunch). */
+export const vivaLayerFile = (dshHome: string) => path.join(dshHome, 'viva.patch.yml')
+
+/** The user's layer: started empty, and emptied of what an earlier version of the app wrote there. */
+function ensureUserLayer(file: string) {
+  if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8').startsWith(VIVA_LAYER_MARK)) fs.writeFileSync(file, EMPTY_LAYER)
+}
+
 /** @returns the profile directory */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir }: {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand }: {
   dshHome: string, profile: string, plugins: readonly ProfilePlugin[],
-  persona?: Persona, models?: ProfileModels, imagesDir?: string,
+  persona?: Persona, models?: ProfileModels, imagesDir?: string, pnpmCommand?: string | null,
 }): string {
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
   if (bad) throw new Error(t("main.dsh-profile.plugin.names.must.start.with", { APP_PLUGIN_PREFIX: APP_PLUGIN_PREFIX, name: bad.name }))
   const dir = path.join(dshHome, 'profiles', profile)
   const modules = path.join(dir, 'node_modules')
-  fs.mkdirSync(modules, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true })
   const manifestFile = path.join(dir, 'package.json')
-  writeIfChanged(manifestFile, `${JSON.stringify(manifestFor(readManifest(manifestFile), plugins), null, 2)}\n`)
+  writeIfChanged(manifestFile, `${JSON.stringify(manifestFor(readManifest(manifestFile)), null, 2)}\n`)
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
-  writeIfChanged(path.join(dir, 'cordis.patch.yml'), patchFor({ plugins, persona, models, imagesDir }))
-  removeDropped(modules, plugins)
-  for (const plugin of plugins) writeShim(modules, plugin)
+  ensureUserLayer(path.join(dir, 'cordis.patch.yml'))
+  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand }))
+  removeForwarders(modules)
   return dir
 }

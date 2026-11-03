@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createAcpBridge } from '../src/main/acp-bridge.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.ts'
-import { ensureDshProfile } from '../src/main/dsh-profile.ts'
+import { ensureDshProfile, vivaLayerFile } from '../src/main/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/main/dsh-runtime.ts'
 import { createTaskRegistry } from '../src/main/task-registry.ts'
 import { startFakeLlm } from './fixtures/fake-llm.js'
@@ -43,7 +43,7 @@ test('real DSH discovers both tools and queries main-process tasks over IPC with
   ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
   const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
   const events: { type: string }[] = []
-  bridge = createAcpBridge({ dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile,
+  bridge = createAcpBridge({ dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
     env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
     emit: event => { events.push(event) },
     taskRead: (request, sessionId) => { assert.ok(sessionId); calls++; return registry.query(request, { cwd: dir }) },
