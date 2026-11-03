@@ -1061,6 +1061,9 @@ function wireFolderDrop(target: Document = document) {
   const showing = (kind: 'folder' | 'images' | null) => {
     document.body.classList.toggle('drop-folder', kind === 'folder')
     document.body.classList.toggle('drop-images', kind === 'images')
+    // styles.css shows it as the body's ::after; read when held, so it is in the language of the moment.
+    if (kind) document.body.dataset.dropHint = t(kind === 'images' ? 'app.drop.images.hint' : 'app.drop.folder.hint')
+    else delete document.body.dataset.dropHint
   }
   target.addEventListener('dragover', (event) => {
     if (!event.dataTransfer || !carriesFiles(event)) return

@@ -4,7 +4,7 @@
   --isl-head: 48px; --isl-pad: 52px; --isl-rim: var(--line);
   position: relative; box-sizing: border-box; width: 120px; height: var(--isl-head); flex: none;
   border: 1.5px solid var(--isl-rim); border-radius: calc(var(--isl-head) / 2);
-  background: #070C18; color: var(--ink); font-family: var(--font-sans);
+  background: var(--island-bg); color: var(--ink); font-family: var(--font-sans);
   transition: width .5s cubic-bezier(.3, 1.3, .5, 1), height .5s cubic-bezier(.3, 1.3, .5, 1),
     border-radius .4s ease, border-color .3s ease, box-shadow .3s ease;
 }
@@ -17,8 +17,8 @@
 .isl[data-tone="error"] { --isl-rim: var(--red); }
 .isl[data-tone="done"] { --isl-rim: var(--accent); }
 /* The input (island-input.js) and files dragged over the island: a blue rim with a soft glow. */
-.isl[data-form="input"], .isl[data-form="drop"] { --isl-rim: var(--accent); box-shadow: 0 0 0 4px rgba(90, 169, 255, .12), 0 24px 60px rgba(0, 0, 0, .6); }
-.isl[data-form="drop"] { box-shadow: 0 0 0 6px rgba(90, 169, 255, .18), 0 24px 60px rgba(0, 0, 0, .6); }
+.isl[data-form="input"], .isl[data-form="drop"] { --isl-rim: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent), 0 24px 60px rgba(0, 0, 0, .6); }
+.isl[data-form="drop"] { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent), 0 24px 60px rgba(0, 0, 0, .6); }
 
 /* The content is clipped to the shape; the cat is not, so its ears may rise over the edge. */
 .isl-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
@@ -169,7 +169,7 @@
 .isl-kbd.hot { border-color: var(--accent); background: var(--accent); color: var(--bg); font-weight: 700; }
 .isl-hint { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; color: var(--ink-3); }
 .isl-hint .isl-push { margin-left: auto; white-space: nowrap; }
-.isl-error { font-size: 13px; color: #FF9AA4; }
+.isl-error { font-size: 13px; color: var(--error-ink); }
 .isl-files { display: flex; flex-wrap: wrap; gap: 8px; }
 .isl-file {
   display: inline-flex; align-items: center; gap: 8px; max-width: 100%; height: 34px; padding: 0 4px 0 10px; box-sizing: border-box;
@@ -184,7 +184,7 @@
 .isl-file-x:hover { color: var(--ink); background: var(--line); }
 .isl-btn-blue { background: var(--accent); color: var(--bg); }
 .isl-drop {
-  height: 92px; box-sizing: border-box; border: 1.5px dashed var(--accent); border-radius: 16px; background: rgba(90, 169, 255, .07);
+  height: 92px; box-sizing: border-box; border: 1.5px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--accent) 7%, transparent);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; pointer-events: none;
 }
 .isl-drop b { font-size: 16px; }
@@ -223,7 +223,7 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .isl-bg-prep { color: var(--accent); }
 .isl-breath { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: isl-breathe 3.2s ease-in-out infinite; }
 @keyframes isl-breathe {
-  0%, 100% { opacity: .25; box-shadow: 0 0 0 0 rgba(90, 169, 255, 0); }
-  50% { opacity: 1; box-shadow: 0 0 10px 3px rgba(90, 169, 255, .8); }
+  0%, 100% { opacity: .25; box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  50% { opacity: 1; box-shadow: 0 0 10px 3px color-mix(in srgb, var(--accent) 80%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) { .isl-breath { animation: none; opacity: .8; } }

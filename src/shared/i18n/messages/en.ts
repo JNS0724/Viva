@@ -158,6 +158,8 @@ export const en = {
   "app.the.island.question.was.not.sent.the": "The island question was not sent: the assistant cannot receive it yet.",
   "app.the.assistant.is.working.send.images.after": "The assistant is working. Send images after this turn.",
   "app.images.can.only.be.sent.to.this": "Images can only be sent to this conversation, not to background tasks.",
+  "app.drop.folder.hint": "Let go to work in this folder",
+  "app.drop.images.hint": "Let go to add the images to your message",
   "app.this.question.has.ended.your.answer.was": "This question has ended. Your answer was not sent.",
   "app.this.connection.request.has.ended": "This connection request has ended.",
   "app.images.cleared": "Images cleared",

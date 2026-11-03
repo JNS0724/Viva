@@ -366,17 +366,18 @@ async function dropSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     window.smokeDrop = new DataTransfer()
     window.smokeDrop.items.add(new File(['x'], '不在磁盘上.txt'))
     document.body.dispatchEvent(new DragEvent('dragover', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))
-    return document.body.classList.contains('drop-folder')
+    return { held: document.body.classList.contains('drop-folder'), hint: document.body.dataset.dropHint ?? null }
   })()`)
-  expect(held, 'a folder held over the window should be told what letting go does')
+  // The words come from the language resources (styles.css shows the body's data-drop-hint), not from the style sheet.
+  expect(held.held && held.hint === '松开，在这个文件夹里工作', 'a folder held over the window should be told what letting go does', held)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'workdir-drop')
   await run(win, `document.body.dispatchEvent(new DragEvent('drop', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))`)
   const after = await until(win, `(() => {
     const toast = document.querySelector('.toast')?.textContent ?? ''
-    return toast && { toast, held: document.body.classList.contains('drop-folder') }
+    return toast && { toast, held: document.body.classList.contains('drop-folder'), hint: document.body.dataset.dropHint ?? null }
   })()`, 'the toast for a drop that is not a folder')
-  expect(after.toast.includes('这不是电脑上的文件夹') && !after.held, 'a drop that is not a folder on disk should be turned down', after)
+  expect(after.toast.includes('这不是电脑上的文件夹') && !after.held && after.hint === null, 'a drop that is not a folder on disk should be turned down', after)
 }
 
 /** @returns failed expectations */

@@ -33,16 +33,22 @@ Everything is defined on `:root` in `styles.css`. Use only tokens. If you need a
 | `--orange` | `#FF8A3D` | **Waiting on the user**: confirmation cards, waiting tasks, a nearly full context |
 | `--red` | `#FF4D5E` | Errors and destructive actions |
 | `--white` | `#EEF3FF` | The send button's busy background |
+| `--drawer-bg` | `#0A1120` | The drawer beside the conversation |
+| `--island-bg` | `#070C18` | The island (title bar and desktop) |
+| `--line-3` | `#2E3D5E` | Dashed and outline borders: empty states, `.btn-outline` |
+| `--user-line` | `#1F2C49` | The border of the user's own messages |
+| `--line-focus` | `#3A4C72` | The composer's border while focused |
+| `--error-ink` | `#FF9AA4` | Error text |
 
 Each color has one meaning, and it stays the same wherever it appears:
 
 - **Blue = you can act / it's ready.** Main buttons, selected tabs, focus rings, `data-tone="done"`.
 - **Orange = waiting on you.** The island's rim, the cat's disc, the confirmation card's edge and pulse dot, and `.btn-primary`. Use an orange button only on a card that waits for the user's decision. A page's ordinary main action is blue, `.btn-accent`.
-- **Red = something went wrong.** Use it for borders, a 3px left bar, or a faint background mixed with `color-mix`. Error text is light red, `#FF9AA4`; plain `--red` text doesn't have enough contrast.
+- **Red = something went wrong.** Use it for borders, a 3px left bar, or a faint background mixed with `color-mix`. Error text uses `--error-ink`; plain `--red` text doesn't have enough contrast.
 
-Write alpha variants with `color-mix(in srgb, var(--orange) 16%, var(--panel))`, not `rgba(90, 169, 255, .12)`.
+Mix alpha variants from the token, for example `color-mix(in srgb, var(--accent) 12%, transparent)` or `color-mix(in srgb, var(--orange) 16%, var(--panel))`, never `rgba(90, 169, 255, .12)`. The black `rgba(0, 0, 0, …)` used for shadows isn't covered by this rule.
 
-**Known values that aren't tokens yet.** When you touch nearby code, move them into `:root`, and don't add more: error text `#FF9AA4`, dashed and outline borders `#2E3D5E`, the composer's focus border `#3A4C72`, the drawer background `#0A1120`, the island background `#070C18`, and scattered `rgba(90, 169, 255, …)` / `rgba(255, 138, 61, …)`. Syntax highlighting (`.hljs-*`) has its own palette and is a deliberate exception.
+`test/renderer-css.test.ts` checks these rules: no hex color values outside `:root`, and no `rgba` for the accent, orange or red. Syntax highlighting (`.hljs-*`) has its own palette and is a deliberate exception.
 
 ## Type
 
@@ -178,13 +184,11 @@ Motion:
 
 ## Copy
 
-- Every piece of interface text, including `aria-label`, `title`, placeholders, empty states and errors, goes into both the English and Chinese resources in `src/shared/i18n/messages/`. Don't put text in CSS `content`.
+- Every piece of interface text, including `aria-label`, `title`, placeholders, empty states and errors, goes into both the English and Chinese resources in `src/shared/i18n/messages/`. Don't put text in CSS `content`. When a pseudo-element needs words, script writes the result of `t()` to an attribute and CSS reads it with `content: attr(…)`. That is how the full-window hint works while a folder or images are held over the window (the `data-drop-hint` attribute on `body`). A test checks this rule.
 - In plain language, say three things: **what happened, what became of the user's work, and what to do next.** For example: "This message is too long. The limit is 20,000 characters. Shorten it and try again; your draft has been kept."
 - Don't blame the user. Don't show error codes or stack traces. Avoid empty phrases like "Operation failed".
 - Action buttons are verbs and match what they do ("Start again here", "Edit and resend", "Run in background").
 - Brand names, tool and protocol ids, paths, user input and model output stay as they are and aren't translated.
-
-**Known issue:** the full-window hints shown while a folder or images are held over the window (the `content` of `body.drop-folder::after` and `body.drop-images::after` in `styles.css`) are hard-coded Chinese, so they show in Chinese even in the English UI. They should come from an attribute set by script, for example `content: attr(data-drop-hint)`, with the text taken from the resources.
 
 ## Platforms
 
