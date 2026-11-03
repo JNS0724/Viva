@@ -120,7 +120,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 | --- | --- |
 | `npm run smoke` | 自动构建，再跑公共 UI 冒烟和全部七阶段集成测试 |
 | `npm run smoke:core` | 无模型引导；真实内嵌 dsh 加本地假模型，回答及重启持久化 |
-| `smoke:setup` | 设置导航、消息源安装/凭据/拉取/移除 |
+| `smoke:setup` | 设置导航 |
 | `smoke:walkthrough` / `smoke:relaunch` | 同一个独立测试：权限、桌面岛、布局、滚动、文件；重启、历史、Markdown、话题、图片、权限和 IME |
 | `smoke:memory` / `smoke:resume` | 同一个独立测试：真实 dsh、本地假模型、记忆注入与原因、反问、MCP、模型切换、崩溃恢复、后台任务和跟进；重启验收 |
 | `smoke:timeline` | 长历史、搜索、回顾、收藏及恢复路径 |
@@ -146,7 +146,7 @@ README 和这份文档里的截图、动图，都是应用自己拍的，不是�
 npm run showcase    # 需要 ffmpeg
 ```
 
-- 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `test/smoke/smoke-showcase.ts` 的剧本走一遍：首页的「今天」、对话、跟进卡片、后台准备、消息建议、确认卡片、消息源、后台准备时段、文件、桌面岛。runner 新建唯一临时资料目录，不碰你自己的数据。
+- 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `test/smoke/smoke-showcase.ts` 的剧本走一遍：首页的「今天」、对话、跟进卡片、后台准备、确认卡片、后台准备时段、文件、桌面岛。runner 新建唯一临时资料目录，不碰你自己的数据。
 - 跟进的全过程按每秒 10 帧录下来，ffmpeg 做成 `docs/images/demo.gif`；截图缩到 1600px 宽放进 `docs/images/`。
 
 改了界面以后重跑一次，再看一遍 `docs/images/` 里的图。

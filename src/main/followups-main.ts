@@ -6,7 +6,6 @@ import { createFollowupNotifier, createGapWatch } from './followup-notifier.ts'
 import { openFollowupStore, type Followup } from './followup-store.ts'
 import { registerFollowupsIpc } from './followups-ipc.ts'
 import type { IpcRegistry } from './ipc-contract.ts'
-import { createMessageJudge, type JudgeDeps } from './message-judge.ts'
 import type { Notice } from './notice-plan.ts'
 import { materialsFor, PREPARE_MAX_TOKENS, PREPARE_SYSTEM, type MaterialSources } from './prepare-materials.ts'
 import { LEAD_MS, nextWindow, scheduleOf, type PrepareSchedule } from './prepare-schedule.ts'
@@ -15,9 +14,8 @@ import { createPrepareScheduler, type Prepared, type PrepareState } from './prep
 /**
  * Follow-ups, put together at launch: their store (followups.db), the notifier that reminds at the times the
  * user agreed to and tells what is ready in the user's gaps, and background preparation, in batches at the
- * windows the user picked, read-only, judging the sources' new messages first. main.ts reports what it sees: the
- * window coming back and turns ending (gaps), the computer waking, the user starting something (preparation
- * yields), proposals from the model, new messages.
+ * windows the user picked, read-only. main.ts reports what it sees: the window coming back and turns ending
+ * (gaps), the computer waking, the user starting something (preparation yields), proposals from the model.
  */
 const DECLINED_FOR_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -38,9 +36,7 @@ export interface FollowupsDeps {
   prepareText: (call: Omit<PrepareCall, 'provider' | 'model'>, signal: AbortSignal) => Promise<PreparedText>
   /** Whether a task of the user's already works on what came from this conversation since `since`. */
   takenUp: (conversationId: string, since: number) => boolean
-  materials: Omit<MaterialSources, 'now' | 'message'>
-  /** The sources' messages (sources-db.ts), to judge and to prepare from; none without sources. */
-  messages?: JudgeDeps['sources'] & { message: NonNullable<MaterialSources['message']> }
+  materials: Omit<MaterialSources, 'now'>
   workDir: () => string
   conversationExists: (id: string) => boolean
   /** How preparation is going, for the island and the 后台 page. */
@@ -59,20 +55,16 @@ export function openFollowups(deps: FollowupsDeps) {
     if (conversationId && deps.takenUp(conversationId, followup.createdAt)) {
       return { skip: t("main.followups-main.you.already.started.a.background.task.from") }
     }
-    const { input, readFiles } = materialsFor(followup, { ...deps.materials, message: deps.messages?.message })
+    const { input, readFiles } = materialsFor(followup, deps.materials)
     const result = await deps.prepareText({ system: PREPARE_SYSTEM, input, maxTokens: PREPARE_MAX_TOKENS, requireComplete: true }, signal)
     return result.ok ? { ok: true, draft: result.text, readFiles } : { ok: false, problem: result.problem, ...(result.called === false ? { called: false } : {}) }
   }
 
-  const judge = deps.messages
-    ? createMessageJudge({ sources: deps.messages, store, prepareText: deps.prepareText, profile: deps.materials.profile })
-    : undefined
   const scheduler = createPrepareScheduler({
     store,
     schedule,
     busy: deps.userBusy,
     prepare,
-    judge,
     onState: deps.onState,
     onReady: () => notifier.refresh(),
     onError: deps.onError,
@@ -98,7 +90,6 @@ export function openFollowups(deps: FollowupsDeps) {
     saveSchedule: deps.storeSchedule,
     workDir: deps.workDir,
     conversationExists: deps.conversationExists,
-    message: deps.messages?.message,
   })
 
   /** Whether the user turned this down lately, or asked not to be asked about such things again. */
@@ -114,8 +105,6 @@ export function openFollowups(deps: FollowupsDeps) {
     store,
     notifier,
     scheduler,
-    /** Judges the messages not judged yet, as the next window would; none without sources. */
-    judge,
     /** A proposal from the model, to show on a card; null when the user turned the same down lately. */
     admitProposal(proposal: ProposalView): ProposalView | null {
       if (declined(proposal)) return null

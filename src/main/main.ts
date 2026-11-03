@@ -45,8 +45,6 @@ import { removeTree } from './remove-tree.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { sessionTiming } from './session-timing.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
-import { openSources } from './sources-main.ts'
-import { NO_SOURCES } from './message-reader.ts'
 import { openFollowups, type Followups } from './followups-main.ts'
 import type { Notice } from './notice-plan.ts'
 import type { ProposalView } from './followup-channel.ts'
@@ -97,7 +95,6 @@ let mcpReloadDue = false
 let memoryDb!: ReturnType<typeof openMemoryDb>
 /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
 let traceDb: ReturnType<typeof openTraceDb> | null = null
-let sources: ReturnType<typeof openSources> | null = null
 /** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
 let taskStore: ReturnType<typeof createTaskStore> | null = null
 const taskRegistry = createTaskRegistry({ changed: snapshot => {
@@ -341,7 +338,6 @@ function createBridge(config: Config, cwd: string) {
     env: dshEnv({ base: process.env, dshHome: dshHomeOf(config), runtime: config.runtime, settings: dshSettings(config) }),
     mcpServers: () => personal.mcpServers(),
     configActions: configActions(config),
-    messageActions: { read: (request) => (sources ? sources.read(request) : Promise.resolve(NO_SOURCES)) },
     historySearch: (query, range) => (historyDb ? historyRecall(historyDb).search(query, range) : []),
     historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
     taskRead: (request, sessionId) => taskRegistry.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
@@ -831,12 +827,6 @@ function showNotice(notice: Notice) {
   shown.show()
 }
 
-/** 安装消息源: a folder with a viva-source.json in it. */
-async function chooseSourceFolder(): Promise<string | null> {
-  const result = await dialog.showOpenDialog(mainWindow(), { title: t("main.main.choose.a.source.folder.containing.viva.source"), properties: ['openDirectory'] })
-  return result.canceled ? null : result.filePaths[0] ?? null
-}
-
 function registerPersonalIpc(config: Config, mcpStore: ReturnType<typeof createMcpConfigStore>) {
   registerMemoryIpc(ipcMain, {
     db: memoryDb,
@@ -874,17 +864,6 @@ function openPersonal(config: Config) {
   })
   personal = createPersonal({ memoryDb, historyDb, mcpStore })
   registerPersonalIpc(config, mcpStore)
-  sources = openSources({
-    userData,
-    crypto: safeStorage,
-    ipcMain,
-    openPath: (dir) => shell.openPath(dir),
-    chooseFolder: chooseSourceFolder,
-    trash: (dir) => shell.trashItem(dir),
-    onError: (err) => console.error('[sources]', err.message),
-    onMessages: () => followups?.scheduler.refresh(),
-  })
-  const sourcesDb = sources.db
   followups = openFollowups({
     userData,
     ipcMain,
@@ -893,7 +872,7 @@ function openPersonal(config: Config) {
     onPending: (count) => {
       pendingFollowups = count
       tray?.setPending(count)
-      // Something changed in the main process (a suggestion, a draft, a reminder): the window shows it as it is now.
+      // Something changed in the main process (a draft, a reminder): the window shows it as it is now.
       emitToRenderer({ type: 'followups_changed' })
     },
     idleSeconds: () => powerMonitor.getSystemIdleTime(),
@@ -916,12 +895,6 @@ function openPersonal(config: Config) {
     conversationExists: (id) => Boolean(historyDb.get(id)),
     onState: (state) => emitToRenderer({ type: 'prepare_state', state }),
     onError: (err) => console.error('[followups]', err instanceof Error ? err.message : String(err)),
-    messages: {
-      unjudged: (limit) => sourcesDb.unjudged(limit),
-      oldestUnjudgedAt: () => sourcesDb.oldestUnjudgedAt(),
-      markJudged: (items) => sourcesDb.markJudged(items),
-      message: (source, id) => sourcesDb.message(source, id),
-    },
   })
 }
 
@@ -1146,14 +1119,13 @@ app.whenReady().then(async () => {
   openPersonal(config)
   installAutomationDriver(automationMode, {
     agentPid: () => bridge?.pid() ?? null, desk: () => desk,
-    sources: () => sources, followups: () => followups,
+    followups: () => followups,
   })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
-  // Timers slept with the computer: preparation and the sources look again from now.
+  // Timers slept with the computer: preparation looks again from now.
   const woke = () => {
     followups?.notifier.wake()
     followups?.scheduler.refresh()
-    sources?.wakeUp()
   }
   powerMonitor.on('resume', woke)
   powerMonitor.on('unlock-screen', woke)
@@ -1181,7 +1153,6 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   tray?.destroy()
   clearInterval(lateMemoryTimer)
-  sources?.close()
   followups?.close()
   historyDb?.close()
   memoryDb?.close()

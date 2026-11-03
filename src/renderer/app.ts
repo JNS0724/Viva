@@ -9,7 +9,6 @@ import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
-import { createSourceActions } from './source-actions.ts'
 import { createFollowupActions } from './followup-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
@@ -573,7 +572,6 @@ const resumeActions = createResumeActions({
 })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
-const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
 const followupActions = createFollowupActions({
   api, getState: () => state, dispatch, errorMessage,
   // 接着做: the draft in the input, the conversation in front; the user reads it and sends it.
@@ -640,7 +638,6 @@ const handlers = {
   },
   ...memoryActions,
   ...extensionActions,
-  ...sourceActions,
   ...followupActions,
   ...modelActions,
   ...filesActions,
@@ -783,7 +780,6 @@ const handlers = {
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
-    sourceActions.loadSources()
     followupActions.loadFollowups()
     modelActions.loadModels()
     try {

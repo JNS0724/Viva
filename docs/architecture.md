@@ -27,7 +27,6 @@ The main process writes the app’s `viva` profile and starts dsh over ACP stdio
 | viva-policy | policy@1 | Behavior only: intercept execution | No shared data |
 | viva-questions | questions@1 IPC | Forward model questions from dsh’s tool-ask-user | Show cards, return answers |
 | viva-followups | followups@1 IPC | Propose follow-ups; return tool-free preparation results | Require user acceptance, store followups.db, schedule preparation, receive drafts |
-| viva-messages | messages@1 IPC | Request messages by source, keywords, hours, limit | Validate, refresh sources older than one minute (wait up to 20 seconds), query sources.db, label results as data; withhold credentials and DB |
 | viva-config | config@1 IPC | Request MCP/skill configuration after approval | Validate and apply; collect secrets in the window, encrypt, never return them to dsh |
 | viva-stream | stream@1 IPC | Live text/thought deltas and committed visible content | Select source per call; reconcile attempts, withdrawals, and final content; ACP still handles tools, usage, approvals |
 | viva-tasks | tasks@1 IPC | Read-only application-task queries | Scope and session checks, live registry, bounded request/output previews |
@@ -60,7 +59,6 @@ Normal operation does not read or write the user’s own `~/.dsh`. Explicit impo
 | trace | agent/turn-stopping and session.eventAt |
 | policy | tools/pre-execute, before approval; deny with an explanation |
 | followups | tools.register and llm.stream without tools |
-| messages | tools.register, read-only result requests to the app |
 | stream | agent/assistant-stream, session/event, agent/disposed |
 
 viva-stream depends on dsh internals, not a general ACP extension. dsh is pinned to `0.2.0-rc.2`, whose ACP adapter forwards committed whole blocks rather than actual deltas. On upgrades, rerun `test/stream-runtime.test.js` with real dsh and delayed SSE: first text must precede response completion and cancellation must preserve the committed prefix. Inspect event/block structures. If the plugin is unavailable, use ACP. If a selected streaming channel fails mid-call, withdraw that call’s provisional content before restoring complete ACP output to avoid omissions or duplicate appends.
@@ -82,7 +80,7 @@ Plugin failures log and degrade gracefully: failed injection omits memories; fai
 - **Sending policy:** deny MCP names containing send/reply/forward/post/publish/deliver/broadcast, including underscore and camelCase forms, before execution. The recorded dsh behavior did not request approval for MCP tools, so this plugin is the hard no-sending boundary.
 - **ACP notifications:** rc.2 exposes no plugin custom-notification API. The app polls memory.db every two seconds for 30 seconds after a turn.
 - **Other models:** reuse llm-pi-ai (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages), not another plugin. Tests verified grouped ACP options, selected baseURL/key, and memory injection. ACP defaults come from the ACP plugin configuration; agent-default-model does not control ACP sessions.
-- **Sources:** remain app programs because dsh plugins require exact dsh versions, can alter context/tools, and require runtime restarts for configuration. Short-lived source processes store validated data in sources.db; viva-messages lets the model query bounded read-only results. The kit checker compiles from app sources.
+- **Sources:** removed (2026-11). External messages now come from dsh plugins the user installs; see [Design: frontend/backend split, event core and open plugins](backend-split-design.md).
 - **Related fixes:** extraction reads assistant/message from data.message; invalidating profile-type memories triggers resynthesis immediately rather than waiting 24 hours.
 
 ## 7. Verification
@@ -93,9 +91,8 @@ Real dsh plus the local fake model in test/fixtures/dsh-harness.js uses the actu
 
 - Move memory rules from user-message injection into a registered system-prompt section after confirming the API, potentially enabling prefix caching.
 - Add further tool policies only for concrete needs, such as sensitive directories.
-- Evaluate schedule/jobs for timed email/IM triage; drafting restrictions already have a policy boundary.
 - Replace polling when dsh exposes ACP extension notifications.
 
 ## 9. Internationalization
 
-`src/shared/i18n/` is shared by main and renderer. The main process owns the persisted language preference; validated IPC broadcasts a resolved locale to both windows. Translation keys and interpolation parameters are typed. The UI refreshes locale-sensitive caches without restarting sessions. Protocol IDs, user content, historical messages, and third-party output retain their original form. Build output includes the shared resources; source-kit emits matching main/shared paths.
+`src/shared/i18n/` is shared by main and renderer. The main process owns the persisted language preference; validated IPC broadcasts a resolved locale to both windows. Translation keys and interpolation parameters are typed. The UI refreshes locale-sensitive caches without restarting sessions. Protocol IDs, user content, historical messages, and third-party output retain their original form. Build output includes the shared resources.

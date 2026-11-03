@@ -12,7 +12,6 @@ import { QUESTION_ACTIONS } from './question-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
 import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
-import { initialSources, SOURCE_ACTIONS } from './source-state.ts'
 import { FOLLOWUP_ACTIONS, initialFollowups } from './followup-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { closeLast, closeStreams } from './streams.ts'
@@ -73,8 +72,6 @@ export const initialState = Object.freeze({
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
-  /** The 消息源 section of settings (source-state.ts). */
-  sources: initialSources,
   /** Follow-ups and background preparation (followup-state.ts). */
   followups: initialFollowups,
   /** Cards for the follow-ups the model proposed in this conversation (followup-state.ts ProposalCard). */
@@ -377,7 +374,6 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     tasks: state.tasks,
     memory: state.memory,
     extensions: state.extensions,
-    sources: state.sources,
     followups: state.followups,
     toast: state.toast,
   }),
@@ -460,7 +456,6 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...QUESTION_ACTIONS,
   ...FILES_ACTIONS,
   ...SECRET_ACTIONS,
-  ...SOURCE_ACTIONS,
   ...FOLLOWUP_ACTIONS,
 }
 

@@ -1,13 +1,13 @@
 import { getLocale } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
-import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage, SUGGESTION_KEY } from '../tasks-state.ts'
+import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
 import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
 import { reconcileChildren } from './reconcile.ts'
-import { followupDetail, followupStanding, suggestionDetail, whenText } from './followups.ts'
+import { followupDetail, followupStanding, whenText } from './followups.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../../shared/text-limits.ts'
 
 /**
@@ -19,7 +19,7 @@ import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../../shared/text-limits.ts
  */
 const groupNames = (): Readonly<Record<string, string>> => ({ waiting: t("task.status.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") })
 const LIVE = new Set(['running', 'waiting'])
-export { FOLLOWUP_KEY, SUGGESTION_KEY }
+export { FOLLOWUP_KEY }
 const followupGroupsCopy = (): ReadonlyArray<[string, string]> => ([['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]])
 
 /**
@@ -33,21 +33,6 @@ export function onPage(state: State): State {
 
 /** A group's name and how many it holds, set apart by a gap rather than joined by a middle dot. */
 const groupHead = (name: string, count: number) => h('div', { class: 'tp-group' }, name, h('span', { class: 'tp-group-count', text: String(count) }))
-
-/** Messages that may need the user, first: they wait on a decision. */
-function suggestionGroup(state: State, selected: string | null, handlers: Handlers) {
-  const open: Untyped[] = state.followups.suggestions.filter((suggestion: Untyped) => suggestion.status === 'open')
-  if (!open.length) return []
-  return [
-    groupHead(t("tasks-page.follow.up"), open.length),
-    ...open.map((suggestion) => h('button', {
-      class: 'tp-row fu-row', type: 'button', 'data-status': 'suggested', 'aria-current': `${SUGGESTION_KEY}${suggestion.id}` === selected ? 'page' : null,
-      onClick: () => handlers.selectTask(`${SUGGESTION_KEY}${suggestion.id}`),
-    },
-    h('span', { class: 'tp-name', text: suggestion.title }),
-    h('span', { class: 'tp-meta', text: t("tasks-page.label", { value1: suggestion.sender || t("tasks-page.message"), why: suggestion.why }) }))),
-  ]
-}
 
 function followupGroups(state: State, selected: string | null, handlers: Handlers, now: number) {
   const list: readonly Untyped[] = state.followups.followups
@@ -104,7 +89,6 @@ function sideView(state: State, handlers: Handlers, now: number) {
         onClick: () => handlers.foldTaskList(true),
       }, h('span', { text: '«', 'aria-hidden': 'true' }))),
     prepareLine(state, now),
-    ...suggestionGroup(state, selected, handlers),
     ...followupGroups(state, selected, handlers, now),
     ...pageGroups(state).flatMap(({ key, tasks }) => [
       groupHead(groupNames()[key], tasks.length),
@@ -224,20 +208,15 @@ function pickedFollowup(state: State): Untyped | null {
   const list: readonly Untyped[] = state.followups.followups
   const selected = state.tasks.page.selected
   if (selected?.startsWith(FOLLOWUP_KEY)) return list.find((followup) => `${FOLLOWUP_KEY}${followup.id}` === selected) ?? null
-  if (selected?.startsWith(SUGGESTION_KEY)) return null
   if (selected || pageTask(state)) return null
   return list.find((followup) => followup.status === 'ready') ?? null
 }
 
 function mainView(state: State, handlers: Handlers, now: number) {
   const selected = state.tasks.page.selected
-  if (selected?.startsWith(SUGGESTION_KEY)) {
-    const suggestion = state.followups.suggestions.find((item: Untyped) => `${SUGGESTION_KEY}${item.id}` === selected)
-    if (suggestion) return suggestionDetail(suggestion, handlers, now)
-  }
   const followup = pickedFollowup(state)
   if (followup) return followupDetail(followup, state.followups.state, handlers, now)
-  const task = selected?.startsWith(FOLLOWUP_KEY) || selected?.startsWith(SUGGESTION_KEY) ? null : pageTask(state)
+  const task = selected?.startsWith(FOLLOWUP_KEY) ? null : pageTask(state)
   if (!task) {
     return h('div', { class: 'tp-main tp-empty' },
       h('p', { class: 'help', text: t("tasks-page.no.background.work.yet.type.a.request") }))

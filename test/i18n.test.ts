@@ -14,7 +14,6 @@ import { checkedIpc, type RawIpc } from '../src/main/ipc-contract.ts'
 import { optionName } from '../src/renderer/approval.ts'
 import { PERMISSION_LEVELS } from '../src/renderer/view/permission-picker.ts'
 import { PROFILE_FIELDS } from '../src/shared/profile-fields.ts'
-import { readMessages } from '../src/main/message-reader.ts'
 import { dayLabel } from '../src/renderer/review-state.ts'
 import { userError } from '../src/renderer/user-error.ts'
 import { MESSAGE_TOO_LONG } from '../src/shared/text-limits.ts'
@@ -37,15 +36,6 @@ test('merged review dates, task states, input limits and safe errors follow repe
 })
 
 afterEach(() => setLocale('zh-CN'))
-
-test('message-reader guidance follows the active locale without altering source data', async () => {
-  const deps = { enabled: () => [], health: () => ({ lastOkAt: null, lastError: null }), search: () => [], pollNow: async () => {} }
-  const request = { source: null, query: null, sinceHours: 72, limit: 10 }
-  setLocale('en')
-  assert.match(await readMessages(request, deps), /^No message sources are enabled/)
-  setLocale('zh-CN')
-  assert.match(await readMessages(request, deps), /^用户还没有打开任何消息源/)
-})
 
 test('count phrases and profile labels switch without changing inserted content', () => {
   setLocale('en')

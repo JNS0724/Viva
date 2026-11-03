@@ -10,7 +10,6 @@ import { checkPermission } from './smoke-permission.ts'
 import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { checkMemory } from './smoke-memory.ts'
 import { checkResume } from './smoke-tasks.ts'
-import { checkSources } from './smoke-sources.ts'
 import { checkFollowups } from './smoke-followups.ts'
 import { runLive } from './live.ts'
 import { checkTimeline } from './smoke-timeline.ts'
@@ -543,11 +542,7 @@ export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePha
     await fs.mkdir(outDir, { recursive: true })
     await until(win, `document.readyState === 'complete' && document.documentElement.dataset.languageLoading !== 'true' && Boolean(document.getElementById('composer-input'))`, 'the application UI ready')
     if (smokePhase === 'language') problems.push(...await checkLanguage(win, outDir, hooks))
-    else if (smokePhase === 'setup') {
-      problems.push(...await checkSetup(win, outDir))
-      // On the settings page checkSetup leaves open.
-      problems.push(...await checkSources(win, outDir, { userData: hooks.userData, fixtures: hooks.fixtures, pick: hooks.pickSourceFolder }))
-    }
+    else if (smokePhase === 'setup') problems.push(...await checkSetup(win, outDir))
     else if (smokePhase === 'relaunch') {
       problems.push(...await checkRelaunch(win, outDir), ...await checkHistoryPanel(win, outDir), ...await checkMarkdown(win, outDir), ...await checkStarLayouts(win, outDir))
       // Last on this profile: they add questions to the conversation the checks above look at.

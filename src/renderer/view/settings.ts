@@ -5,7 +5,6 @@ import { formatSize } from '../selectors.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { extensionsSection } from './extensions.ts'
 import { modelsSection } from './models.ts'
-import { sourcesSection } from './sources.ts'
 import { prepareSection } from './prepare-settings.ts'
 
 /**
@@ -144,10 +143,10 @@ function imagesSection(settings: Settings, handlers: Handlers) {
 }
 
 /**
- * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, message sources, then MCP servers and skills.
+ * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, then MCP servers and skills.
  * Re-rendered only when its slices change, and typed text survives a re-render.
  */
-export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], extensions: State['extensions'], sources: State['sources'],
+export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], extensions: State['extensions'],
   followups: State['followups'], handlers: Handlers, { connected }: { connected: boolean }) {
   if (!settings.open) {
     container.replaceChildren()
@@ -174,7 +173,6 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
         h('span', { class: 'profile-heading', text: t("handoff.privacy.title") }),
         h('p', { class: 'help', text: t("handoff.privacy.scope") })),
       prepareSection(followups, handlers),
-      sourcesSection(sources, handlers),
       extensionsSection(extensions, handlers, { connected }))))
   if (isFirstShow && !input.disabled) input.focus()
 }

@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Rectangle, WebContents } from 'electron'
-import type { createMessageJudge } from '../../src/main/message-judge.ts'
 
 /** How the smoke runs (smoke.js, smoke-memory.js) drive the window: run page code, wait for what it shows. */
 export const UI_WAIT_MS = 600
@@ -43,10 +42,7 @@ export interface SmokeHooks {
   fixtures: string
   importHome: string
   openTasksPage: () => Promise<void>
-  pickSourceFolder: (dir: string) => Promise<void>
-  seedSuggestion: () => Promise<void>
   seedShowcase: () => Promise<void>
-  judgeMessages: () => Promise<Awaited<ReturnType<ReturnType<typeof createMessageJudge>['run']>> | null>
   scaleFactor: () => Promise<number>
   renderPanel: (html: string, size: { width: number, height: number }) => Promise<Buffer>
 }

@@ -5,20 +5,14 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "3df07fd49cb5282e4f53911266dbd3cf77290c792eea466684f1e3489c03e0aa",
-      "zhHash": "2a0e1a8fb2e14d1394756d93e3c5a73d305a7498206ee96c426763aabf32a713"
-    },
-    {
-      "en": "packages/viva-source-kit/README.md",
-      "zh": "packages/viva-source-kit/README.zh-CN.md",
-      "enHash": "498b6c5e4d7155dda0488cb1f608fcd0c4d8cebc1bdea8004492d372d3b16a6d",
-      "zhHash": "4ae7fd67f3795b58aef0459544fafbbd35630726bc949416c87493d24b90c2de"
+      "enHash": "12257f5af9bba789689e56c6bfd18781899b395431866a2e29ab8de4b0793875",
+      "zhHash": "08791a7dd21032c7d4b70cac0c3a795883101a8bb01c1f56504010daae60d32f"
     },
     {
       "en": "docs/architecture.md",
       "zh": "docs/architecture.zh-CN.md",
-      "enHash": "a103f14c240baef7fc10d1399275bc6bfa4c13bf16f4c3a50afdab2ec590e221",
-      "zhHash": "6073d0c644d6a8b29542d2343771abba1246aa4335ea18ea95aebb4e99f2ae13"
+      "enHash": "b5d4bdda03b2c5827323071510c5a02ac1794ee36f16dfdeacef108333c760f6",
+      "zhHash": "71a3bf3426b16da014c2af1a900674b9c233806e861a44d1cc96113ba945da26"
     },
     {
       "en": "docs/background-task-tools.md",
@@ -35,8 +29,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "9bb3bb5de53ddf7dccae3d4c45ac0575c87c59cb602ac160fd8edb7891511a80",
-      "zhHash": "08bf006ea309d81fe9495bfebc8c2b251b06126816d1cc334f624c232df8bc33"
+      "enHash": "3bfec9205043001471f3cf5c1f894af2486fea2caa2a447b5b805b24ba9c7eea",
+      "zhHash": "cf8c786d527f519f65024ee464511d0bf8bb759bd93325f6d16612c820f3dee5"
     },
     {
       "en": "docs/dsh-upgrade-validation-20261026.md",
@@ -47,20 +41,20 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "da95e98d225005fc80143d467e2e9345248dcb399364976904ba507b428fc452",
-      "zhHash": "4200160b409bf5b9bc0fb61f1a04f7e9c58fea903956a1375e9bb2f1d308ebff"
+      "enHash": "21a1162004dc0b7391ea80e7f197e3bf5c332be3e07785c3323162efd798ec78",
+      "zhHash": "b0c1122efcce8cb2c98ca30248b755899a7fd0f3c8b1808a92da150f848bd36d"
     },
     {
       "en": "docs/internationalization.md",
       "zh": "docs/internationalization.zh-CN.md",
-      "enHash": "7cf24857ce30c72738b7a056700b9b74b349eaa0599661d8686f632c72e32722",
-      "zhHash": "5f88d409c53c234e05f42e3524304104d41a5514e4f94cdcc0f18ee7229c83c8"
+      "enHash": "627aa6b6e5e5535a3838241b27dd658a95e3893a0fa036dc1f34c26407c67fa0",
+      "zhHash": "b7e67308e10b0e2c5703063855984168a38617eef45f46a74134dfcd5508511e"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "3b95fe9ada843f0660aee88ed1ac0cf43a5a60da7622e0789ce51d89b92db880",
-      "zhHash": "1b846cb2365ed0ab1505b8a049e390685c8da23ed4ea1dcdaec20216b4c38fb3"
+      "enHash": "ed776e2df2315eed92eabf03c995400fd8d8ef91a7254482839ea5567d65764e",
+      "zhHash": "e82cba0112f0b7e1559388184af1eb42374de4c29041181b083be3b0751d129f"
     },
     {
       "en": "docs/memory.md",
@@ -79,12 +73,6 @@
       "zh": "docs/release-qa-20261028.zh-CN.md",
       "enHash": "d7cd2dc67ff5894c04e76d0130bec41a33b4e0ecd04885d76ddeb059a750e1ce",
       "zhHash": "b09b9c96925be6ed3c14873c05a6ff8039450673c1a7a4bb5d49c6d8e405d65a"
-    },
-    {
-      "en": "docs/sources.md",
-      "zh": "docs/sources.zh-CN.md",
-      "enHash": "c3d05ef25fec93351535403e90c65d876cce367e1db5b3f1a8a7f72d26e64906",
-      "zhHash": "4e34f8f8da2b4436899d2f4de9d5ae1d0572957c3848192b045061386e926961"
     },
     {
       "en": "docs/windows-performance-20261026.md",
@@ -133,6 +121,18 @@
       "zh": "docs/ui-guidelines.zh-CN.md",
       "enHash": "84280b9e92f3f583f9c4f5cf7d15b32b154029e40d2c72dd72485f9ca5c398c2",
       "zhHash": "e1516549dff41284472eba5f9ab5feaf895bd96e6afbbf3685233e7b6d35cf2c"
+    },
+    {
+      "en": "docs/remote-workspace-research-20261104.md",
+      "zh": "docs/remote-workspace-research-20261104.zh-CN.md",
+      "enHash": "df885ab04ad22054e46578f1e1ed22e1189947442bfd693828092cfcc3f5acd7",
+      "zhHash": "b53a6c4d08c8566ea35b28ab0324b25fab9389aca42b4497c0ca91b740cc7fb0"
+    },
+    {
+      "en": "docs/backend-split-design.md",
+      "zh": "docs/backend-split-design.zh-CN.md",
+      "enHash": "4fe8d36472efc55a296cca9d7ab9f8838b614609ee6c4a17011add338932e7bf",
+      "zhHash": "5437d7c8ec88d2d24b50b5379316db5842bd09d2763683866a8a9a76a7911ceb"
     }
   ],
   "bilingual": [

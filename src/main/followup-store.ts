@@ -6,15 +6,15 @@ import { DatabaseSync } from 'node:sqlite'
 
 /**
  * followups.db: the things the user agreed Viva follows up on, and what Viva told them when. A follow-up is
- * made only on the user's yes (a suggestion card), never by the model alone; it has a time to remind at and/or a
+ * made only on the user's yes (a proposal card), never by the model alone; it has a time to remind at and/or a
  * time to be prepared by, and goes scheduled → preparing → ready → seen, or is dismissed or done. The notices
  * kept here count the day's interruptions, and the events are what the week of self-use is judged by.
  */
 export const FOLLOWUP_STATUSES = Object.freeze(['scheduled', 'preparing', 'ready', 'seen', 'done', 'dismissed'] as const)
 export type FollowupStatus = typeof FOLLOWUP_STATUSES[number]
-/** Where a follow-up came from: a conversation, a message from a source, a file the user named, or by hand. */
-export type OriginKind = 'chat' | 'message' | 'file' | 'manual'
-export interface Origin { kind: OriginKind, conversationId?: string, sourceId?: string, messageId?: string, path?: string }
+/** Where a follow-up came from: a conversation, a file the user named, or by hand. */
+export type OriginKind = 'chat' | 'file' | 'manual'
+export interface Origin { kind: OriginKind, conversationId?: string, path?: string }
 /** A file a draft was made from, and when it was last changed then: to say when it changed since. */
 export interface ReadFile { path: string, mtimeMs: number }
 
@@ -43,24 +43,6 @@ export interface Followup {
   /** Reserved for conditional follow-ups ("…回信了就提醒我"); unused in the first version. */
   cue: string | null
 }
-
-/** A message a source handed in that may need the user: suggested on the 后台 page, a follow-up only on 跟进. */
-export type SuggestionStatus = 'open' | 'accepted' | 'declined' | 'never'
-export interface Suggestion {
-  id: string
-  source: string
-  messageId: string
-  sender: string
-  title: string
-  ask: string
-  /** Why it is suggested, in a few words (依据：有截止时间 · 你上月回过这个发件人). */
-  why: string
-  remindAt: number | null
-  createdAt: number
-  status: SuggestionStatus
-  followupId: string | null
-}
-export type NewSuggestion = Pick<Suggestion, 'source' | 'messageId' | 'sender' | 'title' | 'ask' | 'why' | 'remindAt'>
 
 export type NewFollowup = Pick<Followup, 'title' | 'ask' | 'origin'> & Partial<Pick<Followup, 'remindAt' | 'prepareBy' | 'files' | 'watchPath' | 'cue'>>
 
@@ -93,20 +75,6 @@ const SCHEMA = `
     followups TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS notices_day ON notices (day);
-  CREATE TABLE IF NOT EXISTS suggestions (
-    id TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
-    message_id TEXT NOT NULL,
-    sender TEXT NOT NULL,
-    title TEXT NOT NULL,
-    ask TEXT NOT NULL,
-    why TEXT NOT NULL,
-    remind_at INTEGER,
-    created_at INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    followup_id TEXT,
-    UNIQUE (source, message_id)
-  );
   CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -155,28 +123,6 @@ function followupOf(row: Row): Followup {
     remindedAt: numberOrNull(row.reminded_at),
     lateFrom: numberOrNull(row.late_from),
     cue: textOrNull(row.cue),
-  }
-}
-
-const SUGGESTION_STATUSES: readonly string[] = ['open', 'accepted', 'declined', 'never']
-/** A sender the user said 不重要 to this many times is not suggested again (以后别问这类: at once). */
-export const DECLINES_TO_MUTE = 2
-const MAX_WHY_CHARS = 200
-const RECENT_DECISIONS = 20
-
-function suggestionOf(row: Row): Suggestion {
-  return {
-    id: String(row.id),
-    source: String(row.source),
-    messageId: String(row.message_id),
-    sender: String(row.sender),
-    title: String(row.title),
-    ask: String(row.ask),
-    why: String(row.why),
-    remindAt: numberOrNull(row.remind_at),
-    createdAt: Number(row.created_at),
-    status: (SUGGESTION_STATUSES.includes(String(row.status)) ? row.status : 'open') as SuggestionStatus,
-    followupId: textOrNull(row.followup_id),
   }
 }
 
@@ -310,52 +256,12 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     return numberOrNull(row.at)
   }
 
-  function getSuggestion(id: string): Suggestion | null {
-    const row = db.prepare('SELECT * FROM suggestions WHERE id = ?').get(id) as Row | undefined
-    return row ? suggestionOf(row) : null
-  }
-
-  /** A suggestion for a message; the same message is suggested once. Returns null when it already was. */
-  function addSuggestion(input: NewSuggestion): Suggestion | null {
-    const id = randomUUID()
-    const result = db.prepare(`INSERT OR IGNORE INTO suggestions (id, source, message_id, sender, title, ask, why, remind_at, created_at, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`)
-      .run(id, input.source, input.messageId, input.sender, input.title.slice(0, MAX_TITLE_CHARS), input.ask.slice(0, MAX_ASK_CHARS),
-        input.why.slice(0, MAX_WHY_CHARS), input.remindAt, now())
-    return Number(result.changes) ? getSuggestion(id) : null
-  }
-
-  /** Open suggestions, newest first, then those of the last month; older settled ones are let go. */
-  function listSuggestions(): Suggestion[] {
-    db.prepare(`DELETE FROM suggestions WHERE status != 'open' AND created_at < ?`).run(now() - KEEP_ENDED_MS)
-    const rows = db.prepare(`SELECT * FROM suggestions ORDER BY status = 'open' DESC, created_at DESC`).all() as Row[]
-    return rows.map(suggestionOf)
-  }
-
-  function settleSuggestion(id: string, status: SuggestionStatus, followupId: string | null = null): Suggestion | null {
-    db.prepare('UPDATE suggestions SET status = ?, followup_id = ? WHERE id = ?').run(status, followupId, id)
-    return getSuggestion(id)
-  }
-
-  /** Senders of `source` the user does not want suggestions about: 以后别问这类 once, or 不重要 twice. */
-  function mutedSenders(source: string): Set<string> {
-    const rows = db.prepare(`SELECT sender, SUM(status = 'declined') AS declined, SUM(status = 'never') AS never FROM suggestions
-      WHERE source = ? AND sender != '' GROUP BY sender`).all(source) as Row[]
-    return new Set(rows.filter((row) => Number(row.never) > 0 || Number(row.declined) >= DECLINES_TO_MUTE).map((row) => String(row.sender)))
-  }
-
-  /** What the user decided on lately, for the judge to go by (问之前先查你以前的回答). */
-  function recentDecisions(limit = RECENT_DECISIONS): Array<{ sender: string, title: string, status: SuggestionStatus }> {
-    const rows = db.prepare(`SELECT sender, title, status FROM suggestions WHERE status != 'open' ORDER BY created_at DESC LIMIT ?`).all(limit) as Row[]
-    return rows.map((row) => ({ sender: String(row.sender), title: String(row.title), status: String(row.status) as SuggestionStatus }))
-  }
-
-  /** Something worth counting in the week of self-use (a suggestion taken, a notice opened, a call made). */
+  /** Something worth counting in the week of self-use (a proposal taken, a notice opened, a call made). */
   function logEvent(kind: string, data: Record<string, unknown> = {}): void {
     db.prepare('INSERT INTO events (kind, at, data) VALUES (?, ?, ?)').run(kind, now(), JSON.stringify(data))
   }
 
-  /** The titles of suggestions the user turned down since `since` (not proposed again meanwhile). */
+  /** The titles of proposals the user turned down since `since` (not proposed again meanwhile). */
   function declinedSince(since: number): string[] {
     const rows = db.prepare(`SELECT data FROM events WHERE kind = 'suggest_declined' AND at >= ?`).all(since) as Row[]
     return rows.flatMap((row) => {
@@ -375,7 +281,7 @@ export function openFollowupStore({ file, now = Date.now }: { file: string, now?
     return Number((db.prepare('SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?').get(kind, since) as Row).n)
   }
 
-  return { add, get, list, setStatus, saveDraft, finishPreparing, moveStatus, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, addSuggestion, getSuggestion, listSuggestions, settleSuggestion, mutedSenders, recentDecisions, logEvent, declinedSince, eventsSince, countEvents, close: () => db.close() }
+  return { add, get, list, setStatus, saveDraft, finishPreparing, moveStatus, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, logEvent, declinedSince, eventsSince, countEvents, close: () => db.close() }
 }
 
 export type FollowupStore = ReturnType<typeof openFollowupStore>

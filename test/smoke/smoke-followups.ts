@@ -47,23 +47,5 @@ export async function checkFollowups(win: SmokeWindow, outDir: string, hooks: Sm
   await until(win, `document.getElementById('composer-input').value.startsWith('接着做「周报」')`, '接着做 puts the draft in the input')
   await capture(win, outDir, 'followup-continue')
   await run(win, `(() => { const input = document.getElementById('composer-input'); input.value = ''; input.dispatchEvent(new Event('input')) })()`)
-  failures.push(...await checkSuggestion(win, outDir, hooks))
-  return failures
-}
-
-async function checkSuggestion(win: SmokeWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
-  const failures: string[] = []
-  await hooks.seedSuggestion()
-  await hooks.openTasksPage()
-  await until(win, q(`${PAGE} .fu-row[data-status="suggested"]`), 'the suggested message on the 后台 page')
-  await run(win, `${q(`${PAGE} .fu-row[data-status="suggested"]`)}.click()`)
-  await until(win, q(`${PAGE} .fu-message`), 'the message and why')
-  const shown = String(await run(win, `${q(`${PAGE} .fu-main`)}.textContent`))
-  if (!shown.includes('合同明天到期') || !shown.includes('依据：明天到期')) failures.push(`the suggestion should show the message and why: ${shown.slice(0, 160)}`)
-  await capture(win, outDir, 'followup-suggestion')
-  await run(win, clickText(`${PAGE} .fu-main`, '跟进'))
-  // With no time of its own it is prepared at once (the fake model is quick), so it may be in any group by now.
-  await until(win, `!${q(`${PAGE} .fu-row[data-status="suggested"]`)} && ${anyText(`${PAGE} .fu-row:not([data-status="suggested"]) .tp-name`, '合同续签')}`,
-    '跟进 makes a follow-up of the message')
   return failures
 }

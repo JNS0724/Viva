@@ -13,7 +13,7 @@ It remembers what you mention, prepares work while you are away, and asks before
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-5AA9FF)](#download-and-install)
 [![License](https://img.shields.io/github/license/JNS0724/Viva)](LICENSE)
 
-[Download](https://github.com/JNS0724/Viva/releases) · [Features](docs/features.md) · [Build a source](docs/sources.md) · [Development](docs/development.md)
+[Download](https://github.com/JNS0724/Viva/releases) · [Features](docs/features.md) · [Development](docs/development.md)
 
 <img src="docs/images/demo.gif" width="880" alt="Follow-up flow: request a weekly report, approve a follow-up card, choose preparation windows, then review and continue with the draft">
 
@@ -55,14 +55,6 @@ Preparation is **one model call without tools**. The app reads materials and lab
 
 ![Preparation settings: daily windows, next run, calls today, and missed deadlines](docs/images/prepare-settings.png)
 
-### Keep up with incoming messages
-
-Connect email, alerts, or messaging through **sources**. New messages are reviewed together in the next window. Items needing attention become suggestions with the original message and a reason. Advertising does not prompt you. Mark a sender’s messages unimportant twice and Viva stops asking about that sender.
-
-| Evidence for a suggestion | Source configuration |
-|---|---|
-| ![Contract expiry suggestion, original message, and follow-up actions](docs/images/suggestion.png) | ![Mailbox source fetched every five minutes and three recent messages](docs/images/sources.png) |
-
 ### Review actions before they run
 
 Confirmation cards explain actions that require approval. Choose **Read only**, **Workspace write**, **Automatic**, or **Full access** beside the input. The selected level determines when approval is required. Thoughts and tool calls appear in Activity.
@@ -81,8 +73,7 @@ Closing the window leaves Viva in the tray. The desktop island shows work, appro
 
 ### More
 
-- **Ask about email:** “Any emails today?” refreshes the source and reads the results.
-- **Today:** the first time you return each day, get one summary of drafts, messages, and reminders.
+- **Today:** the first time you return each day, get one summary of drafts and reminders.
 - **Watch a file:** after ten quiet minutes following a change, preparation is queued for the next window.
 - **Remember you:** say “Remember…” or let Viva learn in conversation. View, edit, delete, or restore memories in About you.
 - **Connect tools through conversation:** ask to connect GitHub or save a workflow as a skill. Secrets go in a dedicated card, are encrypted locally, and are not given to the model.
@@ -94,42 +85,13 @@ Closing the window leaves Viva in the tray. The desktop island shows work, appro
 ```mermaid
 flowchart LR
   A["Conversation"] --> P{"Follow up?"}
-  M["Sources: email, alerts, messaging"] -->|Scheduled batch review| P
   P -->|You approve| S["Scheduled"]
   S -->|Your windows, while idle; no tools| R["Ready for review"]
   R -->|During a break, up to 3 times daily| N["Reminder"]
   N -->|Continue| C["Draft in input; you review and send"]
 ```
 
-Embedded dsh powers conversations over ACP with Electron’s main process. Memory, permissions, and follow-ups are dsh plugins; Viva does not modify dsh. Sources are separate programs, not dsh plugins, and do not receive the model, tools, or conversation context. See [Architecture](docs/architecture.md) and [Features](docs/features.md).
-
-## Build a source
-
-A source is a folder with `viva-source.json` and a program written in any language. Viva starts it periodically, sends one JSON line on stdin, and reads the last JSON line on stdout. JavaScript sources can use `viva-source-kit`:
-
-```js
-import { defineSource } from 'viva-source-kit'
-
-defineSource({
-  async check(config) {
-    return config.token ? true : 'Enter an access token'
-  },
-  async poll(config, cursor) {
-    const page = await fetchInbox(config.token, cursor) // Your own system
-    return {
-      cursor: page.next,
-      messages: page.items.map((m) => ({ id: m.id, at: m.time, from: m.sender, title: m.subject, text: m.body })),
-    }
-  },
-})
-```
-
-```bash
-npx viva-source new my-alerts       # JS, Python, or command template
-npx viva-source test my-alerts      # Viva’s own validation
-```
-
-Secrets are encrypted using the system keychain and passed only to that source on stdin. Each run has a 60-second timeout, a 1 MB output limit, and an allowlisted environment. [Sources](docs/sources.md) documents the protocol and repository usage before npm publication.
+Embedded dsh powers conversations over ACP with Electron’s main process. Memory, permissions, and follow-ups are dsh plugins; Viva does not modify dsh. See [Architecture](docs/architecture.md) and [Features](docs/features.md).
 
 <a id="下载安装"></a>
 ## Download and install
@@ -151,16 +113,14 @@ Installers are unsigned. First launch may require an extra step:
 1. Open Connect a model and enter a [DeepSeek API key](https://platform.deepseek.com/api_keys), or add another provider in Settings.
 2. Ask for help, such as summarizing weekly reports. Review approval cards before allowing actions.
 3. Mention a future task, accept its follow-up card, and choose preparation windows.
-4. To monitor a mailbox, install a source in Settings → Sources, configure it, and enable it.
 5. Choose Follow system, 简体中文, or English in Settings → Language. Existing profiles retain Chinese on upgrade. Switching language does not translate history or restart the assistant.
 
 ## Privacy and safety
 
 - **Encrypted keys:** macOS Keychain or Windows DPAPI encrypts keys locally; the UI shows only the last four characters.
 - **Draft, never send:** sending email or messages is blocked; you send the prepared content yourself.
-- **Read-only preparation:** preparation and message review have no tools. File and email contents are data.
-- **Source isolation:** sources receive their own credentials, not model keys or dsh settings. They still run with your OS permissions; install only sources you trust.
-- **Local data:** conversations, memories, follow-ups, and received messages stay locally. Viva has no server. Model calls, network tools, sources, and connected services use the network. Conversation history is plaintext locally.
+- **Read-only preparation:** preparation has no tools. Conversation and file contents are data.
+- **Local data:** conversations, memories, and follow-ups stay locally. Viva has no server. Model calls, network tools, and connected services use the network. Conversation history is plaintext locally.
 
 ## Run from source
 
@@ -180,7 +140,6 @@ See [Development](docs/development.md) for packaging, tests and embedded dsh.
 ## Documentation
 
 - [Features](docs/features.md)
-- [Sources](docs/sources.md)
 - [Development, packaging, and testing](docs/development.md)
 - [Architecture](docs/architecture.md)
 - [Memory design](docs/memory.md)
@@ -188,7 +147,7 @@ See [Development](docs/development.md) for packaging, tests and embedded dsh.
 
 ## Contributing
 
-Report issues, suggest ideas, or share sources in [Issues](https://github.com/JNS0724/Viva/issues). Before a PR, run `npm run typecheck`, `npm test`, and `npm run smoke`. PR checks run on macOS and Windows.
+Report issues or suggest ideas in [Issues](https://github.com/JNS0724/Viva/issues). Before a PR, run `npm run typecheck`, `npm test`, and `npm run smoke`. PR checks run on macOS and Windows.
 
 ## License
 

@@ -99,7 +99,7 @@ The external Playwright runner in `test/smoke/` owns launch, isolated profiles, 
 | --- | --- |
 | `npm run smoke` | Builds, then runs public UI smoke and all seven integration phases |
 | `npm run smoke:core` | Fresh setup; real embedded dsh with local fake model, answer and persisted restart |
-| `smoke:setup` | Setup navigation and source install/credentials/fetch/removal |
+| `smoke:setup` | Setup navigation |
 | `smoke:walkthrough` / `smoke:relaunch` | One self-contained test: approval, desktop island, layouts, scrolling, files; restart, history, Markdown, topics, images, permissions and IME |
 | `smoke:memory` / `smoke:resume` | One self-contained test: real dsh, local fake model, memory injection/reasons, questions, MCP, provider switching, crash recovery, tasks and follow-ups; restart acceptance |
 | `smoke:timeline` | Seeded long history, search, review, stars and resume paths |
@@ -119,7 +119,7 @@ The design follows [Electron automated testing](https://www.electronjs.org/docs/
 
 ## Captures
 
-npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture Today, chat, follow-ups, preparation, suggestions, approvals, sources, schedules, files, and island. The runner owns a unique temporary profile. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Review captures after UI changes. Current captures use Chinese; localized capture sets must be verified before being represented as English product media.
+npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture Today, chat, follow-ups, preparation, approvals, schedules, files, and island. The runner owns a unique temporary profile. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Review captures after UI changes. Current captures use Chinese; localized capture sets must be verified before being represented as English product media.
 
 ## Known limits
 

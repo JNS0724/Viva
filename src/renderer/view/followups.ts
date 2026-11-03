@@ -111,34 +111,8 @@ export function followupStanding(followup: Untyped, now = Date.now()): string {
   return ''
 }
 
-/** A message suggested for a follow-up, picked on the 后台 page: the message, why, and 跟进 / 不重要 / 别问. */
-export function suggestionDetail(suggestion: Untyped, handlers: Handlers, now = Date.now()) {
-  const message = suggestion.message
-  const open = suggestion.status === 'open'
-  const button = (kind: keyof typeof BUTTON, text: string, action: string) =>
-    h('button', { class: BUTTON[kind], type: 'button', text, onClick: () => handlers.settleSuggestion(suggestion.id, action) })
-  return h('div', { class: 'tp-main fu-main', 'data-suggestion': suggestion.id },
-    h('header', { class: 'tp-head' },
-      h('h2', { class: 'tp-title', text: t("followups.this.looks.like.something.for.you.to") })),
-    h('div', { class: 'tp-scroll fu-scroll' },
-      message
-        ? h('article', { class: 'fu-draft fu-message' },
-          h('div', { class: 'fu-note', text: t("followups.label.2", { value1: message.from || suggestion.sender || t("followups.unknown"), value2: whenText(message.at, now) }) }),
-          message.title ? h('b', { text: message.title }) : null,
-          message.text ? h('p', { class: 'fu-ask', text: message.text }) : null)
-        : h('p', { class: 'fu-note', text: t("followups.the.original.message.is.no.longer.available") }),
-      h('p', { class: 'fu-note', text: t("followups.reason", { why: suggestion.why }) }),
-      h('div', { class: 'fu-lines' },
-        h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: t("followups.after.following.up") }), h('span', { text: suggestion.ask })),
-        suggestion.remindAt ? h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: whenText(suggestion.remindAt, now) }), h('span', { text: t("followups.remind.you.and.prepare.a.draft.beforehand") })) : null),
-      open
-        ? h('div', { class: 'confirm-actions fu-actions' }, button('primary', t("followups.follow.up"), 'accept'), button('secondary', t("followups.not.important"), 'decline'), button('text', t("followups.do.not.ask.about.this.kind.again"), 'never'))
-        : h('p', { class: 'fu-note', text: suggestion.status === 'accepted' ? t("followups.added.to.follow.ups") : t("followups.do.not.follow.up") }),
-      h('p', { class: 'fu-note', text: t("followups.not.important.is.remembered.after.two.dismissals") })))
-}
-
 /** Where the follow-up came from, for its detail. */
-let ORIGIN_NAMES: Readonly<Record<string, string>> = { chat: t("followups.from.conversation"), message: t("followups.from.messages"), file: t("followups.files.you.named"), manual: t("followups.added.by.you") }
+let ORIGIN_NAMES: Readonly<Record<string, string>> = { chat: t("followups.from.conversation"), file: t("followups.files.you.named"), manual: t("followups.added.by.you") }
 let PREPARE_PROMISE = t("followups.prepare.read.only.in.the.background.read")
 
 function detailActions(followup: Untyped, handlers: Handlers) {
@@ -189,6 +163,6 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
 onLocaleChange(() => {
   WEEKDAYS = [t("followups.sunday"), t("followups.monday"), t("followups.tuesday"), t("followups.wednesday"), t("followups.thursday"), t("followups.friday"), t("followups.saturday")]
   PRESET_NAMES = { three: t("followups.three.times.a.day"), two: t("followups.twice.a.day"), one: t("followups.once.a.day"), custom: t("followups.custom") }
-  ORIGIN_NAMES = { chat: t("followups.from.conversation"), message: t("followups.from.messages"), file: t("followups.files.you.named"), manual: t("followups.added.by.you") }
+  ORIGIN_NAMES = { chat: t("followups.from.conversation"), file: t("followups.files.you.named"), manual: t("followups.added.by.you") }
   PREPARE_PROMISE = t("followups.prepare.read.only.in.the.background.read")
 })

@@ -130,16 +130,6 @@ export const IPC_ARGS = Object.freeze({
   'ext:import-dsh': z.tuple([z.enum(['default', 'last', 'choose'])]),
   'ext:remove-skill': z.tuple([id]),
 
-  'sources:get': none,
-  'sources:save': z.tuple([id, record]),
-  'sources:check': z.tuple([id, record.optional()]),
-  'sources:poll-now': z.tuple([id]),
-  'sources:open-folder': none,
-  'sources:choose': none,
-  'sources:install': none,
-  'sources:cancel-install': none,
-  'sources:remove': z.tuple([id]),
-
   'followups:get': none,
   'followups:accept': z.tuple([record]),
   'followups:decline': z.tuple([record]),
@@ -149,7 +139,6 @@ export const IPC_ARGS = Object.freeze({
   'followups:wake': none,
   'followups:set-schedule': z.tuple([record]),
   'followups:pause': z.tuple([count]),
-  'followups:suggestion': z.tuple([id, z.enum(['accept', 'decline', 'never'])]),
 
   'island:view': z.tuple([record]),
   'island:act': z.tuple([record]),

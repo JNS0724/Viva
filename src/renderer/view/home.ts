@@ -47,16 +47,15 @@ const endOfDay = (ts: number) => new Date(ts).setHours(23, 59, 59, 999)
 const OPEN = new Set(['scheduled', 'preparing', 'ready'])
 
 /**
- * 今天: what waits for the user (drafts ready, messages suggested) and what will be reminded of before the day
+ * 今天: what waits for the user (drafts ready) and what will be reminded of before the day
  * ends; only on a day with something, and the way to the 后台 page.
  */
 function todayCard(state: State, handlers: Handlers, now: number) {
   const followups: readonly Untyped[] = state.followups.followups
   const ready = followups.filter((f) => f.status === 'ready').length
-  const suggested = state.followups.suggestions.filter((s: Untyped) => s.status === 'open').length
   const later = followups.filter((f) => OPEN.has(f.status) && f.status !== 'ready' && f.remindAt && f.remindAt > now && f.remindAt <= endOfDay(now)).length
-  if (!ready && !suggested && !later) return null
-  const parts = [ready ? t("home.ready", { ready: ready }) : null, suggested ? t("home.messages.to.review", { suggested: suggested }) : null, later ? t("home.reminders.today", { later: later }) : null].filter(Boolean)
+  if (!ready && !later) return null
+  const parts = [ready ? t("home.ready", { ready: ready }) : null, later ? t("home.reminders.today", { later: later }) : null].filter(Boolean)
   return h('section', { class: 'home-card home-today', 'aria-label': t("selectors.today") },
     h('div', { class: 'home-card-copy' },
       h('h2', { class: 'setup-title', text: t("selectors.today") }),

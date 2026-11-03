@@ -6,11 +6,11 @@ import type { Followup } from './followup-store.ts'
  * - a reminder goes out at the time the user agreed to, once; reminders are what the user asked for, so the
  *   day's cap does not hold them back. Reminders missed while the computer slept or Viva was closed go out
  *   together as one, marked with the time they were due.
- * - what is ready, and messages suggested for a follow-up, are told only in a gap (the window comes back, a turn
+ * - what is ready is told only in a gap (the window comes back, a turn
  *   ends, the user is back at the computer), once each, all together in one notice, and only while the day's
  *   interruptions are under the cap; past it, they wait for the next day's first gap. With the window in front,
  *   the window shows them instead of a notification.
- * - 今天: the day's first gap with something to say gathers it all in one notice (ready, suggested, to be reminded
+ * - 今天: the day's first gap with something to say gathers it all in one notice (ready, to be reminded
  *   of today), once a day, under the cap; a day with nothing says nothing.
  * Nothing else is ever a reason to speak: no time passing, no launch by itself, no model deciding.
  */
@@ -41,8 +41,6 @@ export interface PlanInput {
   windowInFront: boolean
   /** Ready follow-ups the user was already told of. */
   toldReady: ReadonlySet<string>
-  /** Messages suggested for a follow-up, open and not told of yet. */
-  suggestions?: ReadonlyArray<{ id: string, title: string }>
   /** 今天 went out already today. */
   todayTold?: boolean
 }
@@ -73,23 +71,22 @@ function reminderBody(followup: Followup): string {
 const endOfDay = (ts: number) => new Date(ts).setHours(23, 59, 59, 999)
 
 /** 今天: what waits for the user and what will be reminded of before the day ends, in one line. */
-function todayNotice(ready: readonly Followup[], suggestions: ReadonlyArray<{ id: string, title: string }>, later: readonly Followup[], windowInFront: boolean): Notice {
+function todayNotice(ready: readonly Followup[], later: readonly Followup[], windowInFront: boolean): Notice {
   const parts = [
     ready.length ? t("main.notice-plan.ready", { length: ready.length }) : null,
-    suggestions.length ? t("main.notice-plan.messages.to.review", { length: suggestions.length }) : null,
     later.length ? t("main.notice-plan.reminders.today", { length: later.length }) : null,
   ].filter(Boolean)
   return {
     kind: 'today',
-    followupIds: [...ready.map((f) => f.id), ...suggestions.map((s) => s.id)],
+    followupIds: ready.map((f) => f.id),
     title: t("main.notice-plan.today"),
-    body: `${parts.join(' · ')}：${titles([...ready, ...suggestions, ...later])}`,
+    body: `${parts.join(' · ')}：${titles([...ready, ...later])}`,
     interrupts: !windowInFront,
     system: !windowInFront,
   }
 }
 
-export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CAP, atGap, windowInFront, toldReady, suggestions = [], todayTold = true }: PlanInput): Notice[] {
+export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CAP, atGap, windowInFront, toldReady, todayTold = true }: PlanInput): Notice[] {
   const open = followups.filter((f) => OPEN.has(f.status))
   const due = open.filter((f) => f.remindAt !== null && f.remindAt <= now && f.remindedAt === null)
   const onTime = due.filter((f) => now - (f.remindAt as number) <= LATE_MS)
@@ -111,18 +108,16 @@ export function planNotices({ now, followups, interruptionsToday, cap = DAILY_CA
   const mayTell = atGap && (windowInFront || interruptionsToday < cap)
   const readyIds = new Set(ready.map((f) => f.id))
   const later = open.filter((f) => !readyIds.has(f.id) && f.remindAt !== null && f.remindAt > now && f.remindAt <= endOfDay(now) && f.remindedAt === null)
-  if (mayTell && !todayTold && (ready.length || suggestions.length || later.length)) {
-    notices.push(todayNotice(ready, suggestions, later, windowInFront))
+  if (mayTell && !todayTold && (ready.length || later.length)) {
+    notices.push(todayNotice(ready, later, windowInFront))
     return notices
   }
-  if ((ready.length || suggestions.length) && mayTell) {
-    const both = ready.length && suggestions.length
+  if (ready.length && mayTell) {
     notices.push({
       kind: 'ready',
-      followupIds: [...ready.map((f) => f.id), ...suggestions.map((s) => s.id)],
-      title: both ? t("main.notice-plan.ready.messages.to.review", { length: ready.length, length2: suggestions.length })
-        : ready.length ? t("main.notice-plan.ready.for.your.review", { length: ready.length }) : t("main.notice-plan.messages.may.need.your.attention", { length: suggestions.length }),
-      body: ready.length ? t("main.notice-plan.no.action.taken.waiting.for.your.approval", { value1: titles([...ready, ...suggestions]) }) : t("main.notice-plan.you.decide.whether.to.follow.up", { value1: titles(suggestions) }),
+      followupIds: ready.map((f) => f.id),
+      title: t("main.notice-plan.ready.for.your.review", { length: ready.length }),
+      body: t("main.notice-plan.no.action.taken.waiting.for.your.approval", { value1: titles(ready) }),
       interrupts: !windowInFront,
       system: !windowInFront,
     })
