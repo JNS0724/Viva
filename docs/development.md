@@ -117,11 +117,9 @@ Retries are zero and workers are one. Reports: `smoke/report` (HTML), `smoke/jun
 
 The design follows [Electron automated testing](https://www.electronjs.org/docs/latest/tutorial/automated-testing), [Playwright fixtures/isolation](https://playwright.dev/docs/test-fixtures), and [VS Code's external Electron runner](https://github.com/microsoft/vscode/blob/main/test/automation/src/playwrightElectron.ts). Playwright's Electron API remains experimental; this repository pins Playwright 1.64.1 with Electron 44.7.0 and verifies source and packaged applications.
 
-## Captures and promotional video
+## Captures
 
-npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture Today, chat, follow-ups, preparation, suggestions, approvals, sources, schedules, files, and island. The runner owns a unique temporary profile. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Copy media to promo/public and write duration to promo/src/demo-meta.json. Review captures after UI changes.
-
-promo/ is a separate Remotion project, excluded from installers. Generate assets first, then npm install, npm run studio, and npm run render in promo/. Output is promo/out/viva-promo.mp4 at 1920×1080/30 fps. Scenes, timing, and theme live in promo/src/scenes, timeline.ts, and theme.ts. Current legacy captures use Chinese; localized capture sets must be verified before being represented as English product media.
+npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-showcase.ts to capture Today, chat, follow-ups, preparation, suggestions, approvals, sources, schedules, files, and island. The runner owns a unique temporary profile. Record at 10 fps to docs/images/demo.gif; screenshots are resized to 1600 px. Review captures after UI changes. Current captures use Chinese; localized capture sets must be verified before being represented as English product media.
 
 ## Known limits
 

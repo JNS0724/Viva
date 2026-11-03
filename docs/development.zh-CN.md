@@ -138,7 +138,7 @@ app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio─�
 
 设计参考 [Electron 自动化测试](https://www.electronjs.org/docs/latest/tutorial/automated-testing)、[Playwright fixture 与隔离](https://playwright.dev/docs/test-fixtures)、[VS Code 外部 Electron runner](https://github.com/microsoft/vscode/blob/main/test/automation/src/playwrightElectron.ts)。Playwright Electron API 仍为实验性；仓库固定 Playwright 1.64.1 与 Electron 44.7.0，并验证源码和安装产物。
 
-## README 的图和宣传片
+## README 的图
 
 README 和这份文档里的截图、动图，都是应用自己拍的，不是手工截图：
 
@@ -148,22 +148,8 @@ npm run showcase    # 需要 ffmpeg
 
 - 用真实的 dsh 加假模型（`test/fixtures/showcase-llm.js`，回答读起来像真的在用），按 `test/smoke/smoke-showcase.ts` 的剧本走一遍：首页的「今天」、对话、跟进卡片、后台准备、消息建议、确认卡片、消息源、后台准备时段、文件、桌面岛。runner 新建唯一临时资料目录，不碰你自己的数据。
 - 跟进的全过程按每秒 10 帧录下来，ffmpeg 做成 `docs/images/demo.gif`；截图缩到 1600px 宽放进 `docs/images/`。
-- 同一份录像和截图复制到 `promo/public/`，录像的长度写进 `promo/src/demo-meta.json`。
 
 改了界面以后重跑一次，再看一遍 `docs/images/` 里的图。
-
-宣传片在 `promo/`，是一个独立的 [Remotion](https://www.remotion.dev/) 项目，有自己的依赖，不进安装包：
-
-素材（`promo/public/`）由 `npm run showcase` 生成，不进仓库，先在仓库根目录跑一次：
-
-```bash
-cd promo
-npm install
-npm run studio      # 在浏览器里预览、逐帧看
-npm run render      # 出 promo/out/viva-promo.mp4（1920×1080，30fps）
-```
-
-场景在 `promo/src/scenes/`，每个场景的长度在 `promo/src/timeline.ts`，颜色和字体在 `promo/src/theme.ts`。
 
 ## 已知限制
 

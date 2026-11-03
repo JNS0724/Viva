@@ -57,4 +57,5 @@ Drawn by `src/renderer/view/maid.ts`:
 ## Log
 
 - 2026-11-04: the character changed from the captain cat to the blue-haired maid. The title-bar island lost its avatar for a state-colored dot; the desktop island grew to 80 px tall with a 72 px picture; the conversation's avatar follows only the current turn. The cat's art, overlays and character notes were removed from the repository and remain in git history.
-- To do: dedicated 48 px head close-ups (until then the half-body picture is zoomed and cropped); the app icon, tray icon, promo video and screenshots still show the cat.
+- 2026-11-04: the app icon, the Windows tray icon, the README screenshots and the demo show her; the promo video was removed.
+- To do: dedicated 48 px head close-ups (until then the half-body picture is zoomed and cropped); a hand-drawn macOS tray template (the current one is a silhouette taken from the icon).

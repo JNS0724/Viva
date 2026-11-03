@@ -175,7 +175,7 @@ npm run smoke:language   # Language and desktop-island checks
 npm run showcase         # Recreate README captures (requires ffmpeg)
 ```
 
-See [Development](docs/development.md) for packaging, tests, embedded dsh, and the Remotion video in `promo/`.
+See [Development](docs/development.md) for packaging, tests and embedded dsh.
 
 ## Documentation
 
