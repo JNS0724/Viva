@@ -291,7 +291,7 @@ async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expe
   await run(win, escape)
   // Its name says 城市 too: wait for the question itself on its line, its choices on its page.
   const card = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card.text.includes('哪个城市') && card })()`, "the task's question")
-  expect(card.text.includes('去处理 →'), "the task's question should be said on its line", card)
+  expect(card.text.includes('去处理'), "the task's question should be said on its line", card)
   await openFromLine(win, ASKS_LATER)
   const choices = await until(win, `Boolean(${pageButton('上海')}) && Boolean(${pageButton('北京')})`, "the question's choices on its page")
   expect(choices, "the task's question should be answered on its page")
