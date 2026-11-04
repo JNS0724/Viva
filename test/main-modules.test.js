@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { APP_ROOT, CODE_ROOT, dshLaunch, resolveConfig, rootsOf } from '../src/backend/config.ts'
+import { APP_ROOT, CODE_ROOT, rootsOf } from '../src/shared/node/app-roots.ts'
+import { dshLaunch, resolveConfig } from '../src/backend/config.ts'
 import { externalUrl } from '../src/backend/links.ts'
 import { createPermissionBroker } from '../src/backend/permission-broker.ts'
 import { currentModelName, describeConfig, describeError } from '../src/backend/session-info.ts'
@@ -21,10 +22,10 @@ test('config reports what is missing before the agent can start, or nothing when
 
 test('the code is found beside the project from the sources, and in out/ once built', () => {
   const repo = path.resolve('/repo')
-  assert.deepEqual(rootsOf(path.join(repo, 'src', 'backend', 'config.js')), { codeRoot: repo, appRoot: repo })
-  assert.deepEqual(rootsOf(path.join(repo, 'out', 'src', 'backend', 'config.js')), { codeRoot: path.join(repo, 'out'), appRoot: repo })
+  assert.deepEqual(rootsOf(path.join(repo, 'src', 'shared', 'node', 'app-roots.js')), { codeRoot: repo, appRoot: repo })
+  assert.deepEqual(rootsOf(path.join(repo, 'out', 'src', 'shared', 'node', 'app-roots.js')), { codeRoot: path.join(repo, 'out'), appRoot: repo })
   const asar = path.resolve('/Applications/Viva.app/Contents/Resources/app.asar')
-  assert.deepEqual(rootsOf(path.join(asar, 'out', 'src', 'backend', 'config.js')), { codeRoot: path.join(asar, 'out'), appRoot: asar })
+  assert.deepEqual(rootsOf(path.join(asar, 'out', 'src', 'shared', 'node', 'app-roots.js')), { codeRoot: path.join(asar, 'out'), appRoot: asar })
   assert.equal(CODE_ROOT, APP_ROOT, 'the tests run from the sources')
 })
 

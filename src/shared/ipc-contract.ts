@@ -21,12 +21,15 @@ const record = z.looseObject({})
 const images = z.array(z.looseObject({ id })).max(MAX_IMAGES)
 const bytes = z.union([z.instanceof(Uint8Array), z.instanceof(ArrayBuffer)])
 const none = z.tuple([])
+const QUERY = 'query'
+/** A channel that only reads (QUERY_CHANNELS below): said here, where the channel is defined, not in a list apart. */
+const read = <T extends z.ZodType>(schema: T): T => schema.describe(QUERY) as T
 
 /** Each channel's arguments after the event, as a tuple; a trailing `.optional()` may be left out. */
 export const IPC_ARGS = Object.freeze({
-  'language:get': none,
+  'language:get': read(none),
   'language:set': z.tuple([z.enum(['system', 'zh-CN', 'en'])]),
-  'agent:info': none,
+  'agent:info': read(none),
   'agent:prompt': z.tuple([text, images.optional()]),
   'agent:steer': z.tuple([text]),
   'agent:cancel': none,
@@ -37,7 +40,7 @@ export const IPC_ARGS = Object.freeze({
   'agent:secrets': z.tuple([id, z.record(z.string(), z.unknown()).nullable()]),
 
   'shell:open-link': z.tuple([path]),
-  'settings:get': none,
+  'settings:get': read(none),
   'settings:save-key': z.tuple([id]),
   'settings:clear-key': none,
   'settings:set-desk-island': z.tuple([z.boolean()]),
@@ -46,50 +49,50 @@ export const IPC_ARGS = Object.freeze({
   'settings:reset-desk-place': none,
 
   'images:keep': z.tuple([bytes]),
-  'images:usage': none,
+  'images:usage': read(none),
   'images:open-folder': none,
   'images:clear': none,
   'images:move': none,
 
-  'models:get': none,
+  'models:get': read(none),
   'models:add': z.tuple([record]),
   'models:remove': z.tuple([id]),
 
-  'history:load': none,
+  'history:load': read(none),
   'history:save': z.tuple([z.array(record).max(MAX_LIST)]),
-  'history:list': z.tuple([count.optional()]),
-  'history:search': z.tuple([text]),
+  'history:list': read(z.tuple([count.optional()])),
+  'history:search': read(z.tuple([text])),
   'history:open': z.tuple([id]),
   'history:resume-topic': z.tuple([id]),
-  'history:resume-check': z.tuple([id]),
+  'history:resume-check': read(z.tuple([id])),
   'history:continue-from-records': z.tuple([id, path]),
-  'history:trace': z.tuple([id, z.number().optional()]),
+  'history:trace': read(z.tuple([id, z.number().optional()])),
   'history:rename': z.tuple([id, text]),
   'history:pin': z.tuple([id, z.boolean()]),
   'history:delete': z.tuple([id]),
   'history:restore': z.tuple([id]),
   'history:export': z.tuple([id]),
-  'history:segments-before': z.tuple([id, count.optional()]),
-  'history:search-messages': z.tuple([text]),
-  'history:review': z.tuple([z.object({ lastAt: z.number(), topicId: id }).nullable().optional(), z.enum(['all', 'tasks', 'files']).optional()]),
-  'history:read': z.tuple([id, z.object({
+  'history:segments-before': read(z.tuple([id, count.optional()])),
+  'history:search-messages': read(z.tuple([text])),
+  'history:review': read(z.tuple([z.object({ lastAt: z.number(), topicId: id }).nullable().optional(), z.enum(['all', 'tasks', 'files']).optional()])),
+  'history:read': read(z.tuple([id, z.object({
     from: count.optional(), around: z.object({ segmentId: id, seq: count }).optional(), count: count.optional(), whole: z.boolean().optional(),
-  }).optional()]),
-  'history:locate': z.tuple([z.object({ segmentId: id, seq: count, messageId: count.optional() })]),
+  }).optional()])),
+  'history:locate': read(z.tuple([z.object({ segmentId: id, seq: count, messageId: count.optional() })])),
   'history:star': z.tuple([id, count, z.boolean()]),
-  'history:stars-in': z.tuple([z.array(id).max(MAX_LIST)]),
-  'history:starred': none,
+  'history:stars-in': read(z.tuple([z.array(id).max(MAX_LIST)])),
+  'history:starred': read(none),
 
   'timeline:rewind': z.tuple([record]),
-  'timeline:rewind-effects': z.tuple([record]),
-  'timeline:folded': z.tuple([id]),
+  'timeline:rewind-effects': read(z.tuple([record])),
+  'timeline:folded': read(z.tuple([id])),
   'timeline:switch-path': z.tuple([id]),
 
   'task:spin-off': z.tuple([record]),
   'task:start': z.tuple([record]),
   'task:save': z.tuple([id, z.array(record).max(MAX_LIST), record.optional()]),
-  'task:unfinished': none,
-  'task:finished': none,
+  'task:unfinished': read(none),
+  'task:finished': read(none),
   'task:ask': z.tuple([id, text]),
   'task:resume': z.tuple([id]),
   'task:forget': z.tuple([id]),
@@ -98,45 +101,45 @@ export const IPC_ARGS = Object.freeze({
   'task:stop': z.tuple([id]),
   'task:steer': z.tuple([id, text]),
 
-  'workdir:get': none,
+  'workdir:get': read(none),
   'workdir:choose': none,
   'workdir:switch': z.tuple([path, record.optional()]),
   'workdir:forget': z.tuple([path]),
   'workdir:reveal': none,
 
-  'memory:get': none,
-  'memory:list': z.tuple([text.optional()]),
+  'memory:get': read(none),
+  'memory:list': read(z.tuple([text.optional()])),
   'memory:set-profile': z.tuple([z.record(z.string(), z.unknown())]),
   'memory:add': z.tuple([text, id.optional()]),
   'memory:update': z.tuple([z.number(), text]),
   'memory:delete': z.tuple([z.number()]),
   'memory:restore': z.tuple([record]),
-  'memory:list-invalid': none,
+  'memory:list-invalid': read(none),
   'memory:revive': z.tuple([z.number()]),
   'memory:onboarding': z.tuple([id]),
   'memory:add-docs': none,
 
-  'files:list': z.tuple([path]),
-  'files:preview': z.tuple([path, count.optional()]),
+  'files:list': read(z.tuple([path])),
+  'files:preview': read(z.tuple([path, count.optional()])),
   'files:reveal': z.tuple([path]),
-  'files:apps': z.tuple([path]),
+  'files:apps': read(z.tuple([path])),
   'files:open': z.tuple([path, path.nullable().optional()]),
-  'files:image': z.tuple([path]),
+  'files:image': read(z.tuple([path])),
   'files:watch': z.tuple([path.nullable()]),
 
-  'ext:get': none,
+  'ext:get': read(none),
   'ext:remove-mcp': z.tuple([id]),
   'ext:update-mcp': z.tuple([id, record]),
   'ext:import-dsh': z.tuple([z.enum(['default', 'last', 'choose'])]),
   'ext:remove-skill': z.tuple([id]),
 
-  'plugins:get': none,
-  'plugins:inspect': z.tuple([path]),
+  'plugins:get': read(none),
+  'plugins:inspect': read(z.tuple([path])),
   'plugins:install': z.tuple([path, z.array(id).max(50).optional()]),
   'plugins:remove': z.tuple([id]),
   'plugins:set-enabled': z.tuple([id, z.boolean()]),
 
-  'followups:get': none,
+  'followups:get': read(none),
   'followups:accept': z.tuple([record]),
   'followups:decline': z.tuple([record]),
   'followups:dismiss': z.tuple([id]),
@@ -146,9 +149,9 @@ export const IPC_ARGS = Object.freeze({
   'followups:set-schedule': z.tuple([record]),
   'followups:pause': z.tuple([count]),
 
-  'island:view': z.tuple([record]),
+  'island:view': read(z.tuple([record])),
   'island:act': z.tuple([record]),
-  'island:files': z.tuple([z.array(path).max(MAX_LIST)]),
+  'island:files': read(z.tuple([z.array(path).max(MAX_LIST)])),
   'island:ask': z.tuple([record]),
   'island:keep-image': z.tuple([bytes]),
 })
@@ -156,17 +159,13 @@ export const IPC_ARGS = Object.freeze({
 export type Channel = keyof typeof IPC_ARGS
 
 /**
- * The channels that only read: no state of the backend changes when a page asks them, so they are no signal of the
- * event core (src/backend/commands.ts). Every other channel is something the user did, recorded as a signal first.
+ * The channels that only read, marked `read(...)` in IPC_ARGS: no state of the backend changes when a page asks them,
+ * so they are no signal of the event core (src/backend/commands.ts). Every other channel is something the user did,
+ * recorded as a signal first.
  */
-export const QUERY_CHANNELS: ReadonlySet<Channel> = new Set<Channel>([
-  'language:get', 'agent:info', 'settings:get', 'images:usage', 'models:get',
-  'history:load', 'history:list', 'history:search', 'history:resume-check', 'history:trace', 'history:segments-before',
-  'history:search-messages', 'history:review', 'history:read', 'history:locate', 'history:stars-in', 'history:starred',
-  'timeline:rewind-effects', 'timeline:folded', 'task:unfinished', 'task:finished', 'workdir:get',
-  'memory:get', 'memory:list', 'memory:list-invalid', 'files:list', 'files:preview', 'files:apps', 'files:image',
-  'ext:get', 'plugins:get', 'plugins:inspect', 'followups:get', 'island:view', 'island:files',
-])
+export const QUERY_CHANNELS: ReadonlySet<Channel> = new Set(
+  (Object.entries(IPC_ARGS) as Array<[Channel, z.ZodType]>).filter(([, schema]) => schema.description === QUERY).map(([channel]) => channel),
+)
 /** What a page sends on a channel, as the handler receives it. */
 export type ChannelArgs<C extends Channel> = z.input<(typeof IPC_ARGS)[C]>
 

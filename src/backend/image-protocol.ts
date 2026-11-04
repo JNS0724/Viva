@@ -1,14 +1,10 @@
 import fs from 'node:fs'
-import type { Protocol } from 'electron'
 import { isImageId, mimeOfId } from '../shared/images.ts'
 
 /**
- * viva-image://img/<id>: a picture from the pictures folder, for the thread and the inputs to show by name
- * (the pages' Content-Security-Policy lets them load it). Anything that is not a kept picture is 404, so a
- * picture removed by emptying the folder shows as gone.
+ * The backend's answer to viva-image://img/<id> (the shell registers the scheme: src/shell/image-protocol.ts).
+ * Anything that is not a kept picture is 404, so a picture removed by emptying the folder shows as gone.
  */
-export const IMAGE_SCHEME = 'viva-image'
-export const IMAGE_SCHEME_PRIVILEGES = Object.freeze({ scheme: IMAGE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } })
 
 /** What of the picture store this needs. */
 interface PictureFiles { pathOf: (id: string) => string | null }
@@ -25,9 +21,4 @@ export function imageResponse(url: string, store: PictureFiles): Response {
   const mime = mimeOfId(id)
   if (!file || !mime) return new Response(null, { status: 404 })
   return new Response(fs.readFileSync(file), { headers: { 'content-type': mime, 'cache-control': 'max-age=31536000, immutable' } })
-}
-
-/** viva-image:// answered by `answer` (in the shell: from the backend, which has the pictures folder). */
-export function registerImageProtocol(protocol: Pick<Protocol, 'handle'>, answer: (url: string) => Response | Promise<Response>): void {
-  protocol.handle(IMAGE_SCHEME, (request) => answer(request.url))
 }

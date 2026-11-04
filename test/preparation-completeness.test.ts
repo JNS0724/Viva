@@ -4,6 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
+import { openAppDb } from '../src/backend/app-db.ts'
+import { createEventCore } from '../src/backend/event-core.ts'
 import { openFollowups } from '../src/backend/followups-main.ts'
 import { DEFAULT_SCHEDULE } from '../src/backend/prepare-schedule.ts'
 import { PREPARE_MAX_TOKENS } from '../src/backend/prepare-materials.ts'
@@ -16,7 +18,9 @@ test('a token-limited follow-up stays scheduled without a draft; a later complet
   const calls:Array<Omit<PrepareCall,'provider'|'model'>>=[]
   const errors:unknown[]=[]
   let truncated=true
-  const followups=openFollowups({userData:dir,ipcMain:{handle:()=>{}},notify:()=>{},windowInFront:()=>true,onPending:()=>{},idleSeconds:()=>0,
+  const app=openAppDb({file:path.join(dir,'app.db')})
+  const core=createEventCore({app,publish:()=>{}})
+  const followups=openFollowups({db:app.db,apply:core.apply,ipcMain:{handle:()=>{}},notify:()=>{},windowInFront:()=>true,onPending:()=>{},idleSeconds:()=>0,
     loadSchedule:()=>({...DEFAULT_SCHEDULE,chosen:true}),storeSchedule:()=>{},userBusy:()=>null,takenUp:()=>false,
     materials:{conversation:()=>null,profile:()=>null},workDir:()=>dir,conversationExists:()=>true,onState:()=>{},onError:error=>errors.push(error),
     prepareText:async call=>{
@@ -30,6 +34,7 @@ test('a token-limited follow-up stays scheduled without a draft; a later complet
     }})
   t.after(()=>{
     followups.close()
+    app.close()
     const resolved=fs.realpathSync(dir),parent=fs.realpathSync(os.tmpdir())
     assert.equal(path.dirname(resolved).toLowerCase(),parent.toLowerCase())
     assert.ok(path.basename(resolved).startsWith('viva-prepare-complete-'))

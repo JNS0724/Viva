@@ -76,3 +76,18 @@ test('background tasks on the app database are events too, and a store with no s
   ])
   assert.throws(() => journaled(tasks, 'task', ['list', 'nope' as never], apply), /task\.nope is no write/)
 })
+
+test('a write that changed nothing is no event: nothing purged, a star already there, no such follow-up', (t) => {
+  const { app, core, apply } = coreIn(t)
+  const history = journaled(openHistoryDb({ db: app.db }), 'history', ['save', 'purgeDeleted', 'setStar'], apply)
+  assert.equal(history.purgeDeleted({ olderThanMs: 0 }), 0)
+  const saved = history.save(history.create({ sessionId: 's1' }), [{ role: 'user', text: '你好' }])
+  assert.equal(history.setStar(saved.id, 0, true), true)
+  assert.equal(history.setStar(saved.id, 0, true), false, 'starred already')
+  assert.deepEqual(core.since(0).map((event) => event.kind), ['history.save', 'history.setStar'])
+  transaction(app.db, () => {
+    assert.equal(history.purgeDeleted({ olderThanMs: 0 }), 0, 'inside another transaction too')
+    assert.equal(app.db.isTransaction, true, 'and the outer one goes on')
+  })
+  assert.equal(core.since(0).length, 2)
+})

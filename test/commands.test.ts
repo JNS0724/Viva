@@ -65,8 +65,10 @@ test('a command that fails still says so, and its signal stays recorded; one cha
   assert.throws(() => ipc.handle('history:delete', () => {}), /registered twice/)
 })
 
-test('every query in the list is a channel of the contract, and the rest are commands', () => {
+test('a query is marked where its channel is defined; the rest are commands', () => {
   const channels = Object.keys(IPC_ARGS) as Channel[]
   for (const channel of QUERY_CHANNELS) assert.ok(channels.includes(channel), channel)
+  assert.ok(QUERY_CHANNELS.has('history:read') && QUERY_CHANNELS.has('memory:get'), 'a schema over several lines is marked too')
   assert.ok(isCommand('followups:accept') && isCommand('memory:delete') && !isCommand('memory:get') && !isCommand('agent:prompt'))
+  assert.ok(IPC_ARGS['history:read'].safeParse(['c-1']).success, 'the mark leaves the check as it was')
 })

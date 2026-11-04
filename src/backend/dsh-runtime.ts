@@ -44,17 +44,3 @@ export function dshEnv({ base, dshHome, runtime, settings }: {
 export function dshRuntime({ env, execPath }: { env: NodeJS.ProcessEnv, execPath: string }): DshRuntime {
   return env.DSH_NODE ? { nodeBin: env.DSH_NODE, electron: false } : { nodeBin: execPath, electron: true }
 }
-
-/** After dsh dies on its own it is started again, waiting longer each time; this many in a row is enough. */
-export const RESTART_DELAYS_MS: readonly number[] = Object.freeze([1_000, 3_000, 10_000])
-/** Crashes further apart than this are not "in a row". */
-export const CRASH_WINDOW_MS = 120_000
-
-/**
- * How long to wait before starting dsh again, or null to stop trying.
- * @param crashes when dsh died, including this time
- */
-export function restartDelay(crashes: readonly number[], now: number): number | null {
-  const recent = crashes.filter((at) => now - at < CRASH_WINDOW_MS).length
-  return recent >= 1 && recent <= RESTART_DELAYS_MS.length ? RESTART_DELAYS_MS[recent - 1] : null
-}

@@ -1,6 +1,5 @@
 import { type Apply, journaled } from './journal.ts'
 import { t } from '../shared/i18n/translate.ts'
-import path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import type { PrepareCall, Prepared as PreparedText, ProposalView } from './followup-channel.ts'
 import { createFileWatch } from './file-watch.ts'
@@ -22,7 +21,6 @@ import { createPrepareScheduler, type Prepared, type PrepareState } from './prep
 const DECLINED_FOR_MS = 30 * 24 * 60 * 60 * 1000
 
 export interface FollowupsDeps {
-  userData: string
   ipcMain: Pick<IpcRegistry, 'handle'>
   notify: (notice: Notice) => void
   windowInFront: () => boolean
@@ -45,10 +43,10 @@ export interface FollowupsDeps {
   onState: (state: PrepareState) => void
   /** What went wrong in the background (a timer, a batch), for the log. */
   onError: (err: unknown) => void
-  /** The backend's app database (src/backend/app-db.ts) to keep the follow-ups in; followups.db of their own without it. */
-  db?: DatabaseSync
+  /** The backend's app database (src/backend/app-db.ts), which keeps the follow-ups. */
+  db: DatabaseSync
   /** The event core's apply (src/backend/event-core.ts): every change of a follow-up written with its event. */
-  apply?: Apply
+  apply: Apply
   /** The event core's signals for what comes due on its own: reminders, preparation, the user back at the computer. */
   signal?: (kind: 'clock.reminder_due' | 'clock.prepare_window' | 'system.user_returned') => void
 }
@@ -56,8 +54,7 @@ export interface FollowupsDeps {
 /** The store's writes, each a change the event core records (apply); reads go straight through. */
 const WRITES: ReadonlyArray<keyof FollowupStore & string> = Object.freeze(['add', 'setStatus', 'saveDraft', 'finishPreparing', 'moveStatus', 'markReminded', 'reschedule', 'setWatchMtime', 'rearm', 'remove', 'logNotice', 'logEvent'])
 export function openFollowups(deps: FollowupsDeps) {
-  const opened = openFollowupStore(deps.db ? { db: deps.db } : { file: path.join(deps.userData, 'followups.db') })
-  const store = deps.apply ? journaled(opened, 'followup', WRITES, deps.apply) : opened
+  const store = journaled(openFollowupStore({ db: deps.db }), 'followup', WRITES, deps.apply)
   const notifier = createFollowupNotifier({
     store, notify: deps.notify, windowInFront: deps.windowInFront, onPending: deps.onPending, onError: deps.onError,
     ...(deps.signal ? { onTimer: () => deps.signal!('clock.reminder_due') } : {}),

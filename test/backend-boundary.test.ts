@@ -51,6 +51,19 @@ test('the source tree is the shell, the backend and what they share (D1): no src
   for (const folder of ['shell', 'backend', 'shared']) assert.ok(fs.existsSync(path.join(ROOT, 'src', folder)), folder)
 })
 
+test('the shell loads of the backend only the protocol between them (wire.ts) and the key\'s size (envelope.ts)', () => {
+  const allowed = new Set(['src/backend/wire.ts', 'src/backend/envelope.ts'])
+  const shellDir = path.join(ROOT, 'src', 'shell')
+  const loaded = fs.readdirSync(shellDir).filter((name) => name.endsWith('.ts')).flatMap((name) => {
+    const file = path.join(shellDir, name)
+    return runtimeImports(file).filter((spec) => spec.startsWith('.'))
+      .map((spec) => path.relative(ROOT, path.resolve(path.dirname(file), spec)).split(path.sep).join('/'))
+      .filter((target) => target.startsWith('src/backend/') && !allowed.has(target))
+      .map((target) => `${name} -> ${target}`)
+  })
+  assert.deepEqual(loaded, [], 'move what both need to src/shared (or src/shared/node), or import only its types')
+})
+
 test('the boundary check sees through type-only imports and catches value imports', (t) => {
   const dir = fs.mkdtempSync(path.join(ROOT, 'test', '.boundary-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))

@@ -26,12 +26,38 @@ export function recorded(value: unknown): unknown {
   return value
 }
 
-/** `store` with each of `writes` recorded as `<prefix>.<name>`; the rest of it unchanged. */
+/**
+ * What a write returns when it changed nothing: `false` (it did not move, it was not kept), `0` (none removed) or
+ * `null` (no such row). Such a write is no event.
+ */
+const isUnchanged = (value: unknown): boolean => value === false || value === 0 || value === null
+
+/** Thrown inside apply so the event is not written; the write changed nothing, so nothing is undone. */
+class Unchanged {
+  readonly value: unknown
+  constructor(value: unknown) {
+    this.value = value
+  }
+}
+
+/** `store` with each of `writes` recorded as `<prefix>.<name>`, unless it changed nothing; the rest of it unchanged. */
 export function journaled<S extends object>(store: S, prefix: string, writes: ReadonlyArray<keyof S & string>, apply: Apply): S {
   const wrapped = Object.fromEntries(writes.map((name) => {
     const write = store[name] as unknown as (...args: unknown[]) => unknown
     if (typeof write !== 'function') throw new Error(`${prefix}.${name} is no write of this store`)
-    return [name, (...args: unknown[]) => apply(`${prefix}.${name}`, { args: args.map(recorded) }, () => write(...args)).value]
+    const run = (...args: unknown[]) => {
+      try {
+        return apply(`${prefix}.${name}`, { args: args.map(recorded) }, () => {
+          const value = write(...args)
+          if (isUnchanged(value)) throw new Unchanged(value)
+          return value
+        }).value
+      } catch (err) {
+        if (err instanceof Unchanged) return err.value
+        throw err
+      }
+    }
+    return [name, run]
   }))
   return { ...store, ...wrapped }
 }

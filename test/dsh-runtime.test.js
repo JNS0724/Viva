@@ -4,7 +4,8 @@ import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
-import { CRASH_WINDOW_MS, dshEnv, dshHomeFor, dshRuntime, RESTART_DELAYS_MS, restartDelay } from '../src/backend/dsh-runtime.ts'
+import { dshEnv, dshHomeFor, dshRuntime } from '../src/backend/dsh-runtime.ts'
+import { CRASH_WINDOW_MS, RESTART_DELAYS_MS, restartDelay } from '../src/shared/restart-delay.ts'
 
 test("dsh gets the user's environment without anything that steers dsh, then what the app sets", () => {
   const base = {

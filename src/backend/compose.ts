@@ -8,12 +8,14 @@ import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { registerLanguageIpc } from './language-ipc.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
-import { APP_ROOT, CODE_ROOT, DSH_PROFILE, resolveConfig } from './config.ts'
+import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
+import { DSH_PROFILE, resolveConfig } from './config.ts'
 import { createAcpBridge, switchingMessage } from './acp-bridge.ts'
 import { expandHome, importDshServers, importSummary, userDshHome } from './dsh-mcp-import.ts'
 import { ensureDshProfile, vivaLayerFile } from './dsh-profile.ts'
 import { pnpmLauncher } from './pnpm-launcher.ts'
-import { dshEnv, restartDelay } from './dsh-runtime.ts'
+import { dshEnv } from './dsh-runtime.ts'
+import { restartDelay } from '../shared/restart-delay.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
 import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
@@ -746,7 +748,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     personal = createPersonal({ memoryDb, historyDb, mcpStore })
     registerPersonalIpc(config)
     followups = openFollowups({
-      userData,
       ipcMain,
       db: appDb.db,
       apply: applyChange,
