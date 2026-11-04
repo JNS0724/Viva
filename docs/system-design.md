@@ -285,7 +285,7 @@ The user only talks. Starting a background task, stopping it and asking it more 
 
 ### 11.2 Results come back to the main conversation
 
-When a task ends (finished, stopped or failed), the backend opens a turn of the main conversation once it is idle, started by the task's end. The model gets a note (the task's id, title, how it ended, and the end of its conclusion) and decides what to tell the user; when the record already says it all, it may stay silent. This turn never cuts into a running one: it waits for that turn to end, and tasks that end together share one turn. The conversation does not show the note, only the model's answer. How "silent" is expressed is settled by testing in step 4.
+When a task ends (finished, stopped or failed), the backend opens a turn of the main conversation once it is idle, started by the task's end. The model gets a note (the task's id, title, how it ended, and the end of its conclusion) and decides what to tell the user; when the record already says it all, it may stay silent. This turn never cuts into a running one: it waits for that turn to end, and tasks that end together share one turn. The conversation does not show the note, only the model's answer. Staying silent, the model replies only `[silent]`, and the window leaves nothing of that turn.
 
 ### 11.3 The interface only displays
 
@@ -320,6 +320,6 @@ Looked at again once this works in use: 放到后台 and automatic handoff of lo
 1. Remove the extra ways in and the extra displays: 放到后台 and Undo, routing, "#name", the bottom-right panel, result cards, the drawer's task tab, the island's notice. 后台做 and the "continue / drop" card after a restart stay for now, so tasks can still be started and taken up again before step 3. (Done.)
 2. The backend task service: what tasks say is stored by the backend; pages only display it. (Done: `task-transcript.ts` builds the messages, `task-words.ts` saves them, and `task:save` is gone.)
 3. The start, stop and message tools, the `task_created` push, and the sub-agent settings; the 后台做 button, the 后台 page's input box and 接着问, and the cards after a restart are removed. (Done; a follow-up draft keeps its 后台做 until triggers replace follow-ups.)
-4. Results come back to the main conversation.
+4. Results come back to the main conversation. (Done: `task-reports.ts`; "silent" is the reply `[silent]`, and the window shows nothing for that turn.)
 
 Each step is its own commit, with the smoke tests rewritten to match and run.

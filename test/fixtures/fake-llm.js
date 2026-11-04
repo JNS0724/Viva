@@ -9,6 +9,7 @@
  * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result,
  *   or, told 「再问我城市」 too, asks which city as for the weather;
  * - 「后台做：X」 → hands X to a background task with start_background_task;
+ * - a background task's result (the app's 【后台任务结束】 note) → 「已看过后台结果：T」, T the first task's title;
  * - 「告诉后台的「T」：Z」 → finds task T (list_background_tasks) and says Z to it (message_background_task);
  * - 「删掉 X」 → removes X with the shell;
  * - asked by dsh's Auto review about a step → allows it, unless it removes something;
@@ -29,6 +30,8 @@ const WEATHER = /明天.*天气/
 const CONNECT = /接入演示服务/
 const THEN_ASK = /再问我城市/
 const FOLLOW = /到时候帮我/
+/** The app's note when a background task ended (backend/task-reports.ts), and the first task it names. */
+const TASK_REPORT = /^【后台任务结束】[\s\S]*?任务：「([^」]+)」/
 /** 「后台做：X」: a job for the background, as a brief. */
 const HAND_OFF = /^后台做：([\s\S]+)$/
 /** 「告诉后台的「T」：Z」: words for the background task titled T. */
@@ -217,6 +220,8 @@ export function decide(request) {
     const keywords = KNOWN_NAMES.filter((name) => text.includes(name)).sort((a, b) => text.indexOf(a) - text.indexOf(b))
     return { tool: { name: 'memory_remember', input: { text, keywords } } }
   }
+  const taskReport = TASK_REPORT.exec(question)
+  if (taskReport) return { text: `已看过后台结果：${taskReport[1]}` }
   const handOff = HAND_OFF.exec(question)
   if (handOff) return { tool: { name: 'start_background_task', input: { brief: handOff[1] } } }
   if (TELL.test(question)) return { tool: { name: 'list_background_tasks', input: {} } }

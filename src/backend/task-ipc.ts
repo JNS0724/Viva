@@ -263,6 +263,8 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     answer: taskWords.answer,
     /** Viva quits, or dsh went: what tasks said is saved now. */
     flush: taskWords.flush,
+    /** The conversation a task hangs off (its card is there), for its result to come back to; null when not held. */
+    hostOf: (taskId: string): string | null => tasks.get(taskId)?.next ?? null,
     /** The agent's own actions on tasks (viva-tasks start_background_task, stop_…, message_…). */
     agentStart,
     agentStop,

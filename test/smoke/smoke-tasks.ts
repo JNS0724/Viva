@@ -53,8 +53,14 @@ async function answerOnPage(win: SmokeWindow, title: string, label: string) {
   await run(win, escape)
 }
 
-/** Said to the agent in the conversation; waits for its turn to end. */
+/**
+ * Said to the agent in the conversation, once it is free (a task that just ended may be reporting back: those words
+ * would go into that turn); waits for its turn to end.
+ */
 async function tellAgent(win: SmokeWindow, words: string) {
+  await until(win, mainIdle, 'the conversation free')
+  await wait(UI_WAIT_MS)
+  await until(win, mainIdle, 'the conversation still free')
   const before = await run(win, `${userTexts}.length`)
   await submit(win, words)
   await until(win, `${userTexts}.length > ${before} && ${mainIdle}`, `the agent done with 「${words}」`)
@@ -73,14 +79,24 @@ async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect,
   await startInBackground(win, OTHER_ASK)
   const done = await until(win, doneCard(OTHER_ASK), 'the task the agent started answering')
   expect(done.text.includes(`收到：「${OTHER_ASK}」`), 'the task should answer its brief', done)
+  // Its result comes back to the conversation as a turn of the agent's own: no words of the user's for it.
+  const asked = await run(win, `${userTexts}.length`)
+  const back = await until(win, `[...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent).find((text) => text.includes(${JSON.stringify(`已看过后台结果：${OTHER_ASK}`)})) ?? null`, 'the result back in the conversation')
+  await until(win, mainIdle, 'the report turn over')
+  expect(Boolean(back) && (await run(win, `${userTexts}.length`)) === asked, 'the result should come back as the agent\'s turn, with no user words', { back, asked })
   const front = await run(win, `({
     answers: [...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent),
     busy: document.getElementById('send-btn').dataset.busy,
   })`)
   expect(front.answers.some((text: string) => text.includes('已经交给后台')) && !front.answers.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
     'the agent should say it handed the work over, the task answering on its own card', front)
-  const answering = (hooks.model?.()?.requests ?? []).map((request: unknown) => JSON.stringify(request)).find((json: string) => json.includes(`收到：「${OTHER_ASK}」`)) ?? ''
-  expect(!answering.includes('后台做：'), 'the task should start afresh from its brief, not from the conversation', { found: Boolean(answering) })
+  // The task's own session begins with its brief: nothing of the conversation comes before it.
+  const firstWords = (request: { messages?: Array<{ content?: unknown }> }) => {
+    const content = request.messages?.[0]?.content
+    return typeof content === 'string' ? content : Array.isArray(content) ? (content[0] as { text?: string })?.text ?? '' : ''
+  }
+  const fresh = (hooks.model?.()?.requests ?? []).some((request: unknown) => firstWords(request as { messages?: Array<{ content?: unknown }> }) === OTHER_ASK)
+  expect(fresh, 'the task should start afresh from its brief, not from the conversation')
   await run(win, `(${cardOf(OTHER_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-agent-start')

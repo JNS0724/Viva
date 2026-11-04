@@ -11,7 +11,7 @@ import { answered, ended, fromSaved, said, saved, updated, type SavedMessage, ty
 export const SAVE_EVERY_MS = 10_000
 
 /** How a turn's stop reason reads as the way a task ended. */
-const ENDED: Readonly<Record<string, string>> = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
+export const ENDED_STATUS: Readonly<Record<string, string>> = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
 
 /** A question a task asked, for wording its answer: which task, and the questions. */
 interface Asked { taskId: string, questions: Array<{ id: string, question: string, header?: string }> }
@@ -110,7 +110,7 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
     if (event.type === 'task_end') {
       transcripts.set(taskId, ended(transcript, event.stopReason))
       save(taskId)
-      end(taskId, ENDED[text(event.stopReason)] ?? 'done')
+      end(taskId, ENDED_STATUS[text(event.stopReason)] ?? 'done')
     }
   }
 
