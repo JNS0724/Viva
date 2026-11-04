@@ -12,7 +12,7 @@ export function createTasksChannel(port: Port, timeoutMs = 5000) {
   }
   port.on('message', receive)
   return {
-    request(request: object, sessionId: string, signal?: AbortSignal): Promise<string> {
+    request(request: object, sessionId: string, signal?: AbortSignal, waitMs = timeoutMs): Promise<string> {
       if (closed || signal?.aborted) return Promise.reject(new Error('任务查询已取消或断开'))
       const id = `tasks-${++seq}`
       return new Promise((resolve, reject) => {
@@ -22,7 +22,7 @@ export function createTasksChannel(port: Port, timeoutMs = 5000) {
           if (error) reject(error); else resolve(text)
         }
         const abort = () => done(new Error('任务查询已取消'))
-        const timer = setTimeout(() => done(new Error('任务查询超时')), timeoutMs)
+        const timer = setTimeout(() => done(new Error('任务查询超时')), waitMs)
         pending.set(id, done)
         signal?.addEventListener('abort', abort, { once: true })
         try { port.send({ type: 'tasks_query', id, sessionId, request }) } catch (error) { done(error instanceof Error ? error : new Error(String(error))) }

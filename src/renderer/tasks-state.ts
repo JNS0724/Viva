@@ -10,8 +10,6 @@ export const initialTasks = Object.freeze({
   submissions: [] as Array<{ id: string, text: string, origin: string | null, status: string, problem?: string }>,
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
   list: [] as BackgroundTask[],
-  /** Tasks the last launch left going (task-store.js), offered to take up or let go: { id, title, segmentId, startedAt }. */
-  unfinished: [] as Untyped[],
   /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
   page: Object.freeze({ open: false, selected: null as string | null, steps: false }),
   /** The 后台 page's list folded to a narrow strip by the user (view/tasks-page.ts), kept for the next launch. */
@@ -186,11 +184,8 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       return withTasks(state, { list, seen })
     },
 
-    tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),
-    task_forgotten: (state, { taskId }) => withTasks(state, { unfinished: state.tasks.unfinished.filter((entry) => entry.id !== taskId) }),
     /** Taken up again after a relaunch: it goes on as a task in the background, with what it had said. */
     task_resumed: (state, { task, messages, at }) => withTasks({ ...state, ...hostTask(state, task.id) }, {
-      unfinished: state.tasks.unfinished.filter((entry) => entry.id !== task.id),
       list: [...state.tasks.list.filter((entry) => entry.id !== task.id),
         settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView(messages, at) })],
     }),
@@ -234,9 +229,6 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       seen: [...new Set([...state.tasks.seen, ...(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [])])],
     }),
     tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps } }),
-
-    /** The task could not be asked (its session is gone): it is as it was before. */
-    task_ask_failed: (state, { task }) => withTasks(state, { list: state.tasks.list.map((entry) => (entry.id === task.id ? task : entry)) }),
 
     /** Words into that task's turn (task-ipc.js task:steer), shown in its part of the conversation. */
     task_steer: (state, { taskId, text, at }) => inView(state, taskId, 'user_steer', { text, via: null, at }),

@@ -37,17 +37,14 @@ export async function checkReadingLanguage(win: SmokeAppWindow): Promise<string[
       let stateTask=reduce(initialState,{type:'task_started',task:{id:'reading-task',title:'Task fixture',segmentId:'reading-segment'},text:'Fixture request',at:1});
       const task=stateTask.tasks.list[0];stateTask={...stateTask,tasks:{...stateTask.tasks,list:[{...task,view:{...task.view,messages:[...task.view.messages,{id:'task-answer',role:'assistant',text,shown:text.length}]}}],page:{open:true,selected:task.id,steps:false}}};
       renderTasksPage(page,stateTask,handlers);page.querySelector('.answer-more').click();
-      const answer=page.querySelector('.markdown'),input=page.querySelector('.tp-input'),scroller=page.querySelector('.tp-scroll');
-      input.value='Task draft 中文';input.focus();input.setSelectionRange(1,4);scroller.scrollTop=1200;const top=scroller.scrollTop;
+      const answer=page.querySelector('.markdown'),scroller=page.querySelector('.tp-scroll');
+      scroller.scrollTop=1200;const top=scroller.scrollTop;
       for(const locale of ['en','zh-CN','en']){
         setLocale(locale);renderTasksPage(page,stateTask,handlers);
         check(page.querySelector('.markdown')===answer,'Task: Markdown node replaced in '+locale);
         check(answer.querySelectorAll('h3').length===507&&!answer.querySelector('.answer-more'),'Task: expanded answer collapsed in '+locale);
-        check(page.querySelector('.tp-input')===input&&input.value==='Task draft 中文','Task: draft or input node lost in '+locale);
-        check(document.activeElement===input&&input.selectionStart===1&&input.selectionEnd===4,'Task: focus or input selection lost in '+locale);
         check(Math.abs(scroller.scrollTop-top)<=2,'Task: reading position drifted in '+locale);
         check(page.querySelector('.tp-act').textContent===t('island-tasks.stop'),'Task: operation label kept stale language in '+locale);
-        check(input.getAttribute('aria-label')===t('tasks-page.interruption'),'Task: input label kept stale language in '+locale);
       }
       return failures;
     }finally{host.remove();setLocale(previousLocale)}

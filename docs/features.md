@@ -33,15 +33,15 @@ ACP accepts only one active prompt per session, so `viva-steer` (`plugins/steer`
 <a id="后台任务"></a>
 ## Background tasks
 
-Use Run in background beside the composer to start separate work from the current conversation. It works while a turn runs too: the task starts from before that turn, which goes on in front.
+Just ask the assistant: it hands long work to the background itself (`start_background_task`, a fresh session started from a brief that carries the background it needs), and stops, adds to, asks again or takes up an interrupted task when you say so (`stop_background_task`, `message_background_task`). At most 5 run at once; when full it tells you. A task cannot start tasks of its own. A ready follow-up draft still has Run in background, which starts a task from that conversation.
 
 Each task leaves a single clickable status line in its original conversation, with its name, state, preview, and a link to its Background page. Approvals, questions and Stop are handled in one place, the Background page. Status wording is consistent across the conversation, page, and island.
 
 The island shows a spinner and active count, a check and unseen completion count, or an attention count; ready follow-ups show their count and Ready. Opening a completed task marks that result seen, clears its island reminder, and retains its historical line and page entry. Seen state survives restart; a new result becomes unseen again.
 
-The turn rail stays on the left. The Background page shares the persistent Review/Background/About you/Settings navigation and has a collapsible task list whose state is saved.
+The turn rail stays on the left. The Background page shares the persistent Review/Background/About you/Settings navigation and has a collapsible task list whose state is saved. It shows the selected task's whole conversation, with Stop while it works and Close once it ended; there is no input box there, so additions and follow-ups are said to the assistant.
 
-Drag either conversation edge to resize from 560 px up to the available width; double-click restores 760 px. The width is saved. Close dismisses a task. What a task says is saved by the backend as it comes (about every 10 seconds, and at once when its turn ends), and once more when Viva quits or the assistant exits, with or without a window open. Unfinished work offers Resume or Discard after restart. See `smoke-tasks.ts` and `smoke-column.ts`.
+Drag either conversation edge to resize from 560 px up to the available width; double-click restores 760 px. The width is saved. Close dismisses a task. What a task says is saved by the backend as it comes (about every 10 seconds, and at once when its turn ends), and once more when Viva quits or the assistant exits, with or without a window open. After a restart, unfinished tasks are marked interrupted on the Background page; tell the assistant to go on and it takes the original session up again, or close them. See `smoke-tasks.ts` and `smoke-column.ts`.
 
 <a id="文件"></a>
 ## Files

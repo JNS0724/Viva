@@ -71,7 +71,6 @@ const elements = {
   /** Pictures pasted or dropped into the input, above the words (draft-images.js). */
   draftPics: byId('draft-pics'),
   sendBtn: buttonById('send-btn'),
-  bgSend: buttonById('bg-send'),
   context: buttonById('composer-context'),
   workdirArea: document.querySelector<HTMLElement>('.workdir-area'),
   /** 本话题 · N 条 · 已用 X% by the input, and its menu (view/topic-label.js). */
@@ -612,20 +611,6 @@ const handlers = {
   },
   /** 恢复默认宽度 in the topic label's menu: the conversation column back to its default width. */
   resetColumn: () => column.reset(),
-  /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
-  async startInBackground() {
-    const text = dom.input.value.trim()
-    if (text.length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
-    if (!text || setupView(state.info) || state.switching || state.newTopicPending) return dom.input.focus()
-    dom.input.value = ''
-    renderSendButton(dom, state)
-    // Not started: the words come back, so nothing typed is lost.
-    void taskActions.startTask(text)
-    return undefined
-  },
-  /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
-  resumeUnfinished: (taskId: string) => taskActions.resumeUnfinished(taskId),
-  forgetUnfinished: (taskId: string) => taskActions.forgetUnfinished(taskId),
   submitTaskAnswer: (taskId: string) => taskActions.submitTaskAnswer(taskId),
   skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
@@ -738,17 +723,6 @@ const handlers = {
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
-  /**
-   * Typed on the 后台 page: the answer while the task asks, into its turn while it works, its next question
-   * once it has ended.
-   */
-  sendToTask(taskId: string, text: string) {
-    const task = state.tasks.list.find((entry) => entry.id === taskId)
-    if (!task) return false
-    if (task.question) return taskActions.typeTaskAnswer(taskId, text)
-    if (task.endedAt === null) return taskActions.steerTask(taskId, text)
-    return taskActions.askTask(taskId, text)
-  },
   inputProblem: (message: string) => historyActions.showToast(message),
   toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
   async setDeskIsland(on: boolean) {
@@ -851,12 +825,17 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   permission: (event) => ({
     type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at: Date.now(),
   }),
-  /** What a turn moved to the background says, asks and how it ends (tasks-state.js). */
+  /** What a background task says, asks and how it ends (tasks-state.ts). */
   task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now() }),
   task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
   task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now() }),
   task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now() }),
   task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now() }),
+  /** What the agent did with a task (viva-tasks): started one, asked one again, said something into one, took one up. */
+  task_created: (event) => ({ type: 'task_started', task: event.task, text: event.text, at: Date.now() }),
+  task_asked: (event) => ({ type: 'task_asked', taskId: event.taskId, text: event.text, at: Date.now() }),
+  task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now() }),
+  task_resumed: (event) => ({ type: 'task_resumed', task: event.task, messages: event.messages, at: Date.now() }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
   secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
@@ -898,7 +877,6 @@ function wireComposer() {
     handlers.send()
   })
   dom.context.addEventListener('click', () => workDirActions.toggleMenu())
-  dom.bgSend.addEventListener('click', () => handlers.startInBackground())
   dom.modelBtn.addEventListener('click', () => handlers.togglePicker())
   dom.jumpLatest.addEventListener('click', () => dom.follower.jumpToLatest())
   dom.toggleDrawer.addEventListener('click', () => dispatch({ type: 'toggle_drawer' }))
@@ -1062,8 +1040,8 @@ async function boot() {
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])
-  // What the last launch left going in the background, offered to take up or let go.
-  await taskActions.loadUnfinished()
+  // The tasks the last launch kept: ended ones, and those it quit on.
+  await taskActions.loadKept()
   await timelineActions.loadEarlier()
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })

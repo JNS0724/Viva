@@ -23,8 +23,6 @@ export const taskProblems = (): Readonly<Record<string, string>> & { going: stri
   going: t("main.task-ipc.this.task.is.running.your.message.will"),
 })
 
-/** Model instruction, not UI copy: keep it independent of the interface language. */
-const GO_ON = '刚才 Viva 关掉了，请接着做没做完的事。'
 /** Without a store (tests that do not need one), nothing is kept between launches. */
 const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remove: () => {} })
 /** Tasks that ended stay to be asked again (接着问), across launches too: the latest few, until closed. */
@@ -33,6 +31,8 @@ const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remov
  * seen stops reminding), so enough are kept that the 后台 page's 做完了 rarely offers one already let go.
  */
 export const KEEP_ENDED = 30
+/** At most this many tasks work at once; one more is refused, not queued. */
+export const MAX_RUNNING = 5
 const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
@@ -53,9 +53,11 @@ interface TaskIpcDeps {
   agent: Record<'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>
   /** Timers for saving what tasks say along the way (tests pass their own). */
   timers?: Pick<TaskWordsDeps, 'later' | 'cancel'>
+  /** To the window: what the agent did with a task, which the window did not ask for (task_created, …). */
+  announce?: (event: { type: string, [field: string]: unknown }) => void
 }
 
-export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, agentInfo, agent, timers = {} }: TaskIpcDeps) {
+export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, agentInfo, agent, timers = {}, announce = () => {} }: TaskIpcDeps) {
   const restoredSummary = (entry: StoredTask) => {
     const host = db.sideTaskHost(entry.segmentId)
     return { ...summaryOf(entry), ...(host ? { host } : {}) }
@@ -97,11 +99,17 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   async function start(request: { text?: unknown, words?: unknown } | null | undefined) {
     const { text, words = null } = request ?? {}
     if (!isText(text) || (words !== null && !isText(words))) throw new Error('invalid task request')
+    return begin(text, words === null ? {} : { words })
+  }
+
+  /** A task begun: from the conversation (后台做), or afresh from the agent's brief (start_background_task). */
+  async function begin(text: string, how: { words?: string, afresh?: boolean }) {
     const main = current()
     const { mode, model } = agentInfo()
-    if (mode === 'connecting') return { ok: false, problem: taskProblems().connecting }
-    const started = await agent.startTask(words === null ? {} : { words })
-    if (!started.ok) return { ok: false, problem: taskProblems()[started.reason] ?? t("main.task-ipc.could.not.start.in.background", { reason: started.reason }) }
+    if (mode === 'connecting') return { ok: false as const, problem: taskProblems().connecting }
+    if ((registry?.live() ?? 0) >= MAX_RUNNING) return { ok: false as const, problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
+    const started = await agent.startTask(how)
+    if (!started.ok) return { ok: false as const, problem: taskProblems()[started.reason] ?? t("main.task-ipc.could.not.start.in.background", { reason: started.reason }) }
     // A conversation with only 后台做 requests has no foreground messages yet. Keep its identity too,
     // otherwise the task points at an absent parent and its history row cannot return after a restart.
     if (!db.get(main.id)) db.save(main, [], { keepEmpty: true })
@@ -114,7 +122,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     registry?.put({ ...task, cwd: main.cwd ?? '' })
     taskWords.track(task.id, [{ role: 'user', text }])
     agent.promptTask(task.id, text)
-    return { ok: true, task }
+    return { ok: true as const, task }
   }
 
   /** Ended: kept with how it ended; beyond the latest few, the oldest are let go. */
@@ -135,23 +143,20 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     await agent.closeTask(taskId)
   }
 
-  /** Tasks an earlier launch left going (task-store.js): offered at the start, to take up or let go. */
-  const unfinished = () => store.list()
-    .filter((entry) => !tasks.has(entry.id) && !isEnded(entry))
-    .map(({ id, title, segmentId, startedAt }) => ({ id, title, segmentId, startedAt }))
-
   /**
-   * Tasks that had ended by an earlier launch: back in the window as they were, with what they said, to be
-   * asked again or closed. Their sessions are taken up only when asked.
+   * The tasks an earlier launch kept: back in the window as they were, with what they said, to be closed or
+   * messaged by the agent. Those it quit on are interrupted; their sessions are taken up only when messaged.
    */
   function finished() {
     return store.list()
-      .filter((entry) => isEnded(entry) && !attached.has(entry.id))
+      .filter((entry) => !attached.has(entry.id))
       .flatMap((entry) => {
         const found = db.get(entry.segmentId)
         if (!found) return []
         tasks.set(entry.id, entry)
-        return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages: found.messages.slice(entry.keep) }]
+        const ended = isEnded(entry)
+        return [{ task: restoredSummary(entry), status: ended ? entry.status : 'interrupted', endedAt: ended ? entry.endedAt : entry.startedAt ?? Date.now(),
+          messages: found.messages.slice(entry.keep) }]
       })
   }
 
@@ -181,37 +186,75 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   }
 
   /**
-   * Taken up again: its dsh session is reattached as a task and asked to go on; the window gets what it had
-   * said, from its own words on, to show it as it was.
+   * Taken up again: its dsh session is reattached as a task and asked `words` (the agent's); the window gets what
+   * it had said, from its own words on, and those words, to show it as it was.
    */
-  async function resume(taskId: string) {
+  async function resume(taskId: string, words: string) {
     const kept = store.list().find((entry) => entry.id === taskId)
     if (!kept) throw new Error('no such task')
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok) return { ok: false, problem: taskProblems().lost }
     tasks.set(taskId, kept)
     attached = new Set([...attached, taskId])
-    const said = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const said = [...before, { role: 'user', text: words, receipt: null }]
     taskWords.track(taskId, said)
     registry?.restart(taskId)
-    agent.promptTask(taskId, GO_ON)
+    agent.promptTask(taskId, words)
     return { ok: true, task: restoredSummary(kept), messages: said }
   }
 
+  const keptTask = (taskId: string) => {
+    const kept = store.list().find((entry) => entry.id === taskId)
+    if (!kept) throw new Error(taskProblems().gone)
+    return kept
+  }
+
+  /** start_background_task: afresh, from the agent's brief, its card in the conversation on screen. */
+  async function agentStart(brief: string) {
+    const started = await begin(brief, { afresh: true })
+    if (!started.ok) throw new Error(started.problem)
+    announce({ type: 'task_created', task: started.task, text: brief })
+    return { taskId: started.task.id, title: started.task.title, status: 'running' }
+  }
+
+  /** stop_background_task: its turn stops; the task stays, to be messaged later. */
+  async function agentStop(taskId: string) {
+    const kept = keptTask(taskId)
+    if (isEnded(kept) || !attached.has(taskId)) return { taskId, stopped: false, status: isEnded(kept) ? kept.status : 'interrupted' }
+    await agent.cancelTask(taskId)
+    return { taskId, stopped: true }
+  }
+
+  /**
+   * message_background_task: into its turn while it works; its next question once it ended; taken up again
+   * first when an earlier launch left it unfinished.
+   */
+  async function agentMessage(taskId: string, text: string) {
+    const kept = keptTask(taskId)
+    if (isEnded(kept)) {
+      const asked = await ask(taskId, text)
+      if (!asked.ok) throw new Error(asked.problem)
+      announce({ type: 'task_asked', taskId, text })
+      return { taskId, delivered: 'next question' }
+    }
+    if (!attached.has(taskId)) {
+      const taken = await resume(taskId, text)
+      if (!taken.ok) throw new Error(taken.problem)
+      announce({ type: 'task_resumed', task: taken.task, messages: taken.messages })
+      return { taskId, delivered: 'taken up again' }
+    }
+    taskWords.userSaid(taskId, text)
+    const steered = await agent.steerTask(taskId, text)
+    if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
+    announce({ type: 'task_steered', taskId, text })
+    return { taskId, delivered: 'into its turn' }
+  }
+
   ipcMain.handle('task:start', (_event, request) => start(request))
-  ipcMain.handle('task:unfinished', () => unfinished())
   ipcMain.handle('task:finished', () => finished())
-  ipcMain.handle('task:ask', (_event, taskId, text) => ask(taskId, text))
-  ipcMain.handle('task:resume', (_event, taskId) => resume(taskId))
-  ipcMain.handle('task:forget', (_event, taskId) => { store.remove(taskId); registry?.remove(taskId) })
   ipcMain.handle('task:close', (_event, taskId) => close(taskId))
   ipcMain.handle('task:stop', (_event, taskId) => agent.cancelTask(taskById(taskId).id))
-  ipcMain.handle('task:steer', (_event, taskId, text) => {
-    if (!isText(text)) throw new Error('invalid task request')
-    const { id } = taskById(taskId)
-    taskWords.userSaid(id, text)
-    return agent.steerTask(id, text)
-  })
 
   return {
     /** An event from the agent: what a task says, asks and how its turn ends. */
@@ -220,6 +263,10 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     answer: taskWords.answer,
     /** Viva quits, or dsh went: what tasks said is saved now. */
     flush: taskWords.flush,
+    /** The agent's own actions on tasks (viva-tasks start_background_task, stop_…, message_…). */
+    agentStart,
+    agentStop,
+    agentMessage,
   }
 }
 export type TaskService = ReturnType<typeof registerTaskIpc>

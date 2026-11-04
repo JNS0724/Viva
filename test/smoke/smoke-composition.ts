@@ -3,8 +3,6 @@ import { run, report, type SmokeWindow } from './smoke-kit.ts'
 /** Exercise the real renderer handlers: confirming IME text must never submit or dismiss an editor. */
 export async function checkComposition(win: SmokeWindow): Promise<string[]> {
   const seen = await run(win, `(async () => {
-    const { initialState, reduce } = await import('./state.js')
-    const { renderTasksPage } = await import('./view/tasks-page.js')
     const { rewindEditor } = await import('./view/rewind.js')
     const { createIslandInput } = await import('./view/island-input.js')
     const results = []
@@ -15,18 +13,13 @@ export async function checkComposition(win: SmokeWindow): Promise<string[]> {
       { name: 'Shift Enter', shiftKey: true },
       { name: 'ordinary Enter' },
     ]
-    for (const surface of ['task', 'edit', 'island']) for (const sample of cases) {
+    for (const surface of ['edit', 'island']) for (const sample of cases) {
       let sent = 0
       const host = document.createElement('section')
       document.body.append(host)
       try {
         let field
-        if (surface === 'task') {
-          let state = reduce(initialState, { type: 'task_started', task: { id: 'ime-task-' + ++serial, title: '输入法验收', segmentId: 'ime' }, text: '合成请求', at: Date.now() })
-          state = reduce(state, { type: 'tasks_page_open', taskId: state.tasks.list[0].id })
-          renderTasksPage(host, state, { sendToTask: () => sent++ })
-          field = host.querySelector('.tp-input')
-        } else if (surface === 'edit') {
+        if (surface === 'edit') {
           host.append(rewindEditor({ id: 'ime-edit-' + ++serial, role: 'user', text: '原文' }, { submitEdit: () => sent++, cancelEdit: () => {} }, 0))
           field = host.querySelector('textarea')
         } else {

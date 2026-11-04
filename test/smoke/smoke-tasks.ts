@@ -8,7 +8,6 @@ import { checkTaskCardRetention } from './smoke-task-card.ts'
  * page, where it is answered.
  */
 /** Unlike configSteps's words, which stay earlier in the same session. */
-const BUSY_ASK = '再帮我接入演示服务一次'
 const OTHER_ASK = '帮我订一张周五的机票'
 
 /** Idle without approving anything (smoke-kit finishTurn would allow the task's card too). */
@@ -54,43 +53,38 @@ async function answerOnPage(win: SmokeWindow, title: string, label: string) {
   await run(win, escape)
 }
 
-/** 后台做: the words typed go to a task of their own (the button beside 发送). */
-const startInBackground = (win: SmokeWindow, text: string) => run(win, `(() => {
-  const input = document.getElementById('composer-input')
-  input.value = ${JSON.stringify(text)}
-  input.dispatchEvent(new Event('input', { bubbles: true }))
-  document.getElementById('bg-send').click()
-})()`)
+/** Said to the agent in the conversation; waits for its turn to end. */
+async function tellAgent(win: SmokeWindow, words: string) {
+  const before = await run(win, `${userTexts}.length`)
+  await submit(win, words)
+  await until(win, `${userTexts}.length > ${before} && ${mainIdle}`, `the agent done with 「${words}」`)
+}
+
+/** The agent hands `text` to a background task (start_background_task, the fake model's 「后台做：」). */
+const startInBackground = (win: SmokeWindow, text: string) => tellAgent(win, `后台做：${text}`)
+/** The agent finds the task titled `title` and says `words` to it (message_background_task). */
+const tellTask = (win: SmokeWindow, title: string, words: string) => tellAgent(win, `告诉后台的「${title}」：${words}`)
 
 /**
- * While a turn waits on an approval, 后台做 starts a task of its own: the turn and its approval stay in front,
- * the task starts from before that turn and answers on its card.
+ * Asked to, the agent starts a task of its own from its brief: only its line joins the conversation, beside what
+ * the agent said; the task answers on its card, the conversation on screen free.
  */
-async function busyStartSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
-  await submit(win, BUSY_ASK)
-  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
+async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await startInBackground(win, OTHER_ASK)
-  const done = await until(win, doneCard(OTHER_ASK), 'the task the words started answering')
-  expect(done.text.includes(`收到：「${OTHER_ASK}」`), 'the task should answer the words', done)
+  const done = await until(win, doneCard(OTHER_ASK), 'the task the agent started answering')
+  expect(done.text.includes(`收到：「${OTHER_ASK}」`), 'the task should answer its brief', done)
   const front = await run(win, `({
-    asked: ${userTexts},
-    confirms: [...document.querySelectorAll('.confirm:not(.ask) .confirm-head')].map((el) => el.textContent),
-    folds: document.querySelectorAll('#thread .fold-task').length,
+    answers: [...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent),
     busy: document.getElementById('send-btn').dataset.busy,
   })`)
-  expect(front.asked.includes(BUSY_ASK) && !front.asked.includes(OTHER_ASK) && front.folds === 0,
-    'the turn should stay in front, the words not landing in it', front)
-  expect(front.confirms.length === 1 && !front.confirms[0].startsWith('#'), 'the turn\'s approval should still be the conversation\'s', front)
-  const answering = (hooks.model?.()?.requests ?? []).map((request: unknown) => JSON.stringify(request)).find((json: string) => json.includes(OTHER_ASK)) ?? ''
-  const at = answering.indexOf(BUSY_ASK)
-  expect(answering && at < 0, 'the task answering the new words should start from before the turn running', { found: Boolean(answering), around: answering.slice(Math.max(0, at - 300), at + 60) })
+  expect(front.answers.some((text: string) => text.includes('已经交给后台')) && !front.answers.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
+    'the agent should say it handed the work over, the task answering on its own card', front)
+  const answering = (hooks.model?.()?.requests ?? []).map((request: unknown) => JSON.stringify(request)).find((json: string) => json.includes(`收到：「${OTHER_ASK}」`)) ?? ''
+  expect(!answering.includes('后台做：'), 'the task should start afresh from its brief, not from the conversation', { found: Boolean(answering) })
   await run(win, `(${cardOf(OTHER_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-moved')
+  await capture(win, outDir, 'tasks-agent-start')
   await pageSteps(win, outDir, expect)
-  // Declined, the turn in front ends without setting the server up again.
-  await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
-  await until(win, mainIdle, 'the turn ending')
 }
 
 /**
@@ -160,11 +154,9 @@ const FOLLOW_UP = '刚才那件做得怎么样了'
 async function followUpSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   const opened = await openFromLine(win, BIG_ASK)
   expect(opened.act === '关掉这件', 'an ended task\'s page should offer to close it', opened)
-  await run(win, `(() => {
-    const field = document.querySelector('#tasks-page .tp-input')
-    field.value = ${JSON.stringify(FOLLOW_UP)}
-    field.closest('form').requestSubmit()
-  })()`)
+  await run(win, escape)
+  await tellTask(win, BIG_ASK, FOLLOW_UP)
+  await openFromLine(win, BIG_ASK)
   const answered = await until(win, `(() => {
     const seen = ${pageState}
     return seen.said.some((text) => text.includes('收到：「${FOLLOW_UP}」')) && seen
@@ -175,8 +167,8 @@ async function followUpSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, escape)
   const card = await until(win, `(() => { const card = ${cardState(BIG_ASK)}; return card?.status === 'done' && card.text.includes(${JSON.stringify(FOLLOW_UP)}) && card })()`, 'the line after the follow-up')
   expect(card.text.includes('看结果'), 'asked again, the task should report back once more on its line', card)
-  const asked = await run(win, userTexts)
-  expect(!asked.some((text: string) => text.includes(FOLLOW_UP)), 'the follow-up should not land in the conversation on screen', asked)
+  const answers = await run(win, `[...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent)`)
+  expect(!answers.some((text: string) => text.includes(`收到：「${FOLLOW_UP}」`)), 'the task\'s answer should not land in the conversation on screen', answers)
 }
 
 /**
@@ -295,7 +287,7 @@ async function leaveRunning(win: SmokeWindow) {
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await checkTaskCardRetention(win, expect)
-  await busyStartSteps(win, outDir, expect, hooks)
+  await agentStartSteps(win, outDir, expect, hooks)
   await longJobSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)
   await startSteps(win, outDir, expect)
@@ -304,21 +296,20 @@ export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect
 }
 
 /**
- * The `resume` phase, on the profile `memory` left: the task Viva quit on is offered; taken up, it goes on
- * in the background and reports back once done. @returns {Promise<string[]>} failed expectations
+ * The `resume` phase, on the profile `memory` left: the task Viva quit on is back, interrupted, its line in the
+ * conversation; told to go on, the agent takes it up again and it reports back once done.
+ * @returns {Promise<string[]>} failed expectations
  */
 export async function checkResume(win: SmokeWindow, outDir: string): Promise<string[]> {
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
-  const card = await until(win, `document.querySelector('#thread .task-unfinished')?.textContent ?? null`, 'the task Viva quit on')
-  expect(card.includes(`#${LEFT_ASK}`) && card.includes('接着做') && card.includes('不做了'), 'the task Viva quit on should be offered', card)
-  await run(win, `document.querySelector('#thread .task-unfinished').scrollIntoView({ block: 'center' })`)
+  const card = await until(win, `(() => { const card = ${cardState(LEFT_ASK)}; return card?.status === 'interrupted' && card })()`, 'the task Viva quit on')
+  expect(card.text.includes('已中断') && card.buttons.length === 0, 'the task Viva quit on should be back, interrupted, with no buttons of its own', card)
+  expect(!(await run(win, `Boolean(document.querySelector('#thread .task-unfinished'))`)), 'there is no card offering to take it up any more')
+  await run(win, `(${cardOf(LEFT_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-unfinished')
-  // 接着做 waits for the agent to be connected, as a user would find it.
-  const goOn = `[...document.querySelectorAll('#thread .task-unfinished button')].find((el) => el.textContent === '接着做')`
-  await until(win, `!(${goOn}).disabled`, '接着做 once the agent is connected')
-  await run(win, `(${goOn}).click()`)
+  await tellTask(win, LEFT_ASK, '接着做')
   const report = await until(win, `(() => { const card = ${cardState(LEFT_ASK)}; return card?.status === 'done' && card.text })()`, 'the task taken up reporting back')
     .catch(async (err) => {
       // What the card shows instead, and a picture of it, so a run that times out says where the task stood.
@@ -326,11 +317,8 @@ export async function checkResume(win: SmokeWindow, outDir: string): Promise<str
       throw new Error(`${err.message}: ${JSON.stringify(await run(win, cardState(LEFT_ASK)))}`)
     })
   expect(report.includes('做完了'), 'taken up, the task should carry on to its end', report)
-  expect(!(await run(win, `Boolean(document.querySelector('#thread .task-unfinished'))`)), 'taken up, it is no longer offered')
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-resumed')
-  const left = await run(win, `window.agent.unfinishedTasks()`)
-  expect(left.length === 0, 'done with, nothing is left to offer at the next launch', left)
   await restoredSteps(win, outDir, expect)
   return failures
 }
@@ -338,8 +326,8 @@ export async function checkResume(win: SmokeWindow, outDir: string): Promise<str
 const RESTORED_ASK = '后来呢'
 
 /**
- * Tasks that had ended by the last launch (laterQuestionSteps's, startSteps's) are back on the 后台 page;
- * asked again there, a task's session is taken up first, and it answers on its page.
+ * Tasks that had ended by the last launch (laterQuestionSteps's, startSteps's) are back on the 后台 page; asked
+ * again through the agent, a task's session is taken up first, and it answers on its page.
  */
 async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   // Seen last time, they are not reminded of at the island's tail any more: the 后台 page from the hub's sidebar.
@@ -350,11 +338,9 @@ async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   expect(page.rows.includes(ASKS_LATER) && page.rows.includes(ON_ITS_OWN), 'tasks that ended last time should be back on the 后台 page', page.rows)
   await run(win, `[...document.querySelectorAll('#tasks-page .tp-row')].find((el) => el.querySelector('.tp-name').textContent === ${JSON.stringify(ASKS_LATER)}).click()`)
   await until(win, `(${pageState}).title === ${JSON.stringify(`#${ASKS_LATER}`)}`, 'the task from last time on show')
-  await run(win, `(() => {
-    const field = document.querySelector('#tasks-page .tp-input')
-    field.value = ${JSON.stringify(RESTORED_ASK)}
-    field.closest('form').requestSubmit()
-  })()`)
+  await run(win, escape)
+  await tellTask(win, ASKS_LATER, RESTORED_ASK)
+  await openFromLine(win, ASKS_LATER)
   await until(win, `(${pageState}).said.some((text) => text.includes('收到：「${RESTORED_ASK}」'))`, 'the task from last time answering')
     .catch(async (err) => {
       // Where the page stood instead, and a picture of it.
@@ -365,6 +351,6 @@ async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-restored')
   await run(win, escape)
-  const asked = await run(win, userTexts)
-  expect(!asked.some((text: string) => text.includes(RESTORED_ASK)), 'the words should not land in the conversation on screen', asked)
+  const answers = await run(win, `[...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent)`)
+  expect(!answers.some((text: string) => text.includes(`收到：「${RESTORED_ASK}」`)), 'the task\'s answer should not land in the conversation on screen', answers)
 }

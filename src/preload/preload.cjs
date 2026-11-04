@@ -77,24 +77,12 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
    * { ok, info, conversation: { id, messages }, folds } | { ok: false, problem }.
    */
   rewind: (request) => ipcRenderer.invoke('timeline:rewind', request),
-  /**
-   * Background tasks: the running turn goes on in the background ({ words, keep, text }), and the
-   * conversation goes on with `text`: { ok, task, info, conversation, folds } | { ok: false, reason | problem }.
-   */
-  /** 后台做: { text, words? } (words: the running turn's, to start from before it): { ok, task } | { ok: false, problem }. */
+  /** 后台做 (a follow-up's draft): { text, words? } (words: the running turn's, to start from before it): { ok, task } | { ok: false, problem }. */
   startTask: (request) => ipcRenderer.invoke('task:start', request),
-  /** Saved along the way and at its end ({ ended: true, status }: kept to be asked again, not offered as unfinished). */
-  /** Tasks an earlier launch left going: [{ id, title, segmentId, startedAt }]; taken up again, or let go. */
-  unfinishedTasks: () => ipcRenderer.invoke('task:unfinished'),
-  /** Tasks that had ended by an earlier launch: [{ task, status, endedAt, messages }]. */
+  /** The tasks an earlier launch kept, ended or interrupted: [{ task, status, endedAt, messages }]. */
   finishedTasks: () => ipcRenderer.invoke('task:finished'),
-  /** 接着问: a task that ended is asked `text` as its next question: { ok } | { ok: false, problem }. */
-  askTask: (taskId, text) => ipcRenderer.invoke('task:ask', taskId, text),
-  resumeTask: (taskId) => ipcRenderer.invoke('task:resume', taskId),
-  forgetTask: (taskId) => ipcRenderer.invoke('task:forget', taskId),
   closeTask: (taskId) => ipcRenderer.invoke('task:close', taskId),
   stopTask: (taskId) => ipcRenderer.invoke('task:stop', taskId),
-  steerTask: (taskId, text) => ipcRenderer.invoke('task:steer', taskId, text),
   /** What the part that would fold did to the computer ({ keep }): { files: [{ path, times }], commands }. */
   rewindEffects: (request) => ipcRenderer.invoke('timeline:rewind-effects', request),
   /** A path folded off the conversation on screen: what it holds after the shared part ({ messages }), or back onto it. */

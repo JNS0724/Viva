@@ -304,10 +304,10 @@ A new backend task service creates tasks, puts together what they say, stores it
 
 Sub-agents suit sub-work that would flood the context but whose result this turn needs (reading a batch of documents and handing back a conclusion, looking several things up in parallel). Work that runs long, should be visible to the user, or may be asked about later goes to Viva tasks. In `viva.patch.yml`:
 
-- `subagent` and `subagent_fork` stay, with the background mode off (`enableRunInBackground: false`), so the result comes back as a tool result in the same turn; `maxDepth: 0`, so a sub-agent cannot delegate further. dsh-base's `backgroundMode: continuable` for `subagent` is removed.
+- `subagent` and `subagent_fork` stay, with the background mode off (`enableRunInBackground: false`), so the result comes back as a tool result in the same turn; `maxDepth: 1`: the sub-agent itself is depth 1 and cannot delegate further (0 refuses sub-agents altogether, as tested). dsh-base's `backgroundMode: continuable` for `subagent` is removed.
 - A sub-agent gets only read-only tools for looking things up, by allow list: `toolFilter.allow` is `read`, `glob`, `grep`, `read_image`, `web_search`, `web_fetch`, `memory_recall`, `search_conversations`, `read_conversation`, `todo_write`.
 - `send_message`, `list_agents` and `interrupt_agent` are turned off. The persona says the main conversation waits for a sub-agent's result (`dsh-tool-subagent` ignores the switch and still adds "continue useful work while they run"), and says how sub-agents and Viva tasks divide the work.
-- With the allow list, `subagent_fork`'s tool table differs from its parent's and may no longer hit the KV cache; this is measured once in step 3.
+- With the allow list, `subagent_fork`'s tool table differs from its parent's and may no longer hit the KV cache. This needs the real DeepSeek API and was not measured in step 3.
 
 Tested with real dsh on 2026-11-04 (a script with a fake model): by default a sub-agent gets almost all of the main conversation's tools, including `ask_user_question`, `plugin_manager`, `viva_mcp_*`, `memory_remember` and the delegation tools; in the background mode, when it finishes, dsh wakes the main session, which writes an answer that belongs to no turn. Hence the allow list, and the background mode off.
 
@@ -319,7 +319,7 @@ Looked at again once this works in use: 放到后台 and automatic handoff of lo
 
 1. Remove the extra ways in and the extra displays: 放到后台 and Undo, routing, "#name", the bottom-right panel, result cards, the drawer's task tab, the island's notice. 后台做 and the "continue / drop" card after a restart stay for now, so tasks can still be started and taken up again before step 3. (Done.)
 2. The backend task service: what tasks say is stored by the backend; pages only display it. (Done: `task-transcript.ts` builds the messages, `task-words.ts` saves them, and `task:save` is gone.)
-3. The start, stop and message tools, the `task_created` push, and the sub-agent settings; the 后台做 button, the 后台 page's input box and 接着问, and the cards after a restart are removed.
+3. The start, stop and message tools, the `task_created` push, and the sub-agent settings; the 后台做 button, the 后台 page's input box and 接着问, and the cards after a restart are removed. (Done; a follow-up draft keeps its 后台做 until triggers replace follow-ups.)
 4. Results come back to the main conversation.
 
 Each step is its own commit, with the smoke tests rewritten to match and run.

@@ -161,27 +161,26 @@ test('tasks that had ended by the last launch come back ended, and can be asked 
   assert.deepEqual(taskMessages(task).map((m) => m.text), ['查一下明天上海的天气', '晴，18 到 25 度。'])
 })
 
-test('tasks the last launch left going are offered; taken up, one goes on with what it had said', () => {
-  const offered = reduce(initialState, { type: 'tasks_unfinished', list: [{ id: 's1', title: '整理发布说明', segmentId: 'c1', startedAt: 5 }, { id: 's2', title: '查天气', segmentId: 'c2', startedAt: 6 }] })
-  assert.deepEqual(offered.tasks.unfinished.map((entry) => entry.id), ['s1', 's2'])
-
-  const taken = reduce(offered, {
+test('a task the agent takes up again goes on in the background with what it had said, its card where it was', () => {
+  const restored = reduce(initialState, { type: 'tasks_restored', list: [{
+    task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' }, status: 'interrupted', endedAt: 5,
+    messages: [{ role: 'user', text: '整理发布说明', receipt: null }],
+  }] })
+  assert.deepEqual([restored.tasks.list[0].status, liveTasks(restored).length], ['interrupted', 0], 'interrupted: listed, not at work')
+  const taken = reduce(restored, {
     type: 'task_resumed', at: 50,
     task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' },
-    messages: [{ role: 'user', text: '整理发布说明', receipt: null }, { role: 'assistant', text: '先看提交…', receipt: null }],
+    messages: [{ role: 'user', text: '整理发布说明', receipt: null }, { role: 'assistant', text: '先看提交…', receipt: null }, { role: 'user', text: '接着做', receipt: null }],
   })
   const [task] = liveTasks(taken)
   assert.deepEqual([task.id, task.status, task.startedAt], ['s1', 'running', 50])
-  assert.deepEqual(taskMessages(task).map((m) => m.text), ['整理发布说明', '先看提交…'])
-  assert.deepEqual(taken.tasks.unfinished.map((entry) => entry.id), ['s2'], 'no longer offered')
-  assert.deepEqual(reduce(taken, { type: 'task_forgotten', taskId: 's2' }).tasks.unfinished, [])
+  assert.deepEqual(taskMessages(task).map((m) => m.text), ['整理发布说明', '先看提交…', '接着做'])
   const said = reduce(taken, { type: 'task_update', taskId: 's1', update: chunk('三组改动。'), at: 51 })
   assert.equal(taskMessages(liveTasks(said)[0]).at(-1).text, '三组改动。', 'what it says now follows')
 
   // Taken up in a conversation on screen: its card goes under what is there now, and stays there.
   const shown = run([
     { type: 'history_loaded', conversationId: 'c9', messages: [{ role: 'user', text: '做周报', receipt: null }, { role: 'assistant', text: '写好了', receipt: null }], savedAt: 1 },
-    { type: 'tasks_unfinished', list: [{ id: 's1', title: '整理发布说明', segmentId: 'c1', startedAt: 5 }] },
     { type: 'task_resumed', at: 50, task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' }, messages: [] },
   ])
   assert.deepEqual(shown.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']])

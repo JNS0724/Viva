@@ -7,23 +7,21 @@ const LAST_TASK = `[...document.querySelectorAll('#thread .task-card')].at(-1)`
 
 const taskBackground: LiveScenario = {
   id: 'task-background',
-  title: '「后台做」交给后台任务，做完卡片上有结果，对话不被占用',
+  title: '让助手把事放到后台做，做完卡片上有结果，对话不被占用',
   feature: '后台任务',
   core: true,
   async run(ctx) {
     const { win, expect } = ctx
     await fresh(win)
     await run(win, `(() => {
-      const input = document.getElementById('composer-input')
-      input.value = ${JSON.stringify(TASK_WORDS)}
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      document.getElementById('bg-send').click()
+      document.getElementById('composer-input').value = ${JSON.stringify(`放到后台做，不用等：${TASK_WORDS}`)}
+      document.getElementById('composer').requestSubmit()
     })()`)
     const started = await until(win, `(() => {
       const card = ${LAST_TASK}
-      return card ? { busy: document.getElementById('send-btn').dataset.busy, input: document.getElementById('composer-input').value } : null
-    })()`, 'the task card', 15_000)
-    expect(started.busy === 'false' && started.input === '', 'the conversation should stay free while the task works', started)
+      return card && document.getElementById('send-btn').dataset.busy === 'false' ? { busy: 'false' } : null
+    })()`, 'the task card, the agent\'s turn over', LIVE_TURN_MS)
+    expect(started.busy === 'false', 'the conversation should be free while the task works', started)
     const done: { id: string, text: string, preview: string } | null = await until(win, `(() => {
       const card = ${LAST_TASK}
       return card?.dataset.status === 'done' ? { id: card.dataset.task, text: card.textContent, preview: card.querySelector('.task-line-text')?.textContent ?? '' } : null

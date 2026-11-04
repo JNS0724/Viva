@@ -150,7 +150,6 @@ function renderComposerAvailability(dom: Dom, setup: SetupCopy | null, switching
   dom.input.placeholder = setup?.placeholder ?? placeholder
   dom.sendBtn.disabled = Boolean(setup) || switching
   // A question the agent asks is answered here, not handed to the background.
-  dom.bgSend.disabled = Boolean(setup) || switching || asking
 }
 
 /** While the agent works the button stops it, unless there are words to send into the turn. */
@@ -175,7 +174,7 @@ function renderComposer(dom: Dom, state: State, handlers: Handlers) {
 
 /** Cards are conversation content even when no foreground user bubble was created. */
 export const showsHome = (state: State) => state.messages.length === 0 && state.earlier.segments.length === 0
-  && state.tasks.submissions.length === 0 && state.tasks.unfinished.length === 0 && cardedTasks(state).length === 0
+  && state.tasks.submissions.length === 0 && cardedTasks(state).length === 0
   && !state.newTopicPending && state.phase !== 'error'
 
 /** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */

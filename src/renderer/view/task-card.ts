@@ -49,7 +49,7 @@ function partsOf(task: BackgroundTask, now: number): CardParts {
 }
 
 /** Where the line in the conversation leads: to answer it, to see how it goes, to read what it came back with. */
-const leads = () => ({ waiting: t('task.take.action'), interrupted: t('task.take.action'), running: t('task.take.look') } as Record<string, string>)
+const leads = () => ({ waiting: t('task.take.action'), interrupted: t('task.take.look'), running: t('task.take.look') } as Record<string, string>)
 
 /** The conversation's line shows status, not the task's streaming answer. Keep its node while those words agree. */
 export function taskCardInputs(task: BackgroundTask, now: number): readonly unknown[] {
