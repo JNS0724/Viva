@@ -259,6 +259,81 @@ The boundaries are drawn so that the backend could later run elsewhere, but the 
 
 **Suggested next steps:**
 
-- Keep the composer draft across a backend restart (saved in `sessionStorage` before the page reloads), and make notification clicks work across restarts by follow-up id. Both are small changes.
+- Background tasks and triggers, step by step, as planned in §11.
+- Keep the composer draft across a backend restart (saved in `sessionStorage` before the page reloads); a small change.
 - A separate PR for moving the JSON settings files into `app.db`.
 - Let pages catch up by sequence number. This is the largest piece before the cloud.
+
+## 11. Plan: background tasks and triggers
+
+> Status: **plan decided, code not changed yet.** Once it is carried out, §4–8 and the features document are rewritten and this section goes. Date: 2026-11-04.
+
+Two changes make one mechanism. Background tasks are managed by the backend, with four sources; proactive follow-ups are removed altogether, replaced by event-driven triggers whose action is to start a background task or remind the user.
+
+### 11.1 Background tasks
+
+**A background task is an independent dsh session that is kept.** It has its own session id, and its work is recorded in dsh's session log. The user can steer it, stop it and ask it again directly; after Viva restarts, asking again first reattaches the original session by id through ACP's `session/resume`, so no context is lost. Operations that need approval appear on the task's card.
+
+**Managed by the backend.** A new task service creates tasks, collects what they say, stores it and pushes it; all four sources call it. Pages only display: on `task_created` (with its source) they draw a card, and they no longer call `task:save`. Today the page collects what a task says and saves it back, so nothing is saved while the window is not loaded or is reloading; that goes too.
+
+| Source | When it starts | What the task starts from | User consent |
+| --- | --- | --- | --- |
+| The user taps "Do in background" | On the tap | The main conversation first spends one turn writing the user's words and the relevant context into a brief, then a fresh session starts | The user started it |
+| The user taps "Move to background", or automatic handoff | On the tap; or when the turn has run 60 seconds, called a tool, and is not waiting on the user to approve or answer | The running turn: its session goes on as the task, and the main conversation goes on from a fork before that turn | After a handoff: "Moved to background · Undo" |
+| The model creates it | The model calls `start_background_task` (`viva-tasks`) | A fresh session with the model's brief by default; `context: "fork"` when the model explicitly needs the whole conversation | Created at once; the card can stop or undo it |
+| A trigger | The trigger's condition is met | A fresh session with the brief stored in the trigger | Given when the trigger was created |
+
+**Rules:**
+
+- At most 3 background tasks at once; a task's session cannot create tasks.
+- A brief stands on its own: the goal, the background it needs, file paths, errors, constraints, the output language. It shows on the card as the task's first message. What a task reports back is its own claim: for anything outward-facing it must return a handle that can be checked (a URL, an id, a path), checked before the user is told.
+- The tool's description says: there is no choosing foreground or background, it always runs in the background; finish what does not depend on the result, give a one-line status and end the turn, never wait or poll.
+- **Results come back to the main conversation:** when a task ends and the main conversation is idle, a turn started by the task's completion lets the model deal with the result; when the result is already on the card, it may say nothing. Such a turn never cuts into one in progress.
+- Stuck detection follows progress, not time: a task with no new output for a long while, or stuck in one tool, is marked "may be stuck" on its card with a Stop; nothing is stopped just for running long.
+- Permissions: tasks the user or the model creates follow the user's permission level; tasks a trigger starts run as read-only, every change waiting on the card for the user's approval; sending tools stay blocked before execution (`viva-policy`).
+
+**dsh's sub-agents: within a turn only.** Sub-agents suit sub-work that would flood the context but whose result this turn needs (reading a batch of documents and handing back a conclusion, looking several things up in parallel): the material goes into the sub-agent's context only, and the main conversation gets the conclusion. Work that runs long, should be visible to the user, or may be asked about later goes to Viva tasks. In `viva.patch.yml`:
+
+- `subagent` and `subagent_fork` stay, with the background mode off (`enableRunInBackground: false`): the main conversation waits for the sub-agent, whose result comes back as a tool result in the same turn; `maxDepth: 0`, so a sub-agent cannot delegate further.
+- A sub-agent gets only read-only tools for looking things up: `toolFilter.allow` is `read`, `glob`, `grep`, `read_image`, `web_search`, `web_fetch`, `memory_recall`, `search_conversations`, `read_conversation`, `todo_write`. An allow list means tools that dsh or a plugin adds later are not given to sub-agents by default.
+- `send_message`, `list_agents` and `interrupt_agent` (useful only in the background mode) are turned off; `job_*` (shell background jobs) stays.
+- The persona's and the `viva-tasks` tool's reminders that "`list_agents` does not list Viva tasks" go, replaced by how the two divide the work.
+
+Tested with real dsh on 2026-11-04 (a script with a fake model): by default a sub-agent gets almost all of the main conversation's tools, including `ask_user_question`, `plugin_manager`, `viva_mcp_*`, `viva_skill_*`, `memory_remember`, `memory_forget`, `viva_followup_propose` and the delegation tools, so an allow list is required; it gets none of the user's MCP tools, so sending tools were never available to it. In the background mode the user cannot ask a sub-agent anything directly, it is gone after a restart, and operations that need approval are refused automatically; when it finishes, dsh wakes the main session, which writes an answer that belongs to no turn, so Viva neither shows it as working nor saves it in time. The foreground mode has none of these problems; operations that need approval are still refused, which is why it gets read-only tools only.
+
+### 11.2 Triggers (replacing proactive follow-ups)
+
+**A trigger is a condition and an action**, kept in a `triggers` table in `app.db`; creating, firing and cancelling one each record an event.
+
+- **Conditions:** a time arrives; a file changes and then stays still for 10 minutes; a background task ends. Later, signals from dsh plugins the user installs (a mail plugin's "a new message arrived"): where the "connectors" mentioned when message sources were removed land.
+- **Actions:** start a background task (with a brief); or remind the user, optionally with a task's result.
+- **Who creates them:** the model proposes one with a new tool (replacing `viva_followup_propose`); a card in the conversation says when, what, and which files it will read, and only the user's yes creates it. The user can see, change and delete triggers on the Background page.
+- **Event core:** one timer, set for the next trigger due, sends `clock.trigger_due` when it fires; the file watch sends `file.changed`. Both route to "fire", which runs the action. At start and on wake, each overdue trigger fires once.
+- **Notifications:** a reminder goes out at its time, and a finished task is announced. No more limits on timing or count: "only in your gaps", at most 3 a day, merging missed ones, and the home "Today" summary are removed; how much to interrupt is left to the system's Do Not Disturb.
+
+**How the old feature maps:**
+
+| Proactive follow-ups | Triggers |
+| --- | --- |
+| "Weekly report due Friday evening: draft it ahead and remind me" | Two triggers: Friday 16:00 starts a background task "draft the weekly report"; Friday 17:00 reminds, with that task's result |
+| Preparation in chosen windows while the user is away, 30 calls a day | Removed; a task starts at its time, with "at most 3 tasks at once" bounding the cost |
+| A tool-free preparation call | Removed; a read-only background task that can read files and look things up, writes waiting for approval |
+| "When this file changes, help me…" | A trigger whose condition is the file changing |
+| Drafts waiting for you, "Continue" | The task's report card, which can be asked again |
+| Weekly stats, the "Background preparation" settings, the sleeping look | Removed |
+
+**Modules to remove:** `prepare-schedule`, `prepare-scheduler`, `prepare-materials`, `followup-notifier`, `notice-plan`, `followup-store`, `followup-stats`, `followups-ipc`, `followups-main`, the preparation call of `viva-followups`, and the follow-up cards and preparation settings in the pages. No compatibility: old follow-up data is not migrated.
+
+### 11.3 References
+
+What [OpenClaw](https://docs.openclaw.ai/tools/subagents), [Hermes Agent](https://hermes-agent.nousresearch.com/docs/zh-Hans/guides/delegation-patterns) and [QwenPaw](https://github.com/agentscope-ai/QwenPaw/tree/main/src/qwenpaw/tool_calls) share: a child's result comes back as a new turn of the parent once it is idle (OpenClaw lets the parent stay silent). Hermes always runs top-level delegations in the background, at most 3 at once, and judges a stall by progress (450 seconds quiet, or 1200 seconds in one tool). QwenPaw moves a tool call past its deadline to the background, but background work must stay bounded. In all three a child cannot ask the user for approval by default; Viva's tasks keep that difference.
+
+### 11.4 Order of work
+
+1. The backend task service: the backend saves what tasks say, pages only display (a refactor).
+2. Tasks the model creates, results back to the main conversation, stuck detection, dsh's sub-agents within a turn only (foreground, a read-only allow list, no further delegation).
+3. Automatic handoff of long turns.
+4. Triggers, and removing proactive follow-ups.
+5. "Do in background" with the main conversation writing the brief.
+
+Each step is its own commit and runs the smoke tests.
