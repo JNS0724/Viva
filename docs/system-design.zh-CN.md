@@ -304,10 +304,10 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 子 agent 适合会占满上下文、但这一轮就要用到结果的子工作（读完一批文档交回结论、并行查几处资料）；耗时长、要让用户看得见、之后可能追问的事，交给 Viva 任务。在 `viva.patch.yml` 里：
 
-- `subagent`、`subagent_fork` 保留，关掉后台模式（`enableRunInBackground: false`），结果作为工具结果在同一轮返回；`maxDepth: 0`，子 agent 不能再委派。去掉 dsh-base 给 `subagent` 配的 `backgroundMode: continuable`。
+- `subagent`、`subagent_fork` 保留，关掉后台模式（`enableRunInBackground: false`），结果作为工具结果在同一轮返回；`maxDepth: 1`，子 agent 本身算第 1 层，不能再委派（设成 0 连子 agent 都开不了，实测）。去掉 dsh-base 给 `subagent` 配的 `backgroundMode: continuable`。
 - 子 agent 只拿到只读的查阅工具，用白名单：`toolFilter.allow` 为 `read`、`glob`、`grep`、`read_image`、`web_search`、`web_fetch`、`memory_recall`、`search_conversations`、`read_conversation`、`todo_write`。
 - 关掉 `send_message`、`list_agents`、`interrupt_agent`。人设里写明主对话要等子 agent 的结果（`dsh-tool-subagent` 不看开关，仍会加一句 “continue useful work while they run”），也写明子 agent 和 Viva 任务的分工。
-- `subagent_fork` 加了白名单后，工具表和父对话不同，可能不再命中 KV 缓存，第 3 步实测一次。
+- `subagent_fork` 加了白名单后，工具表和父对话不同，可能不再命中 KV 缓存。这要用真实的 DeepSeek 接口测，第 3 步还没测。
 
 2026-11-04 用真实 dsh 实测（一份模拟模型的脚本）：子 agent 默认拿到主对话几乎全部的工具，包括 `ask_user_question`、`plugin_manager`、`viva_mcp_*`、`memory_remember` 和再委派的工具；后台模式下，它跑完后 dsh 会叫醒主会话，生成一段不属于任何一轮的回答。所以必须用白名单，也必须关掉后台模式。
 
@@ -319,7 +319,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 1. 删掉多出来的入口和显示：「放到后台」和「撤销」、自动分流、「#任务名」、右下角面板、结果卡片、抽屉里的任务页、岛上的提示。「后台做」和重启后的「接着做 / 不做了」卡片暂时留着，让第 3 步之前仍然能开任务、接回没做完的任务。（已完成）
 2. 后端任务服务：任务说的话改由后端存，页面只显示。（已完成：`task-transcript.ts` 拼消息，`task-words.ts` 保存，`task:save` 已删掉。）
-3. 开、停、发消息三个工具，`task_created` 推送，子 agent 的配置；删掉「后台做」按钮、后台页的输入框和「接着问」、重启后的卡片。
+3. 开、停、发消息三个工具，`task_created` 推送，子 agent 的配置；删掉「后台做」按钮、后台页的输入框和「接着问」、重启后的卡片。（已完成；跟进草稿上的「后台做」保留到触发器取代跟进。）
 4. 结果回到主对话。
 
 每一步单独提交，并同步改写冒烟测试、跑一遍。

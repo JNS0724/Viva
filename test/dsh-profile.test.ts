@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, VIVA_LAYER_MARK, vivaLayerFile } from '../src/backend/dsh-profile.ts'
+import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, SUBAGENT_TOOLS, VIVA_LAYER_MARK, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 const DSH_BASE_PATCH = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-base', 'cordis.patch.yml')
@@ -127,4 +127,19 @@ test('the safety rows the app restates are dsh-base\'s, word for word, with disa
     const id = row.split('\n')[0].slice('- id: '.length)
     assert.equal(row.replace('\n  disabled: false', ''), baseRow(base, id), `${id} drifted from dsh-base: copy it again`)
   }
+})
+
+test('the app\'s layer keeps dsh\'s sub-agents within a turn: foreground, read-only by allow list, no further delegation', () => {
+  const patch = patchFor({ plugins: [] })
+  for (const [id, toolName] of [['tool-subagent', 'subagent'], ['tool-subagent-fork', 'subagent_fork']]) {
+    const line = patch.split('\n').find((row) => row.startsWith('  config: ') && row.includes(`"toolName":"${toolName}"`))
+    assert.ok(patch.includes(`- id: ${id}\n`) && line, `${id} is restated`)
+    const config = JSON.parse(line.slice('  config: '.length))
+    assert.deepEqual([config.enableRunInBackground, config.backgroundMode, config.maxDepth], [false, 'one-shot', 1])
+    assert.deepEqual(config.toolFilter, { allow: [...SUBAGENT_TOOLS] })
+  }
+  // todo_write keeps the sub-agent's own checklist; nothing else it gets changes anything.
+  assert.ok(!SUBAGENT_TOOLS.filter((name) => name !== 'todo_write').some((name) => /write|edit|bash|pwsh|mcp|plugin|remember|forget|subagent/.test(name)))
+  assert.match(patch, /- id: tool-subagent-control\n {2}disabled: true\n/)
+  assert.match(patch, /- id: tool-subagent-list-agents\n {2}disabled: true\n/)
 })

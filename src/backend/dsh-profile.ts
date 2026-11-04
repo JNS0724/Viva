@@ -78,6 +78,26 @@ function pluginManagerLines(pnpmCommand: string | null) {
     '- id: tool-plugin-manager', '  disabled: false',
   ]
 }
+/**
+ * dsh's sub-agents, used within a turn only (system-design §11.5): in the foreground, so the main conversation waits
+ * for the result in the same turn; with read-only tools for looking things up, by allow list, so tools dsh or a
+ * plugin adds later are not given to them; and unable to delegate further. Work that runs long, should be seen by
+ * the user or asked about later goes to Viva's background tasks instead. The follow-up tools (send_message,
+ * interrupt_agent, list_agents) serve background children only, so they are off.
+ */
+export const SUBAGENT_TOOLS = Object.freeze(['read', 'glob', 'grep', 'read_image', 'web_search', 'web_fetch', 'memory_recall', 'search_conversations', 'read_conversation', 'todo_write'])
+function subagentLines() {
+  const shared = { enableRunInBackground: false, backgroundMode: 'one-shot', toolFilter: { allow: SUBAGENT_TOOLS }, maxDepth: 1 }
+  return [
+    '- id: tool-subagent', "  name: '@deepseek-ai/dsh-tool-subagent'", '  disabled: false',
+    `  config: ${JSON.stringify({ provider: 'spawn', toolName: 'subagent', ...shared })}`,
+    '- id: tool-subagent-fork', "  name: '@deepseek-ai/dsh-tool-subagent'", '  disabled: false',
+    `  config: ${JSON.stringify({ provider: 'fork', toolName: 'subagent_fork', ...shared })}`,
+    '- id: tool-subagent-control', '  disabled: true',
+    '- id: tool-subagent-list-agents', '  disabled: true',
+  ]
+}
+
 /** Which models dsh offers (model-providers.ts): the user's providers, DeepSeek with a key, the one to start with. */
 type ProfileModels = { providers: Record<string, object>, deepseek: boolean, defaultModel: { provider: string, model: string } | null }
 type Persona = { prefix: string, suffix: string }
@@ -137,7 +157,7 @@ export function patchFor({ plugins, persona, models, imagesDir = null, pnpmComma
     for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${yamlString(pathToFileURL(pluginEntry(plugin.dir)).href)}`, ...configLines(plugin.config, '      '))
     for (const entry of plugins.flatMap((plugin) => plugin.stock ?? [])) lines.push(`    - id: ${entry.id}`, `      name: ${yamlString(entry.name)}`)
   }
-  lines.push(...pluginManagerLines(pnpmCommand))
+  lines.push(...pluginManagerLines(pnpmCommand), ...subagentLines())
   return `${lines.join('\n')}\n${SAFETY_ROWS}`
 }
 
