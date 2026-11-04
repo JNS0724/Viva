@@ -32,7 +32,7 @@ function fail(message: string): void {
 async function start(message: StartMessage) {
   // Electron as Node is for this process only: what it starts (dsh, pnpm) is told so on its own where it needs it.
   delete process.env.ELECTRON_RUN_AS_NODE
-  const secrets = createEnvelope({ key: message.dataKey ? Buffer.from(message.dataKey, 'base64') : null, legacy: message.legacySecrets })
+  const secrets = createEnvelope({ key: message.dataKey ? Buffer.from(message.dataKey, 'base64') : null })
   const remote = createRemoteHost({ start: message, secrets, onDropped: (count) => console.error(`[backend] no shell listened: ${count} calls dropped`) })
   const channels = new Map<string, { kind: ChannelKind, listener: ChannelListener }>()
   const ipc = checkedIpc({

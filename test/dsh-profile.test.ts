@@ -54,7 +54,6 @@ test('the app\'s layer holds the persona and each plugin by file URL with its co
   assert.match(layer, /- id: hmr\n {2}name: '@deepseek-ai\/dsh-hmr'\n {2}disabled: false\n/, 'plugins switch while dsh runs')
   assert.match(layer, /- id: tool-plugin-manager\n {2}disabled: false\n/)
   assert.ok(layer.endsWith(SAFETY_ROWS))
-  assert.equal(fs.existsSync(path.join(dir, 'node_modules', 'viva-memory')), false, 'no forwarding packages')
 })
 
 test('the plugin manager is given the app\'s pnpm when there is one', () => {
@@ -62,37 +61,23 @@ test('the plugin manager is given the app\'s pnpm when there is one', () => {
   assert.doesNotMatch(patchFor({ plugins: [] }), /id: plugin-manager\n/)
 })
 
-test('the user\'s layer is kept from one launch to the next; what an earlier version of the app wrote there is emptied', (t) => {
+test('the user\'s layer is kept from one launch to the next', (t) => {
   const { options } = setup(t)
   const dir = ensureDshProfile(options)
   const userLayer = '- id: some-plugin\n  disabled: true\n'
   fs.writeFileSync(path.join(dir, 'cordis.patch.yml'), userLayer)
   ensureDshProfile(options)
   assert.equal(read(dir, 'cordis.patch.yml'), userLayer)
-
-  fs.writeFileSync(path.join(dir, 'cordis.patch.yml'), `${VIVA_LAYER_MARK}\n- insert:\n    - id: viva-policy\n      name: viva-policy\n`)
-  ensureDshProfile(options)
-  assert.equal(read(dir, 'cordis.patch.yml'), '[]\n', 'rows the app now writes in its own layer would come twice')
 })
 
-test('the user\'s plugins stay in the manifest; the app\'s old link dependencies and forwarders go; a folder it did not write stays', (t) => {
-  const { memory, options } = setup(t)
+test('the user\'s plugins stay in the manifest', (t) => {
+  const { options } = setup(t)
   const dir = ensureDshProfile(options)
   const manifestFile = path.join(dir, 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'))
-  fs.writeFileSync(manifestFile, JSON.stringify({ ...manifest, dependencies: { 'other-plugin': '1.0.0', 'viva-memory': `link:${memory.dir}` } }))
-  const modules = path.join(dir, 'node_modules')
-  fs.mkdirSync(path.join(modules, 'viva-trace'), { recursive: true })
-  fs.writeFileSync(path.join(modules, 'viva-trace', 'index.js'), '// Written by Viva: forwards to the plugin inside the app.\nexport * from "file:///x"\n')
-  fs.symlinkSync(memory.dir, path.join(modules, 'viva-memory'), process.platform === 'win32' ? 'junction' : 'dir')
-  fs.mkdirSync(path.join(modules, 'viva-mine'))
-  fs.writeFileSync(path.join(modules, 'viva-mine', 'keep.txt'), 'mine')
-
+  fs.writeFileSync(manifestFile, JSON.stringify({ ...manifest, dependencies: { 'other-plugin': '1.0.0' } }))
   ensureDshProfile(options)
   assert.deepEqual(JSON.parse(fs.readFileSync(manifestFile, 'utf8')).dependencies, { 'other-plugin': '1.0.0' })
-  assert.equal(fs.existsSync(path.join(modules, 'viva-trace')), false)
-  assert.equal(fs.existsSync(path.join(modules, 'viva-memory')), false)
-  assert.equal(fs.readFileSync(path.join(modules, 'viva-mine', 'keep.txt'), 'utf8'), 'mine')
 })
 
 test('an unchanged layer is not rewritten; plugin names must start with viva-', (t) => {

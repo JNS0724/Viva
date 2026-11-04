@@ -35,8 +35,7 @@ export const START = z.object({
   token: z.string().min(32),
   /** base64 of the data key (src/main/data-key.ts), or null when the keychain is not available. */
   dataKey: z.string().nullable(),
-  legacySecrets: z.record(z.string(), z.string()),
-  paths: z.object({ userData: z.string(), documents: z.string(), appData: z.string(), home: z.string() }),
+  paths: z.object({ userData: z.string(), documents: z.string(), home: z.string() }),
   packaged: z.boolean(),
   automation: z.boolean(),
   locale: z.string(),

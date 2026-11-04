@@ -886,8 +886,6 @@ export const zhCN = {
   "main.history-ipc.wait.for.this.turn.to.finish.before": "助手正在工作，等这一轮结束再回到那个话题",
   "main.history-ipc.cannot.resume.that.topic.the.assistant.no": "那个话题接不回来了：助手那边已经没有它的记录",
   "main.history-ipc.conversation.not.found.it.may.have.been": "找不到这段对话，可能已被删除",
-  "main.history-migrate.unsupported.history.file.version": "不支持的历史文件版本：{version}",
-  "main.history-migrate.skipping.history.file": "跳过无法导入的历史文件 {name}：{message}",
   "main.history-schema.invalid.message.receipt": "无效的消息 receipt",
   "main.history-schema.invalid.message.role": "无效的消息 role：{role}",
   "main.history-schema.invalid.message.text": "无效的消息 text",

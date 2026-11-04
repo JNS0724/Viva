@@ -11,8 +11,8 @@
     {
       "en": "docs/architecture.md",
       "zh": "docs/architecture.zh-CN.md",
-      "enHash": "264f0a6be9673166a4e478c864def63f583ec003b04be171be128e16ad84151c",
-      "zhHash": "bcd831e5b06cd939e94fe4faf8c72d187f533a46f63fc5c2724d20ea85e3653e"
+      "enHash": "8bc93f85b5215ef977909e296bd326fa99f502f1531fa7de0aaf3d11ab02b3c5",
+      "zhHash": "456143f05f57e7f93ab840ad62b532b3e36e98c4532e9b96712a1ca6be816c72"
     },
     {
       "en": "docs/background-task-tools.md",
@@ -41,8 +41,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "b2f3a91ee375640926a804df924589ee0e794f2651c747d21e8d38f613159aa9",
-      "zhHash": "53a0217c371f42552c0841c813d9710d124688b8067a35242b6fdd438e852392"
+      "enHash": "d1c1ba48e02be9fc40ec49a1f7636f32ae05e6778410a0f4d2a52fb0d950afd3",
+      "zhHash": "158add2ea959fc999a4e72eb60084fe8e60dedfe3fbf730b7340a4cc65d6b9b2"
     },
     {
       "en": "docs/internationalization.md",
@@ -59,8 +59,8 @@
     {
       "en": "docs/memory.md",
       "zh": "docs/memory.zh-CN.md",
-      "enHash": "ff3853ed53ce424f65c159efe8b60636bf4fc3a3df07aaa99ad09adedd9f9a24",
-      "zhHash": "d011f6195a50e7f83d4ec27fbc345e3f0905844b6924a6e49d75c86bce86df9a"
+      "enHash": "5badea5d3f241c8efcbecad3ffc8e1314fde86654edf07ab0c3685a8f9d49a56",
+      "zhHash": "a018ff63ee0fa4930d04117b418a18cd79d99485c77eaaef7fe3e2faef6c681f"
     },
     {
       "en": "docs/new-topic-performance-20261026.md",
@@ -131,8 +131,8 @@
     {
       "en": "docs/backend-split-design.md",
       "zh": "docs/backend-split-design.zh-CN.md",
-      "enHash": "d8e4528dab424bd0e79c0d5e57e81c59228c816ec1dd824a94505d4e8c4a05e5",
-      "zhHash": "edf85c1acea866a231e23c6b23c6324839f95527aa5687126476fc0f3e890ab3"
+      "enHash": "134c6ccb1d2eafd96a6780ca350c902eabc66a000ff68cba00725bc264d35f6d",
+      "zhHash": "4ee6c86d8ff508331f6a6373689e2f14a4773ccd3e1b22db8d22c99518ac535b"
     }
   ],
   "bilingual": [

@@ -49,18 +49,18 @@ Before startup, `resolvePlugins` verifies existence, readable package.json, matc
 | Layer | Owner | Contents |
 |---|---|---|
 | Bundles | dsh and the plugins the user installs | The bundles of dsh's bundled ACP template, plus those the user installs under Plugins |
-| The profile's `cordis.patch.yml` | The user and dsh's plugin manager | Plugin switches. The app only writes an empty `[]` when the file is missing, or empties what an earlier version of the app wrote there |
+| The profile's `cordis.patch.yml` | The user and dsh's plugin manager | Plugin switches. The app only writes an empty `[]` when the file is missing |
 | The app's layer: `<dsh home>/viva.patch.yml`, given to dsh with `--patch` at launch | The app, rewritten at every launch | See below |
 
 The app's layer holds:
 
 - system-prompt and plugin insertion/configuration. Patching by ID replaces the configuration, so both persona prefix and suffix must be supplied.
 - Model providers use dsh's `llm-pi-ai`. Without a DeepSeek key, disable `llm-deepseek` and `llm-deepseek-account`. New-session defaults override the ACP provider/model. Keys enter the dsh process through environment variables, not the profile.
-- Each plugin's `name` is its entry file's file URL. Plugins remain inside the app (including app.asar when installed); their imports resolve there. The profile's package.json does not list them, so pnpm leaves them alone when the user installs a plugin. `link:` dependencies and `node_modules/viva-*` forwarders left by earlier versions are removed.
+- Each plugin's `name` is its entry file's file URL. Plugins remain inside the app (including app.asar when installed); their imports resolve there. The profile's package.json does not list them, so pnpm leaves them alone when the user installs a plugin.
 - `hmr` switched on (`dsh-acp-app` switches it off, and a patch by ID keeps the lower layer's `disabled`, so it states `disabled: false`), so the user's plugins switch while dsh runs; `tool-plugin-manager` switched on, so the model can propose installing a plugin in conversation, each call approved by the user on an approval card; `plugin-manager`'s `pnpmCommand` pointing at the pnpm the app ships (a launcher `src/main/pnpm-launcher.ts` writes, run on the app's own runtime).
 - The dsh-base rows the app relies on for safety (`sandbox-policy`, `approval`, `permission`) restated whole, so neither a bundle nor the user's layer can change them; `test/dsh-profile.test.ts` keeps them word for word equal to dsh-base.
 
-Normal operation does not read or write the user's own `~/.dsh`. Explicit import and legacy migration are separate flows. If the profile cannot be written, fall back to bundled ACP without app plugins/persona and without the app's layer.
+Normal operation does not read or write the user's own `~/.dsh`; only an explicit import reads it. If the profile cannot be written, fall back to bundled ACP without app plugins/persona and without the app's layer.
 
 ## 5. dsh interfaces and lifecycle
 

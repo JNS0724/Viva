@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createEnvelope, isEnvelope } from '../src/backend/envelope.ts'
-import { DATA_KEY_FILE, legacySecrets, loadDataKey } from '../src/main/data-key.ts'
+import { DATA_KEY_FILE, loadDataKey } from '../src/main/data-key.ts'
 
 /** A stand-in for safeStorage: reversible, marked, and refusing what it did not make. */
 function fakeKeychain(available = true) {
@@ -35,16 +35,10 @@ test('the backend encrypts under the data key, and only that key opens it', () =
   assert.equal(envelope.decryptString(sealed), 'sk-test-一二三')
   assert.notDeepEqual(envelope.encryptString('same'), envelope.encryptString('same'), 'a new IV each time')
   assert.throws(() => createEnvelope({ key: randomBytes(32) }).decryptString(sealed), 'another key fails the tag')
+  assert.throws(() => envelope.decryptString(Buffer.from('kc:unknown')), /cannot decrypt/, 'nothing else is read')
   const tampered = Buffer.from(sealed)
   tampered[tampered.length - 1] ^= 1
   assert.throws(() => envelope.decryptString(tampered))
-})
-
-test('what an earlier version encrypted with the keychain is read from the shell\'s legacy map; nothing else is', () => {
-  const blob = Buffer.from('kc:old-key').toString('base64')
-  const envelope = createEnvelope({ key: randomBytes(32), legacy: { [blob]: 'old-key' } })
-  assert.equal(envelope.decryptString(Buffer.from(blob, 'base64')), 'old-key')
-  assert.throws(() => envelope.decryptString(Buffer.from('kc:unknown')), /cannot decrypt/)
 })
 
 test('without a data key encryption is unavailable, as safeStorage would say', () => {
@@ -69,20 +63,4 @@ test('the data key is made once, kept under the keychain, and set aside when the
   assert.equal(problems.length, 1)
   assert.ok(fs.existsSync(path.join(dir, `${DATA_KEY_FILE}.unreadable`)))
   assert.equal(loadDataKey({ dir, keychain: fakeKeychain(false) }), null)
-})
-
-test('the shell finds the keychain blobs in the stores, however deep, and leaves names, URLs and new-form values alone', (t) => {
-  const dir = folder(t)
-  const keychain = fakeKeychain()
-  const apiKey = Buffer.from('kc:sk-deepseek').toString('base64')
-  const providerKey = Buffer.from('kc:sk-provider').toString('base64')
-  const mcp = Buffer.from('kc:{"env":{"TOKEN":"t"},"headers":{}}').toString('base64')
-  const sealed = createEnvelope({ key: randomBytes(32) }).encryptString('new').toString('base64')
-  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ version: 1, deepseekApiKey: apiKey }))
-  fs.writeFileSync(path.join(dir, 'models.json'), JSON.stringify({ providers: [{ name: 'Moonshot Provider', baseUrl: 'https://api.example.com/v1', key: providerKey }, { key: sealed }] }))
-  fs.writeFileSync(path.join(dir, 'mcp-servers.json'), JSON.stringify({ servers: { search: { secrets: mcp } } }))
-  assert.deepEqual(legacySecrets({ dir, keychain }), { [apiKey]: 'sk-deepseek', [providerKey]: 'sk-provider', [mcp]: '{"env":{"TOKEN":"t"},"headers":{}}' })
-  fs.writeFileSync(path.join(dir, 'models.json'), '{ broken')
-  assert.deepEqual(Object.keys(legacySecrets({ dir, keychain })).length, 2, 'a broken store is skipped')
-  assert.deepEqual(legacySecrets({ dir, keychain: fakeKeychain(false) }), {})
 })

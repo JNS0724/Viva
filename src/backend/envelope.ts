@@ -5,28 +5,23 @@ import type { Secrets } from './host.ts'
  * The encryption of the user's keys in the backend process (docs/backend-split-design.md §12, P5). Electron's
  * safeStorage is only in the shell, so the shell keeps a random data key encrypted with it (src/main/data-key.ts)
  * and hands the key to the backend at launch over the IPC channel; the backend encrypts with AES-256-GCM under
- * that key. What an earlier version encrypted with safeStorage directly is decrypted by the shell at launch and
- * handed over too (`legacy`, keyed by the stored base64), so the stores read it as before; the next write
- * stores it in the new form.
+ * that key.
  */
 export const DATA_KEY_BYTES = 32
 const MAGIC = Buffer.from('viva-env1:')
 const IV_BYTES = 12
 const TAG_BYTES = 16
 
-/** Whether stored bytes are in this envelope's form (and so no keychain blob). */
+/** Whether stored bytes are in this envelope's form. */
 export const isEnvelope = (data: Buffer): boolean => data.subarray(0, MAGIC.length).equals(MAGIC)
 
 export interface EnvelopeOptions {
   /** The data key; null when the system keychain is not available, as safeStorage would say. */
   key: Buffer | null
-  /** Legacy safeStorage blobs (base64, as the stores keep them) and what they decrypt to. */
-  legacy?: Readonly<Record<string, string>>
 }
 
-export function createEnvelope({ key, legacy = {} }: EnvelopeOptions): Secrets {
+export function createEnvelope({ key }: EnvelopeOptions): Secrets {
   if (key && key.length !== DATA_KEY_BYTES) throw new Error(`the data key must be ${DATA_KEY_BYTES} bytes`)
-  const known = new Map(Object.entries(legacy))
 
   function requireKey(): Buffer {
     if (!key) throw new Error('encryption is not available')
@@ -42,11 +37,7 @@ export function createEnvelope({ key, legacy = {} }: EnvelopeOptions): Secrets {
       return Buffer.concat([MAGIC, iv, cipher.getAuthTag(), body])
     },
     decryptString(data: Buffer): string {
-      if (!isEnvelope(data)) {
-        const earlier = known.get(data.toString('base64'))
-        if (earlier === undefined) throw new Error('cannot decrypt: not encrypted by this app, or the keychain changed')
-        return earlier
-      }
+      if (!isEnvelope(data)) throw new Error('cannot decrypt: not encrypted by this app')
       const iv = data.subarray(MAGIC.length, MAGIC.length + IV_BYTES)
       const tag = data.subarray(MAGIC.length + IV_BYTES, MAGIC.length + IV_BYTES + TAG_BYTES)
       const decipher = createDecipheriv('aes-256-gcm', requireKey(), iv)

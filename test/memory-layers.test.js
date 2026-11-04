@@ -99,20 +99,6 @@ test('keywords are cleaned, merged into an equal memory, and kept through undo',
   assert.deepEqual(db.restoreMemory(removed).keywords, ['周报', '张三'])
 })
 
-test('a memory.db from before keywords gains the column and keeps its memories', (t) => {
-  const { dir, defer } = scratch(t, 'memory-old-')
-  const file = path.join(dir, 'memory.db')
-  const old = new DatabaseSync(file)
-  old.exec(`CREATE TABLE memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, norm TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
-    source TEXT NOT NULL, conversation_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-    INSERT INTO memories VALUES (1, '回答先给结论', '回答先给结论', 'preference', 'user', NULL, 1, 1);`)
-  old.close()
-
-  const db = openMemoryDb({ file })
-  defer(() => db.close())
-  assert.deepEqual(db.listMemories().items.map((m) => [m.text, m.keywords]), [['回答先给结论', []]])
-})
-
 test('an unreadable session state starts over instead of failing the turn', (t) => {
   const { db, file } = tempDb(t)
   db.saveSessionState('s-1', { ...initialSession, previous: '你好' })

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { fieldLabel, MAX_FIELD_CHARS, PROFILE_KEYS, RETIRED_FIELDS } from '../../../src/shared/profile-fields.ts'
+import { MAX_FIELD_CHARS, PROFILE_KEYS } from '../../../src/shared/profile-fields.ts'
 
 /** role: who the user is (job, team, field); person / project: who and what they deal with. */
 export const MEMORY_KINDS = Object.freeze(['fact', 'preference', 'person', 'project', 'role'])
@@ -25,9 +25,6 @@ const MAX_QUERY_CHARS = 200
 const MAX_INJECTIONS = 1000
 const MAX_HABITS_CHARS = 200
 const MAX_SYNTHESES_KEPT = 20
-/** Profile fields the agent used to append to, before it wrote memories instead, and the kind they become. */
-const FIELD_KINDS: Readonly<Record<string, string>> = { role: 'role', department: 'role', domain: 'role', projects: 'project', people: 'person', preferences: 'preference' }
-
 /** A memory as the app and the plugin hold it. */
 export interface Memory {
   id: number
@@ -176,31 +173,6 @@ function cleanKeywords(input: unknown): string[] {
 const splitKeywords = (text: string | null | undefined): string[] => (text ? text.split('\n') : [])
 const joinKeywords = (keywords: readonly string[]) => keywords.join('\n')
 
-/** Columns added after the first release; older databases get them on open. */
-const LATER_COLUMNS = [
-  ['keywords', "TEXT NOT NULL DEFAULT ''"],
-  ['invalid_at', 'INTEGER'],
-  ['superseded_by', 'INTEGER'],
-  ['invalidated_by', 'TEXT'],
-]
-
-/** Adds missing columns; the other process may add one first, which is fine. */
-function addLaterColumns(db: DatabaseSync) {
-  const columns = new Set(db.prepare('PRAGMA table_info(memories)').all().map((column) => column.name))
-  for (const [name, type] of LATER_COLUMNS.filter(([column]) => !columns.has(column))) {
-    try {
-      db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${type}`)
-    } catch (err: any) {
-      if (!/duplicate column/i.test(err.message)) throw err
-    }
-  }
-}
-
-const lines = (text: string) => text.split('\n').map((line) => line.trim()).filter(Boolean)
-/** "张三（上级）" → "张三", "李四：风控对接人" → "李四". */
-const nameIn = (line: string) => line.replace(/[（(][^）)]*[）)]/g, ' ').split(/[:：]/)[0].replace(/^[-*•\s]+/, '').trim()
-const clipTo = (text: string, max: number) => ([...text].length > max ? `${[...text].slice(0, max - 1).join('')}…` : text)
-
 const toMemory = (row: MemoryRow): Memory => ({
   id: row.id,
   text: row.text,
@@ -230,7 +202,6 @@ export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () 
   const db = new DatabaseSync(file)
   db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 3000;')
   db.exec(SCHEMA)
-  addLaterColumns(db)
 
   /** A row is a record of what its query selects; each function below says what it returns. */
   const sql: Record<string, { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint, lastInsertRowid: number | bigint } }> = {
@@ -264,7 +235,6 @@ export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () 
     unclaimed: db.prepare(`SELECT * FROM memories WHERE source = 'agent' AND conversation_id IS NULL AND created_at >= ?
       ORDER BY id`),
     claim: db.prepare('UPDATE memories SET conversation_id = ? WHERE id = ?'),
-    agentFields: db.prepare(`SELECT field, value FROM profile WHERE source = 'agent'`),
     profileKindsSince: db.prepare(`SELECT * FROM memories WHERE invalid_at IS NULL AND kind IN (${PROFILE_KINDS.map(() => '?').join(', ')})
       AND updated_at > ? ORDER BY updated_at DESC, id DESC LIMIT ?`),
     profileKinds: db.prepare(`SELECT * FROM memories WHERE invalid_at IS NULL AND kind IN (${PROFILE_KINDS.map(() => '?').join(', ')})
@@ -337,53 +307,6 @@ export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () 
       throw new Error(`memory.db 由更新的版本（约定 ${found}）写入，当前只支持到 ${CONTRACT_VERSION}`)
     }
     if (found < CONTRACT_VERSION) sql.setMeta.run('contract_version', String(CONTRACT_VERSION))
-  }
-
-  /**
-   * Once per database: what the agent had appended to profile fields becomes agent memories (one per
-   * line), so it can be replaced like any other memory; the profile is then the user's alone.
-   */
-  function migrateAgentProfile() {
-    if (sql.meta.get('profile_migrated')) return
-    transaction(() => {
-      if (sql.meta.get('profile_migrated')) return
-      const at = now()
-      for (const { field, value } of sql.agentFields.all()) {
-        for (const line of lines(value)) {
-          const text = clipTo(`${fieldLabel(field)}：${line}`, MAX_MEMORY_CHARS)
-          if (!looksSecret(text) && !sql.byNorm.get(normalize(text))) {
-            sql.insert.run(text, normalize(text), FIELD_KINDS[field] ?? 'fact', 'agent', 'profile-migration', at, at, '')
-          }
-        }
-        sql.dropField.run(field)
-      }
-      sql.setMeta.run('profile_migrated', String(at))
-    })
-  }
-
-  /**
-   * Once per database: what the user wrote in fields the profile no longer has becomes their own memories,
-   * one per line, a name field's name as the keyword. A private field (the email) is left where it was.
-   */
-  function migrateRetiredFields() {
-    if (sql.meta.get('profile_trimmed')) return
-    transaction(() => {
-      if (sql.meta.get('profile_trimmed')) return
-      const at = now()
-      for (const field of RETIRED_FIELDS.filter((item) => !item.private)) {
-        const row = sql.field.get(field.key)
-        if (!row) continue
-        for (const line of lines(row.value)) {
-          const text = clipTo(`${field.label}：${line}`, MAX_MEMORY_CHARS)
-          const keywords = field.names ? joinKeywords(cleanKeywords([nameIn(line)])) : ''
-          if (!looksSecret(text) && !sql.byNorm.get(normalize(text))) {
-            sql.insert.run(text, normalize(text), field.kind, 'user', 'profile-migration', at, at, keywords)
-          }
-        }
-        sql.dropField.run(field.key)
-      }
-      sql.setMeta.run('profile_trimmed', String(at))
-    })
   }
 
   /**
@@ -633,8 +556,6 @@ export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () 
   const onboarding = () => sql.meta.get('onboarding')?.value ?? 'pending'
   const setOnboarding = (status: unknown) => sql.setMeta.run('onboarding', assertOneOf(status, ONBOARDING_STATES, 'onboarding state'))
 
-  migrateAgentProfile()
-  migrateRetiredFields()
   claimContract()
 
   return {

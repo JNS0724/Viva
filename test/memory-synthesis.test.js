@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { contextForTurn } from '../plugins/memory/lib/inject.ts'
 import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import {
@@ -99,56 +98,6 @@ test('a new synthesis sends the fixed layer again; a memory learned mid-session 
   clock = 3000
   db.saveSynthesis('【常打交道的人】\n- 李四是直属上级')
   assert.match(ask(3), /【助手整理的画像】/)
-})
-
-test('what the user wrote in the fields the profile no longer has becomes their memories, once; the email stays out', (t) => {
-  const { dir, defer } = scratch(t, 'memory-synthesis-')
-  const file = path.join(dir, 'memory.db')
-  const old = new DatabaseSync(file)
-  old.exec(`CREATE TABLE profile (field TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL);
-    INSERT INTO profile VALUES ('role', '后端负责人', 'user', 1);
-    INSERT INTO profile VALUES ('department', '支付平台部', 'user', 1);
-    INSERT INTO profile VALUES ('people', '张三（上级）' || char(10) || '李四：风控对接人', 'user', 1);
-    INSERT INTO profile VALUES ('im', '飞书', 'user', 1);
-    INSERT INTO profile VALUES ('email', 'me@example.com', 'user', 1);`)
-  old.close()
-
-  const db = openMemoryDb({ file })
-  assert.deepEqual(Object.keys(db.getProfile()), ['role'])
-  assert.deepEqual(db.listMemories().items.map((m) => [m.text, m.kind, m.source, m.keywords]).sort(), [
-    ['工作 IM：飞书', 'fact', 'user', []],
-    ['常打交道的人：张三（上级）', 'person', 'user', ['张三']],
-    ['常打交道的人：李四：风控对接人', 'person', 'user', ['李四']],
-    ['部门：支付平台部', 'role', 'user', ['支付平台部']],
-  ])
-  assert.ok(db.listMemories().items.every((m) => !m.text.includes('me@example.com')), 'the email is private: never a memory')
-  assert.deepEqual(db.claimChanges(0, 'conv').memories, [], 'moved, not newly learned')
-  db.close()
-  const reopened = openMemoryDb({ file })
-  defer(() => reopened.close())
-  assert.equal(reopened.listMemories().total, 4, 'runs once')
-})
-
-test('what the agent once appended to the profile becomes its memories; the user fields stay', (t) => {
-  const { dir, defer } = scratch(t, 'memory-synthesis-')
-  const file = path.join(dir, 'memory.db')
-  const old = new DatabaseSync(file)
-  old.exec(`CREATE TABLE profile (field TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL);
-    INSERT INTO profile VALUES ('people', '张三：直属上级' || char(10) || '李四', 'agent', 1);
-    INSERT INTO profile VALUES ('role', '后端负责人', 'user', 1);`)
-  old.close()
-
-  const db = openMemoryDb({ file })
-  assert.deepEqual(Object.keys(db.getProfile()), ['role'])
-  assert.deepEqual(db.listMemories().items.map((m) => [m.text, m.kind, m.source]).sort(), [
-    ['常打交道的人：张三：直属上级', 'person', 'agent'],
-    ['常打交道的人：李四', 'person', 'agent'],
-  ])
-  assert.deepEqual(db.claimChanges(0, 'conv').memories, [], 'moved, not newly learned: no "已记住" for them')
-  db.close()
-  const reopened = openMemoryDb({ file })
-  defer(() => reopened.close())
-  assert.equal(reopened.listMemories().total, 2, 'runs once')
 })
 
 test('a profile memory that stops being true brings the synthesis up to date after the turn, not a day later', async (t) => {

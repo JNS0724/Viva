@@ -160,22 +160,18 @@ const isOurs = (name: string) => name.startsWith(APP_PLUGIN_PREFIX)
 
 /**
  * Keeps whatever else the manifest declares (the plugins the user installed, their bundles); the app's own plugins
- * are no dependencies (they load by file URL), so the ones an earlier version listed go.
+ * are no dependencies (they load by file URL).
  */
 function manifestFor(current: Manifest) {
   const bundles = current.dsh?.profile?.bundles?.length ? current.dsh.profile.bundles : BUNDLES
-  const others = Object.fromEntries(Object.entries(current.dependencies ?? {}).filter(([name]) => !isOurs(name)))
   return {
     name: 'dsh-profile-viva',
     ...current,
     private: true,
-    dependencies: others,
+    dependencies: current.dependencies ?? {},
     dsh: { ...current.dsh, profile: { ...current.dsh?.profile, bundles } },
   }
 }
-
-/** First line of every forwarding package the app writes, so it knows which folders are its own. */
-const SHIM_MARK = '// Written by Viva: forwards to the plugin inside the app.'
 
 /**
  * The file dsh loads a plugin from: its TypeScript source where it has one (the repository, as the tests run it:
@@ -185,33 +181,12 @@ export function pluginEntry(dir: string): string {
   const source = path.join(dir, 'index.ts')
   return fs.existsSync(source) ? source : path.join(dir, 'index.js')
 }
-const isShim = (folder: string) => {
-  try {
-    return fs.readFileSync(path.join(folder, 'index.js'), 'utf8').startsWith(SHIM_MARK)
-  } catch {
-    return false
-  }
-}
-
-/**
- * The forwarding packages an earlier version put at `node_modules/viva-*` go (links too); a folder the app did not
- * write is left alone.
- */
-function removeForwarders(modules: string) {
-  if (!fs.existsSync(modules)) return
-  for (const name of fs.readdirSync(modules).filter(isOurs)) {
-    const folder = path.join(modules, name)
-    if (fs.lstatSync(folder).isSymbolicLink()) fs.unlinkSync(folder)
-    else if (isShim(folder)) fs.rmSync(folder, { recursive: true, force: true })
-  }
-}
-
 /** The app's layer, beside the profiles; dsh gets it with --patch (config.ts dshLaunch). */
 export const vivaLayerFile = (dshHome: string) => path.join(dshHome, 'viva.patch.yml')
 
-/** The user's layer: started empty, and emptied of what an earlier version of the app wrote there. */
+/** The user's layer, started empty. */
 function ensureUserLayer(file: string) {
-  if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8').startsWith(VIVA_LAYER_MARK)) fs.writeFileSync(file, EMPTY_LAYER)
+  if (!fs.existsSync(file)) fs.writeFileSync(file, EMPTY_LAYER)
 }
 
 /** @returns the profile directory */
@@ -222,7 +197,6 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
   if (bad) throw new Error(t("main.dsh-profile.plugin.names.must.start.with", { APP_PLUGIN_PREFIX: APP_PLUGIN_PREFIX, name: bad.name }))
   const dir = path.join(dshHome, 'profiles', profile)
-  const modules = path.join(dir, 'node_modules')
   fs.mkdirSync(dir, { recursive: true })
   const manifestFile = path.join(dir, 'package.json')
   writeIfChanged(manifestFile, `${JSON.stringify(manifestFor(readManifest(manifestFile)), null, 2)}\n`)
@@ -230,6 +204,5 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
   ensureUserLayer(path.join(dir, 'cordis.patch.yml'))
   writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand }))
-  removeForwarders(modules)
   return dir
 }

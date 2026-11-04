@@ -11,7 +11,7 @@ import { connect } from '../src/main/backend-client.ts'
 
 const TOKEN = 'a'.repeat(64)
 const START: Pick<StartMessage, 'paths' | 'packaged' | 'automation' | 'locale' | 'mirror'> = {
-  paths: { userData: '/tmp/u', documents: '/tmp/d', appData: '/tmp/a', home: '/tmp/h' },
+  paths: { userData: '/tmp/u', documents: '/tmp/d', home: '/tmp/h' },
   packaged: false, automation: true, locale: 'zh-CN',
   mirror: { inFront: false, idleSeconds: 0, shellSettings: { shortcut: null, openAtLogin: { available: true } } },
 }

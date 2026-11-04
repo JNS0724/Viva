@@ -26,7 +26,7 @@ export interface ShellSettings {
 export type HostEvent = { type: string, [field: string]: any }
 
 export interface HostCapabilities {
-  paths: { userData: string, documents: string, appData: string, home: string }
+  paths: { userData: string, documents: string, home: string }
   /** The installed app, or a run from the repository. */
   packaged: boolean
   /** Started by an external automation client (smoke tests): no notifications, no login item, no shortcut. */

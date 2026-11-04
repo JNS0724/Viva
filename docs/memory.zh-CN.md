@@ -77,7 +77,7 @@ Electron 主进程                                    dsh 进程（--profile viv
 
 ## 3. 数据约定：memory.db
 
-插件和 app 都通过 `store.js` 访问它。数据库开启 WAL，`busy_timeout` 为 3 秒，所有写入都是短事务，两个进程可以同时读写。旧数据库在打开时自动补上新增的列，并做一次画像迁移（见 6.3）。
+插件和 app 都通过 `store.js` 访问它。数据库开启 WAL，`busy_timeout` 为 3 秒，所有写入都是短事务，两个进程可以同时读写。
 
 | 表 | 内容 | 谁写 |
 |---|---|---|
@@ -86,7 +86,7 @@ Electron 主进程                                    dsh 进程（--profile viv
 | `syntheses` | 助手整理的画像（`text, created_at`），保留最近 20 版 | 插件（定时整理） |
 | `sessions` | 每个 dsh 会话的检索状态（JSON） | 插件 |
 | `injections` | 每轮实际带给模型的内容，保留最近 1000 条 | 插件；app 读来显示在「过程」里 |
-| `meta` | `contract_version`（约定版本，当前为 1；遇到更新版本写入的库会直接报错，不会误读）、`onboarding`、`habits`（使用习惯文本，app 写）、`plugin_started_at`（插件心跳）、`profile_migrated` | 各自所有者 |
+| `meta` | `contract_version`（约定版本，当前为 1；遇到更新版本写入的库会直接报错，不会误读）、`onboarding`、`habits`（使用习惯文本，app 写）、`plugin_started_at`（插件心跳） | 各自所有者 |
 
 `memories` 的字段：
 
@@ -96,7 +96,7 @@ Electron 主进程                                    dsh 进程（--profile viv
 | `kind` | `role` 身份职责、`person` 人、`project` 项目、`preference` 偏好、`fact` 其他 |
 | `source` | `user` 用户添加，`agent` 模型或后台写入 |
 | `keywords` | 这条记忆涉及的人名、项目名、系统名，最多 6 个，用于按名称推送 |
-| `conversation_id` | 来自哪段对话。app 在汇报时认领；迁移来的记忆标为 `profile-migration` |
+| `conversation_id` | 来自哪段对话。app 在汇报时认领 |
 | `created_at` / `updated_at` | 毫秒时间戳 |
 | `invalid_at` | 失效时间，`NULL` 表示有效 |
 | `superseded_by` | 被哪条新记忆取代 |
@@ -169,12 +169,6 @@ Electron 主进程                                    dsh 进程（--profile viv
   - 已经积累了 5 处改动。
 - **输入**：用户填写的画像（不含邮箱），以及最多 150 条有效的画像类记忆（带日期）。**不把上一版画像交给模型**，否则失效的旧事实可能被抄回来。
 - **输出格式**：只能使用【身份与职责】【常打交道的人】【在推进的事】【偏好】这四个小标题，按顺序排列，标题下每行以「- 」开头，总长不超过 1200 字。格式不对或含敏感信息的结果会被丢弃，继续使用上一版。
-
-### 6.3 旧数据迁移
-
-旧版本里，模型可以往画像字段里追加内容。首次打开数据库时，`source = 'agent'` 的画像字段会按行拆成「助手记下」的记忆，类别按字段对应，比如「常打交道的人」变成 `person`；随后这些字段被清空。迁移只做一次，迁移出来的记忆不弹「已记住」。
-
-0.2.2 起画像只剩「角色与职责」「在推进的事」「偏好与习惯」三项。首次打开数据库时，用户在部门、领域、常打交道的人、常用网站和文档、工作 IM 里写过的内容，会按行变成用户自己的记忆（部门和领域是 `role`，人是 `person`，其余是 `fact`；人名、部门、领域同时记成关键词），随后这些字段被清空，所以内容仍然看得见、改得了。工作邮箱是私密字段，原样留在表里，不迁移、不显示，也从不发给模型。这次迁移同样只做一次（`meta` 里的 `profile_trimmed`）。
 
 ## 7. 检索：三层
 
@@ -273,9 +267,9 @@ Electron 主进程                                    dsh 进程（--profile viv
 | 命令 / 文件 | 覆盖 |
 |---|---|
 | `test/memory.test.js` | store、上下文格式、工具、IPC |
-| `test/memory-layers.test.js` | 名称词表、检索依据、三层规划、每轮串联、关键词、数据库迁移 |
+| `test/memory-layers.test.js` | 名称词表、检索依据、三层规划、每轮串联、关键词 |
 | `test/memory-extract.test.js` | 提取门槛、候选范围、输出校验、整批回滚、失效与恢复、界面状态 |
-| `test/memory-synthesis.test.js` | 整理时机、格式校验、输入范围、固定层组成、旧画像迁移 |
+| `test/memory-synthesis.test.js` | 整理时机、格式校验、输入范围、固定层组成 |
 | `test/memory-plugin.test.js` | **真实 dsh + app 的完整 profile + 假模型**（`test/fixtures/dsh-harness.js`）：注入次数、名称推送、工具写入、重启恢复、插件故障、后台提取（含读到助手回答）、替换旧事实、用户条目保护、画像整理、人设 |
 | `test/app-plugins.test.js` | 插件清单、约定版本和 dsh 版本检查、数据库的约定版本 |
 | `test/dsh-profile.test.js` | profile 写入、幂等、链接替换、出错时不覆盖 |

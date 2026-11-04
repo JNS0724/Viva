@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-/** Validation shared by the history database, the legacy JSON import and the IPC boundary. */
+/** Validation shared by the history database and the IPC boundary. */
 import { checkImages, type ImageRef } from '../shared/images.ts'
 
 const MAX_MESSAGES = 5000

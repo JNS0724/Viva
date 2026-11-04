@@ -10,7 +10,6 @@ import { registerLanguageIpc } from '../main/language-ipc.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from '../main/app-plugins.ts'
 import { APP_ROOT, CODE_ROOT, DSH_PROFILE, resolveConfig } from '../main/config.ts'
 import { createAcpBridge, switchingMessage } from '../main/acp-bridge.ts'
-import { adoptDshSessions, adoptDshSkills, removeOwnProfiles } from '../main/dsh-migrate.ts'
 import { expandHome, importDshServers, importSummary, userDshHome } from '../main/dsh-mcp-import.ts'
 import { ensureDshProfile, vivaLayerFile } from '../main/dsh-profile.ts'
 import { pnpmLauncher } from '../main/pnpm-launcher.ts'
@@ -28,8 +27,6 @@ import { registerTaskIpc } from '../main/task-ipc.ts'
 import { createTaskStore } from '../main/task-store.ts'
 import { createTaskRegistry } from '../main/task-registry.ts'
 import { registerWorkDirIpc } from '../main/work-dir-ipc.ts'
-import { migrateLegacyHistory } from '../main/history-migrate.ts'
-import { adoptLegacyData, LEGACY_NAME } from '../main/legacy-data.ts'
 import { externalUrl } from '../main/links.ts'
 import { createMcpConfigStore, editServer, parseServerInput, type ServerChanges } from '../main/mcp-config.ts'
 import { registerMemoryIpc } from '../main/memory-ipc.ts'
@@ -47,7 +44,7 @@ import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from '.
 import { ResumeError } from '../main/resume-failure.ts'
 import { historyRecall } from '../main/history-recall.ts'
 import { openFollowupStore } from '../main/followup-store.ts'
-import { migrateFollowups, openAppDb, type AppDb } from './app-db.ts'
+import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
 import type { HostCapabilities, HostEvent } from './host.ts'
 
@@ -790,11 +787,9 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
     return forked
   }
 
-  /** Opens the database, imports the old JSON history once, and drops conversations whose undo window has passed. */
+  /** Opens the database and drops conversations whose undo window has passed. */
   function openHistory(config: Config) {
     historyDb = openHistoryDb({ file: path.join(userData, 'history.db') })
-    const imported = migrateLegacyHistory({ dir: path.join(userData, 'history'), db: historyDb, onError: (err) => console.error('[history]', err.message) })
-    if (imported) process.stdout.write(`[history] imported ${imported} conversation(s) from the old JSON files\n`)
     historyDb.purgeDeleted({ olderThanMs: 0 })
     conversation = historyDb.latest()?.conversation ?? historyDb.create({ cwd: config.cwd })
     registerHistoryIpc(ipcMain, {
@@ -835,43 +830,12 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
     })
   }
 
-  /** Conversations and memories kept under the app's old name, my-agent, come along on the first launch as Viva. */
-  function bringLegacyData() {
-    try {
-      const copied = adoptLegacyData({ userData, legacyDir: path.join(host.paths.appData, LEGACY_NAME) })
-      if (copied.length) process.stdout.write(`[viva] copied ${copied.join(', ')} from the ${LEGACY_NAME} data folder\n`)
-    } catch (err: any) {
-      console.error(`[viva] could not copy the ${LEGACY_NAME} data:`, err.message)
-    }
-  }
-
-  /**
-   * The app's dsh used to live in the user's own ~/.dsh: its sessions come along (old conversations still
-   * resume) and the profiles it wrote there go. The user's own sessions and profiles stay where they are.
-   */
-  function bringDshData(config: Config) {
-    const fromHome = userDshHome()
-    try {
-      const toHome = dshHomeOf(config)
-      const sessions = adoptDshSessions({ fromHome, toHome, cwd: config.cwd })
-      const skills = adoptDshSkills({ fromHome, toHome })
-      const removed = removeOwnProfiles({ fromHome, toHome })
-      if (sessions || skills.length || removed.length) {
-        process.stdout.write(`[viva] moved to the app's own dsh home: ${sessions} sessions, skills ${skills.join(', ') || 'none'}; profiles removed: ${removed.join(', ') || 'none'}\n`)
-      }
-    } catch (err: any) {
-      console.error(`[viva] could not bring the sessions over from ${fromHome}:`, err.message)
-    }
-  }
-
   /** Opens the stores and registers the backend's channels, before the window loads. */
   function open() {
     appDb = openAppDb({ file: path.join(userData, 'app.db') })
     core = createEventCore({ app: appDb, publish: host.window.send })
-    // The follow-ups moved into the app database: their tables first, then what an earlier version kept apart.
+    // The follow-ups' tables, before anything reads them.
     openFollowupStore({ db: appDb.db })
-    const moved = migrateFollowups(appDb, path.join(userData, 'followups.db'))
-    if (moved) process.stdout.write(`[viva] moved ${moved} follow-up(s) into app.db\n`)
     settingsStore = createSettingsStore({
       file: path.join(userData, 'settings.json'), crypto: host.secrets,
       onError: (err) => console.error('[settings] could not read saved settings:', err.message),
@@ -916,10 +880,6 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
       switchTo: switchWorkDir,
       reveal: (dir) => host.shell.openPath(dir),
     })
-    if (!host.automation) {
-      bringLegacyData()
-      bringDshData(config)
-    }
     openHistory(config)
     openPersonal(config)
     routeSignals(core)

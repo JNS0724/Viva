@@ -35,7 +35,7 @@ Declared contract and exact dsh peer versions must match or the plugin is exclud
 
 ## 3. Database contract
 
-`store.ts` enables WAL, a three-second busy timeout, and short transactions. Opening an old database adds columns and runs one-time profile migrations.
+`store.ts` enables WAL, a three-second busy timeout, and short transactions.
 
 | Table | Contents and writer |
 |---|---|
@@ -44,9 +44,9 @@ Declared contract and exact dsh peer versions must match or the plugin is exclud
 | `syntheses` | Synthesized profile text/date; latest 20 versions, plugin-owned |
 | `sessions` | Per-dsh-session retrieval state JSON |
 | `injections` | Actual injected context; latest 1,000 records, read by app activity |
-| `meta` | `contract_version` (1; newer versions are rejected), `onboarding`, app-written `habits`, `plugin_started_at`, `profile_migrated`, and owner-specific metadata |
+| `meta` | `contract_version` (1; newer versions are rejected), `onboarding`, app-written `habits`, `plugin_started_at`, and owner-specific metadata |
 
-Memory fields are `text` and unique normalized `norm`; `kind` (`role`, `person`, `project`, `preference`, `fact`); `source` (`user` or `agent`); up to six `keywords`; `conversation_id` (claimed by app, or `profile-migration`); millisecond `created_at/updated_at`; nullable `invalid_at`; `superseded_by`; and `invalidated_by` (`user` or `agent`).
+Memory fields are `text` and unique normalized `norm`; `kind` (`role`, `person`, `project`, `preference`, `fact`); `source` (`user` or `agent`); up to six `keywords`; `conversation_id` (claimed by app); millisecond `created_at/updated_at`; nullable `invalid_at`; `superseded_by`; and `invalidated_by` (`user` or `agent`).
 
 ## 4. Two write channels
 
@@ -69,8 +69,6 @@ Profile fields and learned facts use different write paths. The user owns role/r
 After extraction, synthesis is considered using the current model route. Changed/refreshed/invalidated memories trigger rebuilding when there is no prior synthesis, a profile memory was invalidated, 24 hours elapsed, or five changes accumulated. Inputs are user profile excluding email and at most 150 active role/person/project/preference memories with dates. The previous synthesis is deliberately excluded to avoid copying invalid facts back.
 
 The existing synthesis format uses four ordered headings—identity/responsibilities, regular contacts, current work, preferences—with `- ` lines and a 1,200-character cap. These stored format markers are currently Chinese and validated as a contract, independent of interface language. Invalid format or sensitive output retains the previous synthesis.
-
-Legacy agent-written profile fields become agent memories line by line once, then are cleared without new-memory notifications. Since 0.2.2, retired user department/domain/contact/site/document/IM fields become user memories; department/domain map to role, contacts to person, others to fact, with name keywords where appropriate. Email remains private in the table: never migrated, shown, or sent to the model. `profile_trimmed` records this migration.
 
 ## 7. Three retrieval layers
 
@@ -114,9 +112,9 @@ Provide a `viva-*` dsh plugin declaring `"viva":{"contract":{"memory":1}}`, then
 | Suite | Coverage |
 |---|---|
 | `memory.test.js` | Store, context, tools, IPC |
-| `memory-layers.test.js` | Vocabulary, query basis, layers, injection, keywords, migrations |
+| `memory-layers.test.js` | Vocabulary, query basis, layers, injection, keywords |
 | `memory-extract.test.js` | Gate/candidates/validation, rollback, invalidation/restoration, UI state |
-| `memory-synthesis.test.js` | Timing/format/input scope, fixed context, legacy migration |
+| `memory-synthesis.test.js` | Timing/format/input scope, fixed context |
 | `memory-plugin.test.js` | Actual dsh/full profile/fake model: injection counts, names, tools, restart, failure, extraction including answer text, replacement, user protection, synthesis, persona |
 | `app-plugins.test.js` | Plugin list and contract/dsh/database compatibility |
 | `dsh-profile.test.js` | Profile writing/idempotency/link replacement/failure preservation |

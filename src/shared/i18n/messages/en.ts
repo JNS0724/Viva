@@ -885,8 +885,6 @@ export const en = {
   "main.history-ipc.wait.for.this.turn.to.finish.before": "Wait for this turn to finish before returning to that topic",
   "main.history-ipc.cannot.resume.that.topic.the.assistant.no": "Cannot resume that topic: the assistant no longer has its record",
   "main.history-ipc.conversation.not.found.it.may.have.been": "Conversation not found; it may have been deleted",
-  "main.history-migrate.unsupported.history.file.version": "Unsupported history file version: {version}",
-  "main.history-migrate.skipping.history.file": "Skipping history file {name}: {message}",
   "main.history-schema.invalid.message.receipt": "Invalid message receipt",
   "main.history-schema.invalid.message.role": "Invalid message role: {role}",
   "main.history-schema.invalid.message.text": "Invalid message text",

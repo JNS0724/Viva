@@ -70,18 +70,18 @@ app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-
 | 层 | 归谁 | 内容 |
 |---|---|---|
 | 组合包 | dsh 与用户装的插件 | 和 dsh 自带的 `acp` 模板相同的组合包，加上用户在「插件」里装的 |
-| profile 的 `cordis.patch.yml` | 用户与 dsh 的插件管理器 | 插件的启停开关。app 只在它不存在时写一个空的 `[]`，或清掉旧版本 app 写在这里的内容 |
+| profile 的 `cordis.patch.yml` | 用户与 dsh 的插件管理器 | 插件的启停开关。app 只在它不存在时写一个空的 `[]` |
 | app 的层：`<dsh home>/viva.patch.yml`，启动时以 `--patch` 交给 dsh | app，每次启动重写 | 见下 |
 
 app 的层写的是：
 
 - `system-prompt`（人设前后缀，按 id 打补丁会整体替换配置，所以两部分都要写）和每个插件的插入项与配置；
 - 模型（`src/main/model-providers.ts`）：用户添加的提供方作为 dsh 自带 `llm-pi-ai` 插件的 `providers`；没有 DeepSeek key 时关掉 `llm-deepseek` 和 `llm-deepseek-account`；新会话的默认模型覆盖 `acp` 一项的 `provider` / `model`。key 不进 profile，只以环境变量交给 dsh 进程；
-- 每个插件的 `name` 是它入口文件的 file URL：插件留在应用里（安装后在 app.asar 内），它的 import 在应用的包里解析；profile 的 `package.json` 里不列 app 的插件，所以用户装插件时 pnpm 不会动它们。旧版本留下的 `link:` 依赖和 `node_modules/viva-*` 转发包会被移除；
+- 每个插件的 `name` 是它入口文件的 file URL：插件留在应用里（安装后在 app.asar 内），它的 import 在应用的包里解析；profile 的 `package.json` 里不列 app 的插件，所以用户装插件时 pnpm 不会动它们；
 - 打开 `hmr`（`dsh-acp-app` 把它关了，按 id 打补丁会保留下层的 `disabled`，所以写 `disabled: false`），用户的插件运行中就能启停；打开 `tool-plugin-manager`，模型可以在对话里提出装插件，每次由用户在授权卡片上批准；`plugin-manager` 的 `pnpmCommand` 指向 app 自带的 pnpm（`src/main/pnpm-launcher.ts` 写的启动脚本，用 app 自己的运行时）；
 - dsh-base 里 app 依赖的安全相关行（`sandbox-policy`、`approval`、`permission`）原样重述，组合包和用户层都改不掉；`test/dsh-profile.test.ts` 检查它们和 dsh-base 逐字一致。
 
-用户自己的 `~/.dsh` 不会被读写。profile 写不了时，退回 dsh 自带的 `acp` profile，也不传 app 的层，助手照常可用，只是没有 app 的插件和人设。
+用户自己的 `~/.dsh` 平时不会被读写，只有用户主动导入时才读。profile 写不了时，退回 dsh 自带的 `acp` profile，也不传 app 的层，助手照常可用，只是没有 app 的插件和人设。
 
 ## 5. 各插件的 dsh 接口
 

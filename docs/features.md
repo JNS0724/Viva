@@ -91,12 +91,12 @@ A request to remind or prepare something at a stated time produces a proposal. O
 - **Today:** the first gap with relevant activity shows one daily summary of ready drafts and reminders due. It counts toward the cap and replaces separate ready announcements. The home card opens the background page; empty days show nothing.
 - **Watch a file:** an accepted `watch_file` proposal records mtime. Polling every minute avoids platform/network filesystem event differences. A change followed by ten quiet minutes schedules preparation in the next window, reading that file. Continuing does not stop the watch; deletion does.
 - **Visibility:** she sleeps during preparation while you are idle; the island shows preparation/readiness, tray counts waiting items, and notifications open the background page. Optional launch-at-login is off by default and available only when installed; it starts in the tray.
-- **Local data:** `app.db` (migrated from the earlier `followups.db`) stores follow-ups, notification bookkeeping, and weekly events. Settings shows acceptance rate, median notification-open delay, daily calls, calls per accepted proposal, and missed preparation. Windows notifications use installer AppUserModelID `app.viva.desktop`.
+- **Local data:** `app.db` stores follow-ups, notification bookkeeping, and weekly events. Settings shows acceptance rate, median notification-open delay, daily calls, calls per accepted proposal, and missed preparation. Windows notifications use installer AppUserModelID `app.viva.desktop`.
 
 <a id="模型和-key"></a>
 ## Models and keys
 
-Without a usable model, home shows Connect model and disables the composer. Add a DeepSeek key or another model in Settings to connect. Keys are encrypted with AES-256-GCM under a data key (`data-key.bin` in app data) that safeStorage protects (Keychain on macOS, DPAPI on Windows), and kept in app-data `settings.json` with mode 600 where supported; keys saved by an earlier version, encrypted with safeStorage directly, are still read and rewritten in the new form on the next save. Unavailable secure storage refuses saving instead of plaintext fallback. Only the backend process holds the key; the UI shows the last four characters. Saving/clearing restarts dsh and starts a new conversation. Saved keys override environment values. A missing dsh installation prompts dependency repair.
+Without a usable model, home shows Connect model and disables the composer. Add a DeepSeek key or another model in Settings to connect. Keys are encrypted with AES-256-GCM under a data key (`data-key.bin` in app data) that safeStorage protects (Keychain on macOS, DPAPI on Windows), and kept in app-data `settings.json` with mode 600 where supported. Unavailable secure storage refuses saving instead of plaintext fallback. Only the backend process holds the key; the UI shows the last four characters. Saving/clearing restarts dsh and starts a new conversation. Saved keys override environment values. A missing dsh installation prompts dependency repair.
 
 ### Other models
 
@@ -118,7 +118,7 @@ The title-bar profile icon opens the Review/Background/About you/Settings hub be
 
 Search highlights matches with nearby messages; Details navigates and highlights the source. Three or more characters use FTS5 trigram; shorter queries use substring matching.
 
-Conversation menus offer Rename, Pin, Export Markdown, and Delete. Deletion offers Undo for eight seconds, then secure-deletes database content; dsh session logs remain. Old activity is restored from `sessions/…/session.v4.jsonl.zstd`; unavailable logs produce an explanation. Active work prevents conversation switching; switching disables sends. Legacy `history/*.json` imports once, preserving the renamed `history-imported` backup.
+Conversation menus offer Rename, Pin, Export Markdown, and Delete. Deletion offers Undo for eight seconds, then secure-deletes database content; dsh session logs remain. Old activity is restored from `sessions/…/session.v4.jsonl.zstd`; unavailable logs produce an explanation. Active work prevents conversation switching; switching disables sends.
 
 <a id="记忆"></a>
 ## Memory
@@ -127,7 +127,7 @@ Conversation menus offer Rename, Pin, Export Markdown, and Delete. Deletion offe
 
 Retrieval has three layers: fixed rules/profile/preferences/habits at first turn, changes, and compaction; up to three name-matched memories from the user's own words, deduplicated within the session; explicit `memory_recall` keyword lookup when needed. Long pasted material uses the user's opening/closing lines; short follow-ups incorporate the preceding question. Native memory tools do not require approval; sensitive secrets/identity numbers are rejected.
 
-Explicit Remember requests save immediately. After each turn, bounded background extraction adds facts or invalidates candidate memories it was shown, with all-or-nothing validation; it cannot alter user-owned entries. Casual chat is filtered. Profile fields are user-owned. Learned identity/people/projects/preferences become memories and periodically produce a synthesized profile after 24 hours or five changes; invalidations trigger earlier rebuilding. Only active memories are used, and recent additions appear separately. Invalid/sensitive synthesis falls back to the previous result. Legacy agent-written profile fields migrate to memories.
+Explicit Remember requests save immediately. After each turn, bounded background extraction adds facts or invalidates candidate memories it was shown, with all-or-nothing validation; it cannot alter user-owned entries. Casual chat is filtered. Profile fields are user-owned. Learned identity/people/projects/preferences become memories and periodically produce a synthesized profile after 24 hours or five changes; invalidations trigger earlier rebuilding. Only active memories are used, and recent additions appear separately. Invalid/sensitive synthesis falls back to the previous result.
 
 Forgetting/replacement invalidates instead of deleting and remains restorable in About you; only explicit UI deletion removes rows. Injection includes today's date, refreshed across midnight, so relative dates can become absolute. Activity shows which memories were included and why; saves notify the user. Failed plugin loading leaves chat functional and is reported in Settings.
 

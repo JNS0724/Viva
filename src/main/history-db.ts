@@ -338,19 +338,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
     })
   }
 
-  /** Brings in a conversation from the old JSON files, keeping its timestamps; skips ids already present. */
-  function importConversation({ id: given, createdAt, updatedAt, sessionId, messages }: { id: unknown, createdAt: number, updatedAt: number, sessionId: string | null, messages: unknown }) {
-    const id = assertId(given)
-    if (sql.anyConversation.get(id)) return false
-    const list = normalizeMessages(messages)
-    if (list.length === 0) return false
-    transaction(() => {
-      sql.upsert.run({ id, title: autoTitle(list), createdAt, updatedAt, sessionId, mode: null, model: null, cwd: null, parentId: null, topicId: id })
-      syncMessages(id, list, sessionId, updatedAt)
-    })
-    return true
-  }
-
   function latest() {
     const row = sql.latest.get()
     return row ? get(row.id) : null
@@ -512,6 +499,6 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
-    questionTimes, importConversation, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading, close: () => db.close(),
+    questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading, close: () => db.close(),
   }
 }

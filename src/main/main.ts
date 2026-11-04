@@ -9,7 +9,7 @@ import type { HostCall, HostMethod, Mirror } from '../backend/wire.ts'
 import { setLocale, type LanguageState } from '../shared/i18n/locale.ts'
 import { type BackendProcess, spawnBackend } from './backend-client.ts'
 import { APP_ROOT, CODE_ROOT } from './config.ts'
-import { legacySecrets, loadDataKey } from './data-key.ts'
+import { loadDataKey } from './data-key.ts'
 import { createDeskIsland } from './desk-island.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { IMAGE_SCHEME_PRIVILEGES, registerImageProtocol } from './image-protocol.ts'
@@ -214,8 +214,7 @@ async function startBackend(): Promise<BackendProcess> {
       type: 'start',
       token: randomBytes(32).toString('hex'),
       dataKey: dataKey?.toString('base64') ?? null,
-      legacySecrets: legacySecrets({ dir: userData, keychain: safeStorage }),
-      paths: { userData, documents: app.getPath('documents'), appData: app.getPath('appData'), home: os.homedir() },
+      paths: { userData, documents: app.getPath('documents'), home: os.homedir() },
       packaged: app.isPackaged,
       automation: automationMode,
       locale: app.getLocale(),
