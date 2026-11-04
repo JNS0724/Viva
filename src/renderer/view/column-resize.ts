@@ -25,9 +25,6 @@ export function clampColumn(wanted: number, available: number): number {
   return Math.max(COLUMN.min, Math.min(wanted, available - COLUMN.margin))
 }
 
-/** The free space right of the column, where the dock floats (the rail is on the other side). */
-export const sideBeside = (column: number, area: number): number => (area - column) / 2
-
 function saved(): number {
   try {
     return Number(localStorage.getItem(STORE_KEY) ?? Number.NaN)
@@ -51,10 +48,9 @@ const KEY_STEP_PX = 40
 /**
  * Wires the two grips at the column's edges inside `area` (the main area the column is centred in). Each grip takes
  * the pointer (drag; double-click for the default) and the keyboard (arrows widen or narrow it, Home for the default).
- * @param onWidth told the width in use after every change, with the area's width (what is left beside the column)
  * @returns fit: re-applies the width, for when the area itself changes size; reset: back to the default
  */
-export function attachColumnResize(area: HTMLElement, grips: readonly HTMLElement[], onWidth: (column: number, area: number) => void = () => {}) {
+export function attachColumnResize(area: HTMLElement, grips: readonly HTMLElement[]) {
   const root = document.documentElement
   let width = Number.isFinite(saved()) ? saved() : COLUMN.default
   const apply = () => {
@@ -63,7 +59,6 @@ export function attachColumnResize(area: HTMLElement, grips: readonly HTMLElemen
     const column = clampColumn(width, available)
     root.style.setProperty('--col', `${column}px`)
     for (const grip of grips) grip.setAttribute('aria-valuenow', String(column))
-    onWidth(column, available)
   }
   const reset = () => {
     width = COLUMN.default

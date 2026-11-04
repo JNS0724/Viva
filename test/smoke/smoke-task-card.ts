@@ -4,6 +4,7 @@ import { report, run, type Expect, type SmokeWindow } from './smoke-kit.ts'
 export const TASK_CARD_RETENTION = `(async()=>{
   const {initialState,reduce}=await import('./state.js')
   const {renderThread}=await import('./view/thread.js')
+  const {taskPreview}=await import('./tasks-state.js')
   const active=document.activeElement,container=document.createElement('div'),calls=[]
   container.style.cssText='position:fixed;left:-10000px;top:0;width:760px;height:600px;overflow:auto'
   document.body.append(container)
@@ -30,12 +31,11 @@ export const TASK_CARD_RETENTION = `(async()=>{
     renderThread(container,state,handlers,62001)
     const permissionChanged=container.querySelector('.task-card')?.textContent.includes('检查输出')
     state=reduce(state,{type:'task_end',taskId,stopReason:'end_turn',at:63000})
-    state=reduce(state,{type:'task_report_shown',taskId})
     renderThread(container,state,handlers,63000)
     const done=container.querySelector('.task-card')
-    const report=state.tasks.reports.find(report=>report.taskId===taskId)
+    const preview=taskPreview(state.tasks.list[0].view)
     done?.click()
-    return{retained,focused,mainKept,allChunksKept:backgroundText.includes('99,'),elapsed:elapsed.includes('1 分钟'),waiting,permissionChanged,done:done?.dataset.status==='done',preview:Boolean(report?.preview)&&done?.querySelector('.task-line-text')?.textContent===report.preview,clicks:calls.filter(call=>call.name==='openTasks').map(call=>call.args[0])}
+    return{retained,focused,mainKept,allChunksKept:backgroundText.includes('99,'),elapsed:elapsed.includes('1 分钟'),waiting,permissionChanged,done:done?.dataset.status==='done',preview:Boolean(preview)&&done?.querySelector('.task-line-text')?.textContent===preview,clicks:calls.filter(call=>call.name==='openTasks').map(call=>call.args[0])}
   }finally{container.remove();if(active instanceof HTMLElement&&active.isConnected)active.focus({preventScroll:true})}
 })()`
 

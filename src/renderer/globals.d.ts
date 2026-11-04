@@ -120,8 +120,6 @@ interface BackgroundTask {
   question?: any
   [field: string]: any
 }
-/** What an ended task came back with, for the conversation: shown in the thread until put away. */
-interface TaskReport { taskId: string, title: string, status: string, preview: string, shown: boolean }
 /**
  * What the island is given to show: islandView's (island-view.ts IslandView), or a form only the desktop's page
  * makes (desk.ts: mini, coach, input, drop), with the fields that form reads.

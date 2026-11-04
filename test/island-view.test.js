@@ -132,20 +132,12 @@ test('a task waiting on the user takes the whole island, named, and is first in 
   assert.deepEqual([mainAsks.permission.requestId, mainAsks.task], ['p1', undefined], 'the conversation on screen comes first')
 })
 
-test('a task that ends says so for a moment, while the conversation is quiet', () => {
+test('a task that ends is counted at the tail; the island still says what the conversation on screen does', () => {
   const ended = run([...spun, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: T0 + 9000 }])
   const view = islandView(ended)
-  assert.deepEqual([view.form, view.tone, view.label], ['done', 'done', '#明天上海天气 做完了'])
-  assert.deepEqual([view.background.count, view.background.done], [0, 1], 'and counts it among those done')
-  assert.equal(islandView(reduce(ended, { type: 'task_finish_seen', taskId: 's1' })).label, '空闲')
-  const failed = islandView(run([...spun, { type: 'task_end', taskId: 's1', stopReason: 'error', at: T0 + 9000 }]))
-  assert.deepEqual([failed.label, failed.tone], ['#明天上海天气 出错了', 'error'])
-})
-
-test('tasks that ended stay counted at the tail, so the 后台 page can still be reached from it', () => {
-  const seen = run([...spun, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: T0 + 9000 }, { type: 'task_finish_seen', taskId: 's1' }])
-  assert.deepEqual([islandView(seen).background.count, islandView(seen).background.done], [0, 1])
-  assert.equal(islandView(reduce(seen, { type: 'task_closed', taskId: 's1' })).background, undefined, 'closed, nothing is left')
+  assert.equal(view.form, 'idle')
+  assert.deepEqual([view.background.count, view.background.done], [0, 1], 'counted among those done, so the 后台 page is a click away')
+  assert.equal(islandView(reduce(ended, { type: 'task_closed', taskId: 's1' })).background, undefined, 'closed, nothing is left')
 })
 
 test('when the conversation on screen and a task both wait, the tail says the task waits too', () => {

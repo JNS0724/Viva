@@ -10,7 +10,7 @@ import { createTaskStore } from '../src/backend/task-store.ts'
 import { checkedIpc, type RawIpc } from '../src/shared/ipc-contract.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { cardedTasks, restoredTaskAnchors } from '../src/renderer/view/task-card.ts'
-import { dockTasks } from '../src/renderer/tasks-state.ts'
+import { taskPreview, unseenEnded } from '../src/renderer/tasks-state.ts'
 import { setLocale } from '../src/shared/i18n/locale.ts'
 
 test('resuming an unfinished task sends the same model instruction in either UI language', async t => {
@@ -70,7 +70,7 @@ test('persisted side links restore only retained tasks through the real IPC, at 
   const loaded = reduce(initialState, { type: 'history_loaded', conversationId: main.id, messages: db.get(main.id)!.messages, savedAt: 1 })
   const state = reduce(loaded, { type: 'tasks_restored', list })
   assert.deepEqual(restoredTaskAnchors(state), [{ taskId: 'before', at: 0 }, { taskId: 'middle', at: 1 }])
-  assert.deepEqual(cardedTasks(state).map(({ report }) => report?.preview), ['result-before', 'result-middle'])
+  assert.deepEqual(cardedTasks(state).map(task => taskPreview(task.view)), ['result-before', 'result-middle'])
   assert.deepEqual(state.messages.map(message => message.text), ['front', 'front answer'], 'background requests never become foreground messages')
   db.softDelete(main.id)
   assert.equal(db.sideTaskHost(store.list()[0].segmentId), null, 'a deleted parent cannot restore a card')
@@ -106,12 +106,12 @@ test('restored rows stay in their own topic, survive being seen, and do not resu
   let state = reduce(initialState, { type: 'history_loaded', conversationId: 'own', messages: [user('front')], savedAt: 1 })
   state = reduce(state, { type: 'tasks_seen_restored', ids: ['a'] })
   state = reduce(state, { type: 'tasks_restored', list: [restored('a', 'own', 1, 1), restored('other', 'elsewhere', 0, 2)] })
-  assert.deepEqual(cardedTasks(state).map(({ task }) => task.id), ['a'])
-  assert.deepEqual(dockTasks(state).map(({ task }) => task.id), ['other'], 'seen state survives result reconstruction')
+  assert.deepEqual(cardedTasks(state).map((task) => task.id), ['a'])
+  assert.deepEqual(unseenEnded(state).map((task) => task.id), ['other'], 'seen state survives result reconstruction')
   const elsewhere = reduce(state, { type: 'new_session', at: 20 })
   assert.deepEqual(cardedTasks(elsewhere), [])
   const reopened = reduce(elsewhere, { type: 'conversation_opened', conversation: { id: 'own', messages: [user('front')] }, info: {} })
-  assert.deepEqual(cardedTasks(reopened).map(({ task }) => task.id), ['a'])
+  assert.deepEqual(cardedTasks(reopened).map((task) => task.id), ['a'])
   const closed = reduce(reopened, { type: 'task_closed', taskId: 'a' })
   assert.deepEqual(cardedTasks(closed), [])
 })
@@ -121,5 +121,5 @@ test('live hosting takes precedence over a restored anchor, so a task is drawn o
   state = reduce(state, { type: 'tasks_restored', list: [restored('a', 'own', 0, 1)] })
   const hosted = { ...state, taskCards: ['a'] }
   assert.deepEqual(restoredTaskAnchors(hosted), [])
-  assert.deepEqual(cardedTasks(hosted).map(({ task }) => task.id), ['a'])
+  assert.deepEqual(cardedTasks(hosted).map((task) => task.id), ['a'])
 })

@@ -9,10 +9,6 @@ import { spinOffTarget, taskMessages } from './tasks-state.ts'
  * 撤销 moves it back. While the main process moves a turn, what the agent says arrives under the turn's new
  * place before the window has moved it too, so it waits and is passed on (`deliver`) once the window caught up.
  */
-/** How long the island says a task ended (island-view.js), counted while the user is not typing. */
-export const FINISHED_MS = 5000
-/** While the user types, how often to look again before a task's report comes into the conversation (F). */
-export const REPORT_RETRY_MS = 1000
 /** While a task talks, what it said is saved at most this often, so quitting Viva loses little. */
 export const SAVE_EVERY_MS = 10_000
 let UNDO_FAILED = t("task-actions.could.not.undo")
@@ -21,11 +17,11 @@ const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_q
 type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
 const ofTask = (event: AgentEvent | null | undefined) => TASK_EVENTS.has(event?.type ?? '') || Boolean(event?.taskId)
 
-/** isTyping: words are in the input; later: setTimeout, for tests. */
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, isTyping = () => false, later = setTimeout }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
+/** later: setTimeout, for tests. */
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, later = setTimeout }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
   api: Pick<AgentApi, 'spinOffTask' | 'startTask' | 'undoTask' | 'steerTask' | 'saveTask' | 'unfinishedTasks' | 'finishedTasks'
     | 'askTask' | 'resumeTask' | 'forgetTask' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
-  deliver: (event: AgentEvent) => void, isTyping?: () => boolean, later?: (run: () => void, ms: number) => unknown,
+  deliver: (event: AgentEvent) => void, later?: (run: () => void, ms: number) => unknown,
 }) {
   /** While a move is on its way: which events wait ({ keeps }), and those that came. */
   let holding: { keeps: (event: AgentEvent) => boolean, events: AgentEvent[] } | null = null
@@ -135,23 +131,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     events.filter((event) => !its(event) && (ofTask(event) || !event.sessionId || event.sessionId === move.taskId)).forEach(deliver)
   }
 
-  /** The island has said it long enough; not while the user types, who may not have looked up yet. */
-  function settleFinished(taskId: string) {
-    later(() => {
-      if (getState().tasks.finished?.taskId !== taskId) return
-      if (isTyping()) settleFinished(taskId)
-      else dispatch({ type: 'task_finish_seen', taskId })
-    }, FINISHED_MS)
-  }
-
-  /** What it came back with goes into the conversation, but not under the user's typing (F). */
-  function showReport(taskId: string) {
-    if (!getState().tasks.reports.some((entry: TaskReport) => entry.taskId === taskId && !entry.shown)) return
-    if (isTyping()) later(() => showReport(taskId), REPORT_RETRY_MS)
-    else dispatch({ type: 'task_report_shown', taskId })
-  }
-
-  /** 「#name …」: the words go into that task's turn; it says if they could not. */
+  /** Words for a task (typed on its page): they go into its turn; it says if they could not. */
   function steerTask(taskId: string, text: string) {
     dispatch({ type: 'task_steer', taskId, text, at: Date.now() })
     api.steerTask(taskId, text)
@@ -183,13 +163,11 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   /**
    * A task that ended keeps what it said, in its own part of the timeline, and how it ended, to be asked again
-   * later (接着问); the island says it ended a moment.
+   * later (接着问).
    */
   function ended(taskId: string) {
     const task = taskById(taskId)
     if (!task) return
-    settleFinished(taskId)
-    showReport(taskId)
     save(taskId, { ended: true, status: task.status })
   }
 
@@ -205,7 +183,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   /**
-   * 接着问 / 「#name …」 to a task that ended: the words are its next question, in its own session; it is back
+   * 接着问 to a task that ended: the words are its next question, in its own session; it is back
    * at work at once. Should it not be reachable, it says why and the task is as it was.
    */
   async function askTask(taskId: string, text: string) {
@@ -279,7 +257,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     loadUnfinished,
     resumeUnfinished,
     forgetUnfinished,
-    dismissReport: (taskId: string) => dispatch({ type: 'task_report_dismissed', taskId }),
     submitTaskAnswer: (taskId: string) => {
       const question = questionOf(taskId)
       if (question) answerTask(taskId, answersFrom(question))

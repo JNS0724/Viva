@@ -1,4 +1,3 @@
-import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
@@ -98,7 +97,7 @@ function afterTurn(state: State, base: IslandBase): IslandView {
  */
 function backgroundOf(state: State): IslandBackground | null {
   const live: BackgroundTask[] = liveTasks(state)
-  if (!state.tasks.list.length && !state.tasks.finished) return null
+  if (!state.tasks.list.length) return null
   const items: IslandTask[] = live
     .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
     .map((task) => ({
@@ -106,12 +105,10 @@ function backgroundOf(state: State): IslandBackground | null {
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),
       ...(task.question ? { question: questionView(task.question) } : {}),
     }))
-  // Ended and not yet seen: once opened on the 后台 page (or put away), no longer counted.
+  // Ended and not yet seen: once opened on the 后台 page, no longer counted.
   const done = unseenEnded(state).length
   return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, done, items }
 }
-
-let TASK_ENDED: Readonly<Record<string, readonly [said: string, tone: string]>> = { done: [t("island-view.done"), 'done'], stopped: [t("island-view.stopped.2"), 'idle'], error: [t("island-view.something.went.wrong"), 'error'] }
 
 /** Follow-ups ready and preparation going, when there is either; nothing otherwise, so the island stays as it was. */
 function prepareOf(state: State): IslandView['prepare'] | undefined {
@@ -134,7 +131,7 @@ export function islandView(state: State): IslandView {
 
 /**
  * What the island's head says: the conversation on screen, unless a task waits on the user and it does not
- * (then the task takes the whole island, named), or a task has just ended while it is quiet.
+ * (then the task takes the whole island, named).
  */
 function mainView(state: State, background: IslandBackground | null): IslandView {
   const base: IslandBase = { mood: catMood(state), recent: recentSteps(state) }
@@ -165,18 +162,8 @@ function mainView(state: State, background: IslandBackground | null): IslandView
     }
   }
   if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: t("island-view.error"), detail: truncate(state.error, DETAIL_LIMIT) }
-  const finished = state.tasks.finished
-  if (finished) {
-    const [said, tone] = TASK_ENDED[finished.status] ?? TASK_ENDED.done
-    const form = tone === 'error' ? 'error' : 'done'
-    return { ...base, mood: tone === 'idle' ? 'idle' : form, form, tone, label: `#${finished.title} ${said}`, task: finished.title }
-  }
   if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.connecting") }
   if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected") }
   if (state.lastReceipt) return afterTurn(state, base)
   return { ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' }
 }
-
-onLocaleChange(() => {
-  TASK_ENDED = { done: [t("island-view.done"), 'done'], stopped: [t("island-view.stopped.2"), 'idle'], error: [t("island-view.something.went.wrong"), 'error'] }
-})

@@ -1,5 +1,5 @@
 import { capture, run, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
-import { dockPendingSteps, dockSteps } from './smoke-dock.ts'
+import { columnSteps } from './smoke-column.ts'
 import { checkTaskCardRetention } from './smoke-task-card.ts'
 
 /**
@@ -46,7 +46,7 @@ async function openFromLine(win: SmokeWindow, title: string) {
   return until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title === ${JSON.stringify(`#${title}`)} && seen })()`, `#${title} on the 后台 page`)
 }
 
-/** What a task waits on, answered where it is answered when the dock is not shown: its page, opened from its line. */
+/** What a task waits on, answered where it is answered: its page, opened from its line. */
 async function answerOnPage(win: SmokeWindow, title: string, label: string) {
   await openFromLine(win, title)
   await until(win, `Boolean(${pageButton(label)})`, `「${label}」 on #${title}'s page`)
@@ -315,9 +315,8 @@ export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect
   await offerSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)
   await startSteps(win, outDir, expect)
-  await dockSteps(win, outDir, expect, (text) => startInBackground(win, text))
+  await columnSteps(win, outDir, expect)
   await leaveRunning(win)
-  await dockPendingSteps(win, outDir, expect)
 }
 
 /**

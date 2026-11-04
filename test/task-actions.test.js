@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { createTaskActions, FINISHED_MS, REPORT_RETRY_MS, SAVE_EVERY_MS } from '../src/renderer/task-actions.ts'
+import { createTaskActions, SAVE_EVERY_MS } from '../src/renderer/task-actions.ts'
 import { liveTasks, taskMessages } from '../src/renderer/tasks-state.ts'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -148,28 +148,6 @@ test('an undo that fails passes on what came meanwhile and says so', async () =>
   assert.deepEqual(win.said.steered, [])
 })
 
-test('the island says a task ended a moment, longer while the user is typing', async () => {
-  const timers = []
-  let typing = true
-  const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async () => {} }, {
-    later: (run, ms) => timers.push({ run, ms }),
-    isTyping: () => typing,
-  })
-  await win.actions.moveToBackground()
-  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
-  win.actions.ended('s1')
-
-  // The island's timers only; the report into the conversation keeps its own (REPORT_RETRY_MS).
-  const island = () => timers.filter((timer) => timer.ms === FINISHED_MS)
-  const [first] = island()
-  first.run()
-  assert.equal(win.state().tasks.finished.taskId, 's1', 'still said while the user types')
-  assert.equal(island().length, 2, 'it waits another while')
-  typing = false
-  island()[1].run()
-  assert.equal(win.state().tasks.finished, null)
-})
-
 test('a task\'s question is answered there: one choice by picking it, more with 提交, or skipped', async () => {
   const answered = []
   const win = windowWith({ spinOffTask: async () => spunReply, answerQuestion: async (...args) => { answered.push(args); return true } })
@@ -191,23 +169,6 @@ test('a task\'s question is answered there: one choice by picking it, more with 
   ])
   assert.equal(liveTasks(win.state())[0].question, null)
   assert.equal(win.state().question, null, 'the conversation on screen was never asked')
-})
-
-test('a task\'s report comes into the conversation at once, or once the user stops typing', async () => {
-  const timers = []
-  let typing = true
-  const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async () => {} }, {
-    later: (run, ms) => timers.push({ run, ms }),
-    isTyping: () => typing,
-  })
-  await win.actions.moveToBackground()
-  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
-  win.actions.ended('s1')
-  assert.equal(win.state().tasks.reports[0].shown, false, 'not while the user types')
-
-  typing = false
-  timers.filter((timer) => timer.ms === REPORT_RETRY_MS).forEach((timer) => timer.run())
-  assert.equal(win.state().tasks.reports[0].shown, true)
 })
 
 test('「#name」 words go into that task\'s turn', async () => {

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { liveTasks, offeredBackground, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.ts'
+import { liveTasks, offeredBackground, spinOffTarget, taskMessages, taskPreview } from '../src/renderer/tasks-state.ts'
 import { traceItems } from '../src/renderer/selectors.ts'
 import { showsHome } from '../src/renderer/view/render.ts'
 import { cardedTasks } from '../src/renderer/view/task-card.ts'
@@ -55,20 +55,19 @@ test('a background request while idle adds only its card; the original words sta
   const empty = reduce(initialState, { type: 'task_started', task: { id: 'bg', title: '查天气' }, text: '查天气', at: 2 })
   assert.deepEqual(empty.messages, [], 'even an empty conversation must not acquire a user bubble')
   assert.equal(showsHome(empty), false, 'the welcome screen must not hide the standalone background card')
-  assert.deepEqual(cardedTasks(empty).map(({ task }) => task.id), ['bg'])
+  assert.deepEqual(cardedTasks(empty).map((task) => task.id), ['bg'])
   assert.equal(showsHome(initialState), true)
   const speaking = reduce(empty, { type: 'user_prompt', text: '这里继续聊', at: 3 })
   assert.deepEqual(speaking.taskCards, ['bg'], 'the standalone card remains before the first foreground message')
-  assert.deepEqual(cardedTasks(speaking).map(({ task }) => task.id), ['bg'])
+  assert.deepEqual(cardedTasks(speaking).map((task) => task.id), ['bg'])
   const fresh = reduce(speaking, { type: 'new_session' })
   assert.deepEqual(fresh.taskCards, [])
   assert.deepEqual(cardedTasks(fresh), [], 'another topic must not acquire a stale unhosted card')
   const closed = reduce(empty, { type: 'task_closed', taskId: 'bg' })
   assert.deepEqual(closed.taskCards, [])
   assert.equal(showsHome(closed), true, 'closing the only card leaves no ghost conversation')
-  const failed = run([{ type: 'task_end', taskId: 'bg', stopReason: 'error', message: 'offline', at: 4 }, { type: 'task_report_shown', taskId: 'bg' }], empty)
+  const failed = reduce(empty, { type: 'task_end', taskId: 'bg', stopReason: 'error', message: 'offline', at: 4 })
   assert.equal(cardedTasks(failed).length, 1, 'a failure is visible on the same card')
-  assert.equal(cardedTasks(reduce(failed, { type: 'task_report_dismissed', taskId: 'bg' })).length, 0)
   const late = reduce(reduce(initialState, { type: 'new_session_pending', at: 1 }), {
     type: 'task_started', task: { id: 'late', title: '旧话题的任务' }, text: '旧请求', origin: null, at: 2,
   })
@@ -155,20 +154,18 @@ test('the agent saying a job will take long offers the background while that tur
   assert.deepEqual(traceItems(state).at(-1), { key: traceItems(state).at(-1).key, time: traceItems(state).at(-1).time, title: '提议放到后台', detail: '要逐个读完所有提交', tone: 'done' })
 })
 
-test('a task that ends reports back to the conversation, once the user is not typing, until put away', () => {
+test('a task that ends says the first line of what it came back with on its line in the conversation', () => {
   const said = reduce(spun(working()), { type: 'task_update', taskId: 's1', update: chunk('三组改动，已写进 docs/release.md。'), at: 30 })
   const ended = reduce(said, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 40 })
-  assert.deepEqual(ended.tasks.reports, [{ taskId: 's1', title: '整理这周的提交，写成发布说明', status: 'done', preview: '先看提交…三组改动，已写进 docs/release.md。', shown: false }])
-  const shown = reduce(ended, { type: 'task_report_shown', taskId: 's1' })
-  assert.equal(shown.tasks.reports[0].shown, true)
-  assert.deepEqual(reduce(shown, { type: 'task_report_dismissed', taskId: 's1' }).tasks.reports, [])
+  assert.equal(taskPreview(ended.tasks.list[0].view), '先看提交…三组改动，已写进 docs/release.md。')
+  assert.deepEqual(cardedTasks(ended).map((task) => task.id), ['s1'], 'its line stays in the conversation')
 })
 
 test('a task that fails says why: on its card and on its page', () => {
   const failed = reduce(spun(working()), { type: 'task_end', taskId: 's1', stopReason: 'error', message: 'No API key for provider: custom-d59f4622', at: 40 })
   const [task] = failed.tasks.list
   assert.deepEqual([task.status, task.view.phase, task.view.error], ['error', 'error', 'No API key for provider: custom-d59f4622'])
-  assert.equal(failed.tasks.reports[0].preview, 'No API key for provider: custom-d59f4622', 'the card says why, not where it had got to')
+  assert.equal(taskPreview(task.view), 'No API key for provider: custom-d59f4622', 'the card says why, not where it had got to')
 })
 
 test('words for a background task go into its turn, not the conversation on screen', () => {
@@ -182,14 +179,12 @@ test('a task that ended can be asked again, and it goes back to work with the wo
   const ended = run([
     { type: 'task_update', taskId: 's1', update: chunk('写好了。'), at: 30 },
     { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 40 },
-    { type: 'task_report_shown', taskId: 's1' },
   ], spun(working()))
 
   const asked = reduce(ended, { type: 'task_asked', taskId: 's1', text: '再加上已知问题', at: 60 })
   const [again] = liveTasks(asked)
   assert.deepEqual([again.id, again.status, again.endedAt, again.startedAt], ['s1', 'running', null, 60])
   assert.equal(taskMessages(again).at(-1).text, '再加上已知问题')
-  assert.deepEqual(asked.tasks.reports, [], 'its card goes: a new one comes when it is done again')
   assert.deepEqual(asked.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
 })
 
@@ -204,7 +199,6 @@ test('tasks that had ended by the last launch come back ended, and can be asked 
   const [task] = restored.tasks.list
   assert.deepEqual([task.id, task.status, task.endedAt, liveTasks(restored).length], ['s3', 'done', 5, 0])
   assert.deepEqual(taskMessages(task).map((m) => m.text), ['查一下明天上海的天气', '晴，18 到 25 度。'])
-  assert.deepEqual(restored.tasks.reports, [], 'reported last time already')
 })
 
 test('tasks the last launch left going are offered; taken up, one goes on with what it had said', () => {
@@ -233,17 +227,6 @@ test('tasks the last launch left going are offered; taken up, one goes on with w
   assert.deepEqual(shown.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']])
   const askedAgain = reduce({ ...shown, tasks: { ...shown.tasks, list: shown.tasks.list.map((t) => ({ ...t, status: 'done' })) } }, { type: 'task_asked', taskId: 's1', text: '再补一句', at: 60 })
   assert.deepEqual(askedAgain.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']], 'asked again, the card is where it was, not twice')
-})
-
-test('a task has its own tab in the drawer, showing what it did', () => {
-  const state = spun(working())
-  const tab = taskTab('s1')
-  assert.equal(taskOfTab(state, tab).id, 's1')
-  assert.equal(taskOfTab(state, 'trace'), null)
-  assert.equal(taskOfTab(state, taskTab('gone')), null)
-  assert.equal(reduce(state, { type: 'open_drawer', tab }).drawer, tab)
-  const closed = reduce(reduce(state, { type: 'open_drawer', tab }), { type: 'task_closed', taskId: 's1' })
-  assert.equal(closed.drawer, 'trace', 'its tab gone, the drawer shows the conversation\'s')
 })
 
 test('undone, the turn is on screen again with what it said since, still running', () => {

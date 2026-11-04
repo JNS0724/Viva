@@ -439,8 +439,8 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   })
   // A background task's card goes under the words that started it (后台做), or under the message that was last when
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
-  const cards = new Map(cardedTasks(state).map(({ task, report }) => [task.id,
-    part(`task:${task.id}`, taskCardInputs(task, report, now), () => taskCard(task, report, handlers, now))]))
+  const cards = new Map(cardedTasks(state).map((task) => [task.id,
+    part(`task:${task.id}`, taskCardInputs(task, now), () => taskCard(task, handlers, now))]))
   const anchors = restoredTaskAnchors(state)
   const takeCards = (ids: readonly (string | undefined)[]) => ids.flatMap((id) => {
     const card = id ? cards.get(id) : undefined

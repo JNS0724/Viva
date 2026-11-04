@@ -35,13 +35,13 @@ ACP accepts only one active prompt per session, so `viva-steer` (`plugins/steer`
 
 Use Run in background beside the composer to start separate work from the current conversation. Long-running foreground work can offer Move to background.
 
-Each task leaves a single clickable status line in its original conversation, with its name, state, preview, and a link to its Background page. Approval and question actions live in the bottom-right task dock, or in the Background page when the dock is unavailable. Status wording is consistent across the conversation, dock, page, and island.
+Each task leaves a single clickable status line in its original conversation, with its name, state, preview, and a link to its Background page. Approvals, questions and Stop are handled in one place, the Background page. Status wording is consistent across the conversation, page, and island.
 
-The island shows a spinner and active count, a check and unseen completion count, or an attention count; ready follow-ups show their count and Ready. Opening a completed task marks that result seen, clears its island/dock reminder, and retains its historical line and page entry. Seen state survives restart; a new result becomes unseen again.
+The island shows a spinner and active count, a check and unseen completion count, or an attention count; ready follow-ups show their count and Ready. Opening a completed task marks that result seen, clears its island reminder, and retains its historical line and page entry. Seen state survives restart; a new result becomes unseen again.
 
-The dock shows up to three tasks, prioritizing approvals, with Stop, Continue, Details, or Acknowledge as appropriate. It collapses to a small tag and remembers that choice. When space is tight, it yields to the conversation; pending approval/error tags remain and temporarily expand above the composer. The turn rail stays on the left. The Background page shares the persistent Review/Background/About you/Settings navigation and has a collapsible task list whose state is saved.
+The turn rail stays on the left. The Background page shares the persistent Review/Background/About you/Settings navigation and has a collapsible task list whose state is saved.
 
-Drag either conversation edge to resize from 560 px up to the available width; double-click restores 760 px. The width is saved. Close dismisses a task; `#task-name message` addresses it. Unfinished work offers Resume or Discard after restart. See `smoke-tasks.ts` and `smoke-dock.ts`.
+Drag either conversation edge to resize from 560 px up to the available width; double-click restores 760 px. The width is saved. Close dismisses a task. Unfinished work offers Resume or Discard after restart. See `smoke-tasks.ts` and `smoke-column.ts`.
 
 <a id="文件"></a>
 ## Files

@@ -102,14 +102,14 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 - **Title bar.** `--titlebar-h` is 56px and the island, `--island-h`, is 36px, centred in it. The title-bar island carries no picture of her, only a dot in the tone of the moment; the desktop island is 80px with her at 72px. It must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
 - **Room for window buttons.** On macOS, `--reserve-left` keeps 84px on the left for the traffic lights. On Windows and Linux, `env(titlebar-area-width)` gives how much to leave on the right. This value is set only on `.titlebar`, so resizing the window doesn't invalidate the inherited style of every message.
 - **Status capsule.** It is always centered on the whole window. When space runs out it shrinks first, so it never covers the buttons on either side.
-- **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail; the right side is the task dock's.
+- **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail.
 - **Drawer.** `--drawer-width` is 440px. At 1100px and narrower, it floats over the conversation instead of squeezing it.
 - **Breakpoints.** 720px (pages go to one column), 760px (home cards stack), 1100px (the drawer floats). The minimum window size is 880×600.
 - **Layers (z-index):**
 
 | Value | Layer |
 | --- | --- |
-| 1–10 | Inside a region: column grips 6, task dock 8, turn rail 9, dropdowns 10 |
+| 1–10 | Inside a region: column grips 6, turn rail 9, dropdowns 10 |
 | 29–30 | Menus over content and their scrims, the drawer on narrow windows |
 | 32 | Hub pages (Search · About you · Settings · Background) |
 | 35 | Title bar (the island unfolds over the conversation) |
