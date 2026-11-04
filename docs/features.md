@@ -123,7 +123,7 @@ The title-bar profile icon opens the Review/Background/About you/Settings hub be
 
 Search highlights matches with nearby messages; Details navigates and highlights the source. Three or more characters use FTS5 trigram; shorter queries use substring matching.
 
-Conversation menus offer Rename, Pin, Export Markdown, and Delete. Deletion offers Undo for eight seconds, then secure-deletes database content; dsh session logs remain. Old activity is restored from `sessions/…/session.v4.jsonl.zstd`; unavailable logs produce an explanation. Active work prevents conversation switching; switching disables sends.
+Old activity is restored from `sessions/…/session.v4.jsonl.zstd`; unavailable logs produce an explanation. Active work prevents conversation switching; switching disables sends.
 
 <a id="记忆"></a>
 ## Memory

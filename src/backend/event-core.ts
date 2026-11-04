@@ -39,7 +39,7 @@ export type Push = { type: string, seq: number, transient?: true, [field: string
 export type StoredEvent = { seq: number, at: number, kind: string, data: Record<string, unknown> }
 
 /** The events kept: older ones go when the core opens. A shell that missed more than this reloads instead. */
-export const EVENTS_KEPT = 100_000
+const EVENTS_KEPT = 100_000
 
 /** Signals worth no row of their own: they say nothing new about the backend's state and come often. */
 const UNRECORDED: ReadonlySet<SignalKind> = new Set(['window.foreground'])

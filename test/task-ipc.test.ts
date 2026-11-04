@@ -20,7 +20,6 @@ import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 type Message = { role: string, text: string, receipt?: null }
 type Started = { ok: boolean, task: { id: string, segmentId: string } }
 type Kept = { task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string } }, status: string, endedAt: number, messages: Message[] }
-type Restored = { ok: boolean, task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string } }, messages: Message[] }
 type Call = [string, ...unknown[]]
 type Handler = (event: unknown, ...args: unknown[]) => unknown
 

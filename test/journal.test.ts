@@ -48,19 +48,15 @@ test('a savepoint inside a transaction undoes only its own write; the outer one 
 
 test('the history on the app database: each write is an event in the same transaction, without the words', (t) => {
   const { app, core, apply } = coreIn(t)
-  const history = journaled(openHistoryDb({ db: app.db }), 'history', ['save', 'rename', 'softDelete', 'setStar'], apply)
+  const history = journaled(openHistoryDb({ db: app.db }), 'history', ['save', 'setStar'], apply)
   const saved = history.save(history.create({ sessionId: 's1' }), [{ role: 'user', text: '帮我整理周报' }, { role: 'assistant', text: '好的' }])
-  history.rename(saved.id, '周报')
   history.setStar(saved.id, 0, true)
-  assert.throws(() => history.rename('missing', 'x'))
+  assert.throws(() => history.setStar(saved.id, 99, true))
   const events = core.since(0)
-  assert.deepEqual(events.map((event) => event.kind), ['history.save', 'history.rename', 'history.setStar'], 'a write that failed left no event')
-  assert.deepEqual(events[1].data, { args: [saved.id, { chars: 2 }] })
+  assert.deepEqual(events.map((event) => event.kind), ['history.save', 'history.setStar'], 'a write that failed left no event')
+  assert.deepEqual(events[1].data, { args: [saved.id, 0, true] })
   assert.ok(!JSON.stringify(events).includes('周报'), 'no words of the user in the events')
-
-  history.softDelete(saved.id)
-  history.purgeDeleted({ olderThanMs: 0 })
-  assert.equal(app.db.prepare('SELECT COUNT(*) AS n FROM stars').get()!.n, 0, 'foreign keys on: the star went with its conversation')
+  assert.equal(app.db.prepare('PRAGMA foreign_keys').get()!.foreign_keys, 1, 'foreign keys on: a star or a message needs its conversation')
   history.close()
   assert.equal(app.db.isOpen, true, 'the history leaves the app database open')
 })
@@ -77,16 +73,15 @@ test('background tasks on the app database are events too, and a store with no s
   assert.throws(() => journaled(tasks, 'task', ['list', 'nope' as never], apply), /task\.nope is no write/)
 })
 
-test('a write that changed nothing is no event: nothing purged, a star already there, no such follow-up', (t) => {
+test('a write that changed nothing is no event: a star already there, no such follow-up', (t) => {
   const { app, core, apply } = coreIn(t)
-  const history = journaled(openHistoryDb({ db: app.db }), 'history', ['save', 'purgeDeleted', 'setStar'], apply)
-  assert.equal(history.purgeDeleted({ olderThanMs: 0 }), 0)
+  const history = journaled(openHistoryDb({ db: app.db }), 'history', ['save', 'setStar'], apply)
   const saved = history.save(history.create({ sessionId: 's1' }), [{ role: 'user', text: '你好' }])
   assert.equal(history.setStar(saved.id, 0, true), true)
   assert.equal(history.setStar(saved.id, 0, true), false, 'starred already')
   assert.deepEqual(core.since(0).map((event) => event.kind), ['history.save', 'history.setStar'])
   transaction(app.db, () => {
-    assert.equal(history.purgeDeleted({ olderThanMs: 0 }), 0, 'inside another transaction too')
+    assert.equal(history.setStar(saved.id, 0, true), false, 'inside another transaction too')
     assert.equal(app.db.isTransaction, true, 'and the outer one goes on')
   })
   assert.equal(core.since(0).length, 2)

@@ -8,7 +8,6 @@ import type { Notice } from './notice-plan.ts'
  */
 export interface FolderOptions { title: string, createDirectory?: boolean, defaultPath?: string, showHidden?: boolean }
 export interface FileOptions { title: string, multiple?: boolean }
-export interface SaveOptions { title: string, defaultPath: string, filters?: Array<{ name: string, extensions: string[] }> }
 
 /** The encryption of the user's keys (Electron's safeStorage), as the stores use it. */
 export interface Secrets {
@@ -26,7 +25,7 @@ export interface ShellSettings {
 export type HostEvent = { type: string, [field: string]: any }
 
 export interface HostCapabilities {
-  paths: { userData: string, documents: string, home: string }
+  paths: { userData: string, home: string }
   /** The installed app, or a run from the repository. */
   packaged: boolean
   /** Started by an external automation client (smoke tests): no notifications, no login item, no shortcut. */
@@ -37,7 +36,6 @@ export interface HostCapabilities {
   dialogs: {
     chooseFolder(options: FolderOptions): Promise<string | null>
     chooseFiles(options: FileOptions): Promise<string[] | null>
-    saveFile(options: SaveOptions): Promise<string | null>
   }
   shell: {
     openExternal(url: string): Promise<void>

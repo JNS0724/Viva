@@ -20,12 +20,9 @@ const detailMood = (status: string) => (status === 'ready' ? 'done' : status ===
  */
 const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
 let WEEKDAYS = [t("followups.sunday"), t("followups.monday"), t("followups.tuesday"), t("followups.wednesday"), t("followups.thursday"), t("followups.friday"), t("followups.saturday")]
-const DAY_MS = 24 * 60 * 60 * 1000
 const WEEK_DAYS = 7
 export let PRESET_NAMES: Readonly<Record<string, string>> = { three: t("followups.three.times.a.day"), two: t("followups.twice.a.day"), one: t("followups.once.a.day"), custom: t("followups.custom") }
 export const PRESET_TIMES: Readonly<Record<string, string>> = { three: '08:30 / 12:30 / 16:30', two: '09:00 / 17:00', one: '08:30' }
-
-const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
 
 /** 今天 17:00, 明天 09:00, 周五 17:00 within the week, 10月30日 17:00 further off. */
 export function whenText(ts: number, now = Date.now()): string {

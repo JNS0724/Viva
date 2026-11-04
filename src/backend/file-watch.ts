@@ -13,7 +13,7 @@ const POLL_MS = MINUTE_MS
 
 type Repeat = ReturnType<typeof setInterval>
 
-export interface FileWatchDeps {
+interface FileWatchDeps {
   store: Pick<FollowupStore, 'list' | 'setWatchMtime'>
   /** The file changed and settled: prepare its follow-up again. */
   onChanged: (followup: Followup) => void

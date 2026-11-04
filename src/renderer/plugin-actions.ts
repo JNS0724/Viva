@@ -21,7 +21,7 @@ export function problemText(code: string, detail: string | null = null): string 
 }
 
 /** What to tell the user after a change; null when it asks for build scripts first (shown in the section). */
-export function changeNotice(change: Change): string | null {
+function changeNotice(change: Change): string | null {
   if (change.pendingBuilds.length) return null
   if (change.application === 'restart-required') return t('plugins.restart.required')
   if (change.application === 'overridden') return t('plugins.overridden')

@@ -1,7 +1,7 @@
 import { report, run, type Expect, type SmokeWindow } from './smoke-kit.ts'
 
 /** Exercise actual renderer nodes: background answer chunks must leave the main conversation's task line alone. */
-export const TASK_CARD_RETENTION = `(async()=>{
+const TASK_CARD_RETENTION = `(async()=>{
   const {initialState,reduce}=await import('./state.js')
   const {renderThread}=await import('./view/thread.js')
   const {taskPreview}=await import('./tasks-state.js')

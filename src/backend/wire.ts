@@ -35,7 +35,7 @@ export const START = z.object({
   token: z.string().min(32),
   /** base64 of the data key (src/shell/data-key.ts), or null when the keychain is not available. */
   dataKey: z.string().nullable(),
-  paths: z.object({ userData: z.string(), documents: z.string(), home: z.string() }),
+  paths: z.object({ userData: z.string(), home: z.string() }),
   packaged: z.boolean(),
   automation: z.boolean(),
   locale: z.string(),
@@ -56,7 +56,7 @@ export interface FailedMessage { type: 'failed', message: string }
 /** What the backend may ask of the desktop; each is a member of HostCapabilities (host.ts). */
 export const HOST_METHODS = [
   'window.send', 'window.broadcastLanguage', 'window.setPending', 'window.refreshNative',
-  'dialogs.chooseFolder', 'dialogs.chooseFiles', 'dialogs.saveFile',
+  'dialogs.chooseFolder', 'dialogs.chooseFiles',
   'shell.openExternal', 'shell.openPath', 'shell.showItemInFolder', 'shell.trash',
   'notify', 'loginItem.set',
 ] as const

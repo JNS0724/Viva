@@ -59,7 +59,7 @@ test('nothing outside the workspace can be listed or read, however the path is w
 })
 
 test('previews: Markdown and text as text, images inline, binaries and huge files only described', (t) => {
-  const { root, write } = workspace(t)
+  const { root } = workspace(t)
   assert.deepEqual(previewFile(root, 'README.md'), { path: 'README.md', name: 'README.md', size: 16, kind: 'markdown', text: '# 项目\n\n说明', offset: 0, nextOffset: null, openable: true })
   assert.equal(previewFile(root, 'src/app.js').kind, 'code')
   const image = previewFile(root, 'logo.png')

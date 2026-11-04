@@ -7,14 +7,14 @@ import type { ReviewTopic } from './history-review.ts'
  * (segment, seq, id: small), and the messages themselves are read for the part asked for. The window keeps at most
  * a couple of hundred messages; it reads on before or after what it has as the user scrolls.
  */
-export const READ_COUNT = 100
+const READ_COUNT = 100
 const MAX_READ_COUNT = 200
 
 type Row = Record<string, any>
 /** Where a message is in what is read: its segment and place, its id. */
 type Place = { segmentId: string, seq: number, id: number }
 /** What to read: from a place in the order (`from`), or around a message (`around`), `count` of them. */
-export type ReadRequest = { from?: number, around?: { segmentId: string, seq: number }, count?: number, whole?: boolean }
+type ReadRequest = { from?: number, around?: { segmentId: string, seq: number }, count?: number, whole?: boolean }
 
 /**
  * Where a segment's own messages start (history-review.ts OWN_FROM): a moved turn's after the talk it shares,
@@ -28,7 +28,7 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
   const sql = {
     places: db.prepare(`SELECT m.conversation_id AS segment_id, m.seq, m.id FROM messages m JOIN conversations c ON c.id = m.conversation_id
       WHERE m.conversation_id = :id AND ${OWN} ORDER BY m.seq`),
-    present: db.prepare('SELECT 1 FROM conversations WHERE id = ? AND deleted_at IS NULL'),
+    present: db.prepare('SELECT 1 FROM conversations WHERE id = ?'),
   }
 
   const placesOf = (segmentId: string, whole: boolean): Place[] =>

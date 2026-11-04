@@ -10,9 +10,9 @@ const MAX_ITEMS = 8
 const MAX_COMMAND_CHARS = 120
 
 /** A step as the trace plugin records it. */
-export interface TraceStep { at: number, kind: string, name?: string, args?: Record<string, any>, status?: string }
+interface TraceStep { at: number, kind: string, name?: string, args?: Record<string, any>, status?: string }
 
-export interface SideEffects { files: Array<{ path: string, times: number }>, commands: string[] }
+interface SideEffects { files: Array<{ path: string, times: number }>, commands: string[] }
 
 const cut = (text: string) => (text.length > MAX_COMMAND_CHARS ? `${text.slice(0, MAX_COMMAND_CHARS)}…` : text)
 

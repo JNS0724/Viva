@@ -5,16 +5,15 @@ import { checkImages, type ImageRef } from '../shared/images.ts'
 const MAX_MESSAGES = 5000
 const MAX_TEXT_CHARS = 200_000
 const MAX_STOP_REASON_CHARS = 40
-const MAX_TITLE_CHARS = 80
 const AUTO_TITLE_CHARS = 20
 const ROLES = new Set(['user', 'assistant', 'note'])
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/
 
 /** What a finished answer took: time, tool calls, thoughts, and why it stopped. */
-export interface Receipt { ms: number, tools: number, thoughts: number, stopReason: string }
+interface Receipt { ms: number, tools: number, thoughts: number, stopReason: string }
 
 /** A message as it is kept. */
-export interface StoredMessage { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[] }
+interface StoredMessage { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[] }
 
 const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0
 
@@ -47,13 +46,6 @@ export function normalizeMessages(input: unknown): StoredMessage[] {
 export function assertId(id: unknown): string {
   if (typeof id !== 'string' || !SAFE_ID.test(id)) throw new Error(t("main.history-schema.invalid.conversation.id", { id: String(id) }))
   return id
-}
-
-/** A user-chosen title, trimmed. */
-export function normalizeTitle(input: unknown): string {
-  const title = typeof input === 'string' ? input.trim() : ''
-  if (!title || title.length > MAX_TITLE_CHARS) throw new Error(t("main.history-schema.title.must.contain.characters", { MAX_TITLE_CHARS: MAX_TITLE_CHARS }))
-  return title
 }
 
 /** Default title: the first question, on one line, cut to a readable length. */

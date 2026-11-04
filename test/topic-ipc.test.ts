@@ -38,7 +38,6 @@ function setup({ busy = false } = {}) {
       info = { ...info, sessionId: sessionId ?? `new-${switches.length}`, cwd: cwd ?? '/w', resumed: sessionId !== null }
       return info
     },
-    chooseExportPath: async () => null,
     isBusy: () => busy,
     folderExists: (dir) => FOLDERS.has(dir),
     workDir: () => info.cwd ?? null,

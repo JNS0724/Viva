@@ -9,7 +9,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const MINUTE_MS = 60_000
 const DAYS = 7
 
-export interface WeekStats {
+interface WeekStats {
   suggestions: { shown: number, accepted: number, declined: number, never: number, acceptRate: number | null }
   notices: { sent: number, opened: number, medianOpenMinutes: number | null }
   calls: { total: number, perDay: number[], perAccepted: number | null }

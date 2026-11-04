@@ -20,8 +20,8 @@ const PICTURES: Readonly<Partial<Record<MaidMood, MaidMood>>> = Object.freeze({ 
 /** `face` framing: how far in on her face, centred. */
 export const FACE_ZOOM = 1.6
 
-export type Framing = 'whole' | 'face'
-export type Ring = 'quiet' | 'blue' | 'orange' | 'red' | 'gray'
+type Framing = 'whole' | 'face'
+type Ring = 'quiet' | 'blue' | 'orange' | 'red' | 'gray'
 
 const RINGS: Readonly<Record<MaidMood, Ring>> = Object.freeze({
   greeting: 'blue', idle: 'quiet', thinking: 'blue', typing: 'blue', ask: 'orange', listening: 'blue',
@@ -58,7 +58,7 @@ export function framingOf(size: number, framing: Framing): { size: number, offse
 }
 
 /** How she is drawn: her size, how she is framed, whether she may move, whether a badge says what she holds. */
-export interface MaidOptions { size: number, framing?: Framing, moving?: boolean, badge?: boolean }
+interface MaidOptions { size: number, framing?: Framing, moving?: boolean, badge?: boolean }
 
 const urlOf = (file: string) => new URL(`../../assets/maid/${file}`, import.meta.url).href
 

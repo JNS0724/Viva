@@ -189,18 +189,11 @@ interface AgentApi extends LanguageApi {
   discoverModels: Invoke<'models:discover'>
   loadHistory: Invoke<'history:load'>
   saveHistory: Invoke<'history:save'>
-  listHistory: Invoke<'history:list'>
   searchHistory: Invoke<'history:search'>
-  openConversation: Invoke<'history:open'>
   resumeTopic: Invoke<'history:resume-topic'>
   resumeCheck: Invoke<'history:resume-check'>
   continueFromRecords: Invoke<'history:continue-from-records'>
   loadTrace: Invoke<'history:trace'>
-  renameConversation: Invoke<'history:rename'>
-  pinConversation: Invoke<'history:pin'>
-  deleteConversation: Invoke<'history:delete'>
-  restoreConversation: Invoke<'history:restore'>
-  exportConversation: Invoke<'history:export'>
   earlierSegments: Invoke<'history:segments-before'>
   searchTimeline: Invoke<'history:search-messages'>
   reviewTimeline: Invoke<'history:review'>
@@ -228,7 +221,6 @@ interface AgentApi extends LanguageApi {
   listMemories: Invoke<'memory:list'>
   saveProfile: Invoke<'memory:set-profile'>
   addMemory: Invoke<'memory:add'>
-  updateMemory: Invoke<'memory:update'>
   deleteMemory: Invoke<'memory:delete'>
   restoreMemory: Invoke<'memory:restore'>
   listInvalidMemories: Invoke<'memory:list-invalid'>

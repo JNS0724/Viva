@@ -14,14 +14,14 @@ const ANTHROPIC_VERSION = '2023-06-01'
 const ANTHROPIC_MODEL_LIMIT = 1000
 /** The endpoint is whatever URL the user typed: its answer is read only this far. */
 export const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
-export const DISCOVERY_TIMEOUT_MS = 15_000
+const DISCOVERY_TIMEOUT_MS = 15_000
 /** More than the picker offers is cut, in the endpoint's order. */
-export const MAX_DISCOVERED = 2000
+const MAX_DISCOVERED = 2000
 
 export type DiscoveryFetch = (url: string, init: { method: string, headers: Record<string, string>, redirect: 'manual', signal: AbortSignal }) => Promise<Response>
 
 /** Why discovery failed, for the form to word (models-ipc.ts). */
-export type DiscoveryReason = 'unreachable' | 'timeout' | 'refused' | 'redirected' | 'status' | 'not-json' | 'not-a-listing' | 'too-large'
+type DiscoveryReason = 'unreachable' | 'timeout' | 'refused' | 'redirected' | 'status' | 'not-json' | 'not-a-listing' | 'too-large'
 
 export class DiscoveryError extends Error {
   readonly reason: DiscoveryReason

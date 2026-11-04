@@ -9,6 +9,8 @@ const WIDE: readonly [number, number] = [1600, 1000]
 const DRAG_PX = 120
 /** Far past the widest the column may be. */
 const DRAG_MAX_PX = 2000
+/** The lane the column leaves free at the main area's left for the rail (view/column-resize.ts COLUMN.margin). */
+const RAIL_LANE_PX = 40
 
 /** A window that can be resized: the app's own (BrowserWindow), as the memory run is given. */
 type Sized = SmokeWindow & { getSize(): Promise<[number, number]>, setSize(width: number, height: number): Promise<void> }
@@ -20,7 +22,7 @@ const LAYOUT = `(() => {
   const rail = document.getElementById('turn-rail')
   return {
     composer: box(document.getElementById('composer')), main: box(main),
-    rail: rail.hidden ? null : box(rail), lane: parseFloat(getComputedStyle(main).getPropertyValue('--rail-lane')),
+    rail: rail.hidden ? null : box(rail),
   }
 })()`
 
@@ -67,7 +69,7 @@ async function widestSteps(win: Sized, outDir: string, expect: Expect) {
   const overflow = await run(win, `(() => { const scroll = document.getElementById('scroll'); const wide = [...scroll.querySelectorAll('*')].filter((el) => el.getBoundingClientRect().right > scroll.getBoundingClientRect().right + 1).slice(0, 5).map((el) => el.className || el.tagName); return { scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth, wide } })()`)
   expect(overflow.scrollWidth <= overflow.clientWidth, 'at its widest the column should not scroll sideways', overflow)
   const railClear = !widest.rail || widest.rail.right <= widest.composer.left
-  expect(widest.composer.left >= widest.main.left + widest.lane && railClear, 'at its widest the column should leave the rail\'s lane free', widest)
+  expect(widest.composer.left >= widest.main.left + RAIL_LANE_PX && railClear, 'at its widest the column should leave the rail\'s lane free', widest)
   await capture(win, outDir, 'column-max')
   await run(win, resetColumn)
   await wait(UI_WAIT_MS)

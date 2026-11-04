@@ -8,7 +8,7 @@ import type { Step } from './steps.ts'
  * 过程 tab of reopened conversations. This file is the trace contract: replace the plugin with anything that
  * writes the same tables at the same CONTRACT_VERSION and the app keeps working.
  */
-export const CONTRACT_VERSION = 1
+const CONTRACT_VERSION = 1
 /** The oldest steps go once there are more than this; the newest conversations matter most. */
 const MAX_STEPS = 100_000
 

@@ -48,8 +48,7 @@ test('persisted side links restore only retained tasks through the real IPC, at 
   assert.deepEqual(restoredTaskAnchors(state), [{ taskId: 'before', at: 0 }, { taskId: 'middle', at: 1 }])
   assert.deepEqual(cardedTasks(state).map(task => taskPreview(task.view)), ['result-before', 'result-middle'])
   assert.deepEqual(state.messages.map(message => message.text), ['front', 'front answer'], 'background requests never become foreground messages')
-  db.softDelete(main.id)
-  assert.equal(db.sideTaskHost(store.list()[0].segmentId), null, 'a deleted parent cannot restore a card')
+  assert.equal(db.sideTaskHost('gone-seg-1'), null, 'no such segment, no card')
 })
 
 test('an empty conversation can restore task rows before any foreground question, without a history divider', () => {

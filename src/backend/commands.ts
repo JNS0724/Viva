@@ -7,7 +7,7 @@ import type { SignalOf } from './event-core.ts'
  * signal is recorded; a query (ipc-contract.ts QUERY_CHANNELS), and a channel that is a signal of its own already,
  * go straight to their listener.
  */
-export type CommandSignal = SignalOf<'user.command'>
+type CommandSignal = SignalOf<'user.command'>
 
 /** agent:prompt is `chat.said` (compose.ts), so not a command as well. */
 const OWN_SIGNALS: ReadonlySet<Channel> = new Set<Channel>(['agent:prompt'])

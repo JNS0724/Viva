@@ -6,7 +6,7 @@
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 
 /** A tool of this plugin: the operation it asks the app for, and, for a change, what its approval card says. */
-export type ConfigTool = {
+type ConfigTool = {
   name: string
   op: string
   description: string

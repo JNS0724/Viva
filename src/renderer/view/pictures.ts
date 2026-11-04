@@ -4,7 +4,7 @@ import { imageUrl } from '../../shared/images.ts'
 import { h } from './dom.ts'
 
 /** Shown where a picture was when the pictures folder no longer has it (emptied in settings). */
-export let GONE_TEXT = t("pictures.image.removed")
+let GONE_TEXT = t("pictures.image.removed")
 
 /**
  * Once the folder has been emptied from this page, every picture kept before is gone, though the page may still

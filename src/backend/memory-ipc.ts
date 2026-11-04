@@ -64,7 +64,6 @@ export function registerMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, ha
   handle('memory:list', (query = '') => db.listMemories({ query }))
   handle('memory:set-profile', (changes) => db.setProfile(changes, 'user'))
   handle('memory:add', (text, kind = 'fact') => db.addMemory({ text: assertMemoryText(text), kind, source: 'user' }).memory)
-  handle('memory:update', (id, text) => db.updateMemory(id, assertMemoryText(text)))
   handle('memory:delete', (id) => db.deleteMemory(id))
   handle('memory:restore', (memory) => db.restoreMemory(memory))
   handle('memory:list-invalid', () => db.listInvalid())

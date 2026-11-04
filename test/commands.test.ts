@@ -37,32 +37,32 @@ test('what the user does is recorded first, by its shape only, then handled; its
   const { core, ipc, call } = backendIn(t)
   const seen: unknown[] = []
   ipc.handle('settings:save-key', (event, key) => { seen.push([event, key]); return 'saved' })
-  ipc.handle('history:rename', async (_event, id, title) => `${id}:${title}`)
+  ipc.handle('memory:add', async (_event, text, kind) => `${kind}:${text}`)
   assert.equal(await call('settings:save-key', 'sk-0123456789abcdef'), 'saved')
-  assert.equal(await call('history:rename', 'c-1', '季度复盘'), 'c-1:季度复盘')
+  assert.equal(await call('memory:add', '喜欢喝茶', 'fact'), 'fact:喜欢喝茶')
   assert.deepEqual(seen, [[{ sender: 'page' }, 'sk-0123456789abcdef']], 'the listener gets the event and the arguments as sent')
   assert.deepEqual(core.since(0).map((event) => [event.kind, event.data]), [
     ['signal.user.command', { channel: 'settings:save-key', args: [{ chars: 19 }] }],
-    ['signal.user.command', { channel: 'history:rename', args: [{ chars: 3 }, { chars: 4 }] }],
+    ['signal.user.command', { channel: 'memory:add', args: [{ chars: 4 }, { chars: 4 }] }],
   ])
   assert.ok(!JSON.stringify(core.since(0)).includes('sk-0123'), 'a key is never in the events')
 })
 
 test('a query, and a channel that is its own signal, go straight to their listener with no event', async (t) => {
   const { core, ipc, call } = backendIn(t)
-  ipc.handle('history:list', () => ['a'])
+  ipc.handle('history:search', () => ['a'])
   ipc.handle('agent:prompt', () => 'asked')
-  assert.deepEqual(await call('history:list'), ['a'])
+  assert.deepEqual(await call('history:search', '周报'), ['a'])
   assert.equal(await call('agent:prompt', '你好'), 'asked')
   assert.deepEqual(core.since(0), [])
 })
 
 test('a command that fails still says so, and its signal stays recorded; one channel is registered once', async (t) => {
   const { core, ipc, call } = backendIn(t)
-  ipc.handle('history:delete', () => { throw new Error('conversation not found') })
-  assert.throws(() => call('history:delete', 'gone-1'), /conversation not found/)
-  assert.deepEqual(core.since(0).map((event) => event.data.channel), ['history:delete'], 'the user did it, whatever came of it')
-  assert.throws(() => ipc.handle('history:delete', () => {}), /registered twice/)
+  ipc.handle('memory:delete', () => { throw new Error('conversation not found') })
+  assert.throws(() => call('memory:delete', 7), /conversation not found/)
+  assert.deepEqual(core.since(0).map((event) => event.data.channel), ['memory:delete'], 'the user did it, whatever came of it')
+  assert.throws(() => ipc.handle('memory:delete', () => {}), /registered twice/)
 })
 
 test('a query is marked where its channel is defined; the rest are commands', () => {

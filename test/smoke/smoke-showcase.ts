@@ -19,7 +19,6 @@ const PAUSE_MS = 1200
 /** A toast stays a few seconds. */
 const TOAST_TIMEOUT_MS = 15_000
 const PREPARE_TIMEOUT_MS = 30_000
-const HOUR_MS = 3_600_000
 const PROMPTS = Object.freeze({
   report: '把这周的进展整理成一页，用表格列出各模块',
   followup: '周五下班前要交周报，到时候帮我按上周的格式起草',
@@ -168,7 +167,7 @@ async function chatScenes(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
   await finishTurn(win)
 }
 
-async function settingsScenes(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
+async function settingsScenes(win: SmokeWindow, outDir: string) {
   await openSettings(win)
   await run(win, `${q('#settings-root section[aria-label="后台准备"]')}.scrollIntoView({ block: 'start' })`)
   await wait(UI_WAIT_MS)
@@ -200,7 +199,7 @@ export async function runShowcase(win: SmokeAppWindow, outDir: string, hooks: Sm
   await demo(win, outDir, hooks)
   await closeHub(win)
   await chatScenes(win, outDir, hooks.desk?.())
-  await settingsScenes(win, outDir, hooks)
+  await settingsScenes(win, outDir)
   await filesScene(win, outDir)
   await deskInput(outDir, hooks.desk?.())
   await composeDesk(outDir, hooks)

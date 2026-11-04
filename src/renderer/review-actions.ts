@@ -16,7 +16,7 @@ const TITLE_CHARS = 40
 const READ_ON = 30
 
 /** A message named by a hit, a link or a star. */
-export type MessageRef = MessagePlace & { messageId?: number }
+type MessageRef = MessagePlace & { messageId?: number }
 type Read = { title: string, at: number | null, head: string | null, total: number, from: number, messages: ReaderMessage[] }
 type ReadRequest = { from?: number, around?: { segmentId: string, seq: number }, count?: number, whole?: boolean }
 

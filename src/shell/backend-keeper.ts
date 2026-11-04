@@ -6,11 +6,11 @@ import { restartDelay } from '../shared/restart-delay.ts'
  * up when it keeps crashing. A call made while it restarts waits for the new one, for a while.
  */
 /** How long a page's call waits for a backend that is restarting. */
-export const BACKEND_WAIT_MS = 20_000
+const BACKEND_WAIT_MS = 20_000
 
 type ExitHandler = (code: number | null, signal: NodeJS.Signals | null) => void
 
-export interface BackendKeeper<B> {
+interface BackendKeeper<B> {
   /** The first start; what goes wrong is the caller's to report. */
   start: () => Promise<B>
   /** The backend, once it is running: at once, or after a restart, or an error after waiting `waitMs`. */

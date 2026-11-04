@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, startHarness as setup } from './fixtures/dsh-harness.js'
 
 /** The steer plugin inside the real dsh: words sent mid-turn reach the model within that same turn. */
 

@@ -49,7 +49,7 @@ test('around a message the part has it in the middle, kept within the topic at e
   assert.deepEqual([start.from, end.from, end.messages.at(-1)!.seq], [0, 900, 999])
 })
 
-test('never more than 200 at a time; a segment read alone, whole or its own part; a deleted one is gone', () => {
+test('never more than 200 at a time; a segment read alone, whole or its own part; an unknown one reads as nothing', () => {
   const db = freshDb()
   const moved = segment(db, [...turns(1), ...turns(1, 1)])
   const next = segment(db, turns(1), { topicId: moved.topicId })
@@ -59,10 +59,8 @@ test('never more than 200 at a time; a segment read alone, whole or its own part
   assert.deepEqual(db.read(`s:${moved.id}`)!.messages.map((m) => m.seq), [2, 3])
   assert.deepEqual(db.read(`s:${moved.id}`, { whole: true })!.messages.map((m) => m.seq), [0, 1, 2, 3])
 
-  db.softDelete(next.id)
-  db.softDelete(moved.id)
-  assert.equal(db.read(`s:${moved.id}`), null)
-  assert.equal(db.read(`t:${moved.topicId}`), null)
+  assert.equal(db.read('s:gone-seg-1'), null)
+  assert.equal(db.read('t:gone-seg-1'), null)
   assert.throws(() => db.read('x:nothing'), /invalid reader key/)
 
   const long = segment(db, turns(300))

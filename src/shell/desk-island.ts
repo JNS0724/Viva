@@ -14,7 +14,7 @@ type DeskView = { form: string, [field: string]: any }
  * lets the user allow, reject, answer, stop or ask from there. It takes the keyboard only while its input
  * is open and lets clicks through except over the island itself.
  */
-export { DESK_SIZE }
+
 /**
  * After a turn: how long the island says done, then how long the cat rests before it goes. Done waits while
  * the pointer rests on it, and stays this long (linger) once the pointer leaves.

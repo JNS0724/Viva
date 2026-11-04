@@ -30,7 +30,7 @@ export interface Notice {
   system: boolean
 }
 
-export interface PlanInput {
+interface PlanInput {
   now: number
   /** The follow-ups not ended. */
   followups: readonly Followup[]

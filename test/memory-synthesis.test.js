@@ -10,8 +10,6 @@ import { scratch } from './fixtures/scratch.js'
 
 const HOUR = 60 * 60 * 1000
 
-const tempDir = (t) => scratch(t, 'memory-synthesis-').dir
-
 function tempDb(t, now) {
   const { dir, defer } = scratch(t, 'memory-synthesis-')
   const db = openMemoryDb({ file: path.join(dir, 'memory.db'), now })

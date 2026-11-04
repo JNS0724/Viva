@@ -8,7 +8,6 @@ import { openHistoryDb } from '../src/backend/history-db.ts'
 const receipt = { ms: 4200, tools: 2, thoughts: 1, stopReason: 'end_turn' }
 const user = (text) => ({ role: 'user', text, receipt: null })
 const answer = (text, withReceipt = receipt) => ({ role: 'assistant', text, receipt: withReceipt })
-const DAY = 86_400_000
 
 function freshDb() {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-db-')), 'history.db')
@@ -30,7 +29,6 @@ test('a new conversation is not written until it has messages', () => {
   db.save(fresh, [])
 
   assert.equal(db.latest(), null)
-  assert.deepEqual(db.list(), { items: [], hasMore: false })
 })
 
 test('saving keeps messages in order, titles from the first question, and reloads intact', () => {
@@ -59,34 +57,6 @@ test('saving again only appends new messages and updates the last one, keeping e
   assert.equal(db.get(first.id).conversation.sessionId, 's-2')
 })
 
-test('list puts pinned first, then most recent, and pages through the rest', () => {
-  const { db } = freshDb()
-  const old = saved(db, [user('最早')])
-  const middle = saved(db, [user('中间')])
-  const recent = saved(db, [user('最新')])
-  db.setPinned(old.id, true)
-
-  const firstPage = db.list({ limit: 2 })
-  const secondPage = db.list({ offset: 2, limit: 2 })
-
-  assert.deepEqual(firstPage.items.map((c) => [c.title, c.pinned]), [['最早', true], ['最新', false]])
-  assert.equal(firstPage.hasMore, true)
-  assert.deepEqual(secondPage, { items: [{ ...secondPage.items[0], title: '中间' }], hasMore: false })
-  assert.equal(secondPage.items[0].id, middle.id)
-  assert.equal(db.latest().conversation.id, recent.id)
-})
-
-test('rename sticks even after more messages are saved', () => {
-  const { db } = freshDb()
-  const conversation = saved(db, [user('原来的问题')])
-
-  db.rename(conversation.id, '  周报整理  ')
-  db.save(db.get(conversation.id).conversation, [user('原来的问题'), answer('好')])
-
-  assert.equal(db.get(conversation.id).conversation.title, '周报整理')
-  assert.throws(() => db.rename(conversation.id, '   '), /标题/)
-})
-
 test('search finds long and short Chinese queries in messages and titles, with a snippet around the hit', () => {
   const { db } = freshDb()
   const notes = saved(db, [user('整理周会纪要'), answer('第一项：接口联调还没有完成，需要在周五前确认负责人。')])
@@ -102,26 +72,6 @@ test('search finds long and short Chinese queries in messages and titles, with a
   assert.deepEqual(title.map((r) => r.id), [notes.id])
   assert.deepEqual(db.search('  '), [])
   assert.deepEqual(db.search('"引号" OR *'), [])
-})
-
-test('deleted conversations disappear at once, can be restored, and are purged for good later', () => {
-  const { db, advance } = freshDb()
-  const keep = saved(db, [user('保留')])
-  const gone = saved(db, [user('删掉的内容')])
-
-  db.softDelete(gone.id)
-  const hidden = db.list().items.map((c) => c.id)
-  db.restore(gone.id)
-  const back = db.list().items.map((c) => c.id)
-  db.softDelete(gone.id)
-  advance(DAY)
-  db.purgeDeleted({ olderThanMs: 8000 })
-
-  assert.deepEqual(hidden, [keep.id])
-  assert.deepEqual(back, [gone.id, keep.id])
-  assert.equal(db.get(gone.id), null)
-  assert.deepEqual(db.search('删掉的内容'), [])
-  assert.equal(db.latest().conversation.id, keep.id)
 })
 
 test('history db rejects bad input before touching the database', () => {

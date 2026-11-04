@@ -62,7 +62,7 @@ test('reading around a hit gives what was said before and after it, who said it,
   await assert.rejects(ask({ action: 'read', link: 'https://example.com' }), /原文链接/)
 })
 
-test('a message said again since is read as the ones near where it was, not as the original; a deleted one says so', () => {
+test('a message said again since is read as the ones near where it was, not as the original; one with no record says so', () => {
   const { db, contract } = seeded()
   const recall = historyRecall(db)
   const [hit] = recall.search('违约金')
@@ -70,6 +70,5 @@ test('a message said again since is read as the ones near where it was, not as t
   const missing = recall.read({ segmentId: hit.segmentId, seq: hit.seq, messageId: hit.messageId })
   assert.equal(missing.status, 'missing')
   assert.equal('messages' in missing && missing.messages.some((m) => m.target), false, 'nothing taken for the original')
-  db.softDelete(contract.id)
-  assert.deepEqual(recall.read({ segmentId: hit.segmentId, seq: hit.seq }), { status: 'deleted' })
+  assert.deepEqual(recall.read({ segmentId: 'gone-seg-1', seq: 0 }), { status: 'deleted' })
 })

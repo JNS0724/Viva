@@ -25,7 +25,7 @@ type IslandTask = {
   permission?: IslandPermission, question?: IslandQuestion,
 }
 type IslandBackground = { count: number, waiting: number, done: number, items: IslandTask[], alsoWaiting?: number }
-export type IslandView = {
+type IslandView = {
   form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
   detail?: string, action?: string | null, startedAt?: number | null, steps?: number, elapsedMs?: number,
   /** The task it speaks for, when a task (not the conversation) has the island. */

@@ -20,7 +20,7 @@ import { createPrepareScheduler, type Prepared, type PrepareState } from './prep
  */
 const DECLINED_FOR_MS = 30 * 24 * 60 * 60 * 1000
 
-export interface FollowupsDeps {
+interface FollowupsDeps {
   ipcMain: Pick<IpcRegistry, 'handle'>
   notify: (notice: Notice) => void
   windowInFront: () => boolean

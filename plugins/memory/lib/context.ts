@@ -6,7 +6,7 @@ import { PROFILE_FIELDS } from '../../../src/shared/profile-fields.ts'
  * and the memories pushed because the question named something. It is a separate text block of the
  * prompt, never shown in the thread. Nothing at all goes out on a turn with neither.
  */
-export const CONTEXT_TAG = 'about-user'
+const CONTEXT_TAG = 'about-user'
 /** Budget for the fixed layer; pushed memories (a few lines at most) come on top. */
 export const MAX_CONTEXT_CHARS = 3200
 /** Profile memories newer than the last synthesis that ride along with it, newest first. */
@@ -16,7 +16,7 @@ const FIELD_CHARS = 300
 
 const FIXED_INTRO = '以下是本机保存的用户画像和长期偏好，帮助你理解用户的背景。与当前请求无关的部分请忽略，也不必向用户复述。'
 /** How to use the memory tools; sent with the fixed layer, so the model has it from a session's first turn. */
-export const MEMORY_RULES = [
+const MEMORY_RULES = [
   '用户可以在「关于你」页面查看、修改和删除每一条记忆；【画像】由用户自己填写，你不能修改。',
   '用户透露了以后仍然有用的信息时，用 memory_remember 保存：身份、部门、职责用 kind=role，常打交道的人用 kind=person，',
   '在推进的项目用 kind=project，其他事实、约定、决定用 kind=fact；keywords 写这条记忆的核心对象（人名、项目名、系统名），1–3 个。',
@@ -33,7 +33,7 @@ const PUSHED_INTRO = '用户的话里提到了下面这些人或事，系统已�
 const WEEKDAYS = '日一二三四五六'
 
 /** The fixed layer's parts: what the user wrote, the latest synthesis, profile memories since it, habits. */
-export interface FixedLayer {
+interface FixedLayer {
   profile: Readonly<Record<string, { value: string } | undefined>>
   synthesis?: string | null
   recent?: ReadonlyArray<MemoryLike>
@@ -42,7 +42,7 @@ export interface FixedLayer {
 /** A memory as far as the block shows it. */
 type MemoryLike = { text: string, createdAt: number, updatedAt?: number }
 /** A memory pushed because the question named something, with the names it was found by. */
-export interface PushedMemory { memory: MemoryLike, names: string[] }
+interface PushedMemory { memory: MemoryLike, names: string[] }
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 const pad = (n: number) => String(n).padStart(2, '0')

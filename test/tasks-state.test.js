@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { liveTasks, runningTurn, taskMessages, taskPreview } from '../src/renderer/tasks-state.ts'
+import { liveTasks, runningTurn, taskPreview } from '../src/renderer/tasks-state.ts'
 import { showsHome } from '../src/renderer/view/render.ts'
 import { cardedTasks } from '../src/renderer/view/task-card.ts'
 
@@ -28,14 +28,12 @@ const started = (state) => run([
   { type: 'task_update', taskId: 's1', update: chunk('先看提交…'), at: 21 },
 ], state)
 
-const WORDS_LATER = '整理发布说明'
-
 test('a background request while idle adds only its card; the original words stay in task details', () => {
   const idle = run([{ type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'assistant', text: '有什么可以帮你？' }], savedAt: 1 }])
   const state = reduce(idle, { type: 'task_started', task: { id: 'bg', segmentId: 'bg-c', title: '查天气', words: '查天气' }, text: '查天气', at: 2 })
   assert.deepEqual(state.messages.map(message => message.text), ['有什么可以帮你？'])
   assert.deepEqual(state.messages[0].cardsAfter, ['bg'])
-  assert.deepEqual(taskMessages(state.tasks.list[0]).map(message => message.text), ['查天气'])
+  assert.deepEqual(state.tasks.list[0].view.messages.map(message => message.text), ['查天气'])
   const empty = reduce(initialState, { type: 'task_started', task: { id: 'bg', title: '查天气' }, text: '查天气', at: 2 })
   assert.deepEqual(empty.messages, [], 'even an empty conversation must not acquire a user bubble')
   assert.equal(showsHome(empty), false, 'the welcome screen must not hide the standalone background card')
@@ -90,7 +88,7 @@ test('what the task says and asks goes to the task; its end leaves the conversat
   let [task] = liveTasks(state)
   assert.deepEqual([task.status, task.now, task.permission.requestId], ['waiting', '写入 docs/release.md', 'p1'])
   assert.equal(state.permission, null, 'the conversation on screen is not asked')
-  assert.deepEqual(taskMessages(task).map((m) => m.text), ['整理这周的提交，写成发布说明', '先看提交…三组改动。'])
+  assert.deepEqual(task.view.messages.map((m) => m.text), ['整理这周的提交，写成发布说明', '先看提交…三组改动。'])
 
   const answered = reduce(state, { type: 'permission_resolved', requestId: 'p1', optionId: 'allow', at: 33 })
   assert.equal(liveTasks(answered)[0].status, 'running')
@@ -110,7 +108,7 @@ test('a task\'s question is answered in the task, not in the conversation on scr
   const answered = reduce(picked, { type: 'question_answered', taskId: 's1', questionId: 'q1', answers: [{ id: 'city', selected: ['上海'] }], at: 31 })
   const [task] = liveTasks(answered)
   assert.deepEqual([task.status, task.question], ['running', null])
-  assert.equal(taskMessages(task).at(-1).text, '上海')
+  assert.equal(task.view.messages.at(-1).text, '上海')
   assert.deepEqual(answered.messages.map((m) => m.text), ['做周报', '写好了'], 'the conversation on screen is left alone')
 })
 
@@ -131,7 +129,7 @@ test('a task that fails says why: on its card and on its page', () => {
 test('words for a background task go into its turn, not the conversation on screen', () => {
   const state = started(idle())
   const steered = reduce(state, { type: 'task_steer', taskId: 's1', text: '加上版本号', at: 50 })
-  assert.equal(taskMessages(liveTasks(steered)[0]).at(-1).text, '加上版本号')
+  assert.equal(liveTasks(steered)[0].view.messages.at(-1).text, '加上版本号')
   assert.deepEqual(steered.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
 })
 
@@ -144,7 +142,7 @@ test('a task that ended can be asked again, and it goes back to work with the wo
   const asked = reduce(ended, { type: 'task_asked', taskId: 's1', text: '再加上已知问题', at: 60 })
   const [again] = liveTasks(asked)
   assert.deepEqual([again.id, again.status, again.endedAt, again.startedAt], ['s1', 'running', null, 60])
-  assert.equal(taskMessages(again).at(-1).text, '再加上已知问题')
+  assert.equal(again.view.messages.at(-1).text, '再加上已知问题')
   assert.deepEqual(asked.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
 })
 
@@ -158,7 +156,7 @@ test('tasks that had ended by the last launch come back ended, and can be asked 
   })
   const [task] = restored.tasks.list
   assert.deepEqual([task.id, task.status, task.endedAt, liveTasks(restored).length], ['s3', 'done', 5, 0])
-  assert.deepEqual(taskMessages(task).map((m) => m.text), ['查一下明天上海的天气', '晴，18 到 25 度。'])
+  assert.deepEqual(task.view.messages.map((m) => m.text), ['查一下明天上海的天气', '晴，18 到 25 度。'])
 })
 
 test('a task the agent takes up again goes on in the background with what it had said, its card where it was', () => {
@@ -174,9 +172,9 @@ test('a task the agent takes up again goes on in the background with what it had
   })
   const [task] = liveTasks(taken)
   assert.deepEqual([task.id, task.status, task.startedAt], ['s1', 'running', 50])
-  assert.deepEqual(taskMessages(task).map((m) => m.text), ['整理发布说明', '先看提交…', '接着做'])
+  assert.deepEqual(task.view.messages.map((m) => m.text), ['整理发布说明', '先看提交…', '接着做'])
   const said = reduce(taken, { type: 'task_update', taskId: 's1', update: chunk('三组改动。'), at: 51 })
-  assert.equal(taskMessages(liveTasks(said)[0]).at(-1).text, '三组改动。', 'what it says now follows')
+  assert.equal(liveTasks(said)[0].view.messages.at(-1).text, '三组改动。', 'what it says now follows')
 
   // Taken up in a conversation on screen: its card goes under what is there now, and stays there.
   const shown = run([

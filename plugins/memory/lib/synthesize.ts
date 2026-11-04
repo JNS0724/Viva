@@ -13,9 +13,9 @@ export const SYNTHESIS_INTERVAL_MS = 24 * 60 * 60 * 1000
 export const SYNTHESIS_MIN_CHANGES = 5
 /** Profile memories are one-line facts; this many fit comfortably in one call. */
 const SYNTHESIS_MEMORY_LIMIT = 150
-export const SYNTHESIS_SECTIONS = Object.freeze(['身份与职责', '常打交道的人', '在推进的事', '偏好'])
+const SYNTHESIS_SECTIONS = Object.freeze(['身份与职责', '常打交道的人', '在推进的事', '偏好'])
 
-export const SYNTHESIS_SYSTEM = [
+const SYNTHESIS_SYSTEM = [
   '你是画像整理员。根据用户自己填写的画像和长期记忆，写一份关于用户的简短画像，供另一个助手在对话开始时阅读。',
   `只用这几个小标题，每个占一行，按顺序：${SYNTHESIS_SECTIONS.map((section) => `【${section}】`).join('')}；没有内容的小标题省略。`,
   '每个小标题下写 1–5 行，每行以「- 」开头，一句话。只写记忆和画像里有的内容，不推测，不补充；记忆之间矛盾时以日期更新的为准。',

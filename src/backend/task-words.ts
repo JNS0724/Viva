@@ -8,7 +8,7 @@ import { answered, ended, fromSaved, said, saved, updated, type SavedMessage, ty
  */
 
 /** While a task talks, what it said is saved at most this often. */
-export const SAVE_EVERY_MS = 10_000
+const SAVE_EVERY_MS = 10_000
 
 /** How a turn's stop reason reads as the way a task ended. */
 export const ENDED_STATUS: Readonly<Record<string, string>> = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
@@ -155,4 +155,3 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
 
   return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, has: (taskId: string) => transcripts.has(taskId) }
 }
-export type TaskWords = ReturnType<typeof createTaskWords>

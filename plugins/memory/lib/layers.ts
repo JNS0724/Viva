@@ -30,7 +30,7 @@ export interface SessionState {
   lastDate: string | null
 }
 /** Why the fixed layer goes out this turn. */
-export type FixedReason = 'first' | 'compacted' | 'changed'
+type FixedReason = 'first' | 'compacted' | 'changed'
 /** A memory as far as the layers look at it. */
 type Remembered = { id: number, text: string, keywords?: readonly string[], updatedAt: number }
 
@@ -56,7 +56,7 @@ export function ownWords(question: unknown): string {
   return `${lines[0].slice(0, INSTRUCTION_CHARS)}\n${lines[lines.length - 1].slice(-INSTRUCTION_CHARS)}`
 }
 
-export const isFollowUp = (words: string) => words.length <= FOLLOW_UP_CHARS || FOLLOW_UP_START.test(words)
+const isFollowUp = (words: string) => words.length <= FOLLOW_UP_CHARS || FOLLOW_UP_START.test(words)
 
 /** What layer 2 looks for names in: the question's own words, after the previous question's for a follow-up. */
 export function retrievalBasis(question: unknown, previous = '') {

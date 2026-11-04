@@ -8,7 +8,7 @@ export type ProviderForm = Readonly<{
   models: ReadonlyArray<Readonly<{ id: string, contextWindow: string, maxTokens: string, image: boolean }>>,
 }>
 /** Where to ask for models: the form's protocol, address and key. */
-export type Endpoint = Readonly<{ api: string, baseURL: string, key: string }>
+type Endpoint = Readonly<{ api: string, baseURL: string, key: string }>
 
 /**
  * The 模型 section of settings. Adding, editing or removing a provider restarts the agent, which resumes the

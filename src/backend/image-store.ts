@@ -12,7 +12,7 @@ import { removeTree } from './remove-tree.ts'
  * attachment store pointed here by dsh-profile.js). Settings show its size, and the user can move or empty it.
  * Only these folders are ever read, counted, moved or removed: the folder may be one the user picked.
  */
-export const IMAGE_FOLDERS: readonly string[] = Object.freeze(['pasted', 'attachments', 'cache'])
+const IMAGE_FOLDERS: readonly string[] = Object.freeze(['pasted', 'attachments', 'cache'])
 /** The folder made inside the one the user picks to move the pictures to. */
 export const MOVED_FOLDER_NAME = 'Viva 图片'
 let TOO_BIG = t("main.image-ipc.image.is.too.large.maximum.mb", { value1: IMAGE_LIMITS.bytes / 1024 / 1024 })
@@ -37,7 +37,7 @@ function sizeOf(dir: string): { bytes: number, files: number } {
 }
 
 /** A picture kept: its name in the folder, its kind, its size. */
-export interface KeptImage { id: string, mimeType: ImageMime, size: number }
+interface KeptImage { id: string, mimeType: ImageMime, size: number }
 
 /** @param dir where the pictures are now (preferences, or the default in userData) */
 export function createImageStore({ dir }: { dir: () => string }) {

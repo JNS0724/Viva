@@ -80,10 +80,10 @@ type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configAc
 type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
-const HISTORY_WRITES = Object.freeze(['save', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
+const HISTORY_WRITES = Object.freeze(['save', 'fold', 'unfold', 'setStar'] as const)
 const TASK_WRITES = Object.freeze(['add', 'remove'] as const)
 /** The user's own changes on the 关于你 page; what the agent saves is recorded when the app reads it (memory.learned). */
-const MEMORY_WRITES = Object.freeze(['setProfile', 'addMemory', 'updateMemory', 'deleteMemory', 'restoreMemory', 'reviveMemory', 'setOnboarding'] as const)
+const MEMORY_WRITES = Object.freeze(['setProfile', 'addMemory', 'deleteMemory', 'restoreMemory', 'reviveMemory', 'setOnboarding'] as const)
 
 const isFolder = (dir: string) => {
   try {
@@ -765,9 +765,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   }
 
   const chooseWorkFolder = () => host.dialogs.chooseFolder({ title: t("main.main.choose.working.directory"), createDirectory: true })
-  const chooseExportPath = (defaultName: string) => host.dialogs.saveFile({
-    title: t("main.main.export.conversation"), defaultPath: path.join(host.paths.documents, defaultName), filters: [{ name: 'Markdown', extensions: ['md'] }],
-  })
   const chooseDshDir = () => host.dialogs.chooseFolder({ title: t("main.main.choose.the.dsh.folder.usually.named.dsh"), defaultPath: os.homedir(), showHidden: true })
 
   /** Reattaches the session with the current MCP servers; not while a turn runs (it would be cancelled). */
@@ -877,10 +874,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return forked
   }
 
-  /** Opens the database and drops conversations whose undo window has passed. */
+  /** Opens the history and the conversation to go on with. */
   function openHistory(config: Config) {
     historyDb = journaled(openHistoryDb({ db: appDb.db }), 'history', HISTORY_WRITES, applyChange)
-    historyDb.purgeDeleted({ olderThanMs: 0 })
     conversation = historyDb.latest()?.conversation ?? historyDb.create({ cwd: config.cwd })
     registerHistoryIpc(ipcMain, {
       db: historyDb,
@@ -890,7 +886,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       setCurrent: (next) => { conversation = next },
       agentInfo: () => lastInfo,
       switchAgent,
-      chooseExportPath,
       isBusy: () => turn.active,
       folderExists: (dir) => isFolder(dir),
       workDir: () => workDirNow() ?? null,
@@ -1015,5 +1010,3 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     close,
   }
 }
-
-export type Backend = ReturnType<typeof createBackend>

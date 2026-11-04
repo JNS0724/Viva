@@ -2,14 +2,14 @@ import { t } from '../shared/i18n/translate.ts'
 import path from 'node:path'
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'
-export interface TaskSnapshot {
+interface TaskSnapshot {
   taskId: string, title: string, status: TaskStatus, currentAction: string | null,
   waitingFor: 'permission' | 'answer' | null, startedAt: number, updatedAt: number,
   endedAt: number | null, resultPreview: string, revision: number,
 }
 interface Task extends TaskSnapshot { cwd: string, request: string }
-export interface TaskMetadata { id: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string }
-export type TaskScope = { cwd: string } | { taskId: string }
+interface TaskMetadata { id: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string }
+type TaskScope = { cwd: string } | { taskId: string }
 export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean }
 const statuses = new Set<string>(['running', 'waiting', 'done', 'stopped', 'error', 'interrupted'])
 const terminal = new Set<TaskStatus>(['done', 'stopped', 'error', 'interrupted'])

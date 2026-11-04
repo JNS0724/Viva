@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { createTaskActions } from '../src/renderer/task-actions.ts'
-import { liveTasks, taskMessages } from '../src/renderer/tasks-state.ts'
+import { liveTasks } from '../src/renderer/tasks-state.ts'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 const WORDS = '整理这周的提交，写成发布说明'
@@ -86,7 +86,7 @@ test('what a task says before the window knows it waits, then reaches it', async
   win.arrive({ type: 'task_update', taskId: 's1', update: chunk('三组改动。') })
   reply.resolve(startedReply)
   await starting
-  assert.deepEqual(taskMessages(liveTasks(win.state())[0]).map((m) => m.text), [WORDS, '三组改动。'])
+  assert.deepEqual(liveTasks(win.state())[0].view.messages.map((m) => m.text), [WORDS, '三组改动。'])
   assert.deepEqual(win.state().messages.map((m) => m.text), ['做周报', '写好了', WORDS, '先看提交…'], 'the conversation on screen as it was')
 })
 
@@ -139,5 +139,5 @@ test('the tasks the last launch kept come back at the start, with what they said
   })
   await win.actions.loadKept()
   const [task] = win.state().tasks.list
-  assert.deepEqual([task.id, task.status, taskMessages(task).map((m) => m.text)], ['s3', 'done', ['查天气', '晴。']])
+  assert.deepEqual([task.id, task.status, task.view.messages.map((m) => m.text)], ['s3', 'done', ['查天气', '晴。']])
 })

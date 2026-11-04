@@ -13,12 +13,12 @@ const MINUTE_MS = 60_000
 /** setTimeout holds at most about 24.8 days; a reminder further off is looked at again in a day. */
 const MAX_TIMER_MS = 24 * 60 * MINUTE_MS
 /** Away this long, the user's return is a gap. */
-export const AWAY_SECONDS = 15 * 60
+const AWAY_SECONDS = 15 * 60
 const IDLE_POLL_MS = MINUTE_MS
 
 type Timer = ReturnType<typeof setTimeout>
 
-export interface NotifierDeps {
+interface NotifierDeps {
   store: Pick<FollowupStore, 'list' | 'markReminded' | 'logNotice' | 'interruptionsOn' | 'lastToldAt' | 'logEvent' | 'noticedOn'>
   /** Shows a system notification. */
   notify: (notice: Notice) => void
@@ -128,8 +128,6 @@ export function createFollowupNotifier(deps: NotifierDeps) {
     },
   }
 }
-
-export type FollowupNotifier = ReturnType<typeof createFollowupNotifier>
 
 /** Back at the computer after being away 15 minutes, asked of the system's idle time once a minute. */
 export function createGapWatch({ idleSeconds, onGap, onError = () => {}, setRepeat = setInterval, clearRepeat = clearInterval }: {

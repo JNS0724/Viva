@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import {
   catMood,
-  fileItems, formatElapsed, greeting, historyMessages, modeLine, permissionDetail, receiptLine, restoredNote, setupView, statusView,
+  fileItems, formatElapsed, greeting, historyMessages, permissionDetail, receiptLine, restoredNote, setupView, statusView,
   toolDetail, traceItems, truncate, usageLabel, workspaceName,
 } from '../src/renderer/selectors.ts'
 
@@ -106,9 +106,6 @@ test('formatting helpers', () => {
   assert.equal(workspaceName(''), '—')
   assert.equal(usageLabel({ used: 25, size: 100 }), '上下文已用 25%')
   assert.equal(usageLabel(null), '')
-  assert.equal(modeLine({ mode: 'setup', problem: 'no-key' }), '未连接')
-  assert.equal(modeLine({ mode: 'live' }), 'DeepSeek Harness · ACP')
-  assert.equal(modeLine({ mode: 'connecting' }), '连接中…')
 })
 
 test('greeting follows the hour', () => {

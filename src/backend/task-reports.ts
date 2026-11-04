@@ -36,7 +36,7 @@ export function noteFor(tasks: readonly EndedTask[]): string {
   ].join('\n\n')
 }
 
-export interface TaskReportsDeps {
+interface TaskReportsDeps {
   /** The main conversation is free for a turn: nothing running, nothing switching, the agent there. */
   isIdle: () => boolean
   /** The conversation on screen, which a task's report goes to only if the task hangs off it. */

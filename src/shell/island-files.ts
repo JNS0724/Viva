@@ -11,7 +11,7 @@ import path from 'node:path'
 export let NOT_A_FILE = t("main.island-files.folders.are.not.supported.here.yet.drop")
 export let MISSING = t("main.island-files.file.not.found")
 
-export interface DroppedFile { path: string, name: string, size: number }
+interface DroppedFile { path: string, name: string, size: number }
 
 /** @param paths absolute paths, as the system gave them for the drop */
 export function describeDropped(paths: readonly string[]): { files: DroppedFile[] } | { error: string } {

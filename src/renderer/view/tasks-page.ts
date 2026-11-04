@@ -17,7 +17,6 @@ import { followupDetail, followupStanding, whenText } from './followups.ts'
  */
 const groupNames = (): Readonly<Record<string, string>> => ({ waiting: t("task.status.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") })
 const LIVE = new Set(['running', 'waiting'])
-export { FOLLOWUP_KEY }
 const followupGroupsCopy = (): ReadonlyArray<[string, string]> => ([['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]])
 
 /**

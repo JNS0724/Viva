@@ -3,7 +3,7 @@ import { t } from './i18n/translate.ts'
  * The fields of the user's profile ("关于你"). Shared by the main process (storage, the memory tools,
  * the context sent with each prompt) and the renderer (the profile page and the intro form).
  */
-export interface ProfileField { key: string, label: string, hint: string }
+interface ProfileField { key: string, label: string, hint: string }
 
 export const PROFILE_FIELDS: readonly ProfileField[] = Object.freeze([
   { key: 'role', get label() { return t('profile.role') }, get hint() { return t('profile.role.hint') } },

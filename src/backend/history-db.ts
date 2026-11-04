@@ -6,10 +6,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
-import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
+import { assertId, autoTitle, normalizeMessages } from './history-schema.ts'
 
-const PAGE_SIZE = 50
-const MAX_PAGE_SIZE = 200
 const SEARCH_LIMIT = 30
 const SEARCH_SCAN_LIMIT = 300
 const MAX_QUERY_CHARS = 100
@@ -32,14 +30,11 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
-    title_custom INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     session_id TEXT,
     mode TEXT,
     model TEXT,
-    pinned INTEGER NOT NULL DEFAULT 0,
-    deleted_at INTEGER,
     -- The working directory the segment's dsh session ran in.
     cwd TEXT,
     -- The segment it went on from (another directory, or back to an earlier point), so the timeline reads as one.
@@ -53,7 +48,6 @@ const SCHEMA = `
     -- The topic the segment is part of: its parent's, or its own id; set when it is first written, never again.
     topic_id TEXT
   );
-  CREATE INDEX IF NOT EXISTS conversations_order ON conversations (deleted_at, pinned, updated_at);
   CREATE INDEX IF NOT EXISTS conversations_topic ON conversations (topic_id);
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,
@@ -91,9 +85,9 @@ const SCHEMA = `
 const COUNT_MESSAGE_IDS = "INSERT OR IGNORE INTO id_counters (name, value) VALUES ('messages', 0);"
 
 /** A message as a link, a search hit or a star names it: its segment and place, and its id when known. */
-export type MessageRef = { segmentId: string, seq: number, messageId?: number }
+type MessageRef = { segmentId: string, seq: number, messageId?: number }
 /** Where such a message is now (history-db.ts locate). */
-export type Located =
+type Located =
   | { status: 'found', segmentId: string, seq: number, messageId: number }
   | { status: 'missing', segmentId: string, seq: number | null }
   | { status: 'deleted', segmentId: string }
@@ -107,7 +101,6 @@ type Statement = { get: (...params: any[]) => any, all: (...params: any[]) => an
 export interface Conversation {
   id: string
   title: string
-  titleCustom: boolean
   createdAt: number
   updatedAt: number
   sessionId: string | null
@@ -122,7 +115,6 @@ export interface Conversation {
 const toConversation = (row: Row): Conversation => ({
   id: row.id,
   title: row.title,
-  titleCustom: Boolean(row.title_custom),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   sessionId: row.session_id,
@@ -134,7 +126,7 @@ const toConversation = (row: Row): Conversation => ({
 })
 
 const toSummary = (row: Row) => ({
-  id: row.id, title: row.title, updatedAt: row.updated_at, model: row.model, mode: row.mode, pinned: Boolean(row.pinned),
+  id: row.id, title: row.title, updatedAt: row.updated_at, model: row.model, mode: row.mode,
 })
 
 const toMessage = (row: Row) => ({
@@ -187,8 +179,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   /** A row is a record of what its query selects; each function below says what it returns. */
   const sql: Record<string, Statement> = {
-    conversation: db.prepare('SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL'),
-    anyConversation: db.prepare('SELECT title, title_custom FROM conversations WHERE id = ?'),
+    conversation: db.prepare('SELECT * FROM conversations WHERE id = ?'),
+    anyConversation: db.prepare('SELECT title FROM conversations WHERE id = ?'),
     upsert: db.prepare(`
       INSERT INTO conversations (id, title, created_at, updated_at, session_id, mode, model, cwd, parent_id, topic_id)
       VALUES (:id, :title, :createdAt, :updatedAt, :sessionId, :mode, :model, :cwd, :parentId, :topicId)
@@ -198,14 +190,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     storedMessage: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropMessage: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropStar: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq = ?'),
-    messageById: db.prepare(`SELECT m.id, m.conversation_id, m.seq, c.deleted_at FROM messages m
-      JOIN conversations c ON c.id = m.conversation_id WHERE m.id = ?`),
-    messageAt: db.prepare(`SELECT m.id, m.conversation_id, m.seq, c.deleted_at FROM messages m
-      JOIN conversations c ON c.id = m.conversation_id WHERE m.conversation_id = ? AND m.seq = ?`),
+    messageById: db.prepare(`SELECT id, conversation_id, seq FROM messages WHERE id = ?`),
+    messageAt: db.prepare(`SELECT id, conversation_id, seq FROM messages WHERE conversation_id = ? AND seq = ?`),
     nearest: db.prepare('SELECT seq FROM messages WHERE conversation_id = ? ORDER BY abs(seq - ?), seq LIMIT 1'),
-    segmentRow: db.prepare('SELECT id, deleted_at FROM conversations WHERE id = ?'),
+    segmentRow: db.prepare('SELECT id FROM conversations WHERE id = ?'),
     position: db.prepare('SELECT created_at, rowid FROM conversations WHERE id = ?'),
-    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
+    segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
     timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
@@ -219,21 +209,19 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     nextMessageId: db.prepare(`UPDATE id_counters SET value = value + 1 WHERE name = 'messages' RETURNING value`),
     insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-    latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
-    fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
+    latest: db.prepare('SELECT id FROM conversations WHERE folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
+    fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ?'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
-      FROM conversations c WHERE c.folded_into = ? AND c.deleted_at IS NULL ORDER BY c.created_at, c.rowid`),
-    list: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL
-      ORDER BY pinned DESC, updated_at DESC, rowid DESC LIMIT ? OFFSET ?`),
+      FROM conversations c WHERE c.folded_into = ? ORDER BY c.created_at, c.rowid`),
     sessions: db.prepare(`SELECT session_id FROM messages WHERE conversation_id = ? AND session_id IS NOT NULL
       GROUP BY session_id ORDER BY MIN(seq)`),
     ftsHits: db.prepare(`SELECT m.conversation_id AS id, m.text FROM messages_fts
       JOIN messages m ON m.id = messages_fts.rowid JOIN conversations c ON c.id = m.conversation_id
-      WHERE messages_fts MATCH ? AND c.deleted_at IS NULL ORDER BY c.updated_at DESC, m.seq LIMIT ${SEARCH_SCAN_LIMIT}`),
+      WHERE messages_fts MATCH ? ORDER BY c.updated_at DESC, m.seq LIMIT ${SEARCH_SCAN_LIMIT}`),
     likeHits: db.prepare(`SELECT m.conversation_id AS id, m.text FROM messages m JOIN conversations c ON c.id = m.conversation_id
-      WHERE m.text LIKE ? ESCAPE '\\' AND c.deleted_at IS NULL ORDER BY c.updated_at DESC, m.seq LIMIT ${SEARCH_SCAN_LIMIT}`),
+      WHERE m.text LIKE ? ESCAPE '\\' ORDER BY c.updated_at DESC, m.seq LIMIT ${SEARCH_SCAN_LIMIT}`),
     titleHits: db.prepare(`SELECT id, title AS text FROM conversations
-      WHERE title LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ${SEARCH_SCAN_LIMIT}`),
+      WHERE title LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT ${SEARCH_SCAN_LIMIT}`),
   }
 
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
@@ -281,7 +269,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   /** An unsaved conversation; it reaches the database with its first message. */
   function create({ sessionId = null, mode = null, model = null, cwd = null, parentId = null, topicId = null }: Partial<Pick<Conversation, 'sessionId' | 'mode' | 'model' | 'cwd' | 'parentId' | 'topicId'>> = {}): Conversation {
     const at = now()
-    return { id: newId(), title: '', titleCustom: false, createdAt: at, updatedAt: at, sessionId, mode, model, cwd, parentId, topicId }
+    return { id: newId(), title: '', createdAt: at, updatedAt: at, sessionId, mode, model, cwd, parentId, topicId }
   }
 
   /** The topic a stored segment is part of, or null when there is no such segment. */
@@ -297,7 +285,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       const existing = sql.anyConversation.get(id)
       sql.upsert.run({
         id,
-        title: existing?.title_custom ? existing.title : autoTitle(messages),
+        title: autoTitle(messages),
         createdAt: conversation.createdAt ?? at,
         updatedAt: at,
         sessionId: conversation.sessionId ?? null,
@@ -316,12 +304,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   function latest() {
     const row = sql.latest.get()
     return row ? get(row.id) : null
-  }
-
-  function list({ offset = 0, limit = PAGE_SIZE } = {}) {
-    const size = Math.min(Math.max(1, Math.trunc(limit) || PAGE_SIZE), MAX_PAGE_SIZE)
-    const rows = sql.list.all(size + 1, Math.max(0, Math.trunc(offset) || 0))
-    return { items: rows.slice(0, size).map(toSummary), hasMore: rows.length > size }
   }
 
   /** One result per conversation, newest first, with a snippet around the first hit. */
@@ -376,7 +358,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       : `messages m JOIN conversations c ON c.id = m.conversation_id WHERE 1`
     const params = [...(long.length ? [long.map(ftsPhrase).join(' AND ')] : []), ...short.map((term) => `%${escapeLike(term)}%`), since, until]
     return db.prepare(`SELECT m.id AS message_id, m.conversation_id AS segment_id, m.seq, m.role, m.text, m.created_at, c.cwd FROM ${from}
-      ${likes.map((like) => `AND ${like}`).join(' ')} AND c.deleted_at IS NULL AND c.folded_into IS NULL
+      ${likes.map((like) => `AND ${like}`).join(' ')} AND c.folded_into IS NULL
       AND m.created_at >= ? AND m.created_at < ?
       ORDER BY m.created_at DESC, m.id DESC LIMIT ${SEARCH_LIMIT}`).all(...params) as Row[]
   }
@@ -404,16 +386,16 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * - 'found': it is there (by its id when the reference has one, else by its place);
    * - 'missing': its segment is there but it is not (cut off, or said again differently): `seq` is the nearest
    *   message left, or null when the segment has none;
-   * - 'deleted': its segment was deleted.
+   * - 'deleted': there is no such segment.
    */
   function locate(ref: MessageRef): Located {
     const segmentId = assertId(ref.segmentId)
     const byId = ref.messageId === undefined ? undefined : sql.messageById.get(ref.messageId)
     const row = byId && byId.conversation_id === segmentId ? byId
       : ref.messageId === undefined ? sql.messageAt.get(segmentId, ref.seq) : undefined
-    if (row) return row.deleted_at ? { status: 'deleted', segmentId } : { status: 'found', segmentId, seq: row.seq, messageId: row.id }
+    if (row) return { status: 'found', segmentId, seq: row.seq, messageId: row.id }
     const segment = sql.segmentRow.get(segmentId)
-    if (!segment || segment.deleted_at) return { status: 'deleted', segmentId }
+    if (!segment) return { status: 'deleted', segmentId }
     return { status: 'missing', segmentId, seq: sql.nearest.get(segmentId, ref.seq)?.seq ?? null }
   }
 
@@ -441,39 +423,23 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     .filter((row) => row.fold_kind !== 'side')
     .map((row) => ({ id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at), kind: row.fold_kind ?? 'path' }))
 
-  /** A retained 后台做 task's original card position; deleted parents/segments must not resurrect a card. */
+  /** A retained 后台做 task's original card position, while the segment it folds into is there. */
   function sideTaskHost(id: unknown): { conversationId: string, at: number, order: number } | null {
     const row = db.prepare(`SELECT c.folded_into, c.folded_at, c.rowid AS position FROM conversations c
-      JOIN conversations p ON p.id = c.folded_into WHERE c.id = ? AND c.fold_kind = 'side'
-      AND c.deleted_at IS NULL AND p.deleted_at IS NULL`).get(assertId(id))
+      JOIN conversations p ON p.id = c.folded_into WHERE c.id = ? AND c.fold_kind = 'side'`).get(assertId(id))
     if (!row || typeof row.folded_into !== 'string' || typeof row.folded_at !== 'number'
       || !Number.isSafeInteger(row.folded_at) || row.folded_at < 0 || typeof row.position !== 'number') return null
     return { conversationId: row.folded_into, at: row.folded_at, order: row.position }
   }
 
-  const rename = (id: unknown, title: unknown) => changeOne(
-    db.prepare('UPDATE conversations SET title = ?, title_custom = 1 WHERE id = ? AND deleted_at IS NULL'), normalizeTitle(title), assertId(id))
-  const setPinned = (id: unknown, pinned: boolean) => changeOne(
-    db.prepare('UPDATE conversations SET pinned = ? WHERE id = ? AND deleted_at IS NULL'), pinned ? 1 : 0, assertId(id))
-  const softDelete = (id: unknown) => changeOne(
-    db.prepare('UPDATE conversations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL'), now(), assertId(id))
-  const restore = (id: unknown) => changeOne(
-    db.prepare('UPDATE conversations SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL'), assertId(id))
-
-  /** Removes conversations deleted at least `olderThanMs` ago, messages and index entries included. */
-  function purgeDeleted({ olderThanMs }: { olderThanMs: number }) {
-    return db.prepare('DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at <= ?').run(now() - olderThanMs).changes
-  }
-
   const sessionIds = (id: unknown): string[] => sql.sessions.all(assertId(id)).map((row) => row.session_id)
 
   /** When the user asked their latest questions (ms), newest first; feeds the habit analysis. @returns {number[]} */
-  const questionTimes = (limit = QUESTION_TIMES_LIMIT) => db.prepare(`SELECT m.created_at FROM messages m
-    JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
-    ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
+  const questionTimes = (limit = QUESTION_TIMES_LIMIT) => db.prepare(`SELECT created_at FROM messages WHERE role = 'user'
+    ORDER BY id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
   return {
-    create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
+    create, save, get, latest, search, sessionIds, topicOf, locate,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.
     close: () => { if (!given) db.close() },

@@ -15,7 +15,7 @@ export const initialRewind = Object.freeze({
 })
 
 /** A path folded off the conversation: where it hangs (after that many saved messages), how many it folds, and whether a path or a task. */
-export type Fold = { id: string, at: number, count: number, kind: string }
+type Fold = { id: string, at: number, count: number, kind: string }
 
 /** Words that started a turn of their own: not said into a running one, not an answer, not left unsent. */
 const startsTurn = (message: ThreadMessage) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed

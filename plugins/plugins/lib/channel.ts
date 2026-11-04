@@ -3,9 +3,6 @@
  * asks dsh's plugin manager and answers (`plugins_result`). Arguments are checked here as well as in the app:
  * a malformed call is refused, never passed on.
  */
-export const PLUGINS_OPS = Object.freeze(['list', 'inspect', 'install', 'remove', 'setBundle', 'setPlugin'] as const)
-export type PluginsOp = typeof PLUGINS_OPS[number]
-
 const MAX_SPEC_CHARS = 2048
 const MAX_NAME_CHARS = 214
 const MAX_BUILDS = 50
@@ -21,7 +18,7 @@ export interface Manager {
   setPluginEnabled(id: string, enabled: boolean): Promise<unknown>
 }
 
-export interface Port {
+interface Port {
   send: (message: object) => unknown
   on: (event: 'message', handler: (message: unknown) => void) => unknown
   off: (event: 'message', handler: (message: unknown) => void) => unknown

@@ -3,7 +3,7 @@ const SEARCH_DEBOUNCE_MS = 200
 const UNDO_TOAST_MS = 8000
 const NOTICE_TOAST_MS = 6000
 /** The profile fields the intro asks for: all three. Sites and documents are only read, not kept. */
-export const INTRO_FIELDS = Object.freeze(['role', 'projects', 'preferences'])
+const INTRO_FIELDS = Object.freeze(['role', 'projects', 'preferences'])
 
 const lines = (text: unknown) => String(text ?? '').split('\n').map((line) => line.trim()).filter(Boolean)
 

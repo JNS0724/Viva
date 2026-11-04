@@ -73,7 +73,7 @@ function markSeen(state: State, taskId: string | null): State {
   return { ...state, tasks: { ...state.tasks, seen: [...state.tasks.seen, task.id] } }
 }
 
-export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 
 /** The 后台 page's list: those waiting on the user, then those at work, then those that ended, latest first. */
 export function pageGroups(state: State): Array<{ key: string, tasks: BackgroundTask[] }> {
@@ -109,8 +109,6 @@ export function shownOnPage(state: State): string | null {
   return selected && keys.includes(selected) ? selected : keys[0] ?? null
 }
 
-export const taskMessages = (task: BackgroundTask) => task.view.messages.map(({ role, text }: ThreadMessage) => ({ role, text }))
-
 const startsTurn = (message: ThreadMessage) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
 const isBusy = (state: { phase: string }) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'
 
@@ -136,9 +134,6 @@ export function taskPreview(view: { error?: string | null, messages: readonly Th
   return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS - 1)}…` : line
 }
 
-/** What a task said last, whole: its drawer tab shows it above what it did (view/drawer.js). */
-export const taskAnswer = (task: BackgroundTask): string => task.view.messages.findLast((message: ThreadMessage) => message.role === 'assistant')?.text ?? ''
-
 const withTasks = (state: State, changes: Partial<State['tasks']>): State => ({ ...state, tasks: { ...state.tasks, ...changes } })
 
 /**
@@ -146,7 +141,7 @@ const withTasks = (state: State, changes: Partial<State['tasks']>): State => ({ 
  * goes under the message that was last when it started (view/thread.ts), so it stays where it happened as the
  * conversation goes on, instead of below everything.
  */
-export function withCardAfter(messages: readonly ThreadMessage[], taskId: string): ThreadMessage[] {
+function withCardAfter(messages: readonly ThreadMessage[], taskId: string): ThreadMessage[] {
   const last = messages.at(-1)
   if (!last) return [...messages]
   return [...messages.slice(0, -1), { ...last, cardsAfter: [...(last.cardsAfter ?? []), taskId] }]

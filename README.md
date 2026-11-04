@@ -78,7 +78,7 @@ Closing the window leaves Viva in the tray. The desktop island shows work, appro
 - **Remember you:** say “Remember…” or let Viva learn in conversation. View, edit, delete, or restore memories in About you.
 - **Connect tools through conversation:** ask to connect GitHub or save a workflow as a skill. Secrets go in a dedicated card, are encrypted locally, and are not given to the model.
 - **Ask when uncertain:** if a missing detail changes the answer, the assistant asks instead of guessing.
-- **History:** full-text search, pins, Markdown export, and continuation of earlier conversations.
+- **History:** full-text search and continuation of earlier conversations.
 
 ## How it works
 

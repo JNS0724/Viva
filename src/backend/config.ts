@@ -31,7 +31,7 @@ function problemFor(hasModel: boolean, dshBin: string, exists: (file: string) =>
   return null
 }
 
-export interface LaunchConfig {
+interface LaunchConfig {
   dshBin: string
   nodeBin: string
   runtime: DshRuntime

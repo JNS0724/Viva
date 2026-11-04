@@ -20,7 +20,7 @@ const KEEP_ALIVE_MS = 15_000
 const MISSING_TURN_MS = 5_000
 
 export type ChannelListener = (event: unknown, ...args: unknown[]) => unknown
-export interface RpcServerOptions {
+interface RpcServerOptions {
   token: string
   channels: ReadonlyMap<string, { kind: ChannelKind, listener: ChannelListener }>
   controls: Readonly<Record<string, (...args: unknown[]) => unknown>>

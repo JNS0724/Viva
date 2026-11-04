@@ -26,7 +26,7 @@ const isRecord = (value: unknown): value is Update => Boolean(value) && typeof v
 const textOf = (value: unknown) => (typeof value === 'string' ? value : '')
 
 /** Anything happening other than the agent writing ends what it was writing. */
-export function closed(transcript: Transcript): Transcript {
+function closed(transcript: Transcript): Transcript {
   const last = transcript.at(-1)
   return last?.open ? [...transcript.slice(0, -1), { ...last, open: false }] : transcript
 }

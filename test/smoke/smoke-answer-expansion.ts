@@ -1,7 +1,7 @@
 import { report, run, type Expect, type SmokeWindow } from './smoke-kit.ts'
 
 /** Actual Markdown and ResizeObserver: revealing a finished answer must keep the reader's place. */
-export const ANSWER_EXPANSION = `(async()=>{
+const ANSWER_EXPANSION = `(async()=>{
   const {initialState,reduce}=await import('./state.js')
   const {renderThread}=await import('./view/thread.js')
   const {createScrollFollower}=await import('./view/scroll-follow.js')

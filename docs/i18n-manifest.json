@@ -5,8 +5,8 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "4771358a3a5f5e89db89b12e13c81440b878743419d36c1564554516df4dac8e",
-      "zhHash": "ae6323da6ec6de9f8f15c2a5915cd153747074ea65a62cad7a0819827dfe93c7"
+      "enHash": "cf71cb0786287fabacbfdc9f647f8b2140169c5eea03fa66c543115e712a0076",
+      "zhHash": "105105097f2e2ce5e364e9a812a71d03ac32781a53d6e2ffbd545354adb95105"
     },
     {
       "en": "docs/development.md",
@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "314304dc329b47afd047804a913de13aa8c15da167827fbd7caabf23d87ddb22",
-      "zhHash": "74a8b47aefe4c60d6e96fbc80a115cc5bec82f6edcaae8b54f78e8e977470825"
+      "enHash": "279711a4af7c22459f6a55e651ba5994abd298f9ae3d5eb087c3b3abafcff5b3",
+      "zhHash": "7d246a2f0794d1f9c148512e53e00aa3e40139476b7bb2a109342a951f9781af"
     },
     {
       "en": "docs/live-check.md",
@@ -65,8 +65,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "714e3d9ed76b5f86ca9fd2d84f51b86c8546aa649a0e0a06411ef0f861c5e4e4",
-      "zhHash": "aac3c81cb2b32f6a92f67b77518aa15ea34a8e349f942d58c0708c853d1e357a"
+      "enHash": "a80f273960f3af85d382d87c6309333c72eb820e9007a28737176f0216ea0a3e",
+      "zhHash": "a3d4ee010d6e7918683550740aeeb09c3bc94928c1637ca2de7390792b6d0bfb"
     },
     {
       "en": "docs/system-design.md",

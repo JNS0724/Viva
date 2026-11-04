@@ -52,12 +52,12 @@ function skillName(name: string): string {
 }
 
 /** An MCP server the model asked for; `secrets` names the keys the user is asked to type. */
-export interface ServerSpec { name: string, command: string, args: string[], url: string, secrets: string[] }
+interface ServerSpec { name: string, command: string, args: string[], url: string, secrets: string[] }
 /**
  * A change to a server the model asked for: what is empty (args: null) stays as it is; `secrets` names keys the
  * user types in the window, new ones or ones to replace.
  */
-export interface ServerUpdate { name: string, newName: string, command: string, args: string[] | null, url: string, secrets: string[] }
+interface ServerUpdate { name: string, newName: string, command: string, args: string[] | null, url: string, secrets: string[] }
 
 const secretNames = (value: unknown) => list(value, t("main.config-channel.credential.name"), { max: MAX_SECRETS, itemMax: 128, pattern: SECRET_NAME })
 
@@ -102,7 +102,7 @@ const ARGS: Record<string, (args: any) => any> = {
 const isId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS
 
 /** A request as checked: to perform, or to answer with why not. */
-export type ConfigRequest = { id: string, sessionId: string, op: string, args: any } | { id: string, problem: string }
+type ConfigRequest = { id: string, sessionId: string, op: string, args: any } | { id: string, problem: string }
 
 /** @returns null when there is no id to answer */
 export function parseConfigRequest(message: any): ConfigRequest | null {
@@ -132,7 +132,7 @@ function checkSecrets(names: readonly string[], values: any): Record<string, str
 const bullet = (items: readonly string[]) => items.map((item) => `- ${item}`).join('\n')
 
 /** What main.js does for the desk, with the MCP store and the skills folder. */
-export interface ConfigActions {
+interface ConfigActions {
   listServers(): string[]
   prepareServer(spec: ServerSpec): void
   addServer(spec: ServerSpec, secrets: Record<string, string>): string

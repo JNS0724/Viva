@@ -7,12 +7,12 @@ import type { openHistoryDb } from './history-db.ts'
  */
 type HistoryDb = ReturnType<typeof openHistoryDb>
 /** How many messages on either side of the one asked for are read at most. */
-export const MAX_AROUND = 10
+const MAX_AROUND = 10
 const DEFAULT_AROUND = 4
 
-export type RecallRange = { since?: number, until?: number }
-export type RecallMessage = { messageId: number, segmentId: string, seq: number, role: string, text: string, at: number, target: boolean }
-export type Recalled =
+type RecallRange = { since?: number, until?: number }
+type RecallMessage = { messageId: number, segmentId: string, seq: number, role: string, text: string, at: number, target: boolean }
+type Recalled =
   | { status: 'found' | 'missing', title: string, messages: RecallMessage[] }
   | { status: 'deleted' }
 

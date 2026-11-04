@@ -2,12 +2,6 @@
  * The conversation column's width (the thread, the earlier part, the topic label and the input share it, styles.css
  * --col): dragged wider or narrower at either edge, double-clicked back to the default, and kept for the next launch.
  */
-/**
- * The lane at each side of the main area the column never takes: on the left the turn rail (view/turn-rail.ts) lives
- * there, so the widest column still leaves the rail clear of the text; the column is centred, so the right keeps as
- * much. styles.css --rail-lane.
- */
-export const RAIL_LANE = 40
 /** styles.css .main's padding at each side, inside which the conversation scrolls. */
 const MAIN_PADDING_PX = 28
 /**
@@ -15,7 +9,10 @@ const MAIN_PADDING_PX = 28
  * ::-webkit-scrollbar), so the widest column never scrolls sideways.
  */
 const STAR_GUTTER_PX = 48
-/** The margin left over at the widest: padding and the star's gutter at each side, which also keeps the rail's lane. */
+/**
+ * The margin left over at the widest: padding and the star's gutter at each side. It also keeps a lane clear of the
+ * text at the left for the turn rail (view/turn-rail.ts); the column is centred, so the right keeps as much.
+ */
 export const COLUMN = Object.freeze({ default: 760, min: 560, margin: 2 * (MAIN_PADDING_PX + STAR_GUTTER_PX) })
 const STORE_KEY = 'viva:column-width'
 

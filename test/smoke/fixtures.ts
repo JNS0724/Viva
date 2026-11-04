@@ -13,10 +13,10 @@ import { runSmoke } from './smoke.ts'
 import type { SmokeModel } from './smoke-kit.ts'
 
 export type SmokePhase = 'setup' | 'language' | 'walkthrough' | 'relaunch' | 'memory' | 'resume' | 'timeline' | 'perf' | 'showcase' | 'live' | 'live-resume'
-export interface ScenarioOptions { phase: SmokePhase, bridge: 'real' | 'fake', apiKey?: string }
+interface ScenarioOptions { phase: SmokePhase, bridge: 'real' | 'fake', apiKey?: string }
 
 /** A restart belongs to the same logical scenario; separate tests never depend on a previous test's files. */
-export class Scenario {
+class Scenario {
   readonly profile: OwnedProfile
   readonly info: TestInfo
   readonly options: ScenarioOptions

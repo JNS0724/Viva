@@ -67,7 +67,6 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
     dialogs: {
       chooseFolder: (options) => ask('dialogs.chooseFolder', options),
       chooseFiles: (options) => ask('dialogs.chooseFiles', options),
-      saveFile: (options) => ask('dialogs.saveFile', options),
     },
     shell: {
       openExternal: (url) => ask('shell.openExternal', url),

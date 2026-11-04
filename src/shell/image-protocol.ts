@@ -5,7 +5,7 @@ import type { Protocol } from 'electron'
  * pages' Content-Security-Policy lets them load it). The shell registers the scheme; the backend, which has the
  * pictures folder, answers it (src/backend/image-protocol.ts imageResponse).
  */
-export const IMAGE_SCHEME = 'viva-image'
+const IMAGE_SCHEME = 'viva-image'
 export const IMAGE_SCHEME_PRIVILEGES = Object.freeze({ scheme: IMAGE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } })
 
 /** viva-image:// answered by `answer`: from the backend. */

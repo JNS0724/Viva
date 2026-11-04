@@ -75,8 +75,6 @@ test('memories are deduplicated, edited, deleted and restored with their id', (t
   assert.deepEqual([again.created, again.memory.id, again.memory.updatedAt], [false, first.memory.id, 2000])
 
   const second = db.addMemory({ text: '回答先给结论', kind: 'preference' }).memory
-  assert.throws(() => db.updateMemory(second.id, '周报每周五交给张三'), /相同的记忆/)
-  assert.equal(db.updateMemory(second.id, '回答先给结论，再给细节').text, '回答先给结论，再给细节')
 
   const removed = db.deleteMemory(first.memory.id)
   assert.equal(db.deleteMemory(first.memory.id), null)

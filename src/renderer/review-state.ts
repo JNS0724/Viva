@@ -25,7 +25,7 @@ export type ReaderMessage = SegmentMessage & { segmentId: string }
  * What is read at the top: opened from a hit, a link or a star; `found`, the message it named (its `data-msg`),
  * marked while it is open; `notice` when that message itself is not there.
  */
-export type ReviewFocus = { key: string, title: string, at: number | null, head: string | null, found: string | null, notice: string | null }
+type ReviewFocus = { key: string, title: string, at: number | null, head: string | null, found: string | null, notice: string | null }
 
 /**
  * The part of what is read that is drawn: `messages` from place `from` of `total` (history-reader.ts), never more
@@ -34,13 +34,13 @@ export type ReviewFocus = { key: string, title: string, at: number | null, head:
  * asked for by an earlier one, opened before the topic was opened again elsewhere, is not taken); `whole`, a segment
  * read with the talk it shares, as every part read on of it is too.
  */
-export type ReaderWindow = {
+type ReaderWindow = {
   key: string, read: number, whole: boolean, total: number, from: number, messages: readonly ReaderMessage[], loading: 'before' | 'after' | null,
 }
 export type ReaderEdge = 'before' | 'after'
-export const READER_MAX = 200
+const READER_MAX = 200
 /** A part read from the history: where it starts, what it holds. */
-export type ReadPart = { total: number, from: number, messages: readonly ReaderMessage[] }
+type ReadPart = { total: number, from: number, messages: readonly ReaderMessage[] }
 
 /** Whether a part read on joins the window at that end: right before its first message, or right after its last. */
 const joins = (window: ReaderWindow, edge: ReaderEdge, part: ReadPart) => (edge === 'before'
@@ -114,7 +114,7 @@ export function reviewDays(topics: readonly ReviewTopic[], now = Date.now()) {
 }
 
 /** Whether a topic holds a segment, in its conversation or as one of its tasks. */
-export const topicHolds = (topic: ReviewTopic, segmentId: string) => topic.segments.includes(segmentId) || topic.tasks.some((task) => task.id === segmentId)
+const topicHolds = (topic: ReviewTopic, segmentId: string) => topic.segments.includes(segmentId) || topic.tasks.some((task) => task.id === segmentId)
 
 const withReview = (state: State, changes: Partial<State['review']>): State => ({ ...state, review: { ...state.review, ...changes } })
 const counted = (stars: number, starred: boolean) => Math.max(0, stars + (starred ? 1 : -1))

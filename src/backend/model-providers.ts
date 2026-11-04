@@ -13,7 +13,7 @@ import { type Encryption, keyHint, validateApiKey } from './settings-store.ts'
  */
 /** 2: models are entries (`{ id, contextWindow?, maxTokens?, image? }`); a file of 1 lists ids, read as entries. */
 const FILE_VERSION = 2
-export const MAX_PROVIDERS = 20
+const MAX_PROVIDERS = 20
 const MAX_MODELS = 50
 const MAX_NAME_CHARS = 40
 const MAX_MODEL_CHARS = 200
@@ -26,7 +26,7 @@ const MAX_TOKEN_COUNT = 100_000_000
  */
 export const MODEL_DEFAULTS = Object.freeze({ contextWindow: 262144, maxTokens: 32768 })
 /** dsh's own DeepSeek route; the stock ACP default points at it. */
-export const DEEPSEEK_PROVIDER = 'deepseek-official'
+const DEEPSEEK_PROVIDER = 'deepseek-official'
 /** The wire protocols dsh's pi-ai adapter speaks, as the settings form names them. */
 export let PROTOCOLS = Object.freeze({
   'openai-completions': t("main.model-providers.openai.compatible.chat.completions"),
@@ -40,11 +40,11 @@ const KEY_ENV_PREFIX = 'VIVA_MODEL_KEY_'
 /** One model of a provider, with what the user set of it; what is unset dsh assumes (MODEL_DEFAULTS). */
 export interface ModelEntry { id: string, contextWindow?: number, maxTokens?: number, image?: boolean }
 /** A provider as the settings form sends it, checked. */
-export interface ProviderInput { name: string, api: string, baseURL: string, models: ModelEntry[], key: string }
+interface ProviderInput { name: string, api: string, baseURL: string, models: ModelEntry[], key: string }
 /** A provider as the main process holds it: with its route id, and its key decrypted ('' for none). */
 export interface Provider extends ProviderInput { id: string }
 /** A model to start on: which route, which model of it. */
-export interface ModelChoice { provider: string, model: string }
+interface ModelChoice { provider: string, model: string }
 
 /** The environment variable that carries one provider's key into dsh. */
 export const keyEnvName = (id: string): string => `${KEY_ENV_PREFIX}${id.slice(ID_PREFIX.length).toUpperCase()}`

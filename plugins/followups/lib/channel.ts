@@ -10,8 +10,8 @@
  *   app → plugin  { type: 'prepare_cancel', id }                           the user came back: stop it
  *   plugin → app  { type: 'prepare_result', id, ok, text }                 the text, or why there is none
  */
-export const MAX_INPUT_CHARS = 120_000
-export const MAX_SYSTEM_CHARS = 8_000
+const MAX_INPUT_CHARS = 120_000
+const MAX_SYSTEM_CHARS = 8_000
 export const MAX_TOKENS = 8_192
 const MAX_ID_CHARS = 100
 const MAX_ROUTE_CHARS = 200

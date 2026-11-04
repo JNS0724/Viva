@@ -9,7 +9,7 @@ import type { Followup, ReadFile } from './followup-store.ts'
  * never instructions. The model gets no tools (plugins/followups), so this is all it can see, and a draft is all
  * it can give back.
  */
-export const PREPARE_MARK = '后台准备'
+const PREPARE_MARK = '后台准备'
 export const PREPARE_SYSTEM = [
   `你在${PREPARE_MARK}：用户不在的时候，提前把一件事准备好，等用户回来一看就能接着做。`,
   '只写草稿、清单或要点。不要声称已经执行、发送、修改或安排了任何东西，你也做不到这些。',

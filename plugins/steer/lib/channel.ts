@@ -18,7 +18,7 @@ const MAX_ID_CHARS = 128
 const MAX_TEXT_CHARS = 20_000
 
 /** Why the words did not reach the turn. */
-export type SteerReason = (typeof REASONS)[keyof typeof REASONS]
+type SteerReason = (typeof REASONS)[keyof typeof REASONS]
 /** What arrives over IPC: anything at all, so every field is checked before it is used. */
 type Incoming = any
 

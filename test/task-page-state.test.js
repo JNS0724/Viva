@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { hubPage } from '../src/renderer/hub-state.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { liveTasks, pageGroups, pageTask, taskMessages } from '../src/renderer/tasks-state.ts'
+import { liveTasks, pageGroups, pageTask } from '../src/renderer/tasks-state.ts'
 
 /**
  * The 后台 page (view/tasks-page.js): every background task, grouped by where it stands, and the one picked
@@ -24,7 +24,7 @@ test('a task started on its own leaves only its card in the conversation and kee
   assert.equal(state.phase, 'idle', 'the conversation on screen is not busy for it')
   const [task] = liveTasks(state)
   assert.deepEqual([task.id, task.status, task.startedAt], ['s7', 'running', 10])
-  assert.deepEqual(taskMessages(task).map((m) => m.text), ['把这周的提交整理成发布说明'])
+  assert.deepEqual(task.view.messages.map((m) => m.text), ['把这周的提交整理成发布说明'])
 })
 
 test('the page groups the tasks: waiting on the user, then at work, then ended, latest first', () => {

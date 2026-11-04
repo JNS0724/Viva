@@ -46,9 +46,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   discoverModels: (input, providerId) => ipcRenderer.invoke('models:discover', input, providerId),
   loadHistory: () => ipcRenderer.invoke('history:load'),
   saveHistory: (messages) => ipcRenderer.invoke('history:save', messages),
-  listHistory: (offset) => ipcRenderer.invoke('history:list', offset),
   searchHistory: (query) => ipcRenderer.invoke('history:search', query),
-  openConversation: (id) => ipcRenderer.invoke('history:open', id),
   /** 回到这个话题 / 撤销 a new topic: { info, parentId } (history-ipc.js). */
   resumeTopic: (id) => ipcRenderer.invoke('history:resume-topic', id),
   /** Before 继续这个话题: its directory, whether it is there, whether it is the one in use. */
@@ -56,11 +54,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** Its own session gone: a new conversation in `dir` going on from its saved records. */
   continueFromRecords: (id, dir) => ipcRenderer.invoke('history:continue-from-records', id, dir),
   loadTrace: (id, until) => ipcRenderer.invoke('history:trace', id, until),
-  renameConversation: (id, title) => ipcRenderer.invoke('history:rename', id, title),
-  pinConversation: (id, pinned) => ipcRenderer.invoke('history:pin', id, pinned),
-  deleteConversation: (id) => ipcRenderer.invoke('history:delete', id),
-  restoreConversation: (id) => ipcRenderer.invoke('history:restore', id),
-  exportConversation: (id) => ipcRenderer.invoke('history:export', id),
   /** The one timeline: the segments before `id`, oldest first; messages across all of it that contain `query`. */
   earlierSegments: (id, limit) => ipcRenderer.invoke('history:segments-before', id, limit),
   searchTimeline: (query) => ipcRenderer.invoke('history:search-messages', query),
@@ -104,7 +97,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   listMemories: (query) => ipcRenderer.invoke('memory:list', query),
   saveProfile: (changes) => ipcRenderer.invoke('memory:set-profile', changes),
   addMemory: (text, kind) => ipcRenderer.invoke('memory:add', text, kind),
-  updateMemory: (id, text) => ipcRenderer.invoke('memory:update', id, text),
   deleteMemory: (id) => ipcRenderer.invoke('memory:delete', id),
   restoreMemory: (memory) => ipcRenderer.invoke('memory:restore', memory),
   listInvalidMemories: () => ipcRenderer.invoke('memory:list-invalid'),

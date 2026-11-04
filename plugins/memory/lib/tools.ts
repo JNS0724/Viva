@@ -3,8 +3,6 @@ import { recallCandidates } from './match.ts'
 import { MEMORY_KINDS } from './store.ts'
 import type { Memory } from './store.ts'
 
-/** Prefixed so they can't clash with another plugin's tools; dsh shows them to the model under these names. */
-export const MEMORY_TOOL_NAMES = Object.freeze(['memory_remember', 'memory_recall', 'memory_forget'])
 const RECALL_LIMIT = 5
 const MAX_QUERY_CHARS = 200
 

@@ -53,7 +53,7 @@ export function historyAnswer(query: string, hits: readonly HistoryHit[]): strin
 const cut = (text: string) => (text.length > MAX_READ_CHARS ? `${text.slice(0, MAX_READ_CHARS)}…（后面略）` : text)
 
 /** The messages around one, oldest first, the one asked for marked; or why there are none. */
-export function historyReadAnswer(read: ReturnType<HistoryRead>): string {
+function historyReadAnswer(read: ReturnType<HistoryRead>): string {
   if (read.status === 'deleted') return '这条记录已经删除了，读不到原文。如实告诉用户。'
   const lead = read.status === 'missing' ? '原文已经不在了（可能被重新生成或撤回），下面是它附近的记录，不能当作原文引用。\n' : ''
   const lines = read.messages.flatMap((message) => [

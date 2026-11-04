@@ -32,12 +32,10 @@ test('a segment keeps the working directory it ran in and the one it went on fro
   assert.deepEqual([reopened.get(second.id).conversation.cwd, reopened.get(second.id).conversation.parentId], ['/w/site', first.id])
 })
 
-test('earlier segments come back oldest first, in pages, each message with its time; deleted ones are left out', () => {
+test('earlier segments come back oldest first, in pages, each message with its time', () => {
   const { db } = freshDb()
   const a = segment(db, [user('一'), answer('答一')], { cwd: '/w/a' })
   const b = segment(db, [user('二')], { cwd: '/w/b' })
-  const gone = segment(db, [user('删掉的')])
-  db.softDelete(gone.id)
   const c = segment(db, [user('三')], { cwd: '/w/b' })
   const now = segment(db, [user('现在')], { cwd: '/w/b' })
 

@@ -5,15 +5,15 @@
  */
 const FORK_TIMEOUT_MS = 10_000
 /** No answer from the plugin: it is not loaded, or dsh is gone. */
-export const NO_PLUGIN = 'unavailable'
+const NO_PLUGIN = 'unavailable'
 
-export type ForkResult = { ok: true, sessionId: string } | { ok: false, reason: string }
+type ForkResult = { ok: true, sessionId: string } | { ok: false, reason: string }
 
 /**
  * before: index of the user message to go back to; or words: what the user said there, the occurrence-th
  * such turn from the end; cwd: where the new session works.
  */
-export interface ForkPoint { before?: number, words?: string, occurrence?: number, cwd?: string }
+interface ForkPoint { before?: number, words?: string, occurrence?: number, cwd?: string }
 
 export function createForkDesk({ send, sessionId, timeoutMs = FORK_TIMEOUT_MS }: {
   send: (message: object) => void, sessionId: () => string | null, timeoutMs?: number,

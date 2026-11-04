@@ -372,9 +372,9 @@ function localizeAssistant(view: View, message: ThreadMessage): boolean {
  * How many of the conversation's messages are drawn at most: its latest. A topic a thousand turns long draws no
  * more than a short one; what is before is read in 回顾 (the line at the top), a part at a time.
  */
-export const THREAD_MAX = 200
+const THREAD_MAX = 200
 /** The first message of the conversation drawn (by its place in `state.messages`). */
-export const threadStart = (state: Pick<State, 'messages'>) => Math.max(0, state.messages.length - THREAD_MAX)
+const threadStart = (state: Pick<State, 'messages'>) => Math.max(0, state.messages.length - THREAD_MAX)
 
 /** The line above what is drawn of a long conversation: how many are before it, read in 回顾 from the last of them. */
 function restLine(state: State, start: number, handlers: Handlers) {

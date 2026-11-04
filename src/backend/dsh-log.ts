@@ -20,7 +20,7 @@ const TITLE_CHARS = 60
 interface ToolView { id: string, kind: string, title: string, status?: string, at: number, locations: Array<{ path: string }>, rawInput: object | null }
 
 /** The drawer's trace: thoughts and tool calls, and the order they came in. */
-export interface Trace {
+interface Trace {
   thoughts: Array<{ id: string, text: string, open: boolean, at: number }>
   tools: Record<string, ToolView>
   timeline: Array<{ kind: 'thought' | 'tool', ref: string, at: number }>
@@ -69,7 +69,7 @@ const emptyTrace = (): Trace => ({ thoughts: [], tools: {}, timeline: [] })
  * The drawer's trace from one session's steps. Steps after `until` are skipped, so turns the live view
  * already shows are not repeated.
  */
-export function traceFromSteps(steps: readonly Step[], { sessionId, until = Infinity }: { sessionId: string, until?: number }): Trace {
+function traceFromSteps(steps: readonly Step[], { sessionId, until = Infinity }: { sessionId: string, until?: number }): Trace {
   const trace = emptyTrace()
   for (const step of steps.filter((item) => item.at <= until)) {
     if (step.kind === 'thought') {

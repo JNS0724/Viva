@@ -3,7 +3,7 @@
  * Each keeps its own slice (history, memory, settings) and its own open and close actions; this keeps
  * only one of them open and remembers which to open on next. Pure, like the rest of `state.js`.
  */
-export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks'] as const)
+const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks'] as const)
 type HubPage = typeof HUB_PAGES[number]
 /** Every page, 后台 too, is one of the hub's: the 关于你 icon opens on whichever was shown last. */
 const REMEMBERED = new Set<string>(HUB_PAGES)

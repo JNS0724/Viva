@@ -62,18 +62,11 @@ export const IPC_ARGS = Object.freeze({
 
   'history:load': read(none),
   'history:save': z.tuple([z.array(record).max(MAX_LIST)]),
-  'history:list': read(z.tuple([count.optional()])),
   'history:search': read(z.tuple([text])),
-  'history:open': z.tuple([id]),
   'history:resume-topic': z.tuple([id]),
   'history:resume-check': read(z.tuple([id])),
   'history:continue-from-records': z.tuple([id, path]),
   'history:trace': read(z.tuple([id, z.number().optional()])),
-  'history:rename': z.tuple([id, text]),
-  'history:pin': z.tuple([id, z.boolean()]),
-  'history:delete': z.tuple([id]),
-  'history:restore': z.tuple([id]),
-  'history:export': z.tuple([id]),
   'history:segments-before': read(z.tuple([id, count.optional()])),
   'history:search-messages': read(z.tuple([text])),
   'history:review': read(z.tuple([z.object({ lastAt: z.number(), topicId: id }).nullable().optional(), z.enum(['all', 'tasks', 'files']).optional()])),
@@ -105,7 +98,6 @@ export const IPC_ARGS = Object.freeze({
   'memory:list': read(z.tuple([text.optional()])),
   'memory:set-profile': z.tuple([z.record(z.string(), z.unknown())]),
   'memory:add': z.tuple([text, id.optional()]),
-  'memory:update': z.tuple([z.number(), text]),
   'memory:delete': z.tuple([z.number()]),
   'memory:restore': z.tuple([record]),
   'memory:list-invalid': read(none),
@@ -161,7 +153,7 @@ export const QUERY_CHANNELS: ReadonlySet<Channel> = new Set(
   (Object.entries(IPC_ARGS) as Array<[Channel, z.ZodType]>).filter(([, schema]) => schema.description === QUERY).map(([channel]) => channel),
 )
 /** What a page sends on a channel, as the handler receives it. */
-export type ChannelArgs<C extends Channel> = z.input<(typeof IPC_ARGS)[C]>
+type ChannelArgs<C extends Channel> = z.input<(typeof IPC_ARGS)[C]>
 
 /**
  * Why `args` do not fit `channel`, or null when they do. A trailing argument the page left undefined counts as

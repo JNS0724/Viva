@@ -5,7 +5,7 @@ import { APP_ROOT, CODE_ROOT, rootsOf } from '../src/shared/node/app-roots.ts'
 import { dshLaunch, resolveConfig } from '../src/backend/config.ts'
 import { externalUrl } from '../src/backend/links.ts'
 import { createPermissionBroker } from '../src/backend/permission-broker.ts'
-import { currentModelName, describeConfig, describeError } from '../src/backend/session-info.ts'
+import { describeConfig, describeError } from '../src/backend/session-info.ts'
 
 const always = () => true
 const never = () => false
@@ -78,11 +78,11 @@ test('current model name handles flat options, grouped options and fallbacks', (
   const grouped = [{ id: 'x', category: 'model', currentValue: 'b', options: [{ group: 'g', name: 'G', options: [{ value: 'b', name: 'Beta' }] }] }]
   const unnamed = [{ id: 'model', currentValue: 'raw-id', options: [] }]
 
-  assert.equal(currentModelName(flat), 'DeepSeek V4')
-  assert.equal(currentModelName(grouped), 'Beta')
-  assert.equal(currentModelName(unnamed), 'raw-id')
-  assert.equal(currentModelName([{ id: 'reasoning_effort' }]), '')
-  assert.equal(currentModelName(undefined), '')
+  assert.equal(describeConfig(flat).model, 'DeepSeek V4')
+  assert.equal(describeConfig(grouped).model, 'Beta')
+  assert.equal(describeConfig(unnamed).model, 'raw-id')
+  assert.equal(describeConfig([{ id: 'reasoning_effort' }]).model, '')
+  assert.equal(describeConfig(undefined).model, '')
 })
 
 test('describeConfig reads the shape real dsh returns (grouped models + reasoning effort)', () => {

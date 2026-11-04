@@ -7,7 +7,7 @@
  */
 import { describeError } from './session-info.ts'
 
-export type ResumeReason = 'missing-dir' | 'gone' | 'unavailable'
+type ResumeReason = 'missing-dir' | 'gone' | 'unavailable'
 
 /** The agent as it is after a failed try: back on the conversation it was on (or on a new one, if that was gone). */
 type AgentInfo = { sessionId: string | null, resumed?: boolean, [field: string]: unknown }

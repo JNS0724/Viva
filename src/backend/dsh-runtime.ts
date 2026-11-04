@@ -11,7 +11,7 @@ import path from 'node:path'
 /** Where the app's dsh keeps its profile, sessions, credentials and skills. */
 export const dshHomeFor = (userData: string): string => path.join(userData, 'dsh')
 /** dsh-skill-filesystem also scans `~/.agents/skills`; the app's dsh scans this instead. */
-export const agentsHomeFor = (dshHome: string): string => path.join(dshHome, 'agents')
+const agentsHomeFor = (dshHome: string): string => path.join(dshHome, 'agents')
 
 /**
  * Variables that steer dsh (its home, endpoint, keys, runtime). The user's values are never passed on;

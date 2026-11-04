@@ -29,7 +29,6 @@
   --font-sans: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
   --font-dot: 'Doto', 'JetBrains Mono', ui-monospace, monospace;
-  --radius-tile: 28px;
   /* main's window-options.ts TITLEBAR_HEIGHT matches it; the island (36px, view/island-dom.ts) is centred in it. */
   --titlebar-h: 56px;
   --island-h: 36px;
@@ -100,9 +99,9 @@ html:not([data-platform="darwin"]) .titlebar {
 
 /* A zoomed minimum-size window must constrain the grid column instead of adopting its contents' min-width. */
 .body { position: relative; display: flex; min-width: 0; min-height: 0; }
-/* --rail-lane: kept free of the column at each side, the turn rail's on the left (view/column-resize.ts RAIL_LANE). */
-.main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
-/* 按轮次跳转 (view/turn-rail.ts): in its own lane at the main area's left edge (--rail-lane), one mark per question,
+/* The column leaves a lane free at each side, the turn rail's on the left (view/column-resize.ts COLUMN.margin). */
+.main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+/* 按轮次跳转 (view/turn-rail.ts): in its own lane at the main area's left edge, one mark per question,
    packed tighter as turns add up. A mark's tip opens rightwards, over the text. */
 .turn-rail {
   position: absolute; left: 4px; top: 50%; transform: translateY(-50%); z-index: 9; max-height: 56%;
@@ -533,9 +532,6 @@ html:not([data-platform="darwin"]) .titlebar {
 .tabs { flex: 1; display: flex; gap: 4px; padding: 4px; background: var(--panel-2); border-radius: 12px; }
 .tab { flex: 1; height: 34px; border: none; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; background: transparent; color: var(--ink-2); }
 .tab[aria-selected="true"] { background: var(--accent); color: var(--bg); }
-/* A task's tab (view/drawer.js): as narrow as its name allows; with many, the row scrolls. */
-.tabs:has(.tab-task) { overflow-x: auto; scrollbar-width: none; }
-.tab-task { flex: 0 1 auto; min-width: 4em; max-width: 9em; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .drawer-body > .row-between .label { color: var(--ink-3); }
 
@@ -617,8 +613,6 @@ html:not([data-platform="darwin"]) .titlebar {
   font-family: var(--font-mono); font-size: 12px; line-height: 1.6; color: var(--ink-2); background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
 }
-.list-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 13px; min-width: 0; }
-.list-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { border: 1px dashed var(--line-3); border-radius: 16px; padding: 26px 18px; text-align: center; color: var(--ink-3); font-size: 13px; line-height: 1.7; }
 
 /* ---------- streaming caret ---------- */
@@ -759,7 +753,6 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 
 /* ---------- motion ---------- */
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 96% { transform: scaleY(.1); } }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--orange) 55%, transparent); } 100% { box-shadow: 0 0 0 12px color-mix(in srgb, var(--orange) 0%, transparent); } }
 @keyframes caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
@@ -939,7 +932,6 @@ body.drop-folder::after, body.drop-images::after {
 .review-focus { margin-bottom: 18px; border: 1px solid var(--accent); border-radius: 14px; background: var(--panel); }
 .review-focus-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; }
 .review-notice { margin: 0 16px 12px; padding: 8px 12px; border-radius: 10px; background: var(--raised); color: var(--orange); font-size: 13px; }
-.review-star[data-deleted="true"] { opacity: .55; }
 /* 继续这个话题 asking first (view/resume-dialog.ts): the folder it goes on in. */
 .resume-dir { display: block; margin: 0 0 12px; padding: 8px 12px; border-radius: 10px; background: var(--raised); color: var(--ink); font-size: 13px; word-break: break-all; }
 .review-star { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); }

@@ -10,10 +10,10 @@ import { DatabaseSync } from 'node:sqlite'
  * time to be prepared by, and goes scheduled → preparing → ready → seen, or is dismissed or done. The notices
  * kept here count the day's interruptions, and the events are what the week of self-use is judged by.
  */
-export const FOLLOWUP_STATUSES = Object.freeze(['scheduled', 'preparing', 'ready', 'seen', 'done', 'dismissed'] as const)
+const FOLLOWUP_STATUSES = Object.freeze(['scheduled', 'preparing', 'ready', 'seen', 'done', 'dismissed'] as const)
 export type FollowupStatus = typeof FOLLOWUP_STATUSES[number]
 /** Where a follow-up came from: a conversation, a file the user named, or by hand. */
-export type OriginKind = 'chat' | 'file' | 'manual'
+type OriginKind = 'chat' | 'file' | 'manual'
 export interface Origin { kind: OriginKind, conversationId?: string, path?: string }
 /** A file a draft was made from, and when it was last changed then: to say when it changed since. */
 export interface ReadFile { path: string, mtimeMs: number }
@@ -44,7 +44,7 @@ export interface Followup {
   cue: string | null
 }
 
-export type NewFollowup = Pick<Followup, 'title' | 'ask' | 'origin'> & Partial<Pick<Followup, 'remindAt' | 'prepareBy' | 'files' | 'watchPath' | 'cue'>>
+type NewFollowup = Pick<Followup, 'title' | 'ask' | 'origin'> & Partial<Pick<Followup, 'remindAt' | 'prepareBy' | 'files' | 'watchPath' | 'cue'>>
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS followups (

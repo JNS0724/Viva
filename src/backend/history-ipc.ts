@@ -1,8 +1,6 @@
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
-import fs from 'node:fs/promises'
 import { readSessionTrace } from './dsh-log.ts'
-import { exportFileName, toMarkdown } from './history-export.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import { assertId } from './history-schema.ts'
 import { CARRY_TURNS, carriedRecords } from './history-carry.ts'
@@ -10,9 +8,6 @@ import { ResumeError } from './resume-failure.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
 
-/** How long "已删除 · 撤销" stays up; the conversation is purged for good after that. */
-export const UNDO_WINDOW_MS = 8000
-const PURGE_SLACK_MS = 1000
 const MAX_QUERY_CHARS = 200
 
 type HistoryDb = ReturnType<typeof openHistoryDb>
@@ -43,8 +38,6 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null, [field: string]: unknown },
   switchAgent: (sessionId: string | null, cwd?: string | null, options?: { exactly?: boolean }) => Promise<StartedAgent>,
-  chooseExportPath: (defaultName: string) => Promise<string | null>,
-  schedule?: (fn: () => void, ms: number) => void,
   isBusy?: () => boolean,
   /** Whether a directory is there; the one the agent is in now. */
   folderExists?: (dir: string) => boolean,
@@ -52,12 +45,11 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   /** Records to go with the first question of a conversation (main.ts agent:prompt). */
   carryNext?: (conversationId: string, text: string) => void,
 }) {
-  const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
+  const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent } = deps
   const folderExists = deps.folderExists ?? (() => true)
   const workDir = deps.workDir ?? (() => null)
   const carryNext = deps.carryNext ?? (() => {})
   const isBusy = deps.isBusy ?? (() => false)
-  const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref?.())
   const handle = handlerOf(ipcMain)
 
   /** The conversation on screen, with the paths folded off it where the user went back (rewind-ipc.js). */
@@ -73,7 +65,6 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     return summaryOf(saved)
   })
 
-  handle('history:list', (offset = 0) => db.list({ offset: Number(offset) || 0 }))
   handle('history:search', (query) => db.search(assertQuery(query)))
   /** The one timeline: the segments before `id` (the window scrolls up into them), and search across all of it. */
   handle('history:segments-before', (id, limit) => db.segmentsBefore(assertId(id), { limit: Number(limit) || undefined }))
@@ -94,16 +85,6 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:star', (id, seq, starred) => db.setStar(id, seq, starred === true))
   handle('history:stars-in', (ids) => db.starsIn(ids))
   handle('history:starred', () => db.starredMessages())
-
-  /** Shows an older conversation and reattaches the agent to its dsh session when it still can. */
-  handle('history:open', async (id) => {
-    const found = db.get(assertId(id))
-    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
-    if (found.conversation.id === current().id) return { conversation: viewOf(found), info: agentInfo() }
-    const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
-    setCurrent({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
-    return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed } }
-  })
 
   /**
    * Before 继续这个话题: the directory it goes on in, whether that is still there, and whether it is the one the
@@ -164,23 +145,6 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     sessionIds: db.sessionIds(assertId(id)),
     until: typeof until === 'number' && Number.isFinite(until) ? until : Date.now(),
   }))
-
-  handle('history:rename', (id, title) => db.rename(id, title))
-  handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))
-  handle('history:delete', (id) => {
-    db.softDelete(id)
-    schedule(() => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS }), UNDO_WINDOW_MS + PURGE_SLACK_MS)
-  })
-  handle('history:restore', (id) => db.restore(id))
-
-  handle('history:export', async (id) => {
-    const found = db.get(assertId(id))
-    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
-    const file = await chooseExportPath(exportFileName(found.conversation.title))
-    if (!file) return { saved: false }
-    await fs.writeFile(file, toMarkdown(found.conversation, found.messages), 'utf8')
-    return { saved: true, file }
-  })
 }
 
 onLocaleChange(() => {

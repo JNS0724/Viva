@@ -13,7 +13,7 @@ import { sideEffectsOf } from './side-effects.ts'
 
 const MAX_TEXT_CHARS = 20_000
 
-export let REWIND_PROBLEMS: Readonly<Record<string, string>> & { busy: string, unsaved: string } = Object.freeze({
+let REWIND_PROBLEMS: Readonly<Record<string, string>> & { busy: string, unsaved: string } = Object.freeze({
   busy: t("main.rewind-ipc.stop.the.current.task.before.restarting.from"),
   unsaved: t("main.rewind-ipc.this.message.has.not.been.saved.yet"),
   invalid: t("main.rewind-ipc.this.message.is.not.in.the.assistant"),

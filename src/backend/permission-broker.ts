@@ -1,5 +1,5 @@
 /** The answer the ACP agent gets for a permission request. */
-export type PermissionOutcome = { outcome: { outcome: 'selected', optionId: string } | { outcome: 'cancelled' } }
+type PermissionOutcome = { outcome: { outcome: 'selected', optionId: string } | { outcome: 'cancelled' } }
 
 /** What the broker needs of an ACP permission request. */
 interface PermissionParams { sessionId?: string, options?: Array<{ optionId: string }>, toolCall?: unknown }

@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url'
  * touched. The user's other profiles (including `acp`) are never read or written.
  */
 /** The app's plugins are all named like this, so ones dropped from the list can be told apart and removed. */
-export const APP_PLUGIN_PREFIX = 'viva-'
+const APP_PLUGIN_PREFIX = 'viva-'
 /** Same bundles as dsh's own `acp` template (`dsh --from-default-profile acp`). */
 const BUNDLES = Object.freeze(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app'])
 /** The app's layer, written on every launch (vivaLayerFile). */

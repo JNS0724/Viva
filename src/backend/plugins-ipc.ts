@@ -15,9 +15,9 @@ const MAX_TEXT_CHARS = 2000
 type Call = (op: PluginsOp, args?: Record<string, unknown>) => Promise<PluginsResult>
 
 /** One row a bundle adds, and how it runs now. */
-export interface PluginRowView { id: string, entryId: string | null, enabled: boolean, phase: string | null }
+interface PluginRowView { id: string, entryId: string | null, enabled: boolean, phase: string | null }
 /** One installed plugin as the section shows it. */
-export interface PluginView {
+interface PluginView {
   name: string, version: string | null, description: string | null, enabled: boolean, removable: boolean,
   /** dsh's code for what is wrong with it, with its words; null when nothing is. */
   error: { code: string, detail: string | null } | null,
@@ -27,9 +27,9 @@ export interface PluginView {
   /** dsh's own rows it changes. */
   overrides: string[]
 }
-export interface PluginsView { connected: boolean, plugins: PluginView[] }
+interface PluginsView { connected: boolean, plugins: PluginView[] }
 /** What an install, removal or switch did, as the section words it. */
-export interface ChangeView { changed: boolean, application: string, error: { code: string, detail: string | null } | null, pendingBuilds: string[] }
+interface ChangeView { changed: boolean, application: string, error: { code: string, detail: string | null } | null, pendingBuilds: string[] }
 
 const str = (value: unknown): string | null => (typeof value === 'string' && value ? value.slice(0, MAX_TEXT_CHARS) : null)
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value.slice(0, MAX_LIST) : [])
@@ -41,7 +41,7 @@ const errorOf = (value: unknown) => {
 }
 
 /** Whether the installed package brings a part for dsh's Web client. */
-export function hasWebUi(profileDir: string, name: string): boolean {
+function hasWebUi(profileDir: string, name: string): boolean {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8'))
     return Boolean(manifest?.dsh?.client)

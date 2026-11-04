@@ -47,7 +47,7 @@ const messagesOf = (block: TopicBlock) => block.segments.flatMap((segment) => se
  * How many messages an earlier topic opened in place draws at most: its latest. The rest of a long one is read in
  * 回顾, a part at a time.
  */
-export const OPENED_TOPIC_MAX = 100
+const OPENED_TOPIC_MAX = 100
 
 /** What a folded topic draws once opened, kept by its element: it is drawn then, not before (see oldTopic). */
 const fillers = new WeakMap<HTMLDetailsElement, () => void>()

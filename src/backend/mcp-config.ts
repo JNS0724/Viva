@@ -9,7 +9,7 @@ import type { Encryption } from './settings-store.ts'
  * OS keychain (safeStorage) like the API key, and the UI only ever sees their names.
  */
 const FILE_VERSION = 1
-export const MAX_SERVERS = 20
+const MAX_SERVERS = 20
 const MAX_ARGS = 50
 const MAX_ARG_CHARS = 1000
 const MAX_COMMAND_CHARS = 500
@@ -19,7 +19,7 @@ const MAX_PAIRS = 30
 const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9-]{1,128}$/
-export const SERVER_TYPES: readonly string[] = Object.freeze(['stdio', 'http'])
+const SERVER_TYPES: readonly string[] = Object.freeze(['stdio', 'http'])
 
 /**
  * A server as the main process holds it: its secrets (env, headers) decrypted. `missing` names keys it needs but

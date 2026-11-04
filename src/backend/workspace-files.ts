@@ -31,10 +31,10 @@ const IMAGES: Readonly<Record<string, string>> = { '.png': 'image/png', '.jpg': 
 const PROGRAMS = new Set(['.exe', '.bat', '.cmd', '.com', '.ps1', '.sh', '.command', '.app', '.js', '.vbs', '.wsf', '.lnk', '.msi', '.jar', '.scr', '.pkg', '.dmg'])
 const BINARY_SAMPLE = 8000
 
-export interface FolderEntry { name: string, path: string, kind: 'folder' | 'file', size: number, heavy: boolean }
+interface FolderEntry { name: string, path: string, kind: 'folder' | 'file', size: number, heavy: boolean }
 
 /** A file as the preview shows it; `offset` and `nextOffset` page through text. */
-export interface FilePreview {
+interface FilePreview {
   path: string
   name: string
   size: number

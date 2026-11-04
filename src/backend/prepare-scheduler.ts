@@ -36,7 +36,7 @@ export interface PrepareState {
   waiting: string | null
 }
 
-export interface SchedulerDeps {
+interface SchedulerDeps {
   store: Pick<FollowupStore, 'list' | 'get' | 'setStatus' | 'finishPreparing' | 'moveStatus' | 'logEvent' | 'countEvents'>
   schedule: () => PrepareSchedule
   /** Why preparation must wait now (a turn or task of the user's going), or null when it may run. */

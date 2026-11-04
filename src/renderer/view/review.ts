@@ -164,21 +164,20 @@ function topicList(review: State['review'], handlers: Handlers, now: number): Vi
   return [...(months.length ? months : [hint(EMPTY()[review.filter] ?? EMPTY().all)]), more]
 }
 
-type StarredItem = { segmentId: string, seq: number, messageId?: number, role: string, text: string, at: number, title: string, deleted?: boolean }
+type StarredItem = { segmentId: string, seq: number, messageId?: number, role: string, text: string, at: number, title: string }
 
 /**
- * The starred messages, newest star first: who said it, when, in which topic; 详情 reads it where it is kept. A star
- * whose record was just deleted shows so, greyed, until the record is gone for good (or comes back with 撤销).
+ * The starred messages, newest star first: who said it, when, in which topic; 详情 reads it where it is kept.
  */
 function starredList(review: State['review'], handlers: Handlers, now: number): View[] {
   if (review.starred === null) return [hint(t("earlier.loading"))]
   if (!review.starred.length) return [hint(t("bookmarks.empty"))]
   return [h('ul', { class: 'review-items review-stars' }, review.starred.map((item: StarredItem) =>
-    h('li', { class: 'review-star', 'data-deleted': String(Boolean(item.deleted)) },
+    h('li', { class: 'review-star' },
       h('span', { class: 'history-meta mono' }, h('b', { class: 'history-title', text: SPEAKERS()[item.role] ?? t("history-panel.record") }),
-        `${formatListTime(item.at, now)} · ${item.title}${item.deleted ? t("review.deleted.suffix") : ''}`),
+        `${formatListTime(item.at, now)} · ${item.title}`),
       h('div', { class: 'review-star-text', text: item.text }),
-      item.deleted ? null : h('div', { class: 'review-star-actions' },
+      h('div', { class: 'review-star-actions' },
         h('button', { class: 'btn btn-text btn-small', type: 'button', text: t("bookmarks.remove"), onClick: () => handlers.toggleStar({ segmentId: item.segmentId, seq: item.seq }, false) }),
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("history-panel.details"),
           onClick: () => handlers.openStarred({ segmentId: item.segmentId, seq: item.seq, messageId: item.messageId }) })))))]

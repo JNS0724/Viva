@@ -57,7 +57,7 @@ export interface LiveScenario {
   run: (ctx: LiveContext) => Promise<void>
 }
 
-export function newTag(): string {
+function newTag(): string {
   return crypto.randomBytes(3).toString('hex')
 }
 
@@ -95,7 +95,7 @@ const TURN_STATE = `(() => {
 })()`
 
 /** What the user does when the turn asks: allow or turn down what needs permission, answer a question, fill a key. */
-export interface TurnPolicy {
+interface TurnPolicy {
   permission?: 'allow' | 'deny'
   /** The option to pick, or words to type, when the agent asks a question; without it the turn stops there. */
   answer?: string
@@ -104,7 +104,7 @@ export interface TurnPolicy {
   timeoutMs?: number
 }
 
-export interface TurnOutcome {
+interface TurnOutcome {
   /** Titles of the permission cards, in order. */
   cards: string[]
   questions: Array<{ question: string, options: string[] }>
@@ -201,17 +201,6 @@ export async function agentReady(win: SmokeWindow, timeoutMs = LIVE_TURN_MS) {
     const send = document.getElementById('send-btn')
     return send.dataset.busy === 'false' && !send.disabled && !document.getElementById('model-btn').disabled
   })()`, 'the agent connected', timeoutMs)
-}
-
-/** The titles of the steps in 过程 for the conversation on screen: the tools the agent used, among others. */
-export async function traceTitles(win: SmokeWindow): Promise<string[]> {
-  const wasOpen = await run(win, `document.getElementById('drawer').dataset.open === 'true'`)
-  if (!wasOpen) await run(win, `document.getElementById('toggle-drawer').click()`)
-  await run(win, `[...document.querySelectorAll('.drawer .tab')].find((el) => el.textContent === '过程')?.click()`)
-  await wait(UI_WAIT_MS)
-  const titles = await run(win, `[...document.querySelectorAll('.trace-row .trace-title')].map((row) => row.textContent)`)
-  if (!wasOpen) await run(win, `document.getElementById('toggle-drawer').click()`)
-  return titles
 }
 
 /** Actual current-session tool identities, not words merely mentioned in a thought or explanation. */

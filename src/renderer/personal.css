@@ -13,8 +13,6 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 
 /* ---------- dialog ---------- */
 .profile { width: min(760px, 100%); }
-.profile-head-actions { display: flex; align-items: center; gap: 8px; }
-.profile-intro { display: flex; flex-direction: column; gap: 8px; }
 .profile-section { display: flex; flex-direction: column; gap: 12px; }
 .profile-section > .row-between .field { max-width: 220px; height: 36px; font-size: 13px; }
 .profile-heading { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
@@ -86,8 +84,6 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .ext-memory { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ink-2); }
 .ext-memory[data-on="false"] { color: var(--orange); }
 .ext-form { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; border: 1px solid var(--line-2); }
-.ext-stdio, .ext-http { display: flex; flex-direction: column; gap: 12px; }
-.ext-form[data-type="stdio"] .ext-http, .ext-form[data-type="http"] .ext-stdio { display: none; }
 .ext-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ext-actions { display: flex; gap: 8px; flex: none; }
 .ext-import-note {

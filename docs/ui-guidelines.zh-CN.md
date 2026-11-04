@@ -95,14 +95,14 @@ Viva 现有界面的视觉和交互规则，从 `src/renderer/styles.css`、`isl
 | 999px | 胶囊：toast、回到最新、时间线上的工作目录 |
 | 50% | 圆点、头像 |
 
-嵌套圆角要同心：内层圆角 = 外层圆角 − 内边距。桌面岛上她的图就是这样对齐的（`island.css` 的 `.isl-face`）。`--radius-tile`（28px）定义了但目前没有使用。
+嵌套圆角要同心：内层圆角 = 外层圆角 − 内边距。桌面岛上她的图就是这样对齐的（`island.css` 的 `.isl-face`）。
 
 ## 布局
 
 - **标题栏**：`--titlebar-h` 56px，岛高 `--island-h` 36px，在标题栏里居中。标题栏的岛不放她，只用状态色圆点；桌面岛高 80px，她占 72px。主进程 `window-options.ts` 的 `TITLEBAR_HEIGHT` 和这个值必须一致。
 - **窗口按钮的留白**：macOS 左侧留 `--reserve-left` 84px 给红绿灯；Windows / Linux 用 `env(titlebar-area-width)` 算出右侧要让出的宽度。这个值只写在 `.titlebar` 上，避免窗口缩放时让所有消息的继承样式失效。
 - **状态胶囊**：始终按整个窗口居中，空间不够时先收缩，不压到两侧按钮。
-- **对话列**：`--col` 默认 760px，可以拖动边缘调整。左侧 `--rail-lane` 40px 留给轮次刻度。
+- **对话列**：`--col` 默认 760px，可以拖动边缘调整。最宽时左侧仍留出 40px 给轮次刻度（`view/column-resize.ts` 的 `COLUMN.margin`）。
 - **抽屉**：`--drawer-width` 440px。窗口不超过 1100px 时浮在对话上方，不挤压对话。
 - **断点**：720px（页面改单列）、760px（首页卡片竖排）、1100px（抽屉浮起）。窗口最小 880×600。
 - **层级（z-index）**：

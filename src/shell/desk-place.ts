@@ -10,7 +10,7 @@
 export const DESK_SIZE = Object.freeze({ width: 600, height: 352 })
 /** The island's head (island-dom.js SIZES.desk.head) and the room around it in the window. */
 const HEAD = 80
-export const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
+const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
 /** The home place: this far below the top of the work area. */
 const TOP_GAP = 6
 /** Dropped this close to home, the island goes home. */
@@ -21,13 +21,13 @@ const SNAP_PX = 48
  */
 export const DRAG_SIZE = Object.freeze({ width: 104, height: 104 })
 
-export interface Area { x: number, y: number, width: number, height: number }
+interface Area { x: number, y: number, width: number, height: number }
 /** The centre of the island's head, on the screen. */
-export interface Point { x: number, y: number }
+interface Point { x: number, y: number }
 /** A point as fractions of a work area. */
-export interface Place { fx: number, fy: number }
+interface Place { fx: number, fy: number }
 /** What preferences.json keeps. */
-export interface Places { last: string | null, places: Record<string, Place> }
+interface Places { last: string | null, places: Record<string, Place> }
 
 export function homePoint(area: Area): Point {
   return { x: area.x + area.width / 2, y: area.y + TOP_GAP + STAGE_PAD.end + HEAD / 2 }

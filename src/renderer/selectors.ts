@@ -32,7 +32,7 @@ export function formatElapsed(ms: number): string {
 }
 
 export const formatHM = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`
-export const formatClock = (ts: number) => {
+const formatClock = (ts: number) => {
   const d = new Date(ts)
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
@@ -55,7 +55,6 @@ export const historyMessages = (state: State) => state.messages
   .filter((m) => !m.open)
   .map(({ role, text, receipt, images }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}) }))
 
-const DAY_MS = 86_400_000
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
 /** Whole calendar days between `ts` and `now` (0 = today). */
 const daysAgo = (ts: number, now: number) => calendarDays(ts, now)
@@ -255,7 +254,7 @@ let FIXED_REASONS: Readonly<Record<string, string>> = {
 }
 
 /** A trace row: a title, what it was about, and its tone. */
-export type TraceRow = { title: string, detail: string, tone: string }
+type TraceRow = { title: string, detail: string, tone: string }
 
 /** One trace row for what the memory plugin sent: why the profile went along, and which memories and why. */
 export function memoryTrace(injection: { fixed?: string | null, pushed?: ReadonlyArray<{ names: string[], text: string }> }): TraceRow {
@@ -333,12 +332,6 @@ export function permissionDetail(permission: { rawInput?: Record<string, unknown
   } catch {
     return t("selectors.arguments.cannot.be.displayed")
   }
-}
-
-export function modeLine(info: AgentInfo): string {
-  if (info.mode === 'live') return 'DeepSeek Harness · ACP'
-  if (info.mode === 'setup') return t("island-view.not.connected")
-  return t("selectors.connecting")
 }
 
 /** What the home card and composer say while the agent cannot start. */

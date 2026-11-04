@@ -2,7 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Followup, FollowupStore } from './followup-store.ts'
-import { weekStats } from './followup-stats.ts'
+import { WEEK_MS, weekStats } from './followup-stats.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import { changedSince } from './prepare-materials.ts'
 import { checkSchedule, nextWindow, type PrepareSchedule } from './prepare-schedule.ts'
@@ -14,7 +14,6 @@ import type { PrepareScheduler } from './prepare-scheduler.ts'
  * 现在就准备 does not wait for a window, 叫醒它 stops a preparation), and the 后台准备 settings.
  */
 const MINUTE_MS = 60_000
-const WEEK_MS = 7 * 24 * 60 * MINUTE_MS
 /** A time a little in the past still counts (the card sat there a moment). */
 const PAST_SLACK_MS = MINUTE_MS
 const MAX_PAUSE_MINUTES = 24 * 60
@@ -24,7 +23,7 @@ const MAX_TIME_CHARS = 60
 const MAX_PATH_CHARS = 1000
 const MAX_FILES = 5
 
-export interface FollowupsIpcDeps {
+interface FollowupsIpcDeps {
   store: FollowupStore
   scheduler: Pick<PrepareScheduler, 'refresh' | 'prepareNow' | 'wakeUp' | 'state'> & Partial<Pick<PrepareScheduler, 'abandon'>>
   /** After a change: the timer for reminders, the tray's count. */

@@ -10,12 +10,12 @@ import { smokeHooks } from './hooks.ts'
 import { applicationEnvironment } from './environment.ts'
 import type { SmokeAppWindow, SmokeHooks, SmokeModel } from './smoke-kit.ts'
 
-export const PROJECT_ROOT = path.resolve(import.meta.dirname, '..', '..')
+const PROJECT_ROOT = path.resolve(import.meta.dirname, '..', '..')
 const LAUNCH_TIMEOUT_MS = 30_000
 const CLOSE_TIMEOUT_MS = 15_000
 const require = createRequire(import.meta.url)
 
-export interface ApplicationOptions {
+interface ApplicationOptions {
   profile: OwnedProfile
   outputDirectory: string
   model: SmokeModel | null

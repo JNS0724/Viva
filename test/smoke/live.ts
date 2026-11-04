@@ -23,7 +23,7 @@ const MAX_REPEAT = 10
 const ATTEMPT_MS = 15 * 60_000
 const RECOVER_MS = 60_000
 
-export interface Attempt { ok: boolean, ms: number, failures: string[], shots: string[] }
+interface Attempt { ok: boolean, ms: number, failures: string[], shots: string[] }
 export interface ScenarioResult { id: string, title: string, feature: string, core: boolean, step: 'run' | 'prepare', attempts: Attempt[] }
 export interface PhaseReport { phase: string, set: string, repeat: number, startedAt: string, endedAt: string, scenarios: ScenarioResult[] }
 

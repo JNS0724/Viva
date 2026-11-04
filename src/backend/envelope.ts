@@ -15,7 +15,7 @@ const TAG_BYTES = 16
 /** Whether stored bytes are in this envelope's form. */
 export const isEnvelope = (data: Buffer): boolean => data.subarray(0, MAGIC.length).equals(MAGIC)
 
-export interface EnvelopeOptions {
+interface EnvelopeOptions {
   /** The data key; null when the system keychain is not available, as safeStorage would say. */
   key: Buffer | null
 }

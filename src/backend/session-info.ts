@@ -6,7 +6,7 @@ export const CONFIG_IDS: readonly string[] = Object.freeze([MODEL_CONFIG_ID, EFF
 interface Choice { value: string, name: string, group: string }
 
 /** What the UI shows of the session's config: the current model and reasoning effort, and their choices. */
-export interface ConfigView {
+interface ConfigView {
   model: string
   modelValue: string
   models: Choice[]
@@ -41,9 +41,6 @@ export function describeConfig(configOptions: unknown): ConfigView {
     efforts,
   }
 }
-
-/** Picks the display name of the selected model from an ACP `configOptions` list. */
-export const currentModelName = (configOptions: unknown): string => describeConfig(configOptions).model
 
 /** JSON-RPC errors from the ACP SDK carry the real cause in `data` (e.g. `{ details: 'unknown model option' }`). */
 function errorDetail(err: any): string {

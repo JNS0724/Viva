@@ -13,11 +13,11 @@ const MAX_ANSWER_CHARS = 2000
 export const DECLINED = '用户现在没法回答这个问题（已经离开了这段对话）。不要再问，按最合理的假设继续，并在回答里说明假设。'
 
 /** A question as the window gets it. */
-export interface QuestionView {
+interface QuestionView {
   id: string, question: string, header?: string, options?: Array<{ label: string, description?: string }>, multiSelect?: boolean
 }
 /** One answer, in dsh's answer shape. */
-export interface Answer { id: string, selected: string[], custom?: string }
+interface Answer { id: string, selected: string[], custom?: string }
 /** What dsh hands over with user-questions/request: its questions, the turn's signal, the agent asking. */
 interface QuestionRequest {
   questions: ReadonlyArray<QuestionView & { options?: ReadonlyArray<{ label: string, description?: string }> }>

@@ -28,7 +28,7 @@ export function timelineSeedTime(now: number, daysAgo: number, hour: number): nu
  */
 type Seed = { daysAgo: number, hour: number, talk: string[], files?: string[], star?: number, task?: boolean, continues?: number, cwd?: 'other' | 'gone' }
 /** The folders of the seeds talked in elsewhere, within the run's own userData. */
-export const seedDir = (userData: string, cwd: Seed['cwd']) => (cwd === 'other' ? path.join(userData, 'other-project') : cwd === 'gone' ? path.join(userData, 'deleted-project') : path.join(userData, 'workspace'))
+const seedDir = (userData: string, cwd: Seed['cwd']) => (cwd === 'other' ? path.join(userData, 'other-project') : cwd === 'gone' ? path.join(userData, 'deleted-project') : path.join(userData, 'workspace'))
 
 /** Oldest first; the last is the conversation on screen. A task hangs off the topic before it. */
 const SEEDS: readonly Seed[] = [

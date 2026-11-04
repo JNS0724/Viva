@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 
 /** 回顾: the topics, the one last talked in first, the background tasks in them, and the messages starred. */
@@ -106,8 +105,7 @@ test('a topic is read segment after segment, each message with its segment and i
   assert.equal(read.messages.every((m) => Number.isInteger(m.id)), true)
   assert.deepEqual(db.readerOf(b.id), { key: `t:${a.topicId}`, topicId: a.topicId })
   assert.deepEqual(db.readerOf(task.id), { key: `s:${task.id}`, topicId: a.topicId })
-  db.softDelete(b.id)
-  assert.equal(db.readerOf(b.id), null)
+  assert.equal(db.readerOf('gone-seg-1'), null)
 })
 
 test('starring a message already starred changes nothing, and says so', () => {
@@ -138,30 +136,19 @@ test('a star is kept per message, counted on its topic, and listed with the mess
   assert.deepEqual(db.starsIn([a.id, 'other']), [{ segmentId: a.id, seq: 1 }])
   assert.equal(db.review().topics[0].stars, 1)
   const [starred] = db.starredMessages()
-  assert.deepEqual([starred.segmentId, starred.seq, starred.role, starred.text, starred.title, starred.deleted], [a.id, 1, 'assistant', '在 共享盘/行政/报销.xlsx', '报销模板放哪了', false])
+  assert.deepEqual([starred.segmentId, starred.seq, starred.role, starred.text, starred.title], [a.id, 1, 'assistant', '在 共享盘/行政/报销.xlsx', '报销模板放哪了'])
 
   db.setStar(a.id, 1, false)
   assert.deepEqual(db.starsIn([a.id]), [])
   assert.deepEqual(db.starredMessages(), [])
 })
 
-test('a star on a deleted record is listed as deleted until the record is gone for good, then goes with it', () => {
+test('a star goes with the message it marks when that is cut off', () => {
   const { db } = freshDb()
   const a = segment(db, [user('一'), answer('答')])
   db.setStar(a.id, 1, true)
   db.save(a, [user('一')])
   assert.deepEqual(db.starredMessages(), [], 'a message cut off takes its star along')
-
-  const b = segment(db, [user('二')])
-  db.setStar(b.id, 0, true)
-  db.softDelete(b.id)
-  assert.deepEqual(db.starredMessages().map((item) => [item.segmentId, item.deleted]), [[b.id, true]])
-  assert.equal(db.review().topics.some((t) => t.id === b.topicId), false)
-  db.restore(b.id)
-  assert.equal(db.starredMessages()[0].deleted, false)
-  db.softDelete(b.id)
-  db.purgeDeleted({ olderThanMs: 0 })
-  assert.deepEqual(db.starredMessages(), [])
 })
 
 test('a star on a message that does not exist is refused', () => {
@@ -188,7 +175,7 @@ test('a message keeps its id while it finishes; said again differently it is ano
   assert.ok(idOf(1) > before, 'an id cut off is never given again, so a link to it cannot name another message')
 })
 
-test('a message named by a link or a star is found where it is now, or said to be missing or deleted', () => {
+test('a message named by a link or a star is found where it is now, or said to be missing or gone', () => {
   const { db } = freshDb()
   const a = segment(db, [user('写首诗'), answer('春眠不觉晓'), user('再来一首'), answer('床前明月光')])
   const named = db.timelineOf(a.id).find((m) => m.seq === 3)!
@@ -200,10 +187,8 @@ test('a message named by a link or a star is found where it is now, or said to b
   db.save(a, [user('写首诗'), answer('春眠不觉晓')])
   assert.deepEqual(db.locate({ segmentId: a.id, seq: 3, messageId: named.id }), { status: 'missing', segmentId: a.id, seq: 1 })
 
-  db.softDelete(a.id)
-  assert.deepEqual(db.locate({ segmentId: a.id, seq: 1 }), { status: 'deleted', segmentId: a.id })
-  db.purgeDeleted({ olderThanMs: 0 })
-  assert.deepEqual(db.locate({ segmentId: a.id, seq: 1, messageId: named.id }), { status: 'deleted', segmentId: a.id })
+  assert.deepEqual(db.locate({ segmentId: 'gone-seg-1', seq: 1 }), { status: 'deleted', segmentId: 'gone-seg-1' })
+  assert.deepEqual(db.locate({ segmentId: 'gone-seg-1', seq: 1, messageId: named.id }), { status: 'deleted', segmentId: 'gone-seg-1' }, 'an id from another segment is not taken')
 })
 
 test('a segment takes its topic when first saved: its parent’s, the one given, or its own; and keeps it', () => {
@@ -214,17 +199,7 @@ test('a segment takes its topic when first saved: its parent’s, the one given,
   const alone = segment(db, [user('新话题')])
   assert.deepEqual([a.topicId, b.topicId, back.topicId, alone.topicId], [a.id, a.id, a.id, alone.id])
 
-  db.softDelete(a.id)
-  db.purgeDeleted({ olderThanMs: 0 })
   db.save(b, [user('二'), answer('答')])
-  assert.equal(db.topicOf(b.id), a.id, 'deleting the first segment leaves the rest where they were')
+  assert.equal(db.topicOf(b.id), a.id, 'saved again, it keeps its topic')
   assert.deepEqual(db.review().topics.map((t) => t.id).toSorted(), [a.id, alone.id].toSorted())
 })
-
-/** A file from before topics were kept: the same segments with no topic_id. */
-function withoutTopics(file: string, change = '') {
-  const raw = new DatabaseSync(file)
-  if (change) raw.exec(change)
-  raw.exec('UPDATE conversations SET topic_id = NULL')
-  raw.close()
-}

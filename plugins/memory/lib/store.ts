@@ -6,15 +6,15 @@ import { MAX_FIELD_CHARS, PROFILE_KEYS } from '../../../src/shared/profile-field
 /** role: who the user is (job, team, field); person / project: who and what they deal with. */
 export const MEMORY_KINDS = Object.freeze(['fact', 'preference', 'person', 'project', 'role'])
 /** The kinds a profile is made of: the synthesis summarises them, the fixed layer lists the newest. */
-export const PROFILE_KINDS = Object.freeze(['role', 'person', 'project', 'preference'])
+const PROFILE_KINDS = Object.freeze(['role', 'person', 'project', 'preference'])
 export const MAX_SYNTHESIS_CHARS = 1200
 /** The version of the memory.db contract this code reads and writes: the tables below, checked through `meta.contract_version`. */
-export const CONTRACT_VERSION = 1
-export const MEMORY_SOURCES = Object.freeze(['user', 'agent'])
-export const ONBOARDING_STATES = Object.freeze(['pending', 'done', 'skipped'])
+const CONTRACT_VERSION = 1
+const MEMORY_SOURCES = Object.freeze(['user', 'agent'])
+const ONBOARDING_STATES = Object.freeze(['pending', 'done', 'skipped'])
 export const MAX_MEMORY_CHARS = 500
-export const MAX_KEYWORDS = 6
-export const MAX_KEYWORD_CHARS = 20
+const MAX_KEYWORDS = 6
+const MAX_KEYWORD_CHARS = 20
 const MIN_KEYWORD_CHARS = 2
 /** At most this many changes from one background extraction; more means the extractor misread the turn. */
 export const MAX_EXTRACTED_CHANGES = 3
@@ -49,20 +49,20 @@ interface MemoryRow {
 }
 
 /** The filled profile fields, by field. */
-export type Profile = Record<string, { value: string, source: string, updatedAt: number }>
+type Profile = Record<string, { value: string, source: string, updatedAt: number }>
 
 /** What addMemory is given; text and keywords are checked before anything is kept. */
-export interface NewMemory { text: unknown, kind?: string, source?: string, conversationId?: string | null, keywords?: unknown }
+interface NewMemory { text: unknown, kind?: string, source?: string, conversationId?: string | null, keywords?: unknown }
 
 /** One background extraction: shown, the ids of the memories the extractor was given, the only ones it may invalidate. */
-export interface Extraction {
+interface Extraction {
   add: Array<{ text: string, kind?: string, keywords?: string[], replaces?: number | null }>
   invalidate: number[]
   shown: Set<number>
 }
 
 /** What a turn put in front of the model, as logged. */
-export interface Injection { id: number, turn: number, at: number, fixed: string | null, pushed: Array<{ text: string, names: string[] }> }
+interface Injection { id: number, turn: number, at: number, fixed: string | null, pushed: Array<{ text: string, names: string[] }> }
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS profile (
@@ -225,7 +225,6 @@ export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () 
     revive: db.prepare('UPDATE memories SET invalid_at = NULL, superseded_by = NULL, invalidated_by = NULL, updated_at = ? WHERE id = ?'),
     invalidList: db.prepare('SELECT * FROM memories WHERE invalid_at IS NOT NULL ORDER BY invalid_at DESC, id DESC LIMIT ?'),
     invalidatedSince: db.prepare(`SELECT * FROM memories WHERE invalid_at >= ? AND invalidated_by = 'agent' ORDER BY id`),
-    update: db.prepare('UPDATE memories SET text = ?, norm = ?, updated_at = ? WHERE id = ?'),
     remove: db.prepare('DELETE FROM memories WHERE id = ?'),
     recent: db.prepare('SELECT * FROM memories WHERE invalid_at IS NULL ORDER BY updated_at DESC, id DESC LIMIT ?'),
     matching: db.prepare(`SELECT * FROM memories WHERE invalid_at IS NULL AND text LIKE ? ESCAPE '\\'
@@ -336,19 +335,6 @@ export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () 
   function getMemory(id: unknown): Memory | null {
     const row = sql.byId.get(assertMemoryId(id))
     return row ? toMemory(row) : null
-  }
-
-  function updateMemory(id: unknown, input: unknown): Memory {
-    const text = cleanText(input, { max: MAX_MEMORY_CHARS, what: '记忆' })
-    const norm = normalize(text)
-    return transaction(() => {
-      const row = sql.byId.get(assertMemoryId(id))
-      if (!row) throw new Error('找不到这条记忆，可能已被删除')
-      const other = sql.byNorm.get(norm)
-      if (other && other.id !== id) throw new Error('已经有一条相同的记忆了')
-      sql.update.run(text, norm, now(), id)
-      return toMemory(sql.byId.get(id))
-    })
   }
 
   /** @returns the deleted memory, so it can be put back, or null if there was none */
@@ -560,7 +546,7 @@ export function openMemoryDb({ file, now = Date.now }: { file: string, now?: () 
 
   return {
     getProfile, setProfile, profileMemories, latestSynthesis, saveSynthesis, changesSince, profileInvalidationsSince,
-    addMemory, getMemory, updateMemory, deleteMemory, restoreMemory, listMemories, allMemories, ofKind,
+    addMemory, getMemory, deleteMemory, restoreMemory, listMemories, allMemories, ofKind,
     listInvalid, invalidateMemory, reviveMemory, invalidatedSince, applyExtraction,
     claimChanges, onboarding, setOnboarding,
     sessionState, saveSessionState, logInjection, injectionsAfter, lastInjectionId,

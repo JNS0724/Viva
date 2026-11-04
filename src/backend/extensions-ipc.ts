@@ -23,7 +23,7 @@ const field = (value: unknown, what: string): string | undefined => {
  * The edit form as sent: name, type, command, url as typed; args one per line; keys as [{ name, value }], a blank
  * value keeping the saved one. Only shapes are checked here; editServer checks what they mean.
  */
-export function formChanges(input: Record<string, unknown>): ServerChanges {
+function formChanges(input: Record<string, unknown>): ServerChanges {
   const type = input.type === undefined ? undefined : input.type === 'http' ? 'http' : input.type === 'stdio' ? 'stdio' : null
   if (type === null) throw new Error('invalid type')
   const args = field(input.args, 'args')
@@ -40,7 +40,7 @@ export function formChanges(input: Record<string, unknown>): ServerChanges {
 }
 
 /** Where MCP servers can be imported from: dsh's default home, and the folder used last time if it was another. */
-export interface DshDirs { defaultDir: string, lastDir: string }
+interface DshDirs { defaultDir: string, lastDir: string }
 
 /**
  * IPC for the 扩展 section of settings: the user's MCP servers and skills, to list, edit and remove, and the

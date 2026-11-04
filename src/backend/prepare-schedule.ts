@@ -6,7 +6,7 @@ import { t } from '../shared/i18n/translate.ts'
  * prepared in the last window at least an hour before it; when no window comes in time, at the next chance.
  * Nothing runs outside the active hours, or while paused from the tray.
  */
-export const PRESETS = Object.freeze({
+const PRESETS = Object.freeze({
   three: Object.freeze(['08:30', '12:30', '16:30']),
   two: Object.freeze(['09:00', '17:00']),
   one: Object.freeze(['08:30']),
@@ -29,7 +29,7 @@ export interface PrepareSchedule {
   pausedUntil: number | null
 }
 
-export const MAX_WINDOWS = 6
+const MAX_WINDOWS = 6
 const MIN_GAP_MINUTES = 60
 /** Prepared at least this long before what it is for. */
 export const LEAD_MS = 60 * 60 * 1000

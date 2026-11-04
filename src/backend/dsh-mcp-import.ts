@@ -26,7 +26,7 @@ type Expression = { js: string }
 const JS_TAG = { tag: 'tag:yaml.org,2002:js', resolve: (source: string): Expression => ({ js: source }) }
 const isExpression = (value: unknown): value is Expression => typeof value === 'object' && value !== null && typeof (value as Expression).js === 'string'
 
-export type EnvLookup = (name: string) => string | undefined
+type EnvLookup = (name: string) => string | undefined
 
 /** The dsh home the user's own `dsh` uses: DSH_HOME, else ~/.dsh. */
 export const userDshHome = (env: Record<string, string | undefined> = process.env, home = os.homedir()): string =>
@@ -295,7 +295,7 @@ export function parseShellEnv(output: string): Record<string, string> {
  * The login shell's environment, where the user's tokens are usually exported. Empty on Windows, where apps get
  * the user's variables anyway, and when the shell cannot be run or takes too long.
  */
-export function loginShellEnv({ platform = process.platform, shell = process.env.SHELL } = {}): Promise<Record<string, string>> {
+function loginShellEnv({ platform = process.platform, shell = process.env.SHELL } = {}): Promise<Record<string, string>> {
   if (platform === 'win32') return Promise.resolve({})
   return new Promise((resolve) => {
     execFile(shell || '/bin/zsh', ['-ilc', `printf '${ENV_MARK}'; env -0`], { timeout: SHELL_ENV_TIMEOUT_MS, maxBuffer: SHELL_ENV_MAX_BYTES }, (err, stdout) => {

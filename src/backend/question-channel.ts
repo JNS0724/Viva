@@ -13,11 +13,11 @@ const MAX_LABEL_CHARS = 200
 const MAX_ANSWER_CHARS = 2000
 const MAX_ID_CHARS = 128
 
-export interface QuestionOption { label: string, description?: string }
-export interface Question { id: string, question: string, header: string, options: QuestionOption[], multiSelect: boolean }
+interface QuestionOption { label: string, description?: string }
+interface Question { id: string, question: string, header: string, options: QuestionOption[], multiSelect: boolean }
 /** What the plugin asked: one card of questions. */
-export interface QuestionSet { id: string, questions: Question[] }
-export interface Answer { id: string, selected: string[], custom?: string }
+interface QuestionSet { id: string, questions: Question[] }
+interface Answer { id: string, selected: string[], custom?: string }
 
 const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max
 

@@ -7,9 +7,9 @@ const STEER_TIMEOUT_MS = 5_000
 /** No answer from the plugin: it is not loaded, or dsh is gone. */
 export const NO_PLUGIN = 'unavailable'
 
-export type SteerResult = { ok: boolean, reason?: string }
+type SteerResult = { ok: boolean, reason?: string }
 
-export interface SteerDesk {
+interface SteerDesk {
   /** @param session the turn to steer: the main conversation's, or a background task's */
   steer: (text: string, session?: string | null) => Promise<SteerResult>
   receive: (message: any) => void

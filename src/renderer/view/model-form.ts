@@ -12,7 +12,7 @@ import { icon } from './icons.ts'
 
 type Models = State['models']
 /** A provider as the form edits it (model-providers.ts providerView). */
-export type ProviderView = Readonly<{ id: string, name: string, api: string, baseURL: string, keyHint?: string }>
+type ProviderView = Readonly<{ id: string, name: string, api: string, baseURL: string, keyHint?: string }>
 
 /** More of a listing than this is not drawn at once; a search narrows it. */
 const MAX_SHOWN = 100

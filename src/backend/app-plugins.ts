@@ -63,7 +63,7 @@ type PluginConfig = Record<string, string | number | boolean>
  * stock: dsh's own entries the plugin is for, switched on only while the plugin is (an ask tool nobody
  * answers would leave the model waiting).
  */
-export interface AppPlugin {
+interface AppPlugin {
   name: string
   dir: string
   contract: string
@@ -109,7 +109,7 @@ function peerProblem(peers: Record<string, string> | undefined, dshVersion: stri
 }
 
 /** Why the plugin can't be used, or null when it can. */
-export function pluginProblem(plugin: Pick<AppPlugin, 'name' | 'contract'>, { dir, dshVersion }: { dir: string, dshVersion: string }): string | null {
+function pluginProblem(plugin: Pick<AppPlugin, 'name' | 'contract'>, { dir, dshVersion }: { dir: string, dshVersion: string }): string | null {
   let manifest: any
   try {
     manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
@@ -125,7 +125,7 @@ export function pluginProblem(plugin: Pick<AppPlugin, 'name' | 'contract'>, { di
 }
 
 /** A plugin that passed, as dsh-profile.js writes it into the profile. */
-export interface UsablePlugin { name: string, dir: string, config: PluginConfig, stock: StockEntry[] }
+interface UsablePlugin { name: string, dir: string, config: PluginConfig, stock: StockEntry[] }
 
 /**
  * The plugins to put in the profile, with their config, and the ones left out with the reason.

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, screen, shell, Tray } from 'electron'
-import type { FileOptions, FolderOptions, SaveOptions, ShellSettings } from '../backend/host.ts'
+import type { FileOptions, FolderOptions, ShellSettings } from '../backend/host.ts'
 import type { HostCall, HostMethod, Mirror } from '../backend/wire.ts'
 import { setLocale, type LanguageState } from '../shared/i18n/locale.ts'
 import { type BackendProcess, spawnBackend } from './backend-client.ts'
@@ -175,10 +175,6 @@ const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
     const result = await dialog.showOpenDialog(mainWindow(), { title, properties: ['openFile', ...(multiple ? ['multiSelections' as const] : [])] })
     return result.canceled ? null : result.filePaths
   },
-  'dialogs.saveFile': async ({ title, defaultPath, filters }: SaveOptions) => {
-    const result = await dialog.showSaveDialog(mainWindow(), { title, defaultPath, ...(filters ? { filters } : {}) })
-    return result.canceled ? null : result.filePath ?? null
-  },
   'shell.openExternal': (url: string) => shell.openExternal(url),
   'shell.openPath': (dir: string) => shell.openPath(dir),
   'shell.showItemInFolder': (file: string) => shell.showItemInFolder(file),
@@ -215,7 +211,7 @@ function startBackend(onExit: (code: number | null, signal: NodeJS.Signals | nul
       type: 'start',
       token: randomBytes(32).toString('hex'),
       dataKey: dataKey?.toString('base64') ?? null,
-      paths: { userData, documents: app.getPath('documents'), home: os.homedir() },
+      paths: { userData, home: os.homedir() },
       packaged: app.isPackaged,
       automation: automationMode,
       locale: app.getLocale(),

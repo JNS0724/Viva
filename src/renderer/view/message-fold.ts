@@ -10,7 +10,7 @@ import { queueLayout } from './reconcile.ts'
  */
 
 /** Folded only from this height on (CSS px): a message a little over the folded height stays whole. */
-export const FOLD_AT_PX = 560
+const FOLD_AT_PX = 560
 
 /** Messages the user unfolded, this session: a redraw (another turn, the language) leaves them open. */
 const unfolded = new Set<string>()

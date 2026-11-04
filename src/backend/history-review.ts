@@ -15,8 +15,7 @@ const STARRED_LIMIT = 200
 const MAX_STARS_IN = 500
 /** How much of a starred message the 收藏 list shows. */
 const STARRED_CHARS = 140
-export const REVIEW_FILTERS = Object.freeze(['all', 'tasks', 'files'] as const)
-export type ReviewFilter = typeof REVIEW_FILTERS[number]
+const REVIEW_FILTERS = Object.freeze(['all', 'tasks', 'files'] as const)
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS stars (
@@ -57,7 +56,7 @@ export interface ReviewTopic {
 }
 
 /** Where 回顾 reads a segment: in its topic (the conversation), or on its own (a background task, a path left behind). */
-export type ReaderPlace = { key: string, topicId: string | null }
+type ReaderPlace = { key: string, topicId: string | null }
 
 type Row = Record<string, any>
 type Cursor = { lastAt: number, topicId: string }
@@ -75,8 +74,8 @@ const OWN_FROM = `(CASE WHEN c.fold_kind = 'task' THEN COALESCE(c.folded_at, 0) 
 /** The first question of a segment's own messages: a moved turn's name. */
 const FIRST_QUESTION = `(SELECT q.text FROM messages q WHERE q.conversation_id = c.id AND q.role = 'user' AND q.seq >= ${OWN_FROM}
   ORDER BY q.seq LIMIT 1)`
-/** The segments 回顾 lists: not deleted; the conversation, or a background task folded off it. */
-const LISTED = `c.deleted_at IS NULL AND (c.folded_into IS NULL OR c.fold_kind IN ('task', 'side'))`
+/** The segments 回顾 lists: the conversation, or a background task folded off it. */
+const LISTED = `(c.folded_into IS NULL OR c.fold_kind IN ('task', 'side'))`
 const HAS_FILES = `m.role = 'user' AND (m.images IS NOT NULL OR instr(m.text, :header) > 0)`
 /** No cursor: from the topic last talked in. */
 const NEWEST: Cursor = { lastAt: Number.MAX_SAFE_INTEGER, topicId: '￿' }
@@ -119,13 +118,13 @@ export function reviewQueries(db: DatabaseSync, now: () => number) {
           OR (:filter = 'files' AND EXISTS (SELECT 1 FROM conversations c JOIN messages m ON m.conversation_id = c.id
             WHERE c.topic_id = t.topic_id AND ${LISTED} AND m.seq >= ${OWN_FROM} AND ${HAS_FILES})))
       ORDER BY t.last_at DESC, t.topic_id DESC LIMIT :limit`),
-    place: db.prepare('SELECT topic_id, folded_into, deleted_at FROM conversations WHERE id = ?'),
+    place: db.prepare('SELECT topic_id, folded_into FROM conversations WHERE id = ?'),
     own: db.prepare(`SELECT m.id, m.seq, m.role, m.text, m.receipt, m.images, m.created_at FROM messages m JOIN conversations c ON c.id = m.conversation_id
       WHERE m.conversation_id = :id AND (:whole = 1 OR m.seq >= ${OWN_FROM}) ORDER BY m.seq`),
-    message: db.prepare('SELECT 1 FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.conversation_id = ? AND m.seq = ? AND c.deleted_at IS NULL'),
+    message: db.prepare('SELECT 1 FROM messages WHERE conversation_id = ? AND seq = ?'),
     star: db.prepare('INSERT OR IGNORE INTO stars (conversation_id, seq, created_at) VALUES (?, ?, ?)'),
     unstar: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq = ?'),
-    starred: db.prepare(`SELECT s.conversation_id, s.seq, m.id, m.role, m.text, m.created_at, c.title, c.fold_kind, c.deleted_at, ${FIRST_QUESTION} AS first_question FROM stars s
+    starred: db.prepare(`SELECT s.conversation_id, s.seq, m.id, m.role, m.text, m.created_at, c.title, c.fold_kind, ${FIRST_QUESTION} AS first_question FROM stars s
       JOIN messages m ON m.conversation_id = s.conversation_id AND m.seq = s.seq
       JOIN conversations c ON c.id = s.conversation_id
       ORDER BY s.created_at DESC LIMIT ${STARRED_LIMIT}`),
@@ -192,7 +191,7 @@ export function reviewQueries(db: DatabaseSync, now: () => number) {
   function readerOf(segmentId: unknown): ReaderPlace | null {
     const id = assertId(segmentId)
     const row = sql.place.get(id) as Row | undefined
-    if (!row || row.deleted_at) return null
+    if (!row) return null
     return row.folded_into ? { key: `s:${id}`, topicId: row.topic_id ?? null } : { key: `t:${row.topic_id}`, topicId: row.topic_id ?? null }
   }
 
@@ -214,13 +213,10 @@ export function reviewQueries(db: DatabaseSync, now: () => number) {
     return rows.map((row: Row) => ({ segmentId: row.conversation_id, seq: row.seq }))
   }
 
-  /**
-   * The 收藏 list: newest star first, each with the message on one line and the topic it is in. A star whose
-   * segment was just deleted stays listed as deleted (it comes back with 撤销, and goes for good with the segment).
-   */
+  /** The 收藏 list: newest star first, each with the message on one line and the topic it is in. */
   const starredMessages = () => (sql.starred.all() as Row[]).map((row) => ({
     segmentId: row.conversation_id, seq: row.seq, messageId: row.id, role: row.role, text: oneLine(row.text), at: row.created_at,
-    title: titleOf(row), deleted: Boolean(row.deleted_at),
+    title: titleOf(row),
   }))
 
   return { review, reviewTopic, topicMessages, segmentMessages, readerOf, setStar, starsIn, starredMessages }
