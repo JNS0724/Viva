@@ -61,8 +61,13 @@ export const HOST_METHODS = [
   'notify', 'loginItem.set',
 ] as const
 export type HostMethod = (typeof HOST_METHODS)[number]
-export interface HostCall { id: number | null, method: HostMethod, args: unknown[] }
-export type Answer = { ok: true, value: unknown } | { ok: false, error: string }
+/** `n` numbers the calls in the order the backend made them (remote-host.ts), from 1. */
+export interface HostCall { id: number | null, method: HostMethod, args: unknown[], n: number }
+/**
+ * `mark` on an answer from the backend: the last host call it had made when it answered. The shell runs the host calls
+ * up to it first (backend-client.ts), so a page never has an answer before what the backend pushed ahead of it.
+ */
+export type Answer = { ok: true, value: unknown, mark?: number } | { ok: false, error: string, mark?: number }
 
 /** Bytes in a JSON body: by id once uploaded (`$blob`), or inline in an answer (`$bytes`, base64). */
 type BlobRef = { $blob: string }

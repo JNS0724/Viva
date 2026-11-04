@@ -7,15 +7,18 @@
 /** The event core's apply, as a store's writes need it. */
 export type Apply = <T>(kind: string, data: Record<string, unknown>, write: () => T) => { value: T }
 
-/** An id, a status, a kind or a time: recorded as it is. Anything else that is text is recorded only by its length. */
-const PLAIN = /^[\w.:-]{1,64}$/
+/**
+ * An id (a UUID, `f-1a2b`, `task-3`): letters, digits and dashes with a digit among them, no shorter than six. It is
+ * recorded as it is; any other text, a status or a word the user wrote, only by its length.
+ */
+const ID = /^(?=[\w-]*\d)[\w-]{6,64}$/
 
 /**
- * What of a write's arguments its event records: ids, statuses, numbers and flags; text only by its length, lists
- * by their count, an object by its fields one level down. Never what the user or the model wrote.
+ * What of a write's arguments its event records: ids, numbers and flags; other text only by its length, lists by
+ * their count, an object by its fields one level down. Never what the user or the model wrote.
  */
 export function recorded(value: unknown): unknown {
-  if (typeof value === 'string') return PLAIN.test(value) ? value : { chars: value.length }
+  if (typeof value === 'string') return ID.test(value) ? value : { chars: value.length }
   if (Array.isArray(value)) return { items: value.length }
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, typeof item === 'object' && item !== null ? '…' : recorded(item)]))

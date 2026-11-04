@@ -27,8 +27,11 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
   const pending = new Map<number, Pending>()
   const callbacks = new Map<number, (...args: unknown[]) => void>()
   let lastId = 0
+  let sent = 0
 
-  function send(call: HostCall) {
+  function send(unnumbered: Omit<HostCall, 'n'>) {
+    sent += 1
+    const call: HostCall = { ...unnumbered, n: sent }
     if (listeners.size === 0) {
       waiting.push(call)
       if (waiting.length > MAX_WAITING_CALLS) onDropped(waiting.splice(0, waiting.length - MAX_WAITING_CALLS).length)
@@ -113,6 +116,8 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
     mirror(update: Partial<Mirror>) {
       mirror = { ...mirror, ...update }
     },
+    /** The number of the last host call made (wire.ts Answer mark). */
+    mark: (): number => sent,
     /** Every call still waiting for the shell fails: it has gone. */
     abandon(reason: string) {
       for (const waiter of pending.values()) waiter.reject(new Error(reason))

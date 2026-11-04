@@ -85,7 +85,7 @@ test('a call whose turn never comes holds up the next ones only for a while', as
   const { port } = await backendWith(t, { 'agent:info': () => 'info' })
   const started = Date.now()
   const late = await post(port, '/rpc/agent:info', { headers: { authorization: `Bearer ${TOKEN}`, [SEQ_HEADER]: '2' } })
-  assert.deepEqual(JSON.parse(late.body), { ok: true, value: 'info' })
+  assert.deepEqual(JSON.parse(late.body), { ok: true, value: 'info', mark: 0 })
   assert.ok(Date.now() - started >= 4_900, 'it waited for number 1 first')
 })
 
@@ -95,7 +95,7 @@ test('only the token and the server\'s own host get in', async (t) => {
   assert.equal((await post(port, '/rpc/agent:info', { headers: { authorization: `Bearer ${'b'.repeat(64)}` } })).status, 401)
   assert.equal((await post(port, '/rpc/agent:info', { headers: { authorization: `Bearer ${TOKEN}`, host: `localhost:${port}` } })).status, 403)
   const ok = await post(port, '/rpc/agent:info', { headers: { authorization: `Bearer ${TOKEN}` } })
-  assert.deepEqual([ok.status, JSON.parse(ok.body)], [200, { ok: true, value: 'info' }])
+  assert.deepEqual([ok.status, JSON.parse(ok.body)], [200, { ok: true, value: 'info', mark: 0 }])
 })
 
 test('what the backend asks of the desktop waits for the shell, keeps its order, and gets the shell\'s answers', async (t) => {
@@ -129,6 +129,27 @@ test('what the backend asks of the desktop waits for the shell, keeps its order,
   assert.deepEqual(seen.map((call) => call.method), ['window.send', 'dialogs.chooseFolder', 'window.send', 'shell.openPath', 'notify'], 'what waited, in order')
   assert.deepEqual(replayed.map((event) => event.seq), [1, 2], 'the stored events after the number, first')
   assert.equal(opened, 1500)
+})
+
+test('an answer reaches the page only after what the backend pushed before it, even when the push comes late', async (t) => {
+  const remote = createRemoteHost({ start: START, secrets: createEnvelope({ key: randomBytes(32) }) })
+  // The stream is slow: each host call reaches the shell 200 ms after the backend made it.
+  const late = { ...remote, listen: (listener: (call: HostCall) => void) => remote.listen((call) => { setTimeout(() => listener(call), 200) }) }
+  const server = createRpcServer({
+    token: TOKEN,
+    channels: new Map([['history:save', { kind: 'handle' as const, listener: () => { remote.host.window.send({ type: 'history_saved', seq: 0 }); return 'saved' } }]]),
+    controls: {}, remote: late, since: () => [], image: () => new Response(null, { status: 404 }),
+  })
+  const port = await server.listen()
+  t.after(() => server.close())
+  const connection = connect({ port, token: TOKEN })
+  const pushed: string[] = []
+  const stop = connection.listen({ host: (call) => { pushed.push(String((call.args[0] as { type: string }).type)) }, ended: () => {} })
+  t.after(stop)
+  const started = Date.now()
+  assert.equal(await connection.rpc('history:save', [[]]), 'saved')
+  assert.deepEqual(pushed, ['history_saved'], 'the push came first')
+  assert.ok(Date.now() - started >= 150, 'the answer waited for it')
 })
 
 test('the mirror is what the backend reads without waiting', async (t) => {

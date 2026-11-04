@@ -21,13 +21,15 @@ function coreIn(t: TestContext) {
   return { app, core, apply: core.apply }
 }
 
-test('an event records ids, statuses and numbers, and only the length of what someone wrote', () => {
-  assert.equal(recorded('f-1a2b'), 'f-1a2b')
-  assert.equal(recorded('done'), 'done')
+test('an event records ids and numbers, and only the length of what someone wrote', () => {
+  assert.equal(recorded('f-1a2b3c'), 'f-1a2b3c')
+  assert.equal(recorded('0b6f3c1e-8d2a-4f7e-9c3b-5a1d2e3f4a5b'), '0b6f3c1e-8d2a-4f7e-9c3b-5a1d2e3f4a5b')
+  assert.deepEqual(recorded('done'), { chars: 4 }, 'a status is a word: by its length too')
+  assert.deepEqual(recorded('Q3'), { chars: 2 }, 'a short title is not taken for an id')
   assert.deepEqual(recorded('周报每周五交给张三'), { chars: 9 })
   assert.deepEqual(recorded('send the report'), { chars: 15 }, 'words with spaces are writing, not an id')
   assert.deepEqual(recorded([1, 2, 3]), { items: 3 })
-  assert.deepEqual(recorded({ id: 'c1', title: '季度复盘', pinned: true, at: 5, nested: { x: 1 } }), { id: 'c1', title: { chars: 4 }, pinned: true, at: 5, nested: '…' })
+  assert.deepEqual(recorded({ id: 'conv-01', title: '季度复盘', pinned: true, at: 5, nested: { x: 1 } }), { id: 'conv-01', title: { chars: 4 }, pinned: true, at: 5, nested: '…' })
 })
 
 test('a savepoint inside a transaction undoes only its own write; the outer one keeps the rest', (t) => {
@@ -66,11 +68,11 @@ test('the history on the app database: each write is an event in the same transa
 test('background tasks on the app database are events too, and a store with no such write is refused', (t) => {
   const { app, core, apply } = coreIn(t)
   const tasks = journaled(createTaskStore({ db: app.db }), 'task', ['add', 'remove'], apply)
-  tasks.add({ id: 't1', segmentId: 'c1', title: '整理发布说明' })
-  tasks.remove('t1')
+  tasks.add({ id: 'task-01', segmentId: 'seg-001', title: '整理发布说明' })
+  tasks.remove('task-01')
   assert.deepEqual(core.since(0).map((event) => [event.kind, event.data]), [
-    ['task.add', { args: [{ id: 't1', segmentId: 'c1', title: { chars: 6 } }] }],
-    ['task.remove', { args: ['t1'] }],
+    ['task.add', { args: [{ id: 'task-01', segmentId: 'seg-001', title: { chars: 6 } }] }],
+    ['task.remove', { args: ['task-01'] }],
   ])
   assert.throws(() => journaled(tasks, 'task', ['list', 'nope' as never], apply), /task\.nope is no write/)
 })

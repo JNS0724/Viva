@@ -20,6 +20,7 @@ function core(t: TestContext) {
 const noRoutes = (): Routes => ({
   'chat.said': () => 'asked', 'agent.turn_ended': () => {}, 'agent.task_ended': () => {}, 'agent.followup_proposed': () => {},
   'clock.reminder_due': () => {}, 'clock.prepare_window': () => {}, 'system.woke': () => {}, 'system.user_returned': () => {}, 'window.foreground': () => {},
+  'user.command': () => {},
 })
 
 test('a change and its event are written together, numbered without gaps, and pushed with their number', (t) => {

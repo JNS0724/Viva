@@ -154,6 +154,19 @@ export const IPC_ARGS = Object.freeze({
 })
 
 export type Channel = keyof typeof IPC_ARGS
+
+/**
+ * The channels that only read: no state of the backend changes when a page asks them, so they are no signal of the
+ * event core (src/backend/commands.ts). Every other channel is something the user did, recorded as a signal first.
+ */
+export const QUERY_CHANNELS: ReadonlySet<Channel> = new Set<Channel>([
+  'language:get', 'agent:info', 'settings:get', 'images:usage', 'models:get',
+  'history:load', 'history:list', 'history:search', 'history:resume-check', 'history:trace', 'history:segments-before',
+  'history:search-messages', 'history:review', 'history:read', 'history:locate', 'history:stars-in', 'history:starred',
+  'timeline:rewind-effects', 'timeline:folded', 'task:unfinished', 'task:finished', 'workdir:get',
+  'memory:get', 'memory:list', 'memory:list-invalid', 'files:list', 'files:preview', 'files:apps', 'files:image',
+  'ext:get', 'plugins:get', 'plugins:inspect', 'followups:get', 'island:view', 'island:files',
+])
 /** What a page sends on a channel, as the handler receives it. */
 export type ChannelArgs<C extends Channel> = z.input<(typeof IPC_ARGS)[C]>
 

@@ -11,8 +11,8 @@
     {
       "en": "docs/architecture.md",
       "zh": "docs/architecture.zh-CN.md",
-      "enHash": "f11295e02618e06a0deb9da645933c375254fbcc914c4fdbe93a392564edef55",
-      "zhHash": "c51fdf8c1865297a574e5df420dd26f84c39fa7f7c9005e5fa0b4ca2feb37eeb"
+      "enHash": "1473fc9eac399adf844ad079fb29c5182c55689336388953ce3563c44d1c09c8",
+      "zhHash": "377ebcbe0c05c556c7e47a3d76f6f2b1dd9c543004f00b8d3d6d0b3e9fbff800"
     },
     {
       "en": "docs/background-task-tools.md",
@@ -131,8 +131,8 @@
     {
       "en": "docs/backend-split-design.md",
       "zh": "docs/backend-split-design.zh-CN.md",
-      "enHash": "2fce5c93be68171b0f77231b0ab30f5c110273b4e0ef96eada3d3b667115d405",
-      "zhHash": "04738b25926dab152ae51d8b7142b81717a5145ec400ca4f6c0960754d1b1679"
+      "enHash": "b1d9e3579f8af2395745eba44465e612ebf64de6f019614250ef7e57ea587983",
+      "zhHash": "cdb7ad0c61cb23d81205e3ecda848916610d62d58b5f947f4d5ec82ebe284e43"
     }
   ],
   "bilingual": [

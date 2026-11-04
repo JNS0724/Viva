@@ -47,6 +47,7 @@ import { openFollowupStore } from '../main/followup-store.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
 import { type Apply, journaled } from './journal.ts'
+import { commandIpc } from './commands.ts'
 import type { HostCapabilities, HostEvent } from './host.ts'
 
 /**
@@ -109,8 +110,11 @@ const updateChanges = (spec: ServerUpdate, secrets: Readonly<Record<string, stri
   values: secrets,
 })
 
-export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, ipc: IpcRegistry }) {
+export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcRegistry }) {
   const userData = host.paths.userData
+  // What the user does in a page is a signal first (commands.ts); every channel below is registered through this.
+  const commands = commandIpc(ipc, (input) => signal(input))
+  const ipcMain = commands.ipc
   // The stores and databases are opened once at launch (open, openHistory, openPersonal), before any window or
   // handler can reach them: `!` says so. What may be absent at any time says `| null`.
   /** The backend's database and its event core (app-db.ts, event-core.ts), opened first. */
@@ -602,6 +606,8 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
       'system.woke': () => woke(),
       'system.user_returned': () => followups?.notifier.gap(),
       'window.foreground': () => followups?.gap(),
+      // What the user did in a page: the channel's own listener (commands.ts), its answer the page's.
+      'user.command': (input) => commands.route(input),
     })
   }
 

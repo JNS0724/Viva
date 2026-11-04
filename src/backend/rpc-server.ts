@@ -24,7 +24,7 @@ export interface RpcServerOptions {
   token: string
   channels: ReadonlyMap<string, { kind: ChannelKind, listener: ChannelListener }>
   controls: Readonly<Record<string, (...args: unknown[]) => unknown>>
-  remote: Pick<RemoteHost, 'listen' | 'answer' | 'callback'>
+  remote: Pick<RemoteHost, 'listen' | 'answer' | 'callback' | 'mark'>
   since: (seq: number) => StoredEvent[]
   /** A viva-image:// URL's answer (image-protocol.ts imageResponse). */
   image: (url: string) => Response | Promise<Response>
@@ -120,9 +120,10 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
   /** Runs a call and answers it; what it throws goes back as the answer's error. */
   async function answer(res: http.ServerResponse, run: () => unknown) {
     try {
-      sendJson(res, 200, { ok: true, value: encodeValue(await run()) })
+      const value = encodeValue(await run())
+      sendJson(res, 200, { ok: true, value, mark: remote.mark() })
     } catch (err) {
-      sendJson(res, 200, { ok: false, error: (err as Error)?.message ?? String(err) })
+      sendJson(res, 200, { ok: false, error: (err as Error)?.message ?? String(err), mark: remote.mark() })
     }
   }
 

@@ -15,6 +15,8 @@ import {
 const READY_TIMEOUT_MS = 60_000
 /** How long a quitting backend may take to stop dsh and close; then it is killed. */
 const EXIT_WAIT_MS = 10_000
+/** How long an answer waits for the host calls the backend made before it (wire.ts Answer mark). */
+const CATCH_UP_MS = 5_000
 
 export interface Connection {
   /** A page's call on one of the backend's channels; bytes among the arguments are uploaded first. */
@@ -33,6 +35,36 @@ export interface Connection {
 export function connect({ port, token }: { port: number, token: string }): Connection {
   const agent = new http.Agent({ keepAlive: true })
   let seq = 0
+  // The host calls run so far, by number (wire.ts HostCall n), and the answers waiting for some still to come.
+  let ran = 0
+  let listening = false
+  let waiters: ReadonlyArray<{ mark: number, release: () => void }> = []
+
+  /** Resolves once the host calls up to `mark` have run: what the backend pushed before answering comes first. */
+  function caughtUp(mark: number): Promise<void> {
+    if (!listening || ran >= mark) return Promise.resolve()
+    return new Promise((resolve) => {
+      const release = () => {
+        clearTimeout(timer)
+        waiters = waiters.filter((waiter) => waiter.release !== release)
+        resolve()
+      }
+      const timer = setTimeout(() => {
+        console.error(`[backend] host calls up to ${mark} did not come in ${CATCH_UP_MS / 1000}s; answering anyway`)
+        release()
+      }, CATCH_UP_MS)
+      waiters = [...waiters, { mark, release }]
+    })
+  }
+  function advance(n: number) {
+    ran = Math.max(ran, n)
+    for (const waiter of waiters.filter((one) => one.mark <= ran)) waiter.release()
+  }
+  /** The stream is gone: nothing more will come, so no answer waits. */
+  function stopListening() {
+    listening = false
+    for (const waiter of [...waiters]) waiter.release()
+  }
 
   type Reply = { status: number, headers: http.IncomingHttpHeaders, body: Buffer }
   function request(method: 'GET' | 'POST', pathname: string, body: Buffer | null, headers: Record<string, string> = {}, retried = false): Promise<Reply> {
@@ -68,6 +100,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
     } catch {
       throw new Error(`the backend answered ${pathname} with status ${res.status} and no JSON`)
     }
+    if (typeof answer.mark === 'number') await caughtUp(answer.mark)
     if (!answer.ok) throw new Error(answer.error)
     return decodeValue(answer.value)
   }
@@ -121,23 +154,34 @@ export function connect({ port, token }: { port: number, token: string }): Conne
         )
       }
       const read = sseReader((event, data) => {
-        if (event === 'host') run(data as HostCall)
-        else if (event === 'stored') stored(data as StoredEvent)
+        if (event === 'host') {
+          const hostCall = data as HostCall
+          run(hostCall)
+          advance(hostCall.n)
+        } else if (event === 'stored') stored(data as StoredEvent)
       })
+      const end = (err?: Error) => {
+        stopListening()
+        ended(err)
+      }
+      listening = true
       const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: '/events?since=0', headers: { [TOKEN_HEADER]: bearer(token) } }, (res) => {
         if (res.statusCode !== 200) {
-          ended(new Error(`the backend refused its events: ${res.statusCode}`))
+          end(new Error(`the backend refused its events: ${res.statusCode}`))
           res.resume()
           return
         }
         res.setEncoding('utf8')
         res.on('data', read)
-        res.on('end', () => ended())
-        res.on('error', ended)
+        res.on('end', () => end())
+        res.on('error', end)
       })
-      req.on('error', ended)
+      req.on('error', end)
       req.end()
-      return () => req.destroy()
+      return () => {
+        stopListening()
+        req.destroy()
+      }
     },
   }
 }

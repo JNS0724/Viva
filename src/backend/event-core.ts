@@ -1,3 +1,4 @@
+import type { Channel } from '../main/ipc-contract.ts'
 import { type AppDb, transaction } from './app-db.ts'
 
 /**
@@ -25,6 +26,8 @@ export type Signal =
   | { kind: 'system.user_returned' }
   /** The window came to the front. */
   | { kind: 'window.foreground' }
+  /** The user did something in a page: a channel of ipc-contract.ts that is no query (commands.ts). */
+  | { kind: 'user.command', channel: Channel, args: readonly unknown[], event: unknown }
 
 export type SignalKind = Signal['kind']
 export type SignalOf<K extends SignalKind> = Extract<Signal, { kind: K }>
@@ -37,9 +40,22 @@ export type StoredEvent = { seq: number, at: number, kind: string, data: Record<
 
 /** Signals worth no row of their own: they say nothing new about the backend's state and come often. */
 const UNRECORDED: ReadonlySet<SignalKind> = new Set(['window.foreground'])
+/**
+ * A value by its shape: numbers, flags and nulls as they are; text, lists, objects and bytes only by how long they
+ * are. A command's arguments may hold a key (settings:save-key) or what the user wrote.
+ */
+function shapeOf(value: unknown): unknown {
+  if (typeof value === 'string') return { chars: value.length }
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return { bytes: value.byteLength }
+  if (Array.isArray(value)) return { items: value.length }
+  if (value && typeof value === 'object') return { fields: Object.keys(value).length }
+  return value ?? null
+}
+
 /** What of a signal is recorded: its kind and its shape, never what the user said or a model wrote. */
 function signalData(signal: Signal): Record<string, unknown> {
   if (signal.kind === 'chat.said') return { chars: signal.text.length, images: signal.images.length }
+  if (signal.kind === 'user.command') return { channel: signal.channel, args: signal.args.map(shapeOf) }
   return {}
 }
 
