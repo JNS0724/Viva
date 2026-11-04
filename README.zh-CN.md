@@ -153,6 +153,7 @@ npm run showcase    # 重新拍 README 里的截图和动图（需要 ffmpeg）
 - [功能说明](docs/features.zh-CN.md)：主动跟进、Viva 岛、文件、模型、记忆、历史对话等功能的细节
 - [开发、打包与测试](docs/development.zh-CN.md)
 - [架构](docs/architecture.zh-CN.md)：Viva 如何在 dsh 的插件体系上分层
+- [系统架构设计](docs/system-design.zh-CN.md)：外壳与后端两个进程、事件内核、数据存储、安全边界和生命周期
 - [记忆方案](docs/memory.zh-CN.md)
 
 ## 参与

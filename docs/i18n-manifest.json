@@ -5,8 +5,8 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "12257f5af9bba789689e56c6bfd18781899b395431866a2e29ab8de4b0793875",
-      "zhHash": "08791a7dd21032c7d4b70cac0c3a795883101a8bb01c1f56504010daae60d32f"
+      "enHash": "0a8b29e48e0490d6dd958b9d87f7dd4c2eb68097efb989ae67e58d61cd4dbcd9",
+      "zhHash": "56e083bed752af4ea4c2a723e83f2628ec583a1849be9e20ba487680f2ace64f"
     },
     {
       "en": "docs/architecture.md",
@@ -133,6 +133,12 @@
       "zh": "docs/backend-split-design.zh-CN.md",
       "enHash": "321f84d978a94f7e1bf53e77a2370628a8cdc2d476215e560a1ac5827b6316c7",
       "zhHash": "2ce94d2cc0ffd7688826b531b145960c988bb22c4d8feb1358206a14969720a9"
+    },
+    {
+      "en": "docs/system-design.md",
+      "zh": "docs/system-design.zh-CN.md",
+      "enHash": "35cff11a307c53c412d83e2eed619a66dc3e10c6c5ca33bf9091544e0a99d091",
+      "zhHash": "f30d93536b1c4d2c5fd3972cf5f575238a3475f963d7b88bd2c6b7d5a8745226"
     }
   ],
   "bilingual": [
