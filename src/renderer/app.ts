@@ -851,12 +851,17 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   permission: (event) => ({
     type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at: Date.now(),
   }),
-  /** What a turn moved to the background says, asks and how it ends (tasks-state.js). */
+  /** What a background task says, asks and how it ends (tasks-state.ts). */
   task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now() }),
   task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
   task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now() }),
   task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now() }),
   task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now() }),
+  /** What the agent did with a task (viva-tasks): started one, asked one again, said something into one, took one up. */
+  task_created: (event) => ({ type: 'task_started', task: event.task, text: event.text, at: Date.now() }),
+  task_asked: (event) => ({ type: 'task_asked', taskId: event.taskId, text: event.text, at: Date.now() }),
+  task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now() }),
+  task_resumed: (event) => ({ type: 'task_resumed', task: event.task, messages: event.messages, at: Date.now() }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
   secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),

@@ -33,7 +33,7 @@ ACP accepts only one active prompt per session, so `viva-steer` (`plugins/steer`
 <a id="后台任务"></a>
 ## Background tasks
 
-Use Run in background beside the composer to start separate work from the current conversation. It works while a turn runs too: the task starts from before that turn, which goes on in front.
+Use Run in background beside the composer to start separate work from the current conversation. It works while a turn runs too: the task starts from before that turn, which goes on in front. You can also just ask the assistant: it hands long work to the background itself (`start_background_task`, a fresh session started from a brief that carries the background it needs), and stops, adds to, asks again or takes up an interrupted task when you say so (`stop_background_task`, `message_background_task`). At most 5 run at once; when full it tells you. A task cannot start tasks of its own.
 
 Each task leaves a single clickable status line in its original conversation, with its name, state, preview, and a link to its Background page. Approvals, questions and Stop are handled in one place, the Background page. Status wording is consistent across the conversation, page, and island.
 

@@ -127,7 +127,9 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     return { observedAt: now(), total: list.length, nextOffset: offset + limit < list.length ? offset + limit : null,
       tasks: list.slice(offset, offset + limit).map(task => ({ ...snapshot(task), resultPreview: undefined })) }
   }
-  return { put, restart, remove, receive, interrupt, query }
+  /** Tasks at work or waiting on the user, this launch. */
+  const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
+  return { put, restart, remove, receive, interrupt, query, live }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 

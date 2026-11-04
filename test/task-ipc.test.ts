@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openHistoryDb } from '../src/backend/history-db.ts'
-import { KEEP_ENDED, registerTaskIpc, type TaskService } from '../src/backend/task-ipc.ts'
+import { KEEP_ENDED, MAX_RUNNING, registerTaskIpc, type TaskService } from '../src/backend/task-ipc.ts'
+import { createTaskRegistry } from '../src/backend/task-registry.ts'
 import type { StoredTask } from '../src/backend/task-store.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
@@ -28,7 +29,7 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
  * The IPC over a history db and a task store. relaunch() registers it afresh on the same db and store, as the
  * next launch does: nothing in memory, what was kept on disk. Saves along the way wait in `pending` until run.
  */
-function setup({ resumable, stored = [] }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[] } = {}) {
+function setup({ resumable, stored = [], steerable = true }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean } = {}) {
   let n = 0
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
@@ -44,36 +45,44 @@ function setup({ resumable, stored = [] }: { resumable?: { ok: boolean, reason?:
     cancel: (timer: unknown) => { pending = pending.filter((run) => run !== timer) },
   }
 
+  const announced: Array<{ type: string, [field: string]: unknown }> = []
+  let started = 0
+
   function register() {
     const calls: Call[] = []
+    const registry = createTaskRegistry()
     const handlers: Record<string, Handler> = {}
     const ipc = { handle: (channel: string, fn: Handler) => { handlers[channel] = fn } } as unknown as Pick<IpcRegistry, 'handle'>
     const service: TaskService = registerTaskIpc(ipc, {
       db,
       store,
       timers,
+      registry,
+      announce: (event) => { announced.push(event) },
       current: () => current,
       agentInfo: () => ({ mode: 'live', model: 'V4' }),
       agent: {
         closeTask: async (taskId: string) => { calls.push(['closeTask', taskId]) },
         cancelTask: async (taskId: string) => { calls.push(['cancelTask', taskId]) },
-        steerTask: async (taskId: string, text: string) => { calls.push(['steerTask', taskId, text]); return { ok: true } },
+        steerTask: async (taskId: string, text: string) => { calls.push(['steerTask', taskId, text]); return { ok: steerable } },
         resumeTask: async (request: { taskId: string }) => { calls.push(['resumeTask', request.taskId]); return resumable ?? { ok: true } },
         promptTask: async (taskId: string, text: string) => { calls.push(['promptTask', taskId, text]) },
-        startTask: async (request: unknown) => { calls.push(['startTask', request]); return { ok: true, taskId: 's9' } },
+        startTask: async (request: unknown) => { calls.push(['startTask', request]); started += 1; return { ok: true, taskId: started === 1 ? 's9' : `s9-${started}` } },
       },
     })
     const call = async <T = unknown>(channel: string, ...args: unknown[]) => await handlers[channel]({}, ...args) as T
     /** The agent says `text` in the task's turn. */
-    const says = (taskId: string, text: string) => service.receive({ type: 'task_update', taskId, update: chunk(text) })
-    const ends = (taskId: string, stopReason = 'end_turn') => service.receive({ type: 'task_end', taskId, stopReason })
+    /** An event from the agent, as compose.ts passes it on: to the registry and to the task service. */
+    const emit = (event: object) => { registry.receive(event); service.receive(event) }
+    const says = (taskId: string, text: string) => emit({ type: 'task_update', taskId, update: chunk(text) })
+    const ends = (taskId: string, stopReason = 'end_turn') => emit({ type: 'task_end', taskId, stopReason })
     return { call, calls, service, says, ends }
   }
 
   const first = register()
   const texts = (segmentId: string) => db.get(segmentId)?.messages.map((m: Message) => m.text)
   const runPending = () => { const runs = pending; pending = []; runs.forEach((run) => run()) }
-  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, texts, runPending, pending: () => pending.length }
+  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, texts, runPending, pending: () => pending.length, announced }
 }
 
 test('what the task says is saved along the way, once however much it says meanwhile, and at once when it ends', async () => {
@@ -257,4 +266,64 @@ test('what an agent says in a task this launch does not hold, or in the conversa
   service.receive(null)
   service.flush()
   assert.deepEqual(texts(current().id), ['做周报', '写好了', '整理发布说明'])
+})
+
+test('the agent starts a task afresh from its brief; the window is told, and the card says the brief', async () => {
+  const { service, calls, announced, texts, kept } = setup()
+  const result = await service.agentStart('把 docs 里的发布说明按版本整理好，输出中文')
+  assert.deepEqual(result, { taskId: 's9', title: '把 docs 里的发布说明按版本整理好，输出中文', status: 'running' })
+  assert.deepEqual(calls.slice(0, 2), [['startTask', { afresh: true }], ['promptTask', 's9', '把 docs 里的发布说明按版本整理好，输出中文']])
+  assert.deepEqual(announced.map((event) => [event.type, (event.task as { id: string }).id, event.text]), [['task_created', 's9', '把 docs 里的发布说明按版本整理好，输出中文']])
+  assert.deepEqual(texts(kept()[0].segmentId), ['把 docs 里的发布说明按版本整理好，输出中文'])
+})
+
+test(`at most ${MAX_RUNNING} tasks work at once: one more is refused, not queued, by the agent and by 后台做 alike`, async () => {
+  const { service, call, ends } = setup()
+  const ids = []
+  for (let i = 0; i < MAX_RUNNING; i++) ids.push((await service.agentStart(`任务 ${i}`)).taskId)
+  await assert.rejects(service.agentStart('再来一个'), /最多 5 个/)
+  assert.match((await call<{ ok: boolean, problem: string }>('task:start', { text: '后台做一个' })).problem, /最多 5 个/)
+  ends(ids[0])
+  assert.equal((await service.agentStart('现在可以了')).status, 'running', 'one ended: room for another')
+})
+
+test('the agent messages a task: into its turn while it works, its next question once it ended', async () => {
+  const { service, calls, announced, says, ends, texts, kept } = setup()
+  const { taskId } = await service.agentStart('整理发布说明')
+  assert.deepEqual(await service.agentMessage(taskId, '加上版本号'), { taskId, delivered: 'into its turn' })
+  assert.deepEqual(calls.at(-1), ['steerTask', taskId, '加上版本号'])
+  says(taskId, '写好了')
+  ends(taskId)
+  assert.deepEqual(await service.agentMessage(taskId, '再加上已知问题'), { taskId, delivered: 'next question' })
+  assert.deepEqual(calls.at(-1), ['promptTask', taskId, '再加上已知问题'])
+  assert.deepEqual(announced.map((event) => event.type), ['task_created', 'task_steered', 'task_asked'])
+  ends(taskId)
+  assert.deepEqual(texts(kept()[0].segmentId), ['整理发布说明', '加上版本号', '写好了', '再加上已知问题', '本轮没有文字回复。'])
+})
+
+test('a message to a task an earlier launch left unfinished takes it up again with those words', async () => {
+  const { service, says, relaunch } = setup()
+  const { taskId } = await service.agentStart('整理发布说明')
+  says(taskId, '先看提交…')
+  service.flush()
+  const later = relaunch()
+  assert.deepEqual(await later.service.agentMessage(taskId, '接着做，写完为止'), { taskId, delivered: 'taken up again' })
+  assert.deepEqual(later.calls, [['resumeTask', taskId], ['promptTask', taskId, '接着做，写完为止']])
+})
+
+test('the agent stops a task at work; one that ended or is not held says so; one unknown is refused', async () => {
+  const { service, calls, ends } = setup()
+  const { taskId } = await service.agentStart('整理发布说明')
+  assert.deepEqual(await service.agentStop(taskId), { taskId, stopped: true })
+  assert.deepEqual(calls.at(-1), ['cancelTask', taskId])
+  ends(taskId, 'cancelled')
+  assert.deepEqual(await service.agentStop(taskId), { taskId, stopped: false, status: 'stopped' })
+  await assert.rejects(service.agentStop('nobody'), /接不上/)
+  await assert.rejects(service.agentMessage('nobody', '在吗'), /接不上/)
+})
+
+test('words that do not reach a task at work are said so, not taken for delivered', async () => {
+  const { service } = setup({ steerable: false })
+  const { taskId } = await service.agentStart('整理发布说明')
+  await assert.rejects(service.agentMessage(taskId, '加上版本号'), /话没有送到/)
 })

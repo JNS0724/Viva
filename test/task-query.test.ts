@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { createTaskRegistry, parseTaskQuery } from '../src/backend/task-registry.ts'
-import { createTasksDesk } from '../src/backend/tasks-channel.ts'
+import { createTasksDesk, parseTaskAction } from '../src/backend/tasks-channel.ts'
 import { createTasksChannel } from '../plugins/tasks/lib/channel.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 
@@ -107,4 +107,35 @@ test('text updates remain queryable without duplicate UI refreshes; status snaps
   const interrupted = reduce(started, { type: 'task_snapshot', snapshot })
   assert.equal(interrupted.tasks.list[0]!.status, 'interrupted')
   assert.equal(interrupted.tasks.list[0]!.now, null)
+})
+
+test('the agent\'s actions travel the same channel: checked, carried out by the app, their result or refusal returned', async () => {
+  const port = new EventEmitter()
+  const acted: unknown[] = []
+  const desk = createTasksDesk({
+    send: message => port.emit('message', message), authorized: id => id === 'main', read: () => ({ tasks: [] }),
+    act: async (request, sessionId) => {
+      acted.push([request, sessionId])
+      if (request.op === 'stop') throw new Error('任务不存在或不在当前可查询范围内')
+      return { taskId: 't1', status: 'running' }
+    },
+  })
+  const channel = createTasksChannel({ send: message => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
+  assert.deepEqual(JSON.parse(await channel.request({ op: 'start', brief: '  整理发布说明  ' }, 'main')), { taskId: 't1', status: 'running' })
+  assert.deepEqual(acted, [[{ op: 'start', brief: '整理发布说明' }, 'main']], 'the brief arrives trimmed')
+  await assert.rejects(channel.request({ op: 'stop', taskId: 'x' }, 'main'), /不存在/)
+  await assert.rejects(channel.request({ op: 'start', brief: ' ' }, 'main'), /brief 无效/)
+  await assert.rejects(channel.request({ op: 'message', taskId: 't1' }, 'main'), /text 无效/)
+  await assert.rejects(channel.request({ op: 'start', brief: '整理' }, 'old'), /会话已失效/)
+  assert.equal(acted.length, 2, 'nothing malformed or from a stale session reaches the app')
+  const readOnly = createTasksDesk({ send: message => port.emit('message', message), authorized: () => true, read: () => ({}) })
+  const second = createTasksChannel({ send: message => readOnly.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
+  await assert.rejects(second.request({ op: 'start', brief: '整理' }, 'main'), /未启用/)
+  channel.close(); second.close()
+})
+
+test('an action is parsed to what it names, no more', () => {
+  assert.deepEqual(parseTaskAction({ op: 'message', taskId: 't1', text: ' 接着做 ', extra: true }), { op: 'message', taskId: 't1', text: '接着做' })
+  assert.deepEqual(parseTaskAction({ op: 'stop', taskId: 't1' }), { op: 'stop', taskId: 't1' })
+  for (const bad of [null, { op: 'stop' }, { op: 'start' }, { op: 'start', brief: 'x'.repeat(20_001) }, { op: 'other', taskId: 't1' }]) assert.throws(() => parseTaskAction(bad))
 })

@@ -15,7 +15,7 @@ import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
 import { createPluginsDesk, type PluginsOp, type PluginsResult } from './plugins-channel.ts'
-import type { TaskRead } from './tasks-channel.ts'
+import type { TaskAct, TaskRead } from './tasks-channel.ts'
 import { createQuestionDesk } from './question-channel.ts'
 import { ResumeError, resumeReason } from './resume-failure.ts'
 import { stopInTime } from './stop-in-time.ts'
@@ -88,7 +88,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, overlay = null as string | null, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  taskRead = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming,
+  taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** The app's layer over the profile (dsh-profile.ts vivaLayerFile); none for the stock fallback profile. */
@@ -97,6 +97,8 @@ export function createAcpBridge({
   onExit?: ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead?: TaskRead | null,
+  /** The agent starting, stopping or messaging a background task (viva-tasks); null leaves it unavailable. */
+  taskAct?: TaskAct | null,
   /** What was said in the timeline before, for search_conversations (viva-history); null leaves it saying there is none. */
   historySearch?: HistorySearch | null,
   /** The messages around one found, for read_conversation (viva-history). */
@@ -147,7 +149,7 @@ export function createAcpBridge({
   } })
   // The plugins page, through dsh's plugin manager (viva-plugins).
   const pluginsDesk = createPluginsDesk({ send: toPlugins })
-  const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, authorized: id => id === sessionId || tasks.has(id) })
+  const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || tasks.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || tasks.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
     if (!running.has(id) || running.get(id)?.released) return
@@ -549,11 +551,12 @@ export function createAcpBridge({
    * as it is, or from before the turn running in it (named by its `words`), so it knows what was said; with
    * nothing said yet, in a fresh session. promptTask then asks it.
    */
-  async function startTask({ words }: { words?: string } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
+  async function startTask({ words, afresh = false }: { words?: string, afresh?: boolean } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
     if (!sessionId) return { ok: false, reason: 'missing' }
     const originCwd = sessionCwd
     const originConfig = configNow
-    const forked = await forking.fork(words ? { words, occurrence: 0 } : {})
+    // A task the agent starts begins afresh from its brief; 后台做 goes on from the conversation as it is.
+    const forked = afresh ? { ok: false as const } : await forking.fork(words ? { words, occurrence: 0 } : {})
     if (forked.ok) {
       const taken = await resumeTask({ taskId: forked.sessionId, cwd: originCwd })
       if (!taken.ok) return taken

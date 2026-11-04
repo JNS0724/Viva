@@ -26,6 +26,7 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc, type TaskService } from './task-ipc.ts'
+import type { TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
 import { createTaskRegistry } from './task-registry.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
@@ -359,6 +360,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       historySearch: (query, range) => (historyDb ? historyRecall(historyDb).search(query, range) : []),
       historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
       taskRead: (request, sessionId) => taskRegistry.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
+      taskAct: (request, sessionId) => actOnTask(request, sessionId),
       emit: (event) => {
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
@@ -374,6 +376,19 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         if (generation === bridgeGeneration) recoverFromCrash(exit)
       },
     })
+  }
+
+  /**
+   * The agent of the conversation on screen starting, stopping or messaging a task (viva-tasks). A task's own session
+   * may not; and only a task the conversation could list (its working folder) can be stopped or messaged.
+   */
+  async function actOnTask(request: TaskAction, sessionId: string) {
+    if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
+    if (!taskService) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+    if (request.op === 'start') return taskService.agentStart(request.brief)
+    taskRegistry.query({ op: 'get', taskId: request.taskId }, { cwd: workDirNow() ?? '' })
+    if (request.op === 'stop') return taskService.agentStop(request.taskId)
+    return taskService.agentMessage(request.taskId, request.text)
   }
 
   /** Only the app's selected provider credentials reach dsh; inherited endpoints remain isolated. */
@@ -850,6 +865,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       current: () => conversation,
       agentInfo: () => lastInfo,
       agent: taskAgent,
+      announce: emitToRenderer,
     })
   }
 
