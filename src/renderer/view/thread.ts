@@ -10,6 +10,7 @@ import type { MaidMood, MaidSlots } from './maid.ts'
 import { h, label } from './dom.ts'
 import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
+import { foldKey, foldTall } from './message-fold.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
@@ -119,6 +120,8 @@ function assistantView(message: ThreadMessage, handlers: Handlers, traceReady: b
   const text = answerText(message, handlers)
   text.querySelector('.caret')?.remove()
   if (typing) caretHost(text).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
+  // A long answer folds once it is no longer the latest: the one being read stays whole.
+  else if (!look.latest) foldTall(text, foldKey(message))
   return h('div', { class: 'msg-agent' },
     avatar(message, look),
     h('div', { class: 'msg-body' },
@@ -138,7 +141,7 @@ function askedView(message: ThreadMessage): View {
   const bubble = h('div', { class: 'msg-user' },
     sentPictures(message.images),
     files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
-    text)
+    foldTall(h('div', { class: 'msg-user-text' }, text), foldKey(message)))
   const notes = [message.steered && t("thread.sent.during.work"), message.via === 'island' && t("thread.sent.from.viva.island"), message.failed && t("thread.not.delivered")].filter(Boolean)
   if (!notes.length) return bubble
   return [bubble, h('div', { class: `msg-via${message.failed ? ' msg-via-failed' : ''}`, text: notes.join(' · ') })]

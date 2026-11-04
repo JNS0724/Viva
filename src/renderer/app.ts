@@ -1,6 +1,7 @@
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { initializeLanguage, registerLanguageDocument } from './language.ts'
+import { icon } from './view/icons.ts'
 import { withFiles } from '../shared/attachments.ts'
 import { IMAGE_TYPES } from '../shared/images.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
@@ -880,6 +881,7 @@ function wireComposer() {
   })
   dom.context.addEventListener('click', () => workDirActions.toggleMenu())
   dom.modelBtn.addEventListener('click', () => handlers.togglePicker())
+  dom.jumpLatest.replaceChildren(icon('down', 18))
   dom.jumpLatest.addEventListener('click', () => dom.follower.jumpToLatest())
   dom.toggleDrawer.addEventListener('click', () => dispatch({ type: 'toggle_drawer' }))
   dom.historySearch.addEventListener('input', () => handlers.searchHistory(dom.historySearch.value))

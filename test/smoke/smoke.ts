@@ -17,6 +17,7 @@ import { checkPerf } from './smoke-perf.ts'
 import { runShowcase } from './smoke-showcase.ts'
 import { checkComposition } from './smoke-composition.ts'
 import { checkInputBoundaries } from './smoke-input-boundaries.ts'
+import { checkMessageFold } from './smoke-message-fold.ts'
 import { checkMarkdownLists } from './smoke-markdown-lists.ts'
 import { checkStarLayouts } from './smoke-star-layout.ts'
 import { checkAnswerExpansion } from './smoke-answer-expansion.ts'
@@ -520,6 +521,7 @@ export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePha
       problems.push(...await checkPermission(win, outDir))
       problems.push(...await checkComposition(win))
       problems.push(...await checkInputBoundaries(win))
+      problems.push(...await checkMessageFold(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
     else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))
