@@ -26,6 +26,8 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc, type TaskService } from './task-ipc.ts'
+import { createTaskReports } from './task-reports.ts'
+import { ENDED_STATUS } from './task-words.ts'
 import type { TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
 import { createTaskRegistry } from './task-registry.ts'
@@ -367,6 +369,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         emitToRenderer(event)
         taskRegistry.receive(event)
         taskService?.receive(event)
+        if (event.type === 'task_end') taskReports.ended(String(event.taskId), ENDED_STATUS[String(event.stopReason)] ?? 'done')
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         if (event.type === 'task_end') return signal({ kind: 'agent.task_ended' })
         if (event.type === 'error') reportTurnMemories()
@@ -390,6 +393,34 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     if (request.op === 'stop') return taskService.agentStop(request.taskId)
     return taskService.agentMessage(request.taskId, request.text)
   }
+
+  /**
+   * Results of background tasks, back in the conversation on screen as a turn of their own (task-reports.ts), once
+   * nothing runs there. The window is told the turn began, as it is told nothing else of it: no words of the user's.
+   */
+  const taskReports = createTaskReports({
+    isIdle: () => Boolean(bridge) && !turn.active && !bridge?.isSwitching() && !quitting,
+    currentConversation: () => conversation.id,
+    describe: (taskId, status) => {
+      const host = taskService?.hostOf(taskId) ?? null
+      try {
+        const { task } = taskRegistry.query({ op: 'get', taskId, includeOutput: true }, { taskId }) as { task: { title: string, resultPreview?: string } }
+        return { taskId, title: task.title, status, host, output: task.resultPreview ?? '' }
+      } catch {
+        return null
+      }
+    },
+    report: (note) => {
+      const agent = bridge
+      if (!agent) return
+      turn = { active: true, startedAt: Date.now() }
+      emitToRenderer({ type: 'turn_started', by: 'task' })
+      agent.prompt(note).catch((err: Error) => {
+        turn = { ...turn, active: false }
+        emitToRenderer({ type: 'error', message: err.message })
+      })
+    },
+  })
 
   /** Only the app's selected provider credentials reach dsh; inherited endpoints remain isolated. */
   function dshSettings(config: Config) {
@@ -621,6 +652,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         followups?.gap()
         reportTurnMemories()
         if (mcpReloadDue) reloadMcpAfterTurn()
+        // A task that ended while this turn ran comes back now that the conversation is free.
+        taskReports.flush()
       },
       'agent.task_ended': () => followups?.gap(),
       // The same proposal turned down lately is not shown again.

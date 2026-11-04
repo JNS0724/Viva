@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "55281c7f83befa35862be5635ce306da53b84f3abaf8de76334ea5cae35dc681",
-      "zhHash": "f337fd376d327bdfb3e2ecada57bbced9db99ad7f00caef119d840c722d80f5f"
+      "enHash": "cf8778bc60292b94e42a1221ba61a63a2caa94c132a391149babbb51a15c2625",
+      "zhHash": "bd265add2f3e1fe4f371dbe0e0140dc6e7050a37250ca74062b1a5afef1bab3c"
     },
     {
       "en": "docs/live-check.md",
@@ -71,8 +71,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "0b2699226f97b030fc6286256065c3bce8707881e16d54a49409666f038d1dcb",
-      "zhHash": "26c93d2ad441de446df5903901eca33ab6ad097d5276d9c8a0dc8af84c08f2ee"
+      "enHash": "8bd690f275dd5faa4c9e4e6a245bf4b4e23fd174c7bee1d40632f0b4b12f5b1a",
+      "zhHash": "7b65f4b190ba1dc271061ed1165ccecbb3d9e537ce7d8c1965704340cd9e7c8f"
     }
   ],
   "bilingual": [

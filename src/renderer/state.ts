@@ -16,6 +16,7 @@ import { SECRET_ACTIONS } from './secret-state.ts'
 import { FOLLOWUP_ACTIONS, initialFollowups } from './followup-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { closeLast, closeStreams } from './streams.ts'
+import { isSilentReply } from '../shared/task-report.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
 
@@ -231,6 +232,17 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   },
 
   /**
+   * A turn the app started, not the user: a background task ended and its result comes back (backend/task-reports.ts).
+   * The conversation works as for any turn, with no words of the user's.
+   */
+  agent_turn_started: (state, { by = null, at }) => ({
+    ...closeStreams(state),
+    phase: 'working',
+    error: null,
+    turn: { startedAt: at, tools: 0, thoughts: 0, ...(by ? { by } : {}) },
+  }),
+
+  /**
    * Said while the agent works (viva-steer): into the thread at once, the turn going on. What the agent was
    * writing closes, so its reply to these words starts below them.
    */
@@ -301,16 +313,14 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     const closed = closeStreams(state)
     const turn = closed.turn ?? { startedAt: at, tools: 0, thoughts: 0 }
     const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason }
-    return {
-      ...closed,
-      phase: 'idle',
-      permission: null,
-      question: null,
-      secret: null,
-      turn: null,
-      lastReceipt: receipt,
-      messages: attachReceipt(closed.messages, receipt),
+    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt }
+    // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
+    if (turn.by === 'task') {
+      const last = closed.messages.at(-1)
+      const silent = !last || last.role !== 'assistant' || isSilentReply(last.text)
+      if (silent) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }
     }
+    return { ...ended, messages: attachReceipt(closed.messages, receipt) }
   },
 
   error: (state, { message }) => ({

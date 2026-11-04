@@ -822,6 +822,8 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   ready: (event) => ({ type: 'ready', info: event.info }),
   config: (event) => ({ type: 'config_applied', info: event.info }),
   update: (event) => ({ type: 'acp_update', update: event.update, at: Date.now() }),
+  /** A turn the app started (a background task's result coming back): no words of the user's. */
+  turn_started: (event) => ({ type: 'agent_turn_started', by: event.by ?? null, at: Date.now() }),
   permission: (event) => ({
     type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at: Date.now(),
   }),
