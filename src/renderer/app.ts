@@ -43,7 +43,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'turn_end', 'error', 'task_started'])
+const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error', 'task_started'])
 let STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
 const api = window.agent
 /** A part of the page (index.html): one missing is a broken page, said at once rather than at its first use. */

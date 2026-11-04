@@ -430,6 +430,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
   function recoverFromCrash({ message }: { message: string }) {
     taskService?.flush()
+    taskService?.detachAll()
     taskRegistry.interrupt()
     console.error('[dsh] exited unexpectedly:', message)
     bridge = null
@@ -452,6 +453,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
   async function stopBridge() {
     taskService?.flush()
+    taskService?.detachAll()
     taskRegistry.interrupt()
     clearTimeout(restartTimer)
     const running = bridge

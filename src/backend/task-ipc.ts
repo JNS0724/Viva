@@ -144,20 +144,22 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   }
 
   /**
-   * The tasks an earlier launch kept: back in the window as they were, with what they said, to be closed or
-   * messaged by the agent. Those it quit on are interrupted; their sessions are taken up only when messaged.
+   * Every task kept, for a window that opens (at launch, or reloaded while tasks go on): with what it said, to be
+   * closed or messaged by the agent. Those this launch holds and that have not ended are at work (no `endedAt`),
+   * with what they said so far; those an earlier launch quit on are interrupted, taken up only when messaged.
    */
   function finished() {
-    return store.list()
-      .filter((entry) => !attached.has(entry.id))
-      .flatMap((entry) => {
-        const found = db.get(entry.segmentId)
-        if (!found) return []
-        tasks.set(entry.id, entry)
-        const ended = isEnded(entry)
-        return [{ task: restoredSummary(entry), status: ended ? entry.status : 'interrupted', endedAt: ended ? entry.endedAt : entry.startedAt ?? Date.now(),
-          messages: found.messages.slice(entry.keep) }]
-      })
+    return store.list().flatMap((entry) => {
+      const found = db.get(entry.segmentId)
+      if (!found) return []
+      if (!tasks.has(entry.id)) tasks.set(entry.id, entry)
+      const ended = isEnded(entry)
+      const held = attached.has(entry.id)
+      const messages = (held ? taskWords.current(entry.id) : null) ?? found.messages.slice(entry.keep)
+      if (ended) return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages }]
+      if (held) return [{ task: restoredSummary(entry), status: 'running', endedAt: null, startedAt: entry.startedAt ?? null, messages }]
+      return [{ task: restoredSummary(entry), status: 'interrupted', endedAt: entry.startedAt ?? Date.now(), messages }]
+    })
   }
 
   /**
@@ -263,6 +265,11 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     answer: taskWords.answer,
     /** Viva quits, or dsh went: what tasks said is saved now. */
     flush: taskWords.flush,
+    /**
+     * dsh went (stopped, restarted, crashed): no task's session is held any more, so the next message to one takes
+     * it up again in the new dsh first, instead of prompting a session that dsh no longer knows.
+     */
+    detachAll: () => { attached = new Set() },
     /** The conversation a task hangs off (its card is there), for its result to come back to; null when not held. */
     hostOf: (taskId: string): string | null => tasks.get(taskId)?.next ?? null,
     /** The agent's own actions on tasks (viva-tasks start_background_task, stop_…, message_…). */

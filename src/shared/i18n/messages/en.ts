@@ -1018,6 +1018,7 @@ export const en = {
   "main.workspace-files.this.is.not.a.file": "This is not a file",
   "main.workspace-files.invalid.read.position": "Invalid read position",
   "handoff.task.no.session": "No conversation is ready yet. Wait for the connection or start a new topic, then retry.",
+  "main.acp-bridge.task.session.gone": "This task's session is gone; ask the assistant to take it up again, or close it",
   "handoff.task.connecting": "The assistant is connecting. Retry when connected; your request has been kept.",
   "handoff.prepare.waiting": "Waiting: {reason}. Preparation will continue when this clears.",
   "handoff.prepare.reason": "Waiting because: {reason}",

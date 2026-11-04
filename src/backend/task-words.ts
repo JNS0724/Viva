@@ -132,6 +132,12 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
     transcripts.delete(taskId)
   }
 
-  return { track, userSaid, receive, answer, flush, drop, has: (taskId: string) => transcripts.has(taskId) }
+  /** What a task held has said so far, as it would be saved, the answer being written marked open; null for one not held. */
+  const current = (taskId: string) => {
+    const transcript = transcripts.get(taskId)
+    return transcript ? transcript.map(({ role, text, open }) => ({ role, text, ...(open ? { open: true } : {}) })) : null
+  }
+
+  return { track, userSaid, receive, answer, flush, drop, current, has: (taskId: string) => transcripts.has(taskId) }
 }
 export type TaskWords = ReturnType<typeof createTaskWords>

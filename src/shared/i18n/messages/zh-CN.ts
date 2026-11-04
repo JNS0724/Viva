@@ -1019,6 +1019,7 @@ export const zhCN = {
   "main.workspace-files.this.is.not.a.file": "这不是文件",
   "main.workspace-files.invalid.read.position": "读取位置不对",
   "handoff.task.no.session": "当前还没有可用对话，请等待连接完成或新建话题后重试",
+  "main.acp-bridge.task.session.gone": "这件任务的会话已经不在了，可以让助手重新接回，或者关掉它",
   "handoff.task.connecting": "助手正在连接，请连接完成后重试；这次的内容已保留",
   "handoff.prepare.waiting": "正在等待：{reason}。条件满足后会继续准备。",
   "handoff.prepare.reason": "等待原因：{reason}",

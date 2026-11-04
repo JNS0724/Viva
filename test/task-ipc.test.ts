@@ -6,6 +6,8 @@ import path from 'node:path'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { KEEP_ENDED, MAX_RUNNING, registerTaskIpc, type TaskService } from '../src/backend/task-ipc.ts'
 import { createTaskRegistry } from '../src/backend/task-registry.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { liveTasks } from '../src/renderer/tasks-state.ts'
 import type { StoredTask } from '../src/backend/task-store.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
@@ -103,7 +105,7 @@ test('what the task says is saved along the way, once however much it says meanw
   assert.deepEqual(texts(task.segmentId), ['整理发布说明', '先看提交…三组改动。写好了。'])
   const [done] = kept()
   assert.deepEqual([done.status, Number.isFinite(done.endedAt)], ['done', true], 'ended: kept, to be asked again')
-  assert.deepEqual((await setupKept(call)).map((entry) => entry.status), [], 'held by this launch: not listed as kept')
+  assert.deepEqual((await setupKept(call)).map((entry) => entry.status), ['done'], 'listed for a window that opens, as it ended')
 })
 
 test('flushed when Viva quits: what the task said so far is saved, and the next launch lists it as interrupted', async () => {
@@ -319,5 +321,27 @@ test('words that do not reach a task at work are said so, not taken for delivere
   await assert.rejects(service.agentMessage(taskId, '加上版本号'), /话没有送到/)
 })
 
-/** What `task:finished` lists of the tasks kept, for a launch that holds them all: none. */
+/** What `task:finished` lists of the tasks kept, for a window that opens. */
 const setupKept = (call: <T>(channel: string, ...args: unknown[]) => Promise<T>) => call<Kept[]>('task:finished')
+
+test('a window reloaded while a task works gets it back at work, with what it said so far, saved or not', async () => {
+  const { call, says } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  says(task.id, '先看提交…')
+  const [listed] = await call<Array<Kept & { startedAt: number | null }>>('task:finished')
+  assert.deepEqual([listed.task.id, listed.status, listed.endedAt, typeof listed.startedAt], [task.id, 'running', null, 'number'])
+  assert.deepEqual(listed.messages.map((m) => m.text), ['整理发布说明', '先看提交…'], 'what it said, before the save along the way')
+  const state = reduce(initialState, { type: 'tasks_restored', list: [listed] })
+  assert.deepEqual([state.tasks.list[0].status, liveTasks(state).length], ['running', 1], 'at work in the window again')
+  const said = reduce(state, { type: 'task_update', taskId: task.id, update: chunk('三组改动。'), at: 5 })
+  assert.equal(said.tasks.list[0].view.messages.at(-1)?.text, '先看提交…三组改动。', 'what it says next follows on')
+})
+
+test('after dsh went, a message to a task takes its session up again first, rather than prompting one dsh forgot', async () => {
+  const { service, calls, ends } = setup()
+  const { taskId } = await service.agentStart('整理发布说明')
+  ends(taskId, 'error')
+  service.detachAll()
+  assert.deepEqual(await service.agentMessage(taskId, '接着做'), { taskId, delivered: 'next question' })
+  assert.deepEqual(calls.slice(-2), [['resumeTask', taskId], ['promptTask', taskId, '接着做']])
+})

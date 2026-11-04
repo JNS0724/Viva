@@ -579,7 +579,11 @@ export function createAcpBridge({
 
   /** A turn in a task's session: what it says arrives as task_update, its end as task_end (as for a spun-off turn). */
   async function promptTask(taskId: string, text: string) {
-    if (!tasks.has(taskId)) return
+    // A session this dsh does not hold (taken up in a dsh since gone): said as the task's end, never left hanging.
+    if (!tasks.has(taskId)) {
+      emit({ type: 'task_end', taskId, stopReason: 'error', message: t('main.acp-bridge.task.session.gone') })
+      return
+    }
     const operation: Running = { released: false }
     running.set(taskId, operation)
     try {
