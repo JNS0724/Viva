@@ -141,14 +141,15 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
   }
 
   /**
-   * What a task held has said so far, as it would be saved: the answer being written marked open, and a stream not
-   * settled yet (it keeps its blocks until then; words said meanwhile close it, they do not end it) with its key and
-   * blocks, so updates still to come land on it; null for one not held.
+   * What a task held has said so far, as it would be saved: the answer being written marked open, and every stream's
+   * message with its key (and its blocks, until it settles), so updates still to come land on it: more of a stream
+   * not settled (words said meanwhile close it, they do not end it), or the turn's fallback to plain ACP text, which
+   * withdraws even a settled stream's message (assistant-stream.ts complete); null for one not held.
    */
   const current = (taskId: string) => {
     const transcript = transcripts.get(taskId)
     return transcript ? transcript.map(({ role, text, open, streamKey, blocks }) => ({
-      role, text, ...(open ? { open: true } : {}), ...(streamKey && blocks ? { streamKey, blocks } : {}),
+      role, text, ...(open ? { open: true } : {}), ...(streamKey ? { streamKey, ...(blocks ? { blocks } : {}) } : {}),
     })) : null
   }
 

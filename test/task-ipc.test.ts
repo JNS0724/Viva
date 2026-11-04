@@ -399,3 +399,21 @@ test('a stream with words said into it, then a reload, still settles into one me
   const settled = reduce(more, { type: 'task_update', taskId: task.id, at: 10, update: update('settle', { blocks: [{ type: 'text', text: '前半段后半段' }] }) })
   assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段', '用户补充'])
 })
+
+test('an answer streamed and settled, then a reload, then the turn falling back to plain text: one answer, not two', async () => {
+  const { call, service } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const update = (kind: string, extra: object) => ({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra })
+  const says = (raw: object) => service.receive({ type: 'task_update', taskId: task.id, update: raw })
+  says(update('delta', { index: 0, blockType: 'text', text: '回答' }))
+  says(update('settle', { blocks: [{ type: 'text', text: '回答' }] }))
+  const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
+  // The stream channel's last flush did not come back (assistant-stream.ts complete): its keys withdrawn, then the ACP text.
+  const fallback = [update('settle', { blocks: [] }), { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回答' } }]
+  fallback.forEach(says)
+  const shown = fallback.reduce((current, raw, i) => reduce(current, { type: 'task_update', taskId: task.id, at: 10 + i, update: raw }), state)
+  assert.deepEqual(shown.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '回答'], 'the window')
+  service.flush()
+  const [kept] = await call<Kept[]>('task:finished')
+  assert.deepEqual(kept.messages.map((m) => m.text), ['整理发布说明', '回答'], 'and what is kept')
+})
