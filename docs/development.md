@@ -25,12 +25,12 @@ The app runs from out/. scripts/build.mjs emits src/ and plugins/ through TypeSc
 ## Embedded dsh
 
 - Uses the app’s Electron, without resolving system Node or the dsh CLI.
-- Its home is userData/dsh (on macOS, ~/Library/Application Support/Viva/dsh), containing profiles, sessions, credentials, and skills. Normal runtime is isolated from ~/.dsh and ~/.agents/skills; explicit import and initial migration are separate.
+- Its home is userData/dsh (on macOS, ~/Library/Application Support/Viva/dsh), containing profiles, sessions, credentials, and skills. Normal runtime is isolated from ~/.dsh and ~/.agents/skills; only an explicit import reads them.
 - Remove inherited DSH_*, DEEPSEEK_*, ELECTRON_*, and VIVA_* variables before adding app-owned paths/credentials. Terminal DSH_HOME and DEEPSEEK_BASE_URL do not control Viva; the app can still read DEEPSEEK_API_KEY and pass it deliberately.
 - Only one Viva instance owns this home. A second launch opens the existing window.
+- Viva's backend runs in its own process. If it exits unexpectedly, the shell starts it again after 1, 3, then 10 seconds and reloads the window onto it; the conversation is kept in `app.db`. Three exits within two minutes stop retries with an error, and Viva quits. A page's call made meanwhile waits up to 20 seconds.
 - Unexpected dsh exit retries after 1, 3, then 10 seconds; three exits within two minutes stop retries with an explanation. Key/provider changes wait for the previous process to exit before replacement.
 - App exit waits up to five seconds: close stdin, terminate the process tree after 1.5 seconds (taskkill /T on Windows, including MCP children), then force termination after another 1.5 seconds.
-- Initial migration copies only sessions belonging to Viva’s working directory from ~/.dsh/sessions, without moving or overwriting other projects. Remove only old viva/my-agent profiles whose manifest identifies them as Viva-owned. Copy ~/.dsh/skills once, skipping duplicate names; later deletions inside Viva are not recopied. Original skills remain untouched.
 
 ## Package
 

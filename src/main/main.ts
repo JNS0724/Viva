@@ -8,6 +8,7 @@ import type { FileOptions, FolderOptions, SaveOptions, ShellSettings } from '../
 import type { HostCall, HostMethod, Mirror } from '../backend/wire.ts'
 import { setLocale, type LanguageState } from '../shared/i18n/locale.ts'
 import { type BackendProcess, spawnBackend } from './backend-client.ts'
+import { createBackendKeeper } from './backend-keeper.ts'
 import { APP_ROOT, CODE_ROOT } from './config.ts'
 import { loadDataKey } from './data-key.ts'
 import { createDeskIsland } from './desk-island.ts'
@@ -25,7 +26,8 @@ import { devIcon, windowChrome, windowSize } from './window-options.ts'
  * The desktop shell (docs/backend-split-design.md D1, D2, D4): the app's lifecycle, the window, the tray, the
  * desktop island, the shortcut, notifications, dialogs and the system shell. Everything else is the backend's, in
  * its own process (src/backend/server.ts): the shell starts it, forwards the pages' calls to it, does what it asks
- * of the desktop, and keeps it told what it reads without waiting (the mirror). The two end together.
+ * of the desktop, and keeps it told what it reads without waiting (the mirror). A backend that ends on its own is
+ * started again (backend-keeper.ts), and the window reloads onto it.
  */
 const automationMode = app.commandLine.hasSwitch('enable-smoke-test-driver')
 // A standard alternate profile works for automation and separate user profiles alike.
@@ -46,6 +48,8 @@ const shownNotices = new Set<Notification>()
 const NOTICE_KEEP_MS = 60 * 60 * 1000
 /** How often the backend is told how long the user has been away (follow-ups' gaps poll it each minute). */
 const IDLE_MIRROR_MS = 15_000
+/** How soon the shell listens again when the backend's stream ends while the backend runs. */
+const RELISTEN_MS = 1_000
 /** The backend process (src/backend/server.ts), built to out/ beside this file. */
 const BACKEND_ENTRY = path.join(CODE_ROOT, 'src', 'backend', 'server.js')
 /** Started with the computer (开机启动): the window stays hidden, Viva in the tray. */
@@ -53,7 +57,6 @@ const startedHidden = process.argv.includes('--hidden') || (process.platform ===
 
 type ShellPreferences = Pick<Preferences, 'deskIsland' | 'deskPlaces' | 'deskCoached'>
 
-let backend: BackendProcess | null = null
 let win: BrowserWindow | null = null
 /** The island on the desktop, shown while the window is in the background (desk-island.ts). */
 let desk: ReturnType<typeof createDeskIsland> | null = null
@@ -74,15 +77,12 @@ let backendClosing: Promise<void> | null = null
 let backendClosed = false
 let lastInFront = false
 
-/** The backend, for what happens only once it is running. */
-function running(): BackendProcess {
-  if (!backend) throw new Error('the backend is not running')
-  return backend
-}
+/** The backend's connection once it is running: at once, or after a restart (backend-keeper.ts). */
+const backendConnection = async () => (await keeper.get()).connection
 
 /** A call the shell makes of the backend and does not wait for; a failure is only logged. */
 function tellBackend(op: string, ...args: unknown[]) {
-  backend?.connection.control(op, ...args).catch((err: Error) => console.error(`[backend] ${op}:`, err.message))
+  keeper.running()?.connection.control(op, ...args).catch((err: Error) => console.error(`[backend] ${op}:`, err.message))
 }
 
 /** The window, for what happens only while it is open: its dialogs, the shortcut's focus, closing it to the tray. */
@@ -184,7 +184,8 @@ const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
   'shell.showItemInFolder': (file: string) => shell.showItemInFolder(file),
   'shell.trash': (file: string) => shell.trashItem(file),
   notify: (notice: Notice, callbackId: number) => showNotice(notice, (afterMs) => {
-    backend?.connection.callback(callbackId, [afterMs]).catch((err: Error) => console.error('[backend] notice opened:', err.message))
+    // A backend started again since knows nothing of this id: the click is then only logged.
+    keeper.running()?.connection.callback(callbackId, [afterMs]).catch((err: Error) => console.error('[backend] notice opened:', err.message))
   }),
   'loginItem.set': (on: boolean) => app.setLoginItemSettings({ openAtLogin: on, ...(process.platform === 'win32' ? { args: ['--hidden'] } : {}) }),
 }
@@ -195,21 +196,21 @@ function runHostCall(call: HostCall): unknown {
   return handler(...call.args)
 }
 
-/** The backend ended on its own: without it there is nothing the window can do. */
-function backendDied(code: number | null, signal: NodeJS.Signals | null) {
+/** The backend kept crashing: without it there is nothing the window can do. */
+function backendGaveUp(why: string) {
   if (quitting) return
-  console.error(`[viva] the backend ended: ${signal ?? `exit ${code}`}`)
-  dialog.showErrorBox(t("main.main.backend.stopped"), signal ?? `exit ${code}`)
+  console.error(`[viva] the backend ended: ${why}`)
+  dialog.showErrorBox(t("main.main.backend.stopped"), why)
   app.exit(1)
 }
 
-/** The backend, started with what it reads of the desktop and the keys' data key. */
-async function startBackend(): Promise<BackendProcess> {
+/** A backend, started with what it reads of the desktop and the keys' data key. */
+function startBackend(onExit: (code: number | null, signal: NodeJS.Signals | null) => void): Promise<BackendProcess> {
   const userData = app.getPath('userData')
   const dataKey = loadDataKey({ dir: userData, keychain: safeStorage, onProblem: (message) => console.error('[secrets]', message) })
-  const started = await spawnBackend({
+  return spawnBackend({
     entry: BACKEND_ENTRY,
-    onExit: backendDied,
+    onExit,
     start: {
       type: 'start',
       token: randomBytes(32).toString('hex'),
@@ -218,30 +219,61 @@ async function startBackend(): Promise<BackendProcess> {
       packaged: app.isPackaged,
       automation: automationMode,
       locale: app.getLocale(),
-      mirror: { inFront: false, idleSeconds: powerMonitor.getSystemIdleTime(), shellSettings: shellSettings() },
+      mirror: { inFront: windowInFront(), idleSeconds: powerMonitor.getSystemIdleTime(), shellSettings: shellSettings() },
     },
   })
-  setLocale(started.ready.locale)
-  started.connection.listen({
-    host: runHostCall,
-    ended: (err) => { if (!quitting) console.error('[backend] its events ended', err?.message ?? '') },
-  })
-  return started
 }
+
+/**
+ * Does what `started` asks of the desktop. A stream that ends while the backend runs is listened to again, from
+ * the last push's number, so what the backend stored meanwhile comes first.
+ */
+function listenTo(started: BackendProcess, since?: number) {
+  let last = since
+  const host = (call: HostCall) => {
+    const push = call.method === 'window.send' ? call.args[0] as { seq?: unknown } | undefined : undefined
+    if (typeof push?.seq === 'number') last = Math.max(last ?? 0, push.seq)
+    return runHostCall(call)
+  }
+  started.connection.listen({
+    since,
+    host,
+    stored: (event) => { last = Math.max(last ?? 0, event.seq) },
+    ended: (err) => {
+      if (quitting || keeper.running() !== started) return
+      console.error('[backend] its events ended; listening again:', err?.message ?? '')
+      setTimeout(() => { if (!quitting && keeper.running() === started) listenTo(started, last ?? 0) }, RELISTEN_MS)
+    },
+  })
+}
+
+/** A backend is up. After a restart the window reloads onto it, and dsh starts again once the page has loaded. */
+function backendUp(started: BackendProcess, restarted: boolean) {
+  setLocale(started.ready.locale)
+  listenTo(started)
+  if (!restarted) return
+  mirror({ shellSettings: shellSettings() })
+  const shown = win && !win.isDestroyed() ? win : null
+  if (!shown) return
+  shown.webContents.once('did-finish-load', () => tellBackend('start-bridge'))
+  shown.webContents.reload()
+}
+
+const keeper = createBackendKeeper<BackendProcess>({ spawn: startBackend, onUp: backendUp, onGaveUp: backendGaveUp })
 
 /** The pages' calls on the backend's channels go to it, after the same check as the shell's own (ipc-contract.ts). */
 function forwardChannels(started: BackendProcess) {
   for (const { channel, kind } of started.ready.channels) {
     const name = channel as Channel
-    if (kind === 'handle') ipcMain.handle(name, (_event, ...args: unknown[]) => started.connection.rpc(channel, args))
-    else ipcMain.on(name, (_event, ...args: unknown[]) => { started.connection.rpc(channel, args).catch((err: Error) => console.error(`[ipc] ${channel}:`, err.message)) })
+    if (kind === 'handle') ipcMain.handle(name, async (_event, ...args: unknown[]) => (await backendConnection()).rpc(channel, args))
+    else ipcMain.on(name, (_event, ...args: unknown[]) => { backendConnection().then((connection) => connection.rpc(channel, args)).catch((err: Error) => console.error(`[ipc] ${channel}:`, err.message)) })
   }
 }
 
 /** One of the desktop island's preferences: here at once, in the backend's file once it answers. */
-function setShellPreference<K extends keyof ShellPreferences>(key: K, value: ShellPreferences[K]): Promise<unknown> {
+async function setShellPreference<K extends keyof ShellPreferences>(key: K, value: ShellPreferences[K]): Promise<unknown> {
   shellPreferences = { ...shellPreferences, [key]: value }
-  return running().connection.control('preferences-set', key, value)
+  return (await backendConnection()).control('preferences-set', key, value)
 }
 
 const logged = (what: string) => (err: Error) => console.error(`[desk] ${what}:`, err.message)
@@ -335,12 +367,12 @@ function registerShellSettingsIpc() {
   ipcMain.handle('settings:set-desk-island', async (_event, on) => {
     if (typeof on !== 'boolean') throw new Error('invalid desk island switch')
     await setDeskIsland(on)
-    return running().connection.control('settings-view')
+    return (await backendConnection()).control('settings-view')
   })
   ipcMain.handle('settings:reset-desk-place', async () => {
     desk?.resetPlace()
     if (!desk) await setShellPreference('deskPlaces', { last: null, places: {} })
-    return running().connection.control('settings-view')
+    return (await backendConnection()).control('settings-view')
   })
 }
 
@@ -399,17 +431,17 @@ app.on('activate', () => showWindow())
 app.whenReady().then(async () => {
   // macOS needs its app menu for ⌘C / ⌘V; elsewhere the hidden title bar has no room for a menu bar.
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
-  const started = await startBackend()
-  backend = started
+  const started = await keeper.start()
   forwardChannels(started)
   shellPreferences = await started.connection.control<Preferences>('preferences-get')
-  registerImageProtocol(protocol, (url) => started.connection.image(url))
+  registerImageProtocol(protocol, async (url) => (await backendConnection()).image(url))
   registerShellSettingsIpc()
   registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } })
   installAutomationDriver(automationMode, {
-    agentPid: () => started.connection.control<number | null>('agent-pid'),
+    agentPid: async () => (await backendConnection()).control<number | null>('agent-pid'),
+    backendPid: () => keeper.running()?.pid ?? null,
     desk: () => desk,
-    seedPrepared: (item) => started.connection.control<void>('automation.seed-prepared', item),
+    seedPrepared: async (item) => (await backendConnection()).control<void>('automation.seed-prepared', item),
   })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
   const woke = () => tellBackend('signal', { kind: 'system.woke' })
@@ -429,9 +461,9 @@ app.on('window-all-closed', () => app.quit())
 /** Quitting waits for the backend to stop dsh (it may still be writing the session) and close, a few seconds at most. */
 app.on('before-quit', (event) => {
   quitting = true
-  if (backendClosed || !backend) return
+  if (backendClosed) return
   event.preventDefault()
-  backendClosing ??= backend.shutdown().finally(() => {
+  backendClosing ??= keeper.shutdown().finally(() => {
     backendClosed = true
     app.quit()
   })

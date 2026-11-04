@@ -20,6 +20,7 @@ export function smokeHooks(runtime: Runtime): SmokeHooks {
     model: () => runtime.model,
     userData: runtime.userData, cwd: runtime.cwd, fixtures: runtime.fixtures, importHome: runtime.importHome,
     agentPid: () => application.evaluate(() => globalThis.vivaAutomation!.agentPid()),
+    backendPid: () => application.evaluate(() => globalThis.vivaAutomation!.backendPid()),
     async openTasksPage() {
       if (await page.locator('#hub').getAttribute('data-open') !== 'true') await page.locator('#open-profile').click()
       await page.locator('.hub-nav[data-page="tasks"]').click()

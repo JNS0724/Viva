@@ -27,8 +27,11 @@ export interface Connection {
   image(url: string): Promise<Response>
   /** Answers a notification's click (remote-host.ts keep). */
   callback(id: number, args: unknown[]): Promise<void>
-  /** Listens for what the backend asks of the desktop; `ended` when the stream closes. */
-  listen(handlers: { host: (call: HostCall) => unknown, stored?: (event: StoredEvent) => void, ended: (err?: Error) => void }): () => void
+  /**
+   * Listens for what the backend asks of the desktop; `ended` when the stream closes. Listening again, `since` is the
+   * last stored event seen, and the ones after it come first.
+   */
+  listen(handlers: { host: (call: HostCall) => unknown, stored?: (event: StoredEvent) => void, ended: (err?: Error) => void, since?: number }): () => void
 }
 
 /** Talks to a backend at `port` (on loopback) with `token`. */
@@ -126,7 +129,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
     async callback(id, args) {
       await call(`/callback/${id}`, args, false)
     },
-    listen({ host, stored = () => {}, ended }) {
+    listen({ host, stored = () => {}, ended, since }) {
       const answerHost = (id: number, answer: Answer) => {
         request('POST', `/host/${id}`, Buffer.from(JSON.stringify(encodeValue(answer))), { 'content-type': 'application/json' })
           .catch((err: Error) => console.error('[backend] could not answer a host call:', err.message))
@@ -165,7 +168,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
         ended(err)
       }
       listening = true
-      const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: '/events?since=0', headers: { [TOKEN_HEADER]: bearer(token) } }, (res) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: since === undefined ? '/events' : `/events?since=${since}`, headers: { [TOKEN_HEADER]: bearer(token) } }, (res) => {
         if (res.statusCode !== 200) {
           end(new Error(`the backend refused its events: ${res.statusCode}`))
           res.resume()

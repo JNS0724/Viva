@@ -67,3 +67,11 @@ test('signals are recorded (never what was said) and routed; without routes, or 
   events.route(partial as unknown as Routes)
   assert.throws(() => events.signal({ kind: 'system.woke' }), /no route for signal system.woke/)
 })
+
+test('only the latest events are kept: older ones go when the core opens', (t) => {
+  const { app, events } = core(t)
+  for (const name of ['a', 'b', 'c', 'd']) events.apply('thing.added', { name }, () => undefined)
+  const reopened = createEventCore({ app, publish: () => {}, kept: 2 })
+  assert.deepEqual(reopened.since(0).map((event) => event.seq), [3, 4])
+  assert.equal(reopened.apply('thing.added', { name: 'e' }, () => undefined).seq, 5, 'numbers go on, never reused')
+})

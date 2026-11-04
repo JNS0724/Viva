@@ -29,8 +29,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "3bfec9205043001471f3cf5c1f894af2486fea2caa2a447b5b805b24ba9c7eea",
-      "zhHash": "cf8c786d527f519f65024ee464511d0bf8bb759bd93325f6d16612c820f3dee5"
+      "enHash": "8a11ba03a146f09d48bbe038ba6c3232e6b64a0dff7700776b1dfbae2d0cae3e",
+      "zhHash": "89e10f6f6556adb431940c7c42285f1b6aa32513fc94d813b4e9708cdc249dee"
     },
     {
       "en": "docs/dsh-upgrade-validation-20261026.md",
@@ -131,8 +131,8 @@
     {
       "en": "docs/backend-split-design.md",
       "zh": "docs/backend-split-design.zh-CN.md",
-      "enHash": "b1d9e3579f8af2395745eba44465e612ebf64de6f019614250ef7e57ea587983",
-      "zhHash": "cdb7ad0c61cb23d81205e3ecda848916610d62d58b5f947f4d5ec82ebe284e43"
+      "enHash": "6a996e64209d0813d2d6e96540a3b5ea9e616f42f3e6626c229a0c3d39b4ad2e",
+      "zhHash": "70894dd068bd39827743760ac1a0212fe024ef44189460737cefcec8064e2749"
     }
   ],
   "bilingual": [

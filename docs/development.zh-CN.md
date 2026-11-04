@@ -27,14 +27,14 @@ npm start
 dsh 是应用的一部分，和你自己装的 dsh 完全隔离：
 
 - **运行时**：用应用自己的 Electron 运行，不依赖、也不读取系统里的 Node 和 `dsh` 命令。
-- **数据目录**：dsh 的 home 在应用数据目录下的 `dsh/`（macOS 上是 `~/Library/Application Support/Viva/dsh`），里面是 profile、会话、凭据和 skill。你的 `~/.dsh`、`~/.agents/skills` 都不会被读写。
+- **数据目录**：dsh 的 home 在应用数据目录下的 `dsh/`（macOS 上是 `~/Library/Application Support/Viva/dsh`），里面是 profile、会话、凭据和 skill。你的 `~/.dsh`、`~/.agents/skills` 平时不会被读写，只有你主动导入时才读。
 - **环境变量**：交给 dsh 的环境去掉了所有 `DSH_*`、`DEEPSEEK_*`、`ELECTRON_*` 和 `VIVA_*` 变量，再放入应用自己设定的（dsh 目录、key、提供方的 key）。所以你在终端里设的 `DSH_HOME`、`DEEPSEEK_BASE_URL` 等不会影响 Viva。`DEEPSEEK_API_KEY` 仍可作为 key 的来源，由应用读出后再交给 dsh。
 - **生命周期**：
   - 只允许运行一个 Viva（dsh 目录是它独占的），再次打开会切回已有的窗口。
+  - Viva 的后端是单独的进程。它意外退出时，外壳依次等 1、3、10 秒把它重新启动，并让窗口重新加载；对话存在 `app.db` 里，不会丢。两分钟内连续退出三次就不再重试，弹窗说明后退出。重启期间页面的调用最多等 20 秒。
   - dsh 意外退出时自动重启并接回当前对话，依次等 1、3、10 秒；两分钟内连续三次后停止重试，在对话里说明原因。
   - 换 key、增删模型时，先等旧的 dsh 完全退出，再启动新的，两者不会同时写同一个会话。
   - 退出应用时等 dsh 结束（最多 5 秒）：先关闭它的输入，1.5 秒后结束整个进程树（Windows 上用 `taskkill /T`，连同它启动的 MCP 服务器），再过 1.5 秒强制结束。
-- **从 `~/.dsh` 迁移**：首次启动时，把 Viva 工作区在 `~/.dsh/sessions` 里的会话复制过来（不移动、不覆盖；dsh 按工作目录分组会话，你自己项目的会话不会被带走），旧对话照常接着聊、能看「过程」；再删除 Viva 以前写在 `~/.dsh/profiles` 里的 `viva`、`my-agent` profile（只删清单名称确认是 Viva 写的）。`~/.dsh/skills` 里的 skill 也复制一次（同名的跳过；只在首次迁移时做，之后在 Viva 里删掉的 skill 不会再被复制回来；你自己的 dsh 的 skill 文件夹保持原样）。
 
 ## 打包
 

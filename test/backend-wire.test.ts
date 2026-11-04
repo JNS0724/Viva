@@ -113,6 +113,7 @@ test('what the backend asks of the desktop waits for the shell, keeps its order,
   const replayed: StoredEvent[] = []
   await new Promise<void>((resolve) => {
     const stop = connection.listen({
+      since: 0,
       stored: (event) => replayed.push(event),
       host: (call) => {
         seen.push(call)
@@ -127,7 +128,7 @@ test('what the backend asks of the desktop waits for the shell, keeps its order,
   assert.equal(await folder, '/picked')
   await refused
   assert.deepEqual(seen.map((call) => call.method), ['window.send', 'dialogs.chooseFolder', 'window.send', 'shell.openPath', 'notify'], 'what waited, in order')
-  assert.deepEqual(replayed.map((event) => event.seq), [1, 2], 'the stored events after the number, first')
+  assert.deepEqual(replayed.map((event) => event.seq), [1, 2], 'listening again: the stored events after the number, first')
   assert.equal(opened, 1500)
 })
 

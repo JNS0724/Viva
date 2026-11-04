@@ -192,9 +192,11 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
   }
 
   function events(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
-    const after = Number(url.searchParams.get('since') ?? 0)
+    // A shell listening again says the last stored event it saw; one listening for the first time has none to miss.
+    const given = url.searchParams.get('since')
+    const after = given === null ? null : Number(given)
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
-    for (const stored of since(Number.isFinite(after) ? after : 0)) res.write(sseMessage('stored', stored))
+    if (after !== null && Number.isFinite(after)) for (const stored of since(after)) res.write(sseMessage('stored', stored))
     const stop = remote.listen((call) => res.write(sseMessage('host', call)))
     const alive = setInterval(() => res.write(': alive\n\n'), KEEP_ALIVE_MS)
     req.on('close', () => {

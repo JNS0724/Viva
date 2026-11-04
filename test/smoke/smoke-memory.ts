@@ -233,6 +233,34 @@ async function crashSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
 }
 
 /**
+ * The backend process is killed: the shell starts it again (backend-keeper.ts), the window reloads onto it with the
+ * conversation as it was (app.db), dsh comes back, and the next question is answered.
+ */
+async function backendCrashSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+  const pid = await hooks.backendPid()
+  expect(Boolean(pid), 'the backend should be running', pid)
+  if (!pid) return
+  const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
+  process.kill(pid, 'SIGKILL')
+  const deadline = Date.now() + TURN_TIMEOUT_MS
+  let restarted = await hooks.backendPid()
+  while (!(restarted && restarted !== pid) && Date.now() < deadline) {
+    await wait(POLL_MS)
+    restarted = await hooks.backendPid()
+  }
+  expect(Boolean(restarted) && restarted !== pid, 'a new backend should be running', restarted)
+  await until(win, `document.querySelectorAll('.msg-user').length === ${asked} && !document.getElementById('model-btn').disabled && !document.querySelector('.msg-error')`, 'the window back on the new backend')
+
+  await submit(win, '后端重启后还在吗')
+  await finishTurn(win)
+  await wait(UI_WAIT_MS)
+  const last = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  expect(last.length > 0, 'the agent should answer after the backend restarted', last.slice(0, 40))
+  expect(await run(win, `document.querySelectorAll('.msg-user').length`) === asked + 1, 'the conversation should carry on after the backend restarted')
+  await capture(win, outDir, 'backend-recovered')
+}
+
+/**
  * The conversation goes on in another folder (single-conversation design): the first time it is asked, then
  * the chip names it, the timeline says where the folder changed with what was said before still above, and the
  * agent answers there. A name with a space and Chinese in it, as people's folders have.
@@ -388,6 +416,7 @@ export async function checkMemory(win: SmokeWindow, outDir: string, hooks: Smoke
   try {
     await steps(win, outDir, expect, hooks)
     await crashSteps(win, outDir, expect, hooks)
+    await backendCrashSteps(win, outDir, expect, hooks)
     await workDirSteps(win, outDir, expect, hooks)
     await rewindSteps(win, outDir, expect, hooks)
     await taskSteps(win, outDir, expect, hooks)
