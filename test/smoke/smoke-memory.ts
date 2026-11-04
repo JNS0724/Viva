@@ -241,6 +241,8 @@ async function backendCrashSteps(win: SmokeWindow, outDir: string, expect: Expec
   expect(Boolean(pid), 'the backend should be running', pid)
   if (!pid) return
   const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
+  // The page reloads onto the new backend: marked now, the old page is told from the new one.
+  await run(win, `window.smokeBeforeRestart = true`)
   process.kill(pid, 'SIGKILL')
   const deadline = Date.now() + TURN_TIMEOUT_MS
   let restarted = await hooks.backendPid()
@@ -249,7 +251,19 @@ async function backendCrashSteps(win: SmokeWindow, outDir: string, expect: Expec
     restarted = await hooks.backendPid()
   }
   expect(Boolean(restarted) && restarted !== pid, 'a new backend should be running', restarted)
-  await until(win, `document.querySelectorAll('.msg-user').length === ${asked} && !document.getElementById('model-btn').disabled && !document.querySelector('.msg-error')`, 'the window back on the new backend')
+  const ready = `!window.smokeBeforeRestart && document.querySelectorAll('.msg-user').length === ${asked}
+    && !document.getElementById('model-btn').disabled && !document.querySelector('.msg-error')`
+  let back = false
+  while (!back && Date.now() < deadline) {
+    // A check that runs as the page reloads is cut off with it: that is the reload, not a failure.
+    back = await run(win, ready).catch((err: Error) => {
+      if (/context was destroyed|navigation/i.test(err.message)) return false
+      throw err
+    })
+    if (!back) await wait(POLL_MS)
+  }
+  expect(back, 'the window should be back on the new backend: reloaded, the conversation as it was, the agent ready')
+  if (!back) return
 
   await submit(win, '后端重启后还在吗')
   await finishTurn(win)
