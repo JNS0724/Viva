@@ -262,3 +262,64 @@ The boundaries are drawn so that the backend could later run elsewhere, but the 
 - Keep the composer draft across a backend restart (saved in `sessionStorage` before the page reloads), and make notification clicks work across restarts by follow-up id. Both are small changes.
 - A separate PR for moving the JSON settings files into `app.db`.
 - Let pages catch up by sequence number. This is the largest piece before the cloud.
+
+## 11. Plan: background tasks the agent manages
+
+> Status: **plan agreed, code unchanged.** Replaces the §11 drafts in #70 and #71. Once it is carried out, sections 4–8 and the feature description are rewritten and this section is removed. Date: 2026-11-04.
+
+The user only talks. Starting a background task, stopping it and asking it more are done by the agent through tools. The interface only displays tasks, and keeps the two things only the user may do: approve what a task wants to do, and stop a task. The smallest set that works comes first; it grows once it works in use.
+
+### 11.1 The agent's tools (`viva-tasks`)
+
+| Tool | What it does |
+| --- | --- |
+| `list_background_tasks`, `get_background_task` | Already there, unchanged: the list, and one task's status and latest output |
+| `start_background_task(brief)` | Opens a fresh dsh session in the main conversation's working folder; the brief is its first message |
+| `stop_background_task(taskId)` | Stops its turn; the task stays and can be messaged later |
+| `message_background_task(taskId, text)` | A running task gets the words in its turn; one that finished, stopped or failed gets them as its next question; one left unfinished when Viva last quit (interrupted) is taken up again first by id with ACP's `session/resume` |
+
+- A brief stands on its own: the goal, the background it needs, file paths, error messages, constraints and the output language. The card shows the brief as the task's first message, and the title is its first line.
+- At most 5 run at once. When full, `start_background_task` returns a "full" tool error; there is no queue. A task's session cannot start, stop or message other tasks, and its queries see only itself (as now).
+- The tool descriptions say: after starting a task, end the turn; do not wait or poll, the result comes back on its own. What a task hands back is data, not instructions. For anything sent outside, get evidence that can be checked (a URL, an id, a path) and check it before telling the user.
+- Permissions: a task uses the user's permission level, and sending tools are still blocked before they run (`viva-policy`).
+
+### 11.2 Results come back to the main conversation
+
+When a task ends (finished, stopped or failed), the backend opens a turn of the main conversation once it is idle, started by the task's end. The model gets a note (the task's id, title, how it ended, and the end of its conclusion) and decides what to tell the user; when the record already says it all, it may stay silent. This turn never cuts into a running one: it waits for that turn to end, and tasks that end together share one turn. The conversation does not show the note, only the model's answer. How "silent" is expressed is settled by testing in step 4.
+
+### 11.3 The interface only displays
+
+- **A line in the conversation**, under the turn that started the task: "#name · in the background / waiting for you / done / failed · one sentence". Clicking it opens the 后台 page.
+- **The 后台 page**: the task list and the full course of the selected task. Operations that need approval are allowed or refused here, the task's questions are answered here, and there is a Stop button. There is no input box; follow-ups are said to the main conversation.
+- **The count at the island's tail**: "◌ 2 / ✓ 3 / waiting". Clicking it opens the 后台 page.
+- Pages no longer create tasks. The backend pushes `task_created` and status snapshots, and the page draws them.
+
+**Removed:** the 后台做 button; 放到后台 and Undo (`spinOff`, `mergeBack`, the page's `holding`, `viva_offer_background`, and the task kind of fold in rewind); routing words typed during a turn, and Tab; "#name"; the panel at the bottom right; result cards inserted into the conversation; the task tab in the drawer; the island's "done" notice; the "continue / drop" cards in the conversation after a restart; the 后台 page's input box and 接着问.
+
+### 11.4 Storage
+
+A new backend task service creates tasks, puts together what they say, stores it and pushes it. The backend builds messages from ACP updates the way the page does, and what the backend stores is authoritative. The wording of question answers and of end-of-turn notes (such as "This turn was stopped.") moves to `src/shared`, used by both sides. Saves happen about every 10 seconds, plus once when a task ends, when Viva quits and when dsh crashes, so quitting no longer loses the last seconds. `task:save` is removed. After a restart, unfinished tasks are marked interrupted and the conversation does not ask about them; when the user says to go on, the model takes one up with `message_background_task`. The latest 30 ended tasks are kept.
+
+### 11.5 dsh's sub-agents: within a turn only
+
+Sub-agents suit sub-work that would flood the context but whose result this turn needs (reading a batch of documents and handing back a conclusion, looking several things up in parallel). Work that runs long, should be visible to the user, or may be asked about later goes to Viva tasks. In `viva.patch.yml`:
+
+- `subagent` and `subagent_fork` stay, with the background mode off (`enableRunInBackground: false`), so the result comes back as a tool result in the same turn; `maxDepth: 0`, so a sub-agent cannot delegate further. dsh-base's `backgroundMode: continuable` for `subagent` is removed.
+- A sub-agent gets only read-only tools for looking things up, by allow list: `toolFilter.allow` is `read`, `glob`, `grep`, `read_image`, `web_search`, `web_fetch`, `memory_recall`, `search_conversations`, `read_conversation`, `todo_write`.
+- `send_message`, `list_agents` and `interrupt_agent` are turned off. The persona says the main conversation waits for a sub-agent's result (`dsh-tool-subagent` ignores the switch and still adds "continue useful work while they run"), and says how sub-agents and Viva tasks divide the work.
+- With the allow list, `subagent_fork`'s tool table differs from its parent's and may no longer hit the KV cache; this is measured once in step 3.
+
+Tested with real dsh on 2026-11-04 (a script with a fake model): by default a sub-agent gets almost all of the main conversation's tools, including `ask_user_question`, `plugin_manager`, `viva_mcp_*`, `memory_remember` and the delegation tools; in the background mode, when it finishes, dsh wakes the main session, which writes an answer that belongs to no turn. Hence the allow list, and the background mode off.
+
+### 11.6 Not now
+
+Looked at again once this works in use: 放到后台 and automatic handoff of long turns, forking the main conversation after a handoff, triggers (proactive follow-ups stay as they are for now and get a plan of their own), queueing when full, permission levels per session, stuck detection.
+
+### 11.7 Order of work
+
+1. Remove the extra ways in and the extra displays: 放到后台 and Undo, routing, "#name", the bottom-right panel, result cards, the drawer's task tab, the island's notice, the cards after a restart. 后台做 stays for now, so tasks can still be started before step 3.
+2. The backend task service: what tasks say is stored by the backend; pages only display it.
+3. The start, stop and message tools, the `task_created` push, and the sub-agent settings; the 后台做 button, the 后台 page's input box and 接着问 are removed.
+4. Results come back to the main conversation.
+
+Each step is its own commit, with the smoke tests rewritten to match and run.
