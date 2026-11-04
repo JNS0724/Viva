@@ -50,7 +50,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 
 人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/main/app-plugins.js` 的 `PERSONA`。
 
-app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-CN.md)）：外壳（`src/main/main.ts`，Electron 主进程）管窗口、托盘、桌面小岛和其他 Electron 接口；后端（`src/backend/server.ts`，Electron 以 Node 身份运行的子进程，在 `src/backend/compose.ts` 里组装）管其余的一切，运行时不导入 `electron`，只通过 `HostCapabilities`（`src/backend/host.ts`）用到桌面，这些调用经回环 HTTP 和 SSE、带启动令牌发给外壳。页面仍然通过 IPC 和外壳说话；外壳按 `ipc-contract.ts` 校验每个调用，再转给后端。进入后端的输入都是种类固定的信号（`src/backend/event-core.ts`），每种有自己的路由。状态的改动走 `apply`：改动和 `app.db` 里 `app_events` 的一行带序号的记录在同一个事务里写入，推给窗口的每条消息都带这个序号。
+app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-CN.md)）：外壳（`src/main/main.ts`，Electron 主进程）管窗口、托盘、桌面小岛和其他 Electron 接口；后端（`src/backend/server.ts`，Electron 以 Node 身份运行的子进程，在 `src/backend/compose.ts` 里组装）管其余的一切，运行时不导入 `electron`，只通过 `HostCapabilities`（`src/backend/host.ts`）用到桌面，这些调用经回环 HTTP 和 SSE、带启动令牌发给外壳。页面仍然通过 IPC 和外壳说话；外壳按 `ipc-contract.ts` 校验每个调用，再转给后端。进入后端的输入都是种类固定的信号（`src/backend/event-core.ts`），每种有自己的路由。状态的改动走 `apply`：改动和 `app.db` 里 `app_events` 的一行带序号的记录在同一个事务里写入，推给窗口的每条消息都带这个序号。`app.db` 里还有跟进、历史和后台任务，它们的写操作都走 `apply`（`src/backend/journal.ts`）；事件只记 id、状态和数字，文字只记长度。记忆和过程记录留在各自插件的文件里，由 dsh 的进程写：用户在界面上改记忆，写完后紧接着记事件；模型存下的记忆，在一轮结束后 app 读到时记事件。
 
 ## 3. 插件清单与约定版本
 

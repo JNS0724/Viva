@@ -111,7 +111,7 @@ const mcpAddUse: LiveScenario = {
     expect(added.secrets.includes('MAIL_TOKEN'), 'the key should be asked for in the window, by its name', added.secrets)
     const stored = path.join(ctx.userData, 'mcp-servers.json')
     expect(fileHolds(stored, name) && !fileHolds(stored, secret), 'the server should be kept, its key only encrypted', { stored: fs.existsSync(stored) })
-    expect(!fileHolds(path.join(ctx.userData, 'history.db'), secret), 'the key should never be in the conversation history')
+    expect(!fileHolds(path.join(ctx.userData, 'app.db'), secret), 'the key should never be in the app database: not in the history, not in an event')
     await ctx.shot('mcp-added')
     // The server joins the session once the turn that set it up has ended.
     await wait(5_000)

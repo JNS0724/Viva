@@ -46,6 +46,7 @@ import { historyRecall } from '../main/history-recall.ts'
 import { openFollowupStore } from '../main/followup-store.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
+import { type Apply, journaled } from './journal.ts'
 import type { HostCapabilities, HostEvent } from './host.ts'
 
 /**
@@ -71,6 +72,12 @@ type AgentInfo = { mode: string, model: string, cwd: string, reason?: string, [f
 /** What the model may change from the conversation (config-channel.ts), the app performing it. */
 type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configActions']>
 type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
+
+/** The writes of the stores on the app database, each recorded with its event (journal.ts). */
+const HISTORY_WRITES = Object.freeze(['save', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
+const TASK_WRITES = Object.freeze(['add', 'remove'] as const)
+/** The user's own changes on the 关于你 page; what the agent saves is recorded when the app reads it (memory.learned). */
+const MEMORY_WRITES = Object.freeze(['setProfile', 'addMemory', 'updateMemory', 'deleteMemory', 'restoreMemory', 'reviveMemory', 'setOnboarding'] as const)
 
 const isFolder = (dir: string) => {
   try {
@@ -109,6 +116,11 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
   /** The backend's database and its event core (app-db.ts, event-core.ts), opened first. */
   let appDb!: AppDb
   let core: EventCore | null = null
+  /** One change of the backend's state and its event (event-core.ts apply), for the stores' writes. */
+  const applyChange: Apply = (kind, data, write) => {
+    if (!core) throw new Error(`${kind} before the event core was opened`)
+    return core.apply(kind, data, write)
+  }
   let settingsStore!: ReturnType<typeof createSettingsStore>
   /** Switches from settings, such as the desktop island (preferences.ts). */
   let preferences!: ReturnType<typeof createPreferences>
@@ -202,6 +214,8 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
     try {
       const report = personal.collect({ conversationId: conversation.id, sessionId: conversation.sessionId })
       if (report?.memories.length || report?.invalidated.length) {
+        // What the agent wrote, through the plugin in dsh: recorded here once the app has read it.
+        applyChange('memory.learned', { memories: report.memories.length, invalidated: report.invalidated.length }, () => undefined)
         emitToRenderer({ type: 'memory_changed', memories: report.memories, invalidated: report.invalidated })
       }
       if (report?.injected.length) emitToRenderer({ type: 'memory_context', injected: report.injected })
@@ -689,7 +703,8 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
 
   function registerPersonalIpc(config: Config) {
     registerMemoryIpc(ipcMain, {
-      db: memoryDb,
+      // The memory plugin's file, not the app database: each write's event follows once the write is in.
+      db: journaled(memoryDb, 'memory', MEMORY_WRITES, applyChange),
       habits: () => personal.habits(),
       cwd: () => config.cwd,
       chooseDocs: () => host.dialogs.chooseFiles({ title: t("main.main.choose.reference.documents"), multiple: true }),
@@ -728,7 +743,7 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
       userData,
       ipcMain,
       db: appDb.db,
-      apply: (kind, data, write) => core!.apply(kind, data, write),
+      apply: applyChange,
       signal: (kind) => { signal({ kind }) },
       notify: showNotice,
       windowInFront: host.window.inFront,
@@ -789,7 +804,7 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
 
   /** Opens the database and drops conversations whose undo window has passed. */
   function openHistory(config: Config) {
-    historyDb = openHistoryDb({ file: path.join(userData, 'history.db') })
+    historyDb = journaled(openHistoryDb({ db: appDb.db }), 'history', HISTORY_WRITES, applyChange)
     historyDb.purgeDeleted({ olderThanMs: 0 })
     conversation = historyDb.latest()?.conversation ?? historyDb.create({ cwd: config.cwd })
     registerHistoryIpc(ipcMain, {
@@ -820,7 +835,7 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
       registry: taskRegistry,
       db: historyDb,
       // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).
-      store: taskStore = createTaskStore({ file: path.join(userData, 'background-tasks.json'), onError: (err) => console.error('[tasks]', err.message) }),
+      store: taskStore = journaled(createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) }), 'task', TASK_WRITES, applyChange),
       current: () => conversation,
       setCurrent: (next) => { conversation = next },
       isBusy: () => turn.active,
@@ -894,8 +909,8 @@ export function createBackend({ host, ipc: ipcMain }: { host: HostCapabilities, 
   function close() {
     clearInterval(lateMemoryTimer)
     followups?.close()
-    appDb?.close()
     historyDb?.close()
+    appDb?.close()
     memoryDb?.close()
     traceDb?.close()
   }

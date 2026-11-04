@@ -1,3 +1,4 @@
+import { type Apply, journaled } from '../backend/journal.ts'
 import { t } from '../shared/i18n/translate.ts'
 import path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
@@ -13,7 +14,7 @@ import { LEAD_MS, nextWindow, scheduleOf, type PrepareSchedule } from './prepare
 import { createPrepareScheduler, type Prepared, type PrepareState } from './prepare-scheduler.ts'
 
 /**
- * Follow-ups, put together at launch: their store (followups.db), the notifier that reminds at the times the
+ * Follow-ups, put together at launch: their store (on the app database), the notifier that reminds at the times the
  * user agreed to and tells what is ready in the user's gaps, and background preparation, in batches at the
  * windows the user picked, read-only. main.ts reports what it sees: the window coming back and turns ending
  * (gaps), the computer waking, the user starting something (preparation yields), proposals from the model.
@@ -47,34 +48,16 @@ export interface FollowupsDeps {
   /** The backend's app database (src/backend/app-db.ts) to keep the follow-ups in; followups.db of their own without it. */
   db?: DatabaseSync
   /** The event core's apply (src/backend/event-core.ts): every change of a follow-up written with its event. */
-  apply?: <T>(kind: string, data: Record<string, unknown>, write: () => T) => { value: T }
+  apply?: Apply
   /** The event core's signals for what comes due on its own: reminders, preparation, the user back at the computer. */
   signal?: (kind: 'clock.reminder_due' | 'clock.prepare_window' | 'system.user_returned') => void
 }
 
 /** The store's writes, each a change the event core records (apply); reads go straight through. */
-const WRITES = Object.freeze(['add', 'setStatus', 'saveDraft', 'finishPreparing', 'moveStatus', 'markReminded', 'reschedule', 'setWatchMtime', 'rearm', 'remove', 'logNotice', 'logEvent'] as const)
-const MAX_RECORDED_CHARS = 120
-
-/** What of a write's arguments the event records: ids, statuses and times; long text only by its length. */
-function recorded(value: unknown): unknown {
-  if (typeof value === 'string') return value.length > MAX_RECORDED_CHARS ? { chars: value.length } : value
-  if (Array.isArray(value)) return { items: value.length }
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, typeof item === 'object' && item !== null ? '…' : recorded(item)]))
-  return value
-}
-
-function journaled(store: FollowupStore, apply: NonNullable<FollowupsDeps['apply']>): FollowupStore {
-  const writes = Object.fromEntries(WRITES.map((name) => {
-    const write = store[name] as (...args: unknown[]) => unknown
-    return [name, (...args: unknown[]) => apply(`followup.${name}`, { args: args.map(recorded) }, () => write(...args)).value]
-  }))
-  return { ...store, ...writes } as FollowupStore
-}
-
+const WRITES: ReadonlyArray<keyof FollowupStore & string> = Object.freeze(['add', 'setStatus', 'saveDraft', 'finishPreparing', 'moveStatus', 'markReminded', 'reschedule', 'setWatchMtime', 'rearm', 'remove', 'logNotice', 'logEvent'])
 export function openFollowups(deps: FollowupsDeps) {
   const opened = openFollowupStore(deps.db ? { db: deps.db } : { file: path.join(deps.userData, 'followups.db') })
-  const store = deps.apply ? journaled(opened, deps.apply) : opened
+  const store = deps.apply ? journaled(opened, 'followup', WRITES, deps.apply) : opened
   const notifier = createFollowupNotifier({
     store, notify: deps.notify, windowInFront: deps.windowInFront, onPending: deps.onPending, onError: deps.onError,
     ...(deps.signal ? { onTimer: () => deps.signal!('clock.reminder_due') } : {}),

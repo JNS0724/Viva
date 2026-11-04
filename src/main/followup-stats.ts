@@ -1,7 +1,7 @@
 /**
  * The week of self-use, in figures (步 7): whether suggestions were wanted (taken, turned down, muted), whether
  * notices came at the right time (opened, and how soon), what it cost (model calls, per day and per useful
- * suggestion), and how often a reminder came before its draft. Counted from followups.db's events; nothing leaves
+ * suggestion), and how often a reminder came before its draft. Counted from the follow-ups' events table; nothing leaves
  * the computer. Settings shows them under 后台准备.
  */
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000

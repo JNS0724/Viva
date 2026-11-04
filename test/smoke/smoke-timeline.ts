@@ -54,7 +54,7 @@ const messagesOf = (seed: Seed) => seed.talk.map((text, i) => (i % 2
 /** Writes the timeline into `userData`'s history before the app opens it. */
 export function seedTimeline(userData: string, now = Date.now()) {
   let clock = 0
-  const db = openHistoryDb({ file: path.join(userData, 'history.db'), now: () => clock })
+  const db = openHistoryDb({ file: path.join(userData, 'app.db'), now: () => clock })
   let previous: string | null = null
   const ids: string[] = []
   fs.mkdirSync(seedDir(userData, 'other'), { recursive: true })

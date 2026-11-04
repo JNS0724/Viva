@@ -1,4 +1,4 @@
-import type { AppDb } from './app-db.ts'
+import { type AppDb, transaction } from './app-db.ts'
 
 /**
  * The backend's event core (docs/backend-split-design.md §6, D4, D7). Every input is a signal of a closed kind,
@@ -54,7 +54,6 @@ export function createEventCore({ app, publish, now = Date.now }: {
   const last = db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM app_events')
   const after = db.prepare('SELECT seq, at, kind, data FROM app_events WHERE seq > ? ORDER BY seq LIMIT ?')
   let routes: Routes | null = null
-  let depth = 0
 
   const lastSeq = (): number => Number((last.get() as { seq: number }).seq)
 
@@ -63,21 +62,10 @@ export function createEventCore({ app, publish, now = Date.now }: {
    * neither), then the push, numbered. Nested applies join the outer transaction.
    */
   function apply<T>(kind: string, data: Record<string, unknown>, write: () => T, push: Record<string, unknown> | null = null): { seq: number, value: T } {
-    const outer = depth === 0
-    if (outer) db.exec('BEGIN IMMEDIATE')
-    depth += 1
-    let value: T
-    let seq: number
-    try {
-      value = write()
-      seq = Number(insert.run(now(), kind, JSON.stringify(data)).lastInsertRowid)
-      depth -= 1
-      if (outer) db.exec('COMMIT')
-    } catch (err) {
-      depth -= 1
-      if (outer) db.exec('ROLLBACK')
-      throw err
-    }
+    const { seq, value } = transaction(db, () => {
+      const written = write()
+      return { seq: Number(insert.run(now(), kind, JSON.stringify(data)).lastInsertRowid), value: written }
+    })
     if (push) publish({ ...push, type: String(push.type ?? kind), seq })
     return { seq, value }
   }

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { createFileWatch, SETTLE_MS } from '../src/main/file-watch.ts'
 import { openFollowupStore } from '../src/main/followup-store.ts'
 import { registerFollowupsIpc } from '../src/main/followups-ipc.ts'
@@ -85,23 +84,4 @@ test('IPC: a file to watch is checked and its time taken at once; 接着做 leav
   store.saveDraft(followup.id, '改动摘要', readFiles)
   await call('followups:continue', followup.id)
   assert.deepEqual([store.get(followup.id).status, store.get(followup.id).prepareBy], ['scheduled', null], 'waits for the next change')
-})
-
-test('a followups.db from before learns the watched file\'s time, and keeps its follow-ups', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-old-'))
-  const file = path.join(dir, 'followups.db')
-  const old = new DatabaseSync(file)
-  old.exec(`CREATE TABLE followups (id TEXT PRIMARY KEY, title TEXT NOT NULL, ask TEXT NOT NULL, origin TEXT NOT NULL, created_at INTEGER NOT NULL,
-    remind_at INTEGER, prepare_by INTEGER, files TEXT, watch_path TEXT, status TEXT NOT NULL, draft TEXT, draft_at INTEGER, read_files TEXT,
-    reminded_at INTEGER, late_from INTEGER, cue TEXT)`)
-  old.prepare(`INSERT INTO followups (id, title, ask, origin, created_at, remind_at, status) VALUES ('f1', '周报', 'x', '{"kind":"chat"}', 1, 2, 'scheduled')`).run()
-  old.close()
-  const store = openFollowupStore({ file })
-  t.after(() => {
-    store.close()
-    fs.rmSync(dir, { recursive: true, force: true })
-  })
-  assert.deepEqual([store.get('f1').title, store.get('f1').watchMtime], ['周报', null])
-  store.setWatchMtime('f1', 5)
-  assert.equal(store.get('f1').watchMtime, 5)
 })

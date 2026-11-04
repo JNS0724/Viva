@@ -5,7 +5,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 /**
- * followups.db: the things the user agreed Viva follows up on, and what Viva told them when. A follow-up is
+ * The follow-ups' tables (on the app database): the things the user agreed Viva follows up on, and what Viva told them when. A follow-up is
  * made only on the user's yes (a proposal card), never by the model alone; it has a time to remind at and/or a
  * time to be prepared by, and goes scheduled → preparing → ready → seen, or is dismissed or done. The notices
  * kept here count the day's interruptions, and the events are what the week of self-use is judged by.
@@ -63,7 +63,8 @@ const SCHEMA = `
     read_files TEXT,
     reminded_at INTEGER,
     late_from INTEGER,
-    cue TEXT
+    cue TEXT,
+    watch_mtime INTEGER
   );
   CREATE INDEX IF NOT EXISTS followups_status ON followups (status);
   CREATE TABLE IF NOT EXISTS notices (
@@ -82,8 +83,6 @@ const SCHEMA = `
     data TEXT
   );
 `
-/** Columns added since the first schema; a file from before gets them on opening. */
-const ADDED_COLUMNS = Object.freeze([['followups', 'watch_mtime', 'INTEGER']])
 /** Ended follow-ups are kept this long (the 后台 page's 记录), then let go. */
 const KEEP_ENDED_MS = 30 * 24 * 60 * 60 * 1000
 const MAX_TITLE_CHARS = 60
@@ -151,10 +150,6 @@ export function openFollowupStore({ file, db: given, now = Date.now }: { file?: 
   const db = given ?? new DatabaseSync(file!)
   if (!given) db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
   db.exec(SCHEMA)
-  for (const [table, column, type] of ADDED_COLUMNS) {
-    const has = (db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).some((info) => info.name === column)
-    if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
-  }
 
   const get = (id: string): Followup | null => {
     const row = db.prepare('SELECT * FROM followups WHERE id = ?').get(id) as Row | undefined

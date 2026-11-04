@@ -279,6 +279,7 @@ export async function forgetMemories(win: SmokeWindow, words: string) {
 }
 
 /** Whether `file` (a database, a JSON file) holds `secret` anywhere in its bytes. */
+/** Whether `file`, or a SQLite file's write-ahead log beside it, holds `secret`. */
 export function fileHolds(file: string, secret: string): boolean {
-  return fs.existsSync(file) && fs.readFileSync(file).includes(Buffer.from(secret))
+  return [file, `${file}-wal`].some((one) => fs.existsSync(one) && fs.readFileSync(one).includes(Buffer.from(secret)))
 }

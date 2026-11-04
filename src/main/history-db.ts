@@ -5,7 +5,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
-import { fillTopics } from './history-topics.ts'
+import { APP_DB_PRAGMAS, transaction as inTransaction } from '../backend/app-db.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
 
 const PAGE_SIZE = 50
@@ -39,9 +39,22 @@ const SCHEMA = `
     mode TEXT,
     model TEXT,
     pinned INTEGER NOT NULL DEFAULT 0,
-    deleted_at INTEGER
+    deleted_at INTEGER,
+    -- The working directory the segment's dsh session ran in.
+    cwd TEXT,
+    -- The segment it went on from (another directory, or back to an earlier point), so the timeline reads as one.
+    parent_id TEXT,
+    -- The segment that took its place, which it hangs off folded after its first folded_at messages; fold_kind
+    -- 'task' for a turn moved to the background, 'side' for a task started on its own (后台做), null for a path
+    -- left behind by going back.
+    folded_into TEXT,
+    folded_at INTEGER,
+    fold_kind TEXT,
+    -- The topic the segment is part of: its parent's, or its own id; set when it is first written, never again.
+    topic_id TEXT
   );
   CREATE INDEX IF NOT EXISTS conversations_order ON conversations (deleted_at, pinned, updated_at);
+  CREATE INDEX IF NOT EXISTS conversations_topic ON conversations (topic_id);
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
@@ -51,6 +64,8 @@ const SCHEMA = `
     receipt TEXT,
     session_id TEXT,
     created_at INTEGER NOT NULL,
+    -- The pictures pasted with a question, as JSON [{ id }] (shared/images.ts); the files are in the pictures folder.
+    images TEXT,
     UNIQUE (conversation_id, seq)
   );
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5 (
@@ -71,31 +86,9 @@ const SCHEMA = `
 /**
  * A message's id is what a link, a search hit or a star names it by. SQLite gives a new row the largest id plus one,
  * so after the last messages are cut off the next one would take an id a link still names; the ids are counted here
- * instead, never given twice (from the largest already there, for a file from before).
+ * instead, never given twice.
  */
-const COUNT_MESSAGE_IDS = `
-  INSERT OR IGNORE INTO id_counters (name, value) VALUES ('messages', 0);
-  UPDATE id_counters SET value = max(value, (SELECT COALESCE(MAX(id), 0) FROM messages)) WHERE name = 'messages';
-`
-
-/**
- * Columns added since the first schema, each with its declaration; a file from before gets them on opening.
- * cwd: the working directory the conversation's dsh session ran in; parent_id: the conversation it went on from
- * (a fork: another directory, or back to an earlier point), so the timeline reads as one; folded_into: the
- * segment that went back to an earlier point of this one and on from there, which this one now hangs off,
- * folded, after its first folded_at messages (the ones both have).
- */
-const ADDED_COLUMNS = Object.freeze([
-  ['conversations', 'cwd', 'TEXT'], ['conversations', 'parent_id', 'TEXT'],
-  ['conversations', 'folded_into', 'TEXT'], ['conversations', 'folded_at', 'INTEGER'],
-  // fold_kind: 'task' for a turn moved to the background (phase 3), 'side' for a task started on its own (后台做);
-  // null, a path left behind by going back.
-  ['conversations', 'fold_kind', 'TEXT'],
-  // images: the pictures pasted with a question, as JSON [{ id }] (shared/images.js); the files are in the pictures folder.
-  ['messages', 'images', 'TEXT'],
-  // topic_id: the topic the segment is part of (history-topics.ts), set once when it is written and never worked out again.
-  ['conversations', 'topic_id', 'TEXT'],
-])
+const COUNT_MESSAGE_IDS = "INSERT OR IGNORE INTO id_counters (name, value) VALUES ('messages', 0);"
 
 /** A message as a link, a search hit or a star names it: its segment and place, and its id when known. */
 export type MessageRef = { segmentId: string, seq: number, messageId?: number }
@@ -109,12 +102,6 @@ export type Located =
 type Row = Record<string, any>
 type Statement = { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint } }
 
-function addMissingColumns(db: DatabaseSync) {
-  for (const [table, column, type] of ADDED_COLUMNS) {
-    const present = db.prepare(`PRAGMA table_info(${table})`).all().some((info) => info.name === column)
-    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
-  }
-}
 
 /** A segment of the one timeline, as the app holds it: saved once it has messages. */
 export interface Conversation {
@@ -184,19 +171,17 @@ function contextOf(row: Row | undefined) {
 }
 
 /**
- * Permanent conversation history in one SQLite file (`node:sqlite`, no native module).
+ * Permanent conversation history, on the app database (src/backend/app-db.ts), or in a file of its own for a test.
  * Stores what the conversation column shows, plus which dsh session each message came from,
  * so the trace can be read back from dsh's own logs later.
  */
-export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { file: string, now?: () => number, newId?: () => string }) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const db = new DatabaseSync(file)
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
+export function openHistoryDb({ file, db: given, now = Date.now, newId = randomUUID }: { file?: string, db?: DatabaseSync, now?: () => number, newId?: () => string }) {
+  if (!given && !file) throw new Error('openHistoryDb needs a file or a database')
+  if (!given) fs.mkdirSync(path.dirname(file!), { recursive: true })
+  const db = given ?? new DatabaseSync(file!)
+  if (!given) db.exec(APP_DB_PRAGMAS)
   db.exec(SCHEMA)
-  addMissingColumns(db)
-  db.exec('CREATE INDEX IF NOT EXISTS conversations_topic ON conversations (topic_id)')
   db.exec(COUNT_MESSAGE_IDS)
-  fillTopics(db)
   const reviewing = reviewQueries(db, now)
   const reading = readerQueries(db, reviewing.reviewTopic)
 
@@ -251,17 +236,7 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
       WHERE title LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT ${SEARCH_SCAN_LIMIT}`),
   }
 
-  function transaction<T>(work: () => T): T {
-    db.exec('BEGIN IMMEDIATE')
-    try {
-      const result = work()
-      db.exec('COMMIT')
-      return result
-    } catch (err) {
-      db.exec('ROLLBACK')
-      throw err
-    }
-  }
+  const transaction = <T>(work: () => T): T => inTransaction(db, work)
 
   /**
    * Earlier messages never change; only the last stored one (receipt, final text) and new ones are written. The
@@ -499,6 +474,8 @@ export function openHistoryDb({ file, now = Date.now, newId = randomUUID }: { fi
 
   return {
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
-    questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading, close: () => db.close(),
+    questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
+    // The app database is the backend's to close.
+    close: () => { if (!given) db.close() },
   }
 }

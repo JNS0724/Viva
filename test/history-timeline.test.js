@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { openHistoryDb } from '../src/main/history-db.ts'
 
 /**
@@ -31,18 +30,6 @@ test('a segment keeps the working directory it ran in and the one it went on fro
   const reopened = openHistoryDb({ file })
   assert.deepEqual([reopened.get(first.id).conversation.cwd, reopened.get(first.id).conversation.parentId], ['/w/viva', null])
   assert.deepEqual([reopened.get(second.id).conversation.cwd, reopened.get(second.id).conversation.parentId], ['/w/site', first.id])
-})
-
-test('a history file from before segments opens as it was, its conversations without a directory', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-timeline-')), 'history.db')
-  const old = new DatabaseSync(file)
-  old.exec(`CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', title_custom INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, session_id TEXT, mode TEXT, model TEXT, pinned INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER)`)
-  old.exec(`INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('old-1', '旧的', 1, 2)`)
-  old.close()
-
-  const { db } = freshDb(file)
-  assert.deepEqual([db.get('old-1').conversation.cwd, db.get('old-1').conversation.parentId], [null, null])
 })
 
 test('earlier segments come back oldest first, in pages, each message with its time; deleted ones are left out', () => {
