@@ -5,56 +5,26 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "0a8b29e48e0490d6dd958b9d87f7dd4c2eb68097efb989ae67e58d61cd4dbcd9",
-      "zhHash": "56e083bed752af4ea4c2a723e83f2628ec583a1849be9e20ba487680f2ace64f"
-    },
-    {
-      "en": "docs/architecture.md",
-      "zh": "docs/architecture.zh-CN.md",
-      "enHash": "4b6ebc12bcaf62c3ee49761396527a7a98bf62c971e72fff592477aab5620a4c",
-      "zhHash": "50530d41868ebc05ac52a650eac7ee5e0eaa27e5d25a36131f0225682d692877"
-    },
-    {
-      "en": "docs/background-task-tools.md",
-      "zh": "docs/background-task-tools.zh-CN.md",
-      "enHash": "19bee7e3acb9de59cb17993666d29f7b7957fd875621585094e78ad3750b94f9",
-      "zhHash": "6188dde3f329842391f2fb1e5c55521c5b7849bee7f80ea913a13230e5742567"
-    },
-    {
-      "en": "docs/maid-character.md",
-      "zh": "docs/maid-character.zh-CN.md",
-      "enHash": "060929f17c34468c9691cbca95c1f90b01bf254de79a2895b23698e386963c50",
-      "zhHash": "01dbd066a9a16ae1b2e2604a60f05805a8d27b5c6bc773281145e9bb9225e927"
+      "enHash": "4771358a3a5f5e89db89b12e13c81440b878743419d36c1564554516df4dac8e",
+      "zhHash": "ae6323da6ec6de9f8f15c2a5915cd153747074ea65a62cad7a0819827dfe93c7"
     },
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "8a11ba03a146f09d48bbe038ba6c3232e6b64a0dff7700776b1dfbae2d0cae3e",
-      "zhHash": "89e10f6f6556adb431940c7c42285f1b6aa32513fc94d813b4e9708cdc249dee"
+      "enHash": "84487a815a1d19097aae479c9d7fe399936abd52e4c25f37a12078013ef19929",
+      "zhHash": "6eff3108ad4afa38293913c77616645939ffa4fee0efb2a7b68cd9a799e2f6bd"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "01ad58c39fbf3e34272ef35724d5c0e07b732d8e8a6ba38734da6359801b4f83",
-      "zhHash": "2dd3115e39f05ecc3240a136fcea6bc2d52ff33e1dcf96dc55602e7962e7793a"
-    },
-    {
-      "en": "docs/internationalization.md",
-      "zh": "docs/internationalization.zh-CN.md",
-      "enHash": "627aa6b6e5e5535a3838241b27dd658a95e3893a0fa036dc1f34c26407c67fa0",
-      "zhHash": "b7e67308e10b0e2c5703063855984168a38617eef45f46a74134dfcd5508511e"
+      "enHash": "5533372dc7e41a9b6e7fd8bd44b7f651dcc049a446ccc267a5b5b40193aa720d",
+      "zhHash": "e5383d17ecad3b8a1ca4065a894dfe42f12b8d7d561931e60762ccc2aa85e6ce"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "ed776e2df2315eed92eabf03c995400fd8d8ef91a7254482839ea5567d65764e",
       "zhHash": "e82cba0112f0b7e1559388184af1eb42374de4c29041181b083be3b0751d129f"
-    },
-    {
-      "en": "docs/memory.md",
-      "zh": "docs/memory.zh-CN.md",
-      "enHash": "2b017d142575ecbdaea6a4055a29b346be0f295a4d2a587ca9b0853dbbdde022",
-      "zhHash": "bea712d3ec7c5b465b2e04ece20a644b94652458b8e8fbad4b2889fcff089257"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -95,20 +65,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "84280b9e92f3f583f9c4f5cf7d15b32b154029e40d2c72dd72485f9ca5c398c2",
-      "zhHash": "e1516549dff41284472eba5f9ab5feaf895bd96e6afbbf3685233e7b6d35cf2c"
-    },
-    {
-      "en": "docs/remote-workspace-research-20261104.md",
-      "zh": "docs/remote-workspace-research-20261104.zh-CN.md",
-      "enHash": "f189e16099499882bafffd9d2c4cfb9cc93e720c15a0fdfed2866059b409b5fa",
-      "zhHash": "41328213a877a6caede822bdcf96f65328ceb40d1ab558bbe27af4eaf96acf96"
+      "enHash": "eb8530117ca5f14302d8e2918090dbf77cfd8e0a297c9b1578506d35100c2da1",
+      "zhHash": "787ed30845b121b4deb6ba5ac9f22b0b8d05f1b82092bb663733bc29dd9cd399"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "3d886d90c34ae03253d27e72f57fb37de46e1d9997d31562299a30cbbf1eff1b",
-      "zhHash": "bf2d5b9976fb7978a36a47eac17ee1f481186614e7684a3a2d0fdc0c3a11239f"
+      "enHash": "ac0857c3452a8b5bb682e0e976bed8d1e4d818c090f4c70234cdf036d50d1b6d",
+      "zhHash": "a30e62f93ec145d9515d90f5036bf2213422e9958e6a8d61f5332b88d6c1f1ea"
     }
   ],
   "bilingual": [

@@ -2,7 +2,7 @@
 
 English | [简体中文](ui-guidelines.zh-CN.md)
 
-These are the visual and interaction rules of Viva's current interface, taken from `src/renderer/styles.css`, `island.css`, `personal.css` and `src/renderer/view/` (2026-11-03, main `27de6f4`). If this page and the code disagree, the code wins and this page gets fixed. New UI follows this page. Development conventions (layers, DOM, i18n, verification) are in the "Frontend" section of [AGENTS.md](../AGENTS.md). Her look and states are in [Maid character](maid-character.md).
+These are the visual and interaction rules of Viva's current interface, taken from `src/renderer/styles.css`, `island.css`, `personal.css` and `src/renderer/view/` (2026-11-03, main `27de6f4`). If this page and the code disagree, the code wins and this page gets fixed. New UI follows this page. Development conventions (layers, DOM, i18n, verification) are in the "Frontend" section of [AGENTS.md](../AGENTS.md). Her look and states are in [Her character](#her-character) below.
 
 ## Direction
 
@@ -171,8 +171,40 @@ Motion:
 
 - Hover, opacity and small moves: 0.1–0.15s. Color, border and shadow: 0.3s.
 - The island resizes on a spring curve, `cubic-bezier(.3, 1.3, .5, 1)`, over 0.5s. Don't use springs anywhere else.
-- Looping animation only means "in progress" or "waiting on you": pulse dots, spinners, breathing, the typing caret, her animations. Where she may move is set in [Maid character](maid-character.md#display-rules).
+- Looping animation only means "in progress" or "waiting on you": pulse dots, spinners, breathing, the typing caret, her animations. Where she may move is set in [Her character](#her-character).
 - `prefers-reduced-motion: reduce` turns off all animation and transitions globally. A new looping animation still gets its own reduce rule, with a still state where one is needed (for example, breathing rests at `opacity: .8`).
+
+## Her character
+
+Viva appears as a blue-haired maid, drawn from the V4.1 prop states of dsh-personal-agent. Her hair and navy dress are exactly the interface's accent and background. Her state is shown by what she holds or wears, never by overlaid bubbles or symbols.
+
+**Assets** live in `src/assets/maid/`: one 400×400 still per state, `<state>.webp`. Greeting, thinking, typing, asking (also used for listening) and confirm also have an animation, `<state>-motion.webp`; greeting is 400 px and plays once, the others are 256 px and loop. The pictures come on a cream background, `#FAF7F2`, with no alpha channel. Her disc uses the same cream (`--maid-paper`), so cropping to a circle shows no square edge; nothing else uses this cream. The original GIFs, frame sheets and prompts stay in the dsh-personal-agent repository.
+
+| State | Pose and prop | Animation | Ring | When |
+| --- | --- | --- | --- | --- |
+| `greeting` | Waving | Yes, plays once | Blue | The first time the home page shows after launch |
+| `idle` | Holding a teacup | No | Quiet | Nothing is going on |
+| `thinking` | Pencil to her chin, eyes up | Yes | Blue | A question arrived and writing hasn't started |
+| `typing` | Square glasses, typing | Yes | Blue | Streaming an answer, running tools |
+| `ask` | Hand on her headset, listening | Yes | Orange | The assistant is asking you |
+| `listening` | The asking pictures | Yes | Blue | Files are held over the desktop island; nothing waits on you, so blue and no badge |
+| `confirm` | Handing over a clipboard | Yes | Orange | Approval cards, the desktop island |
+| `done` | Holding up a check card | No | Blue | A turn finished, something is ready |
+| `error` | Checking with a wrench | No | Red | An answer failed |
+| `offline` | Looking at an unplugged connector | No | Gray | No model connected yet, connecting |
+| `sleeping` | Hugging a pillow | No, breathes gently | Quiet | Background preparation runs while you're idle |
+
+Ring colors match the interface's state colors: orange waits on you, red is an error, blue is working or done.
+
+Drawn by `src/renderer/view/maid.ts`:
+
+- **Framing:** `whole` shows the whole half-body picture, used at 200 px on the home page, 96 px on cards, 72 px on the desktop island and 64 px on follow-up details. `face` zooms in 1.6× on her face, used at 48 px in the conversation.
+- **Animations** appear only where she is large and in front of you: the home greeting, approval and question cards, the open desktop island, and the conversation's current turn. Everywhere else shows a still. With reduced motion turned on in the system, every place shows a still.
+- **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
+- **On the desktop island** she's a still while it's folded and moves once it opens. `!`, `?` and `✓` badges say what her props can't at small sizes.
+- **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
+- All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc.
+- After changing assets, check the home page, conversation, approval cards, follow-up details and desktop island, and switch through several states in a row.
 
 ## Accessibility and keyboard
 

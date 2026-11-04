@@ -151,7 +151,7 @@
 
 ## 记忆
 
-记忆整体是 `plugins/memory` 这个 dsh 插件，应用只负责界面。换一种记忆方案，就是换掉这个插件。完整设计见 [memory.md](memory.zh-CN.md)。
+记忆整体是 `plugins/memory` 这个 dsh 插件，应用只负责界面。换一种记忆方案，就是换掉这个插件。它的表和记录的 `meta.contract_version` 就是约定，见 `plugins/memory/lib/store.ts` 和[系统架构设计](system-design.zh-CN.md#6-dsh-与插件)。
 
 - **profile**：每次启动 dsh 前，`dsh-profile.js` 写好应用 dsh 目录里的 `profiles/viva`：dsh 自带的 ACP 组合，加上这个插件（`link:` 依赖，`node_modules` 里放一个转发到插件入口的小包，见 [development.md 的「打包」](development.zh-CN.md#打包)），并把 `memory.db` 的路径写进插件配置。你自己的 `~/.dsh` 不会被读写。写不了时退回 `acp` profile，助手照常可用，只是没有记忆。
 - **约定**：插件和应用共用 `memory.db`（`plugins/memory/lib/store.js`）。应用在「关于你」里读写画像和记忆，把使用习惯写进去；插件写入它记下的内容、每个会话的检索状态，以及每轮带上了什么。
@@ -173,4 +173,4 @@
 
 ## 形象
 
-Viva 的形象是一位蓝发女仆（`src/renderer/view/maid.ts`，设定见[女仆角色设定](maid-character.zh-CN.md)）：首页是挥手问候的大图；对话里只出现在当前这一轮的回答旁边；等你确认或回答时，她在卡片上；桌面岛上也是她。标题栏的岛只有状态色圆点。她手里的道具跟着助手在做的事变：思考时铅笔点下巴，写回答时戴眼镜敲键盘，等你确认时递夹板，问你时扶耳麦，完成时举对勾卡，出错时拿扳手，连不上时看着断开的接头。系统开了「减少动态效果」时她不动。应用图标（`build/icons/`）暂时还是猫。
+Viva 的形象是一位蓝发女仆（`src/renderer/view/maid.ts`，设定见[界面规范](ui-guidelines.zh-CN.md#她的形象)）：首页是挥手问候的大图；对话里只出现在当前这一轮的回答旁边；等你确认或回答时，她在卡片上；桌面岛上也是她。标题栏的岛只有状态色圆点。她手里的道具跟着助手在做的事变：思考时铅笔点下巴，写回答时戴眼镜敲键盘，等你确认时递夹板，问你时扶耳麦，完成时举对勾卡，出错时拿扳手，连不上时看着断开的接头。系统开了「减少动态效果」时她不动。应用图标（`build/icons/`）暂时还是猫。
