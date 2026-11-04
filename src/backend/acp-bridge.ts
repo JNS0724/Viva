@@ -658,6 +658,8 @@ export function createAcpBridge({
 
   /** @returns false when the question is no longer waiting; throws when the answer does not fit it */
   const answerQuestion = (questionId: string, answers: unknown): boolean => questions.answer(questionId, answers)
+  /** What a background task waits on the user for, still: its approvals and its questions (a reloaded window shows them). */
+  const taskWaits = (taskId: string) => (tasks.has(taskId) ? { permissions: broker.pendingFor(taskId), questions: questions.pendingOf(taskId) } : { permissions: [], questions: [] })
   /** @returns false when no key is asked for any more; throws when the values do not fit */
   const provideSecrets = (requestId: string, values: Record<string, unknown> | null) => config?.provideSecrets(requestId, values) ?? false
 
@@ -712,5 +714,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }

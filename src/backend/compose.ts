@@ -627,8 +627,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     })
     ipcMain.handle('agent:answer', (_event, questionId, answers) => {
       const id = assertText(questionId, 'questionId', 200)
+      // Held first: dsh closes the question while it takes the answer, and what was asked goes with it.
+      const keep = taskService?.holdQuestion(id) ?? null
       const accepted = bridge?.answerQuestion(id, answers) ?? false
-      if (accepted) taskService?.answer(id, answers)
+      if (accepted) keep?.(answers)
       return accepted
     })
     // Keys the user typed for a server the model set up: straight to the encrypted store, never to dsh.
@@ -913,6 +915,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       agentInfo: () => lastInfo,
       agent: taskAgent,
       announce: emitToRenderer,
+      waitsOf: (taskId) => bridge?.taskWaits(taskId) ?? { permissions: [], questions: [] },
     })
   }
 

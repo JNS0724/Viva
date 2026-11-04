@@ -114,14 +114,22 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
     }
   }
 
-  /** The user answered a question (accepted by dsh): the reply joins the task that asked it. */
-  function answer(questionId: string, raw: unknown) {
+  /**
+   * About to answer a question: what was asked is taken now, because dsh closes the question (task_question_closed)
+   * while it takes the answer. Returns how to keep the reply once dsh accepted it; null for a question of no task held.
+   */
+  function holdQuestion(questionId: string): ((raw: unknown) => void) | null {
     const asked = questions.get(questionId)
-    questions.delete(questionId)
-    const transcript = asked ? transcripts.get(asked.taskId) : undefined
-    if (!asked || !transcript) return
-    change(asked.taskId, answered(transcript, asked.questions, answersOf(raw)))
+    if (!asked) return null
+    return (raw) => {
+      questions.delete(questionId)
+      const transcript = transcripts.get(asked.taskId)
+      if (transcript) change(asked.taskId, answered(transcript, asked.questions, answersOf(raw)))
+    }
   }
+
+  /** The user answered a question (accepted by dsh): the reply joins the task that asked it. */
+  const answer = (questionId: string, raw: unknown) => holdQuestion(questionId)?.(raw)
 
   /** Everything waiting is saved now: Viva quits, or dsh went. */
   const flush = () => [...timers.keys()].forEach(save)
@@ -135,9 +143,11 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
   /** What a task held has said so far, as it would be saved, the answer being written marked open; null for one not held. */
   const current = (taskId: string) => {
     const transcript = transcripts.get(taskId)
-    return transcript ? transcript.map(({ role, text, open }) => ({ role, text, ...(open ? { open: true } : {}) })) : null
+    return transcript ? transcript.map(({ role, text, open, streamKey, blocks }) => ({
+      role, text, ...(open ? { open: true } : {}), ...(open && streamKey ? { streamKey, blocks: blocks ?? [] } : {}),
+    })) : null
   }
 
-  return { track, userSaid, receive, answer, flush, drop, current, has: (taskId: string) => transcripts.has(taskId) }
+  return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, has: (taskId: string) => transcripts.has(taskId) }
 }
 export type TaskWords = ReturnType<typeof createTaskWords>

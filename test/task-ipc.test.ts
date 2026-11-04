@@ -32,7 +32,7 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
  * The IPC over a history db and a task store. relaunch() registers it afresh on the same db and store, as the
  * next launch does: nothing in memory, what was kept on disk. Saves along the way wait in `pending` until run.
  */
-function setup({ resumable, stored = [], steerable = true }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean } = {}) {
+function setup({ resumable, stored = [], steerable = true, waits }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean, waits?: { permissions: readonly unknown[], questions: readonly unknown[] } } = {}) {
   let n = 0
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
@@ -62,6 +62,7 @@ function setup({ resumable, stored = [], steerable = true }: { resumable?: { ok:
       timers,
       registry,
       announce: (event) => { announced.push(event) },
+      ...(waits ? { waitsOf: () => waits } : {}),
       current: () => current,
       agentInfo: () => ({ mode: 'live', model: 'V4' }),
       agent: {
@@ -344,4 +345,45 @@ test('after dsh went, a message to a task takes its session up again first, rath
   service.detachAll()
   assert.deepEqual(await service.agentMessage(taskId, '接着做'), { taskId, delivered: 'next question' })
   assert.deepEqual(calls.slice(-2), [['resumeTask', taskId], ['promptTask', taskId, '接着做']])
+})
+
+test('an answer is kept even though dsh closes the question as it takes the answer', async () => {
+  const { call, service, ends, texts } = setup()
+  const { task } = await call<Started>('task:start', { text: '查一下明天的天气' })
+  const city = { id: 'city', question: '哪个城市？', options: [{ label: '上海' }, { label: '北京' }] }
+  service.receive({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [city] })
+  // As compose.ts does: held, then dsh takes the answer (and says the question closed), then kept.
+  const keep = service.holdQuestion('q1')
+  service.receive({ type: 'task_question_closed', taskId: task.id, questionId: 'q1' })
+  keep?.([{ id: 'city', selected: ['北京'] }])
+  ends(task.id)
+  assert.deepEqual(texts(task.segmentId), ['查一下明天的天气', '北京', '本轮没有文字回复。'])
+  assert.equal(service.holdQuestion('q-unknown'), null)
+})
+
+test('a window reloaded while a task waits on the user shows what it waits for, to answer it there', async () => {
+  const permission = { requestId: 'p1', toolCall: { toolCallId: 't1', title: '写入 docs/release.md' }, options: [{ optionId: 'ok', name: '允许', kind: 'allow_once' }] }
+  const question = { questionId: 'q1', questions: [{ id: 'city', question: '哪个城市？', options: [{ label: '上海' }] }] }
+  for (const [name, waits] of [['permission', { permissions: [permission], questions: [] }], ['question', { permissions: [], questions: [question] }]] as const) {
+    const { call } = setup({ waits })
+    const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+    const listed = await call<Kept[]>('task:finished')
+    const state = reduce(initialState, { type: 'tasks_restored', list: listed })
+    const [restored] = state.tasks.list
+    assert.equal(restored.status, 'waiting', name)
+    if (name === 'permission') assert.equal(restored.view.permission?.requestId, 'p1')
+    else assert.equal(restored.view.question?.questionId, 'q1')
+    assert.equal(restored.id, task.id)
+  }
+})
+
+test('a window reloaded while a task streams its answer carries the same message on, not a second one', async () => {
+  const { call, service } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const stream = (kind: string, extra: object) => service.receive({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra } })
+  stream('delta', { index: 0, blockType: 'text', text: '前半段' })
+  const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
+  const next = reduce(state, { type: 'task_update', taskId: task.id, at: 9, update: { sessionUpdate: 'viva_stream', key: 'k1', kind: 'delta', index: 0, blockType: 'text', text: '后半段' } })
+  const settled = reduce(next, { type: 'task_update', taskId: task.id, at: 10, update: { sessionUpdate: 'viva_stream', key: 'k1', kind: 'settle', blocks: [{ type: 'text', text: '前半段后半段' }] } })
+  assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段'])
 })

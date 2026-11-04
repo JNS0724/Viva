@@ -25,14 +25,24 @@ export const initialTasks = Object.freeze({
  * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
  * when taken up again (`at`), at rest when it had ended (no `at`).
  */
-const savedView = (messages: ReadonlyArray<{ role: string, text: string, receipt?: Receipt | null, open?: boolean }>, at: number | null = null) => ({
-  messages: messages.map((message, i): ThreadMessage => ({
-    // Open: the answer a task at work was still writing when the window opened (a reload), which goes on from here.
-    id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open: at !== null && message.open === true, receipt: message.receipt ?? null,
-  })),
+type SavedMessage = { role: string, text: string, receipt?: Receipt | null, open?: boolean, streamKey?: string, blocks?: ReadonlyArray<{ index: number, text: string }> }
+const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = null) => ({
+  messages: messages.map((message, i): ThreadMessage => {
+    // Open: the answer a task at work was still writing when the window opened (a reload), which goes on from here;
+    // a stream's, with its key and blocks, so what comes next replaces them rather than starting another message.
+    const open = at !== null && message.open === true
+    const stream = open && message.streamKey ? { streamKey: message.streamKey, streamBlocks: message.blocks ?? [] } : {}
+    return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...stream }
+  }),
   thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
   turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, lastReceipt: null, error: null,
 })
+
+/** A task as `task:finished` gives it back: at rest, or (a reloaded window) at work with what it waits on. */
+type RestoredTask = {
+  task: BackgroundTask, status: string, endedAt: number | null, startedAt?: number | null, messages: SavedMessage[],
+  waits?: { permissions: Array<Record<string, unknown>>, questions: Array<Record<string, unknown>> } | null,
+}
 
 const ENDED: Readonly<Record<string, string>> = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
 const LIVE = new Set(['running', 'waiting'])
@@ -192,11 +202,15 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     }),
     /** Tasks that had ended by the last launch (task-store.js): back as they were, to be asked again or closed. */
     tasks_restored: (state, { list }) => {
-      // One still at work (a reloaded window) goes on from what it said so far; the others are at rest.
-      const restored = list.map(({ task, status, endedAt, startedAt = null, messages }: { task: BackgroundTask, status: string, endedAt: number | null, startedAt?: number | null, messages: ThreadMessage[] }) =>
-        endedAt === null
-          ? settled({ ...task, startedAt: startedAt ?? 0, endedAt: null, status, now: null, view: savedView(messages, startedAt ?? 0) })
-          : settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) }))
+      // One still at work (a reloaded window) goes on from what it said so far, with what it waits on the user for;
+      // the others are at rest.
+      const restored = list.map(({ task, status, endedAt, startedAt = null, messages, waits = null }: RestoredTask) => {
+        if (endedAt !== null) return settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) })
+        const at = startedAt ?? 0
+        const asked = (waits?.permissions ?? []).reduce<BackgroundTask['view']>((view, wait) => handlers.permission_request(view, { ...wait, at }), savedView(messages, at))
+        const view = (waits?.questions ?? []).reduce<BackgroundTask['view']>((current, wait) => handlers.question_request(current, { ...wait, at }), asked)
+        return settled({ ...task, startedAt: at, endedAt: null, status, now: null, view })
+      })
       return withTasks(state, {
         list: [...state.tasks.list.filter(entry => !restored.some((task: BackgroundTask) => task.id === entry.id)), ...restored],
       })

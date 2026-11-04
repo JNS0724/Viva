@@ -53,11 +53,13 @@ interface TaskIpcDeps {
   agent: Record<'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>
   /** Timers for saving what tasks say along the way (tests pass their own). */
   timers?: Pick<TaskWordsDeps, 'later' | 'cancel'>
+  /** What a task held still waits on the user for (acp-bridge.ts taskWaits), for a window that opens meanwhile. */
+  waitsOf?: (taskId: string) => { permissions: readonly unknown[], questions: readonly unknown[] }
   /** To the window: what the agent did with a task, which the window did not ask for (task_created, …). */
   announce?: (event: { type: string, [field: string]: unknown }) => void
 }
 
-export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, agentInfo, agent, timers = {}, announce = () => {} }: TaskIpcDeps) {
+export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, agentInfo, agent, timers = {}, announce = () => {}, waitsOf = () => ({ permissions: [], questions: [] }) }: TaskIpcDeps) {
   const restoredSummary = (entry: StoredTask) => {
     const host = db.sideTaskHost(entry.segmentId)
     return { ...summaryOf(entry), ...(host ? { host } : {}) }
@@ -157,7 +159,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
       const held = attached.has(entry.id)
       const messages = (held ? taskWords.current(entry.id) : null) ?? found.messages.slice(entry.keep)
       if (ended) return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages }]
-      if (held) return [{ task: restoredSummary(entry), status: 'running', endedAt: null, startedAt: entry.startedAt ?? null, messages }]
+      if (held) return [{ task: restoredSummary(entry), status: 'running', endedAt: null, startedAt: entry.startedAt ?? null, messages, waits: waitsOf(entry.id) }]
       return [{ task: restoredSummary(entry), status: 'interrupted', endedAt: entry.startedAt ?? Date.now(), messages }]
     })
   }
@@ -263,6 +265,8 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     receive: taskWords.receive,
     /** The user's answer to a question dsh took: it joins the task that asked it. */
     answer: taskWords.answer,
+    /** Before the answer goes to dsh (which closes the question as it takes it): how to keep it once taken. */
+    holdQuestion: taskWords.holdQuestion,
     /** Viva quits, or dsh went: what tasks said is saved now. */
     flush: taskWords.flush,
     /**

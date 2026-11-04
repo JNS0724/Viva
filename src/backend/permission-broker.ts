@@ -2,7 +2,7 @@
 export type PermissionOutcome = { outcome: { outcome: 'selected', optionId: string } | { outcome: 'cancelled' } }
 
 /** What the broker needs of an ACP permission request. */
-interface PermissionParams { sessionId?: string, options?: Array<{ optionId: string }> }
+interface PermissionParams { sessionId?: string, options?: Array<{ optionId: string }>, toolCall?: unknown }
 
 /**
  * Parks ACP permission requests until the user answers in the renderer.
@@ -41,11 +41,16 @@ export function createPermissionBroker() {
   /** The sessions waiting on the user's answer to a permission request. */
   const waitingSessions = (): Set<string> => new Set([...pending.values()].flatMap((entry) => (entry.params.sessionId ? [entry.params.sessionId] : [])))
 
+  /** What a session still waits on, for a window that opens meanwhile (a reload): each request as it was asked. */
+  const pendingFor = (sessionId: string) => [...pending].filter(([, entry]) => entry.params.sessionId === sessionId)
+    .map(([requestId, entry]) => ({ requestId, toolCall: entry.params.toolCall, options: entry.params.options }))
+
   return {
     create,
     resolve,
     cancelAll,
     waitingSessions,
+    pendingFor,
     get size() {
       return pending.size
     },
