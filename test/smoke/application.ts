@@ -126,8 +126,11 @@ export async function launchSmokeApplication(options: ApplicationOptions): Promi
   }
 }
 
-/** Configure the ordinary model-provider UI; production dsh never receives a test-only endpoint override. */
-export async function configureFakeProvider(session: SmokeApplication, model: SmokeModel): Promise<void> {
+/**
+ * Configure the ordinary model-provider UI; production dsh never receives a test-only endpoint override.
+ * @param shot where to keep a picture of the form with 获取可用模型's picker open, when given
+ */
+export async function configureFakeProvider(session: SmokeApplication, model: SmokeModel, shot?: string): Promise<void> {
   const { page } = session
   await page.locator('#open-profile').click()
   await page.locator('.hub-nav[data-page="settings"]').click()
@@ -135,8 +138,17 @@ export async function configureFakeProvider(session: SmokeApplication, model: Sm
   await page.locator('[name="model-name"]').fill('Smoke primary')
   await page.locator('[name="model-api"]').selectOption('anthropic-messages')
   await page.locator('[name="model-url"]').fill(model.url)
-  await page.locator('[name="model-ids"]').fill('deepseek-chat')
   await page.locator('[name="model-key"]').fill('smoke-fake-key')
+  // 获取可用模型 asks the fake endpoint; the model picked takes the empty row, sized as the listing says.
+  await page.getByRole('button', { name: /获取可用模型|Fetch available models/ }).click()
+  // A pick redraws the picker (model-state.ts), so the box is clicked, then found again checked.
+  await page.locator('[name="model-pick-deepseek-chat"]').click()
+  await expect(page.locator('[name="model-pick-deepseek-chat"]')).toBeChecked()
+  if (shot) await page.locator('form').filter({ has: page.locator('[name="model-name"]') }).screenshot({ path: shot })
+  await page.getByRole('button', { name: /添加所选|Add selected/ }).click()
+  await expect(page.locator('[name="model-id-1"]')).toHaveValue('deepseek-chat')
+  await expect(page.locator('[name="model-ctx-1"]')).toHaveValue('131072')
+  await expect(page.locator('[name="model-id-0"]')).toHaveCount(0)
   await page.locator('form').filter({ has: page.locator('[name="model-name"]') }).locator('button[type="submit"]').click()
   await expect.poll(() => page.evaluate(async () => {
     const info = await window.agent.getInfo()

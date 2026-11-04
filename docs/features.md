@@ -100,9 +100,14 @@ Without a usable model, home shows Connect model and disables the composer. Add 
 
 ### Other models
 
-Add a provider name, protocol, baseURL, one model ID per line, and API key (optional for local models). Providers appear grouped in the composer menu. Supported dsh `llm-pi-ai` protocols are OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. Kimi, Zhipu, Qwen, OpenRouter, Ollama, and LM Studio commonly use OpenAI compatibility.
+Add a provider name, protocol, baseURL and API key (optional for local models), then one row per model. Providers appear grouped in the composer menu.
 
-Viva configures the existing plugin rather than implementing adapters. Provider routes use `custom-xxxxxxxx` ids. Keys are encrypted in `models.json` and supplied to dsh as `VIVA_MODEL_KEY_XXXXXXXX`; profile files contain variable names only. DeepSeek becomes optional; without its key, both DeepSeek plugins are disabled and its menu entries disappear. `lastModel` is restored through ACP provider/model settings on restart and new conversations; missing models fall back to DeepSeek or the first custom provider. Adding/removing providers restarts and resumes the current session without clearing history; changes are blocked during work. Provider editing is not yet supported.
+- **Fetch available models** asks the endpoint for its model list with the protocol, address and key filled in (`{baseURL}/models` for OpenAI protocols, `/v1/models` for Anthropic, as dsh does), to search, tick and turn into rows with Add selected; a context window or max output the listing gives is filled in. An endpoint that lists nothing is filled in by hand; a redirect is not followed (the key never goes to another address), so enter the address it points to.
+- **Each model** has an ID, a context window, a max output, and Images: ticked, the model can receive pictures (`input: ['text', 'image']` in the profile). A blank context window or max output counts as dsh's 262144 / 32768; max output cannot exceed the context window.
+
+Supported dsh `llm-pi-ai` protocols are OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. Kimi, Zhipu, Qwen, OpenRouter, Ollama, and LM Studio commonly use OpenAI compatibility.
+
+Viva configures the existing plugin rather than implementing adapters. Provider routes use `custom-xxxxxxxx` ids. Keys are encrypted in `models.json` and supplied to dsh as `VIVA_MODEL_KEY_XXXXXXXX`; profile files contain variable names only. DeepSeek becomes optional; without its key, both DeepSeek plugins are disabled and its menu entries disappear. `lastModel` is restored through ACP provider/model settings on restart and new conversations; missing models fall back to DeepSeek or the first custom provider. Providers can be added, edited and removed; a key left blank while editing keeps the saved one, unless the address moves to another host: the saved key is never sent to a new host (nor by Fetch available models), so it must be entered again. A change restarts dsh and resumes the current session without clearing history; changes are blocked during work.
 
 <a id="助手反问"></a>
 ## Clarifying questions

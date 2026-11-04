@@ -4,6 +4,7 @@ const ICONS = {
   plus: [['path', { d: 'M12 5v14M5 12h14' }]],
   panel: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M15 4v16' }]],
   send: [['path', { d: 'M12 19V5M6 11l6-6 6 6' }]],
+  down: [['path', { d: 'M12 5v14M6 13l6 6 6-6' }]],
   stop: [['rect', { x: 7, y: 7, width: 10, height: 10, rx: 2, fill: 'currentColor' }]],
   close: [['path', { d: 'M6 6l12 12M18 6L6 18' }]],
   chevron: [['path', { d: 'M6 9l6 6 6-6' }]],

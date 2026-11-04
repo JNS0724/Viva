@@ -68,7 +68,8 @@
 .isl[data-tone="waiting"] .isl-label { color: var(--orange); }
 .isl[data-tone="error"] .isl-label { color: var(--red); }
 .isl-time { flex: none; font-family: var(--font-mono); color: var(--accent); }
-.isl-more { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
+/* What follows the label (the model, what runs) gives way before the label does: 「空闲」 stays whole beside a long model name. */
+.isl-more { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
 .isl[data-host="desk"] .isl-more { flex: 1 1 auto; }
 .isl-ring { flex: none; width: 16px; height: 16px; fill: none; stroke-width: 2.4; stroke-linecap: round; animation: isl-spin 1s linear infinite; }
 .isl-ring circle { stroke: var(--line-2); }

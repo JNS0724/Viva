@@ -11,12 +11,20 @@ import { type Encryption, keyHint, validateApiKey } from './settings-store.ts'
  * hands the key over in an environment variable that only the dsh process sees. Keys are encrypted with
  * the OS keychain like the DeepSeek key; the UI only sees their last characters.
  */
-const FILE_VERSION = 1
+/** 2: models are entries (`{ id, contextWindow?, maxTokens?, image? }`); a file of 1 lists ids, read as entries. */
+const FILE_VERSION = 2
 export const MAX_PROVIDERS = 20
 const MAX_MODELS = 50
 const MAX_NAME_CHARS = 40
 const MAX_MODEL_CHARS = 200
 const MAX_URL_CHARS = 2000
+/** No model's window comes near this; a number past it is a typo. */
+const MAX_TOKEN_COUNT = 100_000_000
+/**
+ * What dsh's pi-ai assumes of a model the profile does not size (dsh-llm-pi-ai DEFAULT_CONTEXT_WINDOW,
+ * DEFAULT_MAX_TOKENS): the form shows them as placeholders. Pictures it assumes a model cannot read.
+ */
+export const MODEL_DEFAULTS = Object.freeze({ contextWindow: 262144, maxTokens: 32768 })
 /** dsh's own DeepSeek route; the stock ACP default points at it. */
 export const DEEPSEEK_PROVIDER = 'deepseek-official'
 /** The wire protocols dsh's pi-ai adapter speaks, as the settings form names them. */
@@ -29,8 +37,10 @@ export let PROTOCOLS = Object.freeze({
 const ID_PREFIX = 'custom-'
 const KEY_ENV_PREFIX = 'VIVA_MODEL_KEY_'
 
+/** One model of a provider, with what the user set of it; what is unset dsh assumes (MODEL_DEFAULTS). */
+export interface ModelEntry { id: string, contextWindow?: number, maxTokens?: number, image?: boolean }
 /** A provider as the settings form sends it, checked. */
-export interface ProviderInput { name: string, api: string, baseURL: string, models: string[], key: string }
+export interface ProviderInput { name: string, api: string, baseURL: string, models: ModelEntry[], key: string }
 /** A provider as the main process holds it: with its route id, and its key decrypted ('' for none). */
 export interface Provider extends ProviderInput { id: string }
 /** A model to start on: which route, which model of it. */
@@ -59,36 +69,74 @@ function parseBaseUrl(value: unknown): string {
   return text.replace(/\/+$/, '')
 }
 
-/** Model ids one per line or separated by commas. */
-function parseModels(value: unknown): string[] {
-  const models = String(value ?? '').split(/[\n,，]/).map((item) => item.trim()).filter(Boolean)
+/** A token count as typed: blank for unset, else a whole number in range; null when it is neither. */
+function tokenCount(value: unknown): number | undefined | null {
+  const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : value == null ? '' : null
+  if (text === null) return null
+  if (!text) return undefined
+  const count = Number(text)
+  return Number.isInteger(count) && count > 0 && count <= MAX_TOKEN_COUNT ? count : null
+}
+
+/** One model row of the form: its id, and the window, output and pictures the user set. */
+function parseModel(value: unknown): ModelEntry {
+  const row = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const id = typeof row.id === 'string' ? row.id.trim() : ''
+  if (id.length > MAX_MODEL_CHARS || /\s/.test(id)) throw new Error(t("main.model-providers.model.ids.cannot.contain.spaces.or.be", { value1: id.slice(0, 40) }))
+  const contextWindow = tokenCount(row.contextWindow)
+  if (contextWindow === null) throw new Error(t("main.model-providers.context.window.must.be.a.whole.number", { model: id }))
+  const maxTokens = tokenCount(row.maxTokens)
+  if (maxTokens === null) throw new Error(t("main.model-providers.max.output.must.be.a.whole.number", { model: id }))
+  if (maxTokens && maxTokens > (contextWindow ?? MODEL_DEFAULTS.contextWindow)) throw new Error(t("main.model-providers.max.output.exceeds.the.context.window", { model: id }))
+  return { id, ...(contextWindow ? { contextWindow } : {}), ...(maxTokens ? { maxTokens } : {}), ...(row.image === true ? { image: true } : {}) }
+}
+
+/** The form's model rows; a row left without an id is dropped. */
+function parseModels(value: unknown): ModelEntry[] {
+  if (!Array.isArray(value)) throw new Error(t("main.model-providers.enter.at.least.one.model.id"))
+  if (value.length > MAX_MODELS) throw new Error(t("main.model-providers.up.to.models.allowed", { MAX_MODELS: MAX_MODELS }))
+  const models = value.map(parseModel).filter((model) => model.id)
   if (models.length === 0) throw new Error(t("main.model-providers.enter.at.least.one.model.id"))
-  if (models.length > MAX_MODELS) throw new Error(t("main.model-providers.up.to.models.allowed", { MAX_MODELS: MAX_MODELS }))
-  const bad = models.find((model) => model.length > MAX_MODEL_CHARS || /\s/.test(model))
-  if (bad) throw new Error(t("main.model-providers.model.ids.cannot.contain.spaces.or.be", { value1: bad.slice(0, 40) }))
-  if (new Set(models).size !== models.length) throw new Error(t("main.model-providers.duplicate.model.ids"))
+  if (new Set(models.map((model) => model.id)).size !== models.length) throw new Error(t("main.model-providers.duplicate.model.ids"))
   return models
+}
+
+/** Models as a file keeps them: ids (version 1) or entries; anything unreadable is dropped. */
+function storedModels(value: unknown): ModelEntry[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item): ModelEntry[] => {
+    if (typeof item === 'string') return item ? [{ id: item }] : []
+    try {
+      const model = parseModel(item)
+      return model.id ? [model] : []
+    } catch {
+      return []
+    }
+  })
+}
+
+/** Where to ask for a provider's models: its protocol and address, checked as the form's are. */
+export function parseEndpoint(input: unknown): { api: string, baseURL: string, key: string } {
+  const value = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  if (typeof value.api !== 'string' || !Object.hasOwn(PROTOCOLS, value.api)) throw new Error(t("main.model-providers.choose.an.api.protocol"))
+  const keyText = typeof value.key === 'string' ? value.key.trim() : ''
+  return { api: value.api, baseURL: parseBaseUrl(value.baseURL), key: keyText ? validateApiKey(keyText) : '' }
 }
 
 /**
  * Validates what the settings form sends.
- * @param input untrusted `{ name, api, baseURL, models, key }`, each field checked below; models as typed (lines or commas), key optional
- * @param takenNames names already in use
+ * @param input untrusted `{ name, api, baseURL, models, key }`, each field checked below: models as rows
+ *   `{ id, contextWindow?, maxTokens?, image? }` (counts as typed, blank for unset), key optional
+ * @param takenNames names already in use (when editing, without the provider's own)
  */
-export function parseProviderInput(input: any, takenNames: readonly string[]): ProviderInput {
+export function parseProviderInput(input: unknown, takenNames: readonly string[]): ProviderInput {
   if (!input || typeof input !== 'object') throw new Error('invalid model provider')
-  const name = requireText(input.name, t("main.mcp-config.name"), MAX_NAME_CHARS)
+  const value = input as Record<string, unknown>
+  const name = requireText(value.name, t("main.mcp-config.name"), MAX_NAME_CHARS)
   if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(t("main.model-providers.a.model.provider.named.already.exists", { name: name }))
-  if (!Object.hasOwn(PROTOCOLS, input.api)) throw new Error(t("main.model-providers.choose.an.api.protocol"))
-  const keyText = typeof input.key === 'string' ? input.key.trim() : ''
-  return {
-    name,
-    api: input.api,
-    baseURL: parseBaseUrl(input.baseURL),
-    models: parseModels(input.models),
-    // A local server (Ollama, LM Studio) usually needs none.
-    key: keyText ? validateApiKey(keyText) : '',
-  }
+  // A local server (Ollama, LM Studio) usually needs no key.
+  const { api, baseURL, key } = parseEndpoint(value)
+  return { name, api, baseURL, models: parseModels(value.models), key }
 }
 
 /** What the settings page shows: everything except the key itself. */
@@ -108,7 +156,9 @@ export function piAiProviders(providers: readonly Provider[]): Record<string, ob
     api: provider.api,
     baseURL: provider.baseURL,
     ...(provider.key ? { apiKeyEnv: keyEnvName(provider.id) } : {}),
-    models: provider.models.map((id) => ({ id, name: id })),
+    models: provider.models.map(({ id, contextWindow, maxTokens, image }) => ({
+      id, name: id, ...(contextWindow ? { contextWindow } : {}), ...(maxTokens ? { maxTokens } : {}), ...(image ? { input: ['text', 'image'] } : {}),
+    })),
   }]))
 }
 
@@ -126,15 +176,15 @@ export const DEEPSEEK_DEFAULT: Readonly<ModelChoice> = Object.freeze({ provider:
  * default when there is a DeepSeek key, else the first model the user added.
  */
 export function defaultModel({ lastModel, providers, hasDeepSeek }: {
-  lastModel: ModelChoice | null, providers: ReadonlyArray<{ id: string, models: string[] }>, hasDeepSeek: boolean,
+  lastModel: ModelChoice | null, providers: ReadonlyArray<{ id: string, models: ReadonlyArray<{ id: string }> }>, hasDeepSeek: boolean,
 }): ModelChoice | null {
   const offered = (choice: ModelChoice) => (choice.provider === DEEPSEEK_PROVIDER
     ? hasDeepSeek
-    : providers.some((provider) => provider.id === choice.provider && provider.models.includes(choice.model)))
+    : providers.some((provider) => provider.id === choice.provider && provider.models.some((model) => model.id === choice.model)))
   if (lastModel && offered(lastModel)) return lastModel
   if (hasDeepSeek) return DEEPSEEK_DEFAULT
   if (providers.length === 0) return null
-  return { provider: providers[0].id, model: providers[0].models[0] }
+  return { provider: providers[0].id, model: providers[0].models[0].id }
 }
 
 /** dsh names a model in its picker as the JSON of `[provider, model]`; anything else is not a model choice. */
@@ -152,8 +202,8 @@ export function parseModelValue(value: string): ModelChoice | null {
 
 export const modelValue = (choice: ModelChoice): string => JSON.stringify([choice.provider, choice.model])
 
-/** A provider as kept on disk: its key encrypted (base64), or null. */
-interface StoredProvider { id: string, name: string, api: string, baseURL: string, models?: string[], key: string | null }
+/** A provider as kept on disk: its key encrypted (base64), or null; models as entries, or ids (FILE_VERSION 1). */
+interface StoredProvider { id: string, name: string, api: string, baseURL: string, models?: Array<string | ModelEntry>, key: string | null }
 
 export function createModelStore({ file, crypto, onError = () => {}, newId = () => `${ID_PREFIX}${randomBytes(4).toString('hex')}` }: {
   file: string, crypto: Encryption, onError?: (err: Error) => void, newId?: () => string,
@@ -189,7 +239,7 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
   /** The providers with their keys decrypted; only the main process ever holds these. */
   function list(): Provider[] {
     return read().stored.map((stored) => ({
-      id: stored.id, name: stored.name, api: stored.api, baseURL: stored.baseURL, models: stored.models ?? [], key: decryptKey(stored),
+      id: stored.id, name: stored.name, api: stored.api, baseURL: stored.baseURL, models: storedModels(stored.models), key: decryptKey(stored),
     }))
   }
 
@@ -201,6 +251,18 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
     const key = config.key ? crypto.encryptString(config.key).toString('base64') : null
     write({ stored: [...stored, { id, name: config.name, api: config.api, baseURL: config.baseURL, models: config.models, key }], lastModel })
     return { ...config, id }
+  }
+
+  /** The provider changed as the form says; a key left blank keeps the one it has. */
+  function update(id: string, config: ProviderInput): Provider {
+    const { stored, lastModel } = read()
+    const before = stored.find((provider) => provider.id === id)
+    if (!before) throw new Error(t("main.model-providers.model.provider.not.found"))
+    if (config.key && !crypto.isEncryptionAvailable()) throw new Error(t("main.model-providers.system.keychain.unavailable.the.key.cannot.be"))
+    const key = config.key ? crypto.encryptString(config.key).toString('base64') : before.key
+    const next = { id, name: config.name, api: config.api, baseURL: config.baseURL, models: config.models, key }
+    write({ stored: stored.map((provider) => (provider.id === id ? next : provider)), lastModel })
+    return { ...config, id, key: config.key || decryptKey(before) }
   }
 
   function remove(id: string): void {
@@ -217,7 +279,7 @@ export function createModelStore({ file, crypto, onError = () => {}, newId = () 
     write({ stored: read().stored, lastModel: choice })
   }
 
-  return { list, add, remove, lastModel, setLastModel }
+  return { list, add, update, remove, lastModel, setLastModel }
 }
 
 onLocaleChange(() => {

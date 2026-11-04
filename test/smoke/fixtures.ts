@@ -36,7 +36,7 @@ export class Scenario {
     if (!['setup', 'language'].includes(this.options.phase) && !this.options.apiKey) {
       this.model = await startFakeLlm({ decideFirst: this.options.phase === 'showcase' ? showcaseDecide : undefined })
       const initial = await this.start('bootstrap')
-      await configureFakeProvider(initial, this.model)
+      await configureFakeProvider(initial, this.model, this.info.outputPath('model-picker.png'))
       await this.closeCurrent()
     }
     if (this.options.phase === 'timeline') seedTimeline(this.profile.userData)

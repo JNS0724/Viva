@@ -40,6 +40,8 @@
   --reserve-left: 84px;
   --reserve-right: 0px;
   --drawer-width: 440px;
+  /* How much of a long message shows folded (view/message-fold.ts); it folds only from about twice this. */
+  --msg-fold-h: 280px; --msg-fold-fade: linear-gradient(to bottom, #000 70%, transparent);
 }
 
 * { box-sizing: border-box; }
@@ -146,9 +148,10 @@ html:not([data-platform="darwin"]) .titlebar {
 .col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
 /* A message's star extends 38px beyond its column. Keep that lane inside the scrollport at narrow widths too. */
 .scroll { position: relative; flex: 1; width: 100%; min-height: 0; padding-inline: 38px; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
+/* Back to the latest (view/scroll-follow.ts): an arrow only, a quiet way down while reading further up. */
 .jump-latest {
-  align-self: center; flex: none; height: 28px; margin: 0 0 4px; padding: 0 14px; border: none; border-radius: 999px;
-  background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  align-self: center; flex: none; display: grid; place-items: center; width: 36px; height: 36px; margin: 0 0 4px; padding: 0;
+  border: none; border-radius: 50%; background: var(--accent); color: var(--bg); cursor: pointer; box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
 }
 .home { width: 100%; max-width: 1240px; min-height: 100%; padding: 24px 0; box-sizing: border-box; }
 .thread { width: 100%; max-width: var(--col, 760px); display: flex; flex-direction: column; gap: 28px; padding: 36px 0 24px; }
@@ -326,6 +329,13 @@ html:not([data-platform="darwin"]) .titlebar {
   background: var(--panel); border: 1px solid var(--line-2); font-size: 13px; line-height: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .msg-via { align-self: flex-end; margin-top: -20px; font-size: 12px; color: var(--ink-3); }
+/* A long message folded (view/message-fold.ts): its start, fading out, and 展开 / 收起 below it. */
+.msg-fold[data-folded="true"] {
+  max-height: var(--msg-fold-h); overflow: hidden;
+  -webkit-mask-image: var(--msg-fold-fade); mask-image: var(--msg-fold-fade);
+}
+.msg-fold-toggle { align-self: flex-start; margin-top: 4px; }
+.msg-user .msg-fold-toggle { display: block; margin-left: auto; white-space: normal; }
 /* Going back to something the user said (view/rewind.js): a bar beside the bubble, shown on hover or focus. */
 .msg-user-row { position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
 .task-submission { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }

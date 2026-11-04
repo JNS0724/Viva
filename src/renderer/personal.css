@@ -135,8 +135,24 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .ext-edit-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .ext-edit-foot .help { margin: 0 0 0 auto; }
 
+/* A provider's models, one row each, and what 获取可用模型 found to pick from (view/model-form.ts). */
+/* One grid for every row, so the head's columns line up with the fields under it. */
+.model-rows { display: grid; grid-template-columns: minmax(0, 1fr) 112px 112px auto 34px; gap: 8px; align-items: center; }
+.model-row { display: contents; }
+.model-row-head > .label { color: var(--ink-3); }
+.model-image { align-items: center; white-space: nowrap; }
+.model-image input { margin-top: 0; }
+.model-pick { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); }
+.model-pick-head { display: flex; align-items: center; gap: 12px; }
+.model-pick-head > .label { flex: none; color: var(--ink-3); }
+.model-pick-list { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.model-pick-item { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px 8px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.model-pick-item:hover { background: var(--raised); }
+.model-pick-item input { flex: none; accent-color: var(--accent); }
+
 @media (max-width: 720px) {
   .intro-pair { grid-template-columns: minmax(0, 1fr); }
+  .model-rows { grid-template-columns: minmax(0, 1fr) 88px 88px auto 34px; }
 }
 
 /* A row's fields beside its label (view/prepare-settings.ts). */

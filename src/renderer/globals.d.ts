@@ -184,7 +184,9 @@ interface AgentApi extends LanguageApi {
   resetDeskPlace: Invoke<'settings:reset-desk-place'>
   getModels: Invoke<'models:get'>
   addModelProvider: Invoke<'models:add'>
+  updateModelProvider: Invoke<'models:update'>
   removeModelProvider: Invoke<'models:remove'>
+  discoverModels: Invoke<'models:discover'>
   loadHistory: Invoke<'history:load'>
   saveHistory: Invoke<'history:save'>
   listHistory: Invoke<'history:list'>
