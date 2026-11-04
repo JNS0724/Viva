@@ -21,7 +21,7 @@ test('real dsh forwards first live text before a delayed SSE response finishes; 
     chunk('', 'stop'); completedAt = Date.now(); res.end('data: [DONE]\n\n')
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  const provider = { id: 'stream-test', name: 'stream-test', api: 'openai-completions', baseURL: `http://127.0.0.1:${server.address().port}/v1`, models: ['stream-test'], key: 'test-only' }
+  const provider = { id: 'stream-test', name: 'stream-test', api: 'openai-completions', baseURL: `http://127.0.0.1:${server.address().port}/v1`, models: [{ id: 'stream-test' }], key: 'test-only' }
   const { bridge, events, defer } = await startHarness(t, { models: () => ({ providers: piAiProviders([provider]), deepseek: false, defaultModel: { provider: provider.id, model: 'stream-test' } }), env: { DEEPSEEK_API_KEY: '', ...providerEnv([provider]) } })
   defer(() => { server.closeAllConnections(); server.close() })
   const agent = bridge(); await agent.start()

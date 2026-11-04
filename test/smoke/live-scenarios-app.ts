@@ -27,7 +27,7 @@ async function addProvider(win: SmokeWindow, form: ProviderForm): Promise<string
     field('model-name').value = ${JSON.stringify(form.name)}
     field('model-api').value = 'openai-completions'
     field('model-url').value = ${JSON.stringify(form.url)}
-    field('model-ids').value = ${JSON.stringify(form.model)}
+    field('model-id-0').value = ${JSON.stringify(form.model)}
     field('model-key').value = ${JSON.stringify(form.key)}
     field('model-name').closest('form').requestSubmit()
   })()`)

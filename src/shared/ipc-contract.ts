@@ -56,7 +56,9 @@ export const IPC_ARGS = Object.freeze({
 
   'models:get': read(none),
   'models:add': z.tuple([record]),
+  'models:update': z.tuple([id, record]),
   'models:remove': z.tuple([id]),
+  'models:discover': read(z.tuple([record, id.optional()])),
 
   'history:load': read(none),
   'history:save': z.tuple([z.array(record).max(MAX_LIST)]),

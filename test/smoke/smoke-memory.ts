@@ -171,7 +171,7 @@ async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
     field('model-name').value = ${JSON.stringify(PROVIDER)}
     field('model-api').value = 'anthropic-messages'
     field('model-url').value = ${JSON.stringify(hooks.model()?.url ?? '')}
-    field('model-ids').value = ${JSON.stringify(PROVIDER_MODEL)}
+    field('model-id-0').value = ${JSON.stringify(PROVIDER_MODEL)}
     field('model-key').value = 'sk-smoke-provider-0001'
     field('model-name').closest('form').requestSubmit()
   })()`)

@@ -268,6 +268,12 @@ function streamAnswer(res, request, index, answer, send) {
   res.end()
 }
 
+/** What the fake lists at `GET …/models`, Anthropic's shape: the smoke picks the first. */
+export const LISTED_MODELS = Object.freeze([
+  Object.freeze({ type: 'model', id: 'deepseek-chat', display_name: 'Fake Flash', max_input_tokens: 131072 }),
+  Object.freeze({ type: 'model', id: 'fake-unpicked', display_name: 'Not picked' }),
+])
+
 /**
  * @param {{ port?: number, decideFirst?: (request: object) => object | null }} [options] a fixed port, for smoke
  *   phases that share a profile (its models keep the URL); decideFirst, answers tried before the rules above
@@ -281,7 +287,13 @@ export function startFakeLlm({ port = 0, decideFirst = null } = {}) {
     req.on('data', (chunk) => { body += chunk })
     req.on('end', () => {
       // The path, not the whole URL: SDK clients add a query (`/v1/messages?beta=true`).
-      if (req.method !== 'POST' || !new URL(req.url, 'http://fake').pathname.endsWith('/messages')) {
+      const { pathname } = new URL(req.url, 'http://fake')
+      // 获取可用模型 (model-discovery.ts): the model the smoke picks, and one it leaves.
+      if (req.method === 'GET' && pathname.endsWith('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: LISTED_MODELS }))
+        return
+      }
+      if (req.method !== 'POST' || !pathname.endsWith('/messages')) {
         res.writeHead(404, { 'content-type': 'application/json' }).end('{}')
         return
       }
