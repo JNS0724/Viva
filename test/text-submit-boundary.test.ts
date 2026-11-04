@@ -2,7 +2,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { createRewindActions } from '../src/renderer/rewind-actions.ts'
-import { createTaskActions } from '../src/renderer/task-actions.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../src/shared/text-limits.ts'
 
 const unexpected = async (): Promise<never> => { assert.fail('This request must not be called') }
@@ -29,23 +28,3 @@ test('an oversized edit leaves its existing path and editor intact without start
   assert.deepEqual(toasts, [MESSAGE_TOO_LONG])
 })
 
-test('a refused task follow-up signals the input to restore its draft and retains the prior task', async () => {
-  let state = reduce(initialState, { type: 'task_started', task: { id: 'task-1', title: '任务', segmentId: 's1' }, text: '原请求', at: 1 })
-  state = reduce(state, { type: 'task_end', taskId: 'task-1', stopReason: 'end_turn', at: 2 })
-  const before = state.tasks.list[0]
-  const toasts: string[] = []
-  const actions = createTaskActions({
-    api: { askTask: async () => ({ ok: false, problem: '暂时接不上' }), stopTask: unexpected, startTask: unexpected, answerQuestion: unexpected,
-      unfinishedTasks: unexpected, finishedTasks: unexpected, resumeTask: unexpected,
-      forgetTask: unexpected, closeTask: unexpected, steerTask: unexpected },
-    getState: () => state,
-    dispatch: action => { state = reduce(state, action) },
-    showToast: text => { toasts.push(text) },
-    errorMessage: String,
-    deliver: () => {},
-  })
-  assert.equal(await actions.askTask('task-1', '没有送达的完整草稿'), false)
-  assert.equal(state.tasks.list[0], before)
-  assert.deepEqual(toasts, ['暂时接不上'])
-  assert.equal(await actions.askTask('gone', '另一份草稿'), false)
-})

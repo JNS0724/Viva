@@ -17,6 +17,7 @@ import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
 type Message = { role: string, text: string, receipt?: null }
 type Started = { ok: boolean, task: { id: string, segmentId: string } }
+type Kept = { task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string } }, status: string, endedAt: number, messages: Message[] }
 type Restored = { ok: boolean, task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string } }, messages: Message[] }
 type Call = [string, ...unknown[]]
 type Handler = (event: unknown, ...args: unknown[]) => unknown
@@ -102,17 +103,17 @@ test('what the task says is saved along the way, once however much it says meanw
   assert.deepEqual(texts(task.segmentId), ['整理发布说明', '先看提交…三组改动。写好了。'])
   const [done] = kept()
   assert.deepEqual([done.status, Number.isFinite(done.endedAt)], ['done', true], 'ended: kept, to be asked again')
-  assert.deepEqual(await call('task:unfinished'), [], 'but not offered as unfinished')
+  assert.deepEqual((await setupKept(call)).map((entry) => entry.status), [], 'held by this launch: not listed as kept')
 })
 
-test('flushed when Viva quits: what the task said so far is saved, and the task is offered again next launch', async () => {
+test('flushed when Viva quits: what the task said so far is saved, and the next launch lists it as interrupted', async () => {
   const { call, says, service, texts, relaunch } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
   says(task.id, '说到一半')
   service.flush()
   assert.deepEqual(texts(task.segmentId), ['整理发布说明', '说到一半'])
-  const later = relaunch()
-  assert.deepEqual((await later.call<Array<{ id: string }>>('task:unfinished')).map((entry) => entry.id), [task.id])
+  const [kept] = await relaunch().call<Kept[]>('task:finished')
+  assert.deepEqual([kept.task.id, kept.status, kept.messages.map((m) => m.text)], [task.id, 'interrupted', ['整理发布说明', '说到一半']])
 })
 
 test('words into its turn and answers to its questions are kept with what the task says', async () => {
@@ -122,7 +123,7 @@ test('words into its turn and answers to its questions are kept with what the ta
   service.receive({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [city] })
   service.answer('q1', [{ id: 'city', selected: ['上海'] }])
   says(task.id, '上海明天多云。')
-  await call('task:steer', task.id, '顺便看看后天')
+  await service.agentMessage(task.id, '顺便看看后天')
   assert.deepEqual(calls.at(-1), ['steerTask', task.id, '顺便看看后天'])
   ends(task.id)
   assert.deepEqual(texts(task.segmentId), ['查一下明天的天气', '上海', '上海明天多云。', '顺便看看后天', '本轮没有文字回复。'])
@@ -145,39 +146,35 @@ test('a task is kept while it goes on and once it ended, until it is closed; clo
   assert.equal(other.pending(), 0)
 })
 
-test('at the next launch an unfinished task is offered; taken up, it goes on with what it had said', async () => {
-  const { call, says, service, relaunch, texts } = setup()
+test('at the next launch an unfinished task is listed as interrupted; messaged, it is taken up and goes on from what it had said', async () => {
+  const { call, says, service, relaunch, texts, announced } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
   says(task.id, '先看提交…')
   service.flush()
-  assert.deepEqual(await call('task:unfinished'), [], 'still going in this launch: nothing to offer')
 
   const later = relaunch()
-  assert.deepEqual((await later.call<Array<{ id: string, title: string }>>('task:unfinished')).map((entry) => [entry.id, entry.title]), [[task.id, '整理发布说明']])
-  const taken = await later.call<Restored>('task:resume', task.id)
-  assert.equal(taken.ok, true, JSON.stringify(taken))
-  assert.deepEqual(taken.task, { id: task.id, segmentId: task.segmentId, title: '整理发布说明', words: '整理发布说明', host: taken.task.host })
-  assert.equal(taken.task.host.conversationId, 'c1', 'hung off the conversation it was started from')
-  assert.deepEqual(taken.messages.map((m) => m.text), ['整理发布说明', '先看提交…'], 'what it had said, from its own words on')
-  assert.deepEqual(later.calls.map(([name, arg]) => [name, arg]), [['resumeTask', task.id], ['promptTask', task.id]])
+  const [kept] = await later.call<Kept[]>('task:finished')
+  assert.deepEqual(kept.task, { id: task.id, segmentId: task.segmentId, title: '整理发布说明', words: '整理发布说明', host: kept.task.host })
+  assert.equal(kept.task.host.conversationId, 'c1', 'hung off the conversation it was started from')
+  assert.deepEqual([kept.status, kept.messages.map((m) => m.text)], ['interrupted', ['整理发布说明', '先看提交…']])
+  assert.deepEqual(await later.service.agentMessage(task.id, '接着做'), { taskId: task.id, delivered: 'taken up again' })
+  assert.deepEqual(later.calls, [['resumeTask', task.id], ['promptTask', task.id, '接着做']])
+  assert.equal((announced.at(-1)?.messages as Message[]).at(-1)?.text, '接着做', 'the window gets what it said, with the new words')
   later.says(task.id, '写好了')
   later.ends(task.id)
-  assert.deepEqual(texts(task.segmentId), ['整理发布说明', '先看提交…', '写好了'], 'going on from what it had said')
-  assert.deepEqual(await relaunch().call('task:unfinished'), [], 'taken up and ended: not offered again')
+  assert.deepEqual(texts(task.segmentId), ['整理发布说明', '先看提交…', '接着做', '写好了'], 'going on from what it had said')
+  assert.deepEqual((await relaunch().call<Kept[]>('task:finished')).map((entry) => entry.status), ['done'], 'taken up and ended: kept as done')
 })
 
 test('a task that ended is asked again in its own session; what it says next follows what it said before', async () => {
-  const { call, calls, says, ends, kept, texts } = setup()
+  const { call, calls, says, ends, kept, texts, service } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
   says(task.id, '写好了')
   ends(task.id)
 
-  const asked = await call('task:ask', task.id, '再加上已知问题')
-  assert.deepEqual(asked, { ok: true })
+  assert.deepEqual(await service.agentMessage(task.id, '再加上已知问题'), { taskId: task.id, delivered: 'next question' })
   assert.deepEqual(calls.at(-1), ['promptTask', task.id, '再加上已知问题'], 'its session is still there: asked at once')
-  assert.equal(kept()[0].endedAt, undefined, 'going again: a later launch offers to go on with it')
-  assert.deepEqual(await call('task:ask', task.id, '还有'), { ok: false, problem: '这件还在做，直接说就会插进去' })
-  await assert.rejects(call('task:ask', task.id, ''), /invalid task request/)
+  assert.equal(kept()[0].endedAt, undefined, 'going again: a later launch lists it as interrupted')
   says(task.id, '加好了')
   ends(task.id)
   assert.deepEqual(texts(task.segmentId), ['整理发布说明', '写好了', '再加上已知问题', '加好了'])
@@ -190,13 +187,12 @@ test('at the next launch tasks that had ended come back with what they said; ask
   ends(task.id, 'cancelled')
 
   const later = relaunch()
-  const [back] = await later.call<Array<Restored & { status: string }>>('task:finished')
+  const [back] = await later.call<Kept[]>('task:finished')
   assert.deepEqual(back.task, { id: task.id, segmentId: task.segmentId, title: '整理发布说明', words: '整理发布说明', host: back.task.host })
-  assert.equal(back.task.host.conversationId, 'c1', 'hung off the conversation it was started from')
   assert.equal(back.status, 'stopped')
   assert.deepEqual(back.messages.map((m) => m.text), ['整理发布说明', '写好了'])
 
-  assert.deepEqual(await later.call('task:ask', task.id, '再加上已知问题'), { ok: true })
+  assert.deepEqual(await later.service.agentMessage(task.id, '再加上已知问题'), { taskId: task.id, delivered: 'next question' })
   assert.deepEqual(later.calls.map(([name, arg]) => [name, arg]), [['resumeTask', task.id], ['promptTask', task.id]])
   later.says(task.id, '加好了')
   later.ends(task.id)
@@ -213,23 +209,18 @@ test('a task that ended and cannot be taken up says so; only the latest few ende
   ends(task.id)
   assert.deepEqual(kept().map((entry) => entry.id).sort(), [...olds.slice(1).map((entry) => entry.id), task.id].sort(), 'the oldest is let go')
 
-  const refused = await relaunch().call<{ ok: boolean, problem: string }>('task:ask', `old${KEEP_ENDED}`, '再说说')
-  assert.equal(refused.ok, false)
-  assert.match(refused.problem, /接不上/)
-  // One let go while the window still listed it: said the same way, not thrown.
-  const letGo = await relaunch().call<{ ok: boolean, problem: string }>('task:ask', 'old1', '再说说')
-  assert.deepEqual([letGo.ok, /接不上/.test(letGo.problem)], [false, true])
+  await assert.rejects(relaunch().service.agentMessage(`old${KEEP_ENDED}`, '再说说'), /接不上/)
+  await assert.rejects(relaunch().service.agentMessage('old1', '再说说'), /接不上/, 'one let go meanwhile: said the same way')
 })
 
-test('a task let go is not offered again; one dsh cannot take up is said so', async () => {
+test('an interrupted task dsh cannot take up says so; closed, it is not listed again', async () => {
   const { call, relaunch } = setup({ resumable: { ok: false, reason: 'missing' } })
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
   const later = relaunch()
-  const refused = await later.call<{ ok: boolean, problem: string }>('task:resume', task.id)
-  assert.equal(refused.ok, false)
-  assert.match(refused.problem, /接不上/)
-  await later.call('task:forget', task.id)
-  assert.deepEqual(await later.call('task:unfinished'), [])
+  assert.deepEqual((await later.call<Kept[]>('task:finished')).map((entry) => entry.status), ['interrupted'])
+  await assert.rejects(later.service.agentMessage(task.id, '接着做'), /接不上/)
+  await later.call('task:close', task.id)
+  assert.deepEqual(await relaunch().call('task:finished'), [])
 })
 
 test('后台做: the words start a task of their own, from the conversation so far, kept out of the timeline', async () => {
@@ -327,3 +318,6 @@ test('words that do not reach a task at work are said so, not taken for delivere
   const { taskId } = await service.agentStart('整理发布说明')
   await assert.rejects(service.agentMessage(taskId, '加上版本号'), /话没有送到/)
 })
+
+/** What `task:finished` lists of the tasks kept, for a launch that holds them all: none. */
+const setupKept = (call: <T>(channel: string, ...args: unknown[]) => Promise<T>) => call<Kept[]>('task:finished')

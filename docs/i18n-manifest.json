@@ -17,14 +17,14 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "e2de9caec43ea52edccf39328dba4fcad2362a41e2eb84c6fccf381309f087a0",
-      "zhHash": "e0463af4a334dad1bc6a12958b8eb0c7a85102729a5a708e9b045a35843eef69"
+      "enHash": "55281c7f83befa35862be5635ce306da53b84f3abaf8de76334ea5cae35dc681",
+      "zhHash": "f337fd376d327bdfb3e2ecada57bbced9db99ad7f00caef119d840c722d80f5f"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "ed776e2df2315eed92eabf03c995400fd8d8ef91a7254482839ea5567d65764e",
-      "zhHash": "e82cba0112f0b7e1559388184af1eb42374de4c29041181b083be3b0751d129f"
+      "enHash": "da29bcd587c2d02597c1be40a02e944b1559ed8b971bcb738fab59a795def1fb",
+      "zhHash": "e3f0aa806b1d50d46f6258fd9e93325f6d8aa4e4a9decbae40bf943e721b1eaa"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",

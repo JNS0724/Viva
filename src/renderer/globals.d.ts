@@ -209,14 +209,9 @@ interface AgentApi extends LanguageApi {
   starredMessages: Invoke<'history:starred'>
   rewind: Invoke<'timeline:rewind'>
   startTask: Invoke<'task:start'>
-  unfinishedTasks: Invoke<'task:unfinished'>
   finishedTasks: Invoke<'task:finished'>
-  askTask: Invoke<'task:ask'>
-  resumeTask: Invoke<'task:resume'>
-  forgetTask: Invoke<'task:forget'>
   closeTask: Invoke<'task:close'>
   stopTask: Invoke<'task:stop'>
-  steerTask: Invoke<'task:steer'>
   rewindEffects: Invoke<'timeline:rewind-effects'>
   foldedPath: Invoke<'timeline:folded'>
   switchPath: Invoke<'timeline:switch-path'>

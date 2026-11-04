@@ -8,6 +8,8 @@
  * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
  * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result,
  *   or, told 「再问我城市」 too, asks which city as for the weather;
+ * - 「后台做：X」 → hands X to a background task with start_background_task;
+ * - 「告诉后台的「T」：Z」 → finds task T (list_background_tasks) and says Z to it (message_background_task);
  * - 「删掉 X」 → removes X with the shell;
  * - asked by dsh's Auto review about a step → allows it, unless it removes something;
  * - after a tool result → says what the tool did;
@@ -27,6 +29,10 @@ const WEATHER = /明天.*天气/
 const CONNECT = /接入演示服务/
 const THEN_ASK = /再问我城市/
 const FOLLOW = /到时候帮我/
+/** 「后台做：X」: a job for the background, as a brief. */
+const HAND_OFF = /^后台做：([\s\S]+)$/
+/** 「告诉后台的「T」：Z」: words for the background task titled T. */
+const TELL = /^告诉后台的「([^」]+)」：([\s\S]+)$/
 /** What the fake proposes to follow up on when asked 「…到时候帮我…」: two days from now, so never in the past. */
 export const FOLLOWUP = Object.freeze({ title: '周报', ask: '按上周的模板起草周报' })
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -77,6 +83,19 @@ export const lastWords = (messages) => messages
   .filter((text) => !text.startsWith(CONTEXT_OPEN))
   .at(-1) ?? ''
 
+/**
+ * What the user asked in this turn, for deciding after a tool result: the first words of the last run of user
+ * messages with text. dsh may add messages of its own after the user's words (a fresh session's runtime context).
+ */
+const askedWords = (messages) => {
+  const hasText = (message) => message.role === 'user' && textParts(message).length > 0
+  let end = messages.length - 1
+  while (end >= 0 && !hasText(messages[end])) end -= 1
+  let start = end
+  while (start > 0 && messages[start - 1].role === 'user') start -= 1
+  return messages.slice(start, end + 1).flatMap(textParts).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? ''
+}
+
 function lastToolUse(messages) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const use = partsOf(messages[i]).find((part) => part.type === 'tool_use')
@@ -97,14 +116,30 @@ function cityFrom(result) {
   }
 }
 
+/** The task titled `title` in what list_background_tasks returned, or null. */
+function taskTitled(result, title) {
+  try {
+    return JSON.parse(resultText(result)).tasks?.find((task) => task.title === title)?.taskId ?? null
+  } catch {
+    return null
+  }
+}
+
 function afterTool(messages, result) {
   const use = lastToolUse(messages)
+  if (use?.name === 'start_background_task') return { text: `已经交给后台：${resultText(result)}` }
+  if (use?.name === 'message_background_task') return { text: `已经转告：${resultText(result)}` }
+  const tell = TELL.exec(askedWords(messages))
+  if (use?.name === 'list_background_tasks' && tell) {
+    const taskId = taskTitled(result, tell[1])
+    return taskId ? { tool: { name: 'message_background_task', input: { taskId, text: tell[2] } } } : { text: `没找到「${tell[1]}」：${resultText(result)}` }
+  }
   if (use?.name === 'ask_user_question') {
     const city = cityFrom(result)
     return { text: city ? `好的，按${city}来看：明天多云转晴。` : `没问到城市：${resultText(result)}` }
   }
   // 「…再问我城市」: once the server is dealt with, it asks which city (a question later in the turn).
-  if (use?.name === 'viva_mcp_add' && THEN_ASK.test(lastWords(messages))) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
+  if (use?.name === 'viva_mcp_add' && THEN_ASK.test(askedWords(messages))) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
@@ -182,6 +217,9 @@ export function decide(request) {
     const keywords = KNOWN_NAMES.filter((name) => text.includes(name)).sort((a, b) => text.indexOf(a) - text.indexOf(b))
     return { tool: { name: 'memory_remember', input: { text, keywords } } }
   }
+  const handOff = HAND_OFF.exec(question)
+  if (handOff) return { tool: { name: 'start_background_task', input: { brief: handOff[1] } } }
+  if (TELL.test(question)) return { tool: { name: 'list_background_tasks', input: {} } }
   if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   if (FOLLOW.test(question)) return { tool: { name: 'viva_followup_propose', input: followupProposal() } }

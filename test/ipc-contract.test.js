@@ -42,7 +42,7 @@ test('arguments of the right outline pass, trailing ones left out or undefined i
   assert.equal(argsProblem('files:open', ['notes.md', null]), null)
   assert.equal(argsProblem('memory:update', [3, '喜欢喝茶']), null)
   assert.equal(argsProblem('images:keep', [new Uint8Array([1, 2, 3])]), null)
-  assert.equal(argsProblem('task:ask', ['t1', 'hi']), null)
+  assert.equal(argsProblem('task:close', ['t1']), null)
 })
 
 test('arguments of another outline are refused with the channel and the place named', () => {

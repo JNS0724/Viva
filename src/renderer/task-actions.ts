@@ -10,8 +10,7 @@ import { runningTurn } from './tasks-state.ts'
 type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
 
 export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
-  api: Pick<AgentApi, 'startTask' | 'steerTask' | 'unfinishedTasks' | 'finishedTasks'
-    | 'askTask' | 'resumeTask' | 'forgetTask' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
+  api: Pick<AgentApi, 'startTask' | 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
   deliver: (event: AgentEvent) => void,
 }) {
   let submissionCounter = 0
@@ -66,53 +65,15 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     return true
   }
 
-  /** Words for a task (typed on its page): they go into its turn; it says if they could not. */
-  function steerTask(taskId: string, text: string) {
-    dispatch({ type: 'task_steer', taskId, text, at: Date.now() })
-    api.steerTask(taskId, text)
-      .then((result: { ok?: boolean } | null) => result?.ok || showToast(t("task-actions.this.task.has.stopped.your.message.was")))
-      .catch((err: unknown) => showToast(errorMessage(err)))
-  }
-
   const taskById = (taskId: string): BackgroundTask | undefined => getState().tasks.list.find((entry: BackgroundTask) => entry.id === taskId)
 
   /**
-   * What the last launch left going (task-store.js), offered in the conversation; and the tasks that had
-   * ended, back as they were, to be asked again.
+   * The tasks an earlier launch kept, back as they were with what they said: ended ones, and those Viva quit on
+   * (interrupted), which the agent takes up again when asked (message_background_task).
    */
-  async function loadUnfinished() {
-    const list = await call(() => api.unfinishedTasks())
-    if (Array.isArray(list) && list.length) dispatch({ type: 'tasks_unfinished', list })
-    const done = await call(() => api.finishedTasks())
-    if (Array.isArray(done) && done.length) dispatch({ type: 'tasks_restored', list: done })
-  }
-
-  /**
-   * 接着问 to a task that ended: the words are its next question, in its own session; it is back
-   * at work at once. Should it not be reachable, it says why and the task is as it was.
-   */
-  async function askTask(taskId: string, text: string) {
-    const before = taskById(taskId)
-    if (!before) return false
-    dispatch({ type: 'task_asked', taskId, text, at: Date.now() })
-    const result = await call(() => api.askTask(taskId, text))
-    if (result?.ok) return true
-    dispatch({ type: 'task_ask_failed', task: before })
-    showToast(result?.problem ?? t("task-actions.could.not.continue.asking"))
-    return false
-  }
-
-  /** 接着做: it goes on in the background, from what it had said. */
-  async function resumeUnfinished(taskId: string) {
-    const result = await call(() => api.resumeTask(taskId))
-    if (!result.ok) return showToast(result.problem ?? t("task-actions.could.not.continue"))
-    return dispatch({ type: 'task_resumed', task: result.task, messages: result.messages, at: Date.now() })
-  }
-
-  /** 不做了: let go, and not offered again. */
-  async function forgetUnfinished(taskId: string) {
-    await call(() => api.forgetTask(taskId))
-    dispatch({ type: 'task_forgotten', taskId })
+  async function loadKept() {
+    const kept = await call(() => api.finishedTasks())
+    if (Array.isArray(kept) && kept.length) dispatch({ type: 'tasks_restored', list: kept })
   }
 
   const questionOf = (taskId: string) => taskById(taskId)?.view.question ?? null
@@ -153,19 +114,10 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     stopTask,
     closeTask,
     pickTaskOption,
-    steerTask,
-    askTask,
-    loadUnfinished,
-    resumeUnfinished,
-    forgetUnfinished,
+    loadKept,
     submitTaskAnswer: (taskId: string) => {
       const question = questionOf(taskId)
       if (question) answerTask(taskId, answersFrom(question))
-    },
-    /** Typed on the 后台 page while the task asks: the answer, as typing in the composer is for the conversation's. */
-    typeTaskAnswer: (taskId: string, text: string) => {
-      const question = questionOf(taskId)
-      if (question) answerTask(taskId, answersFrom(question, text))
     },
     skipTaskQuestion: (taskId: string) => {
       const question = questionOf(taskId)

@@ -240,22 +240,6 @@ function questionCard(question: AskedQuestion, handlers: Handlers) {
       h('span', { class: 'confirm-hint', text: t("thread.you.can.also.type.your.answer.below") })))
 }
 
-/**
- * A task Viva was closed on: offered once more, to go on in the background or be let go. 接着做 waits for the
- * agent to be connected: until then the main process has no session to take the task up in.
- */
-function unfinishedCard(task: { id: string, title: string }, handlers: Handlers, ready: boolean) {
-  return h('div', { class: 'task-report task-unfinished', role: 'group', 'aria-label': t("thread.unfinished.from.last.time") },
-    h('div', { class: 'task-report-main' },
-      h('b', { class: 'task-report-head', text: `#${task.title}` }),
-      h('span', { class: 'task-report-text', text: t("thread.this.task.was.unfinished.when.viva.closed") })),
-    h('button', {
-      class: `${BUTTON.primary} task-report-open`, type: 'button', text: t("followups.continue"), disabled: !ready,
-      title: ready ? null : t("thread.connect.the.assistant.to.continue"), onClick: () => handlers.resumeUnfinished(task.id),
-    }),
-    h('button', { class: `${BUTTON.text} task-report-open`, type: 'button', text: t("thread.abandon"), onClick: () => handlers.forgetUnfinished(task.id) }))
-}
-
 const workingMaids: MaidSlots = new Map()
 
 /** Where the next answer will appear: Viva at work and what she is doing now (the island keeps the time). */
@@ -455,7 +439,6 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
     ...earlierCards,
     ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),
     ...divided.flat().filter(isContent),
-    ...state.tasks.unfinished.map((task) => part(`unfinished:${task.id}`, [task, state.info.mode], () => unfinishedCard(task, handlers, state.info.mode === 'live'))),
     ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },
       h('b', { class: 'task-name', text: item.text }),
       h('div', { class: 'task-submit-status', role: 'status', text: item.status === 'failed' ? t("thread.not.started.in.background", { problem: item.problem ?? '' }) : t("thread.received.preparing.background.task") }),

@@ -113,60 +113,6 @@ test('a task\'s question is answered there: one choice by picking it, more with 
   assert.equal(win.state().question, null, 'the conversation on screen was never asked')
 })
 
-test('words for a task go into its turn', async () => {
-  const steered = []
-  const win = windowWith({ startTask: async () => startedReply, steerTask: async (...args) => { steered.push(args); return { ok: true } } })
-  await withTask(win)
-  win.actions.steerTask('s1', '加上版本号')
-  assert.deepEqual(steered, [['s1', '加上版本号']])
-  assert.equal(taskMessages(liveTasks(win.state())[0]).at(-1).text, '加上版本号')
-})
-
-test('tasks the last launch left going are offered, taken up, or let go', async () => {
-  const resumed = []
-  const forgotten = []
-  const win = windowWith({
-    unfinishedTasks: async () => [{ id: 's9', title: '整理发布说明', segmentId: 'c9', startedAt: 1 }],
-    resumeTask: async (taskId) => { resumed.push(taskId); return { ok: true, task: { id: taskId, segmentId: 'c9', title: '整理发布说明', words: '整理发布说明' }, messages: [{ role: 'user', text: '整理发布说明' }] } },
-    forgetTask: async (taskId) => { forgotten.push(taskId) },
-  })
-  await win.actions.loadUnfinished()
-  assert.deepEqual(win.state().tasks.unfinished.map((entry) => entry.id), ['s9'])
-  await win.actions.resumeUnfinished('s9')
-  assert.deepEqual([resumed, liveTasks(win.state()).map((task) => task.id), win.state().tasks.unfinished], [['s9'], ['s9'], []])
-
-  const other = windowWith({
-    unfinishedTasks: async () => [{ id: 's8', title: '查天气', segmentId: 'c8', startedAt: 1 }],
-    resumeTask: async () => ({ ok: false, problem: '这件事接不上了' }),
-    forgetTask: async (taskId) => { forgotten.push(taskId) },
-  })
-  await other.actions.loadUnfinished()
-  await other.actions.resumeUnfinished('s8')
-  assert.deepEqual(other.said.toasts, ['这件事接不上了'])
-  await other.actions.forgetUnfinished('s8')
-  assert.deepEqual([forgotten, other.state().tasks.unfinished], [['s8'], []])
-})
-
-test('a task that ended is asked again: it goes back to work, or says why it could not and stays as it was', async () => {
-  const asked = []
-  const win = windowWith({ startTask: async () => startedReply, askTask: async (...args) => { asked.push(args); return { ok: true } } })
-  await withTask(win)
-  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
-
-  await win.actions.askTask('s1', '再加上已知问题')
-  assert.deepEqual(asked, [['s1', '再加上已知问题']])
-  const [task] = liveTasks(win.state())
-  assert.deepEqual([task.id, taskMessages(task).at(-1).text], ['s1', '再加上已知问题'])
-
-  const refused = windowWith({ startTask: async () => startedReply, askTask: async () => ({ ok: false, problem: '这件事接不上了' }) })
-  await withTask(refused)
-  refused.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
-  await refused.actions.askTask('s1', '再加上已知问题')
-  assert.deepEqual(refused.said.toasts, ['这件事接不上了'])
-  const [still] = refused.state().tasks.list
-  assert.deepEqual([still.status, liveTasks(refused.state()).length], ['done', 0], 'as it was before')
-})
-
 test('后台做 while a turn runs: a task of its own, started from before that turn; the turn goes on in front', async () => {
   const requests = []
   const win = windowWith({ startTask: async (request) => { requests.push(request); return { ok: true, task: { id: 's9', segmentId: 'c9', title: '查天气', words: '查天气' } } } })
@@ -184,15 +130,14 @@ test('后台做 while a turn runs: a task of its own, started from before that t
   assert.equal(refused.state().tasks.submissions[0].text, '查天气')
 })
 
-test('tasks that had ended by the last launch come back at the start, beside those left going', async () => {
+test('the tasks the last launch kept come back at the start, with what they said', async () => {
   const win = windowWith({
-    unfinishedTasks: async () => [],
     finishedTasks: async () => [{
       task: { id: 's3', segmentId: 'c3', title: '查天气', words: '查天气' }, status: 'done', endedAt: 5,
       messages: [{ role: 'user', text: '查天气', receipt: null }, { role: 'assistant', text: '晴。', receipt: null }],
     }],
   })
-  await win.actions.loadUnfinished()
+  await win.actions.loadKept()
   const [task] = win.state().tasks.list
   assert.deepEqual([task.id, task.status, taskMessages(task).map((m) => m.text)], ['s3', 'done', ['查天气', '晴。']])
 })

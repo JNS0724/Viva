@@ -3,12 +3,10 @@ import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
 import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
-import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { followupDetail, followupStanding, whenText } from './followups.ts'
-import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../../shared/text-limits.ts'
 
 /**
  * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
@@ -111,7 +109,7 @@ function threadState(state: State, task: BackgroundTask): State {
     restored: null,
     folds: [],
     proposals: [],
-    tasks: { ...state.tasks, list: [], reports: [], unfinished: [] },
+    tasks: { ...state.tasks, list: [], reports: [] },
   }
 }
 
@@ -167,42 +165,6 @@ function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
   return section
 }
 
-function inputView(task: BackgroundTask, handlers: Handlers) {
-  if (task.status === 'interrupted') return h('button', { class: 'btn btn-secondary', type: 'button', text: t("followups.continue"), onClick: () => handlers.resumeUnfinished(task.id) })
-  const live = LIVE.has(task.status)
-  const field = h('textarea', {
-    class: 'tp-input', name: `task-input-${task.id}`, rows: 2, 'aria-label': live ? t("tasks-page.interruption") : t("task-card.ask.more"),
-    placeholder: live ? t("tasks-page.add.or.change.instructions.enter.to.send") : t("tasks-page.ask.more.enter.to.send"),
-  })
-  const send = () => {
-    const text = field.value.trim()
-    if (!text) return
-    if (text.length > MAX_MESSAGE_CHARS) return handlers.inputProblem(MESSAGE_TOO_LONG)
-    const draft = field.value
-    const page = field.closest('.tp-main')?.parentElement
-    field.value = ''
-    // A refused follow-up restores the draft in this task, through redraws, without overwriting newer typing.
-    const restore = () => {
-      const current = page?.querySelector<HTMLTextAreaElement>(`textarea[name="${CSS.escape(field.name)}"]`)
-      if (current && !current.value) current.value = draft
-    }
-    Promise.resolve(handlers.sendToTask(task.id, text)).then((accepted) => {
-      if (accepted === false) restore()
-    }).catch(() => {
-      restore()
-      handlers.inputProblem(t("task.send.failed"))
-    })
-  }
-  field.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
-    event.preventDefault()
-    send()
-  })
-  return h('form', { class: 'tp-composer', onSubmit: (event: SubmitEvent) => { event.preventDefault(); send() } },
-    field,
-    h('button', { class: 'send-btn', type: 'submit', 'aria-label': live ? t("tasks-page.interruption") : t("task-card.ask.more") }, icon('send', 20)))
-}
-
 /** The follow-up picked, or, with nothing picked and no task, the first that waits for the user. */
 function pickedFollowup(state: State): Untyped | null {
   const list: readonly Untyped[] = state.followups.followups
@@ -231,8 +193,7 @@ function mainView(state: State, handlers: Handlers, now: number) {
       live
         ? h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("island-tasks.stop"), onClick: () => handlers.stopTask(task.id) })
         : h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("tasks-page.close.this.task"), onClick: () => handlers.closeTask(task.id) })),
-    h('div', { class: 'tp-scroll' }, thread, stepsView(state, task, handlers)),
-    inputView(task, handlers))
+    h('div', { class: 'tp-scroll' }, thread, stepsView(state, task, handlers)))
 }
 
 const renderedPages = new WeakMap<HTMLElement, { state: State, handlers: Handlers, now: number, locale: string }>()
@@ -294,15 +255,6 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
       const live = LIVE.has(task.status)
       const action = main.querySelector('.tp-act')
       if (action) action.textContent = live ? t("island-tasks.stop") : t("tasks-page.close.this.task")
-      const field = main.querySelector<HTMLTextAreaElement>('.tp-input')
-      if (field) {
-        field.setAttribute('aria-label', live ? t("tasks-page.interruption") : t("task-card.ask.more"))
-        field.placeholder = live ? t("tasks-page.add.or.change.instructions.enter.to.send") : t("tasks-page.ask.more.enter.to.send")
-        main.querySelector('.tp-composer button')?.setAttribute('aria-label', live ? t("tasks-page.interruption") : t("task-card.ask.more"))
-      } else {
-        const resume = main.querySelector(':scope > button')
-        if (resume) resume.textContent = t("followups.continue")
-      }
     }
     renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
     if (localeChanged || prior.state.tasks.page.steps !== state.tasks.page.steps

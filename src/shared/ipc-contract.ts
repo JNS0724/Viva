@@ -89,14 +89,9 @@ export const IPC_ARGS = Object.freeze({
   'timeline:switch-path': z.tuple([id]),
 
   'task:start': z.tuple([record]),
-  'task:unfinished': read(none),
   'task:finished': read(none),
-  'task:ask': z.tuple([id, text]),
-  'task:resume': z.tuple([id]),
-  'task:forget': z.tuple([id]),
   'task:close': z.tuple([id]),
   'task:stop': z.tuple([id]),
-  'task:steer': z.tuple([id, text]),
 
   'workdir:get': read(none),
   'workdir:choose': none,
