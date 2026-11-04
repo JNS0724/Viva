@@ -28,10 +28,11 @@ export const initialTasks = Object.freeze({
 type SavedMessage = { role: string, text: string, receipt?: Receipt | null, open?: boolean, streamKey?: string, blocks?: ReadonlyArray<{ index: number, text: string }> }
 const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = null) => ({
   messages: messages.map((message, i): ThreadMessage => {
-    // Open: the answer a task at work was still writing when the window opened (a reload), which goes on from here;
-    // a stream's, with its key and blocks, so what comes next replaces them rather than starting another message.
+    // Open: the answer a task at work was still writing when the window opened (a reload), which goes on from here.
+    // A stream not settled yet keeps its key and blocks, open or not (words said meanwhile close it, they do not end
+    // it), so what comes next replaces them rather than starting another message.
     const open = at !== null && message.open === true
-    const stream = open && message.streamKey ? { streamKey: message.streamKey, streamBlocks: message.blocks ?? [] } : {}
+    const stream = at !== null && message.streamKey ? { streamKey: message.streamKey, streamBlocks: message.blocks ?? [] } : {}
     return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...stream }
   }),
   thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,

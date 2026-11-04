@@ -387,3 +387,15 @@ test('a window reloaded while a task streams its answer carries the same message
   const settled = reduce(next, { type: 'task_update', taskId: task.id, at: 10, update: { sessionUpdate: 'viva_stream', key: 'k1', kind: 'settle', blocks: [{ type: 'text', text: '前半段后半段' }] } })
   assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段'])
 })
+
+test('a stream with words said into it, then a reload, still settles into one message', async () => {
+  const { call, service } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const update = (kind: string, extra: object) => ({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra })
+  service.receive({ type: 'task_update', taskId: task.id, update: update('delta', { index: 0, blockType: 'text', text: '前半段' }) })
+  await service.agentMessage(task.id, '用户补充')
+  const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
+  const more = reduce(state, { type: 'task_update', taskId: task.id, at: 9, update: update('delta', { index: 0, blockType: 'text', text: '后半段' }) })
+  const settled = reduce(more, { type: 'task_update', taskId: task.id, at: 10, update: update('settle', { blocks: [{ type: 'text', text: '前半段后半段' }] }) })
+  assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段', '用户补充'])
+})

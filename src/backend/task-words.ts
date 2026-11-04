@@ -140,11 +140,15 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
     transcripts.delete(taskId)
   }
 
-  /** What a task held has said so far, as it would be saved, the answer being written marked open; null for one not held. */
+  /**
+   * What a task held has said so far, as it would be saved: the answer being written marked open, and a stream not
+   * settled yet (it keeps its blocks until then; words said meanwhile close it, they do not end it) with its key and
+   * blocks, so updates still to come land on it; null for one not held.
+   */
   const current = (taskId: string) => {
     const transcript = transcripts.get(taskId)
     return transcript ? transcript.map(({ role, text, open, streamKey, blocks }) => ({
-      role, text, ...(open ? { open: true } : {}), ...(open && streamKey ? { streamKey, blocks: blocks ?? [] } : {}),
+      role, text, ...(open ? { open: true } : {}), ...(streamKey && blocks ? { streamKey, blocks } : {}),
     })) : null
   }
 
