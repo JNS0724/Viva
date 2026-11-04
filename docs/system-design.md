@@ -274,7 +274,7 @@ Two changes make one mechanism. Background tasks are managed by the backend, wit
 
 **A background task is an independent dsh session that is kept.** It has its own session id, and its work is recorded in dsh's session log. The user can steer it, stop it and ask it again directly; after Viva restarts, asking again first reattaches the original session by id through ACP's `session/resume`, so no context is lost. Operations that need approval appear on the task's card.
 
-**Managed by the backend.** A new task service creates tasks, collects what they say, stores it and pushes it; all four sources call it. Pages only display: on `task_created` (with its source) they draw a card, and they no longer call `task:save`. Today the page collects what a task says and saves it back, so nothing is saved while the window is not loaded or is reloading; that goes too.
+**Managed by the backend.** A new task service creates tasks, collects what they say, stores it and pushes it; all four sources call it. Pages only display: on `task_created` (with its source) they draw a card, and they no longer call `task:save`. Today the page collects what a task says and saves it back, so nothing is saved while the window is not loaded or is reloading; that goes too. With `start_background_task`, `viva-tasks` no longer only queries, so the `tasks` contract goes from version 1 to 2.
 
 | Source | When it starts | What the task starts from | User consent |
 | --- | --- | --- | --- |
@@ -285,19 +285,26 @@ Two changes make one mechanism. Background tasks are managed by the backend, wit
 
 **Rules:**
 
-- At most 3 background tasks at once; a task's session cannot create tasks.
+- At most 5 background tasks at once; a task's session cannot create tasks. This limits concurrency only: cost is not controlled for now, and is decided once the effect is clear.
+- When all are taken: a task a trigger starts is queued in `app.db` and starts in order of its due time once one is free; "Do in background" queues the same way, the card showing "Queued"; "Move to background" is unavailable and says they are all taken; the model's `start_background_task` gets a "full" tool error; and there is no automatic handoff, the turn stays in the foreground.
 - A brief stands on its own: the goal, the background it needs, file paths, errors, constraints, the output language. It shows on the card as the task's first message. What a task reports back is its own claim: for anything outward-facing it must return a handle that can be checked (a URL, an id, a path), checked before the user is told.
 - The tool's description says: there is no choosing foreground or background, it always runs in the background; finish what does not depend on the result, give a one-line status and end the turn, never wait or poll.
 - **Results come back to the main conversation:** when a task ends and the main conversation is idle, a turn started by the task's completion lets the model deal with the result; when the result is already on the card, it may say nothing. Such a turn never cuts into one in progress.
 - Stuck detection follows progress, not time: a task with no new output for a long while, or stuck in one tool, is marked "may be stuck" on its card with a Stop; nothing is stopped just for running long.
-- Permissions: tasks the user or the model creates follow the user's permission level; tasks a trigger starts run as read-only, every change waiting on the card for the user's approval; sending tools stay blocked before execution (`viva-policy`).
+- Permissions: tasks the user or the model creates follow the user's permission level; tasks a trigger starts run as read-only, every change waiting on the card for the user's approval; sending tools stay blocked before execution (`viva-policy`). The level is kept on each task, and `viva-permission` sets it per session; today it pins every dsh session to one global level, which cannot do this. After the user picks another level and dsh restarts, tasks the user or the model created take the new level, and triggered tasks stay read-only. dsh's read-only level is `approval: ask`, so a write asks the user first rather than being refused.
+- MCP: a task's session brings the user's MCP servers like the main conversation, each session with its own processes (see §6). When a server that allows only one connection cannot connect in a task, the card says so, and the task runs on; that is not a failure.
+
+**The main conversation after a handoff.** The main conversation goes on in a new session forked from before that turn; in the history it is still the same conversation, its record pointing at the new session id. What the user said in that turn, and its work, go with the task and show on its card; in the main conversation the turn shows as "Moved to background" with the card. Undo while the task is still running drops the fork and points the main conversation back at the original session: the turn comes back to the foreground and runs on, uninterrupted.
 
 **dsh's sub-agents: within a turn only.** Sub-agents suit sub-work that would flood the context but whose result this turn needs (reading a batch of documents and handing back a conclusion, looking several things up in parallel): the material goes into the sub-agent's context only, and the main conversation gets the conclusion. Work that runs long, should be visible to the user, or may be asked about later goes to Viva tasks. In `viva.patch.yml`:
 
 - `subagent` and `subagent_fork` stay, with the background mode off (`enableRunInBackground: false`): the main conversation waits for the sub-agent, whose result comes back as a tool result in the same turn; `maxDepth: 0`, so a sub-agent cannot delegate further.
 - A sub-agent gets only read-only tools for looking things up: `toolFilter.allow` is `read`, `glob`, `grep`, `read_image`, `web_search`, `web_fetch`, `memory_recall`, `search_conversations`, `read_conversation`, `todo_write`. An allow list means tools that dsh or a plugin adds later are not given to sub-agents by default.
 - `send_message`, `list_agents` and `interrupt_agent` (useful only in the background mode) are turned off; `job_*` (shell background jobs) stays.
-- The persona's and the `viva-tasks` tool's reminders that "`list_agents` does not list Viva tasks" go, replaced by how the two divide the work.
+- The persona's and the `viva-tasks` tool's reminders that "`list_agents` does not list Viva tasks" go, replaced by how the two divide the work (in `src/backend/app-plugins.ts` and `plugins/tasks/index.ts`).
+- With the background mode off, `dsh-tool-subagent` still adds "continue useful work while they run" to the system prompt (it does not look at the switch). The persona says the main conversation waits for a sub-agent's result.
+- dsh-base's `backgroundMode: continuable` for `subagent` does nothing with the background mode off, and goes too.
+- `subagent_fork` is worth having because it reuses the parent's history and hits the KV cache; with an allow list its tools differ from the parent's, so the cache may no longer hit. Step 2 measures it once.
 
 Tested with real dsh on 2026-11-04 (a script with a fake model): by default a sub-agent gets almost all of the main conversation's tools, including `ask_user_question`, `plugin_manager`, `viva_mcp_*`, `viva_skill_*`, `memory_remember`, `memory_forget`, `viva_followup_propose` and the delegation tools, so an allow list is required; it gets none of the user's MCP tools, so sending tools were never available to it. In the background mode the user cannot ask a sub-agent anything directly, it is gone after a restart, and operations that need approval are refused automatically; when it finishes, dsh wakes the main session, which writes an answer that belongs to no turn, so Viva neither shows it as working nor saves it in time. The foreground mode has none of these problems; operations that need approval are still refused, which is why it gets read-only tools only.
 
@@ -305,10 +312,11 @@ Tested with real dsh on 2026-11-04 (a script with a fake model): by default a su
 
 **A trigger is a condition and an action**, kept in a `triggers` table in `app.db`; creating, firing and cancelling one each record an event.
 
-- **Conditions:** a time arrives; a file changes and then stays still for 10 minutes; a background task ends. Later, signals from dsh plugins the user installs (a mail plugin's "a new message arrived"): where the "connectors" mentioned when message sources were removed land.
-- **Actions:** start a background task (with a brief); or remind the user, optionally with a task's result.
+- **Conditions:** a time arrives, once or on a rule that repeats ("every Friday at 16:00"); a file changes and then stays still for 10 minutes; a background task ends. Later, signals from dsh plugins the user installs (a mail plugin's "a new message arrived"): where the "connectors" mentioned when message sources were removed land.
+- **Actions:** start a background task (with a brief); or remind the user, optionally with a task's result. When that task has not ended or has failed by then, the reminder goes out all the same and says "still working" or "failed"; it does not wait.
 - **Who creates them:** the model proposes one with a new tool (replacing `viva_followup_propose`); a card in the conversation says when, what, and which files it will read, and only the user's yes creates it. The user can see, change and delete triggers on the Background page.
-- **Event core:** one timer, set for the next trigger due, sends `clock.trigger_due` when it fires; the file watch sends `file.changed`. Both route to "fire", which runs the action. At start and on wake, each overdue trigger fires once.
+- **Event core:** each trigger's next due time is kept in the `triggers` table, and one timer, set for the earliest, sends `clock.trigger_due` when it fires, routed to "fire". The file watch sends `file.changed`, which only moves that trigger's due time to 10 minutes after this change; it fires once that time comes. Due times are in the database, so they carry on across a restart or wake. Today's `file-watch.ts` already polls this way; it stays and is moved over to triggers.
+- **No double firing:** "fire" first records a row in `trigger_fires`, unique on (trigger id, due time), then starts the task or sends the reminder, and the task's id goes on that row; after a restart the same due time never creates another task. At start and on wake, each overdue trigger fires once; a repeating trigger that missed several times also fires only once.
 - **Notifications:** a reminder goes out at its time, and a finished task is announced. No more limits on timing or count: "only in your gaps", at most 3 a day, merging missed ones, and the home "Today" summary are removed; how much to interrupt is left to the system's Do Not Disturb.
 
 **How the old feature maps:**
@@ -316,13 +324,13 @@ Tested with real dsh on 2026-11-04 (a script with a fake model): by default a su
 | Proactive follow-ups | Triggers |
 | --- | --- |
 | "Weekly report due Friday evening: draft it ahead and remind me" | Two triggers: Friday 16:00 starts a background task "draft the weekly report"; Friday 17:00 reminds, with that task's result |
-| Preparation in chosen windows while the user is away, 30 calls a day | Removed; a task starts at its time, with "at most 3 tasks at once" bounding the cost |
+| Preparation in chosen windows while the user is away, 30 calls a day | Removed; a task starts at its time. Cost is not controlled for now, and is decided once the effect is clear |
 | A tool-free preparation call | Removed; a read-only background task that can read files and look things up, writes waiting for approval |
 | "When this file changes, help me…" | A trigger whose condition is the file changing |
 | Drafts waiting for you, "Continue" | The task's report card, which can be asked again |
 | Weekly stats, the "Background preparation" settings, the sleeping look | Removed |
 
-**Modules to remove:** `prepare-schedule`, `prepare-scheduler`, `prepare-materials`, `followup-notifier`, `notice-plan`, `followup-store`, `followup-stats`, `followups-ipc`, `followups-main`, the preparation call of `viva-followups`, and the follow-up cards and preparation settings in the pages. No compatibility: old follow-up data is not migrated.
+**Modules to remove:** `prepare-schedule`, `prepare-scheduler`, `prepare-materials`, `followup-notifier`, `notice-plan`, `followup-store`, `followup-stats`, `followups-ipc`, `followups-main`, `followup-channel`, the preparation call of `viva-followups`; in the pages, `followup-state`, `followup-actions`, `view/followups.ts`, `view/prepare-settings.ts` and the home "Today". `file-watch` stays and is moved over to triggers. No compatibility: old follow-up data is not migrated.
 
 ### 11.3 References
 
