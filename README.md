@@ -142,6 +142,7 @@ See [Development](docs/development.md) for packaging, tests and embedded dsh.
 - [Features](docs/features.md)
 - [Development, packaging, and testing](docs/development.md)
 - [Architecture](docs/architecture.md)
+- [System design](docs/system-design.md): the shell and backend processes, the event core, storage, security and lifecycle
 - [Memory design](docs/memory.md)
 - [Background task query tools](docs/background-task-tools.md)
 
