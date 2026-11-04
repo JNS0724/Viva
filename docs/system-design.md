@@ -2,7 +2,7 @@
 
 English | [简体中文](system-design.zh-CN.md)
 
-> This describes the architecture as merged into main (PR #67, `bae89e6`). How each phase was carried out, and where it departs from the plan, is in §12 of [Design: frontend/backend split](backend-split-design.md); how Viva layers on dsh's plugin system is in [Architecture](architecture.md). Date: 2026-11-04.
+> This describes the architecture as merged into main (PR #67, `bae89e6`). The split's plan and phase-by-phase notes are in the git history (`docs/backend-split-design.md`, removed after this document replaced it); how Viva layers on dsh's plugin system is in [Architecture](architecture.md). Date: 2026-11-04.
 
 ## 1. Overview
 
@@ -118,7 +118,7 @@ The backend's own data is in one `app.db`. Data written by plugins inside dsh's 
 | `settings.json`, `models.json`, `mcp-servers.json`, `preferences.json` | Key, model providers, MCP servers, preferences | Backend | None |
 | `data-key.bin` | The data key that encrypts keys, itself encrypted by the system keychain | Shell | None |
 
-**Why memory stays out of `app.db`.** Memory is mainly written by the memory plugin inside dsh's process, which does not go through the backend's `apply`. Merging it would mean letting the plugin open the whole app database, and the two `meta` tables would clash. §6.2 of the design document defines plugin-written data as entering the events as observed changes, not through `apply`.
+**Why memory stays out of `app.db`.** Memory is mainly written by the memory plugin inside dsh's process, which does not go through the backend's `apply`. Merging it would mean letting the plugin open the whole app database, and the two `meta` tables would clash. The split's design decided so: plugin-written data enters the events as observed changes, not through `apply`.
 
 **Key encryption.** The system keychain (Electron `safeStorage`: Keychain on macOS, DPAPI on Windows) is available only in the shell. The shell uses it to protect a random 32-byte data key and hands that key to the backend over the IPC channel at start. The backend encrypts with AES-256-GCM under it (`src/backend/envelope.ts`). If the keychain can no longer open the key file, the file is set aside and a new key made; keys encrypted under the old one must be entered again. Without a keychain, saving a key is refused rather than falling back to plain text.
 

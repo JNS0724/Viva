@@ -5,7 +5,7 @@ import type { RemoteHost } from './remote-host.ts'
 import { type Answer, type ChannelKind, decodeValue, encodeValue, isBlobRef, SEQ_HEADER, sseMessage, TOKEN_HEADER } from './wire.ts'
 
 /**
- * The backend's loopback HTTP server (docs/backend-split-design.md D5, §12 P5); wire.ts lists the routes. Only
+ * The backend's loopback HTTP server (docs/system-design.md §3); wire.ts lists the routes. Only
  * 127.0.0.1, only requests with the launch token and the server's own Host (a page in a browser can do neither).
  */
 const LOOPBACK = '127.0.0.1'

@@ -5,7 +5,7 @@ import path from 'node:path'
 
 /**
  * The backend reaches Electron only through HostCapabilities (src/backend/host.ts): no module it loads imports
- * `electron` at run time (docs/backend-split-design.md D1, D2). `import type` is erased and does not count.
+ * `electron` at run time (docs/system-design.md §9). `import type` is erased and does not count.
  */
 const ROOT = path.join(import.meta.dirname, '..')
 /** The backend process's entry (server.ts), which loads compose.ts and everything it does. */

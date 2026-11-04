@@ -17,7 +17,7 @@
 - dsh 还是 0.2.0-rc，插件用到的都是它自己的接口；
 - 每多一个插件，app 就离「换成别的 ACP agent 也能用」更远一步。
 
-这条标准管的是 app 自己写的插件。用户自己装的 dsh 插件（设置「插件」，第 4 节）是另一回事：app 从此和 dsh 的插件生态绑在一起，这是有意的取舍，见 [设计：前后端拆分、事件内核与插件开放](backend-split-design.zh-CN.md)。
+这条标准管的是 app 自己写的插件。用户自己装的 dsh 插件（设置「插件」，第 4 节）是另一回事：app 从此和 dsh 的插件生态绑在一起，这是有意的取舍，见 [系统架构设计](system-design.zh-CN.md)。
 
 插件和 app 通过版本化的数据约定协作：持久数据使用 SQLite；问题、配置和实时输出等瞬时事件使用独立 IPC 通道。
 
@@ -50,7 +50,7 @@ app（Electron 主进程）                                   dsh 进程：--pro
 
 人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/backend/app-plugins.ts` 的 `PERSONA`。
 
-app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-CN.md)）：外壳（`src/shell/main.ts`，Electron 主进程）管窗口、托盘、桌面小岛和其他 Electron 接口；后端（`src/backend/server.ts`，Electron 以 Node 身份运行的子进程，在 `src/backend/compose.ts` 里组装）管其余的一切，运行时不导入 `electron`，只通过 `HostCapabilities`（`src/backend/host.ts`）用到桌面，这些调用经回环 HTTP 和 SSE、带启动令牌发给外壳。页面仍然通过 IPC 和外壳说话；外壳按 `ipc-contract.ts` 校验每个调用，再转给后端。源码目录按拆分来分：`src/shell` 归外壳，`src/backend` 归后端（后端从不引用 `src/shell`，由 `test/backend-boundary.test.ts` 检查），`src/shared` 放两边和页面都用的东西，比如 IPC 契约（两个进程共用、需要 Node 的放在 `src/shared/node`）。外壳在运行时只引用后端的进程间协议（`wire.ts`）。进入后端的输入都是种类固定的信号（`src/backend/event-core.ts`），每种有自己的路由。状态的改动走 `apply`：改动和 `app.db` 里 `app_events` 的一行带序号的记录在同一个事务里写入，推给窗口的每条消息都带这个序号。`app.db` 里还有跟进、历史和后台任务，它们的写操作都走 `apply`（`src/backend/journal.ts`）；事件只记 id、状态和数字，文字只记长度。记忆和过程记录留在各自插件的文件里，由 dsh 的进程写：用户在界面上改记忆，写完后紧接着记事件；模型存下的记忆，在一轮结束后 app 读到时记事件。用户在页面上的操作是 `user.command` 信号（`src/backend/commands.ts`）：不是查询的通道（查询见 `ipc-contract.ts` 的 `QUERY_CHANNELS`），先按通道名和参数的形状记下来（不记文字，参数里可能有 key），再交给它的处理函数。每个回答都带上后端回答时最后一个发给桌面的调用的序号；外壳先把序号之前的调用执行完，再把回答交给页面，所以页面不会先拿到回答、后收到在它之前的推送。
+app 分成两个进程（见 [系统架构设计](system-design.zh-CN.md)）：外壳（`src/shell/main.ts`，Electron 主进程）管窗口、托盘、桌面小岛和其他 Electron 接口；后端（`src/backend/server.ts`，Electron 以 Node 身份运行的子进程，在 `src/backend/compose.ts` 里组装）管其余的一切，运行时不导入 `electron`，只通过 `HostCapabilities`（`src/backend/host.ts`）用到桌面，这些调用经回环 HTTP 和 SSE、带启动令牌发给外壳。页面仍然通过 IPC 和外壳说话；外壳按 `ipc-contract.ts` 校验每个调用，再转给后端。源码目录按拆分来分：`src/shell` 归外壳，`src/backend` 归后端（后端从不引用 `src/shell`，由 `test/backend-boundary.test.ts` 检查），`src/shared` 放两边和页面都用的东西，比如 IPC 契约（两个进程共用、需要 Node 的放在 `src/shared/node`）。外壳在运行时只引用后端的进程间协议（`wire.ts`）。进入后端的输入都是种类固定的信号（`src/backend/event-core.ts`），每种有自己的路由。状态的改动走 `apply`：改动和 `app.db` 里 `app_events` 的一行带序号的记录在同一个事务里写入，推给窗口的每条消息都带这个序号。`app.db` 里还有跟进、历史和后台任务，它们的写操作都走 `apply`（`src/backend/journal.ts`）；事件只记 id、状态和数字，文字只记长度。记忆和过程记录留在各自插件的文件里，由 dsh 的进程写：用户在界面上改记忆，写完后紧接着记事件；模型存下的记忆，在一轮结束后 app 读到时记事件。用户在页面上的操作是 `user.command` 信号（`src/backend/commands.ts`）：不是查询的通道（查询见 `ipc-contract.ts` 的 `QUERY_CHANNELS`），先按通道名和参数的形状记下来（不记文字，参数里可能有 key），再交给它的处理函数。每个回答都带上后端回答时最后一个发给桌面的调用的序号；外壳先把序号之前的调用执行完，再把回答交给页面，所以页面不会先拿到回答、后收到在它之前的推送。
 
 ## 3. 插件清单与约定版本
 
@@ -115,7 +115,7 @@ app 的层写的是：
 | **工具策略下沉** | 已完成一条规则：MCP 工具名里含有 send、reply、forward、post、publish、deliver、broadcast 等词的（下划线和驼峰写法都识别），一律在执行前拒绝，并告诉模型「只起草，由用户自己发送」。**实测发现 dsh 对 MCP 工具完全不弹授权**，所以这个插件是「不代为发送」唯一的硬保障 |
 | **用 ACP 扩展通知代替轮询** | **当前做不到。** dsh 0.2.0-rc.2 的 ACP 实现只会向客户端发 `session/update` 和授权请求，没有给插件开放发送自定义通知的接口。app 继续在每轮结束后的 30 秒内每 2 秒查一次 `memory.db` |
 | **其他模型和协议** | 已完成，复用 dsh 自带的 `llm-pi-ai`（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种协议），不写新插件。实测：配置的路由出现在 ACP 的模型选项里、按提供方分组，选中后请求发到它的 baseURL 并带上 key，记忆插件照常注入；默认模型由 `acp` 一项的配置决定，`agent-default-model` 对 ACP 会话不起作用 |
-| **消息源** | **已删除**（2026-11）。外部消息改由用户安装的 dsh 插件提供，见 [设计：前后端拆分、事件内核与插件开放](backend-split-design.zh-CN.md) |
+| **消息源** | **已删除**（2026-11）。外部消息改由用户安装的 dsh 插件提供，见 [系统架构设计](system-design.zh-CN.md) |
 | **顺带修复** | 记忆插件取助手回答的路径写错了（`assistant/message` 的正文在 `data.message` 下面），后台提取之前一直看不到助手的回答，已修复并加了测试；画像类记忆失效时立即重新整理画像，不再等 24 小时 |
 
 ## 7. 测试

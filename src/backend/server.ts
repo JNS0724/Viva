@@ -8,7 +8,7 @@ import { type ChannelListener, createRpcServer } from './rpc-server.ts'
 import { type ChannelKind, type FailedMessage, MIRROR, type ReadyMessage, START, type StartMessage } from './wire.ts'
 
 /**
- * The backend process (docs/backend-split-design.md D4, D5; §12 P5): started by the shell (src/shell/backend-client.ts)
+ * The backend process (docs/system-design.md §3): started by the shell (src/shell/backend-client.ts)
  * as Electron run as Node, given its launch message over the IPC channel, serving the pages' channels and the
  * shell's controls over loopback HTTP. It lives as long as the shell: when the shell's channel closes, it stops dsh
  * and its databases and exits.

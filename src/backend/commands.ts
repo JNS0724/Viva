@@ -2,7 +2,7 @@ import { type Channel, type IpcRegistry, QUERY_CHANNELS } from '../shared/ipc-co
 import type { SignalOf } from './event-core.ts'
 
 /**
- * What the user does in a page, as signals (docs/backend-split-design.md §6.1, `user.*`). The backend's channels are
+ * What the user does in a page, as signals (docs/system-design.md §4). The backend's channels are
  * registered through this: a command channel's listener runs as the route of its `user.command` signal, once the
  * signal is recorded; a query (ipc-contract.ts QUERY_CHANNELS), and a channel that is a signal of its own already,
  * go straight to their listener.

@@ -2,7 +2,7 @@
 
 [English](system-design.md) | 简体中文
 
-> 描述的是合入 main 后（PR #67，`bae89e6`）的架构。各阶段的实施细节和偏差见 [设计：前后端拆分](backend-split-design.zh-CN.md) 第 12 节；Viva 怎样在 dsh 的插件体系上分层，见 [架构](architecture.zh-CN.md)。日期：2026-11-04。
+> 描述的是合入 main 后（PR #67，`bae89e6`）的架构。拆分的设计稿和各阶段的实施记录在 git 历史里（`docs/backend-split-design.md`，本文取代它之后删除）；Viva 怎样在 dsh 的插件体系上分层，见 [架构](architecture.zh-CN.md)。日期：2026-11-04。
 
 ## 1. 概述
 
@@ -118,7 +118,7 @@ flowchart TB
 | `settings.json`、`models.json`、`mcp-servers.json`、`preferences.json` | key、模型提供方、MCP 服务器、偏好 | 后端 | 无 |
 | `data-key.bin` | 加密 key 用的数据密钥，由系统钥匙串加密 | 外壳 | 无 |
 
-**记忆为什么不并进 `app.db`。** 记忆的主要写入方是 dsh 进程里的记忆插件，它不经过后端的 `apply`。并进来反而要让插件打开整个应用数据库，两边的 `meta` 表也会重名。设计文档 §6.2 的定义是：这类由插件写的数据以“观察到的变化”进入事件，而不是走 `apply`。
+**记忆为什么不并进 `app.db`。** 记忆的主要写入方是 dsh 进程里的记忆插件，它不经过后端的 `apply`。并进来反而要让插件打开整个应用数据库，两边的 `meta` 表也会重名。拆分设计时就这样定了：这类由插件写的数据以“观察到的变化”进入事件，而不是走 `apply`。
 
 **key 的加密。** 系统钥匙串（Electron `safeStorage`：macOS 用钥匙串，Windows 用 DPAPI）只在外壳里用得到。外壳用它保护一把随机的 32 字节数据密钥，启动时经 IPC 通道交给后端；后端用它做 AES-256-GCM 加密（`src/backend/envelope.ts`）。钥匙串打不开密钥文件时，把它改名留着，再生成新的，原来加密的 key 要重新填。钥匙串不可用时拒绝保存 key，不会退回明文。
 

@@ -4,7 +4,7 @@ import type { Notice } from './notice-plan.ts'
  * What the backend may ask of the desktop it runs beside (the shell, src/shell/main.ts): the only way it reaches
  * Electron. The backend's module tree imports no `electron` at run time (test/backend-boundary.test.ts); every
  * capability the shell owns comes through here. Dialogs answer with local paths; they serve only the local
- * capabilities group (docs/backend-split-design.md §4, classes 3 and 4).
+ * capabilities (files, the working folder, MCP), which stay a group of their own (docs/system-design.md §10).
  */
 export interface FolderOptions { title: string, createDirectory?: boolean, defaultPath?: string, showHidden?: boolean }
 export interface FileOptions { title: string, multiple?: boolean }

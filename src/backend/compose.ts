@@ -53,7 +53,7 @@ import { commandIpc } from './commands.ts'
 import type { HostCapabilities, HostEvent } from './host.ts'
 
 /**
- * The backend: everything of the app that is not the desktop (docs/backend-split-design.md D1): the stores and
+ * The backend: everything of the app that is not the desktop (docs/system-design.md §2): the stores and
  * databases, dsh and its lifecycle, the conversation on screen, background tasks, memory, follow-ups and
  * preparation, models, extensions and plugins, and the channels the pages use for them. It reaches the desktop
  * only through HostCapabilities (host.ts); the shell (src/shell/main.ts) owns the windows, the tray, the desk
