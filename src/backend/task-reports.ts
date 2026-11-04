@@ -45,18 +45,23 @@ export interface TaskReportsDeps {
   describe: (taskId: string, status: string) => EndedTask | null
   /** Opens the turn with the note. */
   report: (note: string) => void
+  /** Whether the task is still as it ended: asked again or taken up since, its old result is not reported. */
+  stillEnded?: (taskId: string) => boolean
   later?: (run: () => void, ms: number) => unknown
 }
 
-export function createTaskReports({ isIdle, currentConversation, describe, report, later = setTimeout }: TaskReportsDeps) {
+export function createTaskReports({ isIdle, currentConversation, describe, report, stillEnded = () => true, later = setTimeout }: TaskReportsDeps) {
   let pending: readonly EndedTask[] = []
   let gathering = false
 
-  /** If the conversation is free: one turn for the tasks of the conversation on screen; the others are left to their lines. */
+  /**
+   * If the conversation is free: one turn for the tasks of the conversation on screen that are still as they ended;
+   * the others are left to their lines (a task at work again reports when it ends again).
+   */
   function flush() {
     if (!pending.length || !isIdle()) return
     const here = currentConversation()
-    const mine = pending.filter((task) => task.host === here)
+    const mine = pending.filter((task) => task.host === here && stillEnded(task.taskId))
     pending = []
     if (mine.length) report(noteFor(mine))
   }

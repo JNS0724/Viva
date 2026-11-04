@@ -345,6 +345,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     applyMcpChange()
       .then((info) => info && emitToRenderer({ type: 'config', info }))
       .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
+      // A task's result held back while the session was reattached comes back now.
+      .finally(() => taskReports.flush())
   }
 
   /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
@@ -408,6 +410,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         return { taskId, title: task.title, status, host, output: task.resultPreview ?? '' }
       } catch {
         return null
+      }
+    },
+    stillEnded: (taskId) => {
+      try {
+        const { task } = taskRegistry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string } }
+        return ['done', 'stopped', 'error'].includes(task.status)
+      } catch {
+        return false
       }
     },
     report: (note) => {
@@ -491,6 +501,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
       conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
       emitToRenderer({ type: 'ready', info })
+      // Results of tasks that ended while dsh was away come back once it is here again.
+      taskReports.flush()
       return info
     } catch (err: any) {
       console.error('[main] failed to start agent bridge:', err)
