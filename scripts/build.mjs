@@ -18,7 +18,7 @@ const PAGES = path.join(ROOT, 'src', 'renderer')
 /** What tsc writes out; everything else is copied. */
 const CODE = /\.[cm]?[jt]s$/
 const PAGE_LIBRARY = /from '((?:\.\.\/)+node_modules\/[^']+)'/g
-const ENTRY = path.join(OUT, 'src', 'main', 'main.js')
+const ENTRY = path.join(OUT, 'src', 'shell', 'main.js')
 
 /** Files under `dir`, relative to ROOT; a plugin's own node_modules is not the app's. */
 function filesIn(dir) {

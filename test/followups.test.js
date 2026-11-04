@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createFollowupNotifier, createGapWatch } from '../src/main/followup-notifier.ts'
-import { dayOf, openFollowupStore } from '../src/main/followup-store.ts'
-import { weekStats } from '../src/main/followup-stats.ts'
-import { clock as hhmm, DAILY_CAP, LATE_MS, nextReminderAt, planNotices } from '../src/main/notice-plan.ts'
+import { createFollowupNotifier, createGapWatch } from '../src/backend/followup-notifier.ts'
+import { dayOf, openFollowupStore } from '../src/backend/followup-store.ts'
+import { weekStats } from '../src/backend/followup-stats.ts'
+import { clock as hhmm, DAILY_CAP, LATE_MS, nextReminderAt, planNotices } from '../src/backend/notice-plan.ts'
 
 const MINUTE = 60_000
 const NOON = new Date(2026, 9, 26, 12, 0).getTime()
@@ -162,8 +162,8 @@ test('back at the computer after 15 minutes away is a gap; a short pause is not'
 test('今天: the day\'s first gap with something says it all at once, once; a day with nothing says nothing', () => {
   const base = { now: NOON, interruptionsToday: 0, atGap: true, windowInFront: false, toldReady: new Set(), todayTold: false }
   const later = followup({ id: 'b', title: '合同', remindAt: NOON + 60 * MINUTE })
-  const [today] = planNotices({ ...base, followups: [followup({ id: 'a', status: 'ready' }), later], suggestions: [{ id: 's', title: '续签' }] })
-  assert.deepEqual([today.kind, today.body, today.followupIds], ['today', '准备好 1 件 · 1 条消息要你看看 · 今天要提醒 1 件：周报、续签、合同', ['a', 's']])
+  const [today] = planNotices({ ...base, followups: [followup({ id: 'a', status: 'ready' }), later] })
+  assert.deepEqual([today.kind, today.body, today.followupIds], ['today', '准备好 1 件 · 今天要提醒 1 件：周报、合同', ['a']])
   assert.deepEqual(planNotices({ ...base, followups: [] }), [], 'nothing to say: no 今天')
   assert.deepEqual(planNotices({ ...base, followups: [later], todayTold: true }), [], 'once a day')
   assert.deepEqual(planNotices({ ...base, followups: [later], atGap: false }), [], 'only in a gap')

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { IPC_ARGS, argsProblem, checkedIpc } from '../src/main/ipc-contract.ts'
+import { IPC_ARGS, argsProblem, checkedIpc } from '../src/shared/ipc-contract.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8')
@@ -14,10 +14,13 @@ const sentByPages = () => channelsIn(
   /ipcRenderer\.(?:invoke|send)\('([^']+)'/g,
 )
 
-/** What the main process registers: ipcMain.handle / on, and the `handle('…'` shorthand of the register*Ipc modules. */
+/**
+ * What the main process registers, the shell's and the backend's together (src/shell, src/backend): ipcMain.handle /
+ * on, and the `handle('…'` shorthand of the register*Ipc modules.
+ */
 const registeredByMain = () => {
-  const dir = path.join(ROOT, 'src', 'main')
-  const sources = fs.readdirSync(dir).filter((name) => /\.[jt]s$/.test(name)).map((name) => read(path.join('src', 'main', name))).join('\n')
+  const sources = ['shell', 'backend'].flatMap((folder) => fs.readdirSync(path.join(ROOT, 'src', folder))
+    .filter((name) => /\.[jt]s$/.test(name)).map((name) => read(path.join('src', folder, name)))).join('\n')
   return channelsIn(sources, /(?:ipcMain\.(?:handle|on)|\bhandle)\('([^']+)'/g)
 }
 

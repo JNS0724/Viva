@@ -10,7 +10,7 @@ test('original-language QA report registration stays hash checked and cannot exe
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   fs.mkdirSync(path.join(root, 'docs'))
   const manifest: TranslationManifest = { version: 1, reviewedOn: '2026-10-30', pairs: [],
-    bilingual: ['README.md', 'README.zh-CN.md', 'AGENTS.md', 'packages/viva-source-kit/README.md'],
+    bilingual: ['README.md', 'README.zh-CN.md', 'AGENTS.md'],
     sourceReports: [{ path: 'docs/qa-evidence.md', locale: 'zh-CN', sha256: digest('原始证据') }] }
   const save = () => fs.writeFileSync(path.join(root, 'docs/i18n-manifest.json'), JSON.stringify(manifest))
   fs.writeFileSync(path.join(root, 'docs/qa-evidence.md'), '原始证据'); save()

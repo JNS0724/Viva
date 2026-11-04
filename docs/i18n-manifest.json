@@ -5,20 +5,14 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "3df07fd49cb5282e4f53911266dbd3cf77290c792eea466684f1e3489c03e0aa",
-      "zhHash": "2a0e1a8fb2e14d1394756d93e3c5a73d305a7498206ee96c426763aabf32a713"
-    },
-    {
-      "en": "packages/viva-source-kit/README.md",
-      "zh": "packages/viva-source-kit/README.zh-CN.md",
-      "enHash": "498b6c5e4d7155dda0488cb1f608fcd0c4d8cebc1bdea8004492d372d3b16a6d",
-      "zhHash": "4ae7fd67f3795b58aef0459544fafbbd35630726bc949416c87493d24b90c2de"
+      "enHash": "12257f5af9bba789689e56c6bfd18781899b395431866a2e29ab8de4b0793875",
+      "zhHash": "08791a7dd21032c7d4b70cac0c3a795883101a8bb01c1f56504010daae60d32f"
     },
     {
       "en": "docs/architecture.md",
       "zh": "docs/architecture.zh-CN.md",
-      "enHash": "a103f14c240baef7fc10d1399275bc6bfa4c13bf16f4c3a50afdab2ec590e221",
-      "zhHash": "6073d0c644d6a8b29542d2343771abba1246aa4335ea18ea95aebb4e99f2ae13"
+      "enHash": "7088650da7c0d8ba457a8891010db9d9f83dfb8275206fad361d84b6ad3910c8",
+      "zhHash": "0fef2975892f66c992710c7d371beefc150d66470a329a03177b0593f27cbe20"
     },
     {
       "en": "docs/background-task-tools.md",
@@ -35,38 +29,38 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "9bb3bb5de53ddf7dccae3d4c45ac0575c87c59cb602ac160fd8edb7891511a80",
-      "zhHash": "08bf006ea309d81fe9495bfebc8c2b251b06126816d1cc334f624c232df8bc33"
+      "enHash": "8a11ba03a146f09d48bbe038ba6c3232e6b64a0dff7700776b1dfbae2d0cae3e",
+      "zhHash": "89e10f6f6556adb431940c7c42285f1b6aa32513fc94d813b4e9708cdc249dee"
     },
     {
       "en": "docs/dsh-upgrade-validation-20261026.md",
       "zh": "docs/dsh-upgrade-validation-20261026.zh-CN.md",
       "enHash": "102b4f45010fe1c91f8cfa92490f779df27b833218fc76a1ff7328b5896e75ef",
-      "zhHash": "f65d97d52d998430a2427dfbd38967203e76e667f14873509d69fc07907c93aa"
+      "zhHash": "000c737a8f76faf657cfb31d539405fdaf4876c3baf4ece84a69bfe21e7566a1"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "da95e98d225005fc80143d467e2e9345248dcb399364976904ba507b428fc452",
-      "zhHash": "4200160b409bf5b9bc0fb61f1a04f7e9c58fea903956a1375e9bb2f1d308ebff"
+      "enHash": "01ad58c39fbf3e34272ef35724d5c0e07b732d8e8a6ba38734da6359801b4f83",
+      "zhHash": "2dd3115e39f05ecc3240a136fcea6bc2d52ff33e1dcf96dc55602e7962e7793a"
     },
     {
       "en": "docs/internationalization.md",
       "zh": "docs/internationalization.zh-CN.md",
-      "enHash": "7cf24857ce30c72738b7a056700b9b74b349eaa0599661d8686f632c72e32722",
-      "zhHash": "5f88d409c53c234e05f42e3524304104d41a5514e4f94cdcc0f18ee7229c83c8"
+      "enHash": "627aa6b6e5e5535a3838241b27dd658a95e3893a0fa036dc1f34c26407c67fa0",
+      "zhHash": "b7e67308e10b0e2c5703063855984168a38617eef45f46a74134dfcd5508511e"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "3b95fe9ada843f0660aee88ed1ac0cf43a5a60da7622e0789ce51d89b92db880",
-      "zhHash": "1b846cb2365ed0ab1505b8a049e390685c8da23ed4ea1dcdaec20216b4c38fb3"
+      "enHash": "ed776e2df2315eed92eabf03c995400fd8d8ef91a7254482839ea5567d65764e",
+      "zhHash": "e82cba0112f0b7e1559388184af1eb42374de4c29041181b083be3b0751d129f"
     },
     {
       "en": "docs/memory.md",
       "zh": "docs/memory.zh-CN.md",
-      "enHash": "ff3853ed53ce424f65c159efe8b60636bf4fc3a3df07aaa99ad09adedd9f9a24",
-      "zhHash": "d011f6195a50e7f83d4ec27fbc345e3f0905844b6924a6e49d75c86bce86df9a"
+      "enHash": "2b017d142575ecbdaea6a4055a29b346be0f295a4d2a587ca9b0853dbbdde022",
+      "zhHash": "bea712d3ec7c5b465b2e04ece20a644b94652458b8e8fbad4b2889fcff089257"
     },
     {
       "en": "docs/new-topic-performance-20261026.md",
@@ -79,12 +73,6 @@
       "zh": "docs/release-qa-20261028.zh-CN.md",
       "enHash": "d7cd2dc67ff5894c04e76d0130bec41a33b4e0ecd04885d76ddeb059a750e1ce",
       "zhHash": "b09b9c96925be6ed3c14873c05a6ff8039450673c1a7a4bb5d49c6d8e405d65a"
-    },
-    {
-      "en": "docs/sources.md",
-      "zh": "docs/sources.zh-CN.md",
-      "enHash": "c3d05ef25fec93351535403e90c65d876cce367e1db5b3f1a8a7f72d26e64906",
-      "zhHash": "4e34f8f8da2b4436899d2f4de9d5ae1d0572957c3848192b045061386e926961"
     },
     {
       "en": "docs/windows-performance-20261026.md",
@@ -133,6 +121,18 @@
       "zh": "docs/ui-guidelines.zh-CN.md",
       "enHash": "84280b9e92f3f583f9c4f5cf7d15b32b154029e40d2c72dd72485f9ca5c398c2",
       "zhHash": "e1516549dff41284472eba5f9ab5feaf895bd96e6afbbf3685233e7b6d35cf2c"
+    },
+    {
+      "en": "docs/remote-workspace-research-20261104.md",
+      "zh": "docs/remote-workspace-research-20261104.zh-CN.md",
+      "enHash": "f189e16099499882bafffd9d2c4cfb9cc93e720c15a0fdfed2866059b409b5fa",
+      "zhHash": "41328213a877a6caede822bdcf96f65328ceb40d1ab558bbe27af4eaf96acf96"
+    },
+    {
+      "en": "docs/backend-split-design.md",
+      "zh": "docs/backend-split-design.zh-CN.md",
+      "enHash": "321f84d978a94f7e1bf53e77a2370628a8cdc2d476215e560a1ac5827b6316c7",
+      "zhHash": "2ce94d2cc0ffd7688826b531b145960c988bb22c4d8feb1358206a14969720a9"
     }
   ],
   "bilingual": [

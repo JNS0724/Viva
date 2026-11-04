@@ -12,9 +12,9 @@ on:
       - package-lock.json
       - scripts/**
       - tsconfig*.json
-      - src/main/config.ts
-      - src/main/app-plugins.ts
-      - src/main/automation-driver.ts
+      - src/backend/config.ts
+      - src/backend/app-plugins.ts
+      - src/shell/automation-driver.ts
       - test/smoke/**
       - test/fixtures/**
       - .github/workflows/package.yml

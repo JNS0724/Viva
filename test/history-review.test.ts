@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openHistoryDb } from '../src/main/history-db.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
 
 /** 回顾: the topics, the one last talked in first, the background tasks in them, and the messages starred. */
 
@@ -228,37 +228,3 @@ function withoutTopics(file: string, change = '') {
   raw.exec('UPDATE conversations SET topic_id = NULL')
   raw.close()
 }
-
-test('a file from before gets its topics once, from how its segments go on from each other', () => {
-  const { db, file } = freshDb()
-  const a = segment(db, [user('一'), answer('答')])
-  const b = segment(db, [user('换目录接着聊')], { parentId: a.id })
-  const back = segment(db, [user('一'), user('换个说法')])
-  db.fold(a.id, { into: back.id, at: 1 })
-  const side = segment(db, [user('后台做')], { parentId: b.id })
-  db.fold(side.id, { into: b.id, at: 1, kind: 'side' })
-  const alone = segment(db, [user('新话题')])
-  const orphan = segment(db, [user('父段已清掉')], { parentId: 'gone' })
-  db.close()
-  withoutTopics(file)
-
-  const ids = [a, b, back, side, alone, orphan].map((s) => s.id)
-  const reopened = openHistoryDb({ file })
-  const topics = ids.map((id) => reopened.topicOf(id))
-  assert.deepEqual(topics, [a.id, a.id, a.id, a.id, alone.id, orphan.id])
-  reopened.close()
-
-  const again = openHistoryDb({ file })
-  assert.deepEqual(ids.map((id) => again.topicOf(id)), topics, 'opening again changes nothing')
-})
-
-test('links that come back round are one topic, started by its oldest segment', () => {
-  const { db, file } = freshDb()
-  const a = segment(db, [user('一')])
-  const b = segment(db, [user('二')], { parentId: a.id })
-  db.close()
-  withoutTopics(file, `UPDATE conversations SET parent_id = '${b.id}' WHERE id = '${a.id}'`)
-
-  const reopened = openHistoryDb({ file })
-  assert.deepEqual([reopened.topicOf(a.id), reopened.topicOf(b.id)], [a.id, a.id])
-})

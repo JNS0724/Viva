@@ -1,7 +1,7 @@
 /**
  * The steer contract (version 1) between this plugin, inside dsh, and the app that started dsh. The messages
  * go over Node's IPC channel (`process.send` / `process.on('message')`); the app keeps the same shapes in
- * src/main/steer-channel.js.
+ * src/backend/steer-channel.ts.
  *
  *   app → plugin  { type: 'steer', id, sessionId, text }       what the user said while the agent works
  *   plugin → app  { type: 'steer_result', id, ok, reason? }    reason when not ok: see REASONS

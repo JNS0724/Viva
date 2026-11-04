@@ -9,13 +9,13 @@ import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
-import { createSourceActions } from './source-actions.ts'
 import { createFollowupActions } from './followup-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
 import { mountHistorySearchFrame } from './history-search-frame.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
+import { createPluginActions } from './plugin-actions.ts'
 import { createNewTopicAction, isPreviousTopicEvent } from './new-topic-actions.ts'
 import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
@@ -573,7 +573,6 @@ const resumeActions = createResumeActions({
 })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
-const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage })
 const followupActions = createFollowupActions({
   api, getState: () => state, dispatch, errorMessage,
   // 接着做: the draft in the input, the conversation in front; the user reads it and sends it.
@@ -586,6 +585,7 @@ const followupActions = createFollowupActions({
   startTask: (text) => taskActions.startTask(text),
 })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
+const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
 /** Emptying or moving the pictures folder; null back means the user picked no folder. */
@@ -640,9 +640,9 @@ const handlers = {
   },
   ...memoryActions,
   ...extensionActions,
-  ...sourceActions,
   ...followupActions,
   ...modelActions,
+  ...pluginActions,
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
@@ -783,9 +783,9 @@ const handlers = {
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
-    sourceActions.loadSources()
     followupActions.loadFollowups()
     modelActions.loadModels()
+    pluginActions.loadPlugins()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })
     } catch (err) {

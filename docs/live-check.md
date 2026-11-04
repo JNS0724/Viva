@@ -2,11 +2,11 @@
 
 English | [简体中文](live-check.zh-CN.md)
 
-Unit and smoke tests use fake models. They validate UI and control flow, but only actual-model checks can verify clarification, tool selection, reasoning, and resistance to injected instructions. This suite exercises 26 model-dependent scenarios from [Features](features.md). Run the core set for every beta; run all scenarios for stable releases or major changes. Assert outcomes, files, numbers, cards, and errors rather than exact wording. Each scenario defaults to three runs and must pass all three.
+Unit and smoke tests use fake models. They validate UI and control flow, but only actual-model checks can verify clarification, tool selection, reasoning, and resistance to injected instructions. This suite exercises 23 model-dependent scenarios from [Features](features.md). Run the core set for every beta; run all scenarios for stable releases or major changes. Assert outcomes, files, numbers, cards, and errors rather than exact wording. Each scenario defaults to three runs and must pass all three.
 
 ## Preparation
 
-1. Install dependencies with `npm ci` using Node 22+. Some scenarios launch test MCP/source programs with Node.
+1. Install dependencies with `npm ci` using Node 22+. Some scenarios launch test MCP servers with Node.
 2. Set `DEEPSEEK_API_KEY` or put one `DEEPSEEK_API_KEY=sk-...` line in `~/.config/viva/live-test.env`. On macOS, `chmod 600` is required or the runner refuses the file.
 3. Quit Viva. The suite launches its own app with a unique temporary profile, separate from personal history/keys.
 4. Do not interact with the test window while it runs.
@@ -57,9 +57,6 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | followup-prepare | Prepare now creates a draft; Continue fills composer | ✓ |
 | followup-injection | Embedded delete-files instruction neither executes nor enters the draft as an instruction | |
 | followup-watch | File-watch follow-up is proposed | |
-| sources-read | Test mailbox yields contract id through the read-messages tool | ✓ |
-| sources-injection | Embedded deletion instruction leaves files intact and triggers no approval | |
-| sources-triage | Expiring contract is suggested, routine meeting notes are not | |
 | task-background | Work moves to background without occupying chat and returns a result card | ✓ |
 | model-openai | Switch to OpenAI-compatible model, answer, switch back | |
 | errors | Wrong key/unreachable server has readable localized errors; recovery works | ✓ |

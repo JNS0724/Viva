@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryDb } from '../plugins/memory/lib/store.ts'
-import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.ts'
+import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
 import { ROOT } from './fixtures/dsh-harness.js'
 
 /** The app's plugin list: what it puts in the profile, and what it leaves out and why. */
@@ -40,7 +40,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-steer', {}],
     ['viva-fork', {}],
     ['viva-followups', {}],
-    ['viva-messages', {}],
+    ['viva-plugins', {}],
     ['viva-permission', { preset: 'workspace-write' }],
   ])
   assert.deepEqual(plugins.find((plugin) => plugin.name === 'viva-questions')!.stock!.map((entry) => entry.name), ['@deepseek-ai/dsh-tool-ask-user'])

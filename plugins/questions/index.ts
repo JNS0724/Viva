@@ -3,7 +3,7 @@
  * profile next to this plugin), the question goes to the app's window and the tool waits for the answer.
  * dsh's ACP front end has no way to ask, so this plugin answers dsh's `user-questions/request` itself and
  * hands the question over the IPC channel the app opened when it started dsh (lib/channel.js).
- * Loaded by the app's dsh profile (src/main/dsh-profile.js).
+ * Loaded by the app's dsh profile (src/backend/dsh-profile.ts).
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'

@@ -1,5 +1,5 @@
 import type { SmokeDesk } from './smoke-kit.ts'
-import { MISSING } from '../../src/main/island-files.ts'
+import { MISSING } from '../../src/shell/island-files.ts'
 import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**

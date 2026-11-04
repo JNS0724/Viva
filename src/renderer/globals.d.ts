@@ -1,10 +1,10 @@
 // What the preload scripts put on the page (src/preload/preload.cjs, desk-preload.cjs). A call that only forwards
-// to a channel takes that channel's arguments from the IPC contract (src/main/ipc-contract.ts), the same table the
+// to a channel takes that channel's arguments from the IPC contract (src/shared/ipc-contract.ts), the same table the
 // main process checks them against; test/window-api.test.js keeps these names and the preload scripts in step.
 // What comes back is not typed yet.
 
-type Args<C extends import('../main/ipc-contract.ts').Channel> = import('../main/ipc-contract.ts').ChannelArgs<C>
-type Invoke<C extends import('../main/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<any>
+type Args<C extends import('../shared/ipc-contract.ts').Channel> = import('../shared/ipc-contract.ts').ChannelArgs<C>
+type Invoke<C extends import('../shared/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<any>
 type Unlisten = () => void
 
 /** A part of the state whose shape is not written out yet: what an empty start (null, []) was before strict. */
@@ -255,15 +255,11 @@ interface AgentApi extends LanguageApi {
   updateMcpServer: Invoke<'ext:update-mcp'>
   importDsh: Invoke<'ext:import-dsh'>
   removeSkill: Invoke<'ext:remove-skill'>
-  getSources: Invoke<'sources:get'>
-  saveSource: Invoke<'sources:save'>
-  checkSource: Invoke<'sources:check'>
-  pollSourceNow: Invoke<'sources:poll-now'>
-  openSourcesFolder: Invoke<'sources:open-folder'>
-  chooseSource: Invoke<'sources:choose'>
-  installSource: Invoke<'sources:install'>
-  cancelSourceInstall: Invoke<'sources:cancel-install'>
-  removeSource: Invoke<'sources:remove'>
+  getPlugins: Invoke<'plugins:get'>
+  inspectPlugin: Invoke<'plugins:inspect'>
+  installPlugin: Invoke<'plugins:install'>
+  removePlugin: Invoke<'plugins:remove'>
+  setPluginEnabled: Invoke<'plugins:set-enabled'>
   getFollowups: Invoke<'followups:get'>
   acceptFollowup: Invoke<'followups:accept'>
   declineFollowup: Invoke<'followups:decline'>
@@ -273,7 +269,6 @@ interface AgentApi extends LanguageApi {
   wakePreparation: Invoke<'followups:wake'>
   setPrepareSchedule: Invoke<'followups:set-schedule'>
   pausePreparation: Invoke<'followups:pause'>
-  settleSuggestion: Invoke<'followups:suggestion'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (...args: Args<'island:view'>) => void
   onFocusComposer: (callback: () => void) => Unlisten

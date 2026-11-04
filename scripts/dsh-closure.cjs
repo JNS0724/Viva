@@ -13,6 +13,8 @@ const path = require('node:path')
 const DSH = '@deepseek-ai/dsh'
 /** The bundles the ACP template composes; see the acp entry of PROFILE_TEMPLATES in dsh-app-boot. */
 const ACP_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-acp-app']
+/** Rows the app's layer switches on that the ACP composition leaves off (src/backend/dsh-profile.ts). */
+const LAYER_PACKAGES = ['@deepseek-ai/dsh-hmr']
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'))
 const packageName = (spec) => /^(@[^/]+\/[^/]+|[^@/.][^/]*)/.exec(spec)?.[1] ?? null
@@ -73,7 +75,7 @@ function resolveFrom(projectDir, fromDir, name) {
 function shippedPackages(projectDir) {
   const app = readJson(path.join(projectDir, 'package.json'))
   const roots = [...new Set([
-    ...composedPackages(projectDir), ...ACP_BUNDLES, ...entryImports(projectDir), ...pluginPeers(projectDir),
+    ...composedPackages(projectDir), ...ACP_BUNDLES, ...LAYER_PACKAGES, ...entryImports(projectDir), ...pluginPeers(projectDir),
     ...Object.keys(app.dependencies ?? {}).filter((name) => name !== DSH),
   ])]
   const unresolved = roots.filter((name) => !resolveFrom(projectDir, projectDir, name))

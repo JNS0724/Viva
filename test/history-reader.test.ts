@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
 
 /** 回顾 reads a long topic a part at a time: from a place, or around a message, never more than asked. */
 

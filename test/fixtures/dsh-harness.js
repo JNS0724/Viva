@@ -3,12 +3,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createAcpBridge } from '../../src/main/acp-bridge.ts'
-import { installedDshVersion, PERSONA, resolvePlugins } from '../../src/main/app-plugins.ts'
-import { DSH_PROFILE } from '../../src/main/config.ts'
-import { ensureDshProfile } from '../../src/main/dsh-profile.ts'
-import { dshEnv, dshRuntime } from '../../src/main/dsh-runtime.ts'
-import { removeTree } from '../../src/main/remove-tree.ts'
+import { createAcpBridge } from '../../src/backend/acp-bridge.ts'
+import { installedDshVersion, PERSONA, resolvePlugins } from '../../src/backend/app-plugins.ts'
+import { DSH_PROFILE } from '../../src/backend/config.ts'
+import { ensureDshProfile, vivaLayerFile } from '../../src/backend/dsh-profile.ts'
+import { dshEnv, dshRuntime } from '../../src/backend/dsh-runtime.ts'
+import { pnpmLauncher } from '../../src/backend/pnpm-launcher.ts'
+import { removeTree } from '../../src/backend/remove-tree.ts'
 import { startFakeLlm } from './fake-llm.js'
 
 /**
@@ -31,7 +32,7 @@ export const DSH_TIMEOUT_MS = 60_000
  *   models: the profile's model section (see dsh-profile.js), given the fake Messages endpoint; env: added to dsh's
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  */
-export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, messageActions = null, imagesDir, permission } = {}) {
+export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
@@ -42,7 +43,10 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
   const file = memoryFile ?? path.join(userData, 'memory.db')
   const withFile = plugins.map((plugin) => (plugin.name === 'viva-memory' ? { ...plugin, config: { file } } : plugin))
   const llm = await startFakeLlm()
-  ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA, models: models?.(llm), imagesDir: imagesDir?.(dir) })
+  // As the app does at every launch (main.ts prepareProfile), with the pnpm the app ships for the plugin manager.
+  const pnpmCommand = pnpmLauncher({ dir: path.join(dir, 'bin'), appRoot: ROOT, runtime: RUNTIME })
+  const writeProfile = () => ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA, models: models?.(llm), imagesDir: imagesDir?.(dir), pnpmCommand })
+  writeProfile()
   const bridges = []
   const closers = []
   t.after(async () => {
@@ -61,12 +65,12 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
     const created = createAcpBridge({
       dshBin: DSH_BIN,
       nodeBin: RUNTIME.nodeBin,
+      overlay: vivaLayerFile(dshHome),
       cwd: workspace,
       env: dshEnv({ base: process.env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, ...extraEnv } }),
       mcpServers: () => mcpServers,
       prewarmSessions,
       configActions,
-      messageActions,
       emit: (event) => {
         events.push(event)
         if (allow && event.type === 'permission') setImmediate(() => created.respondPermission(event.requestId, 'allow-once'))
@@ -75,7 +79,9 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
     bridges.push(created)
     return created
   }
-  return { dir, dshHome, userData, workspace, file, llm, events, bridge, defer }
+  /** The profile written again, as the app's next launch does. */
+  const relaunch = writeProfile
+  return { dir, dshHome, userData, workspace, file, llm, events, bridge, defer, relaunch, profileDir: path.join(dshHome, 'profiles', DSH_PROFILE) }
 }
 
 /** On Windows what dsh started (an image worker, or a virus scanner looking at what it wrote) may hold the folder a while after it exits. */

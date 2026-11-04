@@ -146,7 +146,8 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   const ext = await run(win, `({
     memoryProblem: document.querySelector('.ext-memory')?.textContent ?? '',
     hint: document.querySelector('.ext-hint')?.textContent ?? '',
-    form: Boolean(document.querySelector('.ext-form, #add-mcp, #import-skill')),
+    // In the MCP and skills section only: the 插件 section below it has its own install form.
+    form: Boolean(document.querySelector('.ext-hint')?.closest('section')?.querySelector('.ext-form, #add-mcp, #import-skill')),
     servers: [...document.querySelectorAll('.ext-item .ext-name')].map((el) => el.textContent),
   })`)
   expect(!ext.memoryProblem && ext.hint.includes('帮我接入 GitHub') && !ext.form, 'settings should say MCP and skills are set up in the conversation, with no form', ext)
@@ -229,6 +230,48 @@ async function crashSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
   expect(after.answers === answered + 1 && after.last.length > 0, 'the restarted agent should answer the new question', { answered, ...after })
   expect(await run(win, `document.querySelectorAll('.msg-user').length`) === asked + 1, 'the conversation should carry on after the restart')
   await capture(win, outDir, 'dsh-recovered')
+}
+
+/**
+ * The backend process is killed: the shell starts it again (backend-keeper.ts), the window reloads onto it with the
+ * conversation as it was (app.db), dsh comes back, and the next question is answered.
+ */
+async function backendCrashSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+  const pid = await hooks.backendPid()
+  expect(Boolean(pid), 'the backend should be running', pid)
+  if (!pid) return
+  const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
+  // The page reloads onto the new backend: marked now, the old page is told from the new one.
+  await run(win, `window.smokeBeforeRestart = true`)
+  process.kill(pid, 'SIGKILL')
+  const deadline = Date.now() + TURN_TIMEOUT_MS
+  let restarted = await hooks.backendPid()
+  while (!(restarted && restarted !== pid) && Date.now() < deadline) {
+    await wait(POLL_MS)
+    restarted = await hooks.backendPid()
+  }
+  expect(Boolean(restarted) && restarted !== pid, 'a new backend should be running', restarted)
+  const ready = `!window.smokeBeforeRestart && document.querySelectorAll('.msg-user').length === ${asked}
+    && !document.getElementById('model-btn').disabled && !document.querySelector('.msg-error')`
+  let back = false
+  while (!back && Date.now() < deadline) {
+    // A check that runs as the page reloads is cut off with it: that is the reload, not a failure.
+    back = await run(win, ready).catch((err: Error) => {
+      if (/context was destroyed|navigation/i.test(err.message)) return false
+      throw err
+    })
+    if (!back) await wait(POLL_MS)
+  }
+  expect(back, 'the window should be back on the new backend: reloaded, the conversation as it was, the agent ready')
+  if (!back) return
+
+  await submit(win, '后端重启后还在吗')
+  await finishTurn(win)
+  await wait(UI_WAIT_MS)
+  const last = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  expect(last.length > 0, 'the agent should answer after the backend restarted', last.slice(0, 40))
+  expect(await run(win, `document.querySelectorAll('.msg-user').length`) === asked + 1, 'the conversation should carry on after the backend restarted')
+  await capture(win, outDir, 'backend-recovered')
 }
 
 /**
@@ -387,6 +430,7 @@ export async function checkMemory(win: SmokeWindow, outDir: string, hooks: Smoke
   try {
     await steps(win, outDir, expect, hooks)
     await crashSteps(win, outDir, expect, hooks)
+    await backendCrashSteps(win, outDir, expect, hooks)
     await workDirSteps(win, outDir, expect, hooks)
     await rewindSteps(win, outDir, expect, hooks)
     await taskSteps(win, outDir, expect, hooks)

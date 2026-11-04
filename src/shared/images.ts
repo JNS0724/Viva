@@ -1,7 +1,7 @@
 /**
  * Pictures pasted or dropped into a question (main input and desktop island): kept by Viva in its picture
  * folder under a name made of their contents (main/image-store.js), sent to the model with the words, and shown
- * above the words in the thread by that name (viva-image://, main/image-protocol.js).
+ * above the words in the thread by that name (viva-image://, src/shell/image-protocol.ts and src/backend/image-protocol.ts).
  */
 export const IMAGE_TYPES = Object.freeze({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' })
 export const IMAGE_LIMITS = Object.freeze({ bytes: 20 * 1024 * 1024, perMessage: 10 })

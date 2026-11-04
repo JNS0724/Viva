@@ -85,9 +85,6 @@ export function createFollowupActions({ api, getState, dispatch, errorMessage, f
     prepareFollowupNow: (id: string) => change(() => api.prepareFollowupNow(id), t("followup-actions.preparing.in.the.background.now")),
     wakePreparation: () => change(() => api.wakePreparation(), t("followup-actions.awake.preparation.will.resume.shortly")),
     savePrepareSchedule: (schedule: Record<string, unknown>) => change(() => api.setPrepareSchedule(schedule), t("followup-actions.saved.the.new.schedule.starts.with.the")),
-    /** A message suggested for a follow-up: 跟进, 不重要 (learnt), 以后别问这类. */
-    settleSuggestion: (id: string, action: 'accept' | 'decline' | 'never') => change(() => api.settleSuggestion(id, action),
-      action === 'accept' ? t("followup-actions.added.to.follow.ups.a.draft.will") : action === 'never' ? t("followup-actions.you.will.not.be.asked.about.this") : t("followup-actions.noted.this.kind.of.message.is.not")),
     pausePreparation: (minutes: number) => change(() => api.pausePreparation(minutes), minutes ? t("followup-actions.background.preparation.paused.for.hours", { value1: minutes / 60 }) : t("followup-actions.background.preparation.resumed")),
   }
 }

@@ -1,6 +1,6 @@
 interface Port { send: (message: object) => unknown, on: (event: 'message', handler: (message: unknown) => void) => unknown, off: (event: 'message', handler: (message: unknown) => void) => unknown }
 
-/** Asks the app (src/main/history-channel.ts) over dsh's process channel; each request gets its answer by id. */
+/** Asks the app (src/backend/history-channel.ts) over dsh's process channel; each request gets its answer by id. */
 export function createHistoryChannel(port: Port, timeoutMs = 5000) {
   let seq = 0, closed = false
   const pending = new Map<string, (error: Error | null, text?: string) => void>()

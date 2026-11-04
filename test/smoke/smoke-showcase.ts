@@ -168,35 +168,8 @@ async function chatScenes(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
   await finishTurn(win)
 }
 
-async function suggestionScene(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
-  await hooks.openTasksPage()
-  await until(win, q('#tasks-page .fu-row[data-status="suggested"]'), 'the suggested mail')
-  await run(win, `${q('#tasks-page .fu-row[data-status="suggested"]')}.click()`)
-  await until(win, q('#tasks-page .fu-message'), 'the mail and why')
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'suggestion')
-  await closeHub(win)
-}
-
 async function settingsScenes(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   await openSettings(win)
-  const section = '#settings-root section[aria-label="消息源"]'
-  await hooks.pickSourceFolder(path.join(hooks.fixtures, 'sources', 'showcase-mail'))
-  await run(win, clickText(section, '安装消息源…'))
-  await until(win, q(`${section} .source-pending`), 'the mail source offered')
-  await run(win, clickText(`${section} .source-pending`, '安装'))
-  const item = `${section} [data-id="company-mail"]`
-  await until(win, q(item), 'the mail source installed')
-  await run(win, `${q(`${item} .source-switch`)}.click()`)
-  await until(win, q(`${item} [name="source-field-token"]`), 'its form')
-  await run(win, `(() => { const input = ${q(`${item} [name="source-field-token"]`)}; input.value = 'showcase'; input.dispatchEvent(new Event('input', { bubbles: true })) })()`)
-  await run(win, `${q(`${item} form`)}.requestSubmit()`)
-  await until(win, q(`${item} .source-switch`), 'saved')
-  await run(win, `${q(`${item} .source-switch`)}.click()`)
-  await until(win, `document.querySelectorAll(${JSON.stringify(`${item} .source-latest li`)}).length === 3`, 'the mails in')
-  await run(win, `${q(section)}.scrollIntoView({ block: 'start' })`)
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'sources')
   await run(win, `${q('#settings-root section[aria-label="后台准备"]')}.scrollIntoView({ block: 'start' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'prepare-settings')
@@ -227,7 +200,6 @@ export async function runShowcase(win: SmokeAppWindow, outDir: string, hooks: Sm
   await demo(win, outDir, hooks)
   await closeHub(win)
   await chatScenes(win, outDir, hooks.desk?.())
-  await suggestionScene(win, outDir, hooks)
   await settingsScenes(win, outDir, hooks)
   await filesScene(win, outDir)
   await deskInput(outDir, hooks.desk?.())

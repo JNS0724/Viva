@@ -6,7 +6,7 @@ import { createIsland } from './view/island-dom.ts'
 import { createIslandInput } from './view/island-input.ts'
 
 /**
- * The page of the desktop island's window (src/main/desk-island.js): the same island as in the title bar,
+ * The page of the desktop island's window (src/shell/desk-island.ts): the same island as in the title bar,
  * fed by the main process with what the window's island shows. Clicks go back as actions; the main process
  * checks them and passes them on to the window. Here too: the input (the shortcut, a click on the resting
  * cat, or files dropped on the island), moving the island, which the main process does while the user holds
@@ -19,6 +19,12 @@ const MAX_FILES = 10
 const IDLE_VIEW = Object.freeze({ form: 'idle', tone: 'idle', mood: 'idle', label: '', recent: [] })
 const api = window.desk
 let languageReady = false
+/**
+ * The main process sends the view once the page has loaded, which does not wait for the language (asked of the
+ * backend, in its own process): a view that comes meanwhile is kept here and handed on below.
+ */
+let earlyView: unknown = null
+const stopEarly = api.onView((next) => { earlyView = next })
 await initializeLanguage(api, () => { if (languageReady) show() })
 
 /**
@@ -123,7 +129,7 @@ async function ask(text: string) {
   show()
 }
 
-api.onView((next) => {
+const takeView = (next: any) => {
   if (payload?.form === 'input' && next.form !== 'input') {
     files = []
     images = []
@@ -134,7 +140,10 @@ api.onView((next) => {
   island.el.dataset.dir = next.dir
   island.setPointer(Boolean(next.hover))
   show()
-})
+}
+api.onView(takeView)
+stopEarly()
+if (earlyView) takeView(earlyView)
 setInterval(show, TICK_MS)
 
 // The main process lets clicks through to what is below except over the island, so it needs to know where

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.ts'
-import { registerHistoryIpc, type StartedAgent } from '../src/main/history-ipc.ts'
-import { ResumeError } from '../src/main/resume-failure.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
+import { registerHistoryIpc, type StartedAgent } from '../src/backend/history-ipc.ts'
+import { ResumeError } from '../src/backend/resume-failure.ts'
 
 /**
  * 继续这个话题 and 撤销 a new topic, in the main process: the agent takes that session up again in its own directory,

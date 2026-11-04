@@ -1,7 +1,7 @@
 /**
  * viva-trace: records what each turn did (thoughts, tool calls and their outcome) into trace.db, so the
  * app can show the 过程 of a reopened conversation without reading dsh's private session log format.
- * Loaded by the app's dsh profile (src/main/dsh-profile.js) with `config.file` = trace.db.
+ * Loaded by the app's dsh profile (src/backend/dsh-profile.ts) with `config.file` = trace.db.
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'

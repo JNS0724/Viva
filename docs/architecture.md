@@ -12,7 +12,7 @@ This document explains which capabilities belong in DeepSeek Harness plugins, th
 | ACP, independent of a specific agent | Session lifecycle, streaming, approval requests, MCP declarations | User MCP servers, approval cards |
 | Electron app | Presentation, local data, OS integration | About you, history, system-keychain credentials |
 
-Use a plugin only when a capability needs agent internals: injection before steps, session-bound state, native tools without approvals, reusing the model, or interception before execution. Keep the rest in ACP or the app. dsh is still a 0.2.0 release candidate; plugins use its own APIs and increase the cost of switching ACP agents.
+Use a plugin only when a capability needs agent internals: injection before steps, session-bound state, native tools without approvals, reusing the model, or interception before execution. Keep the rest in ACP or the app. dsh is still a 0.2.0 release candidate; plugins use its own APIs and increase the cost of switching ACP agents. This rule covers the app's own plugins. The dsh plugins users install themselves (Settings → Plugins, section 4) are a different matter: the app is now tied to dsh's plugin ecosystem on purpose; see [Design: frontend/backend split, event core and open plugins](backend-split-design.md).
 
 Plugins and the app cooperate through versioned contracts: SQLite for durable data, separate IPC channels for questions, configuration, and streaming events.
 
@@ -20,19 +20,21 @@ Plugins and the app cooperate through versioned contracts: SQLite for durable da
 
 The main process writes the app’s `viva` profile and starts dsh over ACP stdio. Persona patches configure `system-prompt`; memory and trace use `memory.db` and `trace.db`. Question/configuration/follow-up/message/stream/task channels connect plugins with main-process services. The renderer uses a validated preload API rather than directly opening these databases or talking to plugins.
 
+The app runs as two processes (see [Design: frontend/backend split](backend-split-design.md)): the shell (`src/shell/main.ts`, the Electron main process) owns windows, the tray, the desk island and the other Electron APIs; the backend (`src/backend/server.ts`, a child process running Electron as Node, composed in `src/backend/compose.ts`) holds everything else, has no runtime `electron` import, and reaches the desktop only through `HostCapabilities` (`src/backend/host.ts`), which it calls over loopback HTTP and SSE with a launch token. The pages still talk to the shell over IPC; the shell checks each call against `ipc-contract.ts` and forwards it to the backend. The source tree follows the split: `src/shell` is the shell's, `src/backend` the backend's (it never imports from `src/shell`, which `test/backend-boundary.test.ts` checks), and `src/shared` what both and the pages use, such as the IPC contract (`src/shared/node` for what the two processes share that needs Node). At run time the shell loads of the backend only the protocol between them (`wire.ts`). Inputs to the backend are signals of a closed set of kinds (`src/backend/event-core.ts`), each with a route. Changes go through `apply`, which writes the change and a numbered row in `app_events` of `app.db` in one transaction, and every push to the window carries that number. `app.db` also holds the follow-ups, the history and the background tasks, whose writes go through `apply` (`src/backend/journal.ts`); an event records ids, statuses and numbers, and only the length of any text. Memory and the trace stay in their plugins' own files, which dsh's process writes: the user's memory edits are recorded right after they are written, and what the agent saved when the app reads it after a turn. What the user does in a page is a `user.command` signal (`src/backend/commands.ts`): every channel that is not a query (`QUERY_CHANNELS` in `ipc-contract.ts`) is recorded first, by its channel and the shape of its arguments (never their text: one of them may be a key), then handled by its listener. Each answer carries the number of the last host call the backend had made; the shell runs the host calls up to it before handing the answer to the page, so no page sees an answer before what was pushed ahead of it.
+
 | Plugin | Contract | Plugin responsibility | App responsibility |
 |---|---|---|---|
 | viva-memory | memory@1 | Memories, session state, injection records, synthesized profiles | Read/write profile and memories, write habits, display injection traces |
 | viva-trace | trace@1 | Per-turn thoughts and tool calls | Read traces when reopening conversations |
 | viva-policy | policy@1 | Behavior only: intercept execution | No shared data |
 | viva-questions | questions@1 IPC | Forward model questions from dsh’s tool-ask-user | Show cards, return answers |
-| viva-followups | followups@1 IPC | Propose follow-ups; return tool-free preparation results | Require user acceptance, store followups.db, schedule preparation, receive drafts |
-| viva-messages | messages@1 IPC | Request messages by source, keywords, hours, limit | Validate, refresh sources older than one minute (wait up to 20 seconds), query sources.db, label results as data; withhold credentials and DB |
+| viva-followups | followups@1 IPC | Propose follow-ups; return tool-free preparation results | Require user acceptance, store them in app.db, schedule preparation, receive drafts |
+| viva-plugins | plugins@1 IPC | Answers from dsh's plugin manager | The Settings → Plugins list, lookup, install, switch, removal (src/backend/plugins-ipc.ts), all through dsh's plugin manager |
 | viva-config | config@1 IPC | Request MCP/skill configuration after approval | Validate and apply; collect secrets in the window, encrypt, never return them to dsh |
 | viva-stream | stream@1 IPC | Live text/thought deltas and committed visible content | Select source per call; reconcile attempts, withdrawals, and final content; ACP still handles tools, usage, approvals |
 | viva-tasks | tasks@1 IPC | Read-only application-task queries | Scope and session checks, live registry, bounded request/output previews |
 
-Persona is not a plugin. `PERSONA` in `src/main/app-plugins.ts` supplies `personaPrefix` and `personaSuffix` through the profile patch.
+Persona is not a plugin. `PERSONA` in `src/backend/app-plugins.ts` supplies `personaPrefix` and `personaSuffix` through the profile patch.
 
 ## 3. Manifests and contracts
 
@@ -42,15 +44,23 @@ Before startup, `resolvePlugins` verifies existence, readable package.json, matc
 
 ## 4. Writing the profile
 
-`src/main/dsh-profile.ts` writes `<userData>/dsh/profiles/viva` before launch, changing only files whose contents differ:
+`src/backend/dsh-profile.ts` writes `<userData>/dsh/profiles/viva` before launch, changing only files whose contents differ. The profile has three layers; later ones win:
 
-- The package composition follows dsh’s bundled ACP template.
-- `cordis.patch.yml` configures system-prompt and plugin insertion/configuration. Patching by ID replaces the configuration, so both persona prefix and suffix must be supplied.
-- Model providers use dsh’s `llm-pi-ai`. Without a DeepSeek key, disable `llm-deepseek` and `llm-deepseek-account`. New-session defaults override the ACP provider/model. Keys enter the dsh process through environment variables, not the profile.
-- Each plugin uses a `link:` dependency whose `node_modules/viva-*` package re-exports the plugin’s file URL. Plugins remain inside the app (including app.asar when installed); their imports resolve there. No symlinks or junctions are required in user profiles.
-- Remove dependencies and forwarding packages for retired viva-* plugins.
+| Layer | Owner | Contents |
+|---|---|---|
+| Bundles | dsh and the plugins the user installs | The bundles of dsh's bundled ACP template, plus those the user installs under Plugins |
+| The profile's `cordis.patch.yml` | The user and dsh's plugin manager | Plugin switches. The app only writes an empty `[]` when the file is missing |
+| The app's layer: `<dsh home>/viva.patch.yml`, given to dsh with `--patch` at launch | The app, rewritten at every launch | See below |
 
-Normal operation does not read or write the user’s own `~/.dsh`. Explicit import and legacy migration are separate flows. If the profile cannot be written, fall back to bundled ACP without app plugins/persona.
+The app's layer holds:
+
+- system-prompt and plugin insertion/configuration. Patching by ID replaces the configuration, so both persona prefix and suffix must be supplied.
+- Model providers use dsh's `llm-pi-ai`. Without a DeepSeek key, disable `llm-deepseek` and `llm-deepseek-account`. New-session defaults override the ACP provider/model. Keys enter the dsh process through environment variables, not the profile.
+- Each plugin's `name` is its entry file's file URL. Plugins remain inside the app (including app.asar when installed); their imports resolve there. The profile's package.json does not list them, so pnpm leaves them alone when the user installs a plugin.
+- `hmr` switched on (`dsh-acp-app` switches it off, and a patch by ID keeps the lower layer's `disabled`, so it states `disabled: false`), so the user's plugins switch while dsh runs; `tool-plugin-manager` switched on, so the model can propose installing a plugin in conversation, each call approved by the user on an approval card; `plugin-manager`'s `pnpmCommand` pointing at the pnpm the app ships (a launcher `src/backend/pnpm-launcher.ts` writes, run on the app's own runtime).
+- The dsh-base rows the app relies on for safety (`sandbox-policy`, `approval`, `permission`) restated whole, so neither a bundle nor the user's layer can change them; `test/dsh-profile.test.ts` keeps them word for word equal to dsh-base.
+
+Normal operation does not read or write the user's own `~/.dsh`; only an explicit import reads it. If the profile cannot be written, fall back to bundled ACP without app plugins/persona and without the app's layer.
 
 ## 5. dsh interfaces and lifecycle
 
@@ -60,8 +70,8 @@ Normal operation does not read or write the user’s own `~/.dsh`. Explicit impo
 | trace | agent/turn-stopping and session.eventAt |
 | policy | tools/pre-execute, before approval; deny with an explanation |
 | followups | tools.register and llm.stream without tools |
-| messages | tools.register, read-only result requests to the app |
 | stream | agent/assistant-stream, session/event, agent/disposed |
+| plugins | ctx.pluginManager (dsh-plugin-manager: listBundles, listPlugins, inspect, installBundle, removeBundle, setBundleEnabled, setPluginEnabled) |
 
 viva-stream depends on dsh internals, not a general ACP extension. dsh is pinned to `0.2.0-rc.2`, whose ACP adapter forwards committed whole blocks rather than actual deltas. On upgrades, rerun `test/stream-runtime.test.js` with real dsh and delayed SSE: first text must precede response completion and cancellation must preserve the committed prefix. Inspect event/block structures. If the plugin is unavailable, use ACP. If a selected streaming channel fails mid-call, withdraw that call’s provisional content before restoring complete ACP output to avoid omissions or duplicate appends.
 
@@ -82,7 +92,7 @@ Plugin failures log and degrade gracefully: failed injection omits memories; fai
 - **Sending policy:** deny MCP names containing send/reply/forward/post/publish/deliver/broadcast, including underscore and camelCase forms, before execution. The recorded dsh behavior did not request approval for MCP tools, so this plugin is the hard no-sending boundary.
 - **ACP notifications:** rc.2 exposes no plugin custom-notification API. The app polls memory.db every two seconds for 30 seconds after a turn.
 - **Other models:** reuse llm-pi-ai (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages), not another plugin. Tests verified grouped ACP options, selected baseURL/key, and memory injection. ACP defaults come from the ACP plugin configuration; agent-default-model does not control ACP sessions.
-- **Sources:** remain app programs because dsh plugins require exact dsh versions, can alter context/tools, and require runtime restarts for configuration. Short-lived source processes store validated data in sources.db; viva-messages lets the model query bounded read-only results. The kit checker compiles from app sources.
+- **Sources:** removed (2026-11). External messages now come from dsh plugins the user installs; see [Design: frontend/backend split, event core and open plugins](backend-split-design.md).
 - **Related fixes:** extraction reads assistant/message from data.message; invalidating profile-type memories triggers resynthesis immediately rather than waiting 24 hours.
 
 ## 7. Verification
@@ -93,9 +103,8 @@ Real dsh plus the local fake model in test/fixtures/dsh-harness.js uses the actu
 
 - Move memory rules from user-message injection into a registered system-prompt section after confirming the API, potentially enabling prefix caching.
 - Add further tool policies only for concrete needs, such as sensitive directories.
-- Evaluate schedule/jobs for timed email/IM triage; drafting restrictions already have a policy boundary.
 - Replace polling when dsh exposes ACP extension notifications.
 
 ## 9. Internationalization
 
-`src/shared/i18n/` is shared by main and renderer. The main process owns the persisted language preference; validated IPC broadcasts a resolved locale to both windows. Translation keys and interpolation parameters are typed. The UI refreshes locale-sensitive caches without restarting sessions. Protocol IDs, user content, historical messages, and third-party output retain their original form. Build output includes the shared resources; source-kit emits matching main/shared paths.
+`src/shared/i18n/` is shared by main and renderer. The main process owns the persisted language preference; validated IPC broadcasts a resolved locale to both windows. Translation keys and interpolation parameters are typed. The UI refreshes locale-sensitive caches without restarting sessions. Protocol IDs, user content, historical messages, and third-party output retain their original form. Build output includes the shared resources.

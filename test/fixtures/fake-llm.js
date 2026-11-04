@@ -14,11 +14,8 @@
  * - asked by dsh's Auto review about a step → allows it, unless it removes something;
  * - after a tool result → says what the tool did;
  * - 「…到时候帮我…」 → proposes a follow-up with viva_followup_propose (FOLLOWUP below);
- * - 「看看邮件」 → reads the message sources with viva_messages_read; 「看看邮件里的 X」 looks for X;
  * - a background preparation (the system prompt says 后台准备) → a draft that quotes the first line it was given,
  *   and whether it was offered any tools (it must not be);
- * - the judging of new messages (the system prompt says 消息判断) → the fixed JSON shape, a message important when
- *   it says 到期, 截止 or 故障;
  * - anything else → 「收到：…」, prefixed with what background it was given;
  * - the memory plugin's background extractor gets the answers of `extract` below.
  */
@@ -34,7 +31,6 @@ const THEN_ASK = /再问我城市/
 /** 「把全部…」: a job that will take long, which the fake offers the background first (viva_offer_background). */
 const BIG_JOB = /^把全部/
 const FOLLOW = /到时候帮我/
-const MESSAGES = /^看看邮件(?:里的)?\s*(.*)$/s
 /** What the fake proposes to follow up on when asked 「…到时候帮我…」: two days from now, so never in the past. */
 export const FOLLOWUP = Object.freeze({ title: '周报', ask: '按上周的模板起草周报' })
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -43,18 +39,6 @@ export const followupProposal = (now = Date.now()) => ({
 })
 /** What the app's background preparation says in its system prompt (followup-prepare.ts PREPARE_MARK). */
 const PREPARER = '后台准备'
-/** What the judging of new messages says in its system prompt (message-judge.ts JUDGE_MARK). */
-const JUDGER = '消息判断'
-const URGENT = /到期|截止|故障/
-
-/** Verdicts for the messages listed as `[source/id] 来自：…` in the input, one block each. */
-function judge(request) {
-  const input = JSON.stringify(request.messages).replace(/\\n/g, '\n')
-  const items = [...input.matchAll(/\[([^\]\s]+\/[^\]\s]+)\] 来自：([^\n]*)\n([^[]*)/g)].map(([, id, , body]) => ({
-    id, important: URGENT.test(body), why: URGENT.test(body) ? '有截止时间' : '', title: body.split('\n')[0].replace('标题：', '').slice(0, 20), ask: '起草回复',
-  }))
-  return { text: JSON.stringify({ items }) }
-}
 /** What the fake asks to set up: a local server whose key the user types in the window. */
 export const DEMO_SERVER = Object.freeze({ name: 'demo', command: 'node', args: ['demo-mcp.js'], secrets: ['DEMO_TOKEN'] })
 export const CITY_QUESTION = Object.freeze({
@@ -191,7 +175,6 @@ export function decide(request) {
   if (JSON.stringify(request.messages).includes(REVIEWER) || systemText(request).includes(REVIEWER)) return review(request)
   if (systemText(request).includes(EXTRACTOR)) return extract(request)
   if (systemText(request).includes(SYNTHESIZER)) return synthesize(request)
-  if (systemText(request).includes(JUDGER)) return judge(request)
   if (systemText(request).includes(PREPARER)) {
     const first = JSON.stringify(request.messages).match(/"text":"([^"\\]*)/)?.[1] ?? ''
     return { text: `草稿（工具 ${(request.tools ?? []).length} 个）：${first}` }
@@ -212,8 +195,6 @@ export function decide(request) {
   if (BIG_JOB.test(question)) return { tool: { name: 'viva_offer_background', input: { why: '要逐个读完所有文档' } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   if (FOLLOW.test(question)) return { tool: { name: 'viva_followup_propose', input: followupProposal() } }
-  const reading = MESSAGES.exec(question)
-  if (reading) return { tool: { name: 'viva_messages_read', input: reading[1].trim() ? { query: reading[1].trim() } : {} } }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }
   const removal = DELETE.exec(question)

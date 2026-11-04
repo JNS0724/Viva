@@ -1,7 +1,7 @@
 import { closeStreams } from './streams.ts'
 
 /**
- * Keys a server the model set up needs (viva-config, src/main/config-channel.js). While the card waits, the
+ * Keys a server the model set up needs (viva-config, src/backend/config-channel.ts). While the card waits, the
  * phase is 'asking'. The values go from the card straight to the main process; the state only ever holds
  * which server asks for which names, and the trace only that it was asked and whether it was filled in.
  */

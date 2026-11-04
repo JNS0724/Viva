@@ -1,7 +1,7 @@
 /**
  * What the 文件 tab does (files-state.js holds what it shows): read folders as they are opened, preview the
  * picked file, show it in the system's file manager or open it with its app. All through the main process,
- * which keeps every path inside the workspace (src/main/workspace-files.js).
+ * which keeps every path inside the workspace (src/backend/workspace-files.ts).
  */
 export function createFilesActions({ api, getState, dispatch, errorMessage }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'>) {
   const fail = (err: unknown) => dispatch({ type: 'files_failed', message: errorMessage(err) })

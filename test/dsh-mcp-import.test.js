@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { envLookup, expandHome, importDshServers, importSummary, parseShellEnv, readDshMcpServers, resolveExpression, shortPath, userDshHome } from '../src/main/dsh-mcp-import.ts'
+import { envLookup, expandHome, importDshServers, importSummary, parseShellEnv, readDshMcpServers, resolveExpression, shortPath, userDshHome } from '../src/backend/dsh-mcp-import.ts'
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-mcp-import-test-'))

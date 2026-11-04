@@ -14,12 +14,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openMemoryDb } from '../plugins/memory/lib/store.ts'
-import { createAcpBridge } from '../src/main/acp-bridge.ts'
-import { installedDshVersion, PERSONA, resolvePlugins } from '../src/main/app-plugins.ts'
-import { DSH_PROFILE } from '../src/main/config.ts'
-import { ensureDshProfile } from '../src/main/dsh-profile.ts'
-import { dshEnv, dshRuntime } from '../src/main/dsh-runtime.ts'
-import { removeTree } from '../src/main/remove-tree.ts'
+import { createAcpBridge } from '../src/backend/acp-bridge.ts'
+import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
+import { DSH_PROFILE } from '../src/backend/config.ts'
+import { ensureDshProfile } from '../src/backend/dsh-profile.ts'
+import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
+import { removeTree } from '../src/backend/remove-tree.ts'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 /** The app's runtime: this script runs on the app's Electron as Node (or DSH_NODE), and so does dsh. */

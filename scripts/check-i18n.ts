@@ -56,7 +56,7 @@ export function checkDocumentation(base = root): string[] {
     }
   }
   const docs = fs.readdirSync(path.join(base, 'docs'), { recursive: true }).filter((p): p is string => typeof p === 'string' && p.endsWith('.md')).map(p => `docs/${p.replaceAll('\\', '/')}`)
-  for (const file of ['README.md', 'README.zh-CN.md', 'AGENTS.md', 'packages/viva-source-kit/README.md', ...docs]) {
+  for (const file of ['README.md', 'README.zh-CN.md', 'AGENTS.md', ...docs]) {
     if (!registered.has(file)) failures.push(`Unregistered document: ${file}`)
   }
   return failures

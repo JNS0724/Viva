@@ -40,7 +40,7 @@ Internal error: turn failed: unknown prompt variable "{{cwd}}" in section
 "deployment:persona-suffix"; registered variables: provider, model
 ```
 
-Viva 的 `src/main/app-plugins.ts` 原本设置 `suffix: '你的工作目录是 {{cwd}}。'`。副本将 suffix 改为空字符串；新版默认组合中的 `dsh-working-directory` 会通过运行时上下文提供 `Current working directory: ...`，而非静态 persona 变量。`test/memory-plugin.test.js` 的 persona 测试相应改验该上下文。修复后真实模型请求和记忆、权限、流式等路径恢复。
+Viva 的 `src/backend/app-plugins.ts` 原本设置 `suffix: '你的工作目录是 {{cwd}}。'`。副本将 suffix 改为空字符串；新版默认组合中的 `dsh-working-directory` 会通过运行时上下文提供 `Current working directory: ...`，而非静态 persona 变量。`test/memory-plugin.test.js` 的 persona 测试相应改验该上下文。修复后真实模型请求和记忆、权限、流式等路径恢复。
 
 ### 2. Zod 的不同精确版本造成类型不兼容
 

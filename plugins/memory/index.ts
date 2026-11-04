@@ -1,6 +1,6 @@
 /**
  * viva-memory: the app's long-term memory as a dsh plugin. Loaded by the app's own dsh profile
- * (src/main/dsh-profile.js) with `config.file` = the memory.db the app's "关于你" page also edits.
+ * (src/backend/dsh-profile.ts) with `config.file` = the memory.db the app's "关于你" page also edits.
  *
  * - Before the first step of each user turn it adds the retrieval layers (lib/layers.js) as one
  *   source-attributed user message: today's date, rules and profile when due, and memories about names

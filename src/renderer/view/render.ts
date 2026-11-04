@@ -77,10 +77,10 @@ function renderPermissionIfChanged(area: HTMLElement | null, state: State, handl
 
 function renderSettingsIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
   const connected = state.info.mode === 'live'
-  const inputs = [localeRevision(), state.settings, state.models, state.extensions, state.sources, state.followups, connected]
+  const inputs = [localeRevision(), state.settings, state.models, state.extensions, state.plugins, state.followups, connected]
   if (inputs.every((value, i) => value === renderedSettings[i])) return
   renderedSettings = inputs
-  renderSettings(container, state.settings, state.models, state.extensions, state.sources, state.followups, handlers, { connected })
+  renderSettings(container, state.settings, state.models, state.extensions, state.plugins, state.followups, handlers, { connected })
 }
 
 function renderProfileIfChanged(container: HTMLElement, memory: State['memory'], handlers: Handlers) {

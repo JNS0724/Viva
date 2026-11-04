@@ -4,8 +4,8 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.ts'
-import { createHistoryDesk, historyAnswer } from '../src/main/history-channel.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
+import { createHistoryDesk, historyAnswer } from '../src/backend/history-channel.ts'
 import { createHistoryChannel } from '../plugins/history/lib/channel.ts'
 
 /** search_conversations: the assistant looks up what was said before, and says where it is with a link. */

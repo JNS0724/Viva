@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openMemoryDb } from '../plugins/memory/lib/store.ts'
-import { createAcpBridge, failingMcpServer } from '../src/main/acp-bridge.ts'
-import { openHistoryDb } from '../src/main/history-db.ts'
-import { createPersonal } from '../src/main/personal.ts'
+import { createAcpBridge, failingMcpServer } from '../src/backend/acp-bridge.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
+import { createPersonal } from '../src/backend/personal.ts'
 import { scratch } from './fixtures/scratch.js'
 
 /** The user's MCP servers through the real bridge and the fake dsh, and what the app reports after a turn. */
