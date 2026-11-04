@@ -10,6 +10,7 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
 
 function setup({ idle = true } = {}) {
   let free = idle
+  let atWork = new Set<string>()
   const reported: string[] = []
   let timers: Array<() => void> = []
   const known: Record<string, Omit<EndedTask, 'status'>> = {
@@ -22,10 +23,11 @@ function setup({ idle = true } = {}) {
     currentConversation: () => 'c1',
     describe: (taskId, status) => (known[taskId] ? { ...known[taskId], status } : null),
     report: (note) => { reported.push(note) },
+    stillEnded: (taskId) => !atWork.has(taskId),
     later: (run, ms) => { assert.equal(ms, GATHER_MS); timers = [...timers, run] },
   })
   const tick = () => { const runs = timers; timers = []; runs.forEach((run) => run()) }
-  return { reports, reported, tick, setIdle: (value: boolean) => { free = value } }
+  return { reports, reported, tick, setIdle: (value: boolean) => { free = value }, restart: (taskId: string) => { atWork = new Set([...atWork, taskId]) } }
 }
 
 test('tasks that end about together come back in one turn, once the gathering wait is over', () => {
@@ -89,4 +91,16 @@ test('in the window, the turn works with no words of the user\'s; a silent answe
 test('the silent reply is recognised with what a model may put around it', () => {
   for (const text of ['[silent]', ' [silent]。', '[silent].\n']) assert.equal(isSilentReply(text), true, text)
   for (const text of ['silent', '[silent] 不过要注意', '好的']) assert.equal(isSilentReply(text), false, text)
+})
+
+test('a task asked again before its result came back does not report the old result', () => {
+  const { reports, reported, tick, setIdle, restart } = setup({ idle: false })
+  reports.ended('t1', 'done')
+  reports.ended('t2', 'done')
+  tick()
+  restart('t1')
+  setIdle(true)
+  reports.flush()
+  assert.equal(reported.length, 1)
+  assert.ok(!reported[0].includes('整理发布说明') && reported[0].includes('核对发票'), 'only the one still as it ended')
 })

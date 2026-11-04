@@ -114,14 +114,22 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
     }
   }
 
-  /** The user answered a question (accepted by dsh): the reply joins the task that asked it. */
-  function answer(questionId: string, raw: unknown) {
+  /**
+   * About to answer a question: what was asked is taken now, because dsh closes the question (task_question_closed)
+   * while it takes the answer. Returns how to keep the reply once dsh accepted it; null for a question of no task held.
+   */
+  function holdQuestion(questionId: string): ((raw: unknown) => void) | null {
     const asked = questions.get(questionId)
-    questions.delete(questionId)
-    const transcript = asked ? transcripts.get(asked.taskId) : undefined
-    if (!asked || !transcript) return
-    change(asked.taskId, answered(transcript, asked.questions, answersOf(raw)))
+    if (!asked) return null
+    return (raw) => {
+      questions.delete(questionId)
+      const transcript = transcripts.get(asked.taskId)
+      if (transcript) change(asked.taskId, answered(transcript, asked.questions, answersOf(raw)))
+    }
   }
+
+  /** The user answered a question (accepted by dsh): the reply joins the task that asked it. */
+  const answer = (questionId: string, raw: unknown) => holdQuestion(questionId)?.(raw)
 
   /** Everything waiting is saved now: Viva quits, or dsh went. */
   const flush = () => [...timers.keys()].forEach(save)
@@ -132,6 +140,19 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
     transcripts.delete(taskId)
   }
 
-  return { track, userSaid, receive, answer, flush, drop, has: (taskId: string) => transcripts.has(taskId) }
+  /**
+   * What a task held has said so far, as it would be saved: the answer being written marked open, and every stream's
+   * message with its key (and its blocks, until it settles), so updates still to come land on it: more of a stream
+   * not settled (words said meanwhile close it, they do not end it), or the turn's fallback to plain ACP text, which
+   * withdraws even a settled stream's message (assistant-stream.ts complete); null for one not held.
+   */
+  const current = (taskId: string) => {
+    const transcript = transcripts.get(taskId)
+    return transcript ? transcript.map(({ role, text, open, streamKey, blocks }) => ({
+      role, text, ...(open ? { open: true } : {}), ...(streamKey ? { streamKey, ...(blocks ? { blocks } : {}) } : {}),
+    })) : null
+  }
+
+  return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, has: (taskId: string) => transcripts.has(taskId) }
 }
 export type TaskWords = ReturnType<typeof createTaskWords>

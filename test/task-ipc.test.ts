@@ -6,6 +6,8 @@ import path from 'node:path'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { KEEP_ENDED, MAX_RUNNING, registerTaskIpc, type TaskService } from '../src/backend/task-ipc.ts'
 import { createTaskRegistry } from '../src/backend/task-registry.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { liveTasks } from '../src/renderer/tasks-state.ts'
 import type { StoredTask } from '../src/backend/task-store.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
@@ -30,7 +32,7 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
  * The IPC over a history db and a task store. relaunch() registers it afresh on the same db and store, as the
  * next launch does: nothing in memory, what was kept on disk. Saves along the way wait in `pending` until run.
  */
-function setup({ resumable, stored = [], steerable = true }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean } = {}) {
+function setup({ resumable, stored = [], steerable = true, waits }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean, waits?: { permissions: readonly unknown[], questions: readonly unknown[] } } = {}) {
   let n = 0
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
@@ -60,6 +62,7 @@ function setup({ resumable, stored = [], steerable = true }: { resumable?: { ok:
       timers,
       registry,
       announce: (event) => { announced.push(event) },
+      ...(waits ? { waitsOf: () => waits } : {}),
       current: () => current,
       agentInfo: () => ({ mode: 'live', model: 'V4' }),
       agent: {
@@ -103,7 +106,7 @@ test('what the task says is saved along the way, once however much it says meanw
   assert.deepEqual(texts(task.segmentId), ['整理发布说明', '先看提交…三组改动。写好了。'])
   const [done] = kept()
   assert.deepEqual([done.status, Number.isFinite(done.endedAt)], ['done', true], 'ended: kept, to be asked again')
-  assert.deepEqual((await setupKept(call)).map((entry) => entry.status), [], 'held by this launch: not listed as kept')
+  assert.deepEqual((await setupKept(call)).map((entry) => entry.status), ['done'], 'listed for a window that opens, as it ended')
 })
 
 test('flushed when Viva quits: what the task said so far is saved, and the next launch lists it as interrupted', async () => {
@@ -319,5 +322,98 @@ test('words that do not reach a task at work are said so, not taken for delivere
   await assert.rejects(service.agentMessage(taskId, '加上版本号'), /话没有送到/)
 })
 
-/** What `task:finished` lists of the tasks kept, for a launch that holds them all: none. */
+/** What `task:finished` lists of the tasks kept, for a window that opens. */
 const setupKept = (call: <T>(channel: string, ...args: unknown[]) => Promise<T>) => call<Kept[]>('task:finished')
+
+test('a window reloaded while a task works gets it back at work, with what it said so far, saved or not', async () => {
+  const { call, says } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  says(task.id, '先看提交…')
+  const [listed] = await call<Array<Kept & { startedAt: number | null }>>('task:finished')
+  assert.deepEqual([listed.task.id, listed.status, listed.endedAt, typeof listed.startedAt], [task.id, 'running', null, 'number'])
+  assert.deepEqual(listed.messages.map((m) => m.text), ['整理发布说明', '先看提交…'], 'what it said, before the save along the way')
+  const state = reduce(initialState, { type: 'tasks_restored', list: [listed] })
+  assert.deepEqual([state.tasks.list[0].status, liveTasks(state).length], ['running', 1], 'at work in the window again')
+  const said = reduce(state, { type: 'task_update', taskId: task.id, update: chunk('三组改动。'), at: 5 })
+  assert.equal(said.tasks.list[0].view.messages.at(-1)?.text, '先看提交…三组改动。', 'what it says next follows on')
+})
+
+test('after dsh went, a message to a task takes its session up again first, rather than prompting one dsh forgot', async () => {
+  const { service, calls, ends } = setup()
+  const { taskId } = await service.agentStart('整理发布说明')
+  ends(taskId, 'error')
+  service.detachAll()
+  assert.deepEqual(await service.agentMessage(taskId, '接着做'), { taskId, delivered: 'next question' })
+  assert.deepEqual(calls.slice(-2), [['resumeTask', taskId], ['promptTask', taskId, '接着做']])
+})
+
+test('an answer is kept even though dsh closes the question as it takes the answer', async () => {
+  const { call, service, ends, texts } = setup()
+  const { task } = await call<Started>('task:start', { text: '查一下明天的天气' })
+  const city = { id: 'city', question: '哪个城市？', options: [{ label: '上海' }, { label: '北京' }] }
+  service.receive({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [city] })
+  // As compose.ts does: held, then dsh takes the answer (and says the question closed), then kept.
+  const keep = service.holdQuestion('q1')
+  service.receive({ type: 'task_question_closed', taskId: task.id, questionId: 'q1' })
+  keep?.([{ id: 'city', selected: ['北京'] }])
+  ends(task.id)
+  assert.deepEqual(texts(task.segmentId), ['查一下明天的天气', '北京', '本轮没有文字回复。'])
+  assert.equal(service.holdQuestion('q-unknown'), null)
+})
+
+test('a window reloaded while a task waits on the user shows what it waits for, to answer it there', async () => {
+  const permission = { requestId: 'p1', toolCall: { toolCallId: 't1', title: '写入 docs/release.md' }, options: [{ optionId: 'ok', name: '允许', kind: 'allow_once' }] }
+  const question = { questionId: 'q1', questions: [{ id: 'city', question: '哪个城市？', options: [{ label: '上海' }] }] }
+  for (const [name, waits] of [['permission', { permissions: [permission], questions: [] }], ['question', { permissions: [], questions: [question] }]] as const) {
+    const { call } = setup({ waits })
+    const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+    const listed = await call<Kept[]>('task:finished')
+    const state = reduce(initialState, { type: 'tasks_restored', list: listed })
+    const [restored] = state.tasks.list
+    assert.equal(restored.status, 'waiting', name)
+    if (name === 'permission') assert.equal(restored.view.permission?.requestId, 'p1')
+    else assert.equal(restored.view.question?.questionId, 'q1')
+    assert.equal(restored.id, task.id)
+  }
+})
+
+test('a window reloaded while a task streams its answer carries the same message on, not a second one', async () => {
+  const { call, service } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const stream = (kind: string, extra: object) => service.receive({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra } })
+  stream('delta', { index: 0, blockType: 'text', text: '前半段' })
+  const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
+  const next = reduce(state, { type: 'task_update', taskId: task.id, at: 9, update: { sessionUpdate: 'viva_stream', key: 'k1', kind: 'delta', index: 0, blockType: 'text', text: '后半段' } })
+  const settled = reduce(next, { type: 'task_update', taskId: task.id, at: 10, update: { sessionUpdate: 'viva_stream', key: 'k1', kind: 'settle', blocks: [{ type: 'text', text: '前半段后半段' }] } })
+  assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段'])
+})
+
+test('a stream with words said into it, then a reload, still settles into one message', async () => {
+  const { call, service } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const update = (kind: string, extra: object) => ({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra })
+  service.receive({ type: 'task_update', taskId: task.id, update: update('delta', { index: 0, blockType: 'text', text: '前半段' }) })
+  await service.agentMessage(task.id, '用户补充')
+  const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
+  const more = reduce(state, { type: 'task_update', taskId: task.id, at: 9, update: update('delta', { index: 0, blockType: 'text', text: '后半段' }) })
+  const settled = reduce(more, { type: 'task_update', taskId: task.id, at: 10, update: update('settle', { blocks: [{ type: 'text', text: '前半段后半段' }] }) })
+  assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段', '用户补充'])
+})
+
+test('an answer streamed and settled, then a reload, then the turn falling back to plain text: one answer, not two', async () => {
+  const { call, service } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const update = (kind: string, extra: object) => ({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra })
+  const says = (raw: object) => service.receive({ type: 'task_update', taskId: task.id, update: raw })
+  says(update('delta', { index: 0, blockType: 'text', text: '回答' }))
+  says(update('settle', { blocks: [{ type: 'text', text: '回答' }] }))
+  const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
+  // The stream channel's last flush did not come back (assistant-stream.ts complete): its keys withdrawn, then the ACP text.
+  const fallback = [update('settle', { blocks: [] }), { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回答' } }]
+  fallback.forEach(says)
+  const shown = fallback.reduce((current, raw, i) => reduce(current, { type: 'task_update', taskId: task.id, at: 10 + i, update: raw }), state)
+  assert.deepEqual(shown.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '回答'], 'the window')
+  service.flush()
+  const [kept] = await call<Kept[]>('task:finished')
+  assert.deepEqual(kept.messages.map((m) => m.text), ['整理发布说明', '回答'], 'and what is kept')
+})

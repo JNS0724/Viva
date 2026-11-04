@@ -38,7 +38,8 @@ const taskBackground: LiveScenario = {
       await until(win, `document.querySelector('#tasks-page .tp-main')?.dataset.task === ${JSON.stringify(done.id)}`, 'the completed task detail')
       const detail = await run(win, `({ request: [...document.querySelectorAll('#tasks-page .tp-thread .msg-user')].map(el => el.textContent).join('\\n'),
         answer: [...document.querySelectorAll('#tasks-page .tp-thread .msg-agent .msg-text')].map(el => el.textContent).join('\\n') })`)
-      expect(detail.request.includes(TASK_WORDS) && /[一-鿿]/u.test(detail.answer), 'its own page should retain the request and the actual answer', detail)
+      // The brief is the agent's own words for the task: about sleep, not necessarily the user's words verbatim.
+      expect(detail.request.includes('睡眠') && /[一-鿿]/u.test(detail.answer), 'its own page should keep the brief and the actual answer', detail)
       await ctx.shot('task-background-detail')
       await escape(win)
     }

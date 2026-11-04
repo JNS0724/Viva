@@ -345,6 +345,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     applyMcpChange()
       .then((info) => info && emitToRenderer({ type: 'config', info }))
       .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
+      // A task's result held back while the session was reattached comes back now.
+      .finally(() => taskReports.flush())
   }
 
   /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
@@ -410,6 +412,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         return null
       }
     },
+    stillEnded: (taskId) => {
+      try {
+        const { task } = taskRegistry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string } }
+        return ['done', 'stopped', 'error'].includes(task.status)
+      } catch {
+        return false
+      }
+    },
     report: (note) => {
       const agent = bridge
       if (!agent) return
@@ -430,6 +440,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
   function recoverFromCrash({ message }: { message: string }) {
     taskService?.flush()
+    taskService?.detachAll()
     taskRegistry.interrupt()
     console.error('[dsh] exited unexpectedly:', message)
     bridge = null
@@ -452,6 +463,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
   async function stopBridge() {
     taskService?.flush()
+    taskService?.detachAll()
     taskRegistry.interrupt()
     clearTimeout(restartTimer)
     const running = bridge
@@ -489,6 +501,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
       conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
       emitToRenderer({ type: 'ready', info })
+      // Results of tasks that ended while dsh was away come back once it is here again.
+      taskReports.flush()
       return info
     } catch (err: any) {
       console.error('[main] failed to start agent bridge:', err)
@@ -613,8 +627,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     })
     ipcMain.handle('agent:answer', (_event, questionId, answers) => {
       const id = assertText(questionId, 'questionId', 200)
+      // Held first: dsh closes the question while it takes the answer, and what was asked goes with it.
+      const keep = taskService?.holdQuestion(id) ?? null
       const accepted = bridge?.answerQuestion(id, answers) ?? false
-      if (accepted) taskService?.answer(id, answers)
+      if (accepted) keep?.(answers)
       return accepted
     })
     // Keys the user typed for a server the model set up: straight to the encrypted store, never to dsh.
@@ -899,6 +915,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       agentInfo: () => lastInfo,
       agent: taskAgent,
       announce: emitToRenderer,
+      waitsOf: (taskId) => bridge?.taskWaits(taskId) ?? { permissions: [], questions: [] },
     })
   }
 

@@ -579,7 +579,11 @@ export function createAcpBridge({
 
   /** A turn in a task's session: what it says arrives as task_update, its end as task_end (as for a spun-off turn). */
   async function promptTask(taskId: string, text: string) {
-    if (!tasks.has(taskId)) return
+    // A session this dsh does not hold (taken up in a dsh since gone): said as the task's end, never left hanging.
+    if (!tasks.has(taskId)) {
+      emit({ type: 'task_end', taskId, stopReason: 'error', message: t('main.acp-bridge.task.session.gone') })
+      return
+    }
     const operation: Running = { released: false }
     running.set(taskId, operation)
     try {
@@ -654,6 +658,8 @@ export function createAcpBridge({
 
   /** @returns false when the question is no longer waiting; throws when the answer does not fit it */
   const answerQuestion = (questionId: string, answers: unknown): boolean => questions.answer(questionId, answers)
+  /** What a background task waits on the user for, still: its approvals and its questions (a reloaded window shows them). */
+  const taskWaits = (taskId: string) => (tasks.has(taskId) ? { permissions: broker.pendingFor(taskId), questions: questions.pendingOf(taskId) } : { permissions: [], questions: [] })
   /** @returns false when no key is asked for any more; throws when the values do not fit */
   const provideSecrets = (requestId: string, values: Record<string, unknown> | null) => config?.provideSecrets(requestId, values) ?? false
 
@@ -708,5 +714,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }
