@@ -33,7 +33,7 @@ ACP accepts only one active prompt per session, so `viva-steer` (`plugins/steer`
 <a id="后台任务"></a>
 ## Background tasks
 
-Use Run in background beside the composer to start separate work from the current conversation. Long-running foreground work can offer Move to background. A different request while approval is pending can also be routed to background work.
+Use Run in background beside the composer to start separate work from the current conversation. Long-running foreground work can offer Move to background.
 
 Each task leaves a single clickable status line in its original conversation, with its name, state, preview, and a link to its Background page. Approval and question actions live in the bottom-right task dock, or in the Background page when the dock is unavailable. Status wording is consistent across the conversation, dock, page, and island.
 

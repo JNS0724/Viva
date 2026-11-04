@@ -3,10 +3,9 @@ import { dockPendingSteps, dockSteps } from './smoke-dock.ts'
 import { checkTaskCardRetention } from './smoke-task-card.ts'
 
 /**
- * Background tasks on the real dsh (phase 3): while a turn waits on an approval, words about something else
- * say over the input that they go to the background; sent, they start a task of their own and the turn stays
- * in front. 后台做 does the same at any time; 放到后台 moves a long turn there. Each task has one card in the
- * conversation, answered in place, and a place on the 后台 page.
+ * Background tasks on the real dsh (phase 3): 后台做 starts a task of its own at any time, also while a turn
+ * waits on an approval, the turn staying in front; 放到后台 moves a long turn there. Each task has one card in
+ * the conversation, answered in place, and a place on the 后台 page.
  */
 /** Unlike configSteps's words, which stay earlier in the same session. */
 const BUSY_ASK = '再帮我接入演示服务一次'
@@ -64,24 +63,13 @@ const startInBackground = (win: SmokeWindow, text: string) => run(win, `(() => {
 })()`)
 
 /**
- * While a turn waits on an approval, words about something else go to a task of their own: the turn and its
- * approval stay in front, the task starts from before that turn and answers on its card.
+ * While a turn waits on an approval, 后台做 starts a task of its own: the turn and its approval stay in front,
+ * the task starts from before that turn and answers on its card.
  */
-async function routeSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+async function busyStartSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await submit(win, BUSY_ASK)
   await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
-  const hint = await run(win, `(() => {
-    const input = document.getElementById('composer-input')
-    input.value = ${JSON.stringify(OTHER_ASK)}
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    const route = document.getElementById('route-hint')
-    return { hidden: route.hidden, route: route.dataset.route, text: route.textContent }
-  })()`)
-  expect(!hint.hidden && hint.route === 'other' && hint.text.includes('交给后台做'), 'words about something else should say they go to the background', hint)
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-route')
-
-  await run(win, `document.getElementById('composer').requestSubmit()`)
+  await startInBackground(win, OTHER_ASK)
   const done = await until(win, doneCard(OTHER_ASK), 'the task the words started answering')
   expect(done.text.includes(`收到：「${OTHER_ASK}」`), 'the task should answer the words', done)
   const front = await run(win, `({
@@ -100,29 +88,9 @@ async function routeSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-moved')
   await pageSteps(win, outDir, expect)
-  await mentionSteps(win, outDir, expect)
   // Declined, the turn in front ends without setting the server up again.
   await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
   await until(win, mainIdle, 'the turn ending')
-}
-
-const MENTION_WORDS = '顺便说一声'
-
-/** 「#name words」 go to the background task named, here one that ended: asked again, it answers on its card. */
-async function mentionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  const hint = await run(win, `(() => {
-    const input = document.getElementById('composer-input')
-    input.value = '#帮我订一张周五 ${MENTION_WORDS}'
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    return document.getElementById('route-hint').textContent
-  })()`)
-  expect(hint.includes(`交给 #${OTHER_ASK}`) && hint.includes('接着做'), '「#name」 should say the words go to that task', hint)
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-mention')
-  await run(win, `document.getElementById('composer').requestSubmit()`)
-  await until(win, `(() => { const card = ${cardState(OTHER_ASK)}; return card?.status === 'done' && card.text.includes('收到：「${MENTION_WORDS}」') })()`, 'the task answering 「#name」')
-  const asked = await run(win, userTexts)
-  expect(!asked.some((text: string) => text.includes(MENTION_WORDS)), 'the words should not land in the conversation on screen', asked)
 }
 
 /**
@@ -343,7 +311,7 @@ async function leaveRunning(win: SmokeWindow) {
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await checkTaskCardRetention(win, expect)
-  await routeSteps(win, outDir, expect, hooks)
+  await busyStartSteps(win, outDir, expect, hooks)
   await offerSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)
   await startSteps(win, outDir, expect)

@@ -463,15 +463,11 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...FOLLOWUP_ACTIONS,
 }
 
-/** Sending the words ends Tab's say over where they go. */
-const SENT = new Set(['user_prompt', 'user_steer'])
-
 export function reduce(state: State, action: Action): State {
   const routed = routeToTask(state, action, HANDLERS)
   if (routed) return routed
   const handler = ACTION_HANDLERS[action?.type ?? '']
-  const next = oneHubPage(state, handler ? handler(state, action) : state, reduce)
-  return SENT.has(action?.type ?? '') && next.tasks.flip ? { ...next, tasks: { ...next.tasks, flip: false } } : next
+  return oneHubPage(state, handler ? handler(state, action) : state, reduce)
 }
 
 export const isBusy = (state: { phase: string }): boolean => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'

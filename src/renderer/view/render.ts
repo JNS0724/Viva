@@ -5,7 +5,6 @@ import { isBusy } from '../state.ts'
 import { setupView } from '../selectors.ts'
 import type { SetupCopy } from '../selectors.ts'
 import type { Dom } from '../app.ts'
-import { mentionedTask, routeOf } from '../tasks-state.ts'
 import { h } from './dom.ts'
 import { renderDrawer } from './drawer.ts'
 import { renderEarlier, updateEarlierControls } from './earlier.ts'
@@ -165,43 +164,9 @@ export function renderSendButton(dom: Dom, state: State) {
   dom.sendBtn.replaceChildren(icon(stops ? 'stop' : 'send', 22))
 }
 
-/** Where 「#name …」 goes: into the turn of a task still going, or as the next question of one that ended. */
-function renderMentionHint(dom: Dom, mentioned: { taskId: string, title: string, ended: boolean }) {
-  const key = `task:${mentioned.taskId}:${mentioned.ended}:${localeRevision()}`
-  if (dom.routeHint.dataset.route === key) return
-  dom.routeHint.dataset.route = key
-  dom.routeHint.hidden = false
-  dom.routeHint.replaceChildren(h('span', { 'aria-hidden': 'true', text: '↳' }), h('b', { text: t("render.hand.to", { title: mentioned.title }) }),
-    h('span', { text: mentioned.ended ? t("render.it.continues.in.the.background.and.reports") : t("render.it.will.read.this.at.the.next") }))
-}
-
-let ROUTES: Readonly<Record<string, { mark: string, name: string, then: string, tab: string }>> = {
-  other: { mark: '↗', name: t("render.another.task"), then: t("render.run.this.in.the.background.and.continue"), tab: t("render.send.as.an.interruption") },
-  into: { mark: '↳', name: t("render.add.to.the.task.in.progress"), then: t("render.it.will.read.this.at.the.next"), tab: t("render.treat.as.a.separate.task") },
-}
-
-/**
- * While the agent works and words are typed: whether they go into the turn or move it to the background;
- * Tab turns it. Words starting 「#name」 go to that background task, busy or not.
- */
-export function renderRouteHint(dom: Dom, state: State) {
-  const mentioned = state.question ? null : mentionedTask(state, dom.input.value)
-  if (mentioned) return renderMentionHint(dom, mentioned)
-  const route = state.question ? null : routeOf(state, dom.input.value)
-  if (dom.routeHint.dataset.route === (route ?? '') && dom.routeHint.dataset.locale === String(localeRevision())) return
-  dom.routeHint.dataset.locale = String(localeRevision())
-  dom.routeHint.dataset.route = route ?? ''
-  dom.routeHint.hidden = !route
-  if (!route) return dom.routeHint.replaceChildren()
-  const { mark, name, then, tab } = ROUTES[route]
-  return dom.routeHint.replaceChildren(h('span', { 'aria-hidden': 'true', text: mark }), h('b', { text: name }), h('span', { text: then }),
-    h('kbd', { text: 'Tab' }), h('span', { text: tab }))
-}
-
 function renderComposer(dom: Dom, state: State, handlers: Handlers) {
   renderComposerAvailability(dom, setupView(state.info), state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
   renderSendButton(dom, state)
-  renderRouteHint(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   renderTopicLabelIfChanged(dom.ctxArea, state, handlers)
   renderPermissionIfChanged(dom.permArea, state, handlers)
@@ -253,8 +218,4 @@ export function renderTick(dom: Dom, state: State, handlers: Handlers, now = Dat
 onLocaleChange(() => {
   ANSWER_PLACEHOLDER = t("render.type.your.answer.enter.to.send")
   STEER_PLACEHOLDER = t("render.add.or.change.instructions.for.the.next")
-  ROUTES = {
-  other: { mark: '↗', name: t("render.another.task"), then: t("render.run.this.in.the.background.and.continue"), tab: t("render.send.as.an.interruption") },
-  into: { mark: '↳', name: t("render.add.to.the.task.in.progress"), then: t("render.it.will.read.this.at.the.next"), tab: t("render.treat.as.a.separate.task") },
-}
 })

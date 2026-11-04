@@ -25,11 +25,11 @@ import { historyMessages, setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
 import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
-import { hasDockRoom, liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
+import { hasDockRoom, liveTasks } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
 import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
-import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
+import { render, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
@@ -68,7 +68,6 @@ const elements = {
   drawer: byId('drawer'),
   composer: byId('composer'),
   input: fieldById('composer-input'),
-  routeHint: byId('route-hint'),
   /** Pictures pasted or dropped into the input, above the words (draft-images.js). */
   draftPics: byId('draft-pics'),
   sendBtn: buttonById('send-btn'),
@@ -437,10 +436,9 @@ function revealRow(row: HTMLElement) {
 }
 
 /**
- * Sends `text` as the user's next question, or, while the agent works, into the turn it is on — unless it is
- * about something else, when that turn moves to the background first (tasks-state.js routeOf);
+ * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
  * `via: 'island'` when it was asked on the desktop island; `images`: pictures pasted with it, which go only
- * as a new question (not into a running turn, nor to a background task).
+ * as a new question (not into a running turn).
  * @returns {boolean} false when the agent can't take it now
  */
 function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
@@ -450,22 +448,6 @@ function ask(text: string, { via = null as string | null, images = [] as Array<{
   }
   if ((!text && !images.length) || setupView(state.info) || state.switching || state.newTopicPending) return false
   if (images.length) return askWithImages(text, images, via)
-  // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
-  // into its turn while it goes on, as its next question once it has ended.
-  const mentioned = mentionedTask(state, text)
-  if (mentioned) {
-    // Only the name so far (接着问 just wrote it): nothing to send yet.
-    if (!mentioned.text) return false
-    if (mentioned.ended) taskActions.askTask(mentioned.taskId, mentioned.text)
-    else taskActions.steerTask(mentioned.taskId, mentioned.text)
-    return true
-  }
-  // About something else while a turn runs: the words go to a task of their own, the turn stays in front;
-  // A failed submission keeps its own text and retry action.
-  if (isBusy(state) && routeOf(state, text) === 'other') {
-    void taskActions.startTask(text)
-    return true
-  }
   if (isBusy(state)) return steer(text, via)
   dom.follower.resetForPrompt()
   dispatch({ type: 'user_prompt', text, at: Date.now(), via })
@@ -474,14 +456,9 @@ function ask(text: string, { via = null as string | null, images = [] as Array<{
 }
 
 let IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
-let IMAGES_NOT_TO_TASKS = t("app.images.can.only.be.sent.to.this")
 
 /** A question with pictures: only as the next question of the conversation on screen. */
 function askWithImages(text: string, images: Array<{ id: string }>, via: string | null) {
-  if (mentionedTask(state, text)) {
-    historyActions.showToast(IMAGES_NOT_TO_TASKS)
-    return false
-  }
   if (isBusy(state)) {
     historyActions.showToast(IMAGES_WAIT)
     return false
@@ -678,12 +655,11 @@ const handlers = {
     if (!text || setupView(state.info) || state.switching || state.newTopicPending) return dom.input.focus()
     dom.input.value = ''
     renderSendButton(dom, state)
-    renderRouteHint(dom, state)
     // Not started: the words come back, so nothing typed is lost.
     void taskActions.startTask(text)
     return undefined
   },
-  /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. 「#name …」 still works too. */
+  /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. */
   followUpTask(taskId: string) {
     handlers.openTasks(taskId)
     dom.tasksPage.querySelector<HTMLTextAreaElement>('.tp-input')?.focus()
@@ -696,8 +672,6 @@ const handlers = {
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
-    // 「#name 」 with no words yet (接着问 just wrote it): nothing to send, to the task or anywhere else.
-    if (!state.question && mentionedTask(state, dom.input.value)?.text === '') return undefined
     const text = dom.input.value.trim()
     if (state.question) {
       if (!text) return
@@ -948,7 +922,6 @@ function wireComposer() {
   })
   dom.input.addEventListener('input', () => {
     renderSendButton(dom, state)
-    renderRouteHint(dom, state)
     // Typing puts away a dock that was only peeked at: the input is where the user is now.
     if (state.tasks.dockPeek) handlers.peekDock(false)
   })
@@ -963,12 +936,6 @@ function wireComposer() {
   dom.input.addEventListener('keydown', (event) => {
     // Some IMEs report the confirming key as 229 after isComposing has already cleared.
     if (event.isComposing || event.keyCode === 229) return
-    // Tab, while the line over the input says where the words would go: the other way.
-    if (event.key === 'Tab' && !event.shiftKey && routeOf(state, dom.input.value)) {
-      event.preventDefault()
-      taskActions.toggleRoute()
-      return
-    }
     if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     handlers.send()
@@ -1171,5 +1138,4 @@ boot().catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
 onLocaleChange(() => {
   STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
   IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
-  IMAGES_NOT_TO_TASKS = t("app.images.can.only.be.sent.to.this")
 })

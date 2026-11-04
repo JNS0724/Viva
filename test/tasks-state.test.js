@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { liveTasks, mentionedTask, offeredBackground, routeOf, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.ts'
+import { liveTasks, offeredBackground, spinOffTarget, taskMessages, taskOfTab, taskTab } from '../src/renderer/tasks-state.ts'
 import { traceItems } from '../src/renderer/selectors.ts'
 import { showsHome } from '../src/renderer/view/render.ts'
 import { cardedTasks } from '../src/renderer/view/task-card.ts'
@@ -25,20 +25,6 @@ const spun = (state) => reduce(state, {
   info: { sessionId: 's2', cwd: '/w' },
   folds: [{ id: 'c1', at: 2, count: 2, kind: 'task' }],
   at: 20,
-})
-
-test('words typed while a turn runs: about the same thing go into it, about something else go on their own', () => {
-  const state = working()
-  assert.equal(routeOf(initialState, '周会几点'), null, 'nothing runs, nothing to route')
-  assert.equal(routeOf(state, '明天周会几点？'), 'other')
-  assert.equal(routeOf(state, '顺便把已知问题也列上'), 'into', 'said to go on with it')
-  assert.equal(routeOf(state, '发布说明里加上版本号'), 'into', 'sharing words with what runs')
-  assert.equal(routeOf(state, '帮我订一张周五的机票'), 'other', 'a new request')
-  assert.equal(routeOf(state, '嗯，慢一点'), 'into', 'unsure: into it, which adds nothing')
-  const helping = run([{ type: 'user_prompt', text: '帮我接入演示服务', at: 70 }], reduce(state, { type: 'turn_end', stopReason: 'end_turn', at: 60 }))
-  assert.equal(routeOf(helping, '帮我订一张周五的机票'), 'other', 'how a request starts is not what it is about')
-  assert.equal(routeOf(helping, '帮我把演示服务的端口改成 8080'), 'into')
-  assert.equal(routeOf(reduce(state, { type: 'route_toggle', text: '明天周会几点？' }), '明天周会几点？'), 'into', 'Tab turns it round')
 })
 
 test('a task\'s steps are its own turn\'s, not those of the turns before it', () => {
@@ -185,26 +171,19 @@ test('a task that fails says why: on its card and on its page', () => {
   assert.equal(failed.tasks.reports[0].preview, 'No API key for provider: custom-d59f4622', 'the card says why, not where it had got to')
 })
 
-test('「#name」 at the start goes to the background task it names, as words into its turn', () => {
+test('words for a background task go into its turn, not the conversation on screen', () => {
   const state = spun(working())
-  assert.deepEqual(mentionedTask(state, '#发布说明 加上版本号'), { taskId: 's1', title: '整理这周的提交，写成发布说明', text: '加上版本号', ended: false })
-  assert.equal(mentionedTask(state, '#周会 几点'), null, 'no task by that name')
-  assert.equal(mentionedTask(state, '发布说明加上版本号'), null, 'only at the start')
   const steered = reduce(state, { type: 'task_steer', taskId: 's1', text: '加上版本号', at: 50 })
   assert.equal(taskMessages(liveTasks(steered)[0]).at(-1).text, '加上版本号')
   assert.deepEqual(steered.messages.map((m) => m.text), ['做周报', '写好了'], 'not in the conversation on screen')
 })
 
-test('a task that ended can be asked again: 「#name」 reaches it, and it goes back to work with the words', () => {
+test('a task that ended can be asked again, and it goes back to work with the words', () => {
   const ended = run([
     { type: 'task_update', taskId: 's1', update: chunk('写好了。'), at: 30 },
     { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 40 },
     { type: 'task_report_shown', taskId: 's1' },
   ], spun(working()))
-  const [task] = ended.tasks.list
-  assert.deepEqual(mentionedTask(ended, '#发布说明 再加上已知问题'), { taskId: 's1', title: task.title, text: '再加上已知问题', ended: true })
-  assert.deepEqual(mentionedTask(ended, '#发布说明 ')?.text, '', 'found as soon as the name is written, before the words')
-  assert.equal(mentionedTask(ended, '#发布说明'), null, 'not before the space after the name')
 
   const asked = reduce(ended, { type: 'task_asked', taskId: 's1', text: '再加上已知问题', at: 60 })
   const [again] = liveTasks(asked)
@@ -226,7 +205,6 @@ test('tasks that had ended by the last launch come back ended, and can be asked 
   assert.deepEqual([task.id, task.status, task.endedAt, liveTasks(restored).length], ['s3', 'done', 5, 0])
   assert.deepEqual(taskMessages(task).map((m) => m.text), ['查一下明天上海的天气', '晴，18 到 25 度。'])
   assert.deepEqual(restored.tasks.reports, [], 'reported last time already')
-  assert.equal(mentionedTask(restored, '#天气 后天呢')?.ended, true)
 })
 
 test('tasks the last launch left going are offered; taken up, one goes on with what it had said', () => {

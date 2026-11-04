@@ -293,7 +293,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       const question = questionOf(taskId)
       if (question) answerTask(taskId, question.questions.map((item: QuestionItem) => ({ id: item.id, selected: [] })))
     },
-    toggleRoute: () => dispatch({ type: 'route_toggle' }),
   }
 }
 

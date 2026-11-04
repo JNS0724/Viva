@@ -13,8 +13,6 @@ export const initialTasks = Object.freeze({
   list: [] as BackgroundTask[],
   /** The move just made, while it can still be undone: { taskId, prefix, text }. */
   undo: null as Untyped,
-  /** Tab: the words typed now go the other way than routeOf would send them. */
-  flip: false,
   /** The task that just ended, for the island to say so a moment: { taskId, title, status }. */
   finished: null as Untyped,
   /**
@@ -215,21 +213,6 @@ function previewOf(view: { error?: string | null, messages: readonly ThreadMessa
 /** What a task said last, whole: its drawer tab shows it above what it did (view/drawer.js). */
 export const taskAnswer = (task: BackgroundTask): string => task.view.messages.findLast((message: ThreadMessage) => message.role === 'assistant')?.text ?? ''
 
-/** 「#name 」 and what follows: found as soon as the name is written, so the line over the input says where words will go. */
-const MENTION = /^#(\S+)\s+([\s\S]*)$/
-/**
- * 「#name words」: the words go to the background task whose title has `name` in it, not to the
- * conversation on screen. A task still going reads them in its turn; one that ended (`ended`) is asked
- * them as its next question. Tasks still going come first, then those that ended, latest first.
- */
-export function mentionedTask(state: State, text: string): { taskId: string, title: string, text: string, ended: boolean } | null {
-  const match = MENTION.exec(text.trimStart())
-  if (!match) return null
-  const ended = state.tasks.list.filter((task) => !LIVE.has(task.status)).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
-  const task = [...liveTasks(state), ...ended].find((entry) => entry.title.includes(match[1]))
-  return task ? { taskId: task.id, title: task.title, text: match[2].trim(), ended: !LIVE.has(task.status) } : null
-}
-
 /** The tool the agent calls to say, before it starts, that a job will take long (plugins/steer/lib/offer.js). */
 export const OFFER_TOOL = 'viva_offer_background'
 
@@ -242,34 +225,6 @@ export function offeredBackground(state: State): { why: string } | null {
   const since = state.turn?.startedAt ?? Infinity
   const entry = state.timeline.findLast((item) => item.kind === 'tool' && item.at >= since && state.tools[item.ref]?.title === OFFER_TOOL)
   return entry ? { why: String(state.tools[entry.ref].rawInput?.why ?? '') } : null
-}
-
-/** Said to go on with what runs: 「顺便」「再」「改成」… */
-const GOES_ON = /^(顺便|再|还要|还有|另外|也|并且|然后|接着|改成|换成|别|不要|加上|补充|记得|继续|等等)/
-/** Something of its own: a question, or a request of its own (「帮我…」「查一下…」). */
-const ASKING = /^(帮我|帮忙|麻烦|给我|请|查一?下|看一?下|问一?下|搜一?下|写一?个|做一?个|翻译|算一?下)/
-const NEW_THING = new RegExp(`[？?]$|${ASKING.source}`)
-/** What the words are about: two letters at a time, leaving out how a request starts (「帮我」). */
-const pairsOf = (text: string) => {
-  const letters = [...text.replace(ASKING, '').replace(/[\s\p{P}\p{S}]+/gu, '')]
-  return new Set(letters.slice(1).map((letter, i) => `${letters[i]}${letter}`))
-}
-
-/**
- * Where words typed while a turn runs would go: on their own ('other'), to a task of their own in the
- * background while the turn stays in front, when they ask something of their own and share nothing with what
- * started it; else 'into' the turn (the viva-steer plugin), which, when unsure, adds nothing to undo. Tab turns
- * it round. null when nothing runs.
- */
-export function routeOf(state: State, text: string): 'other' | 'into' | null {
-  const target = spinOffTarget(state)
-  const words = text.trim()
-  if (!target || !words) return null
-  const asked = pairsOf(target.words)
-  const shares = [...pairsOf(words)].some((pair) => asked.has(pair))
-  const auto = NEW_THING.test(words) && !GOES_ON.test(words) && !shares ? 'other' : 'into'
-  if (!state.tasks.flip) return auto
-  return auto === 'into' ? 'other' : 'into'
 }
 
 const withTasks = (state: State, changes: Partial<State['tasks']>): State => ({ ...state, tasks: { ...state.tasks, ...changes } })
@@ -321,7 +276,6 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       submissions: state.tasks.submissions.map(item => item.id === id ? { ...item, status: 'failed', problem } : item),
     }),
     task_submit_dismissed: (state, { id }) => withTasks(state, { submissions: state.tasks.submissions.filter(item => item.id !== id) }),
-    route_toggle: (state) => withTasks(state, { flip: !state.tasks.flip }),
 
     /** The running turn went to the background: it takes its part of the conversation with it. */
     task_spun: (state, { task, conversation, info, folds, at, text = null }) => {
@@ -335,7 +289,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       // Undone, the earlier turns' steps come back in front of the task's (task_undone).
       const earlier = state.timeline.filter((item) => item.at < startedAt)
       const undo = { taskId: task.id, prefix: going.messages, text, timeline: earlier }
-      return { ...going, ...hostTask({ ...going, taskCards: state.taskCards }, task.id), tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo, flip: false } }
+      return { ...going, ...hostTask({ ...going, taskCards: state.taskCards }, task.id), tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo } }
     },
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
@@ -446,7 +400,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         info: { ...state.info, ...info },
         folds: [],
         taskCards: state.taskCards.filter(id => id !== taskId),
-        tasks: { ...state.tasks, list: state.tasks.list.filter((entry) => entry.id !== taskId), undo: null, flip: false },
+        tasks: { ...state.tasks, list: state.tasks.list.filter((entry) => entry.id !== taskId), undo: null },
       }
     },
 

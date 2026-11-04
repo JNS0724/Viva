@@ -242,12 +242,6 @@ html:not([data-platform="darwin"]) .titlebar {
   font: inherit; font-size: 16px; line-height: 1.6; max-height: 220px;
 }
 .composer textarea::placeholder { color: var(--ink-3); }
-/* While the agent works: where the words typed would go (view/render.js renderRouteHint). */
-.route { display: flex; align-items: center; gap: 6px; margin: -4px 0 8px; font-size: 12px; color: var(--ink-2); }
-.route[hidden] { display: none; }
-.route b { color: var(--ink); font-weight: 600; }
-.route[data-route="into"] b { color: var(--accent); }
-.route kbd { margin-left: 4px; font: 11px var(--font-mono); color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; }
 .composer-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 /* 后台做: the typed words to a task of their own (task-actions.js startTask); quiet beside 发送. */
 .bg-send { margin-left: auto; height: 40px; padding: 0 14px; border-radius: 12px; font-size: 13px; white-space: nowrap; }
