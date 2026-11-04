@@ -27,13 +27,13 @@ function setFolded(content: HTMLElement, toggle: HTMLButtonElement, folded: bool
 }
 
 /**
- * `content` folds once laid out, if it is at least FOLD_AT_PX tall and the user has not unfolded it: its start shows,
- * and a toggle after it unfolds and folds it again.
+ * `content` gets a toggle once laid out, if it is at least FOLD_AT_PX tall: folded to its start, or open when the user
+ * unfolded it before (a rebuild keeps 收起), and the toggle unfolds and folds it again.
  */
 export function foldTall(content: HTMLElement, key: string): HTMLElement {
   content.classList.add('msg-fold')
   queueLayout(content, () => {
-    if (!content.isConnected || unfolded.has(key) || content.dataset.folded) return undefined
+    if (!content.isConnected || content.dataset.folded) return undefined
     if (content.scrollHeight < FOLD_AT_PX) return undefined
     return () => {
       const toggle = h('button', {
@@ -45,7 +45,7 @@ export function foldTall(content: HTMLElement, key: string): HTMLElement {
           setFolded(content, toggle, fold)
         },
       }) as HTMLButtonElement
-      setFolded(content, toggle, true)
+      setFolded(content, toggle, !unfolded.has(key))
       content.after(toggle)
     }
   })

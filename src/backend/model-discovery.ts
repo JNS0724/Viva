@@ -18,10 +18,10 @@ export const DISCOVERY_TIMEOUT_MS = 15_000
 /** More than the picker offers is cut, in the endpoint's order. */
 export const MAX_DISCOVERED = 2000
 
-export type DiscoveryFetch = (url: string, init: { method: string, headers: Record<string, string>, signal: AbortSignal }) => Promise<Response>
+export type DiscoveryFetch = (url: string, init: { method: string, headers: Record<string, string>, redirect: 'manual', signal: AbortSignal }) => Promise<Response>
 
 /** Why discovery failed, for the form to word (models-ipc.ts). */
-export type DiscoveryReason = 'unreachable' | 'timeout' | 'refused' | 'status' | 'not-json' | 'not-a-listing' | 'too-large'
+export type DiscoveryReason = 'unreachable' | 'timeout' | 'refused' | 'redirected' | 'status' | 'not-json' | 'not-a-listing' | 'too-large'
 
 export class DiscoveryError extends Error {
   readonly reason: DiscoveryReason
@@ -122,7 +122,7 @@ async function readBounded(response: Response): Promise<string> {
 
 /**
  * Asks the endpoint for its models.
- * @throws DiscoveryError when it cannot be reached in time, refuses the key, answers another error, or not a listing
+ * @throws DiscoveryError when it cannot be reached in time, refuses the key, redirects, answers another error, or not a listing
  */
 export async function discoverModels({ api, baseURL, key }: DiscoveryRequest, {
   fetch = globalThis.fetch as DiscoveryFetch, timeoutMs = DISCOVERY_TIMEOUT_MS,
@@ -131,9 +131,14 @@ export async function discoverModels({ api, baseURL, key }: DiscoveryRequest, {
   const signal = AbortSignal.timeout(timeoutMs)
   let response: Response
   try {
-    response = await fetch(url, { method: 'GET', headers: headersFor(api, key), signal })
+    // Not followed: the key goes only to the address typed, never on to where a redirect points.
+    response = await fetch(url, { method: 'GET', headers: headersFor(api, key), redirect: 'manual', signal })
   } catch {
     throw new DiscoveryError(signal.aborted ? 'timeout' : 'unreachable', url)
+  }
+  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+    await response.body?.cancel().catch(() => {})
+    throw new DiscoveryError('redirected', url, response.status || undefined)
   }
   if (response.status === 401 || response.status === 403) throw new DiscoveryError('refused', url, response.status)
   if (!response.ok) throw new DiscoveryError('status', url, response.status)

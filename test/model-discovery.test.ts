@@ -39,6 +39,7 @@ test('the key goes as a bearer for OpenAI and as x-api-key with a version for An
   await discoverModels({ api: 'openai-completions', baseURL: 'https://a.example/v1', key: 'sk-a' }, { fetch })
   await discoverModels({ api: 'anthropic-messages', baseURL: 'https://b.example', key: 'sk-b' }, { fetch })
   await discoverModels({ api: 'openai-completions', baseURL: 'http://127.0.0.1:11434/v1', key: '' }, { fetch })
+  assert.ok(seen.every((one) => one.url.endsWith('/models') || one.url.includes('/v1/models?')))
   assert.deepEqual(seen.map((one) => one.headers), [
     { accept: 'application/json', authorization: 'Bearer sk-a' },
     { accept: 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': 'sk-b' },
@@ -82,10 +83,24 @@ test('what goes wrong is told apart: the key refused, another status, not JSON, 
   assert.equal(await reason(() => json({ error: 'no' }, 401)), 'refused 401')
   assert.equal(await reason(() => json({ error: 'no' }, 403)), 'refused 403')
   assert.equal(await reason(() => json({}, 404)), 'status 404')
+  assert.equal(await reason(() => new Response(null, { status: 307, headers: { location: 'https://other.example/models' } })), 'redirected 307')
   assert.equal(await reason(() => new Response('<html>')), 'not-json')
   assert.equal(await reason(() => json({ object: 'list' })), 'not-a-listing')
   assert.equal(await reason(() => { throw new TypeError('fetch failed') }), 'unreachable')
   assert.equal(await reason(() => new Promise((_, fail) => setTimeout(() => fail(new Error('aborted')), 50)), 10), 'timeout')
+})
+
+test('a redirect is not followed: the key never reaches the host it points to', async (t) => {
+  const reached: string[] = []
+  const other = await endpoint(t, (req, res) => {
+    reached.push(String(req.headers['x-api-key'] ?? req.headers.authorization ?? ''))
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{"data":[{"id":"stolen"}]}')
+  })
+  const typed = await endpoint(t, (_req, res) => { res.writeHead(307, { location: `${other}/v1/models` }).end() })
+  for (const api of ['anthropic-messages', 'openai-completions']) {
+    await assert.rejects(discoverModels({ api, baseURL: typed, key: 'sk-secret' }), (err) => err instanceof DiscoveryError && err.reason === 'redirected')
+  }
+  assert.deepEqual(reached, [], 'the other host was never asked')
 })
 
 test('a real endpoint is asked over HTTP; an answer past the limit is refused, declared or not', async (t) => {

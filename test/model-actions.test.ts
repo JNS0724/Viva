@@ -22,11 +22,11 @@ function setup(api: Partial<AgentApi> = {}) {
 const FORM: ProviderForm = { name: 'Gateway', api: 'openai-completions', baseURL: 'https://gw.example/v1', key: '', models: [{ id: 'glm-5.2', contextWindow: '', maxTokens: '', image: false }] }
 
 test('a new provider opens with one empty row; editing one opens its models, each time with fields started afresh', () => {
-  const fresh = openDraft(null, null)
-  assert.deepEqual([fresh.editing, fresh.rows, fresh.nextKey], [null, [{ key: 0, id: '' }], 1])
-  const editing = openDraft(fresh, PROVIDER)
-  assert.deepEqual([editing.editing, editing.rows, editing.nextKey, editing.version > fresh.version], [
-    'custom-a', [{ key: 0, id: 'glm-5.2', contextWindow: 131072, image: true }, { key: 1, id: 'kimi-k2.6' }], 2, true,
+  const fresh = openDraft(1, null)
+  assert.deepEqual([fresh.editing, fresh.rows, fresh.nextKey, fresh.version], [null, [{ key: 0, id: '' }], 1, 1])
+  const editing = openDraft(2, PROVIDER)
+  assert.deepEqual([editing.editing, editing.rows, editing.nextKey, editing.version], [
+    'custom-a', [{ key: 0, id: 'glm-5.2', contextWindow: 131072, image: true }, { key: 1, id: 'kimi-k2.6' }], 2, 2,
   ])
 })
 
@@ -78,6 +78,17 @@ test('a failure shows in the form; an answer for a form since opened again is dr
   await pending
   assert.equal(draft().discovery.found, null, 'the answer was for the form before')
 
+  // Closed, then opened for another provider: the version is new, so the first form's answer still does not land.
+  const again = setup({ discoverModels: () => new Promise((done) => { answer = done }) })
+  again.actions.openProviderForm()
+  const first = again.actions.discoverModels(ENDPOINT)
+  again.actions.closeProviderForm()
+  again.actions.openProviderForm(PROVIDER)
+  assert.equal(again.draft().version, 2, 'a version is never used twice')
+  answer({ models: FOUND })
+  await first
+  assert.deepEqual([again.draft().discovery.found, again.draft().rows.map((row) => row.id)], [null, ['glm-5.2', 'kimi-k2.6']])
+
   const failing = setup({ discoverModels: async () => { throw new Error('接口拒绝了这个 key（401）') } })
   failing.actions.openProviderForm()
   await failing.actions.discoverModels({ ...ENDPOINT, key: 'sk-bad' })
@@ -107,7 +118,7 @@ test('what was found is searched by id or name, picked, and joins the rows as ty
 })
 
 test('adopting with nothing picked keeps the rows as typed; closing the picker keeps the rows', async () => {
-  const draft: ModelDraft = { ...openDraft(null, null), discovery: { busy: false, error: null, found: FOUND, query: '', picked: [] } }
+  const draft: ModelDraft = { ...openDraft(1, null), discovery: { busy: false, error: null, found: FOUND, query: '', picked: [] } }
   assert.deepEqual(adoptPicked(draft, [{ key: 0, id: 'mine' }]).rows, [{ key: 0, id: 'mine' }])
 
   const { actions, draft: current } = setup({ discoverModels: async () => ({ models: FOUND }) })

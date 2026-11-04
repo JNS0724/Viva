@@ -115,7 +115,7 @@
 
 「设置」页的「模型」部分可以添加 DeepSeek 以外的模型：填名称、接口协议、接口地址（baseURL）和 API key（本地模型可不填），再逐行列出模型。添加后在输入框左下的模型菜单里按提供方分组出现。
 
-- **获取可用模型**：按填好的协议、地址和 key 向接口要模型列表（OpenAI 协议是 `{baseURL}/models`，Anthropic 是 `/v1/models`，和 dsh 自己的做法一样），在列表里搜索、勾选，「添加所选」后成为模型行；接口给出的上下文长度和最大输出会一并填上。列不出模型的接口照常手动填写。
+- **获取可用模型**：按填好的协议、地址和 key 向接口要模型列表（OpenAI 协议是 `{baseURL}/models`，Anthropic 是 `/v1/models`，和 dsh 自己的做法一样），在列表里搜索、勾选，「添加所选」后成为模型行；接口给出的上下文长度和最大输出会一并填上。列不出模型的接口照常手动填写；接口要求跳转时不跟过去（key 不会带到别的地址），请直接填跳转后的地址。
 - **每个模型**：模型 ID、上下文长度、最大输出，以及「读图」——勾上之后这个模型可以收到图片（写进 profile 的 `input: ['text', 'image']`）。上下文长度和最大输出留空时，dsh 按 262144 / 32768 计；最大输出不能超过上下文长度。
 
 - **协议**：OpenAI 兼容（Chat Completions）、OpenAI Responses、Anthropic 兼容（Messages），即 dsh 的 `llm-pi-ai` 插件支持的三种。Kimi、智谱、通义、OpenRouter、Ollama、LM Studio 等大多用 OpenAI 兼容。

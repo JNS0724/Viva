@@ -971,6 +971,7 @@ export const zhCN = {
   "main.model-providers.max.output.exceeds.the.context.window": "「{model}」的最大输出不能超过上下文长度",
   "main.models.discovery.refused": "接口拒绝了这个 key（{status}），检查一下 API key",
   "main.models.discovery.status": "接口返回了 {status}，没有拿到模型列表",
+  "main.models.discovery.redirected": "接口要求跳转到别的地址，请直接填写跳转后的接口地址",
   "main.models.discovery.timeout": "接口没有及时回应",
   "main.models.discovery.unreachable": "连不上这个接口地址",
   "main.models.discovery.too.large": "接口返回的内容太大",

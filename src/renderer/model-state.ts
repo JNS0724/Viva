@@ -14,7 +14,10 @@ export type Discovery = Readonly<{
 export type ModelDraft = Readonly<{
   /** The provider edited, or null for a new one. */
   editing: string | null
-  /** Another each time the form opens, so its fields start fresh (dom.ts keepingInput data-version). */
+  /**
+   * Another each time the form opens, never one used before (models.drafts): its fields start fresh (dom.ts
+   * keepingInput data-version), and an answer for a form since closed or opened again is told apart.
+   */
   version: number
   rows: readonly ModelRow[]
   nextKey: number
@@ -33,6 +36,8 @@ export const initialModels = Object.freeze({
   defaults: Object.freeze({ contextWindow: 0, maxTokens: 0 }),
   /** The add or edit form, null while closed. */
   draft: null as ModelDraft | null,
+  /** How many times a form has opened: the next one's version. */
+  drafts: 0,
   busy: false,
   error: null,
   notice: null,
@@ -52,12 +57,12 @@ function withDraft(state: State, change: (draft: ModelDraft) => Partial<ModelDra
 const withDiscovery = (state: State, changes: Partial<Discovery>): State =>
   withDraft(state, (draft) => ({ discovery: { ...draft.discovery, ...changes } }))
 
-/** The form for `provider`'s models, or for a new provider with one empty row. */
-export function openDraft(previous: ModelDraft | null, provider: Provider | null): ModelDraft {
+/** The form, as opened the `version`th time, for `provider`'s models or for a new provider with one empty row. */
+export function openDraft(version: number, provider: Provider | null): ModelDraft {
   const models: readonly ModelEntry[] = provider?.models.length ? provider.models : [{ id: '' }]
   return {
     editing: provider?.id ?? null,
-    version: (previous?.version ?? 0) + 1,
+    version,
     rows: models.map((model, key) => ({ ...model, key })),
     nextKey: models.length,
     discovery: NO_DISCOVERY,
@@ -91,7 +96,10 @@ export const MODEL_ACTIONS: Record<string, Reducer> = {
   models_busy: (state) => withModels(state, { busy: true, error: null, notice: null }),
   models_failed: (state, { message }) => withModels(state, { busy: false, error: message }),
   models_saved: (state, { view, notice }) => withModels(state, { ...view, loaded: true, busy: false, error: null, notice, draft: null }),
-  models_draft_open: (state, { provider }) => withModels(state, { draft: openDraft(state.models.draft, provider ?? null), error: null, notice: null }),
+  models_draft_open: (state, { provider }) => {
+    const drafts = state.models.drafts + 1
+    return withModels(state, { drafts, draft: openDraft(drafts, provider ?? null), error: null, notice: null })
+  },
   models_draft_close: (state) => withModels(state, { draft: null, error: null, notice: null }),
   models_row_add: (state) => withDraft(state, (draft) => ({ rows: [...draft.rows, { key: draft.nextKey, id: '' }], nextKey: draft.nextKey + 1 })),
   models_row_remove: (state, { key }) => withDraft(state, (draft) => ({ rows: draft.rows.filter((row) => row.key !== key) })),

@@ -410,7 +410,8 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
     const look = { latest: message.id === latestAnswer, mood, maids }
-    const view = part(`message:${message.id}`, messageInputs(message, traceReady), () => messageView(message, handlers, traceReady, look), view => localizeAssistant(view, message))
+    // Whether it is the latest answer is an input: once it is not, it is built again, and folds if tall (message-fold.ts).
+    const view = part(`message:${message.id}`, [...messageInputs(message, traceReady), look.latest], () => messageView(message, handlers, traceReady, look), view => localizeAssistant(view, message))
     refreshAvatar(view, message, look)
     return view
   })

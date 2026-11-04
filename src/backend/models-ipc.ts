@@ -24,6 +24,7 @@ function discoveryMessage(err: DiscoveryError): string {
   switch (err.reason) {
     case 'refused': return t('main.models.discovery.refused', { status: err.status ?? '' })
     case 'status': return t('main.models.discovery.status', { status: err.status ?? '' })
+    case 'redirected': return t('main.models.discovery.redirected')
     case 'timeout': return t('main.models.discovery.timeout')
     case 'unreachable': return t('main.models.discovery.unreachable')
     case 'too-large': return t('main.models.discovery.too.large')

@@ -102,7 +102,7 @@ Without a usable model, home shows Connect model and disables the composer. Add 
 
 Add a provider name, protocol, baseURL and API key (optional for local models), then one row per model. Providers appear grouped in the composer menu.
 
-- **Fetch available models** asks the endpoint for its model list with the protocol, address and key filled in (`{baseURL}/models` for OpenAI protocols, `/v1/models` for Anthropic, as dsh does), to search, tick and turn into rows with Add selected; a context window or max output the listing gives is filled in. An endpoint that lists nothing is filled in by hand.
+- **Fetch available models** asks the endpoint for its model list with the protocol, address and key filled in (`{baseURL}/models` for OpenAI protocols, `/v1/models` for Anthropic, as dsh does), to search, tick and turn into rows with Add selected; a context window or max output the listing gives is filled in. An endpoint that lists nothing is filled in by hand; a redirect is not followed (the key never goes to another address), so enter the address it points to.
 - **Each model** has an ID, a context window, a max output, and Images: ticked, the model can receive pictures (`input: ['text', 'image']` in the profile). A blank context window or max output counts as dsh's 262144 / 32768; max output cannot exceed the context window.
 
 Supported dsh `llm-pi-ai` protocols are OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. Kimi, Zhipu, Qwen, OpenRouter, Ollama, and LM Studio commonly use OpenAI compatibility.

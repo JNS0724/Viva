@@ -970,6 +970,7 @@ export const en = {
   "main.model-providers.max.output.exceeds.the.context.window": "The max output of “{model}” cannot exceed its context window",
   "main.models.discovery.refused": "The endpoint refused the key ({status}); check the API key",
   "main.models.discovery.status": "The endpoint answered {status}; no model list came back",
+  "main.models.discovery.redirected": "The endpoint redirects elsewhere; enter the address it redirects to",
   "main.models.discovery.timeout": "The endpoint did not answer in time",
   "main.models.discovery.unreachable": "Could not reach this address",
   "main.models.discovery.too.large": "The endpoint's answer is too large",
