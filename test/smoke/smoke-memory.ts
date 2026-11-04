@@ -238,6 +238,13 @@ async function backendCrashSteps(win: SmokeWindow, outDir: string, expect: Expec
   expect(Boolean(pid), 'the backend should be running', pid)
   if (!pid) return
   const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
+  // What is on screen is saved first (the save at the end of the turn): one still on its way would be cut off with the
+  // backend, and the window could not come back to the conversation as it was.
+  const saved = await settled<boolean>(win, `(async () => {
+    const messages = (await window.agent.loadHistory())?.messages ?? []
+    return messages.filter((message) => message.role === 'user').length === ${asked} && messages.at(-1)?.role === 'assistant'
+  })()`, Boolean)
+  expect(saved, 'the conversation on screen should be saved before the backend is killed')
   // The page reloads onto the new backend: marked now, the old page is told from the new one.
   await run(win, `window.smokeBeforeRestart = true`)
   process.kill(pid, 'SIGKILL')
