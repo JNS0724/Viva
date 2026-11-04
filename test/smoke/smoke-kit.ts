@@ -80,6 +80,24 @@ export async function capture(win: SmokeWindow, outDir: string, name: string) {
 }
 
 /** Polls page code until it returns something truthy, and returns that. */
+/** How long a change on screen gets to show before its check gives up (an installed build on a CI runner is slow). */
+export const SETTLE_TIMEOUT_MS = 10_000
+
+/**
+ * Reads `code` until `done` holds of what it returns, or SETTLE_TIMEOUT_MS passes, and returns the last reading
+ * either way: the check after it still says what was seen, and the run goes on (until throws). Only for waiting on
+ * something to show; a check that something does not happen still reads once after a wait, or it would pass early.
+ */
+export async function settled<T>(win: SmokeWindow, code: string, done: (value: T) => boolean, timeoutMs = SETTLE_TIMEOUT_MS): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  let value: T = await run(win, code)
+  while (!done(value) && Date.now() < deadline) {
+    await wait(POLL_MS)
+    value = await run(win, code)
+  }
+  return value
+}
+
 export async function until(win: SmokeWindow, code: string, what: string, timeoutMs = TURN_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

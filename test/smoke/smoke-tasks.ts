@@ -1,4 +1,4 @@
-import { capture, run, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, run, settled, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { columnSteps } from './smoke-column.ts'
 import { checkTaskCardRetention } from './smoke-task-card.ts'
 
@@ -134,8 +134,7 @@ async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `document.querySelector('.hub-nav[data-page="tasks"]').click()`)
   await until(win, `(() => { const seen = ${pageState}; return seen.open && !document.getElementById('tasks-page').hidden && seen })()`, 'back on the 后台 page')
   await run(win, escape)
-  await wait(UI_WAIT_MS)
-  const closed = await run(win, `({ open: document.getElementById('tasks-page').dataset.open, tabs: document.querySelectorAll('#drawer .tab-task').length })`)
+  const closed = await settled<{ open: string, tabs: number }>(win, `({ open: document.getElementById('tasks-page').dataset.open, tabs: document.querySelectorAll('#drawer .tab-task').length })`, (seen) => seen.open === 'false')
   expect(closed.open === 'false' && closed.tabs === 0, 'Esc should close the page; the drawer has no task tabs', closed)
 }
 

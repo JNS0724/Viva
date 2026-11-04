@@ -1,4 +1,4 @@
-import { capture, run, wait, UI_WAIT_MS, type Expect, type SmokeWindow } from './smoke-kit.ts'
+import { capture, run, settled, wait, UI_WAIT_MS, type Expect, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * The turn rail and the column's width (view/column-resize.ts) in the memory smoke run, in a wide window: the rail
@@ -85,13 +85,11 @@ export async function columnSteps(win: SmokeWindow, outDir: string, expect: Expe
     await railSteps(win, outDir, expect)
     const before = (await run(win, LAYOUT)).composer.width
     await run(win, drag(DRAG_PX))
-    await wait(UI_WAIT_MS)
-    const wider = await run(win, LAYOUT)
+    const wider = await settled<{ composer: { width: number } }>(win, LAYOUT, (seen) => seen.composer.width >= before + DRAG_PX)
     expect(wider.composer.width >= before + DRAG_PX, 'dragging the column\'s edge should make it wider', { before, after: wider.composer.width })
     await capture(win, outDir, 'column-wide')
     await run(win, resetColumn)
-    await wait(UI_WAIT_MS)
-    const back = await run(win, LAYOUT)
+    const back = await settled<{ composer: { width: number } }>(win, LAYOUT, (seen) => seen.composer.width === before)
     expect(back.composer.width === before, 'a double-click should put the column back', { before, after: back.composer.width })
     await widestSteps(win, outDir, expect)
 

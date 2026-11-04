@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, run, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, run, settled, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * Smoke steps in settings' 扩展 section, after the conversation set up the demo server: editing it in place
@@ -72,8 +72,7 @@ async function importSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
     await until(win, `document.querySelector('.import-btn') && !document.querySelector('.import-btn').disabled || null`, 'the settings page again')
     await run(win, `document.querySelector('.ext-group').scrollIntoView({ block: 'start' })`)
     await run(win, `document.querySelector('.import-btn').click()`)
-    await wait(UI_WAIT_MS)
-    const menu = await run(win, `[...document.querySelectorAll('.import-menu .workdir-item')].map((el) => el.textContent)`)
+    const menu = await settled<string[]>(win, `[...document.querySelectorAll('.import-menu .workdir-item')].map((el) => el.textContent)`, (items) => items.length > 0)
     expect(menu[0]?.startsWith('默认位置') && menu[0].endsWith('dsh-import') && menu.at(-1) === '选择其他 .dsh 文件夹…', 'the menu should offer the default folder and another', menu)
     await capture(win, outDir, 'mcp-import-menu')
     await run(win, `document.querySelector('.import-menu .workdir-item').click()`)

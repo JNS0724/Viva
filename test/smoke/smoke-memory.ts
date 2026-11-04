@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, finishTurn, newTopic, run, settled, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { mcpSteps } from './smoke-mcp.ts'
 import { taskSteps } from './smoke-tasks.ts'
 
@@ -92,14 +92,13 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   })()`)
   await capture(win, outDir, 'memory-intro')
   await run(win, `document.querySelector('.intro-form').requestSubmit()`)
-  await wait(UI_WAIT_MS)
-  const afterIntro = await run(win, `({ panel: Boolean(document.querySelector('.profile')), intro: Boolean(document.getElementById('start-intro')) })`)
-  expect(!afterIntro.panel && !afterIntro.intro, 'saving the intro should close it and retire the home tile', afterIntro)
+  const introDone = (seen: { panel: boolean, intro: boolean }) => !seen.panel && !seen.intro
+  const afterIntro = await settled(win, `({ panel: Boolean(document.querySelector('.profile')), intro: Boolean(document.getElementById('start-intro')) })`, introDone)
+  expect(introDone(afterIntro), 'saving the intro should close it and retire the home tile', afterIntro)
 
   await submit(win, `记住：${FACT}`)
   const asked = await finishTurn(win)
-  await wait(UI_WAIT_MS)
-  const toast = await run(win, `document.querySelector('.toast')?.textContent ?? ''`)
+  const toast = await settled<string>(win, `document.querySelector('.toast')?.textContent ?? ''`, (text) => text.includes(`已记住：${FACT}`))
   expect(asked === 0, 'memory tools should run without a permission card', asked)
   expect(toast.includes(`已记住：${FACT}`), 'the toast should say what was remembered', toast)
   await capture(win, outDir, 'memory-remembered')
@@ -138,8 +137,7 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
 
   // The icon opens the page last shown (关于你); the sidebar goes on to 设置.
   await run(win, `document.getElementById('open-profile').click()`)
-  await wait(UI_WAIT_MS)
-  const shown = await run(win, `document.querySelector('.hub-nav[aria-current="page"]')?.dataset.page ?? ''`)
+  const shown = await settled<string>(win, `document.querySelector('.hub-nav[aria-current="page"]')?.dataset.page ?? ''`, (page) => page === 'profile')
   expect(shown === 'profile', 'the icon should open the page last shown', shown)
   await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
   await wait(UI_WAIT_MS * 2)
@@ -197,8 +195,7 @@ async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
 
   await submit(win, '你好')
   await finishTurn(win)
-  await wait(UI_WAIT_MS)
-  const last = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  const last = await settled<string>(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`, (text) => text.length > 0)
   expect(last.length > 0 && !(await run(win, `Boolean(document.querySelector('.msg-error'))`)), 'the added model should answer', last.slice(0, 40))
 }
 
@@ -225,8 +222,8 @@ async function crashSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
 
   await submit(win, '还在吗')
   await finishTurn(win)
-  await wait(UI_WAIT_MS)
-  const after = await run(win, `({ answers: document.querySelectorAll('.msg-agent').length, last: [...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? '' })`)
+  const after = await settled<{ answers: number, last: string }>(win, `({ answers: document.querySelectorAll('.msg-agent').length, last: [...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? '' })`,
+    (seen) => seen.answers === answered + 1 && seen.last.length > 0)
   expect(after.answers === answered + 1 && after.last.length > 0, 'the restarted agent should answer the new question', { answered, ...after })
   expect(await run(win, `document.querySelectorAll('.msg-user').length`) === asked + 1, 'the conversation should carry on after the restart')
   await capture(win, outDir, 'dsh-recovered')
@@ -267,8 +264,7 @@ async function backendCrashSteps(win: SmokeWindow, outDir: string, expect: Expec
 
   await submit(win, '后端重启后还在吗')
   await finishTurn(win)
-  await wait(UI_WAIT_MS)
-  const last = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  const last = await settled<string>(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`, (text) => text.length > 0)
   expect(last.length > 0, 'the agent should answer after the backend restarted', last.slice(0, 40))
   expect(await run(win, `document.querySelectorAll('.msg-user').length`) === asked + 1, 'the conversation should carry on after the backend restarted')
   await capture(win, outDir, 'backend-recovered')
@@ -298,8 +294,7 @@ async function workDirSteps(win: SmokeWindow, outDir: string, expect: Expect, ho
 
   await submit(win, '换了个项目，继续')
   await finishTurn(win)
-  await wait(UI_WAIT_MS)
-  const last = await run(win, `[...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+  const last = await settled<string>(win, `[...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''`, (text) => text.length > 0)
   expect(last.length > 0 && !(await run(win, `Boolean(document.querySelector('.msg-error'))`)), 'the agent should answer in the new folder', last.slice(0, 40))
   await capture(win, outDir, 'workdir-switched')
 
