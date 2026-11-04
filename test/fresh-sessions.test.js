@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createFreshSessions } from '../src/main/fresh-sessions.ts'
+import { createFreshSessions } from '../src/backend/fresh-sessions.ts'
 
 test('prepared sessions are bounded and consumed once; a changed MCP fingerprint or directory discards the spare', async () => {
   let count = 0; const closed = []

@@ -3,7 +3,7 @@
  * instead of waiting for it to end. dsh's agents take such steering (`agent.steer`), but its ACP front end
  * runs one prompt at a time and refuses a second; so the app hands the words to this plugin over the IPC
  * channel it opened when it started dsh (lib/channel.js), and the plugin gives them to the session's agent.
- * Loaded by the app's dsh profile (src/main/dsh-profile.js).
+ * Loaded by the app's dsh profile (src/backend/dsh-profile.ts).
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'

@@ -1,5 +1,5 @@
 /**
- * The plugin's side of the plugins contract (src/main/plugins-channel.ts): the app asks (`plugins_call`), this
+ * The plugin's side of the plugins contract (src/backend/plugins-channel.ts): the app asks (`plugins_call`), this
  * asks dsh's plugin manager and answers (`plugins_result`). Arguments are checked here as well as in the app:
  * a malformed call is refused, never passed on.
  */

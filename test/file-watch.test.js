@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createFileWatch, SETTLE_MS } from '../src/main/file-watch.ts'
-import { openFollowupStore } from '../src/main/followup-store.ts'
-import { registerFollowupsIpc } from '../src/main/followups-ipc.ts'
-import { materialsFor } from '../src/main/prepare-materials.ts'
-import { checkSchedule, DEFAULT_SCHEDULE } from '../src/main/prepare-schedule.ts'
+import { createFileWatch, SETTLE_MS } from '../src/backend/file-watch.ts'
+import { openFollowupStore } from '../src/backend/followup-store.ts'
+import { registerFollowupsIpc } from '../src/backend/followups-ipc.ts'
+import { materialsFor } from '../src/backend/prepare-materials.ts'
+import { checkSchedule, DEFAULT_SCHEDULE } from '../src/backend/prepare-schedule.ts'
 
 const MINUTE = 60_000
 

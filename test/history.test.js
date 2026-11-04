@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { autoTitle, normalizeMessages, normalizeTitle } from '../src/main/history-schema.ts'
+import { autoTitle, normalizeMessages, normalizeTitle } from '../src/backend/history-schema.ts'
 
 const receipt = { ms: 4200, tools: 2, thoughts: 1, stopReason: 'end_turn' }
 const MESSAGES = [

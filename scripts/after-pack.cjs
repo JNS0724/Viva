@@ -23,7 +23,7 @@ const UNUSED_DIRS = new Set(['test', 'tests', '__tests__', '.github', 'example',
 const NATIVE_EXT = /\.(node|dylib|so|dll|exe)$|\.so\.\d/i
 /**
  * Packages a child process runs from their own files: pnpm, which dsh's plugin manager starts for the user's plugins
- * (src/main/pnpm-launcher.ts). Its native parts sit in its own node_modules, which hasNative does not look into.
+ * (src/backend/pnpm-launcher.ts). Its native parts sit in its own node_modules, which hasNative does not look into.
  */
 const ALWAYS_UNPACKED = ['node_modules/pnpm']
 /** Mach-O (thin and fat), ELF, PE: a program or library, whatever its name. */

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { createTaskStore } from '../src/main/task-store.ts'
+import { createTaskStore } from '../src/backend/task-store.ts'
 
 /** Background tasks still going are kept in the app database, so a later launch can offer to go on with them. */
 

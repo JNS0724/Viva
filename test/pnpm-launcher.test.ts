@@ -4,8 +4,8 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { dshRuntime } from '../src/main/dsh-runtime.ts'
-import { launcherText, pnpmEntry, pnpmLauncher } from '../src/main/pnpm-launcher.ts'
+import { dshRuntime } from '../src/backend/dsh-runtime.ts'
+import { launcherText, pnpmEntry, pnpmLauncher } from '../src/backend/pnpm-launcher.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 

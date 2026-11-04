@@ -1,10 +1,10 @@
 // What the preload scripts put on the page (src/preload/preload.cjs, desk-preload.cjs). A call that only forwards
-// to a channel takes that channel's arguments from the IPC contract (src/main/ipc-contract.ts), the same table the
+// to a channel takes that channel's arguments from the IPC contract (src/shared/ipc-contract.ts), the same table the
 // main process checks them against; test/window-api.test.js keeps these names and the preload scripts in step.
 // What comes back is not typed yet.
 
-type Args<C extends import('../main/ipc-contract.ts').Channel> = import('../main/ipc-contract.ts').ChannelArgs<C>
-type Invoke<C extends import('../main/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<any>
+type Args<C extends import('../shared/ipc-contract.ts').Channel> = import('../shared/ipc-contract.ts').ChannelArgs<C>
+type Invoke<C extends import('../shared/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<any>
 type Unlisten = () => void
 
 /** A part of the state whose shape is not written out yet: what an empty start (null, []) was before strict. */

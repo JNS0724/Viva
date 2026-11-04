@@ -44,17 +44,17 @@ app（Electron 主进程）                                   dsh 进程：--pro
 | `viva-policy`（`plugins/policy`） | `policy@1`：无数据，只有行为 | — | — |
 | `viva-questions`（`plugins/questions`） | `questions@1`：IPC 消息（见 `plugins/questions/lib/channel.js`） | 模型的问题 | 显示提问卡片，回传回答；同时在 profile 里打开 dsh 的 `tool-ask-user` |
 | `viva-followups`（`plugins/followups`） | `followups@1`：IPC 消息（见 `plugins/followups/lib/channel.ts`） | 模型提出的跟进建议；后台准备的不带工具的模型调用的结果 | 建议显示成卡片，用户点了才建跟进（`app.db`）；按时段请它准备，只拿回草稿 |
-| `viva-plugins`（`plugins/plugins`） | `plugins@1`：IPC 消息（见 `plugins/plugins/lib/channel.ts`） | dsh 插件管理器的回答 | 设置「插件」页的列出、查看、安装、启停、删除（`src/main/plugins-ipc.ts`），都经 dsh 的插件管理器 |
-| `viva-config`（`plugins/config`） | `config@1`：IPC 消息（见 `plugins/config/lib/channel.js`） | 模型要接入或移除的 MCP 服务器、要新建或安装的 skill（审批卡片通过之后） | 校验后执行（`src/main/config-channel.js`），需要密钥时由窗口请用户填写，加密保存，不回传给 dsh |
+| `viva-plugins`（`plugins/plugins`） | `plugins@1`：IPC 消息（见 `plugins/plugins/lib/channel.ts`） | dsh 插件管理器的回答 | 设置「插件」页的列出、查看、安装、启停、删除（`src/backend/plugins-ipc.ts`），都经 dsh 的插件管理器 |
+| `viva-config`（`plugins/config`） | `config@1`：IPC 消息（见 `plugins/config/lib/channel.js`） | 模型要接入或移除的 MCP 服务器、要新建或安装的 skill（审批卡片通过之后） | 校验后执行（`src/backend/config-channel.ts`），需要密钥时由窗口请用户填写，加密保存，不回传给 dsh |
 | `viva-stream`（`plugins/stream`） | `stream@1`：IPC 消息 | 真实文本/思考增量，以及最终提交的可见内容 | 每次调用先选择输出来源；按尝试替换、撤回和最终校准，ACP 继续承载工具、用量和授权 |
 
-人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/main/app-plugins.js` 的 `PERSONA`。
+人设不是插件，而是 profile patch 里 `system-prompt` 的 `personaPrefix` 和 `personaSuffix`，定义在 `src/backend/app-plugins.ts` 的 `PERSONA`。
 
-app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-CN.md)）：外壳（`src/main/main.ts`，Electron 主进程）管窗口、托盘、桌面小岛和其他 Electron 接口；后端（`src/backend/server.ts`，Electron 以 Node 身份运行的子进程，在 `src/backend/compose.ts` 里组装）管其余的一切，运行时不导入 `electron`，只通过 `HostCapabilities`（`src/backend/host.ts`）用到桌面，这些调用经回环 HTTP 和 SSE、带启动令牌发给外壳。页面仍然通过 IPC 和外壳说话；外壳按 `ipc-contract.ts` 校验每个调用，再转给后端。进入后端的输入都是种类固定的信号（`src/backend/event-core.ts`），每种有自己的路由。状态的改动走 `apply`：改动和 `app.db` 里 `app_events` 的一行带序号的记录在同一个事务里写入，推给窗口的每条消息都带这个序号。`app.db` 里还有跟进、历史和后台任务，它们的写操作都走 `apply`（`src/backend/journal.ts`）；事件只记 id、状态和数字，文字只记长度。记忆和过程记录留在各自插件的文件里，由 dsh 的进程写：用户在界面上改记忆，写完后紧接着记事件；模型存下的记忆，在一轮结束后 app 读到时记事件。用户在页面上的操作是 `user.command` 信号（`src/backend/commands.ts`）：不是查询的通道（查询见 `ipc-contract.ts` 的 `QUERY_CHANNELS`），先按通道名和参数的形状记下来（不记文字，参数里可能有 key），再交给它的处理函数。每个回答都带上后端回答时最后一个发给桌面的调用的序号；外壳先把序号之前的调用执行完，再把回答交给页面，所以页面不会先拿到回答、后收到在它之前的推送。
+app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-CN.md)）：外壳（`src/shell/main.ts`，Electron 主进程）管窗口、托盘、桌面小岛和其他 Electron 接口；后端（`src/backend/server.ts`，Electron 以 Node 身份运行的子进程，在 `src/backend/compose.ts` 里组装）管其余的一切，运行时不导入 `electron`，只通过 `HostCapabilities`（`src/backend/host.ts`）用到桌面，这些调用经回环 HTTP 和 SSE、带启动令牌发给外壳。页面仍然通过 IPC 和外壳说话；外壳按 `ipc-contract.ts` 校验每个调用，再转给后端。源码目录按拆分来分：`src/shell` 归外壳，`src/backend` 归后端（后端从不引用 `src/shell`，由 `test/backend-boundary.test.ts` 检查），`src/shared` 放两边和页面都用的东西，比如 IPC 契约。进入后端的输入都是种类固定的信号（`src/backend/event-core.ts`），每种有自己的路由。状态的改动走 `apply`：改动和 `app.db` 里 `app_events` 的一行带序号的记录在同一个事务里写入，推给窗口的每条消息都带这个序号。`app.db` 里还有跟进、历史和后台任务，它们的写操作都走 `apply`（`src/backend/journal.ts`）；事件只记 id、状态和数字，文字只记长度。记忆和过程记录留在各自插件的文件里，由 dsh 的进程写：用户在界面上改记忆，写完后紧接着记事件；模型存下的记忆，在一轮结束后 app 读到时记事件。用户在页面上的操作是 `user.command` 信号（`src/backend/commands.ts`）：不是查询的通道（查询见 `ipc-contract.ts` 的 `QUERY_CHANNELS`），先按通道名和参数的形状记下来（不记文字，参数里可能有 key），再交给它的处理函数。每个回答都带上后端回答时最后一个发给桌面的调用的序号；外壳先把序号之前的调用执行完，再把回答交给页面，所以页面不会先拿到回答、后收到在它之前的推送。
 
 ## 3. 插件清单与约定版本
 
-- **清单**：`src/main/app-plugins.js` 的 `APP_PLUGINS` 列出每个插件的名字、目录、要提供的约定，以及配置（例如数据文件放在 userData 的哪个位置）。
+- **清单**：`src/backend/app-plugins.ts` 的 `APP_PLUGINS` 列出每个插件的名字、目录、要提供的约定，以及配置（例如数据文件放在 userData 的哪个位置）。
 - **声明**：插件在自己的 `package.json` 里写明提供的约定，例如 `"viva": { "contract": { "memory": 1 } }`。
 - **启动前检查**（`resolvePlugins`），任何一项不通过，这个插件就**不写进 profile**，原因显示在设置页：
   - 插件存在，`package.json` 可读，名字和清单一致；
@@ -65,7 +65,7 @@ app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-
 
 ## 4. profile 的写法
 
-`src/main/dsh-profile.ts` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`（dsh 内嵌在应用里，home 是应用自己的，见 README「内嵌的 dsh」），只写有变化的文件。profile 分三层，后面的优先：
+`src/backend/dsh-profile.ts` 在每次启动 dsh 前写好 `<应用数据目录>/dsh/profiles/viva`（dsh 内嵌在应用里，home 是应用自己的，见 README「内嵌的 dsh」），只写有变化的文件。profile 分三层，后面的优先：
 
 | 层 | 归谁 | 内容 |
 |---|---|---|
@@ -76,9 +76,9 @@ app 分成两个进程（见 [设计：前后端拆分](backend-split-design.zh-
 app 的层写的是：
 
 - `system-prompt`（人设前后缀，按 id 打补丁会整体替换配置，所以两部分都要写）和每个插件的插入项与配置；
-- 模型（`src/main/model-providers.ts`）：用户添加的提供方作为 dsh 自带 `llm-pi-ai` 插件的 `providers`；没有 DeepSeek key 时关掉 `llm-deepseek` 和 `llm-deepseek-account`；新会话的默认模型覆盖 `acp` 一项的 `provider` / `model`。key 不进 profile，只以环境变量交给 dsh 进程；
+- 模型（`src/backend/model-providers.ts`）：用户添加的提供方作为 dsh 自带 `llm-pi-ai` 插件的 `providers`；没有 DeepSeek key 时关掉 `llm-deepseek` 和 `llm-deepseek-account`；新会话的默认模型覆盖 `acp` 一项的 `provider` / `model`。key 不进 profile，只以环境变量交给 dsh 进程；
 - 每个插件的 `name` 是它入口文件的 file URL：插件留在应用里（安装后在 app.asar 内），它的 import 在应用的包里解析；profile 的 `package.json` 里不列 app 的插件，所以用户装插件时 pnpm 不会动它们；
-- 打开 `hmr`（`dsh-acp-app` 把它关了，按 id 打补丁会保留下层的 `disabled`，所以写 `disabled: false`），用户的插件运行中就能启停；打开 `tool-plugin-manager`，模型可以在对话里提出装插件，每次由用户在授权卡片上批准；`plugin-manager` 的 `pnpmCommand` 指向 app 自带的 pnpm（`src/main/pnpm-launcher.ts` 写的启动脚本，用 app 自己的运行时）；
+- 打开 `hmr`（`dsh-acp-app` 把它关了，按 id 打补丁会保留下层的 `disabled`，所以写 `disabled: false`），用户的插件运行中就能启停；打开 `tool-plugin-manager`，模型可以在对话里提出装插件，每次由用户在授权卡片上批准；`plugin-manager` 的 `pnpmCommand` 指向 app 自带的 pnpm（`src/backend/pnpm-launcher.ts` 写的启动脚本，用 app 自己的运行时）；
 - dsh-base 里 app 依赖的安全相关行（`sandbox-policy`、`approval`、`permission`）原样重述，组合包和用户层都改不掉；`test/dsh-profile.test.ts` 检查它们和 dsh-base 逐字一致。
 
 用户自己的 `~/.dsh` 平时不会被读写，只有用户主动导入时才读。profile 写不了时，退回 dsh 自带的 `acp` profile，也不传 app 的层，助手照常可用，只是没有 app 的插件和人设。

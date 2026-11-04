@@ -6,8 +6,8 @@ import path from 'node:path'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
 import { createEventCore } from '../src/backend/event-core.ts'
 import { journaled, recorded } from '../src/backend/journal.ts'
-import { openHistoryDb } from '../src/main/history-db.ts'
-import { createTaskStore } from '../src/main/task-store.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
+import { createTaskStore } from '../src/backend/task-store.ts'
 
 /** The app database with its event core, closed before its folder goes (Windows keeps an open file). */
 function coreIn(t: TestContext) {

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
-import { APP_DB_PRAGMAS, transaction as inTransaction } from '../backend/app-db.ts'
+import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
 
 const PAGE_SIZE = 50

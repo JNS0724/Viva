@@ -5,7 +5,7 @@ import { createHistoryChannel } from './lib/channel.ts'
 export const name = 'viva-history'
 export const inject = ['tools']
 export const Config = z.object({})
-/** search_conversations: what was said in Viva's timeline before, asked of the app (src/main/history-channel.ts). */
+/** search_conversations: what was said in Viva's timeline before, asked of the app (src/backend/history-channel.ts). */
 export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') return
   const channel = createHistoryChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) })

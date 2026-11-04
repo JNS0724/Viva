@@ -2,7 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import { nativeFileApplications, openNativeFileApplication } from '@deepseek-ai/dsh-native-command'
 import type { Shell } from 'electron'
-import type { IpcRegistry } from './ipc-contract.ts'
+import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { canOpen, listFolder, previewFile, resolveInside } from './workspace-files.ts'
 
 /** An app that opens a file, as dsh's native associations list it. */

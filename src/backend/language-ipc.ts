@@ -1,4 +1,4 @@
-import type { IpcRegistry } from './ipc-contract.ts'
+import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { resolveLocale, setLocale, type Language, type LanguageState } from '../shared/i18n/locale.ts'
 
 export function registerLanguageIpc(ipcMain: IpcRegistry, deps: {

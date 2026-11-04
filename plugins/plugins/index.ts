@@ -2,7 +2,7 @@
  * viva-plugins: the app's plugins page, served inside dsh. The app asks for a list, an inspection, an install, a
  * removal or a switch; this plugin hands each to dsh's own plugin manager (ctx.pluginManager), which keeps the
  * profile's package.json, its cordis.patch.yml and the version checks. Nothing here decides what to install:
- * the app shows what a spec is and the user confirms first. Loaded by the app's dsh profile (src/main/dsh-profile.ts).
+ * the app shows what a spec is and the user confirms first. Loaded by the app's dsh profile (src/backend/dsh-profile.ts).
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'

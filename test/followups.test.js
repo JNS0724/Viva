@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createFollowupNotifier, createGapWatch } from '../src/main/followup-notifier.ts'
-import { dayOf, openFollowupStore } from '../src/main/followup-store.ts'
-import { weekStats } from '../src/main/followup-stats.ts'
-import { clock as hhmm, DAILY_CAP, LATE_MS, nextReminderAt, planNotices } from '../src/main/notice-plan.ts'
+import { createFollowupNotifier, createGapWatch } from '../src/backend/followup-notifier.ts'
+import { dayOf, openFollowupStore } from '../src/backend/followup-store.ts'
+import { weekStats } from '../src/backend/followup-stats.ts'
+import { clock as hhmm, DAILY_CAP, LATE_MS, nextReminderAt, planNotices } from '../src/backend/notice-plan.ts'
 
 const MINUTE = 60_000
 const NOON = new Date(2026, 9, 26, 12, 0).getTime()

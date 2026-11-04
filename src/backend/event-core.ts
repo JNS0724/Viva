@@ -1,4 +1,4 @@
-import type { Channel } from '../main/ipc-contract.ts'
+import type { Channel } from '../shared/ipc-contract.ts'
 import { type AppDb, transaction } from './app-db.ts'
 
 /**

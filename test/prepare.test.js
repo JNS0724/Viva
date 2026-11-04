@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openFollowupStore } from '../src/main/followup-store.ts'
-import { registerFollowupsIpc } from '../src/main/followups-ipc.ts'
-import { changedSince, materialsFor, PREPARE_SYSTEM } from '../src/main/prepare-materials.ts'
-import { checkSchedule, checkTimes, DEFAULT_SCHEDULE, isActive, nextActive, nextWindow, scheduleOf, slotFor, windowsOn } from '../src/main/prepare-schedule.ts'
-import { BLOCKED_RETRY_MS, createPrepareScheduler, FAILED_RETRY_MS, WOKEN_REST_MS } from '../src/main/prepare-scheduler.ts'
+import { openFollowupStore } from '../src/backend/followup-store.ts'
+import { registerFollowupsIpc } from '../src/backend/followups-ipc.ts'
+import { changedSince, materialsFor, PREPARE_SYSTEM } from '../src/backend/prepare-materials.ts'
+import { checkSchedule, checkTimes, DEFAULT_SCHEDULE, isActive, nextActive, nextWindow, scheduleOf, slotFor, windowsOn } from '../src/backend/prepare-schedule.ts'
+import { BLOCKED_RETRY_MS, createPrepareScheduler, FAILED_RETRY_MS, WOKEN_REST_MS } from '../src/backend/prepare-scheduler.ts'
 
 const MINUTE = 60_000
 /** Monday 26 October 2026, local time. */

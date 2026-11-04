@@ -6,7 +6,7 @@ import path from 'node:path'
 import { openAppDb } from '../src/backend/app-db.ts'
 import { commandIpc, isCommand } from '../src/backend/commands.ts'
 import { createEventCore, type Routes } from '../src/backend/event-core.ts'
-import { IPC_ARGS, QUERY_CHANNELS, type Channel, type IpcRegistry } from '../src/main/ipc-contract.ts'
+import { IPC_ARGS, QUERY_CHANNELS, type Channel, type IpcRegistry } from '../src/shared/ipc-contract.ts'
 
 type Listener = (event: unknown, ...args: unknown[]) => unknown
 

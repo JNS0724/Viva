@@ -1,7 +1,7 @@
 /**
  * The followups contract (version 1) between this plugin, inside dsh, and the app that started dsh, over Node's
  * IPC channel (`process.send` / `process.on('message')`); the app keeps the same shapes in
- * src/main/followup-channel.ts.
+ * src/backend/followup-channel.ts.
  *
  *   plugin → app  { type: 'followup_propose', id, sessionId, proposal }   the model suggests a follow-up; the
  *                                                                          user decides on a card in the window

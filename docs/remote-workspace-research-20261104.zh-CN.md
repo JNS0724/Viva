@@ -49,7 +49,7 @@ dsh 0.2.0-rc.2 按「执行环境」（execution world）抽象了三层，各�
 - 沙箱：验证用 `danger-full-access`。`dsh-bash-sandbox` 用 host 的沙箱包装命令，远端应由 workspace 自己隔离（如容器）。
 - 终端和持久 bash（`spawnTerminal`）、文件监听（`watch`）、`read_image`（`readBytes`）。
 - 真正的两台机器：本次用路径映射模拟，bash 的 `pwd` 显示的仍是真实目录。
-- Viva 自己直接用 `node:fs` 的模块：`src/main/workspace-files.ts`、`files-ipc.ts`、`file-watch.ts`、`island-files.ts`、`image-store.ts`、`work-dir.ts`。文件面板可考虑改用 dsh 的 `dsh-api-workspace-files`（建在 `ctx.fs` 上）。
+- Viva 自己直接用 `node:fs` 的模块：`src/backend/workspace-files.ts`、`files-ipc.ts`、`file-watch.ts`、`island-files.ts`、`image-store.ts`、`work-dir.ts`。文件面板可考虑改用 dsh 的 `dsh-api-workspace-files`（建在 `ctx.fs` 上）。
 
 ## 6. 对当前重构的约束
 

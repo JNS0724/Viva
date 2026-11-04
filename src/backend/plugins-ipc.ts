@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
+import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
 
 /**

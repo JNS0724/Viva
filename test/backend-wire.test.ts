@@ -7,7 +7,7 @@ import type { StoredEvent } from '../src/backend/event-core.ts'
 import { createRemoteHost } from '../src/backend/remote-host.ts'
 import { type ChannelListener, createRpcServer } from '../src/backend/rpc-server.ts'
 import { decodeValue, encodeValue, type HostCall, SEQ_HEADER, sseReader, type StartMessage } from '../src/backend/wire.ts'
-import { connect } from '../src/main/backend-client.ts'
+import { connect } from '../src/shell/backend-client.ts'
 
 const TOKEN = 'a'.repeat(64)
 const START: Pick<StartMessage, 'paths' | 'packaged' | 'automation' | 'locale' | 'mirror'> = {

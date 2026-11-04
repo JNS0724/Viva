@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resumeReason } from '../src/main/resume-failure.ts'
-import { carriedRecords } from '../src/main/history-carry.ts'
+import { resumeReason } from '../src/backend/resume-failure.ts'
+import { carriedRecords } from '../src/backend/history-carry.ts'
 
 /** Why a topic could not be taken up, from what dsh said; and the records carried into a new conversation. */
 

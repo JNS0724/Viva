@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { leaveFullScreen } from '../src/main/full-screen.ts'
+import { leaveFullScreen } from '../src/shell/full-screen.ts'
 
 function fakeWindow() {
   const win = new EventEmitter()

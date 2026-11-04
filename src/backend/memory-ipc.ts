@@ -2,7 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { MAX_MEMORY_CHARS, type openMemoryDb } from '../../plugins/memory/lib/store.ts'
-import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
+import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'

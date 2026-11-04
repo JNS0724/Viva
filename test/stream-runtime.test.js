@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness } from './fixtures/dsh-harness.js'
-import { piAiProviders, providerEnv } from '../src/main/model-providers.ts'
+import { piAiProviders, providerEnv } from '../src/backend/model-providers.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 
 test('real dsh forwards first live text before a delayed SSE response finishes; cancellation retains the committed prefix', { timeout: DSH_TIMEOUT_MS }, async t => {

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, VIVA_LAYER_MARK, vivaLayerFile } from '../src/main/dsh-profile.ts'
+import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, VIVA_LAYER_MARK, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 const DSH_BASE_PATCH = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-base', 'cordis.patch.yml')

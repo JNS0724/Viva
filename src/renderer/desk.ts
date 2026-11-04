@@ -6,7 +6,7 @@ import { createIsland } from './view/island-dom.ts'
 import { createIslandInput } from './view/island-input.ts'
 
 /**
- * The page of the desktop island's window (src/main/desk-island.js): the same island as in the title bar,
+ * The page of the desktop island's window (src/shell/desk-island.ts): the same island as in the title bar,
  * fed by the main process with what the window's island shows. Clicks go back as actions; the main process
  * checks them and passes them on to the window. Here too: the input (the shortcut, a click on the resting
  * cat, or files dropped on the island), moving the island, which the main process does while the user holds

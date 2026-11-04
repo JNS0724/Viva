@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { createTaskRegistry, parseTaskQuery } from '../src/main/task-registry.ts'
-import { createTasksDesk } from '../src/main/tasks-channel.ts'
+import { createTaskRegistry, parseTaskQuery } from '../src/backend/task-registry.ts'
+import { createTasksDesk } from '../src/backend/tasks-channel.ts'
 import { createTasksChannel } from '../plugins/tasks/lib/channel.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 

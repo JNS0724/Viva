@@ -7,7 +7,7 @@ import type { Conversation, openHistoryDb } from './history-db.ts'
 import { assertId } from './history-schema.ts'
 import { CARRY_TURNS, carriedRecords } from './history-carry.ts'
 import { ResumeError } from './resume-failure.ts'
-import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
+import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
 
 /** How long "已删除 · 撤销" stays up; the conversation is purged for good after that. */

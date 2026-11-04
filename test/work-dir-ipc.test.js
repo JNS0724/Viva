@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { registerWorkDirIpc } from '../src/main/work-dir-ipc.ts'
+import { registerWorkDirIpc } from '../src/backend/work-dir-ipc.ts'
 
 /** The window asks to see, pick, switch and forget working directories; the main process decides. */
 

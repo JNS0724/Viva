@@ -4,12 +4,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
-import { openFollowups } from '../src/main/followups-main.ts'
-import { DEFAULT_SCHEDULE } from '../src/main/prepare-schedule.ts'
-import { PREPARE_MAX_TOKENS } from '../src/main/prepare-materials.ts'
+import { openFollowups } from '../src/backend/followups-main.ts'
+import { DEFAULT_SCHEDULE } from '../src/backend/prepare-schedule.ts'
+import { PREPARE_MAX_TOKENS } from '../src/backend/prepare-materials.ts'
 import { preparationText } from '../plugins/followups/lib/result.ts'
 import { MAX_TOKENS, prepareRequest } from '../plugins/followups/lib/channel.ts'
-import type { PrepareCall } from '../src/main/followup-channel.ts'
+import type { PrepareCall } from '../src/backend/followup-channel.ts'
 
 test('a token-limited follow-up stays scheduled without a draft; a later complete response becomes ready', async t => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'viva-prepare-complete-'))

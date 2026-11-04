@@ -1,7 +1,7 @@
 /**
  * The questions contract (version 1) between this plugin, inside dsh, and the app that started dsh. The
  * messages go over Node's IPC channel (`process.send` / `process.on('message')`); the app keeps the same
- * shapes in src/main/question-channel.js.
+ * shapes in src/backend/question-channel.ts.
  *
  *   plugin → app  { type: 'question', id, sessionId, questions: [{ id, question, header?, options?: [{ label, description? }], multiSelect? }] }
  *   plugin → app  { type: 'question_closed', id }          the turn was stopped before the user answered

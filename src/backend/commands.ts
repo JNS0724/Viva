@@ -1,4 +1,4 @@
-import { type Channel, type IpcRegistry, QUERY_CHANNELS } from '../main/ipc-contract.ts'
+import { type Channel, type IpcRegistry, QUERY_CHANNELS } from '../shared/ipc-contract.ts'
 import type { SignalOf } from './event-core.ts'
 
 /**

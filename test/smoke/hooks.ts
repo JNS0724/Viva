@@ -1,5 +1,5 @@
 import type { ElectronApplication, Page } from '@playwright/test'
-import type {} from '../../src/main/automation-driver.ts'
+import type {} from '../../src/shell/automation-driver.ts'
 import { islandContents } from './electron-window.ts'
 import type { SmokeHooks, SmokeModel } from './smoke-kit.ts'
 

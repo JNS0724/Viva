@@ -2,11 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { resolveConfig } from '../src/main/config.ts'
-import { patchFor } from '../src/main/dsh-profile.ts'
+import { resolveConfig } from '../src/backend/config.ts'
+import { patchFor } from '../src/backend/dsh-profile.ts'
 import {
   createModelStore, defaultModel, keyEnvName, modelValue, parseModelValue, parseProviderInput, piAiProviders, providerEnv, providerView,
-} from '../src/main/model-providers.ts'
+} from '../src/backend/model-providers.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { scratch } from './fixtures/scratch.js'
 

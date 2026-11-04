@@ -33,7 +33,7 @@ export const MIRROR = z.object({ inFront: z.boolean(), idleSeconds: z.number().n
 export const START = z.object({
   type: z.literal('start'),
   token: z.string().min(32),
-  /** base64 of the data key (src/main/data-key.ts), or null when the keychain is not available. */
+  /** base64 of the data key (src/shell/data-key.ts), or null when the keychain is not available. */
   dataKey: z.string().nullable(),
   paths: z.object({ userData: z.string(), documents: z.string(), home: z.string() }),
   packaged: z.boolean(),

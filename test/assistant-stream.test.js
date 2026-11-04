@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { createAssistantStream } from '../src/main/assistant-stream.ts'
+import { createAssistantStream } from '../src/backend/assistant-stream.ts'
 import { apply } from '../plugins/stream/index.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 

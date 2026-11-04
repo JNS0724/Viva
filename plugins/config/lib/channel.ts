@@ -1,7 +1,7 @@
 /**
  * The config contract (version 1) between this plugin, inside dsh, and the app that started dsh. The messages
  * go over Node's IPC channel (`process.send` / `process.on('message')`); the app keeps the same shapes in
- * src/main/config-channel.js.
+ * src/backend/config-channel.ts.
  *
  *   plugin → app  { type: 'config', id, sessionId, op, args }   one of the operations in lib/tools.js
  *   plugin → app  { type: 'config_closed', id }                the turn was stopped while the app worked on it

@@ -1,4 +1,4 @@
-import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
+import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import { forgetDir, sameDir, withRecent, workDirProblem } from './work-dir.ts'
 
 /**

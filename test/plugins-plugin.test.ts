@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DSH_TIMEOUT_MS, ROOT, startHarness } from './fixtures/dsh-harness.js'
-import { pluginsView } from '../src/main/plugins-ipc.ts'
+import { pluginsView } from '../src/backend/plugins-ipc.ts'
 
 /**
  * The plugins page against the real dsh: a plugin shaped like a community one (a bundle, one host tool, a Web

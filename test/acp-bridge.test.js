@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
-import { createAcpBridge, MCP_RETRY_MS } from '../src/main/acp-bridge.ts'
+import { createAcpBridge, MCP_RETRY_MS } from '../src/backend/acp-bridge.ts'
 import pkg from '../package.json' with { type: 'json' }
 
 const APP_VERSION = pkg.version

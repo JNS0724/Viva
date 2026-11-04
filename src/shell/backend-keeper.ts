@@ -1,4 +1,4 @@
-import { restartDelay } from './dsh-runtime.ts'
+import { restartDelay } from '../backend/dsh-runtime.ts'
 
 /**
  * Keeps the backend process running for the shell (docs/backend-split-design.md §12 C4): started once at launch,

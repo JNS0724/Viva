@@ -8,7 +8,7 @@ import { t } from '../shared/i18n/translate.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import type { StartedAgent } from './history-ipc.ts'
-import type { IpcRegistry } from './ipc-contract.ts'
+import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { sideEffectsOf } from './side-effects.ts'
 
 const MAX_TEXT_CHARS = 20_000

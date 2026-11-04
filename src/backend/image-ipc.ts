@@ -3,7 +3,7 @@ import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import { checkImages, IMAGE_LIMITS, mimeOfId } from '../shared/images.ts'
 import type { createImageStore } from './image-store.ts'
-import type { IpcRegistry } from './ipc-contract.ts'
+import type { IpcRegistry } from '../shared/ipc-contract.ts'
 
 let GONE = t("main.image-ipc.an.image.is.missing.from.the.image")
 let BUSY = t("main.image-ipc.wait.for.this.turn.to.finish.before")

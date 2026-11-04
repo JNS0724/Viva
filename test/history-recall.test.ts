@@ -4,9 +4,9 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.ts'
-import { historyRecall } from '../src/main/history-recall.ts'
-import { createHistoryDesk } from '../src/main/history-channel.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
+import { historyRecall } from '../src/backend/history-recall.ts'
+import { createHistoryDesk } from '../src/backend/history-channel.ts'
 import { createHistoryChannel } from '../plugins/history/lib/channel.ts'
 
 /** The assistant looks up the timeline: by words within a time range, with the topic; then reads around a hit. */

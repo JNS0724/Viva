@@ -2,8 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { canOpen, listFolder, previewFile, PREVIEW_LIMIT, resolveInside } from '../src/main/workspace-files.ts'
-import { registerFilesIpc } from '../src/main/files-ipc.ts'
+import { canOpen, listFolder, previewFile, PREVIEW_LIMIT, resolveInside } from '../src/backend/workspace-files.ts'
+import { registerFilesIpc } from '../src/backend/files-ipc.ts'
 import { scratch } from './fixtures/scratch.js'
 
 /** Windows lets only administrators or Developer Mode make symbolic links; without them the link check is skipped. */

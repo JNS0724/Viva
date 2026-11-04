@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openAppDb } from '../src/backend/app-db.ts'
-import { openFollowupStore } from '../src/main/followup-store.ts'
+import { openFollowupStore } from '../src/backend/followup-store.ts'
 
 /** A fresh folder with the app database open in it; closed before the folder goes (Windows keeps an open file). */
 function appDbIn(t: TestContext) {

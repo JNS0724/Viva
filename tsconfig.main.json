@@ -1,6 +1,6 @@
-// The main process: Node and Electron.
+// The shell (the Electron main process) and the backend (Electron as Node).
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": { "lib": ["ES2023"], "types": ["node"] },
-  "include": ["src/main/**/*.js", "src/main/**/*.ts", "src/backend/**/*.ts", "src/shared/**/*.js", "src/shared/**/*.ts"]
+  "include": ["src/shell/**/*.ts", "src/backend/**/*.ts", "src/shared/**/*.js", "src/shared/**/*.ts"]
 }

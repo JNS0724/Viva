@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createEnvelope, isEnvelope } from '../src/backend/envelope.ts'
-import { DATA_KEY_FILE, loadDataKey } from '../src/main/data-key.ts'
+import { DATA_KEY_FILE, loadDataKey } from '../src/shell/data-key.ts'
 
 /** A stand-in for safeStorage: reversible, marked, and refusing what it did not make. */
 function fakeKeychain(available = true) {

@@ -49,7 +49,7 @@ Files and processes must live in the same execution world: bash has to see the f
 - Sandboxing: the validation ran with `danger-full-access`. `dsh-bash-sandbox` wraps commands with the host sandbox; a remote workspace should provide its own isolation (for example a container).
 - Terminals and persistent bash (`spawnTerminal`), file watching (`watch`), `read_image` (`readBytes`).
 - Two real machines: this run simulated the remote world with path mapping, so bash's `pwd` still shows the real directory.
-- Viva's own modules that use `node:fs` directly: `src/main/workspace-files.ts`, `files-ipc.ts`, `file-watch.ts`, `island-files.ts`, `image-store.ts`, `work-dir.ts`. The files panel could move to dsh's `dsh-api-workspace-files`, which is built on `ctx.fs`.
+- Viva's own modules that use `node:fs` directly: `src/backend/workspace-files.ts`, `files-ipc.ts`, `file-watch.ts`, `island-files.ts`, `image-store.ts`, `work-dir.ts`. The files panel could move to dsh's `dsh-api-workspace-files`, which is built on `ctx.fs`.
 
 ## 6. Constraints for the current refactor
 

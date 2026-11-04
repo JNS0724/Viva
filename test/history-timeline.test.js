@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
 
 /**
  * One timeline (single-conversation design): every stored conversation is a segment of it, with the dsh

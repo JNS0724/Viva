@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream, RequestError } from '@agentclientprotocol/sdk'
-import { createAcpBridge, switchingMessage } from '../src/main/acp-bridge.ts'
-import { ResumeError } from '../src/main/resume-failure.ts'
+import { createAcpBridge, switchingMessage } from '../src/backend/acp-bridge.ts'
+import { ResumeError } from '../src/backend/resume-failure.ts'
 import { setLocale } from '../src/shared/i18n/locale.ts'
 
 test('a bridge loaded before language initialization rejects switching prompts in the active language', async () => {

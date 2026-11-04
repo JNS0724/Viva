@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runCall, serveCalls, type Manager } from '../plugins/plugins/lib/channel.ts'
-import { createPluginsDesk } from '../src/main/plugins-channel.ts'
+import { createPluginsDesk } from '../src/backend/plugins-channel.ts'
 
 /** A plugin manager that records what it was asked. */
 function fakeManager(calls: unknown[][]): Manager {

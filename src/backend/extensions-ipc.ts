@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import { importSummary, shortPath, type ImportResult } from './dsh-mcp-import.ts'
-import { handlerOf, type IpcRegistry } from './ipc-contract.ts'
+import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import { editServer, serverView, type createMcpConfigStore, type ServerChanges } from './mcp-config.ts'
 import { listSkills, removeSkill, type skillRoots } from './skills.ts'
 

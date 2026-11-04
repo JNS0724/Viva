@@ -4,7 +4,7 @@ import { deskMenuTemplate } from './desk-menu.ts'
 import { describeDropped, MISSING } from './island-files.ts'
 import type { BrowserWindow, GlobalShortcut, IpcMainEvent, IpcMainInvokeEvent, Menu as ElectronMenu } from 'electron'
 import type { createDeskIsland } from './desk-island.ts'
-import type { IpcRegistry } from './ipc-contract.ts'
+import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView, type IslandAction } from './island-ipc.ts'
 
 type DeskIsland = ReturnType<typeof createDeskIsland>

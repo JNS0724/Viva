@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { STOP_GRACE_MS, stopInTime } from '../src/main/stop-in-time.ts'
+import { STOP_GRACE_MS, stopInTime } from '../src/backend/stop-in-time.ts'
 
 test('the deadline also covers a cancel RPC that never answers', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })

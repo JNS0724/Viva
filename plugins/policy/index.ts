@@ -1,7 +1,7 @@
 /**
  * viva-policy: the app's tool rules, applied inside dsh before any tool runs (lib/rules.js). A refused
  * call reaches the model as a tool error with the reason, and never reaches the user's approval card.
- * Loaded by the app's dsh profile (src/main/dsh-profile.js).
+ * Loaded by the app's dsh profile (src/backend/dsh-profile.ts).
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'

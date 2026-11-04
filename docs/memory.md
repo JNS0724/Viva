@@ -24,10 +24,10 @@ Remember the user's role, collaborators, projects, preferences, agreements, and 
 | `tools.ts` | Memory tools |
 | `extract.ts` | Background extraction |
 | `synthesize.ts` | Profile synthesis |
-| `src/main/app-plugins.ts` | Plugin list, persona, contract/dsh compatibility |
-| `src/main/dsh-profile.ts` | Private profile generation |
-| `src/main/personal.ts` | Changes/injection reporting and habit writes |
-| `src/main/memory-ipc.ts` | About-you IPC |
+| `src/backend/app-plugins.ts` | Plugin list, persona, contract/dsh compatibility |
+| `src/backend/dsh-profile.ts` | Private profile generation |
+| `src/backend/personal.ts` | Changes/injection reporting and habit writes |
+| `src/backend/memory-ipc.ts` | About-you IPC |
 
 Before each dsh start, `dsh-profile.ts` writes changed files under `<app data>/dsh/profiles/viva`: an ACP composition (`dsh-base`, `dsh-acp-app`) plus `link:` plugin dependencies; forwarding packages in profile `node_modules/viva-*` exporting the plugin file URL; and `cordis.patch.yml` containing persona, plugin insertions, and the database path. `cordis.yml` and `pnpm-workspace.yaml` are created only when absent. Installed apps keep plugins inside app.asar.
 

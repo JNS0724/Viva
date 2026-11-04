@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { SmokeAppWindow } from './smoke-kit.ts'
-import { openHistoryDb } from '../../src/main/history-db.ts'
+import { openHistoryDb } from '../../src/backend/history-db.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
 /**

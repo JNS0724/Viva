@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
-import type { IpcRegistry } from './ipc-contract.ts'
+import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import type { TaskRegistry } from './task-registry.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'

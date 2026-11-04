@@ -1,7 +1,7 @@
-import type { Notice } from '../main/notice-plan.ts'
+import type { Notice } from './notice-plan.ts'
 
 /**
- * What the backend may ask of the desktop it runs beside (the shell, src/main/main.ts): the only way it reaches
+ * What the backend may ask of the desktop it runs beside (the shell, src/shell/main.ts): the only way it reaches
  * Electron. The backend's module tree imports no `electron` at run time (test/backend-boundary.test.ts); every
  * capability the shell owns comes through here. Dialogs answer with local paths; they serve only the local
  * capabilities group (docs/backend-split-design.md §4, classes 3 and 4).

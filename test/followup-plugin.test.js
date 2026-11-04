@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DSH_TIMEOUT_MS, eventually, startHarness as setup } from './fixtures/dsh-harness.js'
 import { FOLLOWUP } from './fixtures/fake-llm.js'
-import { DEEPSEEK_DEFAULT } from '../src/main/model-providers.ts'
+import { DEEPSEEK_DEFAULT } from '../src/backend/model-providers.ts'
 
 /** The followups plugin inside the real dsh, with the fake model: proposals reach the window; preparation has no tools. */
 

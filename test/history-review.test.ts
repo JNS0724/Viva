@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openHistoryDb } from '../src/main/history-db.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
 
 /** 回顾: the topics, the one last talked in first, the background tasks in them, and the messages starred. */
 

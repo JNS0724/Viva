@@ -1,5 +1,5 @@
 /**
- * viva-followups: the follow-ups' side inside dsh. Loaded by the app's dsh profile (src/main/dsh-profile.js).
+ * viva-followups: the follow-ups' side inside dsh. Loaded by the app's dsh profile (src/backend/dsh-profile.ts).
  *
  * - In the conversation, the model may only propose a follow-up (viva_followup_propose) when the user asks to be
  *   reminded or helped at a time; the app shows it on a card and makes it only on the user's yes. The model

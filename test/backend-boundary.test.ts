@@ -42,8 +42,13 @@ test('nothing the backend loads imports electron at run time', () => {
   assert.ok(tree.size > 40, `the backend's tree should be walked whole (${tree.size} files)`)
   const offenders = [...tree].filter(([, imports]) => imports.includes('electron')).map(([file]) => path.relative(ROOT, file))
   assert.deepEqual(offenders, [], 'these modules import electron; give the backend what it needs through HostCapabilities instead')
-  const shellOnly = ['src/main/main.ts', 'src/main/tray.ts', 'src/main/desk-island.ts', 'src/main/island-main.ts', 'src/main/window-options.ts']
-  assert.deepEqual([...tree.keys()].map((file) => path.relative(ROOT, file)).filter((file) => shellOnly.includes(file.split(path.sep).join('/'))), [], 'the shell\'s own modules stay out of the backend')
+  const shell = [...tree.keys()].map((file) => path.relative(ROOT, file).split(path.sep).join('/')).filter((file) => file.startsWith('src/shell/'))
+  assert.deepEqual(shell, [], 'nothing of src/shell is loaded by the backend: the shell depends on the backend, never the other way')
+})
+
+test('the source tree is the shell, the backend and what they share (D1): no src/main is left', () => {
+  assert.equal(fs.existsSync(path.join(ROOT, 'src', 'main')), false)
+  for (const folder of ['shell', 'backend', 'shared']) assert.ok(fs.existsSync(path.join(ROOT, 'src', folder)), folder)
 })
 
 test('the boundary check sees through type-only imports and catches value imports', (t) => {

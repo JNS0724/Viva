@@ -1,4 +1,4 @@
-import type { Notice } from '../main/notice-plan.ts'
+import type { Notice } from './notice-plan.ts'
 import type { HostCapabilities, Secrets } from './host.ts'
 import type { Answer, HostCall, HostMethod, Mirror, StartMessage } from './wire.ts'
 

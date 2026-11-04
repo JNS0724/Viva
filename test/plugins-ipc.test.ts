@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { changeView, inspectionView, pluginsView, registerPluginsIpc } from '../src/main/plugins-ipc.ts'
-import type { PluginsResult } from '../src/main/plugins-channel.ts'
+import { changeView, inspectionView, pluginsView, registerPluginsIpc } from '../src/backend/plugins-ipc.ts'
+import type { PluginsResult } from '../src/backend/plugins-channel.ts'
 
 function profile(t: TestContext) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-plugins-ipc-'))

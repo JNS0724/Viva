@@ -1,9 +1,9 @@
 /**
  * viva-config: the model sets up the app's MCP servers and skills from the conversation ("帮我接入 GitHub",
  * "把这个做法存成 skill"). Every change is asked of the user first through dsh's approval card; the app then
- * performs it (src/main/config-channel.js), over the IPC channel it opened when it started dsh. Keys never
+ * performs it (src/backend/config-channel.ts), over the IPC channel it opened when it started dsh. Keys never
  * pass through here: the model names them, the user types them into the app's window.
- * Loaded by the app's dsh profile (src/main/dsh-profile.js).
+ * Loaded by the app's dsh profile (src/backend/dsh-profile.ts).
  */
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'

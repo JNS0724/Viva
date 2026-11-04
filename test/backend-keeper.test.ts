@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createBackendKeeper } from '../src/main/backend-keeper.ts'
+import { createBackendKeeper } from '../src/shell/backend-keeper.ts'
 
 type Fake = { id: number, died: (code: number | null) => void, shutdown: () => Promise<void>, stopped: boolean }
 

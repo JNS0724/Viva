@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/main/history-db.ts'
-import { KEEP_ENDED, registerTaskIpc } from '../src/main/task-ipc.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
+import { KEEP_ENDED, registerTaskIpc } from '../src/backend/task-ipc.ts'
 
 /**
  * Background tasks from the window (phase 3): while a turn runs, words about something else move that turn to

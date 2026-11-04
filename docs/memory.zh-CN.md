@@ -58,10 +58,10 @@ Electron 主进程                                    dsh 进程（--profile viv
 | `plugins/memory/lib/tools.js` | 三个记忆工具 |
 | `plugins/memory/lib/extract.js` | 轮次结束后的后台提取 |
 | `plugins/memory/lib/synthesize.js` | 定时整理画像 |
-| `src/main/app-plugins.js` | 插件清单、人设、兼容性检查（约定版本、dsh 版本） |
-| `src/main/dsh-profile.js` | 每次启动 dsh 前写好应用 dsh 目录里的 `profiles/viva` |
-| `src/main/personal.js` | 汇报插件写了什么、带上了什么；把使用习惯写进库 |
-| `src/main/memory-ipc.js` | 「关于你」页面的 IPC |
+| `src/backend/app-plugins.ts` | 插件清单、人设、兼容性检查（约定版本、dsh 版本） |
+| `src/backend/dsh-profile.ts` | 每次启动 dsh 前写好应用 dsh 目录里的 `profiles/viva` |
+| `src/backend/personal.ts` | 汇报插件写了什么、带上了什么；把使用习惯写进库 |
+| `src/backend/memory-ipc.ts` | 「关于你」页面的 IPC |
 
 ### profile 与插件挂载
 
@@ -258,7 +258,7 @@ Electron 主进程                                    dsh 进程（--profile viv
 
 记忆是独立的 dsh 插件，替换时：
 
-1. 写一个新的 dsh 插件，名字以 `viva-` 开头，在 `package.json` 里声明 `"viva": { "contract": { "memory": 1 } }`，然后在 `src/main/app-plugins.js` 的 `APP_PLUGINS` 里把原来的记忆插件换掉。
+1. 写一个新的 dsh 插件，名字以 `viva-` 开头，在 `package.json` 里声明 `"viva": { "contract": { "memory": 1 } }`，然后在 `src/backend/app-plugins.ts` 的 `APP_PLUGINS` 里把原来的记忆插件换掉。
 2. app 只通过 `memory.db` 和插件打交道。新方案只要提供约定 `memory@1`，也就是 `profile`、`memories`（含失效字段）、`syntheses`、`injections` 这几张表和 `store.js` 的接口，「关于你」和「过程」就不用改。如果改了数据结构，就把约定升到 2，并同时修改 `memory-ipc.js`、`personal.js` 和对应的界面。
 3. 插件声明的 dsh 版本是精确的 `0.2.0-rc.2`。升级 dsh 后，兼容性检查会把它排除并在设置页说明原因（对话不受影响，只是没有记忆），要同步修改 `plugins/memory/package.json`。
 
