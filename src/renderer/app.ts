@@ -1038,11 +1038,7 @@ function handleEvent(event: AgentEvent) {
     filesActions.filesAfterTurn()
     sendAfterTurn()
   }
-  if (event?.type === 'task_update') taskActions.noteUpdate(event.taskId)
-  if (event?.type === 'task_end') {
-    taskActions.ended(event.taskId)
-    filesActions.filesAfterTurn()
-  }
+  if (event?.type === 'task_end') filesActions.filesAfterTurn()
   if (event?.type === 'error') afterTurn = []
   // A batch ended: drafts are ready, or the list changed.
   if ((event?.type === 'prepare_state' && !event.state?.running) || event?.type === 'followups_changed') followupActions.loadFollowups()

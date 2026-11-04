@@ -318,7 +318,7 @@ Looked at again once this works in use: 放到后台 and automatic handoff of lo
 ### 11.7 Order of work
 
 1. Remove the extra ways in and the extra displays: 放到后台 and Undo, routing, "#name", the bottom-right panel, result cards, the drawer's task tab, the island's notice. 后台做 and the "continue / drop" card after a restart stay for now, so tasks can still be started and taken up again before step 3. (Done.)
-2. The backend task service: what tasks say is stored by the backend; pages only display it.
+2. The backend task service: what tasks say is stored by the backend; pages only display it. (Done: `task-transcript.ts` builds the messages, `task-words.ts` saves them, and `task:save` is gone.)
 3. The start, stop and message tools, the `task_created` push, and the sub-agent settings; the 后台做 button, the 后台 page's input box and 接着问, and the cards after a restart are removed.
 4. Results come back to the main conversation.
 

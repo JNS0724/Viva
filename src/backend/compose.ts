@@ -25,7 +25,7 @@ import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
-import { registerTaskIpc } from './task-ipc.ts'
+import { registerTaskIpc, type TaskService } from './task-ipc.ts'
 import { createTaskStore } from './task-store.ts'
 import { createTaskRegistry } from './task-registry.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
@@ -144,6 +144,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let traceDb: ReturnType<typeof openTraceDb> | null = null
   /** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
   let taskStore: ReturnType<typeof createTaskStore> | null = null
+  /** What background tasks say, kept and saved by the backend (task-ipc.ts). */
+  let taskService: TaskService | null = null
   /** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
   let followups: Followups | null = null
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
@@ -362,6 +364,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
         emitToRenderer(event)
         taskRegistry.receive(event)
+        taskService?.receive(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         if (event.type === 'task_end') return signal({ kind: 'agent.task_ended' })
         if (event.type === 'error') reportTurnMemories()
@@ -380,6 +383,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
   function recoverFromCrash({ message }: { message: string }) {
+    taskService?.flush()
     taskRegistry.interrupt()
     console.error('[dsh] exited unexpectedly:', message)
     bridge = null
@@ -401,6 +405,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
   async function stopBridge() {
+    taskService?.flush()
     taskRegistry.interrupt()
     clearTimeout(restartTimer)
     const running = bridge
@@ -560,7 +565,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const option = optionId === null ? null : assertText(optionId, 'optionId', 200)
       return bridge?.respondPermission(id, option) ?? false
     })
-    ipcMain.handle('agent:answer', (_event, questionId, answers) => bridge?.answerQuestion(assertText(questionId, 'questionId', 200), answers) ?? false)
+    ipcMain.handle('agent:answer', (_event, questionId, answers) => {
+      const id = assertText(questionId, 'questionId', 200)
+      const accepted = bridge?.answerQuestion(id, answers) ?? false
+      if (accepted) taskService?.answer(id, answers)
+      return accepted
+    })
     // Keys the user typed for a server the model set up: straight to the encrypted store, never to dsh.
     ipcMain.handle('agent:secrets', (_event, requestId, values) => {
       const id = assertText(requestId, 'requestId', 200)
@@ -832,7 +842,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       switchAgent,
       traceDb: () => traceDb,
     })
-    registerTaskIpc(ipcMain, {
+    taskService = registerTaskIpc(ipcMain, {
       registry: taskRegistry,
       db: historyDb,
       // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).

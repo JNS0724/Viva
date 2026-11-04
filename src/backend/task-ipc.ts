@@ -3,12 +3,13 @@ import type { Conversation } from './history-db.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import type { TaskRegistry } from './task-registry.ts'
+import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
 /**
  * Background tasks from the window: 后台做 starts a task in a session of its own, forked from the conversation
  * (before the turn running there, if one is), its segment hanging off the conversation, out of the timeline.
- * The window keeps what the task says and saves it here.
+ * What the task says is kept here as it comes (task-words.ts); the window only shows it.
  */
 const MAX_TITLE_CHARS = 40
 
@@ -50,9 +51,11 @@ interface TaskIpcDeps {
   current: () => Conversation
   agentInfo: () => { mode?: string, model?: string }
   agent: Record<'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>
+  /** Timers for saving what tasks say along the way (tests pass their own). */
+  timers?: Pick<TaskWordsDeps, 'later' | 'cancel'>
 }
 
-export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, agentInfo, agent }: TaskIpcDeps) {
+export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, agentInfo, agent, timers = {} }: TaskIpcDeps) {
   const restoredSummary = (entry: StoredTask) => {
     const host = db.sideTaskHost(entry.segmentId)
     return { ...summaryOf(entry), ...(host ? { host } : {}) }
@@ -64,6 +67,19 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   const tasks = new Map<string, StoredTask>()
   /** Tasks whose dsh session this launch holds: moved here, or taken up again. Others must be taken up first. */
   let attached = new Set<string>()
+
+  /** What a task has said, from its own words on, into its segment after what came before them. */
+  function persist(taskId: string, messages: readonly unknown[]) {
+    const task = tasks.get(taskId)
+    const found = task ? db.get(task.segmentId) : null
+    if (!task || !found) return
+    db.save(found.conversation, [...found.messages.slice(0, task.keep), ...messages])
+  }
+  const taskWords = createTaskWords({
+    ...timers, persist,
+    end: (taskId, status) => { const task = tasks.get(taskId); if (task) keepEnded(task, status) },
+    onError: (err) => console.error('[tasks] could not save what the task said:', err.message),
+  })
 
   const taskById = (taskId: unknown) => {
     const task = tasks.get(taskId as string)
@@ -96,20 +112,9 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     attached = new Set([...attached, task.id])
     store.add({ ...task, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: Date.now() })
     registry?.put({ ...task, cwd: main.cwd ?? '' })
+    taskWords.track(task.id, [{ role: 'user', text }])
     agent.promptTask(task.id, text)
     return { ok: true, task }
-  }
-
-  /**
-   * What the task has said, from the words that started it on: kept after what came before them. Saved along
-   * the way and at its end; ended, it stays in the store marked so, to be asked again (`ask`).
-   */
-  function save(taskId: string, messages: readonly unknown[], { ended = false, status = 'done' }: { ended?: boolean, status?: string } = {}) {
-    const task = taskById(taskId)
-    const found = db.get(task.segmentId)
-    if (!found) throw new Error('no such task')
-    db.save(found.conversation, [...found.messages.slice(0, task.keep), ...messages])
-    if (ended) keepEnded(task, status)
   }
 
   /** Ended: kept with how it ended; beyond the latest few, the oldest are let go. */
@@ -122,6 +127,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
 
   async function close(taskId: string) {
     taskById(taskId)
+    taskWords.drop(taskId)
     tasks.delete(taskId)
     detach(taskId)
     store.remove(taskId)
@@ -167,6 +173,8 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const { endedAt: _endedAt, status: _status, ...going } = kept
     store.add(going)
     tasks.set(taskId, going)
+    if (!taskWords.has(taskId)) taskWords.track(taskId, db.get(kept.segmentId)?.messages.slice(kept.keep) ?? [])
+    taskWords.userSaid(taskId, text)
     registry?.restart(taskId)
     agent.promptTask(taskId, text)
     return { ok: true }
@@ -183,14 +191,14 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     if (!taken.ok) return { ok: false, problem: taskProblems().lost }
     tasks.set(taskId, kept)
     attached = new Set([...attached, taskId])
+    const said = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    taskWords.track(taskId, said)
     registry?.restart(taskId)
     agent.promptTask(taskId, GO_ON)
-    const said = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     return { ok: true, task: restoredSummary(kept), messages: said }
   }
 
   ipcMain.handle('task:start', (_event, request) => start(request))
-  ipcMain.handle('task:save', async (_event, taskId, messages, options) => save(taskId, messages, options))
   ipcMain.handle('task:unfinished', () => unfinished())
   ipcMain.handle('task:finished', () => finished())
   ipcMain.handle('task:ask', (_event, taskId, text) => ask(taskId, text))
@@ -200,6 +208,18 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   ipcMain.handle('task:stop', (_event, taskId) => agent.cancelTask(taskById(taskId).id))
   ipcMain.handle('task:steer', (_event, taskId, text) => {
     if (!isText(text)) throw new Error('invalid task request')
-    return agent.steerTask(taskById(taskId).id, text)
+    const { id } = taskById(taskId)
+    taskWords.userSaid(id, text)
+    return agent.steerTask(id, text)
   })
+
+  return {
+    /** An event from the agent: what a task says, asks and how its turn ends. */
+    receive: taskWords.receive,
+    /** The user's answer to a question dsh took: it joins the task that asked it. */
+    answer: taskWords.answer,
+    /** Viva quits, or dsh went: what tasks said is saved now. */
+    flush: taskWords.flush,
+  }
 }
+export type TaskService = ReturnType<typeof registerTaskIpc>
