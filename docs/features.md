@@ -41,7 +41,7 @@ The island shows a spinner and active count, a check and unseen completion count
 
 The turn rail stays on the left. The Background page shares the persistent Review/Background/About you/Settings navigation and has a collapsible task list whose state is saved.
 
-Drag either conversation edge to resize from 560 px up to the available width; double-click restores 760 px. The width is saved. Close dismisses a task. Unfinished work offers Resume or Discard after restart. See `smoke-tasks.ts` and `smoke-column.ts`.
+Drag either conversation edge to resize from 560 px up to the available width; double-click restores 760 px. The width is saved. Close dismisses a task. What a task says is saved by the backend as it comes (about every 10 seconds, and at once when its turn ends), and once more when Viva quits or the assistant exits, with or without a window open. Unfinished work offers Resume or Discard after restart. See `smoke-tasks.ts` and `smoke-column.ts`.
 
 <a id="文件"></a>
 ## Files

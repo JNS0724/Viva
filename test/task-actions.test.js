@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { createTaskActions, SAVE_EVERY_MS } from '../src/renderer/task-actions.ts'
+import { createTaskActions } from '../src/renderer/task-actions.ts'
 import { liveTasks, taskMessages } from '../src/renderer/tasks-state.ts'
 
 const chunk = (text) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -30,7 +30,6 @@ function windowWith(api, deps = {}) {
     ask: (text) => { said.asked.push(text); dispatch({ type: 'user_prompt', text, at: 60 }); return true },
     steer: (text) => { said.steered.push(text); dispatch({ type: 'user_steer', text }); return true },
     deliver,
-    later: () => {},
     ...deps,
   })
   /** An event from the main process, as app.ts takes it: it waits while the task it is for is being started. */
@@ -123,22 +122,6 @@ test('words for a task go into its turn', async () => {
   assert.equal(taskMessages(liveTasks(win.state())[0]).at(-1).text, '加上版本号')
 })
 
-test('what a task says is saved along the way, at most every so often, so a quit loses little', async () => {
-  const timers = []
-  const saved = []
-  const win = windowWith({ startTask: async () => startedReply, saveTask: async (...args) => { saved.push(args) } }, {
-    later: (run, ms) => timers.push({ run, ms }),
-  })
-  await withTask(win)
-  win.actions.noteUpdate('s1')
-  win.actions.noteUpdate('s1')
-  assert.deepEqual(timers.map((timer) => timer.ms), [SAVE_EVERY_MS], 'one save waiting, however much it says meanwhile')
-  await timers.shift().run()
-  assert.deepEqual(saved.map(([id, , options]) => [id, options]), [['s1', undefined]], 'saved, still going')
-  win.actions.noteUpdate('s1')
-  assert.equal(timers.length, 1, 'and the next one after that')
-})
-
 test('tasks the last launch left going are offered, taken up, or let go', async () => {
   const resumed = []
   const forgotten = []
@@ -162,17 +145,6 @@ test('tasks the last launch left going are offered, taken up, or let go', async 
   assert.deepEqual(other.said.toasts, ['这件事接不上了'])
   await other.actions.forgetUnfinished('s8')
   assert.deepEqual([forgotten, other.state().tasks.unfinished], [['s8'], []])
-})
-
-test('an ended task keeps what it said, and how it ended', async () => {
-  const saved = []
-  const win = windowWith({ startTask: async () => startedReply, saveTask: async (...args) => { saved.push(args) } })
-  await withTask(win)
-  win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'cancelled', at: 70 })
-  win.actions.ended('s1')
-
-  assert.deepEqual(saved, [['s1', [{ role: 'user', text: WORDS }, { role: 'assistant', text: '先看提交…' }], { ended: true, status: 'stopped' }]],
-    'ended: kept to be asked again, not offered as unfinished')
 })
 
 test('a task that ended is asked again: it goes back to work, or says why it could not and stays as it was', async () => {

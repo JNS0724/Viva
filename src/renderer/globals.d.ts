@@ -209,7 +209,6 @@ interface AgentApi extends LanguageApi {
   starredMessages: Invoke<'history:starred'>
   rewind: Invoke<'timeline:rewind'>
   startTask: Invoke<'task:start'>
-  saveTask: Invoke<'task:save'>
   unfinishedTasks: Invoke<'task:unfinished'>
   finishedTasks: Invoke<'task:finished'>
   askTask: Invoke<'task:ask'>

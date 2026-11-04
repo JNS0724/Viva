@@ -1,21 +1,18 @@
 import { t } from '../shared/i18n/translate.ts'
 import { answersFrom, type QuestionAnswer } from './question-state.ts'
-import { runningTurn, taskMessages } from './tasks-state.ts'
+import { runningTurn } from './tasks-state.ts'
 
 /**
  * Background tasks from the window: 后台做 starts a task of its own (backend/task-ipc.ts task:start). What the
  * task says can arrive before the window knows the task, so it waits and is passed on (`deliver`) once it does.
  */
-/** While a task talks, what it said is saved at most this often, so quitting Viva loses little. */
-export const SAVE_EVERY_MS = 10_000
 /** What the main process says of the agent (acp-bridge.ts), as far as holding it back reads it. */
 type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
 
-/** later: setTimeout, for tests. */
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, later = setTimeout }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
-  api: Pick<AgentApi, 'startTask' | 'steerTask' | 'saveTask' | 'unfinishedTasks' | 'finishedTasks'
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
+  api: Pick<AgentApi, 'startTask' | 'steerTask' | 'unfinishedTasks' | 'finishedTasks'
     | 'askTask' | 'resumeTask' | 'forgetTask' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
-  deliver: (event: AgentEvent) => void, later?: (run: () => void, ms: number) => unknown,
+  deliver: (event: AgentEvent) => void,
 }) {
   let submissionCounter = 0
   let starting = 0
@@ -78,36 +75,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   const taskById = (taskId: string): BackgroundTask | undefined => getState().tasks.list.find((entry: BackgroundTask) => entry.id === taskId)
-
-  function save(taskId: string, options?: { ended?: boolean, status?: string }) {
-    const task = taskById(taskId)
-    if (!task) return
-    api.saveTask(taskId, taskMessages(task), options)
-      .catch((err: unknown) => console.error('[tasks] could not save what the task said:', errorMessage(err)))
-  }
-
-  /** Tasks with a save waiting: one each, however much they say meanwhile. */
-  let saving = new Set<string>()
-
-  /** A task said something: saved soon, so that quitting Viva midway loses little (task-store.js). */
-  function noteUpdate(taskId: string) {
-    if (saving.has(taskId)) return
-    saving = new Set([...saving, taskId])
-    later(() => {
-      saving = new Set([...saving].filter((id) => id !== taskId))
-      save(taskId)
-    }, SAVE_EVERY_MS)
-  }
-
-  /**
-   * A task that ended keeps what it said, in its own part of the timeline, and how it ended, to be asked again
-   * later (接着问).
-   */
-  function ended(taskId: string) {
-    const task = taskById(taskId)
-    if (!task) return
-    save(taskId, { ended: true, status: task.status })
-  }
 
   /**
    * What the last launch left going (task-store.js), offered in the conversation; and the tasks that had
@@ -183,13 +150,11 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   return {
     hold,
     startTask,
-    ended,
     stopTask,
     closeTask,
     pickTaskOption,
     steerTask,
     askTask,
-    noteUpdate,
     loadUnfinished,
     resumeUnfinished,
     forgetUnfinished,

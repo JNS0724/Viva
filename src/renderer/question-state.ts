@@ -1,29 +1,17 @@
-import { onLocaleChange } from '../shared/i18n/locale.ts'
-import { t } from '../shared/i18n/translate.ts'
+import { answerText, type QuestionAnswer } from '../shared/question-answer.ts'
 import { closeStreams } from './streams.ts'
 
 /**
  * A question the agent asked mid-turn (ask_user_question, through the app's questions plugin). While it
  * waits, the phase is 'asking'; the answer joins the thread as the user's reply, under what was asked.
  */
-let SKIPPED = t("question-state.skipped")
+export { answerText }
+export type { QuestionAnswer }
 
-/** An answer to one question: the options picked, and the user's own words. */
-export type QuestionAnswer = { id: string, selected: string[], custom?: string }
 /** What the agent asks while it waits (state.question): its questions, and what is picked so far, by question. */
 type AskedQuestion = { questionId: string, questions: readonly QuestionItem[], picks: Readonly<Record<string, readonly string[]>> }
 
 const askedText = (questions: readonly QuestionItem[]) => questions.map((question) => question.question).join('\n')
-
-/** The answer as the user would put it: the picks, then their own words; one line per question when there are several. */
-export function answerText(questions: readonly QuestionItem[], answers: readonly QuestionAnswer[]) {
-  const said = questions.map((question) => {
-    const answer = answers.find((item) => item.id === question.id)
-    return [...(answer?.selected ?? []), answer?.custom].filter(Boolean).join('、') || SKIPPED
-  })
-  if (said.length === 1) return said[0]
-  return questions.map((question, i) => `${question.header || question.question}：${said[i]}`).join('\n')
-}
 
 /** The answers to send: what was picked per question, with `text` (typed in the composer) for the ones it answers. */
 export function answersFrom(question: AskedQuestion, text = ''): QuestionAnswer[] {
@@ -85,7 +73,3 @@ export const QUESTION_ACTIONS: Record<string, Reducer> = {
     }
   },
 }
-
-onLocaleChange(() => {
-  SKIPPED = t("question-state.skipped")
-})
