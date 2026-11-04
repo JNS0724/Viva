@@ -8,7 +8,7 @@ export const MEMORY_KINDS = Object.freeze(['fact', 'preference', 'person', 'proj
 /** The kinds a profile is made of: the synthesis summarises them, the fixed layer lists the newest. */
 export const PROFILE_KINDS = Object.freeze(['role', 'person', 'project', 'preference'])
 export const MAX_SYNTHESIS_CHARS = 1200
-/** The version of the memory.db contract this code reads and writes (see docs/memory.md). */
+/** The version of the memory.db contract this code reads and writes: the tables below, checked through `meta.contract_version`. */
 export const CONTRACT_VERSION = 1
 export const MEMORY_SOURCES = Object.freeze(['user', 'agent'])
 export const ONBOARDING_STATES = Object.freeze(['pending', 'done', 'skipped'])

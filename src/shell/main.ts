@@ -23,7 +23,7 @@ import { installAutomationDriver } from './automation-driver.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
 
 /**
- * The desktop shell (docs/backend-split-design.md D1, D2, D4): the app's lifecycle, the window, the tray, the
+ * The desktop shell (docs/system-design.md §2): the app's lifecycle, the window, the tray, the
  * desktop island, the shortcut, notifications, dialogs and the system shell. Everything else is the backend's, in
  * its own process (src/backend/server.ts): the shell starts it, forwards the pages' calls to it, does what it asks
  * of the desktop, and keeps it told what it reads without waiting (the mirror). A backend that ends on its own is

@@ -3,7 +3,7 @@ import type { Locale } from '../shared/i18n/locale.ts'
 import type { ShellSettings } from './host.ts'
 
 /**
- * What the shell and the backend process say to each other (docs/backend-split-design.md D4, D5; §12 P5).
+ * What the shell and the backend process say to each other (docs/system-design.md §3).
  *
  * - Over the child's IPC channel, once: the shell's `start` (the token, the data key, what of the desktop the
  *   backend reads synchronously), and the backend's `ready` (its port, the channels it serves) or `failed`.

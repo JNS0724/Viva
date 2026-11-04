@@ -2,7 +2,7 @@
 
 [English](system-design.md) | 简体中文
 
-> 描述的是合入 main 后（PR #67，`bae89e6`）的架构。各阶段的实施细节和偏差见 [设计：前后端拆分](backend-split-design.zh-CN.md) 第 12 节；Viva 怎样在 dsh 的插件体系上分层，见 [架构](architecture.zh-CN.md)。日期：2026-11-04。
+> 描述的是合入 main 后（PR #67，`bae89e6`）的架构。拆分的设计稿和各阶段的实施记录在 git 历史里（`docs/backend-split-design.md`，本文取代它之后删除）。日期：2026-11-04。
 
 ## 1. 概述
 
@@ -118,7 +118,7 @@ flowchart TB
 | `settings.json`、`models.json`、`mcp-servers.json`、`preferences.json` | key、模型提供方、MCP 服务器、偏好 | 后端 | 无 |
 | `data-key.bin` | 加密 key 用的数据密钥，由系统钥匙串加密 | 外壳 | 无 |
 
-**记忆为什么不并进 `app.db`。** 记忆的主要写入方是 dsh 进程里的记忆插件，它不经过后端的 `apply`。并进来反而要让插件打开整个应用数据库，两边的 `meta` 表也会重名。设计文档 §6.2 的定义是：这类由插件写的数据以“观察到的变化”进入事件，而不是走 `apply`。
+**记忆为什么不并进 `app.db`。** 记忆的主要写入方是 dsh 进程里的记忆插件，它不经过后端的 `apply`。并进来反而要让插件打开整个应用数据库，两边的 `meta` 表也会重名。拆分设计时就这样定了：这类由插件写的数据以“观察到的变化”进入事件，而不是走 `apply`。
 
 **key 的加密。** 系统钥匙串（Electron `safeStorage`：macOS 用钥匙串，Windows 用 DPAPI）只在外壳里用得到。外壳用它保护一把随机的 32 字节数据密钥，启动时经 IPC 通道交给后端；后端用它做 AES-256-GCM 加密（`src/backend/envelope.ts`）。钥匙串打不开密钥文件时，把它改名留着，再生成新的，原来加密的 key 要重新填。钥匙串不可用时拒绝保存 key，不会退回明文。
 
@@ -135,7 +135,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | `memory` | 记忆的工具、每轮带上的背景、画像整理 |
 | `trace` | 把每轮的工具调用和思考记进 `trace.db` |
 | `followups` | 模型提出跟进；后台准备时做不带工具的模型调用 |
-| `tasks` | 后台任务的查询工具 |
+| `tasks` | 后台任务的只读查询工具（`list_background_tasks`、`get_background_task`）；范围由后端按工作目录和会话限定，不由工具参数决定 |
 | `history` | 让模型查以前的对话 |
 | `stream` | 把回答的流式内容交给应用 |
 | `questions` | 模型向用户提问的卡片 |
@@ -151,6 +151,26 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 **两层配置。** 应用每次启动都重写 `$DSH_HOME/viva.patch.yml`，用 `--patch` 叠在最上面。里面是人设、自带插件（按入口文件的 file URL 加载，不进 profile 的依赖列表）、插件配置，以及原样重述的 dsh-base 安全行。profile 自己的 `cordis.patch.yml` 留给用户和 dsh 的插件管理器，应用只在它不存在时写一个空的 `[]`。所以组合包和用户层都改不掉应用的安全行。
 
 **用户插件。** 消息源已经删掉；外部消息和其它能力都来自用户安装的 dsh 插件。设置里的“插件”页用应用自带的 pnpm 11 安装、启用和移除插件，模型也可以在对话里提出安装，由用户在授权卡片上批准。`hmr` 是打开的，插件在 dsh 运行中就能启停。
+
+**什么做成插件。** 只有要用到 agent 内部的能力才做成 Viva 自己的插件：每一步之前注入内容、跟会话绑定的状态、不需要授权的原生工具、复用模型、执行前拦截。其余放在 ACP 层或 app 里。dsh 还是 0.2.x 的候选版，插件用的是它自己的接口，插件越多，将来换 ACP agent 的代价越大。这条标准只管 app 自己的插件；用户装的插件是有意和 dsh 生态绑定。
+
+**约定检查。** `APP_PLUGINS` 列出每个插件的名字、目录、约定和配置；插件在 `package.json` 里声明约定，如 `"viva": { "contract": { "memory": 1 } }`。启动前 `resolvePlugins` 检查插件存在、`package.json` 可读、名字一致、约定版本和 dsh 版本完全匹配；不通过的插件不写进 profile，原因显示在设置里。插件的数据库记录 `meta.contract_version`，更新版本写的数据直接拒绝，不会误读。
+
+**各插件用到的 dsh 接口。** `memory`：agent/pre-step、sessionProjections、tools.register、agent/turn-stopping、llm.stream；`trace`：agent/turn-stopping、session.eventAt；`policy`：tools/pre-execute（在授权之前，拒绝时附原因）；`followups`：tools.register、不带工具的 llm.stream；`stream`：agent/assistant-stream、session/event、agent/disposed；`plugins`：ctx.pluginManager。插件出错只降级：注入失败就不带记忆，记录过程失败就没有“过程”，对话照常。
+
+**会话准备。** 新话题先显示空输入框，准备期间可以打字，发送要等准备好。最多提前准备一个独立的空会话，带自己的 MCP 进程，120 秒没用就作废。单例 MCP 服务器拒绝第二个连接时，丢掉这个预备会话，不影响正式的 MCP 状态。会话之间不共享 MCP 客户端；旧会话的资源关完，才创建新的冷启动 MCP。计时：后端设 `VIVA_SESSION_TIMING=1`，页面设 `localStorage.setItem('viva:session-timing', '1')`，只记阶段、耗时和结果，不记提示词和 MCP 配置。
+
+**升级 dsh 时要复查。**
+
+- `viva-stream` 依赖 dsh 的内部事件，不是通用的 ACP 扩展。dsh 固定在 `0.2.0-rc.2`，它的 ACP 适配器只转发完整的块。升级后用真实 dsh 和延迟 SSE 重跑 `test/stream-runtime.test.js`：第一段文字要先于回答完成到达，取消要保留已提交的部分。流式通道中途失败时，先撤回这次调用的临时内容，再用 ACP 的完整输出。
+- rc.2 没有插件自定义通知的接口，所以一轮结束后 app 每 2 秒查一次 `memory.db`，持续 30 秒。dsh 提供 ACP 扩展通知后可以去掉轮询。
+
+**几项定下来的取舍。**
+
+- 人设是个人工作助手，不用 ACP 模板的编程 agent 身份；测试检查发给模型的请求。
+- 不用 `dsh-time-context`：在 ACP 下没有浏览器时区，它会反复让模型确认日期。今天的日期由记忆插件注入。
+- `viva-policy` 在执行前拒绝名字含 send、reply、forward、post、publish、deliver、broadcast 的 MCP 工具（包括下划线和驼峰写法）。dsh 不会为 MCP 工具请求授权，所以这是“不替用户发出去”的硬边界。
+- 其它模型复用 llm-pi-ai（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages），不另写插件。
 
 ## 7. 安全边界
 
@@ -234,7 +254,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 1. 回环加启动令牌，换成 HTTPS 加账号令牌；协议本身（rpc、SSE、序号、`since` 补发）不变。
 2. 外壳和后端不再同生共死：断线重连从“偶尔发生”变成常态，页面要能按序号补齐状态，而不是重新加载。
-3. dsh 的 `fs-sandbox`、`subprocess` 换成远程实现，把工作区放到另一种虚拟文件系统后端上。这条已验证可行，作为远期调研搁置（[远程 workspace 调研](remote-workspace-research-20261104.zh-CN.md)）。
+3. dsh 的 `fs-sandbox`、`subprocess` 换成远程实现，把工作区放到另一种虚拟文件系统后端上。这条已用 spike 验证可行，作为远期调研搁置；调研记录在 git 历史里（`docs/remote-workspace-research-20261104.md`）。
 4. 钥匙串仍在桌面；云端的 key 保管要另行设计。
 
 **建议的下一步：**

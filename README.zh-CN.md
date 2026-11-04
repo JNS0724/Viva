@@ -105,7 +105,7 @@ flowchart LR
 ```
 
 - 对话由内嵌的 dsh 驱动，通过 ACP 协议和 Electron 主进程通信；记忆、权限、跟进都是 dsh 插件，不改 dsh 本身。
-- 细节见 [架构](docs/architecture.zh-CN.md) 和 [功能说明](docs/features.zh-CN.md)。
+- 细节见 [系统架构设计](docs/system-design.zh-CN.md) 和 [功能说明](docs/features.zh-CN.md)。
 
 ## 下载安装
 
@@ -152,9 +152,9 @@ npm run showcase    # 重新拍 README 里的截图和动图（需要 ffmpeg）
 
 - [功能说明](docs/features.zh-CN.md)：主动跟进、Viva 岛、文件、模型、记忆、历史对话等功能的细节
 - [开发、打包与测试](docs/development.zh-CN.md)
-- [架构](docs/architecture.zh-CN.md)：Viva 如何在 dsh 的插件体系上分层
-- [系统架构设计](docs/system-design.zh-CN.md)：外壳与后端两个进程、事件内核、数据存储、安全边界和生命周期
-- [记忆方案](docs/memory.zh-CN.md)
+- [系统架构设计](docs/system-design.zh-CN.md)：外壳与后端两个进程、事件内核、数据存储、插件、安全边界和生命周期
+- [界面规范](docs/ui-guidelines.zh-CN.md)
+- [发版前的真模型验证](docs/live-check.zh-CN.md)
 
 ## 参与
 
@@ -174,4 +174,4 @@ Viva 以 [MIT 许可证](LICENSE) 发布。
 
 ## 界面语言
 
-设置 → 语言可选跟随系统、简体中文、English。新用户跟随系统，旧配置保留中文；切换不重启会话，不改变对话内容。README 与项目文档提供双语入口；已有演示截图/录像为中文。维护和验证方式见[国际化](docs/internationalization.zh-CN.md)。
+设置 → 语言可选跟随系统、简体中文、English。新用户跟随系统，旧配置保留中文；切换不重启会话，不改变对话内容。README 与项目文档提供双语入口；已有演示截图/录像为中文。维护和验证方式见[开发：国际化](docs/development.zh-CN.md#国际化)。

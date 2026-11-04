@@ -1,7 +1,7 @@
 import { restartDelay } from '../shared/restart-delay.ts'
 
 /**
- * Keeps the backend process running for the shell (docs/backend-split-design.md §12 C4): started once at launch,
+ * Keeps the backend process running for the shell (docs/system-design.md §8): started once at launch,
  * started again when it ends on its own, waiting longer each time as dsh is (src/shared/restart-delay.ts), and given
  * up when it keeps crashing. A call made while it restarts waits for the new one, for a while.
  */

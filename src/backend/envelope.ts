@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import type { Secrets } from './host.ts'
 
 /**
- * The encryption of the user's keys in the backend process (docs/backend-split-design.md §12, P5). Electron's
+ * The encryption of the user's keys in the backend process (docs/system-design.md §5). Electron's
  * safeStorage is only in the shell, so the shell keeps a random data key encrypted with it (src/shell/data-key.ts)
  * and hands the key to the backend at launch over the IPC channel; the backend encrypts with AES-256-GCM under
  * that key.

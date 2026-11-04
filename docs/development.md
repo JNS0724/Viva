@@ -2,7 +2,7 @@
 
 [English](development.md) · [简体中文](development.zh-CN.md)
 
-For running, modifying, or packaging Viva. See [Features](features.md), [Architecture](architecture.md), and [Memory](memory.md).
+For running, modifying, or packaging Viva. See [Features](features.md), [System design](system-design.md) and [UI guidelines](ui-guidelines.md).
 
 ## Run
 
@@ -75,19 +75,23 @@ Launch dsh’s entry directly under Electron with ELECTRON_RUN_AS_NODE=1, not th
 
 ## Runtime architecture
 
-The renderer’s reducer owns immutable state; selectors provide display data, views render it, and preload carries validated IPC to main. Main uses the official ACP ClientSideConnection: initialize → session/new → session/prompt, with cancel and close for lifecycle operations.
+Processes, communication, the event core, storage and plugins are in [System design](system-design.md). On the pages' side:
 
-Message chunks go to conversation text; thoughts/tool events go to Activity and the island, and touched files to Files. Permission requests become cards whose choices pass through permission-broker. Model/reasoning changes use session/set_config_option for the next turn and are disabled during replies.
+- **Event routing:** `agent_message_chunk` goes to the conversation; `agent_thought_chunk`, `tool_call` and `tool_call_update` go to Activity and the title-bar island, and touched files to Files; `session/request_permission` becomes a card in the conversation, whose choice goes back to dsh through `permission-broker`.
+- **Model switching:** the picker at the composer's lower left lists the models and reasoning levels dsh returns (Off / Low / High / Max) and switches them with ACP's `session/set_config_option`, from the next turn; it is disabled during replies.
+- **Streaming:** `viva-stream` supplies real deltas. Typing reveal runs at about 90 characters per second, accelerating a backlog to stay within about 1.2 seconds.
+- **Scrolling:** new content is followed until the latest question is near the top; longer answers grow below it and offer a New content button. Scrolling up suspends following until you return to the bottom. Activity keeps its scroll position when redrawn.
+- **State:** a pure reducer owns immutable state; views read selectors, and text always goes through `textContent`.
+- **Security:** `contextIsolation` and `sandbox`; preload exposes only the methods on `window.agent` (and, for the desktop island, `window.desk`, which can only take content and send clicks); pages have a CSP; the shell and the backend each check arguments against the IPC contract.
 
-Typing reveal runs at about 90 characters per second, accelerating backlog to stay roughly within 1.2 seconds. Earlier documentation described ACP-only whole-block output; current viva-stream supplies real deltas. See architecture.md for selection, fallback, and reconciliation.
+Her character and asset rules are in [UI guidelines](ui-guidelines.md#her-character).
 
-Scrolling follows new content until the latest question is near the top; longer answers grow below it and offer a New content button. Manual upward scrolling suspends following until returning to the bottom. Activity preserves scroll position and follows new steps only when already at the end.
+## Internationalization
 
-Migration from my-agent copies history, memory, and trace data to the Viva directory and leaves the old folder as backup. Keychain entries tied to the old app name cannot migrate; re-enter the key or use the environment variable. contextIsolation, sandbox, CSP, limited window.agent/window.desk APIs, and main-process argument validation form the UI boundary. Translated text uses text nodes/attributes, never arbitrary translated HTML.
-
-## Character assets
-
-See [Maid character](maid-character.md). Each state has a 400 px still and five states also have an animation, all WebP, scaled down from the dsh-personal-agent originals; the original GIFs and prompts stay outside the repository. After changing assets, check the home page, conversation, approval cards, follow-up details and desktop island.
+- **Language:** Settings offers Follow system, Simplified Chinese and English. New profiles follow the system; Simplified Chinese system variants resolve to `zh-CN`, everything else to `en`. The interface language is independent of the conversation's. Switching neither restarts the session nor clears the conversation, keeps drafts, selection, focus and scroll positions, and waits for IME composition to finish before redrawing.
+- **Copy:** interface text (accessibility names, validation text, placeholders, empty states and errors included) goes into `src/shared/i18n/messages/en.ts` and `zh-CN.ts`, with the same keys in both, read with `t()`. Brands, tool and protocol ids, file paths, user text, history and third-party output stay as they are. The persona, plugin instructions to the model and the Chinese markers of memory synthesis do not follow the interface language; do not bulk-translate them as interface copy.
+- **Documents:** each document comes in English and Chinese (`.zh-CN.md`), the two linking to each other, and is registered in `docs/i18n-manifest.json` with both hashes. After editing one, update the other, then record both hashes; never regenerate hashes just to pass the check. `npm run check:i18n` checks pairing, cross-links, local links and hash freshness, and the unit tests run it too.
+- **Verification:** typecheck, unit tests, smoke tests, and `npm run smoke:language` (setup and settings, an unsaved key draft, repeated switching, IME, a narrow window, an unchanged session, desktop island sync).
 
 ## Tests
 

@@ -3,7 +3,7 @@ import type { HostCapabilities, Secrets } from './host.ts'
 import type { Answer, HostCall, HostMethod, Mirror, StartMessage } from './wire.ts'
 
 /**
- * HostCapabilities for a backend in its own process (docs/backend-split-design.md D4, §12 P5): what it reads
+ * HostCapabilities for a backend in its own process (docs/system-design.md §3): what it reads
  * without waiting comes from the launch message and the mirror the shell keeps in step; what it asks of the
  * desktop goes out as host calls over SSE, a dialog's or a path's answer coming back by id. Calls made before the
  * shell listens wait in order, so none is lost at launch.

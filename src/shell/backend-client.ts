@@ -7,7 +7,7 @@ import {
 } from '../backend/wire.ts'
 
 /**
- * The shell's side of the backend process (docs/backend-split-design.md D4, D5; §12 P5): it starts
+ * The shell's side of the backend process (docs/system-design.md §3): it starts
  * src/backend/server.ts as Electron run as Node, hands it the launch message, then talks to it over loopback HTTP
  * (calls) and SSE (what the backend asks of the desktop). The two live and end together.
  */

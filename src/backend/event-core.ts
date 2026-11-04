@@ -2,7 +2,7 @@ import type { Channel } from '../shared/ipc-contract.ts'
 import { type AppDb, transaction } from './app-db.ts'
 
 /**
- * The backend's event core (docs/backend-split-design.md §6, D4, D7). Every input is a signal of a closed kind,
+ * The backend's event core (docs/system-design.md §4). Every input is a signal of a closed kind,
  * routed by code (a route for each kind, checked by the type system); every change of the backend's state goes
  * through `apply`, which writes it and its event in one transaction and numbers the event; every push to the shell
  * carries a number: a stored event its own, a transient push (streamed text, live task snapshots) the latest stored

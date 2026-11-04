@@ -2,7 +2,7 @@
 
 [English](development.md) | 简体中文
 
-面向想从源码运行、修改或打包 Viva 的人。功能说明见 [features.md](features.zh-CN.md)，分层设计见 [architecture.md](architecture.zh-CN.md)，记忆方案见 [memory.md](memory.zh-CN.md)。
+面向想从源码运行、修改或打包 Viva 的人。功能说明见 [功能说明](features.zh-CN.md)，架构见 [系统架构设计](system-design.zh-CN.md)，界面规则见 [界面规范](ui-guidelines.zh-CN.md)。
 
 ## 运行
 
@@ -85,30 +85,23 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 ## 架构
 
-```
-渲染进程（界面）                主进程                        node dsh/lib/bin.js --profile viva
-app.js ── state.js(reducer)     main.js ── acp-bridge.js ──stdio──▶ DeepSeek Harness
-   │        selectors.js           │        history-db.js            （ACP v1 JSON-RPC）
-   └─ view/*  ◀── preload.cjs ──IPC┘        dsh-profile.js                 └─ plugins/memory（记忆插件）
-                                            memory.db ◀──────── 同一个文件 ────────┘
-```
+进程结构、通信、事件内核、存储和插件见 [系统架构设计](system-design.zh-CN.md)。页面这一侧：
 
-- **插件化分层**：模型看到什么、能做什么（记忆、过程记录、工具策略、人设）放在应用自己 profile 里的 dsh 插件中；会话怎么跑留在 ACP；界面和本机数据留在应用。插件和应用只通过带版本号的数据约定协作。详见 [architecture.md](architecture.zh-CN.md)。
-- **主进程** 启动 `dsh --profile viva`（应用自己的 profile，见 [features.md 的「记忆」](features.zh-CN.md#记忆)），用官方 `@agentclientprotocol/sdk` 的 `ClientSideConnection` 说 ACP：`initialize → session/new → session/prompt`，`session/cancel` 停止，`session/close` 开新对话。
-- **事件分流**（对应设计稿的「对话不含思考和工具调用」）：
-  - `agent_message_chunk` → 对话区
-  - `agent_thought_chunk`、`tool_call`、`tool_call_update` → 抽屉「过程」、标题栏的 Viva 岛；读写过的文件进「文件」
-  - `session/request_permission` → 对话里的亮蓝确认卡片；你的选择经 `permission-broker` 回给 dsh
+- **事件分流**：`agent_message_chunk` 进对话区；`agent_thought_chunk`、`tool_call`、`tool_call_update` 进抽屉「过程」和标题栏的 Viva 岛，读写过的文件进「文件」；`session/request_permission` 变成对话里的确认卡片，你的选择经 `permission-broker` 回给 dsh。
 - **模型切换**：输入框左下角的选择器，列出 dsh 返回的模型和推理强度（Off / Low / High / Max），通过 ACP 的 `session/set_config_option` 切换，从下一轮生效；回复进行中禁用。
-- **流式输出**：回复按打字机节奏逐字显示（基础约 90 字/秒，积压多时自动加速，最多落后约 1.2 秒）。注意：dsh 的 ACP 接口只推送「已完成的整段消息」，不推送模型的逐字增量，所以首字要等整段生成完才出现。dsh 将来若推送增量片段，无需改代码即可逐字显示。
-- **滚动**：对话区新内容到来时跟随到底部，但长回复只滚到「最新提问贴近顶部」就停，回答从提问下方往下长，底部出现「↓ 新内容」；你一往上翻就停止自动跟随，滚回底部再恢复。抽屉重绘时保留滚动位置，停在底部时像日志一样跟随最新一步，打开「过程」直接定位到最新。
-- **改名（原 my-agent）**：应用原名 my-agent，Electron 按应用名存放数据。改名后首次启动时，会把旧目录里的历史对话、记忆和过程记录**复制**过来，旧目录原样保留作为备份。加密保存的 API key 无法迁移（系统钥匙串的条目按应用名区分），需要在设置里重新填一次，或者用 `DEEPSEEK_API_KEY` 环境变量。
-- **状态** 全部在 `state.js` 的纯 reducer 里不可变更新；视图只读 `selectors.js`，所有文本都走 `textContent`。
-- **安全**：`contextIsolation` + `sandbox`，preload 只暴露 `window.agent` 上的方法和平台名（桌面岛的页面另有一个只能收内容、发点击的 `window.desk`），主进程校验 IPC 入参（包括渲染进程提交的历史消息），页面有 CSP。
+- **流式输出**：`viva-stream` 送来真正的增量，回复按打字机节奏显示（基础约 90 字/秒，积压多时自动加速，最多落后约 1.2 秒）。
+- **滚动**：新内容到来时跟随到底部，但长回复只滚到「最新提问贴近顶部」就停，底部出现「↓ 新内容」；你一往上翻就停止跟随，滚回底部再恢复。抽屉重绘时保留滚动位置。
+- **状态**：全部在纯 reducer 里不可变更新；视图只读 selector，文字都走 `textContent`。
+- **安全**：`contextIsolation` + `sandbox`，preload 只暴露 `window.agent` 上的方法（桌面岛另有只能收内容、发点击的 `window.desk`），页面有 CSP，外壳和后端各按 IPC 契约校验一次入参。
 
-## 形象素材
+她的形象和素材规范见 [界面规范](ui-guidelines.zh-CN.md#她的形象)。
 
-角色和素材规范见 [女仆角色设定](maid-character.zh-CN.md)。应用从 `src/assets/maid/` 加载：每个状态一张 400px 静图，五个状态另有动图，都是 WebP，从 dsh-personal-agent 的原图缩小导出；原始 GIF 和生成提示词不放进仓库。换图后在首页、对话、确认卡片、跟进详情和桌面岛上各看一遍。
+## 国际化
+
+- **语言**：设置里可选跟随系统、简体中文、English。新用户跟随系统；简体中文的系统变体都按 `zh-CN`，其他语言按 `en`。界面语言和对话语言无关；切换不重开会话、不清对话，保留草稿、选区、焦点和滚动位置，输入法组字期间推迟重绘。
+- **文案**：界面上的字（含无障碍名称、校验提示、占位符、空态和错误）放进 `src/shared/i18n/messages/en.ts` 和 `zh-CN.ts`，两份 key 必须一致，用 `t()` 取。品牌名、工具和协议 id、文件路径、用户的文字、历史和第三方输出保持原样。人设、插件给模型的指令和记忆整理的中文标记不随界面切换，不要当界面文案批量翻译。
+- **文档**：每篇文档中英两份（`.zh-CN.md` 是中文），互相链接，并登记在 `docs/i18n-manifest.json` 里，带两份的哈希。改了一份就要同步另一份，再更新两个哈希；不要为了让检查通过而直接重算哈希。`npm run check:i18n` 检查成对、互链、本地链接和哈希是否最新，单元测试也会跑它。
+- **验证**：类型检查、单元测试、冒烟测试，外加 `npm run smoke:language`（安装向导和设置、未保存的密钥草稿、反复切换、输入法、窄窗、会话不变、桌面岛同步）。
 
 ## 测试
 

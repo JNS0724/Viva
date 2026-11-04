@@ -91,7 +91,7 @@ flowchart LR
   N -->|Continue| C["Draft in input; you review and send"]
 ```
 
-Embedded dsh powers conversations over ACP with Electron’s main process. Memory, permissions, and follow-ups are dsh plugins; Viva does not modify dsh. See [Architecture](docs/architecture.md) and [Features](docs/features.md).
+Embedded dsh powers conversations over ACP with Electron’s main process. Memory, permissions, and follow-ups are dsh plugins; Viva does not modify dsh. See [System design](docs/system-design.md) and [Features](docs/features.md).
 
 <a id="下载安装"></a>
 ## Download and install
@@ -141,10 +141,9 @@ See [Development](docs/development.md) for packaging, tests and embedded dsh.
 
 - [Features](docs/features.md)
 - [Development, packaging, and testing](docs/development.md)
-- [Architecture](docs/architecture.md)
-- [System design](docs/system-design.md): the shell and backend processes, the event core, storage, security and lifecycle
-- [Memory design](docs/memory.md)
-- [Background task query tools](docs/background-task-tools.md)
+- [System design](docs/system-design.md): the shell and backend processes, the event core, storage, plugins, security and lifecycle
+- [UI guidelines](docs/ui-guidelines.md)
+- [Live checks before a release](docs/live-check.md)
 
 ## Contributing
 
@@ -162,4 +161,4 @@ You can also request sources through [Issues](https://github.com/JNS0724/Viva/is
 
 ## Internationalization
 
-Choose Follow system, Simplified Chinese, or English in Settings → Language. New profiles follow the system; existing profiles keep Chinese. Switching does not restart the session or rewrite conversation content. See [Internationalization](docs/internationalization.md) for maintenance and validation. Existing demo screenshots and recordings use Chinese.
+Choose Follow system, Simplified Chinese, or English in Settings → Language. New profiles follow the system; existing profiles keep Chinese. Switching does not restart the session or rewrite conversation content. See [Development](docs/development.md#internationalization) for maintenance and validation. Existing demo screenshots and recordings use Chinese.

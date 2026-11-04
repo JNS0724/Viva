@@ -5,80 +5,26 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "0a8b29e48e0490d6dd958b9d87f7dd4c2eb68097efb989ae67e58d61cd4dbcd9",
-      "zhHash": "56e083bed752af4ea4c2a723e83f2628ec583a1849be9e20ba487680f2ace64f"
-    },
-    {
-      "en": "docs/architecture.md",
-      "zh": "docs/architecture.zh-CN.md",
-      "enHash": "7088650da7c0d8ba457a8891010db9d9f83dfb8275206fad361d84b6ad3910c8",
-      "zhHash": "0fef2975892f66c992710c7d371beefc150d66470a329a03177b0593f27cbe20"
-    },
-    {
-      "en": "docs/background-task-tools.md",
-      "zh": "docs/background-task-tools.zh-CN.md",
-      "enHash": "746f937ae28c567db953610247058c8649cc307267fd9ca70592b7569160edf6",
-      "zhHash": "598312f927f9838386f19c0c52ad90edc2745d867e1645e0d62e16a6d6fa038e"
-    },
-    {
-      "en": "docs/maid-character.md",
-      "zh": "docs/maid-character.zh-CN.md",
-      "enHash": "060929f17c34468c9691cbca95c1f90b01bf254de79a2895b23698e386963c50",
-      "zhHash": "01dbd066a9a16ae1b2e2604a60f05805a8d27b5c6bc773281145e9bb9225e927"
+      "enHash": "4771358a3a5f5e89db89b12e13c81440b878743419d36c1564554516df4dac8e",
+      "zhHash": "ae6323da6ec6de9f8f15c2a5915cd153747074ea65a62cad7a0819827dfe93c7"
     },
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "8a11ba03a146f09d48bbe038ba6c3232e6b64a0dff7700776b1dfbae2d0cae3e",
-      "zhHash": "89e10f6f6556adb431940c7c42285f1b6aa32513fc94d813b4e9708cdc249dee"
-    },
-    {
-      "en": "docs/dsh-upgrade-validation-20261026.md",
-      "zh": "docs/dsh-upgrade-validation-20261026.zh-CN.md",
-      "enHash": "102b4f45010fe1c91f8cfa92490f779df27b833218fc76a1ff7328b5896e75ef",
-      "zhHash": "000c737a8f76faf657cfb31d539405fdaf4876c3baf4ece84a69bfe21e7566a1"
+      "enHash": "84487a815a1d19097aae479c9d7fe399936abd52e4c25f37a12078013ef19929",
+      "zhHash": "6eff3108ad4afa38293913c77616645939ffa4fee0efb2a7b68cd9a799e2f6bd"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "01ad58c39fbf3e34272ef35724d5c0e07b732d8e8a6ba38734da6359801b4f83",
-      "zhHash": "2dd3115e39f05ecc3240a136fcea6bc2d52ff33e1dcf96dc55602e7962e7793a"
-    },
-    {
-      "en": "docs/internationalization.md",
-      "zh": "docs/internationalization.zh-CN.md",
-      "enHash": "627aa6b6e5e5535a3838241b27dd658a95e3893a0fa036dc1f34c26407c67fa0",
-      "zhHash": "b7e67308e10b0e2c5703063855984168a38617eef45f46a74134dfcd5508511e"
+      "enHash": "5533372dc7e41a9b6e7fd8bd44b7f651dcc049a446ccc267a5b5b40193aa720d",
+      "zhHash": "e5383d17ecad3b8a1ca4065a894dfe42f12b8d7d561931e60762ccc2aa85e6ce"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "ed776e2df2315eed92eabf03c995400fd8d8ef91a7254482839ea5567d65764e",
       "zhHash": "e82cba0112f0b7e1559388184af1eb42374de4c29041181b083be3b0751d129f"
-    },
-    {
-      "en": "docs/memory.md",
-      "zh": "docs/memory.zh-CN.md",
-      "enHash": "2b017d142575ecbdaea6a4055a29b346be0f295a4d2a587ca9b0853dbbdde022",
-      "zhHash": "bea712d3ec7c5b465b2e04ece20a644b94652458b8e8fbad4b2889fcff089257"
-    },
-    {
-      "en": "docs/new-topic-performance-20261026.md",
-      "zh": "docs/new-topic-performance-20261026.zh-CN.md",
-      "enHash": "9bc40f1cd1b68fc96ae992392be48a12b01023323f00fc1db886d8ca8f34dc64",
-      "zhHash": "bd6466c4afb112a783ceff788ec2f1e6c656d8bd2baa80e5f661af19235718b5"
-    },
-    {
-      "en": "docs/release-qa-20261028.md",
-      "zh": "docs/release-qa-20261028.zh-CN.md",
-      "enHash": "d7cd2dc67ff5894c04e76d0130bec41a33b4e0ecd04885d76ddeb059a750e1ce",
-      "zhHash": "b09b9c96925be6ed3c14873c05a6ff8039450673c1a7a4bb5d49c6d8e405d65a"
-    },
-    {
-      "en": "docs/windows-performance-20261026.md",
-      "zh": "docs/windows-performance-20261026.zh-CN.md",
-      "enHash": "53b1d4b6bfa039b7749b8e7d7c60e9e4e7f9db4a0d9c23dd2ff0d49f464ec751",
-      "zhHash": "e4963dbcd642327b56302347b76b6f80486533f9af84e5ce2ed8d6ea5e8501d3"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -107,49 +53,31 @@
     {
       "en": "docs/releases/v0.4.0-beta.6.md",
       "zh": "docs/releases/v0.4.0-beta.6.zh-CN.md",
-      "enHash": "6b5d41597fddc0c4229f7dff27cc75de263ed244a830e0669661158ab71b60d5",
-      "zhHash": "c615a6c5f95b307ad49905dede55c869e0ca30c0f517ff3128e577f9bbe51c59"
+      "enHash": "00ed9f5905c956fae6823450ede4fe0b6171cf5a1bf2dd82e86256c1bdd8d97a",
+      "zhHash": "18db5dbe01d746f5dc5342451d8802bcb9c2c21ad36ed906cd5fb4a8ee55980c"
     },
     {
       "en": "docs/releases/v0.4.0-beta.7.md",
       "zh": "docs/releases/v0.4.0-beta.7.zh-CN.md",
-      "enHash": "a1253c7be5a01e0920760807f54a64f0171144a2af52fa4d1eb0435933707746",
-      "zhHash": "d6edd57c1ea73dd35238843b12a525573aeca3c048ea4fbd5c2e761dac987ea8"
+      "enHash": "617864f3a869a35a43a4b3a9639973ee9f8d3e8d4b26dd8dd353ae75bf68e7f2",
+      "zhHash": "1de54711b7c32ab8d8745643766c0f6865fbba74cddc61e1103b2fa2d15bb746"
     },
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "84280b9e92f3f583f9c4f5cf7d15b32b154029e40d2c72dd72485f9ca5c398c2",
-      "zhHash": "e1516549dff41284472eba5f9ab5feaf895bd96e6afbbf3685233e7b6d35cf2c"
-    },
-    {
-      "en": "docs/remote-workspace-research-20261104.md",
-      "zh": "docs/remote-workspace-research-20261104.zh-CN.md",
-      "enHash": "f189e16099499882bafffd9d2c4cfb9cc93e720c15a0fdfed2866059b409b5fa",
-      "zhHash": "41328213a877a6caede822bdcf96f65328ceb40d1ab558bbe27af4eaf96acf96"
-    },
-    {
-      "en": "docs/backend-split-design.md",
-      "zh": "docs/backend-split-design.zh-CN.md",
-      "enHash": "321f84d978a94f7e1bf53e77a2370628a8cdc2d476215e560a1ac5827b6316c7",
-      "zhHash": "2ce94d2cc0ffd7688826b531b145960c988bb22c4d8feb1358206a14969720a9"
+      "enHash": "eb8530117ca5f14302d8e2918090dbf77cfd8e0a297c9b1578506d35100c2da1",
+      "zhHash": "787ed30845b121b4deb6ba5ac9f22b0b8d05f1b82092bb663733bc29dd9cd399"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "35cff11a307c53c412d83e2eed619a66dc3e10c6c5ca33bf9091544e0a99d091",
-      "zhHash": "f30d93536b1c4d2c5fd3972cf5f575238a3475f963d7b88bd2c6b7d5a8745226"
+      "enHash": "ac0857c3452a8b5bb682e0e976bed8d1e4d818c090f4c70234cdf036d50d1b6d",
+      "zhHash": "a30e62f93ec145d9515d90f5036bf2213422e9958e6a8d61f5332b88d6c1f1ea"
     }
   ],
   "bilingual": [
     "AGENTS.md",
     "build/icons/README.txt"
   ],
-  "sourceReports": [
-    {
-      "path": "docs/project-handoff-20261030.md",
-      "locale": "zh-CN",
-      "sha256": "e4b2c6f28c123d5230757df62550dc38edcfec8f66ee6fbf8fa4a9a926cb803c"
-    }
-  ]
+  "sourceReports": []
 }

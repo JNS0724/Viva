@@ -1,5 +1,5 @@
 /**
- * Viva's maid (docs/maid-character.md): one picture per mood in src/assets/maid, drawn on its own cream, so a
+ * Viva's maid (docs/ui-guidelines.md, Her character): one picture per mood in src/assets/maid, drawn on its own cream, so a
  * round crop of it never shows a square edge. `whole` shows the half-body as drawn (the home page, the cards,
  * the desktop island); `face` zooms in on her face for the conversation's 48px. A few moods also have a short
  * animation (`<mood>-motion.webp`), used only where she is large and in front of the user, and never when the
