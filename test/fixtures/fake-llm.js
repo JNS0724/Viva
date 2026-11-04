@@ -8,8 +8,6 @@
  * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
  * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result,
  *   or, told 「再问我城市」 too, asks which city as for the weather;
- * - 「把全部…」 → offers the background with viva_offer_background, then goes on (「开始整理」, or, asked to
- *   接入演示服务 too, to that);
  * - 「删掉 X」 → removes X with the shell;
  * - asked by dsh's Auto review about a step → allows it, unless it removes something;
  * - after a tool result → says what the tool did;
@@ -28,8 +26,6 @@ const RECALL = /查一下\s*(.+)$/s
 const WEATHER = /明天.*天气/
 const CONNECT = /接入演示服务/
 const THEN_ASK = /再问我城市/
-/** 「把全部…」: a job that will take long, which the fake offers the background first (viva_offer_background). */
-const BIG_JOB = /^把全部/
 const FOLLOW = /到时候帮我/
 /** What the fake proposes to follow up on when asked 「…到时候帮我…」: two days from now, so never in the past. */
 export const FOLLOWUP = Object.freeze({ title: '周报', ask: '按上周的模板起草周报' })
@@ -110,11 +106,6 @@ function afterTool(messages, result) {
   // 「…再问我城市」: once the server is dealt with, it asks which city (a question later in the turn).
   if (use?.name === 'viva_mcp_add' && THEN_ASK.test(lastWords(messages))) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
-  if (use?.name === 'viva_offer_background') {
-    // Asked to set up the demo service too, it goes on to that, whose approval holds the turn open.
-    if (CONNECT.test(lastWords(messages))) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
-    return { text: `开始整理。（${resultText(result)}）` }
-  }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
   const saved = output.includes('已记住') || output.includes('之前已经记过')
@@ -192,7 +183,6 @@ export function decide(request) {
     return { tool: { name: 'memory_remember', input: { text, keywords } } }
   }
   if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
-  if (BIG_JOB.test(question)) return { tool: { name: 'viva_offer_background', input: { why: '要逐个读完所有文档' } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   if (FOLLOW.test(question)) return { tool: { name: 'viva_followup_propose', input: followupProposal() } }
   const recall = RECALL.exec(question)

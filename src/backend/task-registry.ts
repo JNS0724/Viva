@@ -58,7 +58,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const event = record(raw), id = text(event.taskId)
     if (!id) return
     const type = text(event.type)
-    if (!['task_update', 'task_end', 'permission', 'task_permission_waiting', 'task_permission_closed', 'task_question', 'task_question_closed'].includes(type)) return
+    if (!['task_update', 'task_end', 'permission', 'task_permission_closed', 'task_question', 'task_question_closed'].includes(type)) return
     const task = tasks.get(id)
     if (!task) {
       if (early.size >= 100 && !early.has(id)) early.delete(early.keys().next().value!)
@@ -67,7 +67,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     if (terminal.has(task.status)) return
     const pending = waits.get(id) ?? new Map<string, 'permission' | 'answer'>()
     waits.set(id, pending)
-    if (type === 'permission' || type === 'task_permission_waiting') pending.set(`p:${text(event.requestId)}`, 'permission')
+    if (type === 'permission') pending.set(`p:${text(event.requestId)}`, 'permission')
     if (type === 'task_permission_closed') pending.delete(`p:${text(event.requestId)}`)
     if (type === 'task_question') pending.set(`q:${text(event.questionId)}`, 'answer')
     if (type === 'task_question_closed') pending.delete(`q:${text(event.questionId)}`)

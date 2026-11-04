@@ -317,9 +317,9 @@ Looked at again once this works in use: 放到后台 and automatic handoff of lo
 
 ### 11.7 Order of work
 
-1. Remove the extra ways in and the extra displays: 放到后台 and Undo, routing, "#name", the bottom-right panel, result cards, the drawer's task tab, the island's notice, the cards after a restart. 后台做 stays for now, so tasks can still be started before step 3.
+1. Remove the extra ways in and the extra displays: 放到后台 and Undo, routing, "#name", the bottom-right panel, result cards, the drawer's task tab, the island's notice. 后台做 and the "continue / drop" card after a restart stay for now, so tasks can still be started and taken up again before step 3. (Done.)
 2. The backend task service: what tasks say is stored by the backend; pages only display it.
-3. The start, stop and message tools, the `task_created` push, and the sub-agent settings; the 后台做 button, the 后台 page's input box and 接着问 are removed.
+3. The start, stop and message tools, the `task_created` push, and the sub-agent settings; the 后台做 button, the 后台 page's input box and 接着问, and the cards after a restart are removed.
 4. Results come back to the main conversation.
 
 Each step is its own commit, with the smoke tests rewritten to match and run.

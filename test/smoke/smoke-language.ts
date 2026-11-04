@@ -42,7 +42,7 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
   const mergedViews = await run(win, `(async () => {
     const { setLocale, getLocale } = await import('../shared/i18n/locale.js');
     const { initialState, reduce } = await import('./state.js');
-    const { renderTaskDock } = await import('./view/task-dock.js');
+    const { renderTasksPage } = await import('./view/tasks-page.js');
     const { renderResumeDialog } = await import('./view/resume-dialog.js');
     const { reviewView } = await import('./view/review.js');
     const { renderEarlier, openEarlierRow } = await import('./view/earlier.js');
@@ -50,7 +50,7 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
     const dock = document.createElement('div'), dialog = document.createElement('div');
     const handlers = new Proxy({}, { get: () => () => {} });
     const taskState = reduce(initialState, { type: 'task_started', task: { id: 'language-test', title: 'User 标题', words: 'User text' }, text: 'User text', at: 1 });
-    const state = { ...taskState, tasks: { ...taskState.tasks, dockRoom: true }, review: { ...initialState.review, loaded: true, hasMore: false } };
+    const state = { ...reduce(taskState, { type: 'tasks_page_open', taskId: 'language-test' }), review: { ...initialState.review, loaded: true, hasMore: false } };
     const asked = { stage: 'gone', segmentId: 'language-test', cwd: '/user/资料' };
     const earlier = document.createElement('div');
     const earlierState = { ...state, earlier: { segments: [{ id: 'old', parentId: null, cwd: '/user/资料', createdAt: 1000,
@@ -59,7 +59,7 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
     try {
       for (const locale of ['en', 'zh-CN', 'en']) {
         setLocale(locale);
-        renderTaskDock(dock, state, handlers, 60000);
+        renderTasksPage(dock, state, handlers, 60000);
         renderResumeDialog(dialog, asked, handlers);
         renderEarlier(earlier, earlierState, handlers, 60000);
         if (!results.length) openEarlierRow(earlier, 'old-0');
@@ -78,7 +78,7 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
       ? ['Background', 'Continue with records', 'Bookmarks']
       : ['后台', '用记录接着聊', '收藏']
     if (!view.dock.includes(expected[0]) || !view.dialog.includes(expected[1]) || !view.review.includes(expected[2])) {
-      problems.push('Merged task dock, resume dialog or review kept stale language: ' + view.locale)
+      problems.push('Merged tasks page, resume dialog or review kept stale language: ' + view.locale)
     }
   }
   const after = await run(win, `window.agent.getInfo()`)

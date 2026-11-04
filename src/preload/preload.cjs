@@ -81,7 +81,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
    * Background tasks: the running turn goes on in the background ({ words, keep, text }), and the
    * conversation goes on with `text`: { ok, task, info, conversation, folds } | { ok: false, reason | problem }.
    */
-  spinOffTask: (request) => ipcRenderer.invoke('task:spin-off', request),
   /** 后台做: { text, words? } (words: the running turn's, to start from before it): { ok, task } | { ok: false, problem }. */
   startTask: (request) => ipcRenderer.invoke('task:start', request),
   /** Saved along the way and at its end ({ ended: true, status }: kept to be asked again, not offered as unfinished). */
@@ -94,7 +93,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   askTask: (taskId, text) => ipcRenderer.invoke('task:ask', taskId, text),
   resumeTask: (taskId) => ipcRenderer.invoke('task:resume', taskId),
   forgetTask: (taskId) => ipcRenderer.invoke('task:forget', taskId),
-  undoTask: (taskId) => ipcRenderer.invoke('task:undo', taskId),
   closeTask: (taskId) => ipcRenderer.invoke('task:close', taskId),
   stopTask: (taskId) => ipcRenderer.invoke('task:stop', taskId),
   steerTask: (taskId, text) => ipcRenderer.invoke('task:steer', taskId, text),

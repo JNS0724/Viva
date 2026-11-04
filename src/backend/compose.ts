@@ -782,14 +782,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     })
   }
 
-  /** The agent's side of background tasks; a change of the main session is the one shown from then on. */
-  const withInfo = <R extends { ok: boolean, info?: any }>(result: R): R => {
-    if (result.ok) lastInfo = { ...result.info, remembersHistory: true }
-    return result
-  }
+  /** The agent's side of background tasks. */
   const taskAgent = {
-    spinOff: async (request: { words: string }) => withInfo(await requireBridge().spinOff(request)),
-    mergeBack: async (taskId: string) => withInfo(await requireBridge().mergeBack(taskId)),
     closeTask: (taskId: string) => bridge?.closeTask(taskId),
     cancelTask: (taskId: string) => bridge?.cancelTask(taskId),
     steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
@@ -844,9 +838,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).
       store: taskStore = journaled(createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) }), 'task', TASK_WRITES, applyChange),
       current: () => conversation,
-      setCurrent: (next) => { conversation = next },
-      isBusy: () => turn.active,
-      setBusy: (active) => { turn = { ...turn, active } },
       agentInfo: () => lastInfo,
       agent: taskAgent,
     })

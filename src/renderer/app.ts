@@ -25,11 +25,11 @@ import { historyMessages, setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
 import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
-import { hasDockRoom, liveTasks, mentionedTask, routeOf } from './tasks-state.ts'
+import { liveTasks } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
 import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
-import { render, renderRouteHint, renderSendButton, renderStream, renderTick } from './view/render.ts'
+import { render, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createScrollFollower } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
@@ -38,7 +38,7 @@ import { createResumeActions } from './resume-actions.ts'
 import { createReviewActions } from './review-actions.ts'
 import { isStarred, placeOf } from './stars.ts'
 import { scheduleFrame } from './view/frame.ts'
-import { attachColumnResize, sideBeside } from './view/column-resize.ts'
+import { attachColumnResize } from './view/column-resize.ts'
 
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
@@ -68,7 +68,6 @@ const elements = {
   drawer: byId('drawer'),
   composer: byId('composer'),
   input: fieldById('composer-input'),
-  routeHint: byId('route-hint'),
   /** Pictures pasted or dropped into the input, above the words (draft-images.js). */
   draftPics: byId('draft-pics'),
   sendBtn: buttonById('send-btn'),
@@ -102,8 +101,6 @@ const elements = {
   hubSearchKey: byId('hub-search-key'),
   /** 后台: every background task and the one picked (view/tasks-page.js). */
   tasksPage: byId('tasks-page'),
-  /** The background tasks floating in the corner of the main area (view/task-dock.ts). */
-  taskDock: byId('task-dock'),
   main: byId('main'),
 }
 /** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */
@@ -113,9 +110,8 @@ export type Dom = typeof dom
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
 attachTurnRail(dom.scroll, byId('turn-rail'))
 
-const DOCK_KEY = 'viva:dock-collapsed'
 const TASK_LIST_KEY = 'viva:tasks-list-folded'
-/** A choice kept for the next launch (the dock, the 后台 page's list folded); storage refused, false. */
+/** A choice kept for the next launch (the 后台 page's list folded); storage refused, false. */
 function storedFlag(key: string): boolean {
   try {
     return localStorage.getItem(key) === 'true'
@@ -131,7 +127,7 @@ function storeFlag(key: string, value: boolean) {
   }
 }
 
-/** The ended tasks seen (tasks-state.ts dockHidden), a JSON list of ids: the latest so many, enough for any launch. */
+/** The ended tasks seen (tasks-state.ts seen), a JSON list of ids: the latest so many, enough for any launch. */
 const SEEN_KEY = 'viva:tasks-seen'
 const SEEN_KEPT = 200
 function storedSeen(): unknown {
@@ -150,26 +146,13 @@ function storeSeen(ids: readonly string[]) {
 }
 
 let state: State = [
-  { type: 'task_dock_toggled', collapsed: storedFlag(DOCK_KEY) },
   { type: 'tasks_list_folded', folded: storedFlag(TASK_LIST_KEY) },
   { type: 'tasks_seen_restored', ids: storedSeen() },
 ].reduce((before: State, action) => reduce(before, action), initialState)
 
-// The column's width as the user dragged it, kept within the main area as the window and the drawer change it;
-// whatever is left beside it says whether the dock has room there.
-// The first call comes at once, before the handlers a render needs exist: that one only sets the state.
-let columnWired = false
-const column = attachColumnResize(dom.main, [byId('col-grip-left'), byId('col-grip-right')], (width, area) => {
-  const action = { type: 'task_dock_room', room: hasDockRoom(sideBeside(width, area), state.tasks.dockRoom) }
-  if (columnWired) dispatch(action)
-  else state = reduce(state, action)
-})
-columnWired = true
+// The column's width as the user dragged it, kept within the main area as the window and the drawer change it.
+const column = attachColumnResize(dom.main, [byId('col-grip-left'), byId('col-grip-right')])
 new ResizeObserver(column.fit).observe(dom.main)
-// The dock peeked at sits above the input and its label: their top, measured from the main area's bottom.
-new ResizeObserver(() => {
-  dom.main.style.setProperty('--composer-lift', `${dom.main.clientHeight - dom.composer.offsetTop + 56}px`)
-}).observe(dom.composer)
 let pendingReveal: (() => void) | null = null
 let lastFrameAt = 0
 /** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
@@ -184,7 +167,7 @@ function dispatch(action: Action) {
   const next = reduce(state, action)
   if (timing !== null) recordRendererTiming('history-state', performance.now() - timing)
   if (next === state) return
-  if (next.tasks.dockHidden !== state.tasks.dockHidden) storeSeen(next.tasks.dockHidden)
+  if (next.tasks.seen !== state.tasks.seen) storeSeen(next.tasks.seen)
   state = next
   if (['acp_update', 'task_update'].includes(action.type ?? '') && LIVE_TEXT_UPDATES.has(action.update?.sessionUpdate)) {
     // State stays current for user actions, while a burst of model chunks paints once per frame.
@@ -240,11 +223,6 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   tasks: () => handlers.openTasks(),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
-  /** 放到后台, offered on the opened island once a turn runs a while (view/island-dom.js offersBackground). */
-  background: () => {
-    dispatch({ type: 'close_island' })
-    taskActions.moveToBackground()
-  },
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
   permission: ({ requestId, optionId }) => {
     const asked = [state.permission, ...liveTasks(state).map((task) => task.permission)].some((item) => item?.requestId === requestId)
@@ -437,10 +415,9 @@ function revealRow(row: HTMLElement) {
 }
 
 /**
- * Sends `text` as the user's next question, or, while the agent works, into the turn it is on — unless it is
- * about something else, when that turn moves to the background first (tasks-state.js routeOf);
+ * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
  * `via: 'island'` when it was asked on the desktop island; `images`: pictures pasted with it, which go only
- * as a new question (not into a running turn, nor to a background task).
+ * as a new question (not into a running turn).
  * @returns {boolean} false when the agent can't take it now
  */
 function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
@@ -450,22 +427,6 @@ function ask(text: string, { via = null as string | null, images = [] as Array<{
   }
   if ((!text && !images.length) || setupView(state.info) || state.switching || state.newTopicPending) return false
   if (images.length) return askWithImages(text, images, via)
-  // 「#name …」: to the background task it names, whether or not the conversation on screen is busy:
-  // into its turn while it goes on, as its next question once it has ended.
-  const mentioned = mentionedTask(state, text)
-  if (mentioned) {
-    // Only the name so far (接着问 just wrote it): nothing to send yet.
-    if (!mentioned.text) return false
-    if (mentioned.ended) taskActions.askTask(mentioned.taskId, mentioned.text)
-    else taskActions.steerTask(mentioned.taskId, mentioned.text)
-    return true
-  }
-  // About something else while a turn runs: the words go to a task of their own, the turn stays in front;
-  // A failed submission keeps its own text and retry action.
-  if (isBusy(state) && routeOf(state, text) === 'other') {
-    void taskActions.startTask(text)
-    return true
-  }
   if (isBusy(state)) return steer(text, via)
   dom.follower.resetForPrompt()
   dispatch({ type: 'user_prompt', text, at: Date.now(), via })
@@ -474,14 +435,9 @@ function ask(text: string, { via = null as string | null, images = [] as Array<{
 }
 
 let IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
-let IMAGES_NOT_TO_TASKS = t("app.images.can.only.be.sent.to.this")
 
 /** A question with pictures: only as the next question of the conversation on screen. */
 function askWithImages(text: string, images: Array<{ id: string }>, via: string | null) {
-  if (mentionedTask(state, text)) {
-    historyActions.showToast(IMAGES_NOT_TO_TASKS)
-    return false
-  }
   if (isBusy(state)) {
     historyActions.showToast(IMAGES_WAIT)
     return false
@@ -561,7 +517,6 @@ const memoryActions = createMemoryActions({ api, getState: () => state, dispatch
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
 const taskActions = createTaskActions({
   api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
-  isTyping: () => Boolean(dom.input.value.trim()),
 })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
 const resumeActions = createResumeActions({
@@ -646,31 +601,17 @@ const handlers = {
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
-  /** Background tasks: 撤销 on the line a move leaves, and stopping or closing one. */
-  undoMove: () => taskActions.undoMove(),
-  /** 放到后台, beside a turn the agent said will take long (view/thread.js offerRow). */
-  moveToBackground: () => taskActions.moveToBackground(),
+  /** Background tasks: stopping or closing one. */
   stopTask: (taskId: string) => taskActions.stopTask(taskId),
   closeTask: (taskId: string) => taskActions.closeTask(taskId),
   pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),
-  /** A task's report in the thread, put away (view/thread.js reportCard). */
-  dismissReport: (taskId: string) => taskActions.dismissReport(taskId),
-  /** The dock in the corner: folded to its tag or unfolded, remembered for the next launch. */
-  toggleDock: (collapsed: boolean) => {
-    dispatch({ type: 'task_dock_toggled', collapsed })
-    storeFlag(DOCK_KEY, collapsed)
-  },
   /** The 后台 page's list folded to its strip, or unfolded; kept for the next launch. */
   foldTaskList: (folded: boolean) => {
     dispatch({ type: 'tasks_list_folded', folded })
     storeFlag(TASK_LIST_KEY, folded)
   },
-  /** No room beside the column: the folded dock shown over the conversation for now, or put back. */
-  peekDock: (peek: boolean) => dispatch({ type: 'task_dock_peek', peek }),
   /** 恢复默认宽度 in the topic label's menu: the conversation column back to its default width. */
   resetColumn: () => column.reset(),
-  /** An ended task put away from the dock; its card in the conversation stays as the history. */
-  hideFromDock: (taskId: string) => dispatch({ type: 'task_dock_hidden', taskId }),
   /** 后台做 beside the send button: what is typed goes to a task of its own; the conversation here goes on. */
   async startInBackground() {
     const text = dom.input.value.trim()
@@ -678,15 +619,9 @@ const handlers = {
     if (!text || setupView(state.info) || state.switching || state.newTopicPending) return dom.input.focus()
     dom.input.value = ''
     renderSendButton(dom, state)
-    renderRouteHint(dom, state)
     // Not started: the words come back, so nothing typed is lost.
     void taskActions.startTask(text)
     return undefined
-  },
-  /** 接着问 on a task's card: that task on the 后台 page, the cursor in its input. 「#name …」 still works too. */
-  followUpTask(taskId: string) {
-    handlers.openTasks(taskId)
-    dom.tasksPage.querySelector<HTMLTextAreaElement>('.tp-input')?.focus()
   },
   /** A task the last launch left going (view/thread.js unfinishedCard): 接着做, or 不做了. */
   resumeUnfinished: (taskId: string) => taskActions.resumeUnfinished(taskId),
@@ -696,8 +631,6 @@ const handlers = {
   send() {
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
-    // 「#name 」 with no words yet (接着问 just wrote it): nothing to send, to the task or anywhere else.
-    if (!state.question && mentionedTask(state, dom.input.value)?.text === '') return undefined
     const text = dom.input.value.trim()
     if (state.question) {
       if (!text) return
@@ -948,9 +881,6 @@ function wireComposer() {
   })
   dom.input.addEventListener('input', () => {
     renderSendButton(dom, state)
-    renderRouteHint(dom, state)
-    // Typing puts away a dock that was only peeked at: the input is where the user is now.
-    if (state.tasks.dockPeek) handlers.peekDock(false)
   })
   // Pictures go above the words; words that came only as formatted text are put in by hand (paste.js).
   dom.input.addEventListener('paste', (event) => {
@@ -963,12 +893,6 @@ function wireComposer() {
   dom.input.addEventListener('keydown', (event) => {
     // Some IMEs report the confirming key as 229 after isComposing has already cleared.
     if (event.isComposing || event.keyCode === 229) return
-    // Tab, while the line over the input says where the words would go: the other way.
-    if (event.key === 'Tab' && !event.shiftKey && routeOf(state, dom.input.value)) {
-      event.preventDefault()
-      taskActions.toggleRoute()
-      return
-    }
     if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     handlers.send()
@@ -1171,5 +1095,4 @@ boot().catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
 onLocaleChange(() => {
   STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
   IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
-  IMAGES_NOT_TO_TASKS = t("app.images.can.only.be.sent.to.this")
 })

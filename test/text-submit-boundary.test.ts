@@ -36,8 +36,8 @@ test('a refused task follow-up signals the input to restore its draft and retain
   const toasts: string[] = []
   const actions = createTaskActions({
     api: { askTask: async () => ({ ok: false, problem: '暂时接不上' }), stopTask: unexpected, startTask: unexpected, answerQuestion: unexpected,
-      spinOffTask: unexpected, saveTask: unexpected, unfinishedTasks: unexpected, finishedTasks: unexpected, resumeTask: unexpected,
-      forgetTask: unexpected, undoTask: unexpected, closeTask: unexpected, steerTask: unexpected },
+      saveTask: unexpected, unfinishedTasks: unexpected, finishedTasks: unexpected, resumeTask: unexpected,
+      forgetTask: unexpected, closeTask: unexpected, steerTask: unexpected },
     getState: () => state,
     dispatch: action => { state = reduce(state, action) },
     showToast: text => { toasts.push(text) },

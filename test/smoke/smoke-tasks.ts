@@ -1,12 +1,11 @@
 import { capture, run, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
-import { dockPendingSteps, dockSteps } from './smoke-dock.ts'
+import { columnSteps } from './smoke-column.ts'
 import { checkTaskCardRetention } from './smoke-task-card.ts'
 
 /**
- * Background tasks on the real dsh (phase 3): while a turn waits on an approval, words about something else
- * say over the input that they go to the background; sent, they start a task of their own and the turn stays
- * in front. 后台做 does the same at any time; 放到后台 moves a long turn there. Each task has one card in the
- * conversation, answered in place, and a place on the 后台 page.
+ * Background tasks on the real dsh: 后台做 starts a task of its own at any time, also while a turn waits on an
+ * approval, the turn staying in front. Each task has one line in the conversation and a place on the 后台
+ * page, where it is answered.
  */
 /** Unlike configSteps's words, which stay earlier in the same session. */
 const BUSY_ASK = '再帮我接入演示服务一次'
@@ -47,7 +46,7 @@ async function openFromLine(win: SmokeWindow, title: string) {
   return until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title === ${JSON.stringify(`#${title}`)} && seen })()`, `#${title} on the 后台 page`)
 }
 
-/** What a task waits on, answered where it is answered when the dock is not shown: its page, opened from its line. */
+/** What a task waits on, answered where it is answered: its page, opened from its line. */
 async function answerOnPage(win: SmokeWindow, title: string, label: string) {
   await openFromLine(win, title)
   await until(win, `Boolean(${pageButton(label)})`, `「${label}」 on #${title}'s page`)
@@ -64,24 +63,13 @@ const startInBackground = (win: SmokeWindow, text: string) => run(win, `(() => {
 })()`)
 
 /**
- * While a turn waits on an approval, words about something else go to a task of their own: the turn and its
- * approval stay in front, the task starts from before that turn and answers on its card.
+ * While a turn waits on an approval, 后台做 starts a task of its own: the turn and its approval stay in front,
+ * the task starts from before that turn and answers on its card.
  */
-async function routeSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+async function busyStartSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await submit(win, BUSY_ASK)
   await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the approval card')
-  const hint = await run(win, `(() => {
-    const input = document.getElementById('composer-input')
-    input.value = ${JSON.stringify(OTHER_ASK)}
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    const route = document.getElementById('route-hint')
-    return { hidden: route.hidden, route: route.dataset.route, text: route.textContent }
-  })()`)
-  expect(!hint.hidden && hint.route === 'other' && hint.text.includes('交给后台做'), 'words about something else should say they go to the background', hint)
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-route')
-
-  await run(win, `document.getElementById('composer').requestSubmit()`)
+  await startInBackground(win, OTHER_ASK)
   const done = await until(win, doneCard(OTHER_ASK), 'the task the words started answering')
   expect(done.text.includes(`收到：「${OTHER_ASK}」`), 'the task should answer the words', done)
   const front = await run(win, `({
@@ -100,29 +88,9 @@ async function routeSteps(win: SmokeWindow, outDir: string, expect: Expect, hook
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-moved')
   await pageSteps(win, outDir, expect)
-  await mentionSteps(win, outDir, expect)
   // Declined, the turn in front ends without setting the server up again.
   await run(win, `document.querySelector('.confirm:not(.ask) .btn-secondary').click()`)
   await until(win, mainIdle, 'the turn ending')
-}
-
-const MENTION_WORDS = '顺便说一声'
-
-/** 「#name words」 go to the background task named, here one that ended: asked again, it answers on its card. */
-async function mentionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  const hint = await run(win, `(() => {
-    const input = document.getElementById('composer-input')
-    input.value = '#帮我订一张周五 ${MENTION_WORDS}'
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    return document.getElementById('route-hint').textContent
-  })()`)
-  expect(hint.includes(`交给 #${OTHER_ASK}`) && hint.includes('接着做'), '「#name」 should say the words go to that task', hint)
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-mention')
-  await run(win, `document.getElementById('composer').requestSubmit()`)
-  await until(win, `(() => { const card = ${cardState(OTHER_ASK)}; return card?.status === 'done' && card.text.includes('收到：「${MENTION_WORDS}」') })()`, 'the task answering 「#name」')
-  const asked = await run(win, userTexts)
-  expect(!asked.some((text: string) => text.includes(MENTION_WORDS)), 'the words should not land in the conversation on screen', asked)
 }
 
 /**
@@ -164,27 +132,12 @@ async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
 const BIG_ASK = '把全部文档整理好，顺手接入演示服务'
 
 /**
- * The agent says first that the job will take long: 放到后台 shows beside the turn; taken, the turn goes on in
- * the background with no new words, and the conversation is free.
+ * A longer job given to 后台做 while the conversation is idle: it waits on its approval in the background, the
+ * conversation staying free; declined on its page (opened from its line), the task ends and reports back.
  */
-async function offerSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  await submit(win, BIG_ASK)
-  const offer = await until(win, `document.querySelector('#thread .offer')?.textContent ?? null`, 'the offer beside the turn', UI_WAIT_MS * 20)
-    .catch(async (err) => {
-      await capture(win, outDir, 'tasks-offer-failed')
-      const seen = await run(win, `JSON.stringify({
-        users: [...document.querySelectorAll('#thread .msg-user')].map((el) => el.textContent).slice(-3),
-        trace: [...document.querySelectorAll('#drawer .trace-title')].map((el) => el.textContent).slice(-4),
-        busy: document.getElementById('send-btn').dataset.busy,
-      })`)
-      throw new Error(`${err.message}: ${seen}`)
-    })
-  expect(offer.includes('要逐个读完所有文档') && offer.includes('放到后台'), 'the offer should say why, with 放到后台', offer)
-  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the turn holding on its approval')
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-offer')
-  await run(win, `document.querySelector('#thread .offer .offer-act').click()`)
-  await until(win, `document.querySelector('#thread .fold-task') && !document.querySelector('#thread .offer')`, 'the turn in the background')
+async function longJobSteps(win: SmokeWindow, outDir: string, expect: Expect) {
+  await startInBackground(win, BIG_ASK)
+  await until(win, `(${cardOf(BIG_ASK)})?.dataset.status === 'waiting'`, 'the task waiting on its approval')
   const after = await run(win, `({
     busy: document.getElementById('send-btn').dataset.busy,
     asked: ${userTexts},
@@ -192,8 +145,7 @@ async function offerSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     card: ${cardState(BIG_ASK)},
   })`)
   expect(after.busy === 'false' && !after.asked.includes(BIG_ASK) && after.count === '1' && after.card?.status === 'waiting',
-    'taken, the turn should go on in the background, its card asking, and the conversation be free', after)
-  // Done with: its approval declined (on its page, opened from its line), the task ends.
+    'the task should wait in the background, its card asking, and the conversation be free', after)
   await answerOnPage(win, BIG_ASK, '拒绝')
   await until(win, `(${cardOf(BIG_ASK)})?.dataset.status === 'done'`, 'the task ending')
   await reportSteps(win, outDir, expect)
@@ -343,13 +295,12 @@ async function leaveRunning(win: SmokeWindow) {
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await checkTaskCardRetention(win, expect)
-  await routeSteps(win, outDir, expect, hooks)
-  await offerSteps(win, outDir, expect)
+  await busyStartSteps(win, outDir, expect, hooks)
+  await longJobSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)
   await startSteps(win, outDir, expect)
-  await dockSteps(win, outDir, expect, (text) => startInBackground(win, text))
+  await columnSteps(win, outDir, expect)
   await leaveRunning(win)
-  await dockPendingSteps(win, outDir, expect)
 }
 
 /**

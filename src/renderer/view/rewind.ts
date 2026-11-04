@@ -126,12 +126,11 @@ function withBody(strip: HTMLElement, fold: Fold, { opened, messageView }: Pick<
 let TASK_STATUS: Readonly<Record<string, string>> = { running: t("rewind.running.in.background"), waiting: t("rewind.waiting.for.you.in.background"), done: t("island-view.done"), stopped: t("island-view.stopped.2"), error: t("island-view.something.went.wrong") }
 
 /**
- * Where a turn moved to the background (tasks-state.js): what it is doing now, and 撤销 while the move can
- * still be undone. Once it is no longer running here, what it said can be opened like a path.
+ * Where a turn moved to the background in an earlier version (tasks-state.ts): what it is doing now; once it is
+ * no longer running, what it said can be opened like a path.
  */
 function taskStrip(fold: Fold, { opened, handlers, messageView, tasks }: FoldOptions) {
   const task: BackgroundTask | undefined = tasks?.list.find((entry: BackgroundTask) => entry.segmentId === fold.id)
-  const undoable = task && tasks?.undo?.taskId === task.id
   const status = task?.status === 'running' && task.now ? t("island-tasks.currently", { now: task.now }) : TASK_STATUS[task?.status ?? ''] ?? t("rewind.messages", { count: fold.count })
   const live = task?.status === 'running' || task?.status === 'waiting'
   const strip = h('div', { class: 'fold fold-task', role: 'group', 'aria-label': t("rewind.task.moved.to.background"), 'data-fold': fold.id },
@@ -140,7 +139,6 @@ function taskStrip(fold: Fold, { opened, handlers, messageView, tasks }: FoldOpt
     task ? h('span', { class: 'fold-tag', title: task.words, text: `#${task.title}` }) : null,
     h('span', { class: 'fold-status', text: `· ${status}` }),
     h('span', { class: 'fold-actions' },
-      undoable ? h('button', { class: 'fold-act', type: 'button', title: t("rewind.restore.as.an.interruption.as.if.nothing"), text: t("memory-actions.undo"), onClick: () => handlers.undoMove() }) : null,
       live ? null : h('button', { class: 'fold-act', type: 'button', 'aria-expanded': String(Boolean(opened)), text: opened ? t("rewind.collapse") : t("rewind.expand.to.view"), onClick: () => handlers.toggleFold(fold.id) })))
   return withBody(strip, fold, { opened: live ? undefined : opened, messageView })
 }

@@ -1,34 +1,22 @@
-import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { answersFrom, type QuestionAnswer } from './question-state.ts'
-import { spinOffTarget, taskMessages } from './tasks-state.ts'
+import { runningTurn, taskMessages } from './tasks-state.ts'
 
 /**
- * Background tasks from the window (phase 3): 后台做, or words about something else said while a turn runs,
- * start a task of their own (main/task-ipc.js task:start); 放到后台 moves the running turn there instead, and
- * 撤销 moves it back. While the main process moves a turn, what the agent says arrives under the turn's new
- * place before the window has moved it too, so it waits and is passed on (`deliver`) once the window caught up.
+ * Background tasks from the window: 后台做 starts a task of its own (backend/task-ipc.ts task:start). What the
+ * task says can arrive before the window knows the task, so it waits and is passed on (`deliver`) once it does.
  */
-/** How long the island says a task ended (island-view.js), counted while the user is not typing. */
-export const FINISHED_MS = 5000
-/** While the user types, how often to look again before a task's report comes into the conversation (F). */
-export const REPORT_RETRY_MS = 1000
 /** While a task talks, what it said is saved at most this often, so quitting Viva loses little. */
 export const SAVE_EVERY_MS = 10_000
-let UNDO_FAILED = t("task-actions.could.not.undo")
-const TASK_EVENTS = new Set(['task_update', 'task_end', 'task_question', 'task_question_closed'])
 /** What the main process says of the agent (acp-bridge.ts), as far as holding it back reads it. */
 type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
-const ofTask = (event: AgentEvent | null | undefined) => TASK_EVENTS.has(event?.type ?? '') || Boolean(event?.taskId)
 
-/** isTyping: words are in the input; later: setTimeout, for tests. */
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, isTyping = () => false, later = setTimeout }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
-  api: Pick<AgentApi, 'spinOffTask' | 'startTask' | 'undoTask' | 'steerTask' | 'saveTask' | 'unfinishedTasks' | 'finishedTasks'
+/** later: setTimeout, for tests. */
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, later = setTimeout }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
+  api: Pick<AgentApi, 'startTask' | 'steerTask' | 'saveTask' | 'unfinishedTasks' | 'finishedTasks'
     | 'askTask' | 'resumeTask' | 'forgetTask' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
-  deliver: (event: AgentEvent) => void, isTyping?: () => boolean, later?: (run: () => void, ms: number) => unknown,
+  deliver: (event: AgentEvent) => void, later?: (run: () => void, ms: number) => unknown,
 }) {
-  /** While a move is on its way: which events wait ({ keeps }), and those that came. */
-  let holding: { keeps: (event: AgentEvent) => boolean, events: AgentEvent[] } | null = null
   let submissionCounter = 0
   let starting = 0
   const earlyTasks = new Map<string, AgentEvent[]>()
@@ -42,38 +30,11 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     }
   }
 
-  function release() {
-    const events = holding?.events ?? []
-    holding = null
-    return events
-  }
-
-  /** @returns {boolean} whether the event waits for a move on its way */
+  /** @returns {boolean} whether the event waits for a task being started */
   function hold(event: AgentEvent) {
-    if (starting && event.taskId && !getState().tasks.list.some(task => task.id === event.taskId)) {
-      earlyTasks.set(event.taskId, [...(earlyTasks.get(event.taskId) ?? []), event])
-      return true
-    }
-    if (!holding?.keeps(event)) return false
-    holding = { ...holding, events: [...holding.events, event] }
+    if (!starting || !event.taskId || getState().tasks.list.some(task => task.id === event.taskId)) return false
+    earlyTasks.set(event.taskId, [...(earlyTasks.get(event.taskId) ?? []), event])
     return true
-  }
-
-  /** The running turn goes on in the background. */
-  async function move() {
-    const target = spinOffTarget(getState())
-    if (!target || holding) return { ok: false, reason: 'idle' }
-    dispatch({ type: 'task_moving', moving: true })
-    holding = { keeps: ofTask, events: [] }
-    const result = await call(() => api.spinOffTask(target))
-    if (result.ok) {
-      dispatch({ type: 'task_spun', task: result.task, conversation: result.conversation, info: result.info, folds: result.folds, at: Date.now() })
-    } else {
-      console.warn('[tasks] could not move the turn to the background:', result.problem ?? result.reason)
-    }
-    release().forEach(deliver)
-    dispatch({ type: 'task_moving', moving: false })
-    return result
   }
 
   /**
@@ -89,7 +50,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       return false
     }
     const id = retryId ?? `submission-${Date.now()}-${++submissionCounter}`
-    const words = spinOffTarget(getState())?.words
+    const words = runningTurn(getState())?.words
     dispatch({ type: 'task_submitting', submission: { id, text, origin, status: 'pending' } })
     starting++
     const result = await call(() => api.startTask(words ? { text, words } : { text }))
@@ -108,50 +69,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     return true
   }
 
-  /** 放到后台 (the island's, D; beside a long turn, E): the turn goes on in the background, and the conversation is free. */
-  async function moveToBackground() {
-    const result = await move()
-    if (!result.ok && result.problem) showToast(t("task-actions.could.not.move.to.background", { problem: result.problem }))
-  }
-
-  /**
-   * 撤销: the task is the conversation on screen again. What it said meanwhile goes to it first; then what came
-   * for the conversation, but not from the one it leaves.
-   */
-  async function undoMove() {
-    const move = getState().tasks.undo
-    if (!move || holding) return
-    holding = { keeps: () => true, events: [] }
-    const result = await call(() => api.undoTask(move.taskId))
-    const events = release()
-    if (!result.ok) {
-      events.forEach(deliver)
-      showToast(result.problem ?? UNDO_FAILED)
-      return
-    }
-    const its = (event: AgentEvent) => event.taskId === move.taskId
-    events.filter(its).forEach(deliver)
-    dispatch({ type: 'task_undone', taskId: move.taskId, conversationId: result.conversation.id, info: result.info })
-    events.filter((event) => !its(event) && (ofTask(event) || !event.sessionId || event.sessionId === move.taskId)).forEach(deliver)
-  }
-
-  /** The island has said it long enough; not while the user types, who may not have looked up yet. */
-  function settleFinished(taskId: string) {
-    later(() => {
-      if (getState().tasks.finished?.taskId !== taskId) return
-      if (isTyping()) settleFinished(taskId)
-      else dispatch({ type: 'task_finish_seen', taskId })
-    }, FINISHED_MS)
-  }
-
-  /** What it came back with goes into the conversation, but not under the user's typing (F). */
-  function showReport(taskId: string) {
-    if (!getState().tasks.reports.some((entry: TaskReport) => entry.taskId === taskId && !entry.shown)) return
-    if (isTyping()) later(() => showReport(taskId), REPORT_RETRY_MS)
-    else dispatch({ type: 'task_report_shown', taskId })
-  }
-
-  /** 「#name …」: the words go into that task's turn; it says if they could not. */
+  /** Words for a task (typed on its page): they go into its turn; it says if they could not. */
   function steerTask(taskId: string, text: string) {
     dispatch({ type: 'task_steer', taskId, text, at: Date.now() })
     api.steerTask(taskId, text)
@@ -183,13 +101,11 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   /**
    * A task that ended keeps what it said, in its own part of the timeline, and how it ended, to be asked again
-   * later (接着问); the island says it ended a moment.
+   * later (接着问).
    */
   function ended(taskId: string) {
     const task = taskById(taskId)
     if (!task) return
-    settleFinished(taskId)
-    showReport(taskId)
     save(taskId, { ended: true, status: task.status })
   }
 
@@ -205,7 +121,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   /**
-   * 接着问 / 「#name …」 to a task that ended: the words are its next question, in its own session; it is back
+   * 接着问 to a task that ended: the words are its next question, in its own session; it is back
    * at work at once. Should it not be reachable, it says why and the task is as it was.
    */
   async function askTask(taskId: string, text: string) {
@@ -266,10 +182,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   return {
     hold,
-    moveToBackground,
     startTask,
     ended,
-    undoMove,
     stopTask,
     closeTask,
     pickTaskOption,
@@ -279,7 +193,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     loadUnfinished,
     resumeUnfinished,
     forgetUnfinished,
-    dismissReport: (taskId: string) => dispatch({ type: 'task_report_dismissed', taskId }),
     submitTaskAnswer: (taskId: string) => {
       const question = questionOf(taskId)
       if (question) answerTask(taskId, answersFrom(question))
@@ -293,10 +206,5 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       const question = questionOf(taskId)
       if (question) answerTask(taskId, question.questions.map((item: QuestionItem) => ({ id: item.id, selected: [] })))
     },
-    toggleRoute: () => dispatch({ type: 'route_toggle' }),
   }
 }
-
-onLocaleChange(() => {
-  UNDO_FAILED = t("task-actions.could.not.undo")
-})

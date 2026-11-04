@@ -120,8 +120,6 @@ interface BackgroundTask {
   question?: any
   [field: string]: any
 }
-/** What an ended task came back with, for the conversation: shown in the thread until put away. */
-interface TaskReport { taskId: string, title: string, status: string, preview: string, shown: boolean }
 /**
  * What the island is given to show: islandView's (island-view.ts IslandView), or a form only the desktop's page
  * makes (desk.ts: mini, coach, input, drop), with the fields that form reads.
@@ -210,7 +208,6 @@ interface AgentApi extends LanguageApi {
   starsIn: Invoke<'history:stars-in'>
   starredMessages: Invoke<'history:starred'>
   rewind: Invoke<'timeline:rewind'>
-  spinOffTask: Invoke<'task:spin-off'>
   startTask: Invoke<'task:start'>
   saveTask: Invoke<'task:save'>
   unfinishedTasks: Invoke<'task:unfinished'>
@@ -218,7 +215,6 @@ interface AgentApi extends LanguageApi {
   askTask: Invoke<'task:ask'>
   resumeTask: Invoke<'task:resume'>
   forgetTask: Invoke<'task:forget'>
-  undoTask: Invoke<'task:undo'>
   closeTask: Invoke<'task:close'>
   stopTask: Invoke<'task:stop'>
   steerTask: Invoke<'task:steer'>
