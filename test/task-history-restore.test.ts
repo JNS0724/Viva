@@ -22,10 +22,10 @@ test('resuming an unfinished task sends the same model instruction in either UI 
   const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
   const prompts: string[] = []
   const unexpected = () => { throw new Error('unexpected task operation') }
-  registerTaskIpc(ipc, { db, current: () => main, setCurrent: unexpected, isBusy: () => false,
-    setBusy: unexpected, agentInfo: () => ({}),
+  registerTaskIpc(ipc, { db, current: () => main,
+    agentInfo: () => ({}),
     store: { list: () => [{ id: 'task', segmentId: 'segment', title: 'User title', keep: 0 }], add: unexpected, remove: unexpected },
-    agent: { spinOff: unexpected, mergeBack: unexpected, closeTask: unexpected, cancelTask: unexpected,
+    agent: { closeTask: unexpected, cancelTask: unexpected,
       steerTask: unexpected, startTask: unexpected, resumeTask: async () => ({ ok: true }),
       promptTask: (_id: string, text: string) => { prompts.push(text) } },
   })
@@ -62,8 +62,8 @@ test('persisted side links restore only retained tasks through the real IPC, at 
   const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
   const unexpected = () => { throw new Error('restoring history must not contact the agent') }
   registerTaskIpc(ipc, { db, store: createTaskStore({ db: tasks }), current: () => main,
-    setCurrent: unexpected, isBusy: () => false, setBusy: unexpected, agentInfo: () => ({}),
-    agent: { spinOff: unexpected, mergeBack: unexpected, closeTask: unexpected, cancelTask: unexpected,
+    agentInfo: () => ({}),
+    agent: { closeTask: unexpected, cancelTask: unexpected,
       steerTask: unexpected, resumeTask: unexpected, startTask: unexpected, promptTask: unexpected } })
   const list = await handlers.get('task:finished')!({}) as Array<ReturnType<typeof restored>>
   assert.deepEqual(list.map(item => [item.task.id, item.task.host.conversationId, item.task.host.at]), [['before', main.id, 0], ['middle', main.id, 1]])
@@ -93,8 +93,8 @@ test('后台做 before the first foreground message persists its empty parent in
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
   const unexpected = () => { throw new Error('unexpected agent operation') }
-  registerTaskIpc(ipc, { db, current: () => main, setCurrent: unexpected, isBusy: () => false, setBusy: unexpected,
-    agentInfo: () => ({}), agent: { spinOff: unexpected, mergeBack: unexpected, closeTask: unexpected, cancelTask: unexpected,
+  registerTaskIpc(ipc, { db, current: () => main,
+    agentInfo: () => ({}), agent: { closeTask: unexpected, cancelTask: unexpected,
       steerTask: unexpected, resumeTask: unexpected, startTask: async () => ({ ok: true, taskId: 'only-background' }), promptTask: () => {} } })
   const result = await handlers.get('task:start')!({}, { text: '只在后台做，不发前台消息' }) as { task: { segmentId: string } }
   assert.deepEqual(db.get(main.id)?.messages, [])

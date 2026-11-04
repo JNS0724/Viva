@@ -12,7 +12,6 @@ import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown } fr
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
-import { offeredBackground } from '../tasks-state.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
@@ -257,15 +256,6 @@ function unfinishedCard(task: { id: string, title: string }, handlers: Handlers,
     h('button', { class: `${BUTTON.text} task-report-open`, type: 'button', text: t("thread.abandon"), onClick: () => handlers.forgetUnfinished(task.id) }))
 }
 
-/** The agent said the turn will take long (E): 放到后台 beside it, while it runs. Not a card: it asks nothing. */
-function offerRow(state: State, handlers: Handlers) {
-  const offered = offeredBackground(state)
-  if (!offered) return ''
-  return h('div', { class: 'offer', role: 'note' },
-    h('span', { class: 'offer-text', text: offered.why ? t("thread.this.will.take.a.while.move.it", { why: offered.why }) : t("island-dom.this.will.take.a.while.move.it") }),
-    h('button', { class: `${BUTTON.secondary} offer-act`, type: 'button', text: t("island-dom.move.to.background"), onClick: () => handlers.moveToBackground() }))
-}
-
 const workingMaids: MaidSlots = new Map()
 
 /** Where the next answer will appear: Viva at work and what she is doing now (the island keeps the time). */
@@ -472,10 +462,8 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
       item.status === 'failed' ? h('div', {},
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("thread.retry"), onClick: () => handlers.retrySubmission(item.id) }),
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("extensions.remove"), onClick: () => handlers.dismissSubmission(item.id) })) : null))),
-    state.tasks.moving ? part('moving', [], () => h('div', { role: 'status', text: t("thread.moving.to.background") })) : '',
     // The follow-ups the model proposed in this conversation, each to be decided on (view/followups.ts).
     ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
-    part('offer', [offeredBackground(state)?.why ?? null], () => offerRow(state, handlers)),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
     state.question ? part('question', [state.question], () => questionCard(state.question, handlers)) : '',
     state.secret ? secretCard(state.secret, handlers) : '',

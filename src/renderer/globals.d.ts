@@ -208,7 +208,6 @@ interface AgentApi extends LanguageApi {
   starsIn: Invoke<'history:stars-in'>
   starredMessages: Invoke<'history:starred'>
   rewind: Invoke<'timeline:rewind'>
-  spinOffTask: Invoke<'task:spin-off'>
   startTask: Invoke<'task:start'>
   saveTask: Invoke<'task:save'>
   unfinishedTasks: Invoke<'task:unfinished'>
@@ -216,7 +215,6 @@ interface AgentApi extends LanguageApi {
   askTask: Invoke<'task:ask'>
   resumeTask: Invoke<'task:resume'>
   forgetTask: Invoke<'task:forget'>
-  undoTask: Invoke<'task:undo'>
   closeTask: Invoke<'task:close'>
   stopTask: Invoke<'task:stop'>
   steerTask: Invoke<'task:steer'>

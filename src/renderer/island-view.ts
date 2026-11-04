@@ -2,7 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
 import { catMood, currentAction, traceItems, truncate } from './selectors.ts'
-import { liveTasks, offeredBackground, spinOffTarget, unseenEnded } from './tasks-state.ts'
+import { liveTasks, unseenEnded } from './tasks-state.ts'
 
 /**
  * What the Viva island shows, for both of its hosts: the capsule in the window's title bar (view/island.js)
@@ -30,7 +30,6 @@ export type IslandView = {
   detail?: string, action?: string | null, startedAt?: number | null, steps?: number, elapsedMs?: number,
   /** The task it speaks for, when a task (not the conversation) has the island. */
   task?: string,
-  movable?: boolean, offered?: boolean,
   permission?: IslandPermission,
   question?: IslandQuestion,
   background?: IslandBackground,
@@ -156,9 +155,6 @@ function mainView(state: State, background: IslandBackground | null): IslandView
     return {
       ...base, form: 'working', tone: 'working', label: t("island-view.working"),
       action: currentAction(state), startedAt: state.turn?.startedAt ?? null, steps: state.turn?.tools ?? 0,
-      // A turn that runs a while is offered the background (D, view/island-dom.js); at once when the agent said it would (E).
-      ...(spinOffTarget(state) ? { movable: true } : {}),
-      ...(offeredBackground(state) ? { offered: true } : {}),
     }
   }
   if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: t("island-view.error"), detail: truncate(state.error, DETAIL_LIMIT) }

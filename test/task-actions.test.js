@@ -33,7 +33,7 @@ function windowWith(api, deps = {}) {
     later: () => {},
     ...deps,
   })
-  /** An event from the main process, as app.js takes it: it waits while a move is on its way. */
+  /** An event from the main process, as app.ts takes it: it waits while the task it is for is being started. */
   const arrive = (event) => actions.hold(event) || deliver(event)
   return { actions, said, arrive, dispatch, state: () => state }
 }
@@ -72,86 +72,29 @@ test('failed background submissions retain text for retry, without duplicate tas
   assert.deepEqual(win.said.steered, [])
 })
 
-const spunReply = {
-  ok: true,
-  task: { id: 's1', segmentId: 'c1', title: WORDS, words: WORDS },
-  info: { sessionId: 's2' },
-  conversation: { id: 'c2', messages: [{ role: 'user', text: '做周报', receipt: null }, { role: 'assistant', text: '写好了', receipt: null }] },
-  folds: [{ id: 'c1', at: 2, count: 2, kind: 'task' }],
+const startedReply = { ok: true, task: { id: 's1', segmentId: 'c9', title: WORDS, words: WORDS } }
+
+/** 后台做 with the words, and the task saying something: a task in the background to work with. */
+async function withTask(win) {
+  await win.actions.startTask(WORDS)
+  win.dispatch({ type: 'task_update', taskId: 's1', update: chunk('先看提交…'), at: 20 })
 }
 
-test('放到后台: what the turn says on the way reaches the task, and it can be undone', async () => {
+test('what a task says before the window knows it waits, then reaches it', async () => {
   const reply = deferred()
-  const requests = []
-  const win = windowWith({ spinOffTask: (request) => { requests.push(request); return reply.promise } })
-
-  const moving = win.actions.moveToBackground()
+  const win = windowWith({ startTask: () => reply.promise })
+  const starting = win.actions.startTask(WORDS)
   win.arrive({ type: 'task_update', taskId: 's1', update: chunk('三组改动。') })
-  reply.resolve(spunReply)
-  await moving
-
-  assert.deepEqual(requests, [{ words: WORDS, keep: 2 }])
-  const [task] = liveTasks(win.state())
-  assert.deepEqual(taskMessages(task).map((m) => m.text), [WORDS, '先看提交…三组改动。'])
-  assert.deepEqual(win.state().messages.map((m) => m.text), ['做周报', '写好了'])
-  assert.equal(win.state().tasks.undo.taskId, 's1')
-})
-
-test('放到后台 with no words: the turn goes on in the background, the conversation is free, and undoing it adds nothing', async () => {
-  const requests = []
-  const win = windowWith({
-    spinOffTask: async (request) => { requests.push(request); return { ...spunReply, conversation: { ...spunReply.conversation } } },
-    undoTask: async () => ({ ok: true, info: { sessionId: 's1' }, conversation: { id: 'c1', messages: [] } }),
-  })
-  await win.actions.moveToBackground()
-
-  assert.deepEqual(requests, [{ words: WORDS, keep: 2 }])
-  assert.deepEqual([win.said.asked, win.said.steered, win.state().phase], [[], [], 'idle'])
-  assert.equal(liveTasks(win.state()).length, 1)
-  await win.actions.undoMove()
-  assert.deepEqual([win.said.steered, win.state().phase], [[], 'working'])
-})
-
-test('a move that fails leaves the turn where it was and says why', async () => {
-  const win = windowWith({ spinOffTask: async () => ({ ok: false, problem: '这句话还没有保存好' }) })
-  await win.actions.moveToBackground()
-
-  assert.equal(win.state().tasks.list.length, 0)
-  assert.equal(win.state().phase, 'working')
-  assert.match(win.said.toasts[0], /没能放到后台.*还没有保存好/)
-})
-
-test('undone: the task is on screen again with all it said, nothing from the conversation it leaves', async () => {
-  const reply = deferred()
-  const win = windowWith({ spinOffTask: async () => spunReply, undoTask: () => reply.promise })
-  await win.actions.moveToBackground()
-
-  const undoing = win.actions.undoMove()
-  win.arrive({ type: 'task_update', taskId: 's1', update: chunk('三组改动。') })
-  win.arrive({ type: 'update', sessionId: 's2', update: chunk('周会在十点') })
-  win.arrive({ type: 'update', sessionId: 's1', update: chunk('写进 docs。') })
-  reply.resolve({ ok: true, info: { sessionId: 's1' }, conversation: { id: 'c1', messages: [] } })
-  await undoing
-
-  const state = win.state()
-  assert.deepEqual(state.messages.map((m) => m.text), ['做周报', '写好了', WORDS, '先看提交…三组改动。写进 docs。'])
-  assert.deepEqual([state.conversationId, state.phase, state.tasks.list, state.tasks.undo], ['c1', 'working', [], null])
-})
-
-test('an undo that fails passes on what came meanwhile and says so', async () => {
-  const win = windowWith({ spinOffTask: async () => spunReply, undoTask: async () => { throw new Error('dsh 没有回应') } })
-  await win.actions.moveToBackground()
-  await win.actions.undoMove()
-
-  assert.deepEqual(win.said.toasts, ['dsh 没有回应'])
-  assert.equal(liveTasks(win.state()).length, 1)
-  assert.deepEqual(win.said.steered, [])
+  reply.resolve(startedReply)
+  await starting
+  assert.deepEqual(taskMessages(liveTasks(win.state())[0]).map((m) => m.text), [WORDS, '三组改动。'])
+  assert.deepEqual(win.state().messages.map((m) => m.text), ['做周报', '写好了', WORDS, '先看提交…'], 'the conversation on screen as it was')
 })
 
 test('a task\'s question is answered there: one choice by picking it, more with 提交, or skipped', async () => {
   const answered = []
-  const win = windowWith({ spinOffTask: async () => spunReply, answerQuestion: async (...args) => { answered.push(args); return true } })
-  await win.actions.moveToBackground()
+  const win = windowWith({ startTask: async () => startedReply, answerQuestion: async (...args) => { answered.push(args); return true } })
+  await withTask(win)
   const city = { id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }, { label: '北京' }] }
   win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q1', questions: [city], at: 70 })
   win.actions.pickTaskOption('s1', 'city', '上海')
@@ -171,10 +114,10 @@ test('a task\'s question is answered there: one choice by picking it, more with 
   assert.equal(win.state().question, null, 'the conversation on screen was never asked')
 })
 
-test('「#name」 words go into that task\'s turn', async () => {
+test('words for a task go into its turn', async () => {
   const steered = []
-  const win = windowWith({ spinOffTask: async () => spunReply, steerTask: async (...args) => { steered.push(args); return { ok: true } } })
-  await win.actions.moveToBackground()
+  const win = windowWith({ startTask: async () => startedReply, steerTask: async (...args) => { steered.push(args); return { ok: true } } })
+  await withTask(win)
   win.actions.steerTask('s1', '加上版本号')
   assert.deepEqual(steered, [['s1', '加上版本号']])
   assert.equal(taskMessages(liveTasks(win.state())[0]).at(-1).text, '加上版本号')
@@ -183,10 +126,10 @@ test('「#name」 words go into that task\'s turn', async () => {
 test('what a task says is saved along the way, at most every so often, so a quit loses little', async () => {
   const timers = []
   const saved = []
-  const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async (...args) => { saved.push(args) } }, {
+  const win = windowWith({ startTask: async () => startedReply, saveTask: async (...args) => { saved.push(args) } }, {
     later: (run, ms) => timers.push({ run, ms }),
   })
-  await win.actions.moveToBackground()
+  await withTask(win)
   win.actions.noteUpdate('s1')
   win.actions.noteUpdate('s1')
   assert.deepEqual(timers.map((timer) => timer.ms), [SAVE_EVERY_MS], 'one save waiting, however much it says meanwhile')
@@ -223,8 +166,8 @@ test('tasks the last launch left going are offered, taken up, or let go', async 
 
 test('an ended task keeps what it said, and how it ended', async () => {
   const saved = []
-  const win = windowWith({ spinOffTask: async () => spunReply, saveTask: async (...args) => { saved.push(args) } })
-  await win.actions.moveToBackground()
+  const win = windowWith({ startTask: async () => startedReply, saveTask: async (...args) => { saved.push(args) } })
+  await withTask(win)
   win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'cancelled', at: 70 })
   win.actions.ended('s1')
 
@@ -234,8 +177,8 @@ test('an ended task keeps what it said, and how it ended', async () => {
 
 test('a task that ended is asked again: it goes back to work, or says why it could not and stays as it was', async () => {
   const asked = []
-  const win = windowWith({ spinOffTask: async () => spunReply, askTask: async (...args) => { asked.push(args); return { ok: true } } })
-  await win.actions.moveToBackground()
+  const win = windowWith({ startTask: async () => startedReply, askTask: async (...args) => { asked.push(args); return { ok: true } } })
+  await withTask(win)
   win.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
 
   await win.actions.askTask('s1', '再加上已知问题')
@@ -243,8 +186,8 @@ test('a task that ended is asked again: it goes back to work, or says why it cou
   const [task] = liveTasks(win.state())
   assert.deepEqual([task.id, taskMessages(task).at(-1).text], ['s1', '再加上已知问题'])
 
-  const refused = windowWith({ spinOffTask: async () => spunReply, askTask: async () => ({ ok: false, problem: '这件事接不上了' }) })
-  await refused.actions.moveToBackground()
+  const refused = windowWith({ startTask: async () => startedReply, askTask: async () => ({ ok: false, problem: '这件事接不上了' }) })
+  await withTask(refused)
   refused.dispatch({ type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 70 })
   await refused.actions.askTask('s1', '再加上已知问题')
   assert.deepEqual(refused.said.toasts, ['这件事接不上了'])

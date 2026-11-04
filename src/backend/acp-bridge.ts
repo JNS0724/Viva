@@ -518,50 +518,6 @@ export function createAcpBridge({
   }
 
   /**
-   * The turn running in the main conversation goes on in the background as a task (its session stays open,
-   * nothing stops); the main conversation goes on from before that turn, in a session forked there, found by
-   * the words that started it (the viva-fork plugin).
-   */
-  const spinOff = ({ words }: { words: string }) => preparingSwitch(() => spinningOff({ words }))
-  async function spinningOff({ words }: { words: string }) {
-    const taskId = sessionId
-    if (!taskId || !running.has(taskId)) return { ok: false, reason: 'idle' }
-    const forked = await forking.fork({ words, occurrence: 0 })
-    if (!forked.ok) return forked
-    tasks.set(taskId, { cwd: sessionCwd, config: configNow })
-    for (const requestId of broker.pendingFor(taskId)) emit({ type: 'task_permission_waiting', taskId, requestId })
-    questions.moveToTask(taskId, taskId)
-    try {
-      return { ok: true, taskId, info: await resumeOrOpen(forked.sessionId, sessionCwd) }
-    } catch (err) {
-      throw new Error(describeError(err, stderrTail))
-    }
-  }
-
-  /**
-   * Undoes spinOff: the session the main conversation went on in is left (closed, what it asked declined) and
-   * the task is the main conversation again, its turn still running; its questions come back to the window.
-   */
-  async function mergeBack(taskId: string) {
-    const task = tasks.get(taskId)
-    if (!task) return { ok: false, reason: 'missing' }
-    const leaving = sessionId
-    questions.declineAll()
-    broker.cancelAll(leaving)
-    try {
-      if (running.has(leaving)) await live().cancel({ sessionId: opened(leaving) })
-      await live().closeSession({ sessionId: opened(leaving) })
-    } catch (err) {
-      console.error('[acp-bridge] leaving the forked session failed, going back anyway:', describeError(err))
-    }
-    tasks.delete(taskId)
-    sessionId = taskId
-    sessionCwd = task.cwd
-    questions.moveToMain(taskId)
-    return { ok: true, info: { ...infoFrom(task.config), resumed: true } }
-  }
-
-  /**
    * A task from an earlier launch, taken up again (task-ipc.js task:resume): its session is reattached beside the
    * main conversation's, as a task, with all it had; promptTask then asks it to go on.
    */
@@ -749,5 +705,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, fork, spinOff, mergeBack, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }

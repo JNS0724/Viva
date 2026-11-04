@@ -223,11 +223,6 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   tasks: () => handlers.openTasks(),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
-  /** 放到后台, offered on the opened island once a turn runs a while (view/island-dom.js offersBackground). */
-  background: () => {
-    dispatch({ type: 'close_island' })
-    taskActions.moveToBackground()
-  },
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
   permission: ({ requestId, optionId }) => {
     const asked = [state.permission, ...liveTasks(state).map((task) => task.permission)].some((item) => item?.requestId === requestId)
@@ -606,10 +601,7 @@ const handlers = {
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
-  /** Background tasks: 撤销 on the line a move leaves, and stopping or closing one. */
-  undoMove: () => taskActions.undoMove(),
-  /** 放到后台, beside a turn the agent said will take long (view/thread.js offerRow). */
-  moveToBackground: () => taskActions.moveToBackground(),
+  /** Background tasks: stopping or closing one. */
   stopTask: (taskId: string) => taskActions.stopTask(taskId),
   closeTask: (taskId: string) => taskActions.closeTask(taskId),
   pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),

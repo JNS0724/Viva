@@ -68,7 +68,7 @@ const oneLine = (text: string) => {
 }
 
 /**
- * Where a segment's own messages start. A turn moved to the background (fold_kind 'task', task-ipc.ts spinOff) keeps
+ * Where a segment's own messages start. A turn moved to the background (fold_kind 'task', from earlier versions' 放到后台) keeps
  * the talk before it, shared with the conversation, in its first folded_at messages: the task is what comes after.
  */
 const OWN_FROM = `(CASE WHEN c.fold_kind = 'task' THEN COALESCE(c.folded_at, 0) ELSE 0 END)`

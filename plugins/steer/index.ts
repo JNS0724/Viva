@@ -9,12 +9,10 @@ import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createSteerChannel, REASONS } from './lib/channel.ts'
-import { OFFERED, OFFER_TOOL } from './lib/offer.ts'
 
 export const name = 'viva-steer'
-export const inject = ['agents', 'tools']
+export const inject = ['agents']
 export const Config = z.object({})
 
 const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
@@ -37,14 +35,4 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
   // The channel must not keep dsh running once its input closes.
   port.channel?.unref?.()
   ctx.effect(() => () => channel.close(), 'steer channel')
-
-  // A job that will take long, said before it starts: the window offers 放到后台 beside it (lib/offer.js).
-  ctx.tools.register(defineTool({
-    ...OFFER_TOOL,
-    output: {
-      schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
-      render: (_args, value) => [{ type: 'text', text: value.text }],
-    },
-    execute: async () => ({ text: OFFERED }),
-  }))
 }

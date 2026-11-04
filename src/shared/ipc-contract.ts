@@ -88,7 +88,6 @@ export const IPC_ARGS = Object.freeze({
   'timeline:folded': read(z.tuple([id])),
   'timeline:switch-path': z.tuple([id]),
 
-  'task:spin-off': z.tuple([record]),
   'task:start': z.tuple([record]),
   'task:save': z.tuple([id, z.array(record).max(MAX_LIST), record.optional()]),
   'task:unfinished': read(none),
@@ -96,7 +95,6 @@ export const IPC_ARGS = Object.freeze({
   'task:ask': z.tuple([id, text]),
   'task:resume': z.tuple([id]),
   'task:forget': z.tuple([id]),
-  'task:undo': z.tuple([id]),
   'task:close': z.tuple([id]),
   'task:stop': z.tuple([id]),
   'task:steer': z.tuple([id, text]),

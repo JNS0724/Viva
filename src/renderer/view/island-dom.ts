@@ -145,25 +145,8 @@ function hasPanel(view: IslandShown, host: Host, pinned = false) {
   return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || tasks)
 }
 
-/** How long a turn runs before the opened island offers it the background (D). */
-export const OFFER_MS = 30_000
-
-/**
- * Whether the opened island offers the turn the background: one with words to move by that has run a while,
- * or that the agent said would take long.
- */
-export function offersBackground(view: IslandShown, now: number) {
-  if (view.form !== 'working' || !view.movable) return false
-  return Boolean(view.offered) || now - (view.startedAt ?? now) >= OFFER_MS
-}
-
-/** 这件要一会儿: not asked, only there for whoever opens the island while waiting (D). */
-const offerRow = (act: IslandAct) => h('div', { class: 'isl-offer' },
-  h('span', { text: t("island-dom.this.will.take.a.while.move.it") }),
-  button(t("island-dom.move.to.background"), 'isl-btn-blue isl-push', () => act({ kind: 'background' })))
-
 /** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far, then the tasks. */
-function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: string, offer: boolean, now: number): View[] {
+function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: string, now: number): View[] {
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
   if (host === 'desk' && view.form === 'coach') return coachPanel(act, shortcut)
@@ -175,7 +158,7 @@ function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: str
       working ? button(t("island-dom.stop"), 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
       button(t("island-dom.view.full.activity"), ROLE.text, () => act({ kind: 'trace' }))),
   ] : []
-  return [...steps, offer ? offerRow(act) : null, backgroundSection(view, act, now)]
+  return [...steps, backgroundSection(view, act, now)]
 }
 
 const tool = (label: string, cls: string, onClick: () => void, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
@@ -205,10 +188,9 @@ function headAction(view: IslandShown, host: Host, unfolds: boolean): { kind: st
  * What an update has to redraw. The row (head and tools) follows the pointer as well; the panel does not, so
  * the tools appearing under a resting pointer leave its buttons alone: one held down meanwhile is the one
  * let go, and the click still happens.
- * @param offer offersBackground
  */
-export function islandSignatures(view: IslandShown, open: boolean, showTools: boolean, offer = false) {
-  const panel = JSON.stringify([view, open, offer])
+export function islandSignatures(view: IslandShown, open: boolean, showTools: boolean) {
+  const panel = JSON.stringify([view, open])
   return { panel, row: JSON.stringify([panel, showTools]) }
 }
 
@@ -274,8 +256,7 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
     const unfolds = wide || hasPanel(view, host, pinned)
     const open = unfolds && (wide || pinned || host === 'desk')
     const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
-    const offer = host === 'bar' && open && offersBackground(view, now)
-    const next = islandSignatures(view, open, showTools, offer)
+    const next = islandSignatures(view, open, showTools)
     next.row = `${localeRevision()}:${next.row}`
     next.panel = `${localeRevision()}:${next.panel}`
     if (next.row === signature.row) {
@@ -305,7 +286,7 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
     if (panelChanged) {
-      const parts = wide && input ? input.panel(view) : panelParts(view, host, act, shortcut, offer, now)
+      const parts = wide && input ? input.panel(view) : panelParts(view, host, act, shortcut, now)
       panel.replaceChildren(...(open ? [h('div', { class: wasOpen ? 'isl-in isl-in-still' : 'isl-in' }, parts)] : []))
       panel.inert = !open
     }

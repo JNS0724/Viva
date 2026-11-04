@@ -3,9 +3,9 @@ import { columnSteps } from './smoke-column.ts'
 import { checkTaskCardRetention } from './smoke-task-card.ts'
 
 /**
- * Background tasks on the real dsh (phase 3): 后台做 starts a task of its own at any time, also while a turn
- * waits on an approval, the turn staying in front; 放到后台 moves a long turn there. Each task has one card in
- * the conversation, answered in place, and a place on the 后台 page.
+ * Background tasks on the real dsh: 后台做 starts a task of its own at any time, also while a turn waits on an
+ * approval, the turn staying in front. Each task has one line in the conversation and a place on the 后台
+ * page, where it is answered.
  */
 /** Unlike configSteps's words, which stay earlier in the same session. */
 const BUSY_ASK = '再帮我接入演示服务一次'
@@ -132,27 +132,12 @@ async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
 const BIG_ASK = '把全部文档整理好，顺手接入演示服务'
 
 /**
- * The agent says first that the job will take long: 放到后台 shows beside the turn; taken, the turn goes on in
- * the background with no new words, and the conversation is free.
+ * A longer job given to 后台做 while the conversation is idle: it waits on its approval in the background, the
+ * conversation staying free; declined on its page (opened from its line), the task ends and reports back.
  */
-async function offerSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  await submit(win, BIG_ASK)
-  const offer = await until(win, `document.querySelector('#thread .offer')?.textContent ?? null`, 'the offer beside the turn', UI_WAIT_MS * 20)
-    .catch(async (err) => {
-      await capture(win, outDir, 'tasks-offer-failed')
-      const seen = await run(win, `JSON.stringify({
-        users: [...document.querySelectorAll('#thread .msg-user')].map((el) => el.textContent).slice(-3),
-        trace: [...document.querySelectorAll('#drawer .trace-title')].map((el) => el.textContent).slice(-4),
-        busy: document.getElementById('send-btn').dataset.busy,
-      })`)
-      throw new Error(`${err.message}: ${seen}`)
-    })
-  expect(offer.includes('要逐个读完所有文档') && offer.includes('放到后台'), 'the offer should say why, with 放到后台', offer)
-  await until(win, `document.querySelector('.confirm:not(.ask)')`, 'the turn holding on its approval')
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'tasks-offer')
-  await run(win, `document.querySelector('#thread .offer .offer-act').click()`)
-  await until(win, `document.querySelector('#thread .fold-task') && !document.querySelector('#thread .offer')`, 'the turn in the background')
+async function longJobSteps(win: SmokeWindow, outDir: string, expect: Expect) {
+  await startInBackground(win, BIG_ASK)
+  await until(win, `(${cardOf(BIG_ASK)})?.dataset.status === 'waiting'`, 'the task waiting on its approval')
   const after = await run(win, `({
     busy: document.getElementById('send-btn').dataset.busy,
     asked: ${userTexts},
@@ -160,8 +145,7 @@ async function offerSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     card: ${cardState(BIG_ASK)},
   })`)
   expect(after.busy === 'false' && !after.asked.includes(BIG_ASK) && after.count === '1' && after.card?.status === 'waiting',
-    'taken, the turn should go on in the background, its card asking, and the conversation be free', after)
-  // Done with: its approval declined (on its page, opened from its line), the task ends.
+    'the task should wait in the background, its card asking, and the conversation be free', after)
   await answerOnPage(win, BIG_ASK, '拒绝')
   await until(win, `(${cardOf(BIG_ASK)})?.dataset.status === 'done'`, 'the task ending')
   await reportSteps(win, outDir, expect)
@@ -312,7 +296,7 @@ async function leaveRunning(win: SmokeWindow) {
 export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await checkTaskCardRetention(win, expect)
   await busyStartSteps(win, outDir, expect, hooks)
-  await offerSteps(win, outDir, expect)
+  await longJobSteps(win, outDir, expect)
   await laterQuestionSteps(win, outDir, expect)
   await startSteps(win, outDir, expect)
   await columnSteps(win, outDir, expect)

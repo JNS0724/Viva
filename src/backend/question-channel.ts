@@ -134,25 +134,5 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
   /** A background task is closed: what it still asked goes unanswered. */
   const declineTask = (taskId: string) => decline((entry) => entry.taskId !== taskId)
 
-  /** The turn asking became a background task: its questions are the task's now. */
-  function moveToTask(fromSessionId: string, taskId: string): void {
-    for (const entry of pending.values()) {
-      if (entry.sessionId !== fromSessionId || entry.taskId) continue
-      closed(entry.question.id, null)
-      entry.taskId = taskId
-      shown(entry)
-    }
-  }
-
-  /** The task became the conversation on screen again (moving it to the background was undone). */
-  function moveToMain(taskId: string): void {
-    for (const entry of pending.values()) {
-      if (entry.taskId !== taskId) continue
-      closed(entry.question.id, taskId)
-      entry.taskId = null
-      shown(entry)
-    }
-  }
-
-  return { receive, answer, declineAll, declineTask, moveToTask, moveToMain }
+  return { receive, answer, declineAll, declineTask }
 }

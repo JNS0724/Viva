@@ -6,15 +6,13 @@ import type { TaskRegistry } from './task-registry.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
 /**
- * Background tasks from the window (phase 3). While a turn runs, words about something else move it to the
- * background: it goes on in its own session as a task (acp-bridge.js spinOff), its segment of the timeline
- * folds there as a task, and the conversation goes on in a new segment with what came before it and the new
- * words. Undone, it all goes back as it was. The window keeps what the task says and saves it here.
+ * Background tasks from the window: 后台做 starts a task in a session of its own, forked from the conversation
+ * (before the turn running there, if one is), its segment hanging off the conversation, out of the timeline.
+ * The window keeps what the task says and saves it here.
  */
 const MAX_TITLE_CHARS = 40
 
-export const taskProblems = (): Readonly<Record<string, string>> & { unsaved: string, going: string, gone: string, lost: string } => ({
-  unsaved: t("main.task-ipc.this.message.has.not.been.saved.yet"),
+export const taskProblems = (): Readonly<Record<string, string>> & { going: string, gone: string, lost: string } => ({
   invalid: t("main.task-ipc.the.current.task.is.not.in.the"),
   missing: t("handoff.task.no.session"),
   connecting: t("handoff.task.connecting"),
@@ -37,22 +35,11 @@ export const KEEP_ENDED = 30
 const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
-const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 const isEnded = (entry: StoredTask | null | undefined) => Number.isFinite(entry?.endedAt)
 const summaryOf = ({ id, segmentId, title, words }: StoredTask) => ({ id, segmentId, title, words })
 const titleOf = (words: string) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
-}
-
-/**
- * words: what started the running turn; keep: saved messages before it; text: the words about something
- * else, or none when the turn is just put in the background (the island's 放到后台).
- */
-function checked(request: { words?: unknown, keep?: unknown, text?: unknown } | null | undefined) {
-  const { words, keep, text = null } = request ?? {}
-  if (!isText(words) || !isCount(keep) || (text !== null && !isText(text))) throw new Error('invalid task request')
-  return { words, keep, text }
 }
 
 /** What the background tasks need from the app: the history, the task store, the conversation on screen, the agent. */
@@ -61,14 +48,11 @@ interface TaskIpcDeps {
   db: ReturnType<typeof import('./history-db.ts').openHistoryDb>
   store?: TaskStore
   current: () => Conversation
-  setCurrent: (conversation: Conversation) => void
-  isBusy: () => boolean
-  setBusy: (busy: boolean) => void
   agentInfo: () => { mode?: string, model?: string }
-  agent: Record<'spinOff' | 'mergeBack' | 'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>
+  agent: Record<'closeTask' | 'cancelTask' | 'steerTask' | 'resumeTask' | 'startTask' | 'promptTask', (...args: any[]) => any>
 }
 
-export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, setCurrent, isBusy, setBusy, agentInfo, agent }: TaskIpcDeps) {
+export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, store = NO_STORE, registry, current, agentInfo, agent }: TaskIpcDeps) {
   const restoredSummary = (entry: StoredTask) => {
     const host = db.sideTaskHost(entry.segmentId)
     return { ...summaryOf(entry), ...(host ? { host } : {}) }
@@ -85,33 +69,6 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     const task = tasks.get(taskId as string)
     if (!task) throw new Error('no such task')
     return task
-  }
-
-  async function spinOff(request: Parameters<typeof checked>[0]) {
-    const { words, keep, text } = checked(request)
-    if (!isBusy()) return { ok: false, reason: 'idle' }
-    const previous = current()
-    const stored = db.get(previous.id)
-    if (!stored || stored.messages[keep]?.text !== words) return { ok: false, problem: taskProblems().unsaved }
-    const spun = await agent.spinOff({ words })
-    if (!spun.ok) return { ok: false, problem: taskProblems()[spun.reason] ?? t("main.task-ipc.could.not.move.to.background", { reason: spun.reason }) }
-    setBusy(false)
-    const kept = stored.messages.slice(0, keep)
-    const { mode, model } = { ...agentInfo(), ...spun.info }
-    const next = db.save(
-      // The conversation goes on in the same topic, the moved turn hanging off it as one of its tasks.
-      db.create({ sessionId: spun.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) }),
-      text === null ? kept : [...kept, { role: 'user', text, receipt: null }],
-    )
-    db.fold(previous.id, { into: next.id, at: keep, kind: 'task' })
-    setCurrent(next)
-    const task = { id: spun.taskId, segmentId: previous.id, title: titleOf(words), words }
-    tasks.set(task.id, { ...task, keep, next: next.id })
-    attached = new Set([...attached, task.id])
-    // Kept on disk while it goes on: should Viva quit first, the next launch offers it again.
-    store.add({ ...task, keep, next: next.id, cwd: previous.cwd ?? '', startedAt: Date.now() })
-    registry?.put({ ...task, cwd: previous.cwd ?? '' })
-    return { ok: true, task, info: spun.info, conversation: { id: next.id, messages: kept }, folds: db.foldsOf(next.id) }
   }
 
   const detach = (taskId: string) => { attached = new Set([...attached].filter((id) => id !== taskId)) }
@@ -161,23 +118,6 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     store.add({ ...entry, endedAt: Date.now(), status: ENDED_STATUSES.has(status) ? status : 'done' })
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED)
       .forEach((old) => { store.remove(old.id); registry?.remove(old.id) })
-  }
-
-  async function undo(taskId: string) {
-    const task = taskById(taskId)
-    const back = await agent.mergeBack(taskId)
-    if (!back.ok) return { ok: false, problem: taskProblems()[back.reason] ?? t("main.task-ipc.could.not.undo") }
-    tasks.delete(taskId)
-    detach(taskId)
-    store.remove(taskId)
-    registry?.remove(taskId)
-    db.unfold(task.segmentId)
-    db.softDelete(task.next)
-    const found = db.get(task.segmentId)
-    if (!found) throw new Error('no such task')
-    setCurrent(found.conversation)
-    setBusy(true)
-    return { ok: true, info: back.info, conversation: { id: found.conversation.id, messages: found.messages } }
   }
 
   async function close(taskId: string) {
@@ -249,7 +189,6 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     return { ok: true, task: restoredSummary(kept), messages: said }
   }
 
-  ipcMain.handle('task:spin-off', (_event, request) => spinOff(request))
   ipcMain.handle('task:start', (_event, request) => start(request))
   ipcMain.handle('task:save', async (_event, taskId, messages, options) => save(taskId, messages, options))
   ipcMain.handle('task:unfinished', () => unfinished())
@@ -257,7 +196,6 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   ipcMain.handle('task:ask', (_event, taskId, text) => ask(taskId, text))
   ipcMain.handle('task:resume', (_event, taskId) => resume(taskId))
   ipcMain.handle('task:forget', (_event, taskId) => { store.remove(taskId); registry?.remove(taskId) })
-  ipcMain.handle('task:undo', (_event, taskId) => undo(taskId))
   ipcMain.handle('task:close', (_event, taskId) => close(taskId))
   ipcMain.handle('task:stop', (_event, taskId) => agent.cancelTask(taskById(taskId).id))
   ipcMain.handle('task:steer', (_event, taskId, text) => {

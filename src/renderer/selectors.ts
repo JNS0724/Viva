@@ -269,7 +269,6 @@ export function memoryTrace(injection: { fixed?: string | null, pushed?: Readonl
 /** The app's own tools that say something to the user, said plainly in the trace. */
 const NAMED_TOOLS: Readonly<Record<string, (tool: ToolCall) => { title: string, detail: string }>> = {
   // The agent saying a job will take long (plugins/steer/lib/offer.js), with its reason.
-  viva_offer_background: (tool) => ({ title: t("selectors.suggest.moving.to.background"), detail: truncate(String(tool.rawInput?.why ?? ''), DETAIL_LIMIT) }),
 }
 
 /** A timeline entry: what happened, which thing of the state it refers to, and when. */

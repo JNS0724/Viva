@@ -1,18 +1,15 @@
 import { currentAction } from './selectors.ts'
 
 /**
- * Background tasks in the window (phase 3): turns that went on in the background (main/task-ipc.js) while the
- * conversation on screen went on. Each keeps a view shaped like the state, updated by the same handlers the
- * conversation uses, so what it is doing, what it said and what it asks are worked out the same way; undone,
- * that view is the conversation on screen again. Pure and immutable like `state.js`, which merges these in.
+ * Background tasks in the window: work that goes on in sessions of its own (backend/task-ipc.ts) beside the
+ * conversation on screen. Each keeps a view shaped like the state, updated by the same handlers the
+ * conversation uses, so what it is doing, what it said and what it asks are worked out the same way. Pure and
+ * immutable like `state.ts`, which merges these in.
  */
 export const initialTasks = Object.freeze({
   submissions: [] as Array<{ id: string, text: string, origin: string | null, status: string, problem?: string }>,
-  moving: false,
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
   list: [] as BackgroundTask[],
-  /** The move just made, while it can still be undone: { taskId, prefix, text }. */
-  undo: null as Untyped,
   /** Tasks the last launch left going (task-store.js), offered to take up or let go: { id, title, segmentId, startedAt }. */
   unfinished: [] as Untyped[],
   /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
@@ -37,10 +34,6 @@ const savedView = (messages: ReadonlyArray<{ role: string, text: string, receipt
   thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
   turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, lastReceipt: null, error: null,
 })
-
-/** The parts of the state a task's view keeps (the conversation, as it was when the turn left). */
-const VIEW_KEYS = ['messages', 'thoughts', 'tools', 'timeline', 'permission', 'question', 'secret', 'turn', 'phase', 'usage', 'lastReceipt', 'error']
-const viewOf = (state: State) => Object.fromEntries(VIEW_KEYS.map((key) => [key, state[key as keyof State]]))
 
 const ENDED: Readonly<Record<string, string>> = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
 const LIVE = new Set(['running', 'waiting'])
@@ -112,10 +105,10 @@ const startsTurn = (message: ThreadMessage) => message.role === 'user' && !messa
 const isBusy = (state: { phase: string }) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'
 
 /**
- * What would move to the background now: the words that started the turn running, and how many saved
- * messages come before them (selectors.js historyMessages keeps the finished ones).
+ * The turn running in the conversation on screen: the words that started it, and how many saved messages come
+ * before them (selectors.ts historyMessages keeps the finished ones). 后台做 starts from before it.
  */
-export function spinOffTarget(state: State): { words: string, keep: number } | null {
+export function runningTurn(state: State): { words: string, keep: number } | null {
   if (!isBusy(state) || !state.conversationId) return null
   const saved = state.messages.filter((message) => !message.open)
   for (let keep = saved.length - 1; keep >= 0; keep -= 1) {
@@ -135,20 +128,6 @@ export function taskPreview(view: { error?: string | null, messages: readonly Th
 
 /** What a task said last, whole: its drawer tab shows it above what it did (view/drawer.js). */
 export const taskAnswer = (task: BackgroundTask): string => task.view.messages.findLast((message: ThreadMessage) => message.role === 'assistant')?.text ?? ''
-
-/** The tool the agent calls to say, before it starts, that a job will take long (plugins/steer/lib/offer.js). */
-export const OFFER_TOOL = 'viva_offer_background'
-
-/**
- * Whether the agent said the turn running will take long (E): the window then offers 放到后台 beside it.
- * Only for the turn it said so in, and only while there is a turn to move.
- */
-export function offeredBackground(state: State): { why: string } | null {
-  if (!spinOffTarget(state)) return null
-  const since = state.turn?.startedAt ?? Infinity
-  const entry = state.timeline.findLast((item) => item.kind === 'tool' && item.at >= since && state.tools[item.ref]?.title === OFFER_TOOL)
-  return entry ? { why: String(state.tools[entry.ref].rawInput?.why ?? '') } : null
-}
 
 const withTasks = (state: State, changes: Partial<State['tasks']>): State => ({ ...state, tasks: { ...state.tasks, ...changes } })
 
@@ -174,15 +153,11 @@ const mapTask = (state: State, taskId: string, change: (task: BackgroundTask) =>
   list: state.tasks.list.map((task) => (task.id === taskId ? settled(change(task)) : task)),
 })
 
-/**
- * @param handlers state.ts's handlers: a task's view is updated the way the conversation is, and the
- *   conversation goes on without the turn as after going back (`rewound`)
- */
+/** @param handlers state.ts's handlers: a task's view is updated the way the conversation is */
 export function taskActions(handlers: Record<string, Reducer>): Record<string, Reducer> {
   const inView = (state: State, taskId: string, type: string, action: Action) => mapTask(state, taskId, (task) => ({ ...task, view: handlers[type](task.view, action) }))
 
   return {
-    task_moving: (state, { moving }) => withTasks(state, { moving }),
     tasks_list_folded: (state, { folded }) => withTasks(state, { listFolded: Boolean(folded) }),
     task_submitting: (state, { submission }) => withTasks(state, {
       submissions: [...state.tasks.submissions.filter(item => item.id !== submission.id), submission],
@@ -191,21 +166,6 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       submissions: state.tasks.submissions.map(item => item.id === id ? { ...item, status: 'failed', problem } : item),
     }),
     task_submit_dismissed: (state, { id }) => withTasks(state, { submissions: state.tasks.submissions.filter(item => item.id !== id) }),
-
-    /** The running turn went to the background: it takes its part of the conversation with it. */
-    task_spun: (state, { task, conversation, info, folds, at, text = null }) => {
-      const target = spinOffTarget(state)
-      const from = target ? state.messages.findIndex((m) => m.text === target.words && startsTurn(m)) : state.messages.length
-      const startedAt = state.turn?.startedAt ?? at
-      // Its own turn's steps only: the turns before it stay with the conversation.
-      const timeline = state.timeline.filter((item) => item.at >= startedAt)
-      const entry = settled({ ...task, startedAt, endedAt: null, status: 'running', now: null, view: { ...viewOf(state), messages: state.messages.slice(from), timeline } })
-      const going = handlers.rewound(state, { conversation, info, folds })
-      // Undone, the earlier turns' steps come back in front of the task's (task_undone).
-      const earlier = state.timeline.filter((item) => item.at < startedAt)
-      const undo = { taskId: task.id, prefix: going.messages, text, timeline: earlier }
-      return { ...going, ...hostTask({ ...going, taskCards: state.taskCards }, task.id), tasks: { ...state.tasks, list: [...state.tasks.list, entry], undo } }
-    },
 
     task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
     task_snapshot: (state, { snapshot }) => withTasks(state, { list: state.tasks.list.map(task => task.id !== snapshot.taskId ? task : {
@@ -221,10 +181,9 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       // Failed: why, as the conversation shows it (its error row), and on the card when it said nothing.
       const view = message ? { ...ended, phase: 'error', error: message } : ended
       const list = state.tasks.list.map((entry) => (entry.id === taskId ? { ...entry, view, status, now: null, endedAt: at } : entry))
-      const undo = state.tasks.undo?.taskId === taskId ? null : state.tasks.undo
       // Something new came back: unseen again, even if what it said before was seen.
       const seen = state.tasks.seen.filter((id) => id !== taskId)
-      return withTasks(state, { list, undo, seen })
+      return withTasks(state, { list, seen })
     },
 
     tasks_unfinished: (state, { list }) => withTasks(state, { unfinished: list }),
@@ -284,23 +243,6 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
 
     task_question: (state, { taskId, questionId, questions, at }) => inView(state, taskId, 'question_request', { questionId, questions, at }),
     task_question_closed: (state, { taskId, questionId, at }) => inView(state, taskId, 'question_closed', { questionId, at }),
-
-    /** Undone: the turn is the conversation on screen again, with all it said since, still running. */
-    task_undone: (state, { taskId, conversationId, info }) => {
-      const task = state.tasks.list.find((entry) => entry.id === taskId)
-      if (!task) return state
-      return {
-        ...state,
-        ...task.view,
-        messages: [...state.tasks.undo?.prefix ?? [], ...task.view.messages].map((m: ThreadMessage, i: number) => ({ ...m, id: `m${i}` })),
-        timeline: [...state.tasks.undo?.timeline ?? [], ...task.view.timeline],
-        conversationId,
-        info: { ...state.info, ...info },
-        folds: [],
-        taskCards: state.taskCards.filter(id => id !== taskId),
-        tasks: { ...state.tasks, list: state.tasks.list.filter((entry) => entry.id !== taskId), undo: null },
-      }
-    },
 
     task_closed: (state, { taskId }) => {
       const closed = {

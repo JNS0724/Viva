@@ -393,19 +393,6 @@ html:not([data-platform="darwin"]) .titlebar {
 .task-line[data-status="error"] .task-state { color: var(--red); }
 .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-state { flex: none; font-size: 13px; font-weight: 400; color: var(--ink-3); }
-/* A task's drawer tab (view/drawer.js taskView): where it stands, then what it said, then what it did. */
-.task-tab-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
-/* Where it stands on the left; its buttons (停下, or 接着问 and 关掉这件) together on the right. */
-.task-tab-head .task-tab-status { margin-right: auto; }
-.task-tab-status { font-size: 13px; font-weight: 700; color: var(--ink-2); }
-.task-tab-status[data-status="waiting"] { color: var(--orange); }
-.task-tab-status[data-status="error"] { color: var(--red); }
-.task-tab-act { flex: none; height: 30px; padding: 0 12px; font-size: 12px; white-space: nowrap; }
-.task-tab-answer { margin-bottom: 16px; padding: 12px 14px; border-radius: 12px; background: var(--raised); font-size: 14px; }
-/* The agent said the turn will take long (view/thread.js offerRow): a quiet line with 放到后台. */
-.offer { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border: 1px solid var(--line-2); border-radius: 12px; font-size: 13px; color: var(--ink-2); }
-.offer-text { flex: 1; min-width: 0; }
-.offer-act { flex: none; height: 32px; padding: 0 14px; font-size: 13px; white-space: nowrap; }
 /* Where a turn moved to the background (view/rewind.js taskStrip). */
 .fold-task { border-style: solid; }
 .fold-tag { max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
