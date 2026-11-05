@@ -113,7 +113,7 @@ The backend's own data is in one `app.db`. Data written by plugins inside dsh's 
 
 | File | Contents | Written by | Events |
 | --- | --- | --- | --- |
-| `app.db` | `app_events`, `meta`; follow-ups (`followups`, `notices`, `events`); history (`conversations`, `messages` with its full-text index, `stars`); background tasks kept for the next launch (`background_tasks`) | Backend | In the same transaction as the write |
+| `app.db` | `app_events`, `meta`; follow-ups (`followups`, `notices`, `events`); history (`conversations`, `messages` with its full-text index, `stars`); background tasks kept for the next launch (`background_tasks`); what is still to be done outside (`effects`, §12.3) | Backend | In the same transaction as the write |
 | `memory.db` | Profile, memories, synthesized profile, the context sent with each turn | The memory plugin (dsh's process) and the backend | The user's edits right after they are written; what the model saved, as `memory.learned` after the turn |
 | `trace.db` | Each turn's tool calls and thinking | The trace plugin (dsh's process) | None |
 | `settings.json`, `models.json`, `mcp-servers.json`, `preferences.json` | Key, model providers, MCP servers, preferences | Backend | None |
@@ -286,7 +286,7 @@ The user only talks. Starting a background task, stopping it and asking it more 
 
 ### 11.2 Results come back to the main conversation
 
-When a task ends (finished, stopped or failed), the backend opens a turn of the main conversation once it is idle, started by the task's end. The model gets a note (the task's id, title, how it ended, and the end of its conclusion) and decides what to tell the user; when the record already says it all, it may stay silent. This turn never cuts into a running one: it waits for that turn to end, and tasks that end together share one turn. The conversation does not show the note, only the model's answer. Staying silent, the model replies only `[silent]`, and the window leaves nothing of that turn.
+When a task ends (finished, stopped or failed), the backend opens a turn of the main conversation once it is idle, started by the task's end. The model gets a note (the task's id, title, how it ended, and the end of its conclusion) and decides what to tell the user; when the record already says it all, it may stay silent. This turn never cuts into a running one: it waits for that turn to end, and tasks that end together share one turn. The result waits as a `report` in the effects queue (§12.3): one for a conversation not on screen waits for it to come back, and one not delivered yet is still there after a restart. The conversation does not show the note, only the model's answer. Staying silent, the model replies only `[silent]`, and the window leaves nothing of that turn.
 
 ### 11.3 The interface only displays
 
@@ -390,7 +390,7 @@ Threads, subscriptions and correlations, an outbox with channels, source plugins
 
 1. One writer of a task's end: the registry decides how a run ended (status, time, last words); the task service alone keeps it in `task-store`. (Done.)
 2. TaskRuntime: task signals routed through the core, the fan-out in `compose.ts` removed; `taskId` and `runId` on every change, and the transaction boundary of §12.2. Result types for the task channels of the IPC contract. (Done: `task-runtime.ts`, with `task-ipc.ts` its window channels only; results in `src/shared/ipc-results.ts`. The effects come with step 3.)
-3. The effects table with generations (§12.3), and reports through it (§12.4): `reportId`, `viva-steer` telling read (written and flushed) from discarded, and the check for a `reportId` in the session's history and inbox before every delivery.
+3. The effects table with generations (§12.3), and reports through it (§12.4): `reportId`, `viva-steer` telling read (written and flushed) from discarded, and the check for a `reportId` in the session's history and inbox before every delivery. (Done in part: the `effects` table (`src/backend/effects.ts`), a run's `report` queued with its end and keyed by `reportId`, delivered as before in a turn of its own once the conversation is idle, waiting for its conversation to be on screen, and kept across a restart. Still to come: delivery into the running turn and the read confirmation through `viva-steer`.)
 4. The delivered result in the conversation: a collapsed system record that opens on what the model was given (§12.4 point 7).
 5. The window: the order of snapshots and stream pieces (§12.2), then a task created by its first snapshot and the early buffers removed; a pure conversation reducer and a narrow view type for the thread.
 6. Triggers; their proposal card is shown as a design before it is built.

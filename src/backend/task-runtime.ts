@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
 import type { Apply } from './journal.ts'
-import type { EndedTask } from './task-reports.ts'
+import type { Effects } from './effects.ts'
+import { GATHER_MS, REPORT, reportId, reportsOf, type ReportPayload } from './task-reports.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
@@ -21,6 +22,8 @@ import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
  *   up), to that turn's end. Its `runId` is on the task's snapshots and events.
  * - Callers get narrow faces: `window` (task-ipc.ts), `agent` (the viva-tasks tools), `dsh` (what it reports),
  *   `reports` (task-reports.ts, for results back in the conversation).
+ * - A run's end queues its `report` (effects.ts) in the same transaction, keyed by the run (`reportId`); a new run,
+ *   or the task closed, cancels the report of the run before.
  */
 const MAX_TITLE_CHARS = 40
 
@@ -96,12 +99,14 @@ export interface TaskRuntimeDeps {
    * (compose.ts). Not called for an end that could not be kept yet.
    */
   onEnd?: (taskId: string, status: string) => void
+  /** The effects queue (effects.ts): a run's report is queued with its end. Without it, no report is queued. */
+  effects?: Pick<Effects, 'queue' | 'cancel' | 'cancelStarting'> | null
   now?: () => number
   newRunId?: () => string
 }
 
 export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, announce = () => {},
-  waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
+  waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
   const later = timers.later ?? setTimeout
   const cancel = timers.cancel ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
   /** taskId → the end of its run still to be kept, and its next try. */
@@ -225,6 +230,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
     store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
+    const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
+      host: typeof entry.next === 'string' ? entry.next : null, output: snapshot.resultPreview }
+    effects?.queue(REPORT, reportId(snapshot.taskId, snapshot.runId), report, now() + GATHER_MS)
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED).forEach((old) => {
       store.remove(old.id)
       afterCommit = [...afterCommit, () => registry.remove(old.id)]
@@ -234,6 +242,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   async function close(taskId: string): Promise<void> {
     taskById(taskId)
     change('task.closed', { taskId }, () => {
+      // Every report of the task, whether it is still kept or was let go among the oldest ended meanwhile.
+      effects?.cancelStarting(REPORT, reportsOf(taskId))
       store.remove(taskId)
       registry.remove(taskId)
     })
@@ -282,6 +292,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const runId = newRunId()
     const running = { ...going, runId }
     change('task.restarted', { taskId, runId }, () => {
+      cancelReport(kept)
       store.add(running)
       registry.restart(taskId, runId)
     })
@@ -304,6 +315,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const runId = newRunId()
     const running = { ...kept, runId }
     change('task.restarted', { taskId, runId }, () => {
+      cancelReport(kept)
       store.add(running)
       registry.restart(taskId, runId)
     })
@@ -423,24 +435,24 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     registry.interrupt(new Set(pendingEnds.keys()))
   }
 
-  /** A task that ended, as the note back in the conversation gives it (task-reports.ts); null once it is not known. */
-  function describe(taskId: string, status: string): EndedTask | null {
+  /**
+   * Whether that run's result is moot: the task is at work again (asked again, taken up) or at another run. A task no
+   * longer known is not: one let go among the oldest ended still has its result reported (the report holds all it
+   * needs); one the user closed had its report cancelled with it.
+   */
+  function superseded(taskId: string, runId: string): boolean {
+    let task: { status: string, runId: string }
     try {
-      const { task } = registry.query({ op: 'get', taskId, includeOutput: true }, { taskId }) as { task: { title: string, resultPreview?: string } }
-      return { taskId, title: task.title, status, host: tasks.get(taskId)?.next ?? null, output: task.resultPreview ?? '' }
-    } catch {
-      return null
-    }
-  }
-
-  /** Whether a task is still as it ended: asked again or taken up since, its old result is not reported. */
-  function stillEnded(taskId: string): boolean {
-    try {
-      const { task } = registry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string } }
-      return ENDED_STATUSES.has(task.status)
+      task = (registry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string, runId: string } }).task
     } catch {
       return false
     }
+    return !ENDED_STATUSES.has(task.status) || task.runId !== runId
+  }
+
+  /** The report of a task's run before, which a new run or its closing makes moot. */
+  const cancelReport = (entry: StoredTask | undefined) => {
+    if (entry && typeof entry.runId === 'string' && entry.runId) effects?.cancel(REPORT, reportId(entry.id, entry.runId))
   }
 
   return {
@@ -471,12 +483,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       gone,
     },
     /** Results back in the conversation (task-reports.ts). */
-    reports: {
-      /** The conversation a task hangs off (its card is there), for its result to come back to; null when not held. */
-      hostOf: (taskId: string): string | null => tasks.get(taskId)?.next ?? null,
-      describe,
-      stillEnded,
-    },
+    reports: { superseded },
   }
 }
 export type TaskRuntime = ReturnType<typeof createTaskRuntime>

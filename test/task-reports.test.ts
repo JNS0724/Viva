@@ -1,66 +1,64 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTaskReports, GATHER_MS, noteFor, type EndedTask } from '../src/backend/task-reports.ts'
+import type { Effect, Outcome } from '../src/backend/effects.ts'
+import { createTaskReports, noteFor, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { isSilentReply, SILENT_REPLY } from '../src/shared/task-report.ts'
 
-/** A background task's result comes back to the main conversation as a turn of its own, once it is free. */
+/**
+ * A background task's result comes back to the main conversation as a turn of its own, once it is free: the runner
+ * of the `report` effects (effects.ts), given those due and answering each.
+ */
 
 const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 
-function setup({ idle = true } = {}) {
-  let free = idle
-  let atWork = new Set<string>()
+const payload = (taskId: string, title: string, host: string, output: string, runId = 'run-1'): ReportPayload =>
+  ({ taskId, runId, title, status: 'done', host, output })
+const effect = (report: ReportPayload): Effect => ({ kind: 'report', key: reportId(report.taskId, report.runId), payload: report, generation: 1, attempts: 0 })
+const t1 = effect(payload('t1', '整理发布说明', 'c1', '写好了，在 docs/release.md'))
+const t2 = effect(payload('t2', '核对发票', 'c1', '三张金额不符'))
+const t3 = effect(payload('t3', '别处的任务', 'c9', '做完了'))
+
+function setup({ idle = true, opens = true, here = 'c1', gone = new Set<string>(), atWork = new Set<string>() } = {}) {
   const reported: string[] = []
-  let timers: Array<() => void> = []
-  const known: Record<string, Omit<EndedTask, 'status'>> = {
-    t1: { taskId: 't1', title: '整理发布说明', host: 'c1', output: '写好了，在 docs/release.md' },
-    t2: { taskId: 't2', title: '核对发票', host: 'c1', output: '三张金额不符' },
-    t3: { taskId: 't3', title: '别处的任务', host: 'c9', output: '做完了' },
-  }
-  const reports = createTaskReports({
-    isIdle: () => free,
-    currentConversation: () => 'c1',
-    describe: (taskId, status) => (known[taskId] ? { ...known[taskId], status } : null),
-    report: (note) => { reported.push(note) },
-    stillEnded: (taskId) => !atWork.has(taskId),
-    later: (run, ms) => { assert.equal(ms, GATHER_MS); timers = [...timers, run] },
+  const run = createTaskReports({
+    isIdle: () => idle,
+    currentConversation: () => here,
+    conversationExists: (conversationId) => !gone.has(conversationId),
+    superseded: (taskId) => atWork.has(taskId),
+    report: (note) => { if (opens) reported.push(note); return opens },
   })
-  const tick = () => { const runs = timers; timers = []; runs.forEach((run) => run()) }
-  return { reports, reported, tick, setIdle: (value: boolean) => { free = value }, restart: (taskId: string) => { atWork = new Set([...atWork, taskId]) } }
+  const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
+  return { outcomes, reported }
 }
 
-test('tasks that end about together come back in one turn, once the gathering wait is over', () => {
-  const { reports, reported, tick } = setup()
-  reports.ended('t1', 'done')
-  reports.ended('t2', 'error')
-  assert.deepEqual(reported, [], 'not before the wait')
-  tick()
+test('reports due together for the conversation on screen come back in one turn', async () => {
+  const { outcomes, reported } = setup()
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'done', 't2:run-1': 'done' })
   assert.equal(reported.length, 1)
-  assert.match(reported[0], /「整理发布说明」（t1）\n结果：做完了/)
-  assert.match(reported[0], /「核对发票」（t2）\n结果：出错了/)
-  assert.match(reported[0], /<task-output>\n写好了，在 docs\/release\.md\n<\/task-output>/)
+  assert.ok(reported[0].includes('整理发布说明') && reported[0].includes('核对发票'))
 })
 
-test('a turn never cuts into a running one: the result waits for the conversation to be free', () => {
-  const { reports, reported, tick, setIdle } = setup({ idle: false })
-  reports.ended('t1', 'done')
-  tick()
-  assert.deepEqual(reported, [], 'a turn runs')
-  setIdle(true)
-  reports.flush()
-  assert.equal(reported.length, 1, 'that turn ended: now')
-  reports.flush()
-  assert.equal(reported.length, 1, 'once')
+test('a turn never cuts into a running one: the result waits for the conversation to be free', async () => {
+  const { outcomes, reported } = setup({ idle: false })
+  assert.deepEqual(await outcomes([t1]), { 't1:run-1': 'wait' })
+  assert.equal(reported.length, 0)
 })
 
-test('a task started from another conversation than the one on screen is left to its line there', () => {
-  const { reports, reported, tick } = setup()
-  reports.ended('t3', 'done')
-  reports.ended('gone', 'done')
-  tick()
-  assert.deepEqual(reported, [])
-  assert.equal(reports.pending(), 0, 'nor kept for later')
+test('a report for another conversation waits for it to be on screen; one whose conversation is gone is let go', async () => {
+  const { outcomes, reported } = setup()
+  assert.deepEqual(await outcomes([t1, t3]), { 't1:run-1': 'done', 't3:run-1': 'wait' })
+  assert.ok(!reported[0].includes('别处的任务'))
+  const there = setup({ here: 'c9' })
+  assert.deepEqual(await there.outcomes([t3]), { 't3:run-1': 'done' }, 'back on its conversation: it goes')
+  const deleted = setup({ gone: new Set(['c9']) })
+  assert.deepEqual(await deleted.outcomes([t3]), { 't3:run-1': 'done' })
+  assert.equal(deleted.reported.length, 0, 'nowhere to report it: let go, said to no one')
+})
+
+test('the turn could not be opened (the agent away): the reports wait', async () => {
+  const { outcomes } = setup({ opens: false })
+  assert.deepEqual(await outcomes([t1]), { 't1:run-1': 'wait' })
 })
 
 test('the note says it is not the user speaking, keeps the task\'s words as data, and offers silence', () => {
@@ -93,14 +91,9 @@ test('the silent reply is recognised with what a model may put around it', () =>
   for (const text of ['silent', '[silent] 不过要注意', '好的']) assert.equal(isSilentReply(text), false, text)
 })
 
-test('a task asked again before its result came back does not report the old result', () => {
-  const { reports, reported, tick, setIdle, restart } = setup({ idle: false })
-  reports.ended('t1', 'done')
-  reports.ended('t2', 'done')
-  tick()
-  restart('t1')
-  setIdle(true)
-  reports.flush()
+test('a run asked again or taken up before its result came back does not report the old result', async () => {
+  const { outcomes, reported } = setup({ atWork: new Set(['t1']) })
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'done', 't2:run-1': 'done' })
   assert.equal(reported.length, 1)
   assert.ok(!reported[0].includes('整理发布说明') && reported[0].includes('核对发票'), 'only the one still as it ended')
 })

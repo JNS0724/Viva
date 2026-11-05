@@ -1,18 +1,28 @@
 import { SILENT_REPLY } from '../shared/task-report.ts'
+import type { Effect, Outcome, Runner } from './effects.ts'
 
 /**
- * Results back to the main conversation (system-design §11.2): when a background task ends, the main conversation
- * gets a turn of its own once it is idle, started by the task's end. The model is given a note (which task, how it
- * ended, the end of what it said) and decides what to tell the user, or stays silent. A turn never cuts into a running
- * one; tasks that end close together share a turn; a task started from another conversation than the one on screen
- * is left to its line there.
+ * Results back to the main conversation (system-design §11.2, §12.4): when a background task's run ends, a `report`
+ * effect is queued with its end (task-runtime.ts, effects.ts), keyed by the run (`reportId`), so it is still there
+ * after a restart. Run once the conversation is idle, it opens a turn of its own: the model is given a note (which
+ * task, how it ended, the end of what it said) and decides what to tell the user, or stays silent. A turn never cuts
+ * into a running one; reports due together share a turn; one for another conversation than the one on screen waits
+ * for it, and one for a run asked again or taken up since is let go.
  */
 
 /** A task that ended, as the note gives it. */
 export interface EndedTask { taskId: string, title: string, status: string, host: string | null, output: string }
 
-/** How long to wait for other tasks ending at about the same time, so they share one turn. */
+/** How long a report waits for others ending at about the same time, so they share one turn. */
 export const GATHER_MS = 300
+/** The effect kind (effects.ts) and its key: one report per run's end. */
+export const REPORT = 'report'
+export const reportId = (taskId: string, runId: string): string => `${taskId}:${runId}`
+/** The start every report key of one task shares, whichever run. */
+export const reportsOf = (taskId: string): string => `${taskId}:`
+
+/** What a report keeps, from the moment the run ended: enough to word its note after a restart. */
+export interface ReportPayload { taskId: string, runId: string, title: string, status: string, host: string | null, output: string }
 /** The end of what a task said, as much as the note carries. */
 const OUTPUT_CHARS = 1500
 
@@ -41,40 +51,31 @@ export interface TaskReportsDeps {
   isIdle: () => boolean
   /** The conversation on screen, which a task's report goes to only if the task hangs off it. */
   currentConversation: () => string
-  /** What the note says of the task, or null when it is no longer known. */
-  describe: (taskId: string, status: string) => EndedTask | null
-  /** Opens the turn with the note. */
-  report: (note: string) => void
-  /** Whether the task is still as it ended: asked again or taken up since, its old result is not reported. */
-  stillEnded?: (taskId: string) => boolean
-  later?: (run: () => void, ms: number) => unknown
+  /** Whether a conversation is still there to report into (not deleted). */
+  conversationExists?: (conversationId: string) => boolean
+  /** Whether that run's result is moot: the task asked again or taken up since (task-runtime.ts superseded). */
+  superseded: (taskId: string, runId: string) => boolean
+  /** Opens the turn with the note; false when it could not be opened now (the agent away). */
+  report: (note: string) => boolean
 }
 
-export function createTaskReports({ isIdle, currentConversation, describe, report, stillEnded = () => true, later = setTimeout }: TaskReportsDeps) {
-  let pending: readonly EndedTask[] = []
-  let gathering = false
-
-  /**
-   * If the conversation is free: one turn for the tasks of the conversation on screen that are still as they ended;
-   * the others are left to their lines (a task at work again reports when it ends again).
-   */
-  function flush() {
-    if (!pending.length || !isIdle()) return
+/** The runner of the `report` effects (effects.ts): those due for the conversation on screen, in one turn. */
+export function createTaskReports({ isIdle, currentConversation, conversationExists = () => true, superseded, report }: TaskReportsDeps): Runner {
+  return async (effects: readonly Effect[]) => {
+    const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
-    const mine = pending.filter((task) => task.host === here && stillEnded(task.taskId))
-    pending = []
-    if (mine.length) report(noteFor(mine))
+    const mine: Array<Effect<ReportPayload>> = []
+    for (const effect of effects as ReadonlyArray<Effect<ReportPayload>>) {
+      const { taskId, runId, host } = effect.payload
+      // Superseded (asked again, taken up, closed) or with nowhere to go: let go.
+      if (superseded(taskId, runId) || !host || !conversationExists(host)) outcomes.set(effect.key, 'done')
+      else if (host !== here || !isIdle()) outcomes.set(effect.key, 'wait')
+      else mine.push(effect)
+    }
+    if (!mine.length) return outcomes
+    const ended: EndedTask[] = mine.map(({ payload }) => ({ taskId: payload.taskId, title: payload.title, status: payload.status, host: payload.host, output: payload.output }))
+    const opened = report(noteFor(ended))
+    for (const effect of mine) outcomes.set(effect.key, opened ? 'done' : 'wait')
+    return outcomes
   }
-
-  /** A task ended: noted, and reported once others ending about now have joined it. */
-  function ended(taskId: string, status: string) {
-    const task = describe(taskId, status)
-    if (!task) return
-    pending = [...pending.filter((entry) => entry.taskId !== taskId), task]
-    if (gathering) return
-    gathering = true
-    later(() => { gathering = false; flush() }, GATHER_MS)
-  }
-
-  return { ended, flush, pending: () => pending.length }
 }
