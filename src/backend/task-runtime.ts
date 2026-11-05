@@ -91,8 +91,9 @@ export interface TaskRuntimeDeps {
 
 export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, announce = () => {},
   waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
-  /** Snapshots of a change still being written: pushed once it commits (`change`), not before. */
+  /** Snapshots of a change still being written, and what is let go of once it commits (`change`), not before. */
   let queued: TaskSnapshot[] = []
+  let afterCommit: Array<() => void> = []
   let depth = 0
   const registry = createTaskRegistry({ now, changed: (snapshot) => {
     queued = [...queued, snapshot]
@@ -101,16 +102,24 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   } })
   function pushQueued() {
     const out = queued
+    const then = afterCommit
     queued = []
+    afterCommit = []
+    for (const run of then) run()
     for (const snapshot of out) publish({ type: 'task_snapshot', taskId: snapshot.taskId, snapshot })
   }
-  /** One change of the tasks: its writes and its event in one transaction, then the window's snapshots. */
-  function change<T>(kind: string, data: Record<string, unknown>, write: () => T): T {
+  /**
+   * One change of a task: its writes and its event in one transaction, then the window's snapshots. Undone, the
+   * database is as it was, and so is the task in memory (how it stands, what it said): a later end can be kept.
+   */
+  function change<T>(kind: string, data: { taskId: string, [field: string]: unknown }, write: () => T): T {
+    const undo = [registry.checkpoint(data.taskId), taskWords.checkpoint(data.taskId)]
     depth += 1
     try {
       return apply(kind, data, write).value
     } catch (err) {
-      queued = []
+      undo.forEach((restore) => restore())
+      if (depth === 1) { queued = []; afterCommit = [] }
       throw err
     } finally {
       depth -= 1
@@ -180,7 +189,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(text), words: text }
-      store.add({ ...begun, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now() })
+      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now() })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
       return begun
     })
@@ -200,20 +209,22 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (snapshot.endedAt === null || !ENDED_STATUSES.has(snapshot.status)) return
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
-    store.add({ ...entry, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
-    store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED)
-      .forEach((old) => { store.remove(old.id); registry.remove(old.id) })
+    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
+    store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED).forEach((old) => {
+      store.remove(old.id)
+      afterCommit = [...afterCommit, () => registry.remove(old.id)]
+    })
   }
 
   async function close(taskId: string): Promise<void> {
     taskById(taskId)
-    taskWords.drop(taskId)
-    tasks.delete(taskId)
-    detach(taskId)
     change('task.closed', { taskId }, () => {
       store.remove(taskId)
       registry.remove(taskId)
     })
+    taskWords.drop(taskId)
+    tasks.delete(taskId)
+    detach(taskId)
     await agent.closeTask(taskId)
   }
 
@@ -253,11 +264,12 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     }
     const { endedAt: _endedAt, status: _status, ...going } = kept
     const runId = newRunId()
+    const running = { ...going, runId }
     change('task.restarted', { taskId, runId }, () => {
-      store.add(going)
+      store.add(running)
       registry.restart(taskId, runId)
     })
-    tasks.set(taskId, going)
+    tasks.set(taskId, running)
     if (!taskWords.has(taskId)) taskWords.track(taskId, db.get(kept.segmentId)?.messages.slice(kept.keep) ?? [])
     taskWords.userSaid(taskId, text)
     agent.promptTask(taskId, text)
@@ -273,13 +285,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (!kept) throw new Error('no such task')
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok) return { ok: false, problem: taskProblems().lost }
-    tasks.set(taskId, kept)
+    const runId = newRunId()
+    const running = { ...kept, runId }
+    change('task.restarted', { taskId, runId }, () => {
+      store.add(running)
+      registry.restart(taskId, runId)
+    })
+    tasks.set(taskId, running)
     attached = new Set([...attached, taskId])
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const said = [...before, { role: 'user', text: words, receipt: null }]
     taskWords.track(taskId, said)
-    const runId = newRunId()
-    change('task.restarted', { taskId, runId }, () => registry.restart(taskId, runId))
     agent.promptTask(taskId, words)
     return { ok: true, task: restoredSummary(kept), messages: said }
   }
@@ -345,7 +361,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return
     }
     change('task.ended', { taskId, runId, status: endedStatus(event.stopReason) }, () => {
-      taskWords.receive(event)
+      taskWords.receive(event, { strict: true })
       registry.receive(event)
     })
   }

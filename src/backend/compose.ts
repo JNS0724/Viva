@@ -659,7 +659,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       },
       // How a task's turn ended is kept (task-runtime.ts); its result goes back to the conversation; a gap follows.
       'agent.task_ended': ({ event }) => {
-        taskRuntime?.dsh.receive(event)
+        try {
+          taskRuntime?.dsh.receive(event)
+        } catch (err) {
+          // Not kept, so nothing changed: the task stays at work, and its result is not reported as if it were.
+          console.error('[tasks] could not keep how a task ended:', err instanceof Error ? err.message : String(err))
+          return
+        }
         taskReports.ended(event.taskId, endedStatus(event.stopReason))
         followups?.gap()
       },

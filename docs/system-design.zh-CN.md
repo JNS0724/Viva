@@ -99,7 +99,7 @@ flowchart TB
 
 **`apply` 与事件表。** `apply(kind, data, write)` 在一个事务里执行写入，再往 `app_events` 插一行；写入抛错就两样都不留。嵌套的写入用 savepoint，内层失败只撤回自己。推给窗口的每条消息都带序号：存下的事件用它自己的，流式文字这类临时推送带最新的序号。事件表只留最近 100,000 条，序号不会重复使用。
 
-**存储的写操作。** 跟进和历史的存储都套一层 `journaled`（`src/backend/journal.ts`）：列出的写操作经过 `apply`，读操作原样穿过。什么都没改的写入（返回 `false`、`0` 或 `null`）不记事件。后台任务只有一个写入方 TaskRuntime（`src/backend/task-runtime.ts`），只在它自己的变化里写：`task.started`、`task.restarted`、`task.ended`、`task.closed`，都带 `taskId` 和这次运行的 `runId`。任务结束时，保存它说的话、记下怎么结束的、记 `task.ended`，在同一个事务里完成；推给窗口的快照等事务提交之后才发。
+**存储的写操作。** 跟进和历史的存储都套一层 `journaled`（`src/backend/journal.ts`）：列出的写操作经过 `apply`，读操作原样穿过。什么都没改的写入（返回 `false`、`0` 或 `null`）不记事件。后台任务只有一个写入方 TaskRuntime（`src/backend/task-runtime.ts`），只在它自己的变化里写：`task.started`、`task.restarted`、`task.ended`、`task.closed`，都带 `taskId` 和这次运行的 `runId`。任务结束时，保存它说的话、记下怎么结束的、记 `task.ended`，在同一个事务里完成，保存失败整个事务也失败；推给窗口的快照等事务提交之后才发。失败的变化在内存里也撤回（任务的状态、说过的话），同一个结束再来时还能记下。这次运行的 `runId` 随任务一起存下，重启后照样恢复。
 
 **只记形状，不记内容。** 事件从不记用户说的话或模型写的内容：
 

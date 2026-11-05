@@ -18,6 +18,7 @@ const terminal = new Set<TaskStatus>(['done', 'stopped', 'error', 'interrupted']
 export const endedStatus = (stopReason: unknown): TaskStatus => stopReason === 'cancelled' ? 'stopped' : stopReason === 'error' ? 'error' : 'done'
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {}
 const text = (value: unknown) => typeof value === 'string' ? value : ''
+const copy = <K, V>(map: Map<K, V> | undefined): Map<K, V> | undefined => map ? new Map(map) : undefined
 const directory = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
 
 /** Main-process projection: no renderer round trip and no disk read on a tool query. */
@@ -55,6 +56,18 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     waits.delete(id); tools.delete(id); streams.delete(id)
     Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', startedAt: now() })
     publish(task)
+  }
+  /** How a task is now in every map, to be put back if the change it was part of is undone. */
+  function checkpoint(id: string): () => void {
+    const task = tasks.get(id)
+    const saved = { task: task ? { ...task } : undefined, waits: copy(waits.get(id)), tools: copy(tools.get(id)), published: published.get(id),
+      stream: (() => { const stream = streams.get(id); return stream ? { key: stream.key, blocks: new Map(stream.blocks) } : undefined })() }
+    const put = <V>(map: Map<string, V>, value: V | undefined) => { if (value === undefined) map.delete(id); else map.set(id, value) }
+    return () => {
+      put(tasks, saved.task ? { ...saved.task } : undefined)
+      put(waits, copy(saved.waits)); put(tools, copy(saved.tools)); put(published, saved.published)
+      put(streams, saved.stream ? { key: saved.stream.key, blocks: new Map(saved.stream.blocks) } : undefined)
+    }
   }
   function remove(id: string) { tasks.delete(id); waits.delete(id); tools.delete(id); streams.delete(id); early.delete(id); published.delete(id) }
   function receive(raw: unknown) {
@@ -137,7 +150,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   }
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, receive, interrupt, query, live, runOf }
+  return { put, restart, remove, receive, interrupt, query, live, runOf, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 

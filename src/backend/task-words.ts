@@ -57,7 +57,8 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   /** questionId → the task that asked it, while it waits. */
   const questions = new Map<string, Asked>()
 
-  function save(taskId: string) {
+  /** What the task said so far, into its segment; a save along the way that fails is logged, one that `must` throws. */
+  function save(taskId: string, must = false) {
     const timer = timers.get(taskId)
     if (timer !== undefined) cancel(timer)
     timers.delete(taskId)
@@ -66,6 +67,7 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
     try {
       persist(taskId, saved(transcript))
     } catch (err) {
+      if (must) throw err
       onError(err instanceof Error ? err : new Error(String(err)))
     }
   }
@@ -92,8 +94,12 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
     if (transcript) change(taskId, said(transcript, words))
   }
 
-  /** An event from the agent (acp-bridge.ts emit); those not about a task held are left alone. */
-  function receive(raw: unknown) {
+  /**
+   * An event from the agent (acp-bridge.ts emit); those not about a task held are left alone. A turn's end saves at
+   * once; inside the change that keeps the end (`strict`, task-runtime.ts), a save that fails throws, so the end is
+   * not kept without what was said.
+   */
+  function receive(raw: unknown, { strict = false } = {}) {
     if (!raw || typeof raw !== 'object') return
     const event = raw as AgentEvent
     const taskId = text(event.taskId)
@@ -107,7 +113,18 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
     if (event.type === 'task_update') change(taskId, updated(transcript, event.update))
     if (event.type === 'task_end') {
       transcripts.set(taskId, ended(transcript, event.stopReason))
-      save(taskId)
+      save(taskId, strict)
+    }
+  }
+
+  /** How a task's words are now, to be put back if the change they were part of is undone. */
+  function checkpoint(taskId: string): () => void {
+    const transcript = transcripts.get(taskId)
+    const waiting = timers.has(taskId)
+    return () => {
+      if (transcript === undefined) transcripts.delete(taskId)
+      else transcripts.set(taskId, transcript)
+      if (waiting) soon(taskId)
     }
   }
 
@@ -129,7 +146,7 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   const answer = (questionId: string, raw: unknown) => holdQuestion(questionId)?.(raw)
 
   /** Everything waiting is saved now: Viva quits, or dsh went. */
-  const flush = () => [...timers.keys()].forEach(save)
+  const flush = () => [...timers.keys()].forEach((taskId) => save(taskId))
 
   /** The task is let go: saved as it is, then no longer held. */
   function drop(taskId: string) {
@@ -150,6 +167,6 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
     })) : null
   }
 
-  return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, has: (taskId: string) => transcripts.has(taskId) }
+  return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, checkpoint, has: (taskId: string) => transcripts.has(taskId) }
 }
 export type TaskWords = ReturnType<typeof createTaskWords>
