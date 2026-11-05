@@ -1048,6 +1048,8 @@ async function boot() {
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
+    // While the tasks are read, where each one's stream got to, so a read behind it is read again.
+    taskActions.saw(event)
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])

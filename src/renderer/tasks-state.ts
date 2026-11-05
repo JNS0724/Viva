@@ -269,8 +269,15 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         const view = (waits?.questions ?? []).reduce<BackgroundTask['view']>((current, wait) => handlers.question_request(current, { ...wait, at }), asked)
         return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
+      // What the window has of a task already, as new as what was read or newer (by the last piece of its stream,
+      // one count across its runs), stays: a read that came back late never puts a task back to where it was.
+      const fresher = (task: BackgroundTask) => {
+        const known = state.tasks.list.find((entry) => entry.id === task.id)
+        return Boolean(known && typeof task.seq === 'number' && typeof known.seq === 'number' && known.seq >= task.seq)
+      }
+      const taken = restored.filter((task: BackgroundTask) => !fresher(task))
       return withTasks(state, {
-        list: [...state.tasks.list.filter(entry => !restored.some((task: BackgroundTask) => task.id === entry.id)), ...restored],
+        list: [...state.tasks.list.filter((entry) => !taken.some((task: BackgroundTask) => task.id === entry.id)), ...taken],
       })
     },
     /**

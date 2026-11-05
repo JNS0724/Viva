@@ -1,6 +1,10 @@
 import { t } from '../shared/i18n/translate.ts'
 import { answersFrom, type QuestionAnswer } from './question-state.ts'
 import { runningTurn } from './tasks-state.ts'
+import type { KeptTask } from '../shared/ipc-results.ts'
+
+/** How many times the tasks are read at most while the live channel keeps having more of one (loadKept). */
+const LOAD_TRIES = 3
 
 /**
  * Background tasks from the window: 后台做 starts a task of its own (backend/task-ipc.ts task:start). The task is
@@ -16,6 +20,12 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   api: Pick<AgentApi, 'startTask' | 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
 }) {
   let submissionCounter = 0
+  /**
+   * While the tasks are read (loadKept), where each task's stream got to on the live channel: its run and last
+   * number. What comes of a task the window does not know yet is not taken (tasks-state.ts), so a read that comes
+   * back behind this is read again, then has all of it.
+   */
+  let heard: Map<string, { runId: string | null, seq: number }> | null = null
 
   /** What the main process answered, or why it could not be asked. */
   async function call<T>(request: () => Promise<T>): Promise<T | Failed> {
@@ -56,9 +66,41 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * The tasks an earlier launch kept, back as they were with what they said: ended ones, and those Viva quit on
    * (interrupted), which the agent takes up again when asked (message_background_task).
    */
+  /** An event from the main process, seen before it is reduced: while the tasks are read, where its task got to. */
+  function saw(event: { taskId?: unknown, runId?: unknown, taskSeq?: unknown, snapshot?: { taskId?: unknown, runId?: unknown, taskSeq?: unknown } }) {
+    if (!heard) return
+    const place = event.snapshot ?? event
+    const { taskId, runId, taskSeq } = place
+    if (typeof taskId !== 'string' || typeof taskSeq !== 'number') return
+    const before = heard.get(taskId)
+    heard.set(taskId, { runId: typeof runId === 'string' ? runId : before?.runId ?? null, seq: Math.max(taskSeq, before?.seq ?? 0) })
+  }
+
+  /** Whether the live channel had more of a task than a read gave: further on, or in another run. */
+  const behind = (entry: KeptTask) => {
+    const got = heard?.get(entry.task.id)
+    if (!got) return false
+    const mark = entry.mark
+    return !mark || got.seq > mark.seq || (got.runId !== null && got.runId !== mark.runId)
+  }
+
+  /**
+   * The tasks an earlier launch kept, and those at work now (a reloaded window): read, and read again, not taken,
+   * while the live channel had more of one meanwhile (its end, a new run), a few times at most; once taken, what the
+   * live channel says of them is taken in turn.
+   */
   async function loadKept() {
-    const kept = await call(() => api.finishedTasks())
-    if (Array.isArray(kept) && kept.length) dispatch({ type: 'tasks_restored', list: kept })
+    for (let tries = 1; ; tries++) {
+      heard = new Map()
+      const kept = await call(() => api.finishedTasks())
+      const late = Array.isArray(kept) && kept.some(behind)
+      heard = null
+      if (!Array.isArray(kept)) return
+      // Behind the live channel: not taken, read again (what it missed is in the next read), but for the last time.
+      if (late && tries < LOAD_TRIES) continue
+      if (kept.length) dispatch({ type: 'tasks_restored', list: kept })
+      return
+    }
   }
 
   const questionOf = (taskId: string) => taskById(taskId)?.view.question ?? null
@@ -94,6 +136,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   return {
+    saw,
     startTask,
     stopTask,
     closeTask,
