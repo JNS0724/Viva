@@ -222,25 +222,36 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   }
 
   /**
-   * Runs being begun and not yet kept, each holding a place among the MAX_RUNNING: a new task (by a token of its own),
-   * or a task asked again or taken up (by its id). Every run begins through `reserveRun`, before anything it awaits,
-   * so runs begun together cannot all pass the count; the place goes once the run is kept (counted as at work by the
-   * registry) or has failed.
+   * Runs being begun and not yet kept, each holding a place among the MAX_RUNNING. Every run (a new task, one asked
+   * again, one taken up) begins through `reserveRun`, before anything it awaits, so runs begun together cannot all
+   * pass the count; the place goes once the run is kept (counted as at work by the registry) or has failed.
    */
-  let reserved = new Set<string>()
-  let newRuns = 0
+  let places = new Set<string>()
+  /** Tasks beginning a run now: one session takes one turn at a time. */
+  let beginning = new Set<string>()
+  let runsBegun = 0
   /**
-   * A place for a run to begin, or why not: all taken, or (`taskId` given) that task already beginning a run (one
-   * session takes one turn at a time; whether it is at work is each way's own to say: 接着问 only when it ended, taken
-   * up only when no session of it is held). Its `release` is called whatever happens after.
+   * A place for a run to begin, or why not: all taken, or (`taskId` given) that task already beginning a run (whether
+   * it is at work is each way's own to say: 接着问 only when it ended, taken up only when no session of it is held).
+   * `counted` hands the place to the registry, at once, as the change that begins the run commits (from then on it
+   * counts the run as at work, and two counts of one run would refuse another); `release` is called whatever happens
+   * after, giving back what is still held. Both may be called more than once.
    */
-  function reserveRun(taskId: string | null): { release: () => void } | { problem: string } {
-    if (taskId !== null && reserved.has(taskId)) return { problem: taskProblems().going }
-    if (registry.live() + reserved.size >= MAX_RUNNING) return { problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
-    newRuns += 1
-    const key = taskId ?? `new:${newRuns}`
-    reserved = new Set([...reserved, key])
-    return { release: () => { reserved = new Set([...reserved].filter((held) => held !== key)) } }
+  function reserveRun(taskId: string | null): { counted: () => void, release: () => void } | { problem: string } {
+    if (taskId !== null && beginning.has(taskId)) return { problem: taskProblems().going }
+    if (registry.live() + places.size >= MAX_RUNNING) return { problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
+    runsBegun += 1
+    const place = `run:${runsBegun}`
+    places = new Set([...places, place])
+    if (taskId !== null) beginning = new Set([...beginning, taskId])
+    const counted = () => { places = new Set([...places].filter((held) => held !== place)) }
+    return {
+      counted,
+      release: () => {
+        counted()
+        if (taskId !== null) beginning = new Set([...beginning].filter((held) => held !== taskId))
+      },
+    }
   }
 
   /** A task begun: from the conversation (后台做), or afresh from the agent's brief (start_background_task). */
@@ -251,13 +262,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(null)
     if ('problem' in place) return { ok: false as const, problem: place.problem }
     try {
-      return await beginReserved(text, how, main, mode, model)
+      return await beginReserved(text, how, main, mode, model, place.counted)
     } finally {
       place.release()
     }
   }
 
-  async function beginReserved(text: string, how: { words?: string, afresh?: boolean }, main: Conversation, mode: string | undefined, model: string | undefined): Promise<TaskStartResult> {
+  async function beginReserved(text: string, how: { words?: string, afresh?: boolean }, main: Conversation, mode: string | undefined,
+    model: string | undefined, counted: () => void): Promise<TaskStartResult> {
     const started = await agent.startTask(how)
     if (!started.ok || !started.taskId) {
       const reason = started.reason ?? 'missing'
@@ -277,6 +289,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
       return begun
     }))
+    counted()
     tasks.set(task.id, { ...task, keep: 0, next: main.id })
     attached = new Set([...attached, task.id])
     taskWords.track(task.id, [{ role: 'user', text }])
@@ -371,13 +384,13 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await askReserved(taskId, text, kept)
+      return await askReserved(taskId, text, kept, place.counted)
     } finally {
       place.release()
     }
   }
 
-  async function askReserved(taskId: string, text: string, kept: StoredTask) {
+  async function askReserved(taskId: string, text: string, kept: StoredTask, counted: () => void) {
     if (!attached.has(taskId)) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
       if (!taken.ok) return { ok: false, problem: taskProblems().gone }
@@ -392,6 +405,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       opens(taskId, { words: text })
       registry.restart(taskId, runId)
     })
+    counted()
     tasks.set(taskId, running)
     if (!taskWords.has(taskId)) taskWords.track(taskId, db.get(kept.segmentId)?.messages.slice(kept.keep) ?? [])
     taskWords.userSaid(taskId, text)
@@ -409,13 +423,13 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await resumeReserved(taskId, words, kept)
+      return await resumeReserved(taskId, words, kept, place.counted)
     } finally {
       place.release()
     }
   }
 
-  async function resumeReserved(taskId: string, words: string, kept: StoredTask) {
+  async function resumeReserved(taskId: string, words: string, kept: StoredTask, counted: () => void) {
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok) return { ok: false, problem: taskProblems().lost }
     const runId = newRunId()
@@ -426,6 +440,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       opens(taskId, { words })
       registry.restart(taskId, runId)
     })
+    counted()
     letEndGo(taskId)
     tasks.set(taskId, running)
     attached = new Set([...attached, taskId])

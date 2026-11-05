@@ -32,7 +32,14 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
  * The IPC over a history db and a task store. relaunch() registers it afresh on the same db and store, as the
  * next launch does: nothing in memory, what was kept on disk. Saves along the way wait in `pending` until run.
  */
-function setup({ resumable, stored = [], steerable = true, waits, startable = () => true }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean, waits?: { permissions: readonly unknown[], questions: readonly unknown[] }, startable?: () => boolean } = {}) {
+function setup({ resumable, stored = [], steerable = true, waits, startable = () => true, gate = async () => {}, onPrompt = () => {} }: {
+  resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean, waits?: { permissions: readonly unknown[], questions: readonly unknown[] },
+  startable?: () => boolean,
+  /** Waited on before dsh answers a task's start: the test lets each through when it likes. */
+  gate?: () => Promise<void>,
+  /** As a task's turn is asked (just after its start is kept). */
+  onPrompt?: (taskId: string) => void,
+} = {}) {
   let n = 0
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
@@ -100,9 +107,10 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
         cancelTask: async (taskId: string) => { calls.push(['cancelTask', taskId]) },
         steerTask: async (taskId: string, text: string) => { calls.push(['steerTask', taskId, text]); return { ok: steerable } },
         resumeTask: async (request: { taskId: string }) => { calls.push(['resumeTask', request.taskId]); return resumable ?? { ok: true } },
-        promptTask: async (taskId: string, text: string) => { calls.push(['promptTask', taskId, text]) },
+        promptTask: async (taskId: string, text: string) => { calls.push(['promptTask', taskId, text]); onPrompt(taskId) },
         startTask: async (request: unknown) => {
           calls.push(['startTask', request])
+          await gate()
           if (!startable()) return { ok: false, reason: 'missing' }
           started += 1
           return { ok: true, taskId: started === 1 ? 's9' : `s9-${started}` }
@@ -613,4 +621,26 @@ test('a run whose beginning throws (dsh gone mid-way) gives its place back too',
   for (let i = 0; i < 2; i++) await assert.rejects(tasks.agent.start(`失败 ${i}`), /dsh went away/)
   const results = await Promise.all(Array.from({ length: MAX_RUNNING }, (_, i) => refusal(tasks.agent.start(`任务 ${i}`))))
   assert.deepEqual(results, Array(MAX_RUNNING).fill('ok'))
+})
+
+test('a run kept is counted once: its place goes to the registry as its start commits, not a step later', async () => {
+  const gates: Array<() => void> = []
+  let fifth: Promise<string> | null = null
+  const { tasks } = setup({
+    gate: () => new Promise<void>((resolve) => { gates.push(resolve) }),
+    // Just after the first is kept, before anything after it runs: one more is begun.
+    onPrompt: () => { fifth ??= refusal(tasks.agent.start('第五个')) },
+  })
+  const four = Array.from({ length: 4 }, (_, i) => refusal(tasks.agent.start(`任务 ${i}`)))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(gates.length, 4, 'four waiting on dsh')
+  gates[0]()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  gates.slice(1).forEach((open) => open())
+  gates.at(-1)?.()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  gates.forEach((open) => open())
+  assert.ok(fifth, 'the fifth was begun as the first was kept')
+  assert.deepEqual(await Promise.all(four), ['ok', 'ok', 'ok', 'ok'])
+  assert.equal(await fifth, 'ok', 'four places taken, not five: the fifth has one')
 })
