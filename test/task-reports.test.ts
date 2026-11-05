@@ -1,13 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Effect, Outcome } from '../src/backend/effects.ts'
+import type { ReportState } from '../src/backend/steer-channel.ts'
 import { createTaskReports, noteFor, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { isSilentReply, SILENT_REPLY } from '../src/shared/task-report.ts'
 
 /**
- * A background task's result comes back to the main conversation as a turn of its own, once it is free: the runner
- * of the `report` effects (effects.ts), given those due and answering each.
+ * A background task's result comes back to the main conversation: into the turn running there, or as a turn of its
+ * own once it is free. The runner of the `report` effects (effects.ts), given those due and answering each; a report
+ * is done only once read (its reading confirmed by viva-steer).
  */
 
 const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -19,46 +21,76 @@ const t1 = effect(payload('t1', '整理发布说明', 'c1', '写好了，在 doc
 const t2 = effect(payload('t2', '核对发票', 'c1', '三张金额不符'))
 const t3 = effect(payload('t3', '别处的任务', 'c9', '做完了'))
 
-function setup({ idle = true, opens = true, here = 'c1', gone = new Set<string>(), atWork = new Set<string>() } = {}) {
-  const reported: string[] = []
+type State = 'idle' | 'busy' | 'away'
+
+function setup({ state = 'idle' as State, here = 'c1', gone = new Set<string>(), atWork = new Set<string>(), known = {} as Record<string, ReportState>, steered = 'steered' as ReportState } = {}) {
+  const turns: string[] = []
+  const delivered: Array<[string, string]> = []
   const run = createTaskReports({
-    isIdle: () => idle,
+    conversation: () => state,
     currentConversation: () => here,
     conversationExists: (conversationId) => !gone.has(conversationId),
     superseded: (taskId) => atWork.has(taskId),
-    report: (note) => { if (opens) reported.push(note); return opens },
+    status: async (reportId) => known[reportId] ?? 'none',
+    deliver: async (reportId, text) => { delivered.push([reportId, text]); return steered },
+    report: (note) => { turns.push(note); return true },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
-  return { outcomes, reported }
+  return { outcomes, turns, delivered }
 }
 
-test('reports due together for the conversation on screen come back in one turn', async () => {
-  const { outcomes, reported } = setup()
-  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'done', 't2:run-1': 'done' })
-  assert.equal(reported.length, 1)
-  assert.ok(reported[0].includes('整理发布说明') && reported[0].includes('核对发票'))
+test('idle: reports due together for the conversation on screen share one turn, done once read', async () => {
+  const { outcomes, turns } = setup()
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'wait' }, 'opened, waiting for its reading')
+  assert.equal(turns.length, 1)
+  assert.ok(turns[0].includes('整理发布说明') && turns[0].includes('核对发票'))
+  assert.ok(turns[0].includes('回报编号：t1:run-1') && turns[0].includes('回报编号：t2:run-1'), 'the note names its reports')
+  const later = setup({ known: { 't1:run-1': 'read', 't2:run-1': 'read' } })
+  assert.deepEqual(await later.outcomes([t1, t2]), { 't1:run-1': 'done', 't2:run-1': 'done' }, 'read: done, nothing sent again')
+  assert.equal(later.turns.length, 0)
 })
 
-test('a turn never cuts into a running one: the result waits for the conversation to be free', async () => {
-  const { outcomes, reported } = setup({ idle: false })
-  assert.deepEqual(await outcomes([t1]), { 't1:run-1': 'wait' })
-  assert.equal(reported.length, 0)
+test('a turn running: each report goes into it, as not the user\'s words; read, it is done', async () => {
+  const { outcomes, turns, delivered } = setup({ state: 'busy' })
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'wait' })
+  assert.deepEqual(delivered.map(([reportId]) => reportId), ['t1:run-1', 't2:run-1'])
+  assert.match(delivered[0][1], /^【后台任务结束】这不是用户说的话/)
+  assert.match(delivered[0][1], /在你这一轮工作时到达/, 'told it came into a turn on something else')
+  assert.equal(turns.length, 0, 'no turn of its own')
+})
+
+test('there already (pending, or read): never sent again', async () => {
+  const { outcomes, turns, delivered } = setup({ state: 'busy', known: { 't1:run-1': 'pending', 't2:run-1': 'read' } })
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'done' })
+  assert.deepEqual([delivered.length, turns.length], [0, 0])
+})
+
+test('steering finds the turn just ended: a turn of its own instead, once the conversation is free', async () => {
+  const busy = setup({ state: 'busy', steered: 'idle' })
+  assert.deepEqual(await busy.outcomes([t1]), { 't1:run-1': 'wait' })
+  assert.equal(busy.turns.length, 0, 'still busy by the app: the turn-ended wake opens it')
+  const idle = setup({ state: 'idle' })
+  await idle.outcomes([t1])
+  assert.equal(idle.turns.length, 1)
 })
 
 test('a report for another conversation waits for it to be on screen; one whose conversation is gone is let go', async () => {
-  const { outcomes, reported } = setup()
-  assert.deepEqual(await outcomes([t1, t3]), { 't1:run-1': 'done', 't3:run-1': 'wait' })
-  assert.ok(!reported[0].includes('别处的任务'))
+  const { outcomes, turns } = setup()
+  assert.deepEqual(await outcomes([t1, t3]), { 't1:run-1': 'wait', 't3:run-1': 'wait' })
+  assert.ok(!turns[0].includes('别处的任务'))
   const there = setup({ here: 'c9' })
-  assert.deepEqual(await there.outcomes([t3]), { 't3:run-1': 'done' }, 'back on its conversation: it goes')
+  await there.outcomes([t3])
+  assert.equal(there.turns.length, 1, 'back on its conversation: it goes')
   const deleted = setup({ gone: new Set(['c9']) })
   assert.deepEqual(await deleted.outcomes([t3]), { 't3:run-1': 'done' })
-  assert.equal(deleted.reported.length, 0, 'nowhere to report it: let go, said to no one')
+  assert.equal(deleted.turns.length, 0, 'nowhere to report it: let go, said to no one')
 })
 
-test('the turn could not be opened (the agent away): the reports wait', async () => {
-  const { outcomes } = setup({ opens: false })
-  assert.deepEqual(await outcomes([t1]), { 't1:run-1': 'wait' })
+test('the agent away, or switching: the reports wait; asking failed: tried again later', async () => {
+  const away = setup({ state: 'away' })
+  assert.deepEqual(await away.outcomes([t1]), { 't1:run-1': 'wait' })
+  const failed = setup({ known: { 't1:run-1': 'failed' } })
+  assert.deepEqual(await failed.outcomes([t1]), { 't1:run-1': 'retry' })
 })
 
 test('the note says it is not the user speaking, keeps the task\'s words as data, and offers silence', () => {
@@ -92,8 +124,14 @@ test('the silent reply is recognised with what a model may put around it', () =>
 })
 
 test('a run asked again or taken up before its result came back does not report the old result', async () => {
-  const { outcomes, reported } = setup({ atWork: new Set(['t1']) })
-  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'done', 't2:run-1': 'done' })
-  assert.equal(reported.length, 1)
-  assert.ok(!reported[0].includes('整理发布说明') && reported[0].includes('核对发票'), 'only the one still as it ended')
+  const { outcomes, turns } = setup({ atWork: new Set(['t1']) })
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'done', 't2:run-1': 'wait' })
+  assert.equal(turns.length, 1)
+  assert.ok(!turns[0].includes('整理发布说明') && turns[0].includes('核对发票'), 'only the one still as it ended')
+})
+
+test('the note for a turn of its own offers silence; the one into a running turn does not', () => {
+  const ended = { taskId: 't1', title: '整理', status: 'done', host: 'c1', output: '写好了', reportId: 't1:run-1' }
+  assert.ok(noteFor([ended]).includes(SILENT_REPLY))
+  assert.ok(!noteFor([ended], { inTurn: true }).includes(SILENT_REPLY))
 })

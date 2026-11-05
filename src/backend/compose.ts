@@ -370,6 +370,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       emit: (event) => {
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
+        // A task's result read in the conversation (written and flushed): its report is done. Lost: sent again.
+        if (event.type === 'report_read' && typeof event.reportId === 'string') return effects?.finish(REPORT, event.reportId)
+        if (event.type === 'report_dropped') return wakeEffects()
         emitToRenderer(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams.
@@ -403,11 +406,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   }
 
   /**
-   * Results of background tasks, back in the conversation on screen as a turn of their own (task-reports.ts), once
-   * nothing runs there. The window is told the turn began, as it is told nothing else of it: no words of the user's.
+   * Results of background tasks, back in the conversation on screen (task-reports.ts): into the turn running there,
+   * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
+   * it: no words of the user's.
    */
   const taskReports = createTaskReports({
-    isIdle: () => Boolean(bridge) && !turn.active && !bridge?.isSwitching() && !quitting,
+    conversation: () => (!bridge || bridge.isSwitching() || quitting ? 'away' : turn.active ? 'busy' : 'idle'),
+    status: (reportId) => bridge?.reportStatus(reportId) ?? Promise.resolve('unavailable'),
+    deliver: (reportId, text) => bridge?.deliverReport(reportId, text) ?? Promise.resolve('unavailable'),
     currentConversation: () => conversation.id,
     conversationExists: (conversationId) => Boolean(historyDb?.get(conversationId)),
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,

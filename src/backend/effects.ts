@@ -78,6 +78,14 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     dropOne.run(kind, key)
   }
 
+  /**
+   * Done, said from outside a try (a report confirmed read, after the try that delivered it waited): the row goes,
+   * whatever generation it is at, as one change with its event.
+   */
+  function finish(kind: string, key: string) {
+    apply('effect.done', { kind, key }, () => dropOne.run(kind, key))
+  }
+
   /** Every effect of `kind` whose key starts so (all the reports of one task, `taskId:`): none to be done any more. */
   function cancelStarting(kind: string, prefix: string) {
     dropStarting.run(kind, prefix, prefix)
@@ -172,6 +180,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   return {
     queue,
     cancel,
+    finish,
     cancelStarting,
     list,
     wake,

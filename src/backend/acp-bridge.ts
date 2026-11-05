@@ -139,7 +139,8 @@ export function createAcpBridge({
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
   const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions }) : null
   // What the user says while a turn runs goes to that turn (the viva-steer plugin), not to a new prompt.
-  const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId })
+  // Background tasks' results go the same way, at most once; the plugin says when one is read or lost.
+  const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
   // Follow-ups proposed in a conversation, and background preparation's tool-less model calls (viva-followups).
@@ -650,6 +651,10 @@ export function createAcpBridge({
    * plugin's reasons).
    */
   const steer = (text: string) => steering.steer(text)
+  /** A background task's result into the main conversation's running turn, at most once (task-reports.ts). */
+  const deliverReport = (reportId: string, text: string) => steering.report(reportId, text)
+  /** How a background task's result stands in the main conversation: read, pending, or nowhere. */
+  const reportStatus = (reportId: string) => steering.reportStatus(reportId)
 
   /** optionId: the option picked, or null to turn it down without one. */
   function respondPermission(requestId: string, optionId: string | null) {
@@ -714,5 +719,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, deliverReport, reportStatus, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }
