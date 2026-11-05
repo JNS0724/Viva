@@ -53,7 +53,7 @@ export function workspaceName(cwd: string | null | undefined): string {
 /** What gets saved: finished messages only, in the shape the main process stores. */
 export const historyMessages = (state: State) => state.messages
   .filter((m) => !m.open)
-  .map(({ role, text, receipt, images, report }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}), ...(report ? { report } : {}) }))
+  .map(({ role, text, receipt, images }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}) }))
 
 const DAY_MS = 86_400_000
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
@@ -119,6 +119,7 @@ export type EarlierRow = { segment: string | null } & (
   | { kind: 'day', label: string }
   | { kind: 'workdir', cwd: string, continues: boolean }
   | { kind: 'message', id: string, role: string, text: string, receipt: Receipt | null, images?: Array<{ id: string }> }
+  | { kind: 'record', id: string, record: ReportRecord }
 )
 
 // Immutable segments keep their row objects across new topics; only a changed day/boundary is rebuilt.
@@ -152,6 +153,12 @@ export function earlierRows(earlier: State['earlier'], { currentCwd = null, now 
     const own: EarlierRow[] = []
     if (segment.cwd && lastCwd && segment.cwd !== lastCwd) own.push({ kind: 'workdir', cwd: segment.cwd, continues, segment: segment.id })
     lastCwd = segment.cwd ?? lastCwd
+    // A task's record after the message it came after (report-state.ts); one after them all, at the end.
+    const records: ReadonlyArray<ReportRecord> = segment.records ?? []
+    const recordRows = (at: (after: number) => boolean) => records.filter((record: ReportRecord) => at(record.after))
+      .map((record: ReportRecord): EarlierRow => ({ kind: 'record', id: `${segment.id}-record-${record.reportId}`, record, segment: segment.id }))
+    own.push(...recordRows((after) => after === 0))
+    let before = 0
     for (const message of segment.messages) {
       const day = timelineDay(message.at, now)
       if (day !== lastDay) own.push({ kind: 'day', label: day, segment: segment.id })
@@ -160,6 +167,9 @@ export function earlierRows(earlier: State['earlier'], { currentCwd = null, now 
         kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt,
         segment: segment.id, ...(message.images ? { images: message.images } : {}),
       })
+      before += 1
+      const last = before === segment.messages.length
+      own.push(...recordRows((after) => after === before || (last && after > before)))
     }
     segmentRows.set(segment, { locale: localeRevision(), day: today, beforeDay, beforeCwd, continues, rows: own, lastDay, lastCwd })
     for (const row of own) rows.push(row)

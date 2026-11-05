@@ -82,6 +82,21 @@ const SCHEMA = `
     INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
   END;
   CREATE TABLE IF NOT EXISTS id_counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+  -- A background task's result the model read, as the record its conversation shows (system-design §12.4 point 7).
+  -- Only the backend writes these, with the report done (report-records.ts); the window's saves never touch them.
+  -- after_seq: how many of the conversation's messages were stored when it came, the place it is drawn at.
+  CREATE TABLE IF NOT EXISTS report_records (
+    report_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    after_seq INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    text TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS report_records_conversation ON report_records (conversation_id, after_seq);
+  -- A conversation not stored yet (a blank topic) may already have a record, so no foreign key: they go with it.
+  CREATE TRIGGER IF NOT EXISTS report_records_gone AFTER DELETE ON conversations BEGIN
+    DELETE FROM report_records WHERE conversation_id = old.id;
+  END;
 `
 /**
  * A message's id is what a link, a search hit or a star names it by. SQLite gives a new row the largest id plus one,
@@ -137,9 +152,15 @@ const toSummary = (row: Row) => ({
   id: row.id, title: row.title, updatedAt: row.updated_at, model: row.model, mode: row.mode, pinned: Boolean(row.pinned),
 })
 
+/**
+ * A background task's result the model read, as its conversation shows it: which report, when it came (ms), the note
+ * as given (no token), and how many of the conversation's messages come before it.
+ */
+export interface ReportRecord { reportId: string, at: number, text: string, after: number }
+const toRecord = (row: Row): ReportRecord => ({ reportId: row.report_id, at: Number(row.at), text: row.text, after: Number(row.after_seq) })
+
 const toMessage = (row: Row) => ({
   role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}),
-  ...(row.meta ? { report: JSON.parse(row.meta) } : {}),
 })
 /** A message of an earlier segment of the timeline: its id, where it is, and when it was written (ms). */
 const toTimelineMessage = (row: Row) => ({ id: row.id, seq: row.seq, ...toMessage(row), at: row.created_at })
@@ -182,8 +203,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const db = given ?? new DatabaseSync(file!)
   if (!given) db.exec(APP_DB_PRAGMAS)
   db.exec(SCHEMA)
-  // A report message's own (history-schema.ts ReportMeta), added after the table was first made.
-  if (!(db.prepare('PRAGMA table_info(messages)').all() as Row[]).some((column) => column.name === 'meta')) db.exec('ALTER TABLE messages ADD COLUMN meta TEXT')
   db.exec(COUNT_MESSAGE_IDS)
   const reviewing = reviewQueries(db, now)
   const reading = readerQueries(db, reviewing.reviewTopic)
@@ -198,8 +217,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       ON CONFLICT (id) DO UPDATE SET title = :title, updated_at = :updatedAt,
         session_id = :sessionId, mode = :mode, model = :model, cwd = :cwd`),
     topicOf: db.prepare('SELECT topic_id FROM conversations WHERE id = ?'),
-    lastUserSeq: db.prepare(`SELECT MAX(seq) AS seq FROM messages WHERE conversation_id = ? AND role = 'user'`),
-    storedTail: db.prepare('SELECT seq, role, text, receipt, images, meta FROM messages WHERE conversation_id = ? AND seq >= ? ORDER BY seq'),
+    storedMessage: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropMessage: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropStar: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq = ?'),
     messageById: db.prepare(`SELECT m.id, m.conversation_id, m.seq, c.deleted_at FROM messages m
@@ -212,19 +230,22 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
-    timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, meta, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
-    messages: db.prepare('SELECT role, text, receipt, images, meta FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    messages: db.prepare('SELECT role, text, receipt, images FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
+    addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
+      VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
+    hasRecord: db.prepare('SELECT 1 AS held FROM report_records WHERE report_id = ?'),
     bySession: db.prepare('SELECT * FROM conversations WHERE session_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
-    hasReport: db.prepare(`SELECT 1 AS held FROM messages WHERE conversation_id = ? AND role = 'report' AND json_extract(meta, '$.reportId') = ?`),
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
     // A message cut off (going back, a turn redone) takes its star along: the next one there is another message.
     trimStars: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq >= ?'),
-    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ?, meta = ? WHERE conversation_id = ? AND seq = ?'),
+    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ? WHERE conversation_id = ? AND seq = ?'),
     nextMessageId: db.prepare(`UPDATE id_counters SET value = value + 1 WHERE name = 'messages' RETURNING value`),
-    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at, meta)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
@@ -245,44 +266,30 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
 
   /**
-   * What is written of a save: from the first message that differs from what is stored, the last stored one always
-   * (its receipt, its final text). Messages before the last user message are as they were; those since may still be
-   * finishing out of order (a streamed answer settling above a task's record, a receipt after it), so they are
-   * compared. A message rewritten keeps its id (what a link or a star names) while it is the same message finishing:
-   * same speaker, its text going on from what was kept. Said again differently (a turn redone), it is another message:
-   * a new id, and a star on the old one goes with it.
+   * Earlier messages never change; only the last stored one (receipt, final text) and new ones are written. The
+   * last stored one keeps its id (what a link or a star names) while it is the same message finishing: same speaker,
+   * its text going on from what was kept. Said again differently (a turn redone), it is another message: a new id,
+   * and a star on the old one goes with it.
    */
   function syncMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined, at: number) {
     const stored = sql.count.get(id).n
-    const last = Math.max(0, Math.min(stored, messages.length) - 1)
-    const from = Math.min(last, sql.lastUserSeq.get(id)?.seq ?? 0)
-    const tail = new Map<number, Row>(sql.storedTail.all(id, from).map((row: Row) => [Number(row.seq), row]))
-    const columnsOf = ({ receipt, images, report }: (typeof messages)[number]) => ({
-      json: receipt ? JSON.stringify(receipt) : null, pictures: images?.length ? JSON.stringify(images) : null, meta: report ? JSON.stringify(report) : null,
-    })
-    let start = from
-    while (start < last) {
-      const kept = tail.get(start)
-      const { json, pictures, meta } = columnsOf(messages[start])
-      if (!kept || kept.role !== messages[start].role || kept.text !== messages[start].text || (kept.receipt ?? null) !== json
-        || (kept.images ?? null) !== pictures || (kept.meta ?? null) !== meta) break
-      start += 1
-    }
+    const start = Math.max(0, Math.min(stored, messages.length) - 1)
     sql.trim.run(id, messages.length)
     sql.trimStars.run(id, messages.length)
     for (let seq = start; seq < messages.length; seq += 1) {
-      const { role, text } = messages[seq]
-      const { json, pictures, meta } = columnsOf(messages[seq])
-      const kept = seq < stored ? tail.get(seq) : undefined
+      const { role, text, receipt, images } = messages[seq]
+      const json = receipt ? JSON.stringify(receipt) : null
+      const pictures = images?.length ? JSON.stringify(images) : null
+      const kept = seq < stored ? sql.storedMessage.get(id, seq) : undefined
       if (kept && kept.role === role && text.startsWith(kept.text)) {
-        sql.update.run(role, text, json, pictures, meta, id, seq)
+        sql.update.run(role, text, json, pictures, id, seq)
         continue
       }
       if (kept) {
         sql.dropStar.run(id, seq)
         sql.dropMessage.run(id, seq)
       }
-      sql.insert.run(sql.nextMessageId.get().value, id, seq, role, text, json, pictures, sessionId ?? null, at, meta)
+      sql.insert.run(sql.nextMessageId.get().value, id, seq, role, text, json, pictures, sessionId ?? null, at)
     }
   }
 
@@ -295,7 +302,33 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   function get(id: unknown) {
     const row = sql.conversation.get(assertId(id))
-    return row ? { conversation: toConversation(row), messages: sql.messages.all(id).map(toMessage) } : null
+    return row ? { conversation: toConversation(row), messages: sql.messages.all(id).map(toMessage), records: recordsOf(row.id) } : null
+  }
+
+  /** The task records a conversation shows, in their places (report_records). */
+  const recordsOf = (id: string): ReportRecord[] => sql.records.all(id).map(toRecord)
+
+  /**
+   * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
+   * now. False when it is kept already.
+   */
+  function addRecord({ conversationId, reportId, at, text }: { conversationId: string, reportId: string, at: number, text: string }): boolean {
+    const id = assertId(conversationId)
+    return Number(sql.addRecord.run(reportId, id, id, Math.max(0, Math.trunc(at)), text).changes) > 0
+  }
+
+  const withRecords = (id: string): { records?: ReportRecord[] } => {
+    const records = recordsOf(id)
+    return records.length ? { records } : {}
+  }
+
+  /** Whether a report's record is kept. */
+  const hasRecord = (reportId: string): boolean => Boolean(sql.hasRecord.get(reportId))
+
+  /** The conversation (segment) a dsh session belongs to, the latest one; null when none is kept. */
+  function bySession(sessionId: string): Conversation | null {
+    const row = sql.bySession.get(sessionId)
+    return row ? toConversation(row) : null
   }
 
   /** An unsaved conversation; it reaches the database with its first message. */
@@ -379,6 +412,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       parentId: row.parent_id ?? null,
       createdAt: row.created_at,
       messages: sql.timelineMessages.all(row.id).map(toTimelineMessage),
+      // Its task records (report_records), when it has any.
+      ...withRecords(row.id),
     }))
     return { segments, hasMore: rows.length > size }
   }
@@ -492,17 +527,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
-  /** The conversation (segment) a dsh session belongs to, the latest one; null when none is kept. */
-  function bySession(sessionId: string): Conversation | null {
-    const row = sql.bySession.get(sessionId)
-    return row ? toConversation(row) : null
-  }
-
-  /** Whether a conversation already keeps the record of that report (a `report` message with its id). */
-  const hasReport = (conversationId: string, reportId: string): boolean => Boolean(sql.hasReport.get(conversationId, reportId))
-
   return {
-    bySession, hasReport,
+    addRecord, hasRecord, recordsOf, bySession,
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.

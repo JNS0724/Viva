@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import type { Effect, Outcome } from '../src/backend/effects.ts'
 import type { ReportState } from '../src/backend/steer-channel.ts'
 import { createTaskReports, noteFor, recordedNote, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
-import { normalizeMessages } from '../src/backend/history-schema.ts'
-import { historyMessages } from '../src/renderer/selectors.ts'
+import { earlierRows, historyMessages } from '../src/renderer/selectors.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
+import { recordsAt } from '../src/renderer/report-state.ts'
 import { isSilentReply, reportRecordOf, shownNote, SILENT_REPLY } from '../src/shared/task-report.ts'
 
 /**
@@ -26,7 +26,7 @@ const t3 = effect(payload('t3', '别处的任务', 'c9', '做完了'))
 type State = 'idle' | 'busy' | 'away'
 
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
-  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true, recordState = 'kept' as 'kept' | 'waiting' } = {}) {
+  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
   const asked: Array<[string, string, string]> = []
@@ -46,7 +46,6 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     onRead: (effect) => {
       if (!keeps) throw new Error('disk full')
       reads.push([effect.key, effect.payload.deliveredTo])
-      return recordState
     },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
@@ -228,16 +227,23 @@ const stream = (key: string, kind: 'delta' | 'settle', text: string) => (kind ==
 const inTurnText = shownNote(noteFor([{ taskId: 'task-0001', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了' }], { inTurn: true }))
 const delivered = (conversationId: string, at = 12, sessionId = 's1') => ({ type: 'report_delivered', conversationId, sessionId, reportId: 'task-0001:run-1', text: inTurnText, at })
 
+/** The conversation as the window draws it: each message, and each record after the messages before it. */
+type WindowState = ReturnType<typeof reduce>
+const layout = (state: WindowState) => [...recordsAt(state, 0).map(() => 'record'),
+  ...state.messages.flatMap((message, i) => [message.role, ...recordsAt(state, i + 1).map(() => 'record')])]
+
 test('in the window: a delivered report is a record where it came; what the agent says next comes below it; once only', () => {
   const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
   const writing = reduce(reduce(start, { type: 'agent_turn_started', at: 10 }), { type: 'acp_update', update: chunk('我先看一下。'), at: 11 })
   const recorded = reduce(writing, delivered('c1'))
-  assert.deepEqual(recorded.messages.map((m) => m.role), ['user', 'assistant', 'report'])
+  assert.deepEqual(layout(recorded), ['user', 'assistant', 'record'])
   assert.equal(recorded.messages[1].open, false, 'what the agent was writing closed')
   const after = reduce(recorded, { type: 'acp_update', update: chunk('插一句：后台查完了。'), at: 13 })
-  assert.deepEqual(after.messages.map((m) => m.role), ['user', 'assistant', 'report', 'assistant'], 'its next words below the record')
+  assert.deepEqual(layout(after), ['user', 'assistant', 'record', 'assistant'], 'its next words below the record')
   assert.equal(reduce(recorded, delivered('c1', 14)), recorded, 'the same report again: nothing')
   assert.equal(reduce(writing, delivered('c-other')), writing, 'one for another conversation is not drawn on this one')
+  assert.deepEqual(historyMessages(reduce(after, { type: 'turn_end', stopReason: 'end_turn', at: 14 })).map((m) => m.role), ['user', 'assistant', 'assistant'],
+    'not saved with the messages: the backend keeps it')
 })
 
 test('in the window, with the model\'s streamed attempts: a late settle stays above the record, a retried attempt goes, the next one comes below', () => {
@@ -249,31 +255,32 @@ test('in the window, with the model\'s streamed attempts: a late settle stays ab
   const settled = reduce(recorded, { type: 'acp_update', update: stream('op:1:a', 'settle', '我先看一下。'), at: 13 })
   const next = reduce(reduce(settled, { type: 'acp_update', update: stream('op:2:a', 'delta', '后台查完了'), at: 14 }),
     { type: 'acp_update', update: stream('op:2:a', 'settle', '后台查完了：写好了。'), at: 15 })
-  assert.deepEqual(next.messages.map((m) => [m.role, m.text.slice(0, 6)]),
-    [['user', '看看 README'.slice(0, 6)], ['assistant', '我先看一下。'], ['report', inTurnText.slice(0, 6)], ['assistant', '后台查完了：']])
+  assert.deepEqual(layout(next), ['user', 'assistant', 'record', 'assistant'])
+  assert.deepEqual(next.messages.map((m) => m.text), ['看看 README', '我先看一下。', '后台查完了：写好了。'])
   // An attempt retried (settled with nothing): it goes; the record stays where it came, the retry below it.
   const retried = reduce(reduce(recorded, { type: 'acp_update', update: stream('op:1:a', 'settle', ''), at: 13 }),
     { type: 'acp_update', update: stream('op:1:b', 'delta', '重来一次'), at: 14 })
-  assert.deepEqual(retried.messages.map((m) => m.role), ['user', 'report', 'assistant'])
+  assert.deepEqual(layout(retried), ['user', 'assistant', 'record'], 'the retry after the record')
+  assert.equal(retried.messages[1].text, '重来一次')
 })
 
-test('a record kept and loaded again: which report, and when it came, survive the save', () => {
-  const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
-  const recorded = reduce(start, delivered('c1', 1_730_800_000_000))
-  const kept = normalizeMessages(historyMessages(recorded))
-  assert.deepEqual(kept.map((m) => m.role), ['user', 'report'], 'kept in the history like any message')
-  assert.deepEqual(kept[1].report, { reportId: 'task-0001:run-1', at: 1_730_800_000_000 })
-  const loaded = reduce({ ...initialState }, { type: 'history_loaded', conversationId: 'c1', messages: kept, savedAt: 2 })
-  assert.deepEqual(loaded.messages[1].report, { reportId: 'task-0001:run-1', at: 1_730_800_000_000 })
+test('a conversation loaded with its records: each after the messages before it, its time kept; a malformed one left out', () => {
+  const at = 1_730_800_000_000
+  const loaded = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', savedAt: 2,
+    messages: [{ role: 'user', text: '看看 README' }, { role: 'assistant', text: '好的。' }],
+    records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }, { reportId: 'task-0002:run-1', at, text: inTurnText, after: 9 },
+      { reportId: '', at, text: 'x', after: 0 }, { reportId: 'task-0003:run-1', at: 'soon', text: 'x', after: 0 }] })
+  assert.deepEqual(layout(loaded), ['user', 'record', 'assistant', 'record'], 'one after more messages than there are: after the last')
+  assert.equal(loaded.records[0].at, at)
   assert.equal(reduce(loaded, delivered('c1')), loaded, 'loaded again, the same report is still one record')
-  assert.equal(normalizeMessages([{ role: 'report', text: 'x', report: { reportId: '', at: 'soon' } }])[0].report, undefined, 'a malformed mark is not kept')
+  const opened = reduce(loaded, { type: 'conversation_opened', info: initialState.info,
+    conversation: { id: 'c2', messages: [{ role: 'user', text: '另一个话题' }], records: [{ reportId: 'task-0009:run-1', at, text: inTurnText, after: 0 }], updatedAt: 3 } })
+  assert.deepEqual(layout(opened), ['record', 'user'], 'another conversation opened: its own records')
 })
 
 test('read, but its record cannot be kept now: tried again after a wait, not left waiting for a wake that may not come', async () => {
   const found = setup({ known: { 't1:run-1': 'read' }, keeps: false })
   assert.deepEqual(await found.outcomes([t1]), { 't1:run-1': 'retry' })
-  const onScreen = setup({ known: { 't1:run-1': 'read' }, recordState: 'waiting' })
-  assert.deepEqual(await onScreen.outcomes([t1]), { 't1:run-1': 'retry' }, 'waiting for the window to store it: looked at again after a wait')
   const steered = setup({ state: 'busy', steered: 'read', keeps: false })
   assert.deepEqual(await steered.outcomes([t1]), { 't1:run-1': 'retry' }, 'the same when it is found read as it is sent')
 })
@@ -282,10 +289,23 @@ test('a blank new topic (no id in the window yet): a record for its session is d
   const blank = { ...reduce(initialState, { type: 'new_session', info: { ...initialState.info, sessionId: 's-fresh' }, at: 1 }) }
   assert.equal(blank.conversationId, null)
   const recorded = reduce(blank, delivered('c-backend-id', 12, 's-fresh'))
-  assert.deepEqual(recorded.messages.map((m) => m.role), ['report'], 'drawn on the topic of that session')
+  assert.deepEqual(layout(recorded), ['record'], 'drawn on the topic of that session')
   assert.equal(reduce(blank, delivered('c-backend-id', 12, 's-other')), blank, 'another session: not here')
   const leaving = reduce(blank, { type: 'new_session_pending', at: 2 })
-  assert.equal(reduce(leaving, delivered('c-backend-id', 12, 's-fresh')).messages.length, 0, 'a topic being left for a new one: not drawn on it')
+  assert.equal(reduce(leaving, delivered('c-backend-id', 12, 's-fresh')).records.length, 0, 'a topic being left for a new one: not drawn on it')
   const saved = reduce(recorded, { type: 'conversation_saved', id: 'c-backend-id' })
   assert.equal(reduce(saved, delivered('c-backend-id', 13, 's-fresh')), saved, 'saved, it is known by its id, and the record is one')
+})
+
+test('in the timeline: an earlier topic draws its records after the messages before them; the topic left keeps those it had', () => {
+  const at = 1_730_800_000_000
+  const segment = { id: 'c-old', cwd: '/w', parentId: null, createdAt: at,
+    messages: [{ seq: 0, role: 'user', text: '整理一下', receipt: null, at }, { seq: 1, role: 'assistant', text: '好的。', receipt: null, at }],
+    records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }, { reportId: 'task-0002:run-1', at, text: inTurnText, after: 5 }] }
+  const rows = earlierRows({ segments: [segment], hasMore: false, loading: false }, { now: at })
+  assert.deepEqual(rows.filter((row) => row.kind !== 'day').map((row) => row.kind === 'message' ? row.role : row.kind), ['user', 'record', 'assistant', 'record'])
+  const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
+  const left = reduce(reduce(start, delivered('c1')), { type: 'new_session', info: initialState.info, at: 2 })
+  assert.deepEqual(left.records, [], 'the new topic has none')
+  assert.deepEqual(left.earlier.segments.at(-1)?.records?.map((record: ReportRecord) => record.reportId), ['task-0001:run-1'], 'the topic left keeps its record')
 })

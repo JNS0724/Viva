@@ -119,7 +119,7 @@ export interface TaskReportsDeps {
    * same as for viva-steer's `report_read`, so a report read before a restart gets its record too. One that throws
    * (the record could not be kept) is tried again after a wait.
    */
-  onRead: (effect: Effect<ReportPayload>) => 'kept' | 'waiting'
+  onRead: (effect: Effect<ReportPayload>) => void
 }
 
 const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
@@ -162,13 +162,11 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     const kept = (effect: Effect<ReportPayload>, payload: ReportPayload): Effect<ReportPayload> | null =>
       (amend(effect, payload) ? { ...effect, payload } : null)
 
-    /**
-     * Read: its record kept, and so done; still to be kept (by the window), or not kept now (the database busy), looked
-     * at again after the queue's wait.
-     */
+    /** Read: its record kept, and so done (onRead); not kept now (the database busy), tried again after a wait. */
     const readOutcome = (effect: Effect<ReportPayload>): Outcome => {
       try {
-        return onRead(effect) === 'kept' ? 'wait' : 'retry'
+        onRead(effect)
+        return 'wait'
       } catch {
         // Said where it failed (compose.ts onRead); here only when to try again.
         return 'retry'

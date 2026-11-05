@@ -2,6 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { approvalTitle, optionName } from './approval.ts'
 import { assistantStream } from './assistant-stream.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
+import { recordsFrom, REPORT_ACTIONS } from './report-state.ts'
 import { FILES_ACTIONS, initialFiles } from './files-state.ts'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.ts'
 import { REVIEW_ACTIONS, initialReview } from './review-state.ts'
@@ -29,6 +30,8 @@ export const initialState = Object.freeze({
   /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
   phase: 'idle' as 'idle' | 'working' | 'waiting' | 'asking' | 'error',
   messages: [] as ThreadMessage[],
+  /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
+  records: [] as readonly ReportRecord[],
   thoughts: [] as Untyped[],
   tools: {} as Record<string, ToolCall>,
   timeline: [] as Untyped[],
@@ -208,14 +211,6 @@ function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): Th
 /** The handlers, looked up when used: a task's view is updated by the same ones (tasks-state.js). */
 const HANDLERS: Record<string, Reducer> = new Proxy({}, { get: (_target, type) => ACTION_HANDLERS[String(type)] })
 
-/**
- * Whether a record is for the topic on screen: its conversation, or, while the topic is not saved yet (no id for it
- * here), its session; never one being left for a new topic.
- */
-const isRecordFor = (state: State, conversationId: unknown, sessionId: unknown) => (state.conversationId !== null
-  ? conversationId === state.conversationId
-  : !state.newTopicPending && typeof sessionId === 'string' && sessionId === state.info.sessionId)
-
 const ACTION_HANDLERS: Record<string, Reducer> = {
   ready: (state, { info }) => ({
     ...state,
@@ -258,20 +253,6 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     const closed = closeStreams(state)
     const message = { id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
     return { ...closed, messages: [...closed.messages, message] }
-  },
-
-  /**
-   * A background task's result the model read (system-design §12.4): a record of it where it came, in a turn running
-   * on something else or at the start of a turn of its own. What the agent was writing closes, so what it says next
-   * comes below the record. The same report twice is one record; one for a conversation not on screen is not drawn
-   * here (the backend keeps it there).
-   */
-  report_delivered: (state, { conversationId, sessionId, reportId, text, at }) => {
-    if (typeof text !== 'string' || !text || typeof reportId !== 'string' || typeof at !== 'number') return state
-    if (!isRecordFor(state, conversationId, sessionId) || state.messages.some((message) => message.report?.reportId === reportId)) return state
-    const closed = closeStreams(state)
-    const record = { id: `m${closed.messages.length}`, role: 'report', text, shown: text.length, open: false, receipt: null, report: { reportId, at } }
-    return { ...closed, messages: [...closed.messages, record] }
   },
 
   /** The words could not reach the agent: they stay in the thread, marked as not sent. */
@@ -357,7 +338,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   }),
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
-  history_loaded: (state, { conversationId = null, messages, savedAt, folds = [], parentId = null, createdAt = null }) => {
+  history_loaded: (state, { conversationId = null, messages, records = [], savedAt, folds = [], parentId = null, createdAt = null }) => {
     if (state.messages.length > 0 || state.newTopicPending || !Array.isArray(messages) || (!messages.length && !conversationId)) return state
     return {
       ...state,
@@ -365,10 +346,10 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: messages.length ? 'loading' : null,
-      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, report?: ReportMark }, i: number) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
-        ...(m.images ? { images: m.images } : {}), ...(m.report ? { report: m.report } : {}),
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
+        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
       })),
+      records: recordsFrom(records),
       restored: messages.length ? { count: messages.length, savedAt } : null,
     }
   },
@@ -432,7 +413,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   /** Picked from the history panel: start over with that conversation's messages and close the panel. */
   conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded(
     { ...ACTION_HANDLERS.new_session(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false } },
-    { conversationId: conversation.id, messages: conversation.messages, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
+    { conversationId: conversation.id, messages: conversation.messages, records: conversation.records, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
   ),
 
   /** Restored trace goes first: it happened before anything the live session has added since. */
@@ -484,6 +465,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...REVIEW_ACTIONS,
   ...RESUME_ACTIONS,
   ...EARLIER_ACTIONS,
+  ...REPORT_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
   ...taskActions(HANDLERS),
   ...WORKDIR_ACTIONS,

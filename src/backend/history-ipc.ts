@@ -22,7 +22,7 @@ export type StartedAgent = { sessionId: string | null, cwd?: string | null, resu
 const summaryOf = (conversation: Pick<Conversation, 'id' | 'title' | 'updatedAt'>) => ({ id: conversation.id, title: conversation.title, updatedAt: conversation.updatedAt })
 /** With what it goes on from and when it began: the window draws where its topic starts (renderer/topics.js). */
 const viewOf = (found: ReturnType<HistoryDb['get']>) => (found
-  ? { ...summaryOf(found.conversation), parentId: found.conversation.parentId, createdAt: found.conversation.createdAt, messages: found.messages }
+  ? { ...summaryOf(found.conversation), parentId: found.conversation.parentId, createdAt: found.conversation.createdAt, messages: found.messages, records: found.records }
   : null)
 let BUSY = t("main.history-ipc.wait.for.this.turn.to.finish.before")
 let GONE = t("main.history-ipc.cannot.resume.that.topic.the.assistant.no")

@@ -82,7 +82,7 @@ type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configAc
 type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
-const HISTORY_WRITES = Object.freeze(['save', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
+const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
 /** The user's own changes on the 关于你 page; what the agent saves is recorded when the app reads it (memory.learned). */
 const MEMORY_WRITES = Object.freeze(['setProfile', 'addMemory', 'updateMemory', 'deleteMemory', 'restoreMemory', 'reviveMemory', 'setOnboarding'] as const)
 
@@ -373,19 +373,18 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
         // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
         // session it was delivered to; said of another session, it is not this report's. Read but its record not kept
-        // yet (the window to store it, or the database busy): a pass now, which puts it off to look again.
+        // (the database busy): a pass now, which puts it off to try again.
         if (event.type === 'report_written' || event.type === 'report_read' || event.type === 'report_dropped') {
           const reportId = String(event.reportId)
           const queued = effects?.get(REPORT, reportId) as Effect<ReportPayload> | null | undefined
           if (!queued || queued.payload.deliveredTo !== event.sessionId) return undefined
           if (event.type === 'report_dropped') return wakeEffects()
           try {
-            if (event.type === 'report_written') return records.written(queued)
-            if (records.read(queued) === 'kept') return undefined
+            return event.type === 'report_written' ? records.written(queued) : records.read(queued)
           } catch (err) {
             console.error('[reports]', err instanceof Error ? err.message : String(err))
+            return wakeEffects()
           }
-          return wakeEffects()
         }
         emitToRenderer(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
@@ -434,7 +433,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
     onRead: (effect) => {
       try {
-        return records.read(effect)
+        records.read(effect)
       } catch (err) {
         console.error('[reports] could not keep a report\'s record:', err instanceof Error ? err.message : String(err))
         throw err

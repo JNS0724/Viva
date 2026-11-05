@@ -14,6 +14,7 @@ import { foldKey, foldTall } from './message-fold.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
 import { reportRecord } from './report-record.ts'
+import { recordsAt } from '../report-state.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
@@ -196,7 +197,6 @@ const MESSAGE_VIEWS: Readonly<Record<string, (message: ThreadMessage, handlers: 
   note: (message, handlers, traceReady) => h('div', { class: 'msg-note' },
     h('span', { text: message.text }),
     hasReceipt(message) ? receiptButton(message, handlers, traceReady) : null),
-  report: (message, handlers) => reportRecord(message, handlers),
 }
 
 const STILL: Look = Object.freeze({ latest: false, mood: 'idle' })
@@ -215,7 +215,6 @@ export function markMessage<T extends View>(view: T, id: string): T {
 export function pastMessageView(message: ThreadMessage, handlers: Handlers): View {
   if (message.role === 'user') return userView(message)
   if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
-  if (message.role === 'report') return reportRecord(message, handlers)
   return h('div', { class: 'msg-agent' },
     avatar(message, STILL),
     h('div', { class: 'msg-body' },
@@ -481,8 +480,12 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
     ...anchors.filter(anchor => anchor.at === i + 1).map(anchor => anchor.taskId)])
   // The cards of messages not drawn stay in sight, at the top of what is.
   const earlierCards = state.messages.slice(0, start).flatMap((_, i) => hostedBy(i))
+  // A task's record goes after the message it came after (one after them all, or after a message gone: at the end);
+  // those of messages not drawn are not drawn either.
+  const recordsAfter = (after: number) => recordsAt(state, after)
+    .map((record) => part(`record:${record.reportId}`, [record], () => reportRecord(record, handlers)))
   const views = messageEntries(state, plain, handlers, start).slice(start).map((entries, i) => {
-    const hosted = hostedBy(start + i)
+    const hosted = [...hostedBy(start + i), ...recordsAfter(start + i + 1)]
     return hosted.length ? [...entries, ...hosted] : entries
   })
   const divided = note && state.restored.count >= start
@@ -493,6 +496,7 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
     start > 0 ? part('thread-rest', [start, state.conversationId], () => restLine(state, start, handlers)) : '',
     ...earlierCards,
     ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),
+    ...recordsAfter(start),
     ...divided.flat().filter(isContent),
     ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },
       h('b', { class: 'task-name', text: item.text }),

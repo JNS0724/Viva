@@ -7,19 +7,14 @@ const MAX_TEXT_CHARS = 200_000
 const MAX_STOP_REASON_CHARS = 40
 const MAX_TITLE_CHARS = 80
 const AUTO_TITLE_CHARS = 20
-/** `report`: a background task's result as the model was given it (renderer/view/report-record.ts). */
-const ROLES = new Set(['user', 'assistant', 'note', 'report'])
+const ROLES = new Set(['user', 'assistant', 'note'])
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/
-/** As long as a report's id may be (plugins/steer/lib/reports.ts MAX_ID_CHARS). */
-const MAX_REPORT_ID_CHARS = 200
 
 /** What a finished answer took: time, tool calls, thoughts, and why it stopped. */
 export interface Receipt { ms: number, tools: number, thoughts: number, stopReason: string }
 
-/** A `report` message's own: which report it records, and when it came (ms). */
-export interface ReportMeta { reportId: string, at: number }
 /** A message as it is kept. */
-export interface StoredMessage { role: 'user' | 'assistant' | 'note' | 'report', text: string, receipt: Receipt | null, images?: ImageRef[], report?: ReportMeta }
+export interface StoredMessage { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[] }
 
 const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0
 
@@ -33,22 +28,12 @@ function normalizeReceipt(receipt: any): Receipt | null {
   return { ms, tools, thoughts, stopReason }
 }
 
-/** A report message's meta, checked: an id and a time, or none. */
-function reportMetaOf(value: unknown): ReportMeta | null {
-  if (!value || typeof value !== 'object') return null
-  const { reportId, at } = value as { reportId?: unknown, at?: unknown }
-  if (typeof reportId !== 'string' || !reportId || reportId.length > MAX_REPORT_ID_CHARS) return null
-  if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) return null
-  return { reportId, at }
-}
-
 function normalizeMessage(message: any): StoredMessage {
   if (!ROLES.has(message?.role)) throw new Error(t("main.history-schema.invalid.message.role", { role: message?.role }))
   if (typeof message.text !== 'string' || message.text.length > MAX_TEXT_CHARS) throw new Error(t("main.history-schema.invalid.message.text"))
   const images = checkImages(message.images)
   if (!images) throw new Error(t("main.history-schema.invalid.message.images"))
-  const report = message.role === 'report' ? reportMetaOf(message.report) : null
-  return { role: message.role, text: message.text, receipt: normalizeReceipt(message.receipt), ...(images.length ? { images } : {}), ...(report ? { report } : {}) }
+  return { role: message.role, text: message.text, receipt: normalizeReceipt(message.receipt), ...(images.length ? { images } : {}) }
 }
 
 /** Keeps only what is persisted from a list of messages (renderer state or a file), or throws. */
