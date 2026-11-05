@@ -10,12 +10,16 @@ import { recordedNote, REPORT, type ReportPayload } from './task-reports.ts'
  * topic since). A report is done only once its record is kept there, so neither is lost on a restart, and the same
  * report is never recorded twice.
  *
- * Read, the record is written into that conversation and the report done, in one change, whichever conversation it
- * is: a write that fails leaves the report queued, tried again after the queue's wait. That conversation on screen,
- * the window draws the record where it came (`written`, as soon as the note is in the session) and keeps it in its own
- * saves: the window's save is the whole list, the record in it where it came, so it rewrites the stored order from
- * the first message it differs at (history-db.ts syncMessages), the record included, never twice.
+ * - That conversation on screen: the window is the one writer of its messages (each save is its whole list, in order),
+ *   so the window draws the record where it came (`written`, as soon as the note is in the session) and keeps it with
+ *   its saves. The report is done only once the record is stored there; till then each pass draws it again (the
+ *   window draws a report once, and saves) and is put off with the queue's growing waits.
+ * - Another conversation (no window writes it now): the record is written in and the report done, in one change; a
+ *   write that fails leaves the report queued, tried again after the queue's wait.
  */
+
+/** A report read: its record kept (or nothing to keep it in), so done; or waiting for the window to store it. */
+export type RecordState = 'kept' | 'waiting'
 
 /** What of the history is used here. */
 export interface RecordHistory {
@@ -82,25 +86,32 @@ export function createReportRecords({ history, effects, apply, current, show, no
 
   /**
    * Read there (viva-steer `report_read`, or a pass that found it so): done once its record is kept there. Kept
-   * already, or no conversation to keep it in: done now.
+   * already, or no conversation to keep it in: done now. Says whether it is done (`kept`), or waits for the window to
+   * store its record (`waiting`: to be looked at again after a wait).
    */
-  function read(effect: Effect<ReportPayload>) {
+  function read(effect: Effect<ReportPayload>): RecordState {
     const queue = effects()
     const store = history()
-    if (!queue || !store) return
+    if (!queue || !store) return 'waiting'
     const target = targetOf(effect)
-    if (!target || store.hasReport(target.id, effect.key)) return queue.finish(REPORT, effect.key)
-    const onScreen = target.id === current().id
+    if (!target || store.hasReport(target.id, effect.key)) {
+      queue.finish(REPORT, effect.key)
+      return 'kept'
+    }
+    if (target.id === current().id) {
+      showOn(target, effect, effect.payload.recordedAt ?? now())
+      return 'waiting'
+    }
     const found = store.get(target.id)
-    // Not stored: only the conversation on screen, before its first save, has its record written as its first message.
-    if (!found && !onScreen) return queue.finish(REPORT, effect.key)
-    const at = effect.payload.recordedAt ?? now()
+    if (!found) {
+      queue.finish(REPORT, effect.key)
+      return 'kept'
+    }
     apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
-      store.save(found?.conversation ?? target, [...(found?.messages ?? []), recordOf(effect, at)])
+      store.save(found.conversation, [...found.messages, recordOf(effect, effect.payload.recordedAt ?? now())])
       queue.finish(REPORT, effect.key)
     })
-    // Drawn by the window, should it not have it yet (it draws a report once).
-    if (onScreen) showOn(target, effect, at)
+    return 'kept'
   }
 
   return { written, read }

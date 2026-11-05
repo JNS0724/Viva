@@ -26,7 +26,7 @@ const t3 = effect(payload('t3', '别处的任务', 'c9', '做完了'))
 type State = 'idle' | 'busy' | 'away'
 
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
-  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true } = {}) {
+  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true, recordState = 'kept' as 'kept' | 'waiting' } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
   const asked: Array<[string, string, string]> = []
@@ -46,6 +46,7 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     onRead: (effect) => {
       if (!keeps) throw new Error('disk full')
       reads.push([effect.key, effect.payload.deliveredTo])
+      return recordState
     },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
@@ -271,6 +272,8 @@ test('a record kept and loaded again: which report, and when it came, survive th
 test('read, but its record cannot be kept now: tried again after a wait, not left waiting for a wake that may not come', async () => {
   const found = setup({ known: { 't1:run-1': 'read' }, keeps: false })
   assert.deepEqual(await found.outcomes([t1]), { 't1:run-1': 'retry' })
+  const onScreen = setup({ known: { 't1:run-1': 'read' }, recordState: 'waiting' })
+  assert.deepEqual(await onScreen.outcomes([t1]), { 't1:run-1': 'retry' }, 'waiting for the window to store it: looked at again after a wait')
   const steered = setup({ state: 'busy', steered: 'read', keeps: false })
   assert.deepEqual(await steered.outcomes([t1]), { 't1:run-1': 'retry' }, 'the same when it is found read as it is sent')
 })

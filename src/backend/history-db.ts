@@ -198,7 +198,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       ON CONFLICT (id) DO UPDATE SET title = :title, updated_at = :updatedAt,
         session_id = :sessionId, mode = :mode, model = :model, cwd = :cwd`),
     topicOf: db.prepare('SELECT topic_id FROM conversations WHERE id = ?'),
-    storedMessage: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
+    lastUserSeq: db.prepare(`SELECT MAX(seq) AS seq FROM messages WHERE conversation_id = ? AND role = 'user'`),
+    storedTail: db.prepare('SELECT seq, role, text, receipt, images, meta FROM messages WHERE conversation_id = ? AND seq >= ? ORDER BY seq'),
     dropMessage: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropStar: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq = ?'),
     messageById: db.prepare(`SELECT m.id, m.conversation_id, m.seq, c.deleted_at FROM messages m
@@ -244,22 +245,35 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
 
   /**
-   * Earlier messages never change; only the last stored one (receipt, final text) and new ones are written. The
-   * last stored one keeps its id (what a link or a star names) while it is the same message finishing: same speaker,
-   * its text going on from what was kept. Said again differently (a turn redone), it is another message: a new id,
-   * and a star on the old one goes with it.
+   * What is written of a save: from the first message that differs from what is stored, the last stored one always
+   * (its receipt, its final text). Messages before the last user message are as they were; those since may still be
+   * finishing out of order (a streamed answer settling above a task's record, a receipt after it), so they are
+   * compared. A message rewritten keeps its id (what a link or a star names) while it is the same message finishing:
+   * same speaker, its text going on from what was kept. Said again differently (a turn redone), it is another message:
+   * a new id, and a star on the old one goes with it.
    */
   function syncMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined, at: number) {
     const stored = sql.count.get(id).n
-    const start = Math.max(0, Math.min(stored, messages.length) - 1)
+    const last = Math.max(0, Math.min(stored, messages.length) - 1)
+    const from = Math.min(last, sql.lastUserSeq.get(id)?.seq ?? 0)
+    const tail = new Map<number, Row>(sql.storedTail.all(id, from).map((row: Row) => [Number(row.seq), row]))
+    const columnsOf = ({ receipt, images, report }: (typeof messages)[number]) => ({
+      json: receipt ? JSON.stringify(receipt) : null, pictures: images?.length ? JSON.stringify(images) : null, meta: report ? JSON.stringify(report) : null,
+    })
+    let start = from
+    while (start < last) {
+      const kept = tail.get(start)
+      const { json, pictures, meta } = columnsOf(messages[start])
+      if (!kept || kept.role !== messages[start].role || kept.text !== messages[start].text || (kept.receipt ?? null) !== json
+        || (kept.images ?? null) !== pictures || (kept.meta ?? null) !== meta) break
+      start += 1
+    }
     sql.trim.run(id, messages.length)
     sql.trimStars.run(id, messages.length)
     for (let seq = start; seq < messages.length; seq += 1) {
-      const { role, text, receipt, images, report } = messages[seq]
-      const json = receipt ? JSON.stringify(receipt) : null
-      const pictures = images?.length ? JSON.stringify(images) : null
-      const meta = report ? JSON.stringify(report) : null
-      const kept = seq < stored ? sql.storedMessage.get(id, seq) : undefined
+      const { role, text } = messages[seq]
+      const { json, pictures, meta } = columnsOf(messages[seq])
+      const kept = seq < stored ? tail.get(seq) : undefined
       if (kept && kept.role === role && text.startsWith(kept.text)) {
         sql.update.run(role, text, json, pictures, meta, id, seq)
         continue

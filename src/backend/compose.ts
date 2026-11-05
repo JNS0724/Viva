@@ -372,20 +372,20 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
         // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
-        // session it was delivered to; said of another session, it is not this report's.
+        // session it was delivered to; said of another session, it is not this report's. Read but its record not kept
+        // yet (the window to store it, or the database busy): a pass now, which puts it off to look again.
         if (event.type === 'report_written' || event.type === 'report_read' || event.type === 'report_dropped') {
           const reportId = String(event.reportId)
           const queued = effects?.get(REPORT, reportId) as Effect<ReportPayload> | null | undefined
           if (!queued || queued.payload.deliveredTo !== event.sessionId) return undefined
           if (event.type === 'report_dropped') return wakeEffects()
           try {
-            return event.type === 'report_written' ? records.written(queued) : records.read(queued)
+            if (event.type === 'report_written') return records.written(queued)
+            if (records.read(queued) === 'kept') return undefined
           } catch (err) {
-            // Not kept now (the database busy): still queued. A pass now finds it read and tries again (onRead),
-            // put off with the queue's growing waits while that fails.
             console.error('[reports]', err instanceof Error ? err.message : String(err))
-            return wakeEffects()
           }
+          return wakeEffects()
         }
         emitToRenderer(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
@@ -434,7 +434,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
     onRead: (effect) => {
       try {
-        records.read(effect)
+        return records.read(effect)
       } catch (err) {
         console.error('[reports] could not keep a report\'s record:', err instanceof Error ? err.message : String(err))
         throw err

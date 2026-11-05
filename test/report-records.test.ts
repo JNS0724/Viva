@@ -68,32 +68,41 @@ test('the record and the report done are one change: a record that cannot be kep
   assert.equal(reportsIn(old.id).length, 0, 'the report not done: its record not kept either, so the next pass keeps it once')
 })
 
-test('read in the session on screen: written there and done in one change, and drawn by the window, at the time it was shown', (t) => {
-  const { records, effects, shown, world, queue, reportsIn } = setup(t)
+const R2 = reportId('task-0002', 'run-1')
+const markOf = (id: string, at: number) => ({ reportId: id, at })
+
+test('read in the session on screen: drawn by the window, done only once the window has stored it, never written over its list', (t) => {
+  const { history, records, effects, shown, world, queue, reportsIn } = setup(t)
   const effect = queue('s-new')
   records.written(effect)
   assert.equal(shown.length, 1, 'drawn as soon as the note is in the session')
-  assert.equal(reportsIn(world.current.id).length, 0, 'written, not yet read: not kept')
-  assert.ok(effects.get(REPORT, ID), 'nor done')
-  records.read(effects.get(REPORT, ID) as Effect<ReportPayload>)
-  assert.deepEqual(reportsIn(world.current.id).map((m) => m.report), [{ reportId: ID, at: 5_000 }], 'kept, with the time it was drawn at')
-  assert.equal(effects.get(REPORT, ID), null, 'done: no save of the window\'s waited on')
-  assert.deepEqual(shown.map((event) => [event.conversationId, event.sessionId, event.at]), [[world.current.id, 's-new', 5_000], [world.current.id, 's-new', 5_000]],
-    'shown again with it (the window draws a report once)')
+  assert.equal(records.read(effects.get(REPORT, ID) as Effect<ReportPayload>), 'waiting', 'read: waiting for the window to store it')
+  assert.equal(reportsIn(world.current.id).length, 0, 'the backend writes nothing into the list the window writes')
+  assert.equal(shown.at(-1)?.at, 5_000, 'drawn again at the time it was first shown')
+  // A save the window sent before it had the record comes after: nothing of the record to lose, the report still queued.
+  history.save(world.current, [{ role: 'user', text: '换个话题' }, { role: 'assistant', text: '我先看一下。', receipt: null }])
+  assert.equal(records.read(effects.get(REPORT, ID) as Effect<ReportPayload>), 'waiting')
+  assert.ok(effects.get(REPORT, ID), 'not done')
+  history.save(world.current, [{ role: 'user', text: '换个话题' }, { role: 'assistant', text: '我先看一下。', receipt: null },
+    { role: 'report', text: shown[0].text, receipt: null, report: markOf(ID, 5_000) }])
+  assert.equal(records.read(effects.get(REPORT, ID) as Effect<ReportPayload>), 'kept', 'stored by the window: done')
+  assert.equal(effects.get(REPORT, ID), null)
   records.written(queue('s-old'))
-  assert.equal(shown.length, 2, 'written in another conversation\'s session: not drawn here')
+  assert.equal(shown.length, 3, 'written in another conversation\'s session: not drawn here')
 })
 
-test('the window\'s next save, its whole list with the record where it came: the stored order follows it, one record', (t) => {
-  const { history, records, world, queue } = setup(t)
-  records.read(queue('s-new'))
-  // The window had more by then than was saved: an answer before the record (its stream settled late), one after.
-  const text = (history.get(world.current.id)!.messages.find((m) => m.role === 'report'))!.text
-  const windowList = [{ role: 'user', text: '换个话题' }, { role: 'assistant', text: '我先看一下。', receipt: null },
-    { role: 'report', text, receipt: null, report: { reportId: ID, at: 5_000 } }, { role: 'assistant', text: '后台查完了。', receipt: null }]
-  history.save(world.current, windowList)
-  assert.deepEqual(history.get(world.current.id)!.messages.map((m) => m.role), ['user', 'assistant', 'report', 'assistant'])
-  assert.equal(history.hasReport(world.current.id, ID), true)
+test('several reports on screen: the window\'s list is stored as it is, each record once, with what came between them', (t) => {
+  const { core, history, records, effects, world, reportsIn } = setup(t)
+  for (const id of [ID, R2]) core.apply('test.queued', {}, () => effects.queue(REPORT, id, { ...payload('s-new'), taskId: id.split(':')[0] }))
+  for (const id of [ID, R2]) assert.equal(records.read(effects.get(REPORT, id) as Effect<ReportPayload>), 'waiting')
+  const list = [{ role: 'user', text: '换个话题' }, { role: 'report', text: 'r1', receipt: null, report: markOf(ID, 5_000) },
+    { role: 'report', text: 'r2', receipt: null, report: markOf(R2, 5_001) }]
+  history.save(world.current, list)
+  // An answer that settled late, above both records: the window's next list.
+  history.save(world.current, [list[0], { role: 'assistant', text: '我先看一下。', receipt: null }, list[1], list[2]])
+  assert.deepEqual(history.get(world.current.id)!.messages.map((m) => m.report?.reportId ?? m.role), ['user', 'assistant', ID, R2])
+  for (const id of [ID, R2]) assert.equal(records.read(effects.get(REPORT, id) as Effect<ReportPayload>), 'kept')
+  assert.equal(reportsIn(world.current.id).length, 2)
 })
 
 test('its record kept already (the window saved it, or an earlier pass): done, not recorded again', (t) => {
@@ -105,15 +114,15 @@ test('its record kept already (the window saved it, or an earlier pass): done, n
   assert.equal(effects.get(REPORT, ID), null)
 })
 
-test('a session with no conversation kept: done with nothing to keep it in; one on screen not yet saved: kept as its first message, and shown', (t) => {
+test('a session with no conversation kept: done with nothing to keep it in; one on screen not yet saved: shown, done once its first save stores it', (t) => {
   const { history, records, effects, shown, world, queue } = setup(t)
   records.read(queue('s-gone'))
   assert.equal(effects.get(REPORT, ID), null)
   world.current = history.create({ sessionId: 's-fresh' })
-  records.read(queue('s-fresh'))
+  assert.equal(records.read(queue('s-fresh')), 'waiting')
   assert.equal(shown.at(-1)?.conversationId, world.current.id, 'the conversation on screen, before its first save')
-  assert.deepEqual(history.get(world.current.id)?.messages.map((m) => m.role), ['report'], 'kept as its first message')
-  assert.equal(effects.get(REPORT, ID), null)
+  history.save(world.current, [{ role: 'report', text: shown.at(-1)!.text, receipt: null, report: markOf(ID, 5_000) }])
+  assert.equal(records.read(effects.get(REPORT, ID) as Effect<ReportPayload>), 'kept', 'its first save, the record in it: done')
 })
 
 test('a history kept before records had marks: opened, it takes them; its old messages read as before', (t) => {
@@ -146,7 +155,18 @@ test(`a late confirmation whose record cannot be kept (${where}): the queue trie
   })
   const old = history.save(history.create({ sessionId: 's-old' }), [{ role: 'user', text: '整理一下发布说明' }]) as Conversation
   const here = history.save(history.create({ sessionId: 's-new' }), [{ role: 'user', text: '换个话题' }]) as Conversation
-  const records = createReportRecords({ history: () => history, effects: () => effects, apply: core.apply, current: () => here, show: () => {}, now: () => clock })
+  // The window: drawn, it saves its whole list, the record in it; a save that fails is only logged there (app.ts).
+  const windowSaves = { failed: 0 }
+  const records = createReportRecords({
+    history: () => history, effects: () => effects, apply: core.apply, current: () => here, now: () => clock,
+    show: (event) => {
+      try {
+        history.save(here, [{ role: 'user', text: '换个话题' }, { role: 'report', text: event.text, receipt: null, report: { reportId: event.reportId, at: event.at } }])
+      } catch {
+        windowSaves.failed += 1
+      }
+    },
+  })
   effects.runs(REPORT, createTaskReports({
     conversation: () => 'idle', currentConversation: () => here.id, session: () => 's-new', superseded: () => false,
     holds: (effect) => effects.holds(effect), status: async () => 'read', deliver: async () => 'read', report: () => true,
@@ -155,18 +175,38 @@ test(`a late confirmation whose record cannot be kept (${where}): the queue trie
   core.apply('test.queued', {}, () => effects.queue(REPORT, ID, payload(session)))
   const target = session === 's-old' ? old : here
   app.db.exec(`CREATE TRIGGER no_reports BEFORE INSERT ON messages WHEN NEW.role = 'report' BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
-  // The confirmation came, its record could not be kept (compose.ts: logged, then a pass now).
-  assert.throws(() => records.read(effects.get(REPORT, ID) as Effect<ReportPayload>), /disk full/)
+  // The confirmation came, its record not kept (compose.ts: logged, or the window's save failed; then a pass now).
+  try { records.read(effects.get(REPORT, ID) as Effect<ReportPayload>) } catch { /* compose.ts logs it */ }
   await effects.wake()
   assert.equal(timers.length, 1, 'put off: a wake is set, not left waiting for one')
   assert.equal(timers[0].at - clock, RETRY_MS[0])
+  if (session === 's-new') assert.ok(windowSaves.failed >= 1, 'the window\'s saves failed meanwhile')
   app.db.exec('DROP TRIGGER no_reports')
-  clock = timers[0].at
-  const [due] = timers
-  timers = []
-  due.run()
-  await new Promise((resolve) => setTimeout(resolve, 10))
+  // The waits go on until it is kept: the window's save, once it goes through, is found on the next look.
+  for (let tries = 0; tries < 3 && effects.get(REPORT, ID); tries += 1) {
+    const [due] = timers
+    assert.ok(due, 'a wake is always set while it is not kept')
+    clock = due.at
+    timers = []
+    due.run()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
   assert.equal((history.get(target.id)?.messages ?? []).filter((message) => message.role === 'report').length, 1, 'kept where it was read')
   assert.equal(effects.get(REPORT, ID), null, 'and done')
 })
 }
+
+test('a save stores what finished out of order since the last question: an answer settled above a record, a receipt after it; ids kept', (t) => {
+  const { history, world } = setup(t)
+  const receipt = { ms: 1200, tools: 1, thoughts: 0, stopReason: 'end_turn' }
+  const record = { role: 'report', text: 'r1', receipt: null, report: markOf(ID, 5_000) }
+  const question = { role: 'user', text: '换个话题' }
+  // Closed by the record, the answer was saved as far as it had come; it settled afterwards, its receipt after that.
+  history.save(world.current, [question, { role: 'assistant', text: '我先', receipt: null }, record])
+  const before = history.timelineOf(world.current.id).map((m) => m.id)
+  history.save(world.current, [question, { role: 'assistant', text: '我先看一下。', receipt: null }, record])
+  history.save(world.current, [question, { role: 'assistant', text: '我先看一下。', receipt }, record])
+  const after = history.timelineOf(world.current.id)
+  assert.deepEqual(after.map((m) => [m.role, m.text, m.receipt]), [['user', '换个话题', null], ['assistant', '我先看一下。', receipt], ['report', 'r1', null]])
+  assert.deepEqual(after.map((m) => m.id), before, 'the same messages finishing: their ids (what links and stars name) kept')
+})
