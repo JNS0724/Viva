@@ -64,7 +64,6 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
     cancel: (timer: unknown) => { pending = pending.filter((run) => run !== timer) },
   }
 
-  const announced: Array<{ type: string, [field: string]: unknown }> = []
   let started = 0
 
   function register() {
@@ -98,7 +97,6 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
         if (depth > 0) pushedInside += 1
       },
       newRunId: () => `run-${++runs}`,
-      announce: (event) => { announced.push(event) },
       ...(waits ? { waitsOf: () => waits } : {}),
       current: () => current,
       agentInfo: () => ({ mode: 'live', model: 'V4' }),
@@ -130,7 +128,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
   const first = register()
   const texts = (segmentId: string) => db.get(segmentId)?.messages.map((m: Message) => m.text)
   const runPending = () => { const runs = pending; pending = []; runs.forEach((run) => run()) }
-  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length, announced }
+  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length }
 }
 
 test('what the task says is saved along the way, once however much it says meanwhile, and at once when it ends', async () => {
@@ -371,14 +369,14 @@ test('what an agent says in a task this launch does not hold, or in the conversa
 })
 
 test('the agent starts a task afresh from its brief; the window is told, and the card says the brief', async () => {
-  const { tasks, calls, announced, texts, kept, snapshots } = setup()
+  const { tasks, calls, pushes, texts, kept, snapshots } = setup()
   const result = await tasks.agent.start('把 docs 里的发布说明按版本整理好，输出中文')
   assert.deepEqual(result, { taskId: 's9', title: '把 docs 里的发布说明按版本整理好，输出中文', status: 'running' })
   assert.deepEqual(calls.slice(0, 2), [['startTask', { afresh: true }], ['promptTask', 's9', '把 docs 里的发布说明按版本整理好，输出中文']])
   const [made] = snapshots
   assert.deepEqual([made.taskId, made.opening?.words, made.opening?.task?.id, made.opening?.hostSession], ['s9', '把 docs 里的发布说明按版本整理好，输出中文', 's9', 's1'],
     'the window is told by the snapshot that makes it: the brief, and the conversation its card goes in')
-  assert.deepEqual(announced, [], 'nothing else to tell')
+  assert.deepEqual(pushes.filter((push) => push.type !== 'task_snapshot'), [], 'nothing else to tell')
   assert.deepEqual(texts(kept()[0].segmentId), ['把 docs 里的发布说明按版本整理好，输出中文'])
 })
 
@@ -393,7 +391,7 @@ test(`at most ${MAX_RUNNING} tasks work at once: one more is refused, not queued
 })
 
 test('the agent messages a task: into its turn while it works, its next question once it ended', async () => {
-  const { tasks, calls, announced, says, ends, texts, kept, snapshots } = setup()
+  const { tasks, calls, pushes, says, ends, texts, kept, snapshots } = setup()
   const { taskId } = await tasks.agent.start('整理发布说明')
   assert.deepEqual(await tasks.agent.message(taskId, '加上版本号'), { taskId, delivered: 'into its turn' })
   assert.deepEqual(calls.at(-1), ['steerTask', taskId, '加上版本号'])
@@ -401,7 +399,8 @@ test('the agent messages a task: into its turn while it works, its next question
   ends(taskId)
   assert.deepEqual(await tasks.agent.message(taskId, '再加上已知问题'), { taskId, delivered: 'next question' })
   assert.deepEqual(calls.at(-1), ['promptTask', taskId, '再加上已知问题'])
-  assert.deepEqual(announced.map((event) => event.type), ['task_steered'], 'into its turn: said; a new run comes by its snapshot')
+  assert.deepEqual(pushes.filter((push): push is TaskPiece => push.type === 'task_steered').map((push) => [push.runId, push.taskSeq, push.text]),
+    [['run-1', 1, '加上版本号']], 'into its turn: a piece of the run\'s stream, numbered; a new run comes by its snapshot')
   assert.equal(snapshots.findLast((snapshot) => snapshot.opening)?.opening?.words, '再加上已知问题')
   ends(taskId)
   assert.deepEqual(texts(kept()[0].segmentId), ['整理发布说明', '加上版本号', '写好了', '再加上已知问题', '本轮没有文字回复。'])
@@ -432,6 +431,17 @@ test('words that do not reach a task at work are said so, not taken for delivere
   const { tasks } = setup({ steerable: false })
   const { taskId } = await tasks.agent.start('整理发布说明')
   await assert.rejects(tasks.agent.message(taskId, '加上版本号'), /话没有送到/)
+})
+
+test('words into a task\'s turn are in a read of it exactly when its mark counts their piece', async () => {
+  const { tasks, call, pushes } = setup()
+  const { taskId } = await tasks.agent.start('整理发布说明')
+  const delivering = tasks.agent.message(taskId, '加上版本号')
+  // Read while the words are on their way to dsh: in what it said, and counted by its mark.
+  const [listed] = await call<Array<Kept & { mark?: { seq: number } }>>('task:finished')
+  const steered = pushes.find((push): push is TaskPiece => push.type === 'task_steered')
+  assert.deepEqual([listed.messages.map((m) => m.text).at(-1), listed.mark?.seq], ['加上版本号', steered?.taskSeq])
+  await delivering
 })
 
 /** What `task:finished` lists of the tasks kept, for a window that opens. */

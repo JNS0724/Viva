@@ -286,9 +286,9 @@ export function taskActions(): Record<string, Reducer> {
         const view = (waits?.questions ?? []).reduce<ConversationView>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at }), asked)
         return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
-      // The read is the baseline: each task it has is put back to it, known to the window or not. What the live channel
-      // said of any task while it was read waited, and follows over it, each piece and snapshot let in only when newer
-      // (task-actions.ts loadKept); a task the read does not have stays as it is.
+      // The read is the baseline of each task it is given (task-actions.ts loadKept gives those the window cannot go on
+      // from itself). What the live channel said of any task while it was read waited, and follows over it, each piece
+      // and snapshot let in only when newer; a task it is not given stays as it is.
       const taken = restored
       return withTasks(state, {
         list: [...state.tasks.list.filter((entry) => !taken.some((task: BackgroundTask) => task.id === entry.id)), ...taken],
@@ -324,8 +324,11 @@ export function taskActions(): Record<string, Reducer> {
     tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps, allSteps: false } }),
     tasks_page_all_steps: (state) => withTasks(state, { page: { ...state.tasks.page, allSteps: true } }),
 
-    /** Words into that task's turn (task-ipc.js task:steer), shown in its part of the conversation. */
-    task_steer: (state, { taskId, text, at }) => inView(state, taskId, 'user_steer', { text, via: null, at }),
+    /**
+     * Words the agent said into that task's turn (task-runtime.ts `said`), shown in its part of the conversation; a
+     * piece of its stream, taken once (a read that has them already leaves them out by its number).
+     */
+    task_steer: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, 'user_steer', { text: action.text, via: null, at: action.at })),
 
     task_closed: (state, { taskId }) => {
       const closed = {

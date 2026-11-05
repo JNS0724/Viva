@@ -844,10 +844,10 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now(), ...streamPlace(event) }),
   task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now(), ...streamPlace(event) }),
   /**
-   * What the agent said into a task's turn (viva-tasks). A task it starts, asks again or takes up comes by the
-   * snapshot that begins the run (task_snapshot), before what the run says.
+   * What the agent said into a task's turn (viva-tasks), a piece of its stream like what the task says. A task it
+   * starts, asks again or takes up comes by the snapshot that begins the run (task_snapshot), before what the run says.
    */
-  task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now() }),
+  task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now(), ...streamPlace(event) }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
   secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
@@ -1048,7 +1048,7 @@ async function boot() {
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
-    // While the tasks are read, what comes of one the window does not know yet waits for the read (task-actions.ts).
+    // While the tasks are read, what comes of any task waits for the read (task-actions.ts).
     if (taskActions.hold(event)) return undefined
     return handleEvent(event)
   })

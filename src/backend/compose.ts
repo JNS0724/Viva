@@ -952,7 +952,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       current: () => conversation,
       agentInfo: () => lastInfo,
       agent: taskAgent,
-      announce: emitToRenderer,
       waitsOf: (taskId) => bridge?.taskWaits(taskId) ?? { permissions: [], questions: [] },
       apply: applyChange,
       publish: emitToRenderer,

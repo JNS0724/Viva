@@ -94,8 +94,6 @@ export interface TaskRuntimeDeps {
   timers?: Pick<TaskWordsDeps, 'later' | 'cancel'>
   /** What a task held still waits on the user for (acp-bridge.ts taskWaits), for a window that opens meanwhile. */
   waitsOf?: (taskId: string) => { permissions: readonly unknown[], questions: readonly unknown[] }
-  /** To the window: what the agent did with a task, which the window did not ask for (task_steered). */
-  announce?: (event: { type: string, [field: string]: unknown }) => void
   /** A change and its event in one transaction (event-core.ts apply). The task store and the history are written only inside one. */
   apply?: Apply
   /** To the window, in order: a piece of a task's stream, and, once a change has committed, a task's snapshot. */
@@ -120,7 +118,7 @@ export type WindowSnapshot = TaskSnapshot & { taskSeq: number, opening?: TaskOpe
 export type TaskPiece = { type: string, taskId: string, runId: string, taskSeq: number, [field: string]: unknown }
 export type TaskPush = { type: 'task_snapshot', taskId: string, snapshot: WindowSnapshot } | TaskPiece
 
-export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, announce = () => {},
+export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {},
   waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
   const later = timers.later ?? setTimeout
   const cancel = timers.cancel ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
@@ -478,6 +476,16 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * message_background_task: into its turn while it works; its next question once it ended; taken up again
    * first when an earlier launch left it unfinished.
    */
+  /**
+   * Words into a task's turn: into what it said, and to the window as a piece of its run's stream (`task_steered`),
+   * numbered with that write, so a read of the task (`finished`) has them exactly when its mark counts the piece.
+   */
+  function said(taskId: string, text: string) {
+    taskWords.userSaid(taskId, text)
+    const runId = registry.runOf(taskId)
+    if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text })
+  }
+
   async function agentMessage(taskId: string, text: string) {
     const kept = keptTask(taskId)
     if (isEnded(kept)) {
@@ -490,10 +498,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       if (!taken.ok) throw new Error(taken.problem)
       return { taskId, delivered: 'taken up again' }
     }
-    taskWords.userSaid(taskId, text)
+    said(taskId, text)
     const steered = await agent.steerTask(taskId, text)
     if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
-    announce({ type: 'task_steered', taskId, text })
     return { taskId, delivered: 'into its turn' }
   }
 

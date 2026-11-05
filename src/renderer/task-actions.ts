@@ -4,6 +4,9 @@ import { runningTurn } from './tasks-state.ts'
 
 /** How much of the live channel waits for a read of the tasks at most (loadKept); more, and the read is begun again. */
 const MAX_HELD = 2_000
+/** A read of the tasks that failed after some of what came was let go: tried again after this, twice as long each time, up to the most. */
+const RETRY_MS = 500
+const MAX_RETRY_MS = 10_000
 /** What the main process says (app.ts), as far as holding it for a read of the tasks reads it. */
 type AgentEvent = { type?: string, taskId?: unknown, snapshot?: { taskId?: unknown }, [field: string]: unknown }
 
@@ -17,10 +20,14 @@ type Failed = { ok: false, problem: string }
 const isFailed = (value: unknown): value is Failed =>
   Boolean(value) && typeof value === 'object' && (value as { ok?: unknown }).ok === false && typeof (value as { problem?: unknown }).problem === 'string'
 
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
+const pause = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
+
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, wait = pause }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
   api: Pick<AgentApi, 'startTask' | 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
   /** An event from the main process, reduced as app.ts reduces it (handleEvent). */
   deliver: (event: AgentEvent) => void,
+  /** Waits before a read of the tasks is tried again (tests pass their own). */
+  wait?: (ms: number) => Promise<void>,
 }) {
   let submissionCounter = 0
   /**
@@ -67,13 +74,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   const taskById = (taskId: string): BackgroundTask | undefined => getState().tasks.list.find((entry: BackgroundTask) => entry.id === taskId)
 
   /**
-   * The tasks an earlier launch kept, back as they were with what they said: ended ones, and those Viva quit on
-   * (interrupted), which the agent takes up again when asked (message_background_task).
-   */
-  /**
    * An event from the main process, before it is reduced: while the tasks are read, any task's waits for the read,
-   * known to the window or not (the read is the baseline the tasks it has are put back to; what came after it follows,
-   * in order). True when it is held (app.ts then leaves it).
+   * known to the window or not, and follows it in order (loadKept). True when it is held (app.ts then leaves it).
    */
   function hold(event: AgentEvent): boolean {
     if (!held) return false
@@ -87,23 +89,39 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   /**
    * The tasks an earlier launch kept, and those at work now (a reloaded window): read, and what the live channel said
    * of them meanwhile taken after, in order. A push and the answer to a call come from the main process in the order
-   * it sent them, so what happened after the read is all among what waited; each piece the read already had is left
-   * out by its number, the snapshots that waited bring each task to how it stands. More than can wait came: the read
-   * is not taken, and begun again.
+   * it sent them, so what happened after the read is all among what waited.
+   *
+   * - A task the window knows already (made by the snapshot that began it, on the live channel) has its whole stream
+   *   here: the read leaves it as it is, with what it did (its tools, its thoughts), and what waited follows on it.
+   * - Each other task the read has is put back to it, its baseline: each piece the read already had is left out by its
+   *   number, the snapshots that waited bring it to how it stands.
+   * - More came than can wait: what was let go is not here for any task, so the read is begun again and taken as the
+   *   baseline of every task it has, known or not. One that fails then is tried again, with a wait, until one is read:
+   *   the handoff does not end on a part of what came.
    */
   async function loadKept() {
+    let lost = false
+    let failures = 0
     for (;;) {
       held = []
       overflowed = false
       const kept = await call(() => api.finishedTasks())
-      const waited = held
-      const lost = overflowed
-      held = null
-      if (lost && Array.isArray(kept)) {
+      if (overflowed) {
+        lost = true
         console.error('[tasks] more came while the tasks were read than could wait; reading them again')
         continue
       }
-      if (Array.isArray(kept) && kept.length) dispatch({ type: 'tasks_restored', list: kept })
+      if (!Array.isArray(kept) && lost) {
+        console.error('[tasks] the tasks could not be read after some of what came was let go; reading them again', isFailed(kept) ? kept.problem : kept)
+        await wait(Math.min(RETRY_MS * 2 ** failures, MAX_RETRY_MS))
+        failures += 1
+        continue
+      }
+      const waited = held
+      held = null
+      const known = new Set(getState().tasks.list.map((task: BackgroundTask) => task.id))
+      const taken = Array.isArray(kept) ? kept.filter((entry) => lost || !known.has(entry.task.id)) : []
+      if (taken.length) dispatch({ type: 'tasks_restored', list: taken })
       for (const event of waited) deliver(event)
       return
     }
