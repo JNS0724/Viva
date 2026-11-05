@@ -78,7 +78,7 @@ function formatSavedAt(ts: number, now: number) {
 }
 
 /** Divider shown under last launch's messages, or null when the thread did not start from history. */
-export function restoredNote(state: State, now = Date.now()): { when: string, memory: string } | null {
+export function restoredNote(state: Pick<State, 'restored' | 'info'>, now = Date.now()): { when: string, memory: string } | null {
   if (!state.restored) return null
   const { remembersHistory } = state.info
   const memory = remembersHistory === undefined
@@ -195,7 +195,7 @@ export function toolDetail(tool: ToolCall): string {
   return [tool.kind, target].filter(Boolean).join(' · ')
 }
 
-function latestActiveTool(state: State): ToolCall | null {
+function latestActiveTool(state: Pick<ConversationView, 'timeline' | 'tools'>): ToolCall | null {
   for (let i = state.timeline.length - 1; i >= 0; i -= 1) {
     const entry = state.timeline[i]
     const tool = entry.kind === 'tool' ? state.tools[entry.ref] : null
@@ -205,7 +205,7 @@ function latestActiveTool(state: State): ToolCall | null {
 }
 
 /** What the agent is doing right now, in a few words: the running tool, or replying, or thinking. */
-export function currentAction(state: State): string {
+export function currentAction(state: Pick<ConversationView, 'timeline' | 'tools' | 'messages'>): string {
   const active = latestActiveTool(state)
   if (active) return active.title
   return state.messages[state.messages.length - 1]?.open ? t("selectors.replying") : t("selectors.thinking")
@@ -220,7 +220,7 @@ function workingEvent(state: State, now: number) {
  * up a ! or ? sign while it waits on the user, pleased once a turn is done, worried after an error. */
 export type CatMood = 'idle' | 'thinking' | 'typing' | 'confirm' | 'ask' | 'done' | 'error' | 'sleeping'
 
-export function catMood(state: State): CatMood {
+export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'messages' | 'followups' | 'lastReceipt'>): CatMood {
   if (state.phase === 'waiting') return 'confirm'
   if (state.phase === 'asking') return 'ask'
   if (state.phase === 'error') return 'error'
@@ -284,7 +284,9 @@ const NAMED_TOOLS: Readonly<Record<string, (tool: ToolCall) => { title: string, 
 /** A timeline entry: what happened, which thing of the state it refers to, and when. */
 type TimelineEntry = State['timeline'][number]
 
-const TRACE_BUILDERS: Readonly<Record<string, (state: State, entry: TimelineEntry) => TraceRow | null | undefined>> = {
+/** What of a conversation its trace is drawn from: the order of what happened, the tools and the thoughts. */
+type TraceSource = Pick<ConversationView, 'timeline' | 'tools' | 'thoughts'>
+const TRACE_BUILDERS: Readonly<Record<string, (state: TraceSource, entry: TimelineEntry) => TraceRow | null | undefined>> = {
   memory: (_state, entry) => memoryTrace(entry.injection),
   thought: (state, entry) => {
     const thought = state.thoughts.find((t) => t.id === entry.ref)
@@ -313,7 +315,7 @@ const TRACE_BUILDERS: Readonly<Record<string, (state: State, entry: TimelineEntr
 }
 
 /** Rows for the drawer's 过程 tab, oldest first. */
-export function traceItems(state: State): Array<TraceRow & { key: string, time: string }> {
+export function traceItems(state: TraceSource): Array<TraceRow & { key: string, time: string }> {
   return state.timeline.flatMap((entry, index) => {
     const item = TRACE_BUILDERS[entry.kind]?.(state, entry)
     return item ? [{ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item }] : []

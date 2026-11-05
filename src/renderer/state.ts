@@ -1,6 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { approvalTitle, optionName } from './approval.ts'
-import { assistantStream } from './assistant-stream.ts'
+import { CONVERSATION_ACTIONS, initialConversation, reduceConversation } from './conversation-state.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
 import { recordsFrom, REPORT_ACTIONS } from './report-state.ts'
 import { FILES_ACTIONS, initialFiles } from './files-state.ts'
@@ -10,14 +9,11 @@ import { RESUME_ACTIONS, initialResume } from './resume-state.ts'
 import { closeHub, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
 import { initialPlugins, PLUGIN_ACTIONS } from './plugins-state.ts'
-import { QUESTION_ACTIONS } from './question-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
 import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
 import { FOLLOWUP_ACTIONS, initialFollowups } from './followup-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
-import { closeLast, closeStreams } from './streams.ts'
-import { isSilentReply } from '../shared/task-report.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
 
@@ -28,25 +24,13 @@ import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-s
 export const initialState = Object.freeze({
   info: { mode: 'connecting', model: '', cwd: '', reason: '' } as AgentInfo,
   /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
-  phase: 'idle' as 'idle' | 'working' | 'waiting' | 'asking' | 'error',
-  messages: [] as ThreadMessage[],
+  /** The conversation on screen: what was said and done, and where its turn is (conversation-state.ts). */
+  ...initialConversation,
   /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
   records: [] as readonly ReportRecord[],
-  thoughts: [] as Untyped[],
-  tools: {} as Record<string, ToolCall>,
-  timeline: [] as Untyped[],
-  permission: null as Untyped,
-  /** A question the agent is waiting on (question-state.js). */
-  question: null as Untyped,
-  /** Keys a server set up from the conversation waits for (secret-state.js): which server, which names. */
-  secret: null as Untyped,
-  turn: null as Untyped,
-  lastReceipt: null as Untyped,
   drawer: null as string | null,
   island: false,
   picker: false,
-  error: null as Untyped,
-  usage: null as Untyped,
   /** Set when the thread opened with saved messages: how many there are and when they were saved. */
   restored: null as Untyped,
   /** Id of the conversation on screen once it is in the history (null for a new, unsaved one). */
@@ -110,7 +94,6 @@ export const initialState = Object.freeze({
   },
 })
 
-const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput']
 /** Typewriter pace for assistant text; speeds up so the display never trails the agent by more than ~1.2 s. */
 const REVEAL_BASE_CPS = 90
 const REVEAL_MAX_LAG_S = 1.2
@@ -132,85 +115,6 @@ const isRevealingMessage = (m: ThreadMessage): m is ThreadMessage & { shown: num
 /** Whether some assistant text is still being typed out. */
 export const isRevealing = (state: State): boolean => state.messages.some(isRevealingMessage)
 
-/** An update from the agent (ACP session/update), as the window gets it: its kind, and what each kind carries. */
-type AcpUpdate = { sessionUpdate?: string, [field: string]: any }
-
-function contentText(content: { type: string, text?: string } | null | undefined) {
-  if (!content) return ''
-  if (content.type === 'text') return content.text ?? ''
-  return `[${content.type}]`
-}
-
-function appendStream<T extends { open?: boolean, text: string }>(list: readonly T[], chunk: string, makeItem: (index: number) => T): { list: T[], created: T | null } {
-  const last = list[list.length - 1]
-  if (last?.open) return { list: [...list.slice(0, -1), { ...last, text: last.text + chunk }], created: null }
-  const item = makeItem(list.length)
-  return { list: [...list, item], created: item }
-}
-
-const bumpTurn = (turn: State['turn'], key: 'tools' | 'thoughts') => (turn ? { ...turn, [key]: turn[key] + 1 } : turn)
-
-function onMessageChunk(state: State, update: AcpUpdate): State {
-  const chunk = contentText(update.content)
-  if (!chunk) return state
-  const { list } = appendStream(state.messages, chunk, (i): ThreadMessage => ({
-    id: `m${i}`, role: 'assistant', text: chunk, shown: 0, open: true, receipt: null,
-  }))
-  return { ...state, thoughts: closeLast(state.thoughts), messages: list }
-}
-
-function onThoughtChunk(state: State, update: AcpUpdate, at: number): State {
-  const chunk = contentText(update.content)
-  if (!chunk) return state
-  const { list, created } = appendStream(state.thoughts, chunk, (i: number) => ({ id: `t${i}`, text: chunk, open: true, at }))
-  return {
-    ...state,
-    messages: closeLast(state.messages),
-    thoughts: list,
-    timeline: created ? [...state.timeline, { kind: 'thought', ref: created.id, at }] : state.timeline,
-    turn: created ? bumpTurn(state.turn, 'thoughts') : state.turn,
-  }
-}
-
-function mergeTool(existing: ToolCall | undefined, update: AcpUpdate, at: number): ToolCall {
-  const base = existing ?? { id: update.toolCallId, title: t("state.tool.call"), kind: 'other', status: 'pending', locations: [], at }
-  const changes = Object.fromEntries(
-    TOOL_FIELDS.filter((key) => update[key] !== undefined && update[key] !== null).map((key) => [key, update[key]]),
-  )
-  return { ...base, ...changes }
-}
-
-function onToolUpdate(state: State, update: AcpUpdate, at: number): State {
-  if (!update.toolCallId) return state
-  const closed = closeStreams(state)
-  const existing = closed.tools[update.toolCallId]
-  return {
-    ...closed,
-    tools: { ...closed.tools, [update.toolCallId]: mergeTool(existing, update, at) },
-    timeline: existing ? closed.timeline : [...closed.timeline, { kind: 'tool', ref: update.toolCallId, at }],
-    turn: existing ? closed.turn : bumpTurn(closed.turn, 'tools'),
-  }
-}
-
-const UPDATE_HANDLERS: Readonly<Record<string, (state: State, update: AcpUpdate, at: number) => State>> = {
-  viva_stream: assistantStream,
-  agent_message_chunk: onMessageChunk,
-  agent_thought_chunk: onThoughtChunk,
-  tool_call: onToolUpdate,
-  tool_call_update: onToolUpdate,
-  usage_update: (state, update) => ({ ...state, usage: { used: update.used, size: update.size } }),
-}
-
-function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
-  const last = messages[messages.length - 1]
-  if (last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
-  const text = receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn")
-  return [...messages, { id: `m${messages.length}`, role: 'note', text, open: false, receipt }]
-}
-
-/** The handlers, looked up when used: a task's view is updated by the same ones (tasks-state.js). */
-const HANDLERS: Record<string, Reducer> = new Proxy({}, { get: (_target, type) => ACTION_HANDLERS[String(type)] })
-
 const ACTION_HANDLERS: Record<string, Reducer> = {
   ready: (state, { info }) => ({
     ...state,
@@ -219,47 +123,10 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     error: !state.newTopicPending && state.phase === 'error' ? null : state.error,
   }),
 
-  user_prompt: (state, { text, at, via = null, images = [] }) => {
-    const closed = closeStreams(state)
-    const message = {
-      id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
-    }
-    return {
-      ...closed,
-      phase: 'working',
-      error: null,
-      island: false,
-      messages: [...closed.messages, message],
-      turn: { startedAt: at, tools: 0, thoughts: 0 },
-    }
-  },
+  /** The conversation's own (conversation-state.ts): its words, its turns, what it asks and is asked. */
+  ...Object.fromEntries(Object.keys(CONVERSATION_ACTIONS).map((type) => [type, (state: State, action: Action) => reduceConversation(state, action)])),
 
-  /**
-   * A turn the app started, not the user: a background task ended and its result comes back (backend/task-reports.ts).
-   * The conversation works as for any turn, with no words of the user's.
-   */
-  agent_turn_started: (state, { by = null, at }) => ({
-    ...closeStreams(state),
-    phase: 'working',
-    error: null,
-    turn: { startedAt: at, tools: 0, thoughts: 0, ...(by ? { by } : {}) },
-  }),
-
-  /**
-   * Said while the agent works (viva-steer): into the thread at once, the turn going on. What the agent was
-   * writing closes, so its reply to these words starts below them.
-   */
-  user_steer: (state, { text, via = null }) => {
-    const closed = closeStreams(state)
-    const message = { id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
-    return { ...closed, messages: [...closed.messages, message] }
-  },
-
-  /** The words could not reach the agent: they stay in the thread, marked as not sent. */
-  steer_failed: (state, { id }) => ({
-    ...state,
-    messages: state.messages.map((message) => (message.id === id ? { ...message, failed: true } : message)),
-  }),
+  user_prompt: (state, action) => ({ ...reduceConversation(state, action), island: false }),
 
   /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
   steer_resent: (state, { at }) => ({
@@ -270,72 +137,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     turn: { startedAt: at, tools: 0, thoughts: 0 },
   }),
 
-  acp_update: (state, { update, at }) => {
-    const handler = UPDATE_HANDLERS[update?.sessionUpdate]
-    return handler ? handler(state, update, at) : state
-  },
-
-  /** dsh names only the tool call; what it does comes from that call, announced just before (approval.js). */
-  permission_request: (state, { requestId, toolCall, options, at }) => {
-    const known = toolCall?.toolCallId ? state.tools[toolCall.toolCallId] : null
-    const title = toolCall?.title || approvalTitle(known) || t("selectors.needs.your.approval")
-    return {
-      ...closeStreams(state),
-      phase: 'waiting',
-      permission: {
-        requestId,
-        title,
-        kind: toolCall?.kind ?? known?.kind ?? 'other',
-        toolCallId: toolCall?.toolCallId ?? null,
-        rawInput: toolCall?.rawInput ?? known?.rawInput ?? null,
-        options: Array.isArray(options) ? options : [],
-      },
-      timeline: [...state.timeline, { kind: 'permission', ref: requestId, at, title }],
-    }
-  },
-
-  permission_resolved: (state, { requestId, optionId, at }) => {
-    if (state.permission?.requestId !== requestId) return state
-    const option = state.permission.options.find((o: PermissionOption) => o.optionId === optionId)
-    return {
-      ...state,
-      phase: 'working',
-      permission: null,
-      timeline: [...state.timeline, {
-        kind: 'decision',
-        ref: requestId,
-        at,
-        title: state.permission.title,
-        allowed: Boolean(option?.kind?.startsWith('allow')),
-        choice: option ? optionName(option) : t("state.canceled"),
-      }],
-    }
-  },
-
-  turn_end: (state, { stopReason, at }) => {
-    const closed = closeStreams(state)
-    const turn = closed.turn ?? { startedAt: at, tools: 0, thoughts: 0 }
-    const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason }
-    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt }
-    // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
-    if (turn.by === 'task') {
-      const last = closed.messages.at(-1)
-      const silent = !last || last.role !== 'assistant' || isSilentReply(last.text)
-      if (silent) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }
-    }
-    return { ...ended, messages: attachReceipt(closed.messages, receipt) }
-  },
-
-  error: (state, { message }) => ({
-    ...closeStreams(state),
-    switching: state.newTopicPending && state.switching,
-    phase: 'error',
-    error: message || t("state.unknown.error"),
-    permission: null,
-    question: null,
-    secret: null,
-    turn: null,
-  }),
+  error: (state, action) => ({ ...reduceConversation(state, action), switching: state.newTopicPending && state.switching }),
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
   history_loaded: (state, { conversationId = null, messages, records = [], savedAt, folds = [], parentId = null, createdAt = null }) => {
@@ -467,19 +269,18 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...EARLIER_ACTIONS,
   ...REPORT_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
-  ...taskActions(HANDLERS),
+  ...taskActions(),
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
   ...MODEL_ACTIONS,
   ...PLUGIN_ACTIONS,
-  ...QUESTION_ACTIONS,
   ...FILES_ACTIONS,
   ...SECRET_ACTIONS,
   ...FOLLOWUP_ACTIONS,
 }
 
 export function reduce(state: State, action: Action): State {
-  const routed = routeToTask(state, action, HANDLERS)
+  const routed = routeToTask(state, action)
   if (routed) return routed
   const handler = ACTION_HANDLERS[action?.type ?? '']
   return oneHubPage(state, handler ? handler(state, action) : state, reduce)

@@ -127,6 +127,8 @@ interface BackgroundTask {
   endedAt?: number | null
   permission?: any
   question?: any
+  /** What it said and did, and where its turn is: a conversation of its own (conversation-state.ts). */
+  view: ConversationView
   [field: string]: any
 }
 /**
@@ -139,8 +141,13 @@ type IslandAct = (action: { kind: string, [field: string]: unknown }) => void
 /** What a view draws: an element, several, text, or nothing. */
 type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
-/** The window's state: what state.ts's initialState can become (a task's view has the same shape). */
+/** The window's state: what state.ts's initialState can become. */
 type State = Widened<typeof import('./state.ts').initialState>
+/**
+ * One conversation as it is reduced (conversation-state.ts): the one on screen (part of State) or a background
+ * task's (BackgroundTask.view), and no more.
+ */
+type ConversationView = Widened<typeof import('./conversation-state.ts').initialConversation>
 /** What changes the state: its type, and the fields its reducer reads (each reducer destructures its own). */
 type Action = { type?: string, [field: string]: any }
 /** The state after an action: a new object, never the one given changed in place. */

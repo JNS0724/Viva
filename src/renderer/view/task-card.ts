@@ -80,7 +80,7 @@ export function taskCard(task: BackgroundTask, handlers: Handlers, now: number):
 }
 
 /** Ended tasks restored from the last launch, put back under the message they hung from. */
-export function restoredTaskAnchors(state: State): Array<{ taskId: string, at: number }> {
+export function restoredTaskAnchors(state: Pick<State, 'taskCards' | 'messages' | 'tasks' | 'conversationId'>): Array<{ taskId: string, at: number }> {
   const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])])])
   return state.tasks.list.filter(task => task.host?.conversationId === String(state.conversationId)
     && Number.isSafeInteger(task.host.at) && task.host.at >= 0 && !hosted.has(task.id))
@@ -89,7 +89,7 @@ export function restoredTaskAnchors(state: State): Array<{ taskId: string, at: n
 }
 
 /** The tasks with a line in the conversation on screen. */
-export function cardedTasks(state: State): BackgroundTask[] {
+export function cardedTasks(state: Pick<State, 'taskCards' | 'messages' | 'tasks' | 'conversationId'>): BackgroundTask[] {
   const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])]),
     ...restoredTaskAnchors(state).map(anchor => anchor.taskId)])
   return state.tasks.list.filter((task) => hosted.has(task.id))

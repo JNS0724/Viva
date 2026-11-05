@@ -30,7 +30,8 @@ function togglePick(item: QuestionItem, current: readonly string[], label: strin
   return current[0] === label ? [] : [label]
 }
 
-export const QUESTION_ACTIONS: Record<string, Reducer> = {
+/** The conversation's questions (conversation-state.ts), in the conversation on screen or a task's. */
+export const QUESTION_ACTIONS: Readonly<Record<string, (state: ConversationView, action: Action) => ConversationView>> = {
   question_request: (state, { questionId, questions, at }) => {
     const closed = closeStreams(state)
     return {

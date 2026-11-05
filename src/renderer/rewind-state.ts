@@ -25,7 +25,7 @@ export type Fold = { id: string, at: number, count: number, kind: string }
 const startsTurn = (message: ThreadMessage) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
 
 /** View eligibility is constant time; locating the turn is needed only when the user invokes it. */
-export const canRewindMessage = (state: State, message: ThreadMessage) => state.phase === 'idle'
+export const canRewindMessage = (state: Pick<State, 'phase' | 'conversationId' | 'rewind'>, message: ThreadMessage) => state.phase === 'idle'
   && Boolean(state.conversationId) && !state.rewind.busy && startsTurn(message)
 
 /**
@@ -47,7 +47,7 @@ export function rewindTarget(state: State, id: string): { words: string, occurre
  * The folded paths by the message they hang after (its id; '' before everything): a fold at `at` follows the
  * `at`-th saved message.
  */
-export function foldAfter(state: State): Record<string, Fold[]> {
+export function foldAfter(state: Pick<State, 'messages' | 'folds'>): Record<string, Fold[]> {
   const saved = state.messages.filter((message) => !message.open)
   return state.folds.reduce((byMessage: Record<string, Fold[]>, fold: Fold) => {
     const key = fold.at === 0 ? '' : saved[fold.at - 1]?.id

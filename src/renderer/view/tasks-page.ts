@@ -4,7 +4,7 @@ import { traceItems } from '../selectors.ts'
 import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
 import { standing, statusMark } from './task-card.ts'
-import { renderThread } from './thread.ts'
+import { renderThread, type ThreadView } from './thread.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
 import { followupDetail, followupStanding, whenText } from './followups.ts'
 
@@ -99,17 +99,25 @@ function sideView(state: State, handlers: Handlers, now: number) {
     ]))
 }
 
-/** The task's view as the thread draws one: all of what it said shown, nothing to go back to, no tasks of its own. */
-function threadState(state: State, task: BackgroundTask): State {
+/**
+ * The task's conversation as the thread draws one (view/thread.ts ThreadView): all of what it said shown; nothing to
+ * go back to, no tasks, records or follow-ups of its own; the window's only for how its maid looks.
+ */
+export function threadState(state: State, task: BackgroundTask): ThreadView {
   return {
-    ...state,
     ...task.view,
     messages: task.view.messages.map((message: ThreadMessage) => ({ ...message, shown: message.text.length })),
+    records: [],
     conversationId: null,
     restored: null,
+    restoredTrace: state.restoredTrace,
+    rewind: state.rewind,
     folds: [],
     proposals: [],
-    tasks: { ...state.tasks, list: [], reports: [] },
+    tasks: { ...state.tasks, list: [] },
+    taskCards: [],
+    info: state.info,
+    followups: state.followups,
   }
 }
 
