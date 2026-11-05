@@ -8,7 +8,7 @@ import type { CatMood } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
 import type { MaidMood, MaidSlots } from './maid.ts'
 import { h, label } from './dom.ts'
-import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown } from './markdown.ts'
+import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown, streamMarkdown, type MarkdownStream } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { foldKey, foldTall } from './message-fold.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
@@ -25,9 +25,14 @@ const CARD_MAID_PX = 96
 /** While a card waits on the user she is on the card, not also beside the answer. */
 const ON_THE_CARD: ReadonlySet<MaidMood> = new Set(['confirm', 'ask'])
 
-/** Whether a message is the answer of the turn in progress or just finished, and what Viva is doing. */
-type Look = { latest: boolean, mood: CatMood | 'idle', maids?: MaidSlots }
+/**
+ * Whether a message is the answer of the turn in progress or just finished, and what Viva is doing; and, in a
+ * view that redraws as an answer is typed out, where each answer being typed was drawn last frame.
+ */
+type Look = { latest: boolean, mood: CatMood | 'idle', maids?: MaidSlots, streams?: Map<string, MarkdownStream> }
 const containerMaids = new WeakMap<HTMLElement, MaidSlots>()
+/** Per view, the answers being typed out (markdown.ts streamMarkdown): each frame draws only what changed. */
+const containerStreams = new WeakMap<HTMLElement, Map<string, MarkdownStream>>()
 const avatarLooks = new WeakMap<Element, string>()
 
 function avatarMood(message: ThreadMessage, look: Look): MaidMood {
@@ -99,10 +104,19 @@ function visibleText(text: string, shown: number | undefined) {
   return text.slice(0, code >= 0xD800 && code <= 0xDBFF ? end + 1 : end)
 }
 
-/** Row caching below owns nodes per container. The same message may be visible in several views. */
-function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
+/**
+ * Row caching below owns nodes per container. The same message may be visible in several views. While it is typed
+ * out, a view that keeps streams draws each frame from the last (its finished blocks stay); once done, it is drawn whole.
+ */
+function answerText(message: ThreadMessage, handlers: Handlers, look: Look): HTMLElement {
   const text = visibleText(message.text, message.shown)
   const finished = !message.open && text.length === message.text.length
+  if (!finished && look.streams) {
+    const drawn = streamMarkdown(look.streams.get(message.id) ?? null, text, { openLink: handlers.openLink, image: null })
+    look.streams.set(message.id, drawn)
+    return drawn.el
+  }
+  look.streams?.delete(message.id)
   if (!finished || text.length <= LONG_ANSWER_CHARS) return renderMarkdown(text, { openLink: handlers.openLink })
   const start = answerStart(text)
   const el = renderMarkdown(start, { openLink: handlers.openLink })
@@ -115,9 +129,32 @@ function answerText(message: ThreadMessage, handlers: Handlers): HTMLElement {
 
 const hasReceipt = (message: ThreadMessage): message is ThreadMessage & { receipt: Receipt } => Boolean(message.receipt)
 
+/** Where an answer's text, shown so far and still being typed are among its inputs (messageInputs). */
+const TYPED_INPUTS: ReadonlySet<number> = new Set([1, 2, 3])
+
+/**
+ * An answer still being typed out, with only its text grown since last frame: drawn on in the view it already has
+ * (its finished blocks, and the view around them, stay as they are laid out), instead of a view built again.
+ * @returns whether it was; if not, the view is built again
+ */
+function typeOn(message: ThreadMessage, handlers: Handlers, look: Look, before: readonly unknown[], after: readonly unknown[], view: View): boolean {
+  const typing = message.open || (message.shown ?? message.text.length) < message.text.length
+  if (message.role !== 'assistant' || !typing || !look.streams) return false
+  if (before.length !== after.length || before.some((value, i) => !TYPED_INPUTS.has(i) && value !== after[i])) return false
+  const el = elementsOf(view)[0]?.querySelector<HTMLElement>('.msg-text.markdown')
+  const stream = look.streams.get(message.id)
+  if (!el || !stream || stream.el !== el) return false
+  const drawn = streamMarkdown(stream, visibleText(message.text, message.shown), { openLink: handlers.openLink, image: null })
+  look.streams.set(message.id, drawn)
+  if (drawn.el !== el) return false
+  el.querySelector('.caret')?.remove()
+  caretHost(el).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
+  return true
+}
+
 function assistantView(message: ThreadMessage, handlers: Handlers, traceReady: boolean, look: Look) {
   const typing = message.open || (message.shown ?? message.text.length) < message.text.length
-  const text = answerText(message, handlers)
+  const text = answerText(message, handlers, look)
   text.querySelector('.caret')?.remove()
   if (typing) caretHost(text).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
   // A long answer folds once it is no longer the latest: the one being read stays whole.
@@ -179,7 +216,7 @@ export function pastMessageView(message: ThreadMessage, handlers: Handlers): Vie
   return h('div', { class: 'msg-agent' },
     avatar(message, STILL),
     h('div', { class: 'msg-body' },
-      answerText(message, handlers),
+      answerText(message, handlers, STILL),
       message.receipt ? h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) }) : null))
 }
 
@@ -324,11 +361,18 @@ const threadViews = new WeakMap<HTMLElement, Map<string, CachedView>>()
 const sameInputs = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => value === b[i])
 
 /** Cache each row independently, so a new prompt or a streamed chunk never detaches old messages. */
-function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean): View {
+/** Draws a view on in place from what it was built with (`before`) to what it shows now (`after`); false to build it again. */
+type Refresh = (before: readonly unknown[], after: readonly unknown[], view: View) => boolean
+
+function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean, refresh?: Refresh): View {
   inputs = [localeRevision(), ...inputs]
   const previous = cache.get(key)
   if (previous && sameInputs(previous.inputs, inputs)) return previous.view
   if (previous && sameInputs(previous.inputs.slice(1), inputs.slice(1)) && localize?.(previous.view)) {
+    cache.set(key, { inputs, view: previous.view })
+    return previous.view
+  }
+  if (previous && previous.inputs[0] === inputs[0] && refresh?.(previous.inputs.slice(1), inputs.slice(1), previous.view)) {
     cache.set(key, { inputs, view: previous.view })
     return previous.view
   }
@@ -390,12 +434,15 @@ function restLine(state: State, start: number, handlers: Handlers) {
 export function renderThread(container: HTMLElement, state: State, handlers: Handlers, now: number) {
   const maids = containerMaids.get(container) ?? new Map()
   containerMaids.set(container, maids)
+  const streams = containerStreams.get(container) ?? new Map<string, MarkdownStream>()
+  containerStreams.set(container, streams)
   const messageIds = new Set(state.messages.map(message => message.id))
   for (const id of maids.keys()) if (!messageIds.has(id)) maids.delete(id)
+  for (const id of streams.keys()) if (!messageIds.has(id)) streams.delete(id)
   const previous = threadViews.get(container) ?? new Map<string, CachedView>()
   const cache = new Map<string, CachedView>()
-  const part = (key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean) => {
-    const view = cachedView(previous, key, inputs, build, localize)
+  const part = (key: string, inputs: readonly unknown[], build: () => View, localize?: (view: View) => boolean, refresh?: Refresh) => {
+    const view = cachedView(previous, key, inputs, build, localize, refresh)
     cache.set(key, previous.get(key)!)
     return view
   }
@@ -409,9 +456,10 @@ export function renderThread(container: HTMLElement, state: State, handlers: Han
   // Only what is drawn is built: the messages before `start` are neither drawn nor kept.
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
-    const look = { latest: message.id === latestAnswer, mood, maids }
+    const look = { latest: message.id === latestAnswer, mood, maids, streams }
     // Whether it is the latest answer is an input: once it is not, it is built again, and folds if tall (message-fold.ts).
-    const view = part(`message:${message.id}`, [...messageInputs(message, traceReady), look.latest], () => messageView(message, handlers, traceReady, look), view => localizeAssistant(view, message))
+    const view = part(`message:${message.id}`, [...messageInputs(message, traceReady), look.latest], () => messageView(message, handlers, traceReady, look),
+      view => localizeAssistant(view, message), (before, after, view) => typeOn(message, handlers, look, before, after, view))
     refreshAvatar(view, message, look)
     return view
   })

@@ -116,6 +116,93 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
   return h('div', { class: 'msg-text markdown' }, blocks(new Lexer({ gfm: true }).lex(text), { openLink, image }))
 }
 
+/** A top-level block of an answer: the token marked made of it, and the nodes built for it. */
+type BuiltBlock = Readonly<{ token: Token, nodes: readonly ChildNode[] }>
+/**
+ * An answer still being typed out, kept between frames (renderer/view/thread.ts): its element, the text drawn, its
+ * blocks, and the links it defines (`[x]: url`, which change how any block refers to them).
+ */
+export type MarkdownStream = Readonly<{ el: HTMLElement, text: string, blocks: readonly BuiltBlock[], links: string }>
+
+/** marked reads `\r\n` as `\n`; the stream does too, so the text compared frame to frame is what marked reads. */
+const lineEnds = (text: string) => text.replace(/\r\n?/g, '\n')
+
+/** marked's top-level tokens of `text` and the links they define, or null when their sources do not add up to it. */
+function lexed(text: string): { tokens: Token[], links: string } | null {
+  const tokens = new Lexer({ gfm: true }).lex(text) as Token[] & { links?: Record<string, unknown> }
+  if (tokens.reduce((length, token) => length + token.raw.length, 0) !== text.length) return null
+  return { tokens, links: JSON.stringify(tokens.links ?? {}) }
+}
+
+/** Whether two tokens are the same in every field, nested tokens, list and table fields included. */
+function sameToken(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false
+  const left = a as Record<string, unknown>
+  const right = b as Record<string, unknown>
+  const keys = Object.keys(left)
+  return keys.length === Object.keys(right).length && keys.every((key) => sameToken(left[key], right[key]))
+}
+
+/** A fenced or indented code block (marked's token union has a generic member, so the type alone does not narrow it). */
+const isCode = (token: Token): token is Tokens.Code => token.type === 'code'
+
+function built(token: Token, ctx: Context): BuiltBlock {
+  const holder = h('div', null, block(token, ctx, { tight: false }))
+  return { token, nodes: [...holder.childNodes] }
+}
+
+/**
+ * The last block, when it is the code block drawn there last frame grown longer: its new text goes in as a text node
+ * of its own, before the caret (a long listing is neither built nor laid out again; drawn whole once the answer ends,
+ * it is one text node again). Null for anything else.
+ */
+function grown(before: BuiltBlock | undefined, token: Token): BuiltBlock | null {
+  const old = before?.token
+  if (!before || !old || !isCode(old) || !isCode(token) || (old.lang ?? '') !== (token.lang ?? '') || !token.text.startsWith(old.text)) return null
+  const code = (before.nodes[0] as Element | undefined)?.querySelector('code')
+  if (!code) return null
+  const added = token.text.slice(old.text.length)
+  if (added) code.insertBefore(document.createTextNode(added), code.querySelector('.caret'))
+  return { token, nodes: before.nodes }
+}
+
+/**
+ * The answer so far, drawn from where it was last frame. marked lexes the whole text each frame, so what is drawn is
+ * what drawing the whole text draws; the frames only share nodes: from the start, a block whose token is the same in
+ * every field keeps its nodes, and everything from the first one that differs is built again, except a code block at
+ * the end that only grew (grown). When the links the answer defines change, nothing is kept. If marked's blocks do not
+ * add up to the text, it is drawn whole.
+ * @param previous last frame's, of the same answer in the same view
+ */
+export function streamMarkdown(previous: MarkdownStream | null, input: string, ctx: Context): MarkdownStream {
+  const text = lineEnds(input)
+  // The same text twice in a frame (thread.ts typeOn, then the view built again) is drawn once.
+  if (previous && text === previous.text) return previous
+  const el = previous?.el ?? h('div', { class: 'msg-text markdown' })
+  const read = lexed(text)
+  if (!read) {
+    el.replaceChildren(...renderMarkdown(text, ctx).childNodes)
+    return { el, text, blocks: [], links: '' }
+  }
+  const before = previous && previous.links === read.links ? previous.blocks : []
+  let same = 0
+  while (same < before.length && same < read.tokens.length && sameToken(before[same].token, read.tokens[same])) same += 1
+  const blocks = read.tokens.map((token, i) => {
+    if (i < same) return before[i]
+    return (i === read.tokens.length - 1 && i === same ? grown(before[i], token) : null) ?? built(token, ctx)
+  })
+  const wanted = new Set(blocks.flatMap((block) => block.nodes))
+  for (const node of [...el.childNodes]) if (!wanted.has(node)) node.remove()
+  // In order, moving none that is already in place (a moved node is laid out again).
+  let cursor: ChildNode | null = el.firstChild
+  for (const node of wanted) {
+    if (node === cursor) cursor = cursor.nextSibling
+    else el.insertBefore(node, cursor)
+  }
+  return { el, text, blocks, links: read.links }
+}
+
 /**
  * Expand a finished answer without detaching its unchanged opening blocks. Parse the whole source first:
  * reference definitions later in the answer can change an earlier block. Only exactly equal blocks keep

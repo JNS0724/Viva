@@ -1,6 +1,7 @@
 import path from 'node:path'
 import type { SmokeAppWindow } from './smoke-kit.ts'
 import { openHistoryDb } from '../../src/backend/history-db.ts'
+import { measureStreaming } from './smoke-streaming.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
 /**
@@ -30,6 +31,15 @@ const BUDGET = Object.freeze({
   heapGrowthMb: 30,
   /** From 详情 to the 200 KB answer drawn. */
   markdownMs: 150,
+  /**
+   * One frame of typing out the end of a 60 000-character answer of short blocks (smoke-streaming.ts), the thread
+   * drawn and laid out: marked lexes it all, the blocks that come out the same keep their nodes.
+   */
+  streamFrameP95Ms: 8,
+  /** The same for a 120 000-character answer that is one open code block, which grows in place. */
+  streamCodeP95Ms: 12,
+  /** Unfolding 过程 of a task of 1000 steps: its latest steps only (tasks-page.ts STEPS_SHOWN). */
+  stepsExpandMs: 16,
   /** Messages drawn at once: in the conversation and in 回顾 (THREAD_MAX, READER_MAX); in an earlier topic opened in place. */
   drawn: 200,
   drawnOpened: 100,
@@ -242,7 +252,7 @@ async function checkReader(win: SmokeAppWindow, outDir: string, expect: Expect, 
 /** The checks that hold on any machine, and the budgets that hold on macOS (reported elsewhere). */
 function judge(expect: Expect, seen: Record<string, any>, platform: string) {
   const strict: Expect = platform === 'darwin' ? expect : () => {}
-  const { conversation, reader, markdown, far } = seen
+  const { conversation, reader, markdown, far, streaming } = seen
   for (const [what, run] of [['the conversation', conversation], ['a long topic in 回顾', reader]] as const) {
     strict(run.frameP95 <= BUDGET.frameP95Ms, `scrolling ${what}: p95 between frames ≤ ${BUDGET.frameP95Ms} ms`, run)
     strict(run.slowest.top[0] <= BUDGET.frameMaxMs, `scrolling ${what}: no frame past ${BUDGET.frameMaxMs} ms`, run)
@@ -253,6 +263,10 @@ function judge(expect: Expect, seen: Record<string, any>, platform: string) {
     'element counts are reported as diagnostics for conversation, reader and Markdown', { conversation: conversation.elements, reader: reader.elements, markdown: markdown?.elements })
   strict(reader.heapMb[1] - reader.heapMb[0] <= BUDGET.heapGrowthMb, `the heap grows by at most ${BUDGET.heapGrowthMb} MB reading a long topic end to end`, reader.heapMb)
   strict(markdown && markdown.ms <= BUDGET.markdownMs, `the 200 KB answer shows within ${BUDGET.markdownMs} ms`, markdown)
+  strict(streaming.answer.p95Ms <= BUDGET.streamFrameP95Ms, `typing out a ${streaming.answer.chars}-character answer: p95 frame ≤ ${BUDGET.streamFrameP95Ms} ms`, streaming.answer)
+  strict(streaming.code.p95Ms <= BUDGET.streamCodeP95Ms, `typing out a ${streaming.code.chars}-character code block: p95 frame ≤ ${BUDGET.streamCodeP95Ms} ms`, streaming.code)
+  strict(streaming.steps.expandMs <= BUDGET.stepsExpandMs, `unfolding 过程 of ${streaming.steps.steps} steps ≤ ${BUDGET.stepsExpandMs} ms`, streaming.steps)
+  expect(streaming.steps.rows > 0 && streaming.steps.rows <= streaming.steps.shown, `unfolded, 过程 draws its latest ${streaming.steps.shown} steps`, streaming.steps)
   expect(far?.inView && far.foldedBefore === far.foldedAfter, `a message ${FAR_TOPICS} topics back should be read at once, in view, without reading the timeline back`, far)
 }
 
@@ -274,6 +288,7 @@ export async function checkPerf(win: SmokeAppWindow, outDir: string): Promise<st
   seen.far = far && { ...far, foldedBefore, foldedAfter: await run(win, `document.querySelectorAll('#earlier .topic-old').length`) }
   await capture(win, outDir, 'perf-far-hit')
 
+  seen.streaming = await measureStreaming(win)
   judge(expect, seen, process.platform)
   report(`perf: ${JSON.stringify(seen)}`)
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)

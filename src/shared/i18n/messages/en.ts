@@ -702,6 +702,7 @@ export const en = {
   "tasks-page.activity.steps": "Activity · {length} steps　{value2}",
   "tasks-page.collapse": "Collapse ▴",
   "tasks-page.expand": "Expand ▾",
+  "tasks-page.earlier.steps": "Show {count} earlier steps",
   "tasks-page.interruption": "Interruption",
   "tasks-page.no.background.work.yet.type.a.request": "No background work yet. Ask the assistant to run long work in the background; you will be told when it finishes.",
   "tasks-page.close.this.task": "Close this task",

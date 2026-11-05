@@ -89,7 +89,7 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 - **事件分流**：`agent_message_chunk` 进对话区；`agent_thought_chunk`、`tool_call`、`tool_call_update` 进抽屉「过程」和标题栏的 Viva 岛，读写过的文件进「文件」；`session/request_permission` 变成对话里的确认卡片，你的选择经 `permission-broker` 回给 dsh。
 - **模型切换**：输入框左下角的选择器，列出 dsh 返回的模型和推理强度（Off / Low / High / Max），通过 ACP 的 `session/set_config_option` 切换，从下一轮生效；回复进行中禁用。
-- **流式输出**：`viva-stream` 送来真正的增量，回复按打字机节奏显示（基础约 90 字/秒，积压多时自动加速，最多落后约 1.2 秒）。
+- **流式输出**：`viva-stream` 送来真正的增量，回复按打字机节奏显示（基础约 90 字/秒，积压多时自动加速，最多落后约 1.2 秒）。每帧在原处续画：marked 对全文做词法分析，所以写的过程中看到的和写完后一致；解析结果完全相同的块保留节点，末尾正在变长的代码块只追加新文字。词法分析的耗时随长度增长（6 万字约 3.4 ms），建 DOM 和排版不随长度增长，但单独一个很长的段落仍会每帧整段重建。后台任务展开的「过程」只画最近 100 步，更早的收在一个按钮后面。
 - **滚动**：新内容到来时跟随到底部，但长回复只滚到「最新提问贴近顶部」就停，底部出现一个向下的箭头，点它回到最新；你一往上翻就停止跟随，滚回底部再恢复。超过约 560px 的提问和较早的回答折叠成开头一段，带「展开全文」；最新的回答不折叠。抽屉重绘时保留滚动位置。
 - **状态**：全部在纯 reducer 里不可变更新；视图只读 selector，文字都走 `textContent`。
 - **安全**：`contextIsolation` + `sandbox`，preload 只暴露 `window.agent` 上的方法（桌面岛另有只能收内容、发点击的 `window.desk`），页面有 CSP，外壳和后端各按 IPC 契约校验一次入参。

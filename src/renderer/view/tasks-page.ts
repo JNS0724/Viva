@@ -5,7 +5,7 @@ import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage } from '../tasks-state.
 import { h, keepingInput } from './dom.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread } from './thread.ts'
-import { reconcileChildren } from './reconcile.ts'
+import { queueLayout, reconcileChildren } from './reconcile.ts'
 import { followupDetail, followupStanding, whenText } from './followups.ts'
 
 /**
@@ -122,6 +122,8 @@ const scopedHandlers = (handlers: Handlers, task: BackgroundTask): Handlers => (
 })
 
 type StepItem = ReturnType<typeof traceItems>[number]
+/** Unfolded, a task's 过程 draws its latest steps only; the earlier ones wait behind a button, drawn when asked for. */
+export const STEPS_SHOWN = 100
 const stepRows = new WeakMap<HTMLElement, Map<string, { item: StepItem, node: HTMLElement }>>()
 
 function stepRow(item: StepItem) {
@@ -132,7 +134,7 @@ function stepRow(item: StepItem) {
       item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))
 }
 
-function updateSteps(section: HTMLElement, state: State, task: BackgroundTask) {
+function updateSteps(section: HTMLElement, state: State, task: BackgroundTask, handlers: Handlers) {
   const items = traceItems(task.view)
   const open = state.tasks.page.steps
   const toggle = section.querySelector<HTMLButtonElement>('.tp-toggle')!
@@ -140,10 +142,21 @@ function updateSteps(section: HTMLElement, state: State, task: BackgroundTask) {
   if (toggle.textContent !== label) toggle.textContent = label
   if (toggle.getAttribute('aria-expanded') !== String(open)) toggle.setAttribute('aria-expanded', String(open))
   if (!items.length) { section.remove(); stepRows.delete(section); return }
-  if (!open) { section.querySelector('.trace')?.remove(); stepRows.delete(section); return }
+  if (!open) { section.querySelector('.trace')?.remove(); section.querySelector('.tp-earlier')?.remove(); stepRows.delete(section); return }
+  const earlier = state.tasks.page.allSteps ? 0 : Math.max(0, items.length - STEPS_SHOWN)
+  let more = section.querySelector<HTMLButtonElement>('.tp-earlier')
+  if (earlier && !more) {
+    more = h('button', { class: 'link-btn tp-earlier', type: 'button', onClick: () => handlers.showAllTaskSteps() })
+    section.querySelector('.tp-toggle')?.after(more)
+  }
+  if (!earlier) more?.remove()
+  else if (more) {
+    const label = t('tasks-page.earlier.steps', { count: earlier })
+    if (more.textContent !== label) more.textContent = label
+  }
   const previous = stepRows.get(section)
   const next = new Map<string, { item: StepItem, node: HTMLElement }>()
-  const nodes = items.map(item => {
+  const nodes = items.slice(earlier).map(item => {
     const cached = previous?.get(item.key)
     const node = cached && cached.item.title === item.title && cached.item.detail === item.detail
       && cached.item.time === item.time && cached.item.tone === item.tone ? cached.node : stepRow(item)
@@ -161,7 +174,7 @@ function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
   const section = h('section', { class: 'tp-steps', 'aria-label': t("drawer.activity") },
     h('button', { class: 'tp-toggle', type: 'button', onClick: () => handlers.toggleTaskSteps() },
       ''))
-  updateSteps(section, state, task)
+  updateSteps(section, state, task, handlers)
   return section
 }
 
@@ -200,16 +213,16 @@ const renderedPages = new WeakMap<HTMLElement, { state: State, handlers: Handler
 
 /** Only a local disclosure changed; all other render inputs must still match. */
 export function onlyTaskStepsChanged(before: State, after: State): boolean {
-  const sameExcept = (a: object, b: object, except: string) => {
-    const left = Object.entries(a).filter(([key]) => key !== except)
-    const right = Object.entries(b).filter(([key]) => key !== except)
+  const sameExcept = (a: object, b: object, except: readonly string[]) => {
+    const left = Object.entries(a).filter(([key]) => !except.includes(key))
+    const right = Object.entries(b).filter(([key]) => !except.includes(key))
     return left.length === right.length && left.every(([key, value]) => Reflect.get(b, key) === value)
   }
   return before.tasks.page.open && after.tasks.page.open
-    && before.tasks.page.steps !== after.tasks.page.steps
-    && sameExcept(before, after, 'tasks')
-    && sameExcept(before.tasks, after.tasks, 'page')
-    && sameExcept(before.tasks.page, after.tasks.page, 'steps')
+    && (before.tasks.page.steps !== after.tasks.page.steps || before.tasks.page.allSteps !== after.tasks.page.allSteps)
+    && sameExcept(before, after, ['tasks'])
+    && sameExcept(before.tasks, after.tasks, ['page'])
+    && sameExcept(before.tasks.page, after.tasks.page, ['steps', 'allSteps'])
 }
 
 /** Rebuilt as task content changes; a disclosure keeps the conversation and input alive. */
@@ -233,8 +246,14 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
   const toggle = steps?.querySelector<HTMLButtonElement>('.tp-toggle')
   if (prior && !localeChanged && prior.handlers === handlers && sameTask && task && steps && toggle
     && onlyTaskStepsChanged(prior.state, shown)) {
-    updateSteps(steps, state, task)
-    if (scroller) scroller.scrollTop = atBottom ? scroller.scrollHeight : top
+    updateSteps(steps, state, task, handlers)
+    // Where it was, or at the bottom: measured with the rest of the frame (reconcile.ts), not right after the rows went in.
+    if (scroller) {
+      queueLayout(scroller, () => {
+        const bottom = atBottom ? scroller.scrollHeight : top
+        return () => { scroller.scrollTop = bottom }
+      })
+    }
     renderedPages.set(container, { state: shown, handlers, now, locale: getLocale() })
     return
   }
@@ -257,11 +276,11 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
       if (action) action.textContent = live ? t("island-tasks.stop") : t("tasks-page.close.this.task")
     }
     renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
-    if (localeChanged || prior.state.tasks.page.steps !== state.tasks.page.steps
+    if (localeChanged || prior.state.tasks.page.steps !== state.tasks.page.steps || prior.state.tasks.page.allSteps !== state.tasks.page.allSteps
       || previousTask.view.timeline !== task.view.timeline
       || previousTask.view.thoughts !== task.view.thoughts
       || previousTask.view.tools !== task.view.tools) {
-      if (steps) updateSteps(steps, state, task)
+      if (steps) updateSteps(steps, state, task, handlers)
       else {
         const nextSteps = stepsView(state, task, handlers)
         if (nextSteps) scroller.append(nextSteps)
