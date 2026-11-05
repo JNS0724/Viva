@@ -18,7 +18,10 @@ function windowWith(api, deps = {}) {
   const said = { asked: [], steered: [], toasts: [] }
   const toAction = {
     update: (event) => ({ type: 'acp_update', update: event.update, at: 50 }),
-    task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: 50 }),
+    // As app.ts maps them: a piece with its place in the task's stream, a snapshot as it is.
+    task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: 50,
+      ...(typeof event.taskSeq === 'number' ? { runId: event.runId, seq: event.taskSeq } : {}) }),
+    task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
   }
   const deliver = (event) => dispatch(toAction[event.type](event))
   const actions = createTaskActions({
@@ -29,11 +32,10 @@ function windowWith(api, deps = {}) {
     errorMessage: (err) => err.message,
     ask: (text) => { said.asked.push(text); dispatch({ type: 'user_prompt', text, at: 60 }); return true },
     steer: (text) => { said.steered.push(text); dispatch({ type: 'user_steer', text }); return true },
-    deliver,
     ...deps,
   })
-  /** An event from the main process, as app.ts takes it: it waits while the task it is for is being started. */
-  const arrive = (event) => actions.hold(event) || deliver(event)
+  /** An event from the main process, as app.ts takes it: straight to the state, none held back. */
+  const arrive = (event) => deliver(event)
   return { actions, said, arrive, dispatch, state: () => state }
 }
 
@@ -79,14 +81,23 @@ async function withTask(win) {
   win.dispatch({ type: 'task_update', taskId: 's1', update: chunk('先看提交…'), at: 20 })
 }
 
-test('what a task says before the window knows it waits, then reaches it', async () => {
+test('a task is made by the snapshot that begins it, before what it says; the call\'s answer then only settles the submission', async () => {
   const reply = deferred()
   const win = windowWith({ startTask: () => reply.promise })
   const starting = win.actions.startTask(WORDS)
-  win.arrive({ type: 'task_update', taskId: 's1', update: chunk('三组改动。') })
+  // The backend's order (task-runtime.ts): the snapshot that makes it, then its first piece, then the call's answer.
+  win.arrive({ type: 'task_snapshot', snapshot: { taskId: 's1', runId: 'run-1', title: WORDS, status: 'running', currentAction: null, waitingFor: null,
+    startedAt: 10, updatedAt: 10, endedAt: null, resultPreview: '', revision: 1, taskSeq: 0,
+    opening: { words: WORDS, task: startedReply.task, hostSession: 'main' } } })
+  // Each as the event core sends it: its own `seq` (the event log's) beside the task's `taskSeq`.
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 1, seq: 900, update: chunk('三组改动。') })
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 1, seq: 900, update: chunk('三组改动。') })
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-0', taskSeq: 2, seq: 900, update: chunk('别的运行说的') })
   reply.resolve(startedReply)
   await starting
-  assert.deepEqual(taskMessages(liveTasks(win.state())[0]).map((m) => m.text), [WORDS, '三组改动。'])
+  assert.equal(win.state().tasks.list.length, 1, 'one task, not made again by the answer')
+  assert.equal(win.state().tasks.submissions.length, 0, 'its submission settled')
+  assert.deepEqual(taskMessages(liveTasks(win.state())[0]).map((m) => m.text), [WORDS, '三组改动。'], 'each piece once; one of another run left out')
   assert.deepEqual(win.state().messages.map((m) => m.text), ['做周报', '写好了', WORDS, '先看提交…'], 'the conversation on screen as it was')
 })
 

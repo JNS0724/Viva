@@ -7,7 +7,7 @@ import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, type ReportPaylo
 import type { StoredTask, TaskStore } from './task-store.ts'
 import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
-import type { KeptMessage, KeptTask, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
+import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
 /**
@@ -24,6 +24,12 @@ import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
  *   `reports` (task-reports.ts, for results back in the conversation).
  * - A run's end queues its `report` (effects.ts) in the same transaction, keyed by the run (`reportId`); a new run,
  *   or the task closed, cancels the report of the run before.
+ * - The window's order (§12.2): what a task's run says reaches the window from here, each piece numbered (`taskSeq`,
+ *   one count per task; not the event core's `seq`, which a push to the window carries too) with its `runId`, after it is taken in and before the snapshot it changed; each snapshot says the
+ *   last piece it already includes. The snapshot that makes a task, or begins a new run of it, goes out (with what
+ *   the run begins with: `opening`) before the run's first piece, since the run is asked only once it is kept. What
+ *   dsh says of a task unknown, or no longer at work, is no task's and goes nowhere: nothing waits for a task to be
+ *   known.
  */
 const MAX_TITLE_CHARS = 40
 
@@ -88,12 +94,12 @@ export interface TaskRuntimeDeps {
   timers?: Pick<TaskWordsDeps, 'later' | 'cancel'>
   /** What a task held still waits on the user for (acp-bridge.ts taskWaits), for a window that opens meanwhile. */
   waitsOf?: (taskId: string) => { permissions: readonly unknown[], questions: readonly unknown[] }
-  /** To the window: what the agent did with a task, which the window did not ask for (task_created, …). */
+  /** To the window: what the agent did with a task, which the window did not ask for (task_steered). */
   announce?: (event: { type: string, [field: string]: unknown }) => void
   /** A change and its event in one transaction (event-core.ts apply). The task store and the history are written only inside one. */
   apply?: Apply
-  /** To the window, once a change has committed: a task's snapshot (`task_snapshot`). */
-  publish?: (push: { type: 'task_snapshot', taskId: string, snapshot: TaskSnapshot }) => void
+  /** To the window, in order: a piece of a task's stream, and, once a change has committed, a task's snapshot. */
+  publish?: (push: TaskPush) => void
   /**
    * A task's run ended and that is kept (after the commit): its result goes back to the conversation, a gap follows
    * (compose.ts). Not called for an end that could not be kept yet.
@@ -105,6 +111,15 @@ export interface TaskRuntimeDeps {
   newRunId?: () => string
 }
 
+/** A snapshot as the window gets it: the last piece of the task's stream it includes, and what a run begins with. */
+export type WindowSnapshot = TaskSnapshot & { taskSeq: number, opening?: TaskOpening }
+/**
+ * What goes to the window of a task, in order: a piece of its run's stream (what dsh said: task_update, task_end, a
+ * wait beginning or ending), numbered, or its snapshot.
+ */
+export type TaskPiece = { type: string, taskId: string, runId: string, taskSeq: number, [field: string]: unknown }
+export type TaskPush = { type: 'task_snapshot', taskId: string, snapshot: WindowSnapshot } | TaskPiece
+
 export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, announce = () => {},
   waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
   const later = timers.later ?? setTimeout
@@ -115,6 +130,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   let queued: TaskSnapshot[] = []
   let afterCommit: Array<() => void> = []
   let depth = 0
+  /** taskId → the last piece of its stream numbered (one count per task, across its runs). */
+  const seqs = new Map<string, number>()
+  /** taskId → what the run a change begins starts with, for the snapshot that goes out once it commits. */
+  let openings = new Map<string, TaskOpening>()
+  const seqOf = (taskId: string) => seqs.get(taskId) ?? 0
+  /** A piece of a task's stream to the window, numbered; the run it is of. */
+  function pushPiece(taskId: string, runId: string, event: Record<string, unknown>) {
+    const taskSeq = seqOf(taskId) + 1
+    seqs.set(taskId, taskSeq)
+    publish({ ...event, type: String(event.type), taskId, runId, taskSeq })
+  }
   const registry = createTaskRegistry({ now, changed: (snapshot) => {
     queued = [...queued, snapshot]
     ended(snapshot)
@@ -126,8 +152,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     queued = []
     afterCommit = []
     for (const run of then) run()
-    for (const snapshot of out) publish({ type: 'task_snapshot', taskId: snapshot.taskId, snapshot })
+    for (const snapshot of out) {
+      const opening = openings.get(snapshot.taskId)
+      if (opening) openings = new Map([...openings].filter(([id]) => id !== snapshot.taskId))
+      publish({ type: 'task_snapshot', taskId: snapshot.taskId, snapshot: { ...snapshot, taskSeq: seqOf(snapshot.taskId), ...(opening ? { opening } : {}) } })
+    }
   }
+  /** What a run a change begins starts with: on its snapshot, once the change commits. */
+  const opens = (taskId: string, opening: TaskOpening) => { openings = new Map([...openings, [taskId, opening]]) }
   /**
    * One change of a task: its writes and its event in one transaction, then the window's snapshots. Undone, the
    * database is as it was, and so is the task in memory (how it stands, what it said): a later end can be kept.
@@ -139,7 +171,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return apply(kind, data, write).value
     } catch (err) {
       undo.forEach((restore) => restore())
-      if (depth === 1) { queued = []; afterCommit = [] }
+      if (depth === 1) { queued = []; afterCommit = []; openings = new Map() }
       throw err
     } finally {
       depth -= 1
@@ -210,6 +242,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(text), words: text }
       store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: how.afresh ? 'agent' : 'user' })
+      opens(taskId, { words: text, task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
       return begun
     })
@@ -271,9 +304,12 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const ended = isEnded(entry)
       const held = attached.has(entry.id)
       const messages = (held ? taskWords.current(entry.id) : null) ?? found.messages.slice(entry.keep)
-      if (ended) return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages }]
-      if (held) return [{ task: restoredSummary(entry), status: 'running', endedAt: null, startedAt: entry.startedAt ?? null, messages, waits: waitsOf(entry.id) }]
-      return [{ task: restoredSummary(entry), status: 'interrupted', endedAt: entry.startedAt ?? Date.now(), messages }]
+      // What it said so far includes its stream to here: a piece in flight at or below this is not taken again.
+      const mark = typeof entry.runId === 'string' && entry.runId
+        ? { mark: { runId: entry.runId, seq: seqOf(entry.id), revision: registry.revisionOf(entry.id) ?? 0 } } : {}
+      if (ended) return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages, ...mark }]
+      if (held) return [{ task: restoredSummary(entry), status: 'running', endedAt: null, startedAt: entry.startedAt ?? null, messages, waits: waitsOf(entry.id), ...mark }]
+      return [{ task: restoredSummary(entry), status: 'interrupted', endedAt: entry.startedAt ?? Date.now(), messages, ...mark }]
     })
   }
 
@@ -298,6 +334,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
+      opens(taskId, { words: text })
       registry.restart(taskId, runId)
     })
     tasks.set(taskId, running)
@@ -321,6 +358,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
+      opens(taskId, { words })
       registry.restart(taskId, runId)
     })
     letEndGo(taskId)
@@ -343,7 +381,6 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   async function agentStart(brief: string) {
     const started = await begin(brief, { afresh: true })
     if (!started.ok) throw new Error(started.problem)
-    announce({ type: 'task_created', task: started.task, text: brief })
     return { taskId: started.task.id, title: started.task.title, status: 'running' }
   }
 
@@ -364,13 +401,11 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (isEnded(kept)) {
       const asked = await ask(taskId, text)
       if (!asked.ok) throw new Error(asked.problem)
-      announce({ type: 'task_asked', taskId, text })
       return { taskId, delivered: 'next question' }
     }
     if (!attached.has(taskId)) {
       const taken = await resume(taskId, text)
       if (!taken.ok) throw new Error(taken.problem)
-      announce({ type: 'task_resumed', task: taken.task, messages: taken.messages })
       return { taskId, delivered: 'taken up again' }
     }
     taskWords.userSaid(taskId, text)
@@ -387,13 +422,24 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   function receive(raw: unknown) {
     const event = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
     const taskId = typeof event.taskId === 'string' ? event.taskId : ''
-    const runId = event.type === 'task_end' ? registry.runOf(taskId) : null
-    if (runId === null) {
+    const runId = registry.runOf(taskId)
+    // No task's: dsh speaks of one unknown, or no longer at work.
+    if (runId === null) return
+    if (event.type === 'task_end') return endRun(taskId, runId, event, 0)
+    // Taken in first, its piece then, the snapshot it changed after (queued, not pushed, while it is taken in).
+    depth += 1
+    try {
       taskWords.receive(event)
       registry.receive(event)
+    } finally {
+      depth -= 1
+    }
+    if (depth > 0) {
+      afterCommit = [...afterCommit, () => pushPiece(taskId, runId, event)]
       return
     }
-    endRun(taskId, runId, event, 0)
+    pushPiece(taskId, runId, event)
+    pushQueued()
   }
 
   /**
@@ -406,6 +452,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       change('task.ended', { taskId, runId, status }, () => {
         taskWords.receive(event, { strict: true })
         registry.receive(event)
+        // The end reaches the window once it is kept, before the snapshot of the run ended.
+        afterCommit = [...afterCommit, () => pushPiece(taskId, runId, event)]
       })
     } catch (err) {
       const wait = END_RETRY_MS[Math.min(attempt, END_RETRY_MS.length - 1)]

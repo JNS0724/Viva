@@ -386,11 +386,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
             return wakeEffects()
           }
         }
-        emitToRenderer(event)
-        if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
-        // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams.
+        // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams. Each
+        // reaches the window from the task runtime, in order with the task's snapshots (task-runtime.ts), not from here.
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
+        emitToRenderer(event)
+        if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         if (event.type === 'error') reportTurnMemories()
         return undefined
       },

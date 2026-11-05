@@ -1,3 +1,4 @@
+import type { TaskOpening } from '../shared/ipc-results.ts'
 import { currentAction } from './selectors.ts'
 
 /**
@@ -46,6 +47,8 @@ const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = nu
 type RestoredTask = {
   task: BackgroundTask, status: string, endedAt: number | null, startedAt?: number | null, messages: SavedMessage[],
   waits?: { permissions: Array<Record<string, unknown>>, questions: Array<Record<string, unknown>> } | null,
+  /** The run it is at and the last piece of its stream in what it said (ipc-results.ts TaskMark). */
+  mark?: unknown,
 }
 
 const ENDED: Readonly<Record<string, string>> = { end_turn: 'done', cancelled: 'stopped', error: 'error' }
@@ -166,11 +169,68 @@ const mapTask = (state: State, taskId: string, change: (task: BackgroundTask) =>
   list: state.tasks.list.map((task) => (task.id === taskId ? settled(change(task)) : task)),
 })
 
+/**
+ * A piece of a task's stream (task-runtime.ts, §12.2), taken only when it is the window's: of a task it knows, of the
+ * run it is at, and after the last it has (`seq`). Taken, it is the last it has. A piece without its place (not from
+ * the runtime) is taken as it comes.
+ */
+function takePiece(state: State, action: Action, take: (state: State) => State): State {
+  const { taskId, runId, seq } = action
+  if (typeof seq !== 'number') return take(state)
+  const task = state.tasks.list.find((entry) => entry.id === taskId)
+  if (!task || (task.runId && runId !== task.runId) || seq <= (task.seq ?? 0)) return state
+  return mapTask(take(state), taskId, (entry) => ({ ...entry, seq }))
+}
+
+/** A task's mark from what the window was given of it (task:finished): the run it is at, the last piece in it. */
+const markOf = (mark: unknown): { runId?: string, seq?: number, revision?: number } => {
+  const { runId, seq, revision } = (mark && typeof mark === 'object' ? mark : {}) as { runId?: unknown, seq?: unknown, revision?: unknown }
+  if (typeof runId !== 'string' || typeof seq !== 'number') return {}
+  return { runId, seq, ...(typeof revision === 'number' ? { revision } : {}) }
+}
+
+/**
+ * Whether a snapshot is older than what the window has of its task, or the same: by its revision, which grows with
+ * every change of the task (task-registry.ts), across its runs. The last piece of the stream cannot tell, as several
+ * snapshots say the same one (a run ending, the next beginning).
+ */
+const isStale = (snapshot: { revision?: unknown }, task: BackgroundTask) =>
+  typeof snapshot.revision === 'number' && typeof task.revision === 'number' && snapshot.revision <= task.revision
+
 /** @param handlers state.ts's handlers: a task's view is updated the way the conversation is */
 export function taskActions(handlers: Record<string, Reducer>): Record<string, Reducer> {
   const inView = (state: State, taskId: string, type: string, action: Action) => mapTask(state, taskId, (task) => ({ ...task, view: handlers[type](task.view, action) }))
 
-  return {
+  /** A task's turn ended: how, in its view and on its card; something new, so unseen again. */
+  function ended(state: State, { taskId, stopReason, message = null, at }: Action): State {
+    const task = state.tasks.list.find((entry) => entry.id === taskId)
+    if (!task) return state
+    const status = ENDED[stopReason] ?? 'done'
+    const turnEnded = handlers.turn_end(task.view, { stopReason, at })
+    // Failed: why, as the conversation shows it (its error row), and on the card when it said nothing.
+    const view = message ? { ...turnEnded, phase: 'error', error: message } : turnEnded
+    const list = state.tasks.list.map((entry) => (entry.id === taskId ? { ...entry, view, status, now: null, endedAt: at } : entry))
+    // Something new came back: unseen again, even if what it said before was seen.
+    const seen = state.tasks.seen.filter((id) => id !== taskId)
+    return withTasks(state, { list, seen })
+  }
+
+  /**
+   * A task made by the snapshot that begins it: the words it was given, its first message; its line under what the
+   * conversation on screen shows, when it was started from that one (by its session, as the window may not have the
+   * conversation's id yet), else nowhere here.
+   */
+  function made(state: State, snapshot: Untyped, opening: TaskOpening): State {
+    const { task, words, hostSession = null } = opening
+    if (!task) return state
+    const entry = settled({ ...task, runId: snapshot.runId, seq: snapshot.taskSeq ?? 0, revision: snapshot.revision, startedAt: snapshot.startedAt, endedAt: null,
+      status: snapshot.status, now: snapshot.currentAction ?? null, view: savedView([{ role: 'user', text: words }], snapshot.startedAt) })
+    const here = !state.newTopicPending && hostSession !== null && hostSession === (state.info.sessionId ?? null)
+    const host = here ? hostTask(state, entry.id) : { messages: state.messages, taskCards: state.taskCards }
+    return { ...withTasks(state, { list: [...state.tasks.list, entry] }), ...host }
+  }
+
+  const ACTIONS: Record<string, Reducer> = {
     tasks_list_folded: (state, { folded }) => withTasks(state, { listFolded: Boolean(folded) }),
     task_submitting: (state, { submission }) => withTasks(state, {
       submissions: [...state.tasks.submissions.filter(item => item.id !== submission.id), submission],
@@ -180,43 +240,55 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     }),
     task_submit_dismissed: (state, { id }) => withTasks(state, { submissions: state.tasks.submissions.filter(item => item.id !== id) }),
 
-    task_update: (state, { taskId, update, at }) => inView(state, taskId, 'acp_update', { update, at }),
-    task_snapshot: (state, { snapshot }) => withTasks(state, { list: state.tasks.list.map(task => task.id !== snapshot.taskId ? task : {
-      ...task, status: snapshot.status, now: snapshot.currentAction, updatedAt: snapshot.updatedAt,
-      endedAt: snapshot.endedAt, waitingFor: snapshot.waitingFor, revision: snapshot.revision,
-    }) }),
-
-    task_end: (state, { taskId, stopReason, message = null, at }) => {
-      const task = state.tasks.list.find((entry) => entry.id === taskId)
-      if (!task) return state
-      const status = ENDED[stopReason] ?? 'done'
-      const ended = handlers.turn_end(task.view, { stopReason, at })
-      // Failed: why, as the conversation shows it (its error row), and on the card when it said nothing.
-      const view = message ? { ...ended, phase: 'error', error: message } : ended
-      const list = state.tasks.list.map((entry) => (entry.id === taskId ? { ...entry, view, status, now: null, endedAt: at } : entry))
-      // Something new came back: unseen again, even if what it said before was seen.
-      const seen = state.tasks.seen.filter((id) => id !== taskId)
-      return withTasks(state, { list, seen })
+    task_update: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, 'acp_update', { update: action.update, at: action.at })),
+    /**
+     * How a task stands (task-runtime.ts). The one that begins a run comes before the run's first piece, with what it
+     * begins with: a task new is made from it (its line in the conversation it was started from, when that is the one
+     * on screen); one known goes on with a new run, its words its next question. Every snapshot says the last piece
+     * of the stream it includes.
+     */
+    task_snapshot: (state, { snapshot }) => {
+      const task = state.tasks.list.find((entry) => entry.id === snapshot.taskId)
+      const opening: TaskOpening | undefined = snapshot.opening
+      if (!task) return opening?.task ? made(state, snapshot, opening) : state
+      // Older than what the window has, or the same (one that waited for a read of the tasks, the beginning of a run
+      // the read has already): how it stood then, not now; nor a run begun again.
+      if (isStale(snapshot, task)) return state
+      const begun = opening && snapshot.runId !== task.runId
+        ? ACTIONS.task_asked(state, { taskId: task.id, text: opening.words, at: snapshot.startedAt }) : state
+      // How it stands is the snapshot's, as it says it (not worked out again from its view).
+      return withTasks(begun, { list: begun.tasks.list.map((entry) => entry.id !== task.id ? entry : {
+        ...entry, status: snapshot.status, now: snapshot.currentAction, updatedAt: snapshot.updatedAt,
+        endedAt: snapshot.endedAt, waitingFor: snapshot.waitingFor, revision: snapshot.revision,
+        runId: snapshot.runId, seq: Math.max(begun === state ? entry.seq ?? 0 : 0, snapshot.taskSeq ?? 0),
+      }) })
     },
 
-    /** Taken up again after a relaunch: it goes on as a task in the background, with what it had said. */
-    task_resumed: (state, { task, messages, at }) => withTasks({ ...state, ...hostTask(state, task.id) }, {
-      list: [...state.tasks.list.filter((entry) => entry.id !== task.id),
-        settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView(messages, at) })],
-    }),
+    task_end: (state, action) => takePiece(state, action, (taken) => ended(taken, action)),
+    task_question: (state, action) => takePiece(state, action, (taken) =>
+      inView(taken, action.taskId, 'question_request', { questionId: action.questionId, questions: action.questions, at: action.at })),
+    task_question_closed: (state, action) => takePiece(state, action, (taken) =>
+      inView(taken, action.taskId, 'question_closed', { questionId: action.questionId, at: action.at })),
+
     /** Tasks that had ended by the last launch (task-store.js): back as they were, to be asked again or closed. */
     tasks_restored: (state, { list }) => {
       // One still at work (a reloaded window) goes on from what it said so far, with what it waits on the user for;
       // the others are at rest.
-      const restored = list.map(({ task, status, endedAt, startedAt = null, messages, waits = null }: RestoredTask) => {
-        if (endedAt !== null) return settled({ ...task, startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) })
+      const restored = list.map(({ task, status, endedAt, startedAt = null, messages, waits = null, mark }: RestoredTask) => {
+        if (endedAt !== null) return settled({ ...task, ...markOf(mark), startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) })
         const at = startedAt ?? 0
         const asked = (waits?.permissions ?? []).reduce<BackgroundTask['view']>((view, wait) => handlers.permission_request(view, { ...wait, at }), savedView(messages, at))
         const view = (waits?.questions ?? []).reduce<BackgroundTask['view']>((current, wait) => handlers.question_request(current, { ...wait, at }), asked)
-        return settled({ ...task, startedAt: at, endedAt: null, status, now: null, view })
+        return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
+      // A task the window knows already stays as it is: it has had every piece and snapshot of it since it knew it,
+      // and a push and the answer to a call come in the order the main process sent them, so whatever the read saw of
+      // it the window has too, and its words since (which no snapshot follows). Only one it does not know is read in;
+      // what the live channel said of that one meanwhile waited, and follows (task-actions.ts loadKept).
+      const known = (task: BackgroundTask) => state.tasks.list.some((entry) => entry.id === task.id)
+      const taken = restored.filter((task: BackgroundTask) => !known(task))
       return withTasks(state, {
-        list: [...state.tasks.list.filter(entry => !restored.some((task: BackgroundTask) => task.id === entry.id)), ...restored],
+        list: [...state.tasks.list.filter((entry) => !taken.some((task: BackgroundTask) => task.id === entry.id)), ...taken],
       })
     },
     /**
@@ -230,6 +302,10 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
      * whether the foreground is idle or busy.
      */
     task_started: (state, { task, text, at, submissionId, origin }) => {
+      // Made already by the snapshot that began it (the usual way): its submission is done, nothing else.
+      if (state.tasks.list.some((entry) => entry.id === task.id)) {
+        return withTasks(state, { submissions: state.tasks.submissions.filter((item) => item.id !== submissionId) })
+      }
       const entry = settled({ ...task, startedAt: at, endedAt: null, status: 'running', now: null, view: savedView([{ role: 'user', text }], at) })
       const host = origin !== undefined && (state.newTopicPending || origin !== (state.info.sessionId ?? null))
         ? { messages: state.messages, taskCards: state.taskCards } : hostTask(state, task.id)
@@ -256,9 +332,6 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
     /** Words into that task's turn (task-ipc.js task:steer), shown in its part of the conversation. */
     task_steer: (state, { taskId, text, at }) => inView(state, taskId, 'user_steer', { text, via: null, at }),
 
-    task_question: (state, { taskId, questionId, questions, at }) => inView(state, taskId, 'question_request', { questionId, questions, at }),
-    task_question_closed: (state, { taskId, questionId, at }) => inView(state, taskId, 'question_closed', { questionId, at }),
-
     task_closed: (state, { taskId }) => {
       const closed = {
         ...withTasks(state, { list: state.tasks.list.filter((task) => task.id !== taskId) }),
@@ -271,6 +344,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       return closed.tasks.page.open ? markSeen(moved, next) : moved
     },
   }
+  return ACTIONS
 }
 
 /** Picking for a task's question, and answering it: the window names the task (app.js). */
@@ -286,7 +360,7 @@ export function routeToTask(state: State, action: Action, handlers: Record<strin
     return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers[action.type ?? ''](task.view, action) }))
   }
   if (action.type === 'permission_request' && action.taskId) {
-    return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers.permission_request(task.view, action) }))
+    return takePiece(state, action, (taken) => mapTask(taken, action.taskId, (task) => ({ ...task, view: handlers.permission_request(task.view, action) })))
   }
   if (action.type === 'permission_resolved' && state.permission?.requestId !== action.requestId) {
     const owner = state.tasks.list.find((task) => task.view.permission?.requestId === action.requestId)

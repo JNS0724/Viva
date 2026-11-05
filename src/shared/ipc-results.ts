@@ -20,12 +20,25 @@ export interface KeptMessage { role: string, text: string, [field: string]: unkn
 /** 后台做: started, or why not, in words for the user. */
 export type TaskStartResult = { ok: true, task: TaskSummary } | { ok: false, problem: string }
 
+/**
+ * Where a task is as the window got it (task-runtime.ts): the run it is at, the last piece of its stream already in
+ * what it was given, and how many times it had changed (its snapshots' `revision`). A piece of another run, or at or
+ * below that piece, and a snapshot at or below that revision, are not the window's to take again.
+ */
+export interface TaskMark { runId: string, seq: number, revision?: number }
+
 /** A task as `task:finished` gives it back: ended; at work in this launch (a reloaded window); or one Viva quit on. */
-export type KeptTask =
+export type KeptTask = ({ mark?: TaskMark }) & (
   | { task: TaskSummary, status: string, endedAt: number, messages: readonly KeptMessage[] }
   | { task: TaskSummary, status: 'running', endedAt: null, startedAt: number | null, messages: readonly KeptMessage[],
     waits: { permissions: readonly unknown[], questions: readonly unknown[] } }
-  | { task: TaskSummary, status: 'interrupted', endedAt: number, messages: readonly KeptMessage[] }
+  | { task: TaskSummary, status: 'interrupted', endedAt: number, messages: readonly KeptMessage[] })
+
+/**
+ * What a run begins with, on the snapshot that starts it (the window makes the task, or its new run, from it): the
+ * words it was given, and, for a task new, its summary and the session of the conversation its line goes in.
+ */
+export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
 export interface IpcResults {
   'task:start': TaskStartResult

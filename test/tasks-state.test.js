@@ -30,6 +30,10 @@ const started = (state) => run([
 
 const WORDS_LATER = '整理发布说明'
 
+/** A task's snapshot as the task runtime sends it (backend/task-runtime.ts WindowSnapshot): at work, nothing in it yet. */
+const snapshotOf = (taskId, runId, at) => ({ taskId, runId, title: taskId, status: 'running', currentAction: null, waitingFor: null,
+  startedAt: at, updatedAt: at, endedAt: null, resultPreview: '', revision: 1, taskSeq: 0 })
+
 test('a background request while idle adds only its card; the original words stay in task details', () => {
   const idle = run([{ type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'assistant', text: '有什么可以帮你？' }], savedAt: 1 }])
   const state = reduce(idle, { type: 'task_started', task: { id: 'bg', segmentId: 'bg-c', title: '查天气', words: '查天气' }, text: '查天气', at: 2 })
@@ -56,7 +60,8 @@ test('a background request while idle adds only its card; the original words sta
     type: 'task_started', task: { id: 'late', title: '旧话题的任务' }, text: '旧请求', origin: null, at: 2,
   })
   assert.deepEqual(late.taskCards, [], 'an old pending submission cannot attach to the new topic before its session id changes')
-  const restored = reduce(initialState, { type: 'task_resumed', task: { id: 'resumed', title: '恢复任务' }, messages: [{ role: 'user', text: '原始请求' }], at: 4 })
+  const kept = reduce(initialState, { type: 'tasks_restored', list: [{ task: { id: 'resumed', title: '恢复任务' }, status: 'interrupted', endedAt: 3, messages: [{ role: 'user', text: '原始请求' }] }] })
+  const restored = reduce(kept, { type: 'task_snapshot', snapshot: { ...snapshotOf('resumed', 'run-2', 4), opening: { words: '接着做' } } })
   assert.deepEqual(restored.taskCards, ['resumed'], 'resuming persisted task data restores its standalone card')
 })
 
@@ -167,21 +172,19 @@ test('a task the agent takes up again goes on in the background with what it had
     messages: [{ role: 'user', text: '整理发布说明', receipt: null }],
   }] })
   assert.deepEqual([restored.tasks.list[0].status, liveTasks(restored).length], ['interrupted', 0], 'interrupted: listed, not at work')
-  const taken = reduce(restored, {
-    type: 'task_resumed', at: 50,
-    task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' },
-    messages: [{ role: 'user', text: '整理发布说明', receipt: null }, { role: 'assistant', text: '先看提交…', receipt: null }, { role: 'user', text: '接着做', receipt: null }],
-  })
+  // Taken up: the snapshot that begins its new run comes first, with the words it goes on from.
+  const taken = reduce(restored, { type: 'task_snapshot', snapshot: { ...snapshotOf('s1', 'run-2', 50), opening: { words: '接着做' } } })
   const [task] = liveTasks(taken)
   assert.deepEqual([task.id, task.status, task.startedAt], ['s1', 'running', 50])
-  assert.deepEqual(taskMessages(task).map((m) => m.text), ['整理发布说明', '先看提交…', '接着做'])
+  assert.deepEqual(taskMessages(task).map((m) => m.text), ['整理发布说明', '接着做'])
   const said = reduce(taken, { type: 'task_update', taskId: 's1', update: chunk('三组改动。'), at: 51 })
   assert.equal(taskMessages(liveTasks(said)[0]).at(-1).text, '三组改动。', 'what it says now follows')
 
   // Taken up in a conversation on screen: its card goes under what is there now, and stays there.
   const shown = run([
     { type: 'history_loaded', conversationId: 'c9', messages: [{ role: 'user', text: '做周报', receipt: null }, { role: 'assistant', text: '写好了', receipt: null }], savedAt: 1 },
-    { type: 'task_resumed', at: 50, task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' }, messages: [] },
+    { type: 'tasks_restored', list: [{ task: { id: 's1', segmentId: 'c1', title: '整理发布说明', words: '整理发布说明' }, status: 'interrupted', endedAt: 5, messages: [] }] },
+    { type: 'task_snapshot', snapshot: { ...snapshotOf('s1', 'run-2', 50), opening: { words: '接着做' } } },
   ])
   assert.deepEqual(shown.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']])
   const askedAgain = reduce({ ...shown, tasks: { ...shown.tasks, list: shown.tasks.list.map((t) => ({ ...t, status: 'done' })) } }, { type: 'task_asked', taskId: 's1', text: '再补一句', at: 60 })

@@ -26,7 +26,9 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-runtime-tx-'))
   const app = openAppDb({ file: path.join(dir, 'app.db') })
   t.after(() => { app.close(); fs.rmSync(dir, { recursive: true, force: true }) })
-  const core = createEventCore({ app, publish: () => {} })
+  /** What reaches the window: the runtime's pushes by way of the event core, as compose.ts sends them (emitToRenderer). */
+  const window: Array<Record<string, unknown>> = []
+  const core = createEventCore({ app, publish: (push) => { window.push(push) } })
   const effects = createEffects({ db: app.db, apply: (kind, data, write) => core.apply(kind, data, write) })
   const history = openHistoryDb({ db: app.db })
   const main = history.save(history.create({ sessionId: 'main', cwd: '/w' }), [{ role: 'user', text: '做周报', receipt: null }])
@@ -60,7 +62,10 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
       resumeTask: () => ({ ok: true }), cancelTask: () => {}, closeTask: () => {},
     },
     apply: (kind, data, write) => core.apply(kind, data, write),
-    publish: ({ snapshot }) => { snapshots.push(snapshot) },
+    publish: (push) => {
+      if (push.type === 'task_snapshot') snapshots.push((push as { snapshot: TaskSnapshot }).snapshot)
+      core.transient(push)
+    },
     onEnd: (taskId, status) => { reported.push([taskId, status]) },
     effects,
     newRunId: () => `run-${++runs}`,
@@ -74,7 +79,7 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const kept = () => realStore.list().find((entry) => entry.id === 'task-0001')
   const ended = () => core.since(0).filter((event) => event.kind === 'task.ended')
   const reports = () => effects.list().filter((effect) => effect.kind === 'report').map((effect) => effect.key)
-  return { tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
+  return { window, tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
@@ -218,4 +223,17 @@ test('a task let go among the oldest ended, then closed by the user: its report 
   assert.deepEqual(reports(), [`${task.id}:run-1`])
   await tasks.window.close(task.id)
   assert.deepEqual(reports(), [], 'closed: its report cancelled though its row was gone')
+})
+
+test('through the event core to the window, a piece keeps its own number: the push\'s `seq` is the event log\'s, `taskSeq` the task\'s', async (t) => {
+  const { tasks, window } = setup(t)
+  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('先看') })
+  tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('提交') })
+  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
+  const pieces = window.filter((push) => push.taskId === task.id && push.type !== 'task_snapshot')
+  assert.deepEqual(pieces.map((push) => [push.type, push.taskSeq]), [['task_update', 1], ['task_update', 2], ['task_end', 3]], 'numbered by the task, as they went')
+  assert.ok(pieces.every((push) => typeof push.seq === 'number'), 'each also carries the event log\'s number, which is not the task\'s')
+  const last = window.filter((push) => push.type === 'task_snapshot').at(-1) as { snapshot: { taskSeq: number, status: string } }
+  assert.deepEqual([last.snapshot.status, last.snapshot.taskSeq], ['done', 3], 'the snapshot of its end includes it')
 })

@@ -28,8 +28,6 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   const tools = new Map<string, Map<string, string>>()
   const streams = new Map<string, { key: string, blocks: Map<number, string> }>()
   const published = new Map<string, string>()
-  // Moving a live session to the background can emit its pending question before task IPC returns.
-  const early = new Map<string, Record<string, unknown>[]>()
   const snapshot = ({ cwd: _cwd, request: _request, ...value }: Task): TaskSnapshot => ({ ...value })
   function publish(task: Task) {
     task.updatedAt = now(); task.revision++
@@ -48,8 +46,6 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       resultPreview: (meta.resultPreview ?? '').slice(-4000), revision: 0 }
     tasks.set(meta.id, task)
     publish(task)
-    const pending = early.get(meta.id) ?? []; early.delete(meta.id)
-    for (const event of pending) receive(event)
   }
   function restart(id: string, runId = '') {
     const task = tasks.get(id); if (!task) return
@@ -69,18 +65,15 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       put(streams, saved.stream ? { key: saved.stream.key, blocks: new Map(saved.stream.blocks) } : undefined)
     }
   }
-  function remove(id: string) { tasks.delete(id); waits.delete(id); tools.delete(id); streams.delete(id); early.delete(id); published.delete(id) }
+  function remove(id: string) { tasks.delete(id); waits.delete(id); tools.delete(id); streams.delete(id); published.delete(id) }
   function receive(raw: unknown) {
     const event = record(raw), id = text(event.taskId)
     if (!id) return
     const type = text(event.type)
     if (!['task_update', 'task_end', 'permission', 'task_permission_closed', 'task_question', 'task_question_closed'].includes(type)) return
+    // A task is known before its run says anything (task-runtime.ts): what comes of one unknown, or no longer at work, is no task's.
     const task = tasks.get(id)
-    if (!task) {
-      if (early.size >= 100 && !early.has(id)) early.delete(early.keys().next().value!)
-      early.set(id, [...(early.get(id) ?? []).slice(-31), event]); return
-    }
-    if (terminal.has(task.status)) return
+    if (!task || terminal.has(task.status)) return
     const pending = waits.get(id) ?? new Map<string, 'permission' | 'answer'>()
     waits.set(id, pending)
     if (type === 'permission') pending.set(`p:${text(event.requestId)}`, 'permission')
@@ -128,7 +121,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     for (const task of tasks.values()) if (!terminal.has(task.status) && !ending.has(task.taskId)) {
       task.status = 'interrupted'; task.currentAction = null; task.waitingFor = null; publish(task)
     }
-    waits.clear(); tools.clear(); streams.clear(); early.clear()
+    waits.clear(); tools.clear(); streams.clear()
   }
   function query(request: TaskQuery, scope: TaskScope) {
     const visible = (task: Task) => 'taskId' in scope ? task.taskId === scope.taskId : Boolean(task.cwd && scope.cwd) && directory(task.cwd) === directory(scope.cwd)
@@ -149,9 +142,11 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const task = tasks.get(id)
     return task && !terminal.has(task.status) ? task.runId : null
   }
+  /** How many times a task has changed (its snapshots' `revision`), or null for one unknown. */
+  const revisionOf = (id: string): number | null => tasks.get(id)?.revision ?? null
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, receive, interrupt, query, live, runOf, checkpoint }
+  return { put, restart, remove, receive, interrupt, query, live, runOf, revisionOf, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 
