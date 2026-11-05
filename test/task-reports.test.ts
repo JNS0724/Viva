@@ -26,7 +26,7 @@ const t3 = effect(payload('t3', '别处的任务', 'c9', '做完了'))
 type State = 'idle' | 'busy' | 'away'
 
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
-  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {} } = {}) {
+  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
   const asked: Array<[string, string, string]> = []
@@ -43,7 +43,10 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     deliver: async (session, reportId, _token, text) => { delivered.push([session, reportId, text]); return steered },
     report: (note) => { turns.push(note); return true },
     amend: (_effect, payload) => { if (world.amends) kept.push(payload); return world.amends },
-    onRead: (effect) => { reads.push([effect.key, effect.payload.deliveredTo]) },
+    onRead: (effect) => {
+      if (!keeps) throw new Error('disk full')
+      reads.push([effect.key, effect.payload.deliveredTo])
+    },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
   return { outcomes, turns, delivered, world, asked, kept, reads }
@@ -222,7 +225,7 @@ const stream = (key: string, kind: 'delta' | 'settle', text: string) => (kind ==
   ? { sessionUpdate: 'viva_stream', key, kind, index: 0, blockType: 'text', text }
   : { sessionUpdate: 'viva_stream', key, kind, blocks: text ? [{ type: 'text', text }] : [] })
 const inTurnText = shownNote(noteFor([{ taskId: 'task-0001', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了' }], { inTurn: true }))
-const delivered = (conversationId: string, at = 12) => ({ type: 'report_delivered', conversationId, reportId: 'task-0001:run-1', text: inTurnText, at })
+const delivered = (conversationId: string, at = 12, sessionId = 's1') => ({ type: 'report_delivered', conversationId, sessionId, reportId: 'task-0001:run-1', text: inTurnText, at })
 
 test('in the window: a delivered report is a record where it came; what the agent says next comes below it; once only', () => {
   const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
@@ -263,4 +266,23 @@ test('a record kept and loaded again: which report, and when it came, survive th
   assert.deepEqual(loaded.messages[1].report, { reportId: 'task-0001:run-1', at: 1_730_800_000_000 })
   assert.equal(reduce(loaded, delivered('c1')), loaded, 'loaded again, the same report is still one record')
   assert.equal(normalizeMessages([{ role: 'report', text: 'x', report: { reportId: '', at: 'soon' } }])[0].report, undefined, 'a malformed mark is not kept')
+})
+
+test('read, but its record cannot be kept now: tried again after a wait, not left waiting for a wake that may not come', async () => {
+  const found = setup({ known: { 't1:run-1': 'read' }, keeps: false })
+  assert.deepEqual(await found.outcomes([t1]), { 't1:run-1': 'retry' })
+  const steered = setup({ state: 'busy', steered: 'read', keeps: false })
+  assert.deepEqual(await steered.outcomes([t1]), { 't1:run-1': 'retry' }, 'the same when it is found read as it is sent')
+})
+
+test('a blank new topic (no id in the window yet): a record for its session is drawn; for another session, or a topic being left, not', () => {
+  const blank = { ...reduce(initialState, { type: 'new_session', info: { ...initialState.info, sessionId: 's-fresh' }, at: 1 }) }
+  assert.equal(blank.conversationId, null)
+  const recorded = reduce(blank, delivered('c-backend-id', 12, 's-fresh'))
+  assert.deepEqual(recorded.messages.map((m) => m.role), ['report'], 'drawn on the topic of that session')
+  assert.equal(reduce(blank, delivered('c-backend-id', 12, 's-other')), blank, 'another session: not here')
+  const leaving = reduce(blank, { type: 'new_session_pending', at: 2 })
+  assert.equal(reduce(leaving, delivered('c-backend-id', 12, 's-fresh')).messages.length, 0, 'a topic being left for a new one: not drawn on it')
+  const saved = reduce(recorded, { type: 'conversation_saved', id: 'c-backend-id' })
+  assert.equal(reduce(saved, delivered('c-backend-id', 13, 's-fresh')), saved, 'saved, it is known by its id, and the record is one')
 })

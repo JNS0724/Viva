@@ -116,7 +116,8 @@ export interface TaskReportsDeps {
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
   /**
    * A report found read: its record kept in the conversation it went to, then it is done (report-records.ts read). The
-   * same as for viva-steer's `report_read`, so a report read before a restart gets its record too.
+   * same as for viva-steer's `report_read`, so a report read before a restart gets its record too. One that throws
+   * (the record could not be kept) is tried again after a wait.
    */
   onRead: (effect: Effect<ReportPayload>) => void
 }
@@ -161,6 +162,17 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     const kept = (effect: Effect<ReportPayload>, payload: ReportPayload): Effect<ReportPayload> | null =>
       (amend(effect, payload) ? { ...effect, payload } : null)
 
+    /** Read: its record kept, then done (it waits for that); not kept now, tried again after the queue's wait. */
+    const readOutcome = (effect: Effect<ReportPayload>): Outcome => {
+      try {
+        onRead(effect)
+        return 'wait'
+      } catch {
+        // Said where it failed (compose.ts onRead); here only when to try again.
+        return 'retry'
+      }
+    }
+
     const unsent: Array<Effect<ReportPayload>> = []
     for (const original of mine) {
       // A token before anything else, kept: the same on every try from now on.
@@ -172,7 +184,7 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       if (!still(effect)) outcomes.set(effect.key, 'wait')
       // Read: done once its record is kept (onRead), not before; kept where it was read, which is where it went (one
       // queued before `deliveredTo` was kept says so now).
-      else if (now === 'read') { onRead(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where } }); outcomes.set(effect.key, 'wait') }
+      else if (now === 'read') outcomes.set(effect.key, readOutcome(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where } }))
       // Lost where it went (or never sent): to the main conversation as it is now.
       else if (now === 'none') unsent.push(effect)
       else outcomes.set(effect.key, now === 'failed' ? 'retry' : 'wait')
@@ -183,7 +195,7 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
       const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
       const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string, noteFor([endedOf(sending)], { inTurn: true })) : 'unavailable'
-      if (sent === 'read') { onRead(sending ?? effect); outcomes.set(effect.key, 'wait') }
+      if (sent === 'read') outcomes.set(effect.key, readOutcome(sending ?? effect))
       else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
     }

@@ -381,9 +381,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
           try {
             return event.type === 'report_written' ? records.written(queued) : records.read(queued)
           } catch (err) {
-            // Not kept now (the database busy): still queued, so a later pass finds it read and keeps it then.
+            // Not kept now (the database busy): still queued. A pass now finds it read and tries again (onRead),
+            // put off with the queue's growing waits while that fails.
             console.error('[reports]', err instanceof Error ? err.message : String(err))
-            return undefined
+            return wakeEffects()
           }
         }
         emitToRenderer(event)
@@ -431,7 +432,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     deliver: (session, reportId, token, text) => bridge?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable'),
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
     amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
-    onRead: (effect) => records.read(effect),
+    onRead: (effect) => {
+      try {
+        records.read(effect)
+      } catch (err) {
+        console.error('[reports] could not keep a report\'s record:', err instanceof Error ? err.message : String(err))
+        throw err
+      }
+    },
     currentConversation: () => conversation.id,
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: (note) => {

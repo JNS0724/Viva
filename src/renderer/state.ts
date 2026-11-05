@@ -208,6 +208,14 @@ function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): Th
 /** The handlers, looked up when used: a task's view is updated by the same ones (tasks-state.js). */
 const HANDLERS: Record<string, Reducer> = new Proxy({}, { get: (_target, type) => ACTION_HANDLERS[String(type)] })
 
+/**
+ * Whether a record is for the topic on screen: its conversation, or, while the topic is not saved yet (no id for it
+ * here), its session; never one being left for a new topic.
+ */
+const isRecordFor = (state: State, conversationId: unknown, sessionId: unknown) => (state.conversationId !== null
+  ? conversationId === state.conversationId
+  : !state.newTopicPending && typeof sessionId === 'string' && sessionId === state.info.sessionId)
+
 const ACTION_HANDLERS: Record<string, Reducer> = {
   ready: (state, { info }) => ({
     ...state,
@@ -258,9 +266,9 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
    * comes below the record. The same report twice is one record; one for a conversation not on screen is not drawn
    * here (the backend keeps it there).
    */
-  report_delivered: (state, { conversationId, reportId, text, at }) => {
+  report_delivered: (state, { conversationId, sessionId, reportId, text, at }) => {
     if (typeof text !== 'string' || !text || typeof reportId !== 'string' || typeof at !== 'number') return state
-    if (conversationId !== state.conversationId || state.messages.some((message) => message.report?.reportId === reportId)) return state
+    if (!isRecordFor(state, conversationId, sessionId) || state.messages.some((message) => message.report?.reportId === reportId)) return state
     const closed = closeStreams(state)
     const record = { id: `m${closed.messages.length}`, role: 'report', text, shown: text.length, open: false, receipt: null, report: { reportId, at } }
     return { ...closed, messages: [...closed.messages, record] }

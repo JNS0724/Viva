@@ -4,12 +4,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openAppDb } from '../src/backend/app-db.ts'
-import { createEffects, type Effect } from '../src/backend/effects.ts'
+import { createEffects, RETRY_MS, type Effect } from '../src/backend/effects.ts'
 import { createEventCore } from '../src/backend/event-core.ts'
 import { openHistoryDb, type Conversation } from '../src/backend/history-db.ts'
 import { journaled } from '../src/backend/journal.ts'
 import { createReportRecords, type RecordShown } from '../src/backend/report-records.ts'
-import { REPORT, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
+import { createTaskReports, REPORT, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
 
 /**
  * A report read is kept as a record in the conversation of the session it went to (report-records.ts), on a real
@@ -71,7 +71,7 @@ test('the record and the report done are one change: a record that cannot be kep
 test('read in the session on screen: shown there, and done once the window saves it, not before', (t) => {
   const { records, effects, shown, world, queue } = setup(t)
   records.read(queue('s-new'))
-  assert.deepEqual(shown, [{ type: 'report_delivered', conversationId: world.current.id, reportId: ID, text: shown[0]?.text, at: 5_000 }])
+  assert.deepEqual(shown, [{ type: 'report_delivered', conversationId: world.current.id, sessionId: 's-new', reportId: ID, text: shown[0]?.text, at: 5_000 }])
   assert.equal((effects.get(REPORT, ID)?.payload as ReportPayload).read, true, 'read, waiting for the window to keep it')
   records.saved([{ role: 'user', text: '换个话题', receipt: null }])
   assert.ok(effects.get(REPORT, ID), 'a save without its record: not done')
@@ -120,4 +120,42 @@ test('a history kept before records had marks: opened, it takes them; its old me
   after.save(kept, [...after.get(kept.id)!.messages, { role: 'report', text: 'note', receipt: null, report: { reportId: ID, at: 7 } }])
   assert.equal(after.hasReport(kept.id, ID), true)
   assert.equal(after.bySession('s-old')?.id, kept.id)
+})
+
+test('a late confirmation whose record cannot be kept: the queue tries again after its wait, and keeps it once the database is back', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'report-records-'))
+  const app = openAppDb({ file: path.join(dir, 'app.db') })
+  t.after(() => { app.close(); fs.rmSync(dir, { recursive: true, force: true }) })
+  let clock = 1_000
+  let timers: Array<{ run: () => void, at: number }> = []
+  const core = createEventCore({ app, publish: () => {}, now: () => clock })
+  const history = journaled(openHistoryDb({ db: app.db, now: () => clock }), 'history', ['save'], core.apply)
+  const effects = createEffects({
+    db: app.db, apply: core.apply, now: () => clock,
+    later: (run, ms) => { const timer = { run, at: clock + ms }; timers = [...timers, timer]; return timer },
+    cancel: (timer) => { timers = timers.filter((entry) => entry !== timer) },
+  })
+  const old = history.save(history.create({ sessionId: 's-old' }), [{ role: 'user', text: '整理一下发布说明' }]) as Conversation
+  const here = history.save(history.create({ sessionId: 's-new' }), [{ role: 'user', text: '换个话题' }]) as Conversation
+  const records = createReportRecords({ history: () => history, effects: () => effects, apply: core.apply, current: () => here, show: () => {}, now: () => clock })
+  effects.runs(REPORT, createTaskReports({
+    conversation: () => 'idle', currentConversation: () => here.id, session: () => 's-new', superseded: () => false,
+    holds: (effect) => effects.holds(effect), status: async () => 'read', deliver: async () => 'read', report: () => true,
+    amend: (effect, payload) => effects.amend(effect, payload), onRead: (effect) => records.read(effect),
+  }))
+  core.apply('test.queued', {}, () => effects.queue(REPORT, ID, payload('s-old')))
+  app.db.exec(`CREATE TRIGGER no_reports BEFORE INSERT ON messages WHEN NEW.role = 'report' BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+  // The confirmation came, its record could not be kept (compose.ts: logged, then a pass now).
+  assert.throws(() => records.read(effects.get(REPORT, ID) as Effect<ReportPayload>), /disk full/)
+  await effects.wake()
+  assert.equal(timers.length, 1, 'put off: a wake is set, not left waiting for one')
+  assert.equal(timers[0].at - clock, RETRY_MS[0])
+  app.db.exec('DROP TRIGGER no_reports')
+  clock = timers[0].at
+  const [due] = timers
+  timers = []
+  due.run()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal((history.get(old.id)?.messages ?? []).filter((message) => message.role === 'report').length, 1, 'kept where it was read')
+  assert.equal(effects.get(REPORT, ID), null, 'and done')
 })

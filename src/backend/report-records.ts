@@ -30,8 +30,11 @@ export interface RecordEffects {
   amend: <P extends object>(effect: Effect<P>, payload: P) => boolean
 }
 
-/** A record for the window to show where it came (state.ts report_delivered). */
-export interface RecordShown { type: 'report_delivered', conversationId: string, reportId: string, text: string, at: number }
+/**
+ * A record for the window to show where it came (state.ts report_delivered): for that conversation, or, before its
+ * first save (the window knows no id for it yet), for the topic on that session.
+ */
+export interface RecordShown { type: 'report_delivered', conversationId: string, sessionId: string, reportId: string, text: string, at: number }
 
 export interface ReportRecordsDeps {
   history: () => RecordHistory | null
@@ -65,7 +68,7 @@ export function createReportRecords({ history, effects, apply, current, show, no
     const target = targetOf(effect)
     if (!target || target.id !== current().id || history()?.hasReport(target.id, effect.key)) return
     const record = recordOf(effect, now())
-    show({ type: 'report_delivered', conversationId: target.id, reportId: effect.key, text: record.text, at: record.report.at })
+    show({ type: 'report_delivered', conversationId: target.id, sessionId: effect.payload.deliveredTo as string, reportId: effect.key, text: record.text, at: record.report.at })
   }
 
   /**
