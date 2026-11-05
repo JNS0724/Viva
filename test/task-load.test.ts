@@ -267,3 +267,32 @@ test('a task read at work with a tool going: its card says the tool, from the re
   win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 2, update: { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' } })
   assert.notEqual(win.state().tasks.list[0].now, '读提交记录', 'and it ends as any tool does')
 })
+
+test('a known task whose end was let go, and the read again no longer has it (let go among the oldest ended): it leaves the window, not left at work', async () => {
+  const first = deferred<unknown>()
+  const second = deferred<unknown>()
+  const win = windowWith([first.promise, second.promise])
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  const loading = win.actions.loadKept()
+  const logged = console.error
+  console.error = () => {}
+  try {
+    for (let n = 1; n <= 2_000; n++) win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: n, update: chunk('字') })
+    win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 2_001, stopReason: 'end_turn' })
+    win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2_001, revision: 3 }))
+    first.resolve([])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    second.resolve([])
+    await loading
+  } finally {
+    console.error = logged
+  }
+  assert.deepEqual([win.asked(), win.state().tasks.list], [2, []])
+})
+
+test('a read that has nothing of a known task with no gap leaves it as it is', async () => {
+  const win = windowWith([Promise.resolve([])])
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  await win.actions.loadKept()
+  assert.deepEqual(win.state().tasks.list.map((task) => [task.id, task.status]), [['s1', 'running']])
+})

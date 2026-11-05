@@ -109,7 +109,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * - Each other task the read has is put back to it, its baseline (with the tool calls it has at work): each piece the
    *   read already had is left out by its number, the snapshots that waited bring it to how it stands.
    * - More came than can wait: the tasks whose events were let go (`gaps`) are not whole here, known or not, so the read
-   *   is begun again and is their baseline; what waited of the others still waits. One that fails then is tried again,
+   *   is begun again and is their baseline (one it no longer has is gone, and leaves the window); what waited of the
+   *   others still waits. One that fails then is tried again,
    *   with a wait, until one is read: the handoff does not end on a part of what came.
    */
   async function loadKept() {
@@ -135,7 +136,11 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       held = null
       const known = new Set(getState().tasks.list.map((task: BackgroundTask) => task.id))
       const taken = failed ? [] : kept.filter((entry) => gaps.has(entry.task.id) || !known.has(entry.task.id))
+      // A task with a gap the read no longer has is gone from the backend (closed, or let go among the oldest ended):
+      // nothing will bring the window's part of it up to date, so it goes, as it would at the next launch.
+      const gone = failed ? [] : [...gaps].filter((taskId) => known.has(taskId) && !kept.some((entry) => entry.task.id === taskId))
       gaps = new Set()
+      for (const taskId of gone) dispatch({ type: 'task_closed', taskId })
       if (taken.length) dispatch({ type: 'tasks_restored', list: taken })
       for (const event of waited) deliver(event)
       return
