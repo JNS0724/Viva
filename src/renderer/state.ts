@@ -255,12 +255,15 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   /**
    * A background task's result the model read (system-design §12.4): a record of it where it came, in a turn running
    * on something else or at the start of a turn of its own. What the agent was writing closes, so what it says next
-   * comes below the record. The same report twice is one record.
+   * comes below the record. The same report twice is one record; one for a conversation not on screen is not drawn
+   * here (the backend keeps it there).
    */
-  report_delivered: (state, { reportId, text, at }) => {
-    if (typeof text !== 'string' || !text || state.messages.some((message) => message.role === 'report' && message.reportId === reportId)) return state
+  report_delivered: (state, { conversationId, reportId, text, at }) => {
+    if (typeof text !== 'string' || !text || typeof reportId !== 'string' || typeof at !== 'number') return state
+    if (conversationId !== state.conversationId || state.messages.some((message) => message.report?.reportId === reportId)) return state
     const closed = closeStreams(state)
-    return { ...closed, messages: [...closed.messages, { id: `m${closed.messages.length}`, role: 'report', text, open: false, receipt: null, reportId, at }] }
+    const record = { id: `m${closed.messages.length}`, role: 'report', text, shown: text.length, open: false, receipt: null, report: { reportId, at } }
+    return { ...closed, messages: [...closed.messages, record] }
   },
 
   /** The words could not reach the agent: they stay in the thread, marked as not sent. */
@@ -354,8 +357,9 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: messages.length ? 'loading' : null,
-      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, report?: ReportMark }, i: number) => ({
+        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
+        ...(m.images ? { images: m.images } : {}), ...(m.report ? { report: m.report } : {}),
       })),
       restored: messages.length ? { count: messages.length, savedAt } : null,
     }

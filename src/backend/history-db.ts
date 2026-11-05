@@ -139,6 +139,7 @@ const toSummary = (row: Row) => ({
 
 const toMessage = (row: Row) => ({
   role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}),
+  ...(row.meta ? { report: JSON.parse(row.meta) } : {}),
 })
 /** A message of an earlier segment of the timeline: its id, where it is, and when it was written (ms). */
 const toTimelineMessage = (row: Row) => ({ id: row.id, seq: row.seq, ...toMessage(row), at: row.created_at })
@@ -181,6 +182,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const db = given ?? new DatabaseSync(file!)
   if (!given) db.exec(APP_DB_PRAGMAS)
   db.exec(SCHEMA)
+  // A report message's own (history-schema.ts ReportMeta), added after the table was first made.
+  if (!(db.prepare('PRAGMA table_info(messages)').all() as Row[]).some((column) => column.name === 'meta')) db.exec('ALTER TABLE messages ADD COLUMN meta TEXT')
   db.exec(COUNT_MESSAGE_IDS)
   const reviewing = reviewQueries(db, now)
   const reading = readerQueries(db, reviewing.reviewTopic)
@@ -208,17 +211,19 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
-    timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
-    messages: db.prepare('SELECT role, text, receipt, images FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, meta, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    messages: db.prepare('SELECT role, text, receipt, images, meta FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    bySession: db.prepare('SELECT * FROM conversations WHERE session_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
+    hasReport: db.prepare(`SELECT 1 AS held FROM messages WHERE conversation_id = ? AND role = 'report' AND json_extract(meta, '$.reportId') = ?`),
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
     // A message cut off (going back, a turn redone) takes its star along: the next one there is another message.
     trimStars: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq >= ?'),
-    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ? WHERE conversation_id = ? AND seq = ?'),
+    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ?, meta = ? WHERE conversation_id = ? AND seq = ?'),
     nextMessageId: db.prepare(`UPDATE id_counters SET value = value + 1 WHERE name = 'messages' RETURNING value`),
-    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at, meta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
@@ -250,19 +255,20 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     sql.trim.run(id, messages.length)
     sql.trimStars.run(id, messages.length)
     for (let seq = start; seq < messages.length; seq += 1) {
-      const { role, text, receipt, images } = messages[seq]
+      const { role, text, receipt, images, report } = messages[seq]
       const json = receipt ? JSON.stringify(receipt) : null
       const pictures = images?.length ? JSON.stringify(images) : null
+      const meta = report ? JSON.stringify(report) : null
       const kept = seq < stored ? sql.storedMessage.get(id, seq) : undefined
       if (kept && kept.role === role && text.startsWith(kept.text)) {
-        sql.update.run(role, text, json, pictures, id, seq)
+        sql.update.run(role, text, json, pictures, meta, id, seq)
         continue
       }
       if (kept) {
         sql.dropStar.run(id, seq)
         sql.dropMessage.run(id, seq)
       }
-      sql.insert.run(sql.nextMessageId.get().value, id, seq, role, text, json, pictures, sessionId ?? null, at)
+      sql.insert.run(sql.nextMessageId.get().value, id, seq, role, text, json, pictures, sessionId ?? null, at, meta)
     }
   }
 
@@ -472,7 +478,17 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
+  /** The conversation (segment) a dsh session belongs to, the latest one; null when none is kept. */
+  function bySession(sessionId: string): Conversation | null {
+    const row = sql.bySession.get(sessionId)
+    return row ? toConversation(row) : null
+  }
+
+  /** Whether a conversation already keeps the record of that report (a `report` message with its id). */
+  const hasReport = (conversationId: string, reportId: string): boolean => Boolean(sql.hasReport.get(conversationId, reportId))
+
   return {
+    bySession, hasReport,
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.

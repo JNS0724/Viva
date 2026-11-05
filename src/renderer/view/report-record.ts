@@ -15,7 +15,7 @@ const opened = new Set<string>()
 let EXPAND = t('thread.report.expand')
 let COLLAPSE = t('thread.report.collapse')
 
-const keyOf = (message: ThreadMessage) => String(message.reportId ?? `${message.text.length}:${message.text.slice(0, 64)}`)
+const keyOf = (message: ThreadMessage) => message.report?.reportId ?? `${message.text.length}:${message.text.slice(0, 64)}`
 const pad = (n: number) => String(n).padStart(2, '0')
 const clock = (at: number) => { const d = new Date(at); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
 
@@ -43,7 +43,7 @@ export function reportRecord(message: ThreadMessage, handlers: Handlers): HTMLEl
       first ? h('span', { class: 'task-name', text: `#${first.title}` }) : null,
       more ? h('span', { class: 'delivered-more', text: more }) : null,
       h('span', { class: 'delivered-said', text: t(record?.inTurn ? 'thread.report.in.turn' : 'thread.report.own.turn') }),
-      typeof message.at === 'number' ? h('span', { class: 'delivered-when', text: clock(message.at) }) : null,
+      message.report ? h('span', { class: 'delivered-when', text: clock(message.report.at) }) : null,
       toggle),
     body)
   toggle.addEventListener('click', () => {

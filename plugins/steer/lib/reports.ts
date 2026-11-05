@@ -66,8 +66,11 @@ export interface ReportDeskDeps {
    * `user/message` messages, or null when no such session is stored.
    */
   stored?: (sessionId: string) => Promise<readonly ReportMessage[] | null>
-  /** To the app: a report read, or lost, in that session. */
-  send: (message: { type: 'report_read' | 'report_dropped', sessionId: string, reportId: string }) => void
+  /**
+   * To the app: a report written in that session's history (said at once, so the conversation shows it where it came,
+   * before what the model says next), read (written and flushed), or lost.
+   */
+  send: (message: { type: 'report_written' | 'report_read' | 'report_dropped', sessionId: string, reportId: string }) => void
   log?: (message: string) => void
 }
 
@@ -138,7 +141,10 @@ export function createReportDesk({ agentOf, stored = async () => null, send, log
   async function written(sessionId: string, message: ReportMessage) {
     const ids = reportsIn(sessionId, message)
     if (!ids.length) return
-    for (const id of ids) claimed.get(sessionId)?.delete(id)
+    for (const id of ids) {
+      claimed.get(sessionId)?.delete(id)
+      send({ type: 'report_written', sessionId, reportId: id })
+    }
     const agent = agentOf(sessionId)
     let flushed = false
     try {

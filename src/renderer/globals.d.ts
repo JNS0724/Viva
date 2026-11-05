@@ -69,8 +69,12 @@ interface ThreadMessage {
   taskId?: string
   /** Background tasks whose cards go under this message: started while it was the last one (tasks-state.ts withCardAfter). */
   cardsAfter?: readonly string[]
+  /** A task's result the model read (role `report`): which report, and when it came. */
+  report?: ReportMark
   [field: string]: any
 }
+/** Which report a record is, and when it came (history-schema.ts ReportMeta). */
+interface ReportMark { reportId: string, at: number }
 /** A message of an earlier segment, as the history keeps it: `seq` counts the segment's saved messages. */
 interface SegmentMessage {
   seq: number

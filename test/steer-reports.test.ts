@@ -64,7 +64,9 @@ test('a note in a turn the app opened is known by the report\'s token, once the 
   await reports.status('s1', 't1:run-1', T1)
   await reports.status('s1', 't2:run-1', T2)
   await reports.written('s1', noted(T1, T2))
-  assert.deepEqual(sent.map(({ type, sessionId, reportId }) => `${type} ${sessionId} ${reportId}`), ['report_read s1 t1:run-1', 'report_read s1 t2:run-1'])
+  assert.deepEqual(sent.map(({ type, sessionId, reportId }) => `${type} ${sessionId} ${reportId}`),
+    ['report_written s1 t1:run-1', 'report_written s1 t2:run-1', 'report_read s1 t1:run-1', 'report_read s1 t2:run-1'],
+    'written said at once (the window shows it where it came), read once flushed')
 })
 
 test('words that name a report, or a token given to another session, are no report', async () => {
@@ -78,11 +80,11 @@ test('words that name a report, or a token given to another session, are no repo
   assert.equal(await reports.status('s1', 't1:run-1', T1), 'none', 'steered in under another token: not this one')
 })
 
-test('written but not flushed: no confirmation yet', async () => {
+test('written but not flushed: said written, no confirmation of its reading yet', async () => {
   const quiet = desk({ flushes: false })
   await quiet.reports.status('s1', 't1:run-1', T1)
   await quiet.reports.written('s1', steered('t1:run-1', T1))
-  assert.deepEqual(quiet.sent, [])
+  assert.deepEqual(quiet.sent, [{ type: 'report_written', sessionId: 's1', reportId: 't1:run-1' }])
 })
 
 test('discarded from the inbox, or taken by a step that never wrote it: lost is said; taken and written: not', async () => {
@@ -130,9 +132,11 @@ test('the app\'s side: each report request goes to its session, answered by the 
   steering.receive({ type: 'report_result', id: sent[0].id, status: 'steered' })
   assert.equal(await asked, 'steered')
   assert.equal(await steering.reportStatus('s2', 't1:run-1', T1), NO_PLUGIN, 'no answer: the plugin is not there')
+  steering.receive({ type: 'report_written', sessionId: 's2', reportId: 't1:run-1' })
   steering.receive({ type: 'report_read', sessionId: 's2', reportId: 't1:run-1' })
   steering.receive({ type: 'report_read', reportId: 't9:run-1' })
-  assert.deepEqual(heard, [{ type: 'report_read', reportId: 't1:run-1', sessionId: 's2' }], 'one without its session is ignored')
+  assert.deepEqual(heard, [{ type: 'report_written', reportId: 't1:run-1', sessionId: 's2' }, { type: 'report_read', reportId: 't1:run-1', sessionId: 's2' }],
+    'one without its session is ignored')
 })
 
 test('a session no agent holds now is read as stored: there, read; not there, or no such session, lost there', async () => {

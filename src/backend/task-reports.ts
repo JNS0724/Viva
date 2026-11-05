@@ -57,6 +57,8 @@ export interface ReportPayload {
   deliveredTo?: string | null
   /** How it went there: into a running turn, or a turn of its own. */
   via?: 'steer' | 'turn'
+  /** Read there, waiting for its record to be kept by the window (report-records.ts). */
+  read?: boolean
 }
 /** The start of what a task was asked, as much as a report keeps and its note gives. */
 export const REQUEST_CHARS = 1000
@@ -112,6 +114,11 @@ export interface TaskReportsDeps {
   report: (note: string) => boolean
   /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
+  /**
+   * A report found read: its record kept in the conversation it went to, then it is done (report-records.ts read). The
+   * same as for viva-steer's `report_read`, so a report read before a restart gets its record too.
+   */
+  onRead: (effect: Effect<ReportPayload>) => void
 }
 
 const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
@@ -129,7 +136,7 @@ const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
  * again, to the main conversation as it is now. A report queued before tokens (#84) has one made and kept before it
  * is first sent, so every later try knows it by the same token.
  */
-export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, status, deliver, report, amend }: TaskReportsDeps): Runner {
+export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
   return async (effects: readonly Effect[]) => {
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
@@ -163,7 +170,9 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       const where = effect.payload.deliveredTo ?? bound
       const now = still(effect) ? await status(where, effect.key, token) : 'unavailable'
       if (!still(effect)) outcomes.set(effect.key, 'wait')
-      else if (now === 'read') outcomes.set(effect.key, 'done')
+      // Read: done once its record is kept (onRead), not before; kept where it was read, which is where it went (one
+      // queued before `deliveredTo` was kept says so now).
+      else if (now === 'read') { onRead(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where } }); outcomes.set(effect.key, 'wait') }
       // Lost where it went (or never sent): to the main conversation as it is now.
       else if (now === 'none') unsent.push(effect)
       else outcomes.set(effect.key, now === 'failed' ? 'retry' : 'wait')
@@ -174,7 +183,7 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
       const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
       const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string, noteFor([endedOf(sending)], { inTurn: true })) : 'unavailable'
-      if (sent === 'read') outcomes.set(effect.key, 'done')
+      if (sent === 'read') { onRead(sending ?? effect); outcomes.set(effect.key, 'wait') }
       else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
     }

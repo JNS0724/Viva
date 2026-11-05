@@ -26,8 +26,9 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
-import { createTaskReports, recordedNote, REPORT, type ReportPayload } from './task-reports.ts'
-import { createEffects, type Effects } from './effects.ts'
+import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts'
+import { createReportRecords } from './report-records.ts'
+import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
 import type { TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
@@ -370,18 +371,20 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       emit: (event) => {
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
-        // A task's result read (written and flushed) in the session it was delivered to: its report is done. Lost:
-        // sent again. Said of another session, it is not this report's: the next pass asks again.
-        if (event.type === 'report_read' || event.type === 'report_dropped') {
+        // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
+        // session it was delivered to; said of another session, it is not this report's.
+        if (event.type === 'report_written' || event.type === 'report_read' || event.type === 'report_dropped') {
           const reportId = String(event.reportId)
-          const queued = effects?.get(REPORT, reportId)
-          if (!queued || (queued.payload as ReportPayload).deliveredTo !== event.sessionId) return undefined
-          if (event.type === 'report_read') {
-            effects?.finish(REPORT, reportId)
-            // The conversation shows what the model was given, as a collapsed record where it came (report-record.ts).
-            emitToRenderer({ type: 'report_delivered', reportId, text: recordedNote(queued.payload as ReportPayload) })
+          const queued = effects?.get(REPORT, reportId) as Effect<ReportPayload> | null | undefined
+          if (!queued || queued.payload.deliveredTo !== event.sessionId) return undefined
+          if (event.type === 'report_dropped') return wakeEffects()
+          try {
+            return event.type === 'report_written' ? records.written(queued) : records.read(queued)
+          } catch (err) {
+            // Not kept now (the database busy): still queued, so a later pass finds it read and keeps it then.
+            console.error('[reports]', err instanceof Error ? err.message : String(err))
+            return undefined
           }
-          return wakeEffects()
         }
         emitToRenderer(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
@@ -428,6 +431,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     deliver: (session, reportId, token, text) => bridge?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable'),
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
     amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
+    onRead: (effect) => records.read(effect),
     currentConversation: () => conversation.id,
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: (note) => {
@@ -444,6 +448,15 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   })
   /** What is still to be done outside (effects.ts): results of tasks to report, after a restart too. */
   let effects: Effects | null = null
+
+  /** Where a report read is kept: in the conversation of the session it went to (report-records.ts). */
+  const records = createReportRecords({
+    history: () => historyDb ?? null,
+    effects: () => effects,
+    apply: applyChange,
+    current: () => conversation,
+    show: emitToRenderer,
+  })
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
   const wakeEffects = () => { void effects?.wake() }
 
@@ -910,6 +923,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       folderExists: (dir) => isFolder(dir),
       workDir: () => workDirNow() ?? null,
       carryNext: (conversationId, text) => { carry = { conversationId, text } },
+      onSaved: (messages) => records.saved(messages),
     })
     registerRewindIpc(ipcMain, {
       db: historyDb,
