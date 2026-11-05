@@ -27,7 +27,8 @@ import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
 import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts'
-import { createEffects, type Effects } from './effects.ts'
+import { createReportRecords } from './report-records.ts'
+import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
 import type { TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
@@ -81,7 +82,7 @@ type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configAc
 type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
-const HISTORY_WRITES = Object.freeze(['save', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
+const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
 /** The user's own changes on the 关于你 page; what the agent saves is recorded when the app reads it (memory.learned). */
 const MEMORY_WRITES = Object.freeze(['setProfile', 'addMemory', 'updateMemory', 'deleteMemory', 'restoreMemory', 'reviveMemory', 'setOnboarding'] as const)
 
@@ -370,14 +371,20 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       emit: (event) => {
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
-        // A task's result read (written and flushed) in the session it was delivered to: its report is done. Lost:
-        // sent again. Said of another session, it is not this report's: the next pass asks again.
-        if (event.type === 'report_read' || event.type === 'report_dropped') {
+        // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
+        // session it was delivered to; said of another session, it is not this report's. Read but its record not kept
+        // (the database busy): a pass now, which puts it off to try again.
+        if (event.type === 'report_written' || event.type === 'report_read' || event.type === 'report_dropped') {
           const reportId = String(event.reportId)
-          const queued = effects?.get(REPORT, reportId)
-          if (!queued || (queued.payload as ReportPayload).deliveredTo !== event.sessionId) return undefined
-          if (event.type === 'report_read') effects?.finish(REPORT, reportId)
-          return wakeEffects()
+          const queued = effects?.get(REPORT, reportId) as Effect<ReportPayload> | null | undefined
+          if (!queued || queued.payload.deliveredTo !== event.sessionId) return undefined
+          if (event.type === 'report_dropped') return wakeEffects()
+          try {
+            return event.type === 'report_written' ? records.written(queued) : records.read(queued)
+          } catch (err) {
+            console.error('[reports]', err instanceof Error ? err.message : String(err))
+            return wakeEffects()
+          }
         }
         emitToRenderer(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
@@ -424,6 +431,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     deliver: (session, reportId, token, text) => bridge?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable'),
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
     amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
+    onRead: (effect) => {
+      try {
+        records.read(effect)
+      } catch (err) {
+        console.error('[reports] could not keep a report\'s record:', err instanceof Error ? err.message : String(err))
+        throw err
+      }
+    },
     currentConversation: () => conversation.id,
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: (note) => {
@@ -440,6 +455,15 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   })
   /** What is still to be done outside (effects.ts): results of tasks to report, after a restart too. */
   let effects: Effects | null = null
+
+  /** Where a report read is kept: in the conversation of the session it went to (report-records.ts). */
+  const records = createReportRecords({
+    history: () => historyDb ?? null,
+    effects: () => effects,
+    apply: applyChange,
+    current: () => conversation,
+    show: emitToRenderer,
+  })
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
   const wakeEffects = () => { void effects?.wake() }
 

@@ -82,6 +82,21 @@ const SCHEMA = `
     INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
   END;
   CREATE TABLE IF NOT EXISTS id_counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+  -- A background task's result the model read, as the record its conversation shows (system-design §12.4 point 7).
+  -- Only the backend writes these, with the report done (report-records.ts); the window's saves never touch them.
+  -- after_seq: how many of the conversation's messages were stored when it came, the place it is drawn at.
+  CREATE TABLE IF NOT EXISTS report_records (
+    report_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    after_seq INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    text TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS report_records_conversation ON report_records (conversation_id, after_seq);
+  -- A conversation not stored yet (a blank topic) may already have a record, so no foreign key: they go with it.
+  CREATE TRIGGER IF NOT EXISTS report_records_gone AFTER DELETE ON conversations BEGIN
+    DELETE FROM report_records WHERE conversation_id = old.id;
+  END;
 `
 /**
  * A message's id is what a link, a search hit or a star names it by. SQLite gives a new row the largest id plus one,
@@ -136,6 +151,13 @@ const toConversation = (row: Row): Conversation => ({
 const toSummary = (row: Row) => ({
   id: row.id, title: row.title, updatedAt: row.updated_at, model: row.model, mode: row.mode, pinned: Boolean(row.pinned),
 })
+
+/**
+ * A background task's result the model read, as its conversation shows it: which report, when it came (ms), the note
+ * as given (no token), and how many of the conversation's messages come before it.
+ */
+export interface ReportRecord { reportId: string, at: number, text: string, after: number }
+const toRecord = (row: Row): ReportRecord => ({ reportId: row.report_id, at: Number(row.at), text: row.text, after: Number(row.after_seq) })
 
 const toMessage = (row: Row) => ({
   role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}),
@@ -210,6 +232,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
     timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
     messages: db.prepare('SELECT role, text, receipt, images FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
+    addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
+      VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
+    hasRecord: db.prepare('SELECT 1 AS held FROM report_records WHERE report_id = ?'),
+    moveRecords: db.prepare('UPDATE report_records SET conversation_id = ? WHERE conversation_id = ? AND after_seq <= ?'),
+    bySession: db.prepare('SELECT * FROM conversations WHERE session_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
@@ -275,7 +303,40 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   function get(id: unknown) {
     const row = sql.conversation.get(assertId(id))
-    return row ? { conversation: toConversation(row), messages: sql.messages.all(id).map(toMessage) } : null
+    return row ? { conversation: toConversation(row), messages: sql.messages.all(id).map(toMessage), records: recordsOf(row.id) } : null
+  }
+
+  /** The task records a conversation shows, in their places (report_records). */
+  const recordsOf = (id: string): ReportRecord[] => sql.records.all(id).map(toRecord)
+
+  /**
+   * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
+   * now. False when it is kept already.
+   */
+  function addRecord({ conversationId, reportId, at, text }: { conversationId: string, reportId: string, at: number, text: string }): boolean {
+    const id = assertId(conversationId)
+    return Number(sql.addRecord.run(reportId, id, id, Math.max(0, Math.trunc(at)), text).changes) > 0
+  }
+
+  const withRecords = (id: string): { records?: ReportRecord[] } => {
+    const records = recordsOf(id)
+    return records.length ? { records } : {}
+  }
+
+  /**
+   * The records of the part two paths share (going back, or back onto a folded path): with the path that goes on.
+   * Those after it stay with the path folded.
+   */
+  const moveRecords = ({ from, to, upTo }: { from: string, to: string, upTo: number }): number =>
+    Number(sql.moveRecords.run(assertId(to), assertId(from), Math.max(0, Math.trunc(upTo))).changes)
+
+  /** Whether a report's record is kept. */
+  const hasRecord = (reportId: string): boolean => Boolean(sql.hasRecord.get(reportId))
+
+  /** The conversation (segment) a dsh session belongs to, the latest one; null when none is kept. */
+  function bySession(sessionId: string): Conversation | null {
+    const row = sql.bySession.get(sessionId)
+    return row ? toConversation(row) : null
   }
 
   /** An unsaved conversation; it reaches the database with its first message. */
@@ -359,6 +420,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       parentId: row.parent_id ?? null,
       createdAt: row.created_at,
       messages: sql.timelineMessages.all(row.id).map(toTimelineMessage),
+      // Its task records (report_records), when it has any.
+      ...withRecords(row.id),
     }))
     return { segments, hasMore: rows.length > size }
   }
@@ -473,6 +536,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
   return {
+    addRecord, hasRecord, moveRecords, recordsOf, bySession,
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { TOKEN_MARK } from '../../plugins/steer/lib/reports.ts'
+import { IN_TURN_MARK, REPORT_HEAD, shownNote, TOKEN_MARK } from '../shared/task-report.ts'
 import type { Effect, Outcome, Runner } from './effects.ts'
 import type { ReportState } from './steer-channel.ts'
 
@@ -55,6 +55,10 @@ export interface ReportPayload {
   startedAt?: number | null, by?: 'agent' | 'user' | null
   /** The session it was delivered to (steered in, or a turn opened), kept before it is sent: asked there first after. */
   deliveredTo?: string | null
+  /** How it went there: into a running turn, or a turn of its own. */
+  via?: 'steer' | 'turn'
+  /** When its record came (ms): drawn as the note was written, written so when read (report-records.ts). */
+  recordedAt?: number
 }
 /** The start of what a task was asked, as much as a report keeps and its note gives. */
 export const REQUEST_CHARS = 1000
@@ -81,10 +85,10 @@ export function noteFor(tasks: readonly EndedTask[], { inTurn = false } = {}): s
     '</task-output>',
   ].join('\n'))
   const tell = inTurn
-    ? '它在你这一轮工作时到达，可能来自之前的话题。和手头的事有关就用上；无关就在这一轮回答里用一两句话顺带告诉用户是哪件事、结果如何，以及需要用户做什么（如果有）。要细看可以用 get_background_task。'
+    ? `${IN_TURN_MARK}，可能来自之前的话题。和手头的事有关就用上；无关就在这一轮回答里用一两句话顺带告诉用户是哪件事、结果如何，以及需要用户做什么（如果有）。要细看可以用 get_background_task。`
     : '你负责把它反馈给用户：用一两句话说明是哪件事（它来自之前的话题时先点明）、结果如何，以及需要用户做什么（如果有）。要细看可以用 get_background_task。'
   return [
-    '【后台任务结束】这不是用户说的话，是 Viva 告诉你后台任务的结果。',
+    `${REPORT_HEAD}这不是用户说的话，是 Viva 告诉你后台任务的结果。`,
     ...blocks,
     tell,
     '涉及对外发送的操作，要有任务给出的可核对凭据（链接、编号、路径）才说已经完成。',
@@ -110,6 +114,12 @@ export interface TaskReportsDeps {
   report: (note: string) => boolean
   /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
+  /**
+   * A report found read: its record kept in the conversation it went to, then it is done (report-records.ts read). The
+   * same as for viva-steer's `report_read`, so a report read before a restart gets its record too. One that throws
+   * (the record could not be kept) is tried again after a wait.
+   */
+  onRead: (effect: Effect<ReportPayload>) => void
 }
 
 const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
@@ -127,7 +137,7 @@ const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
  * again, to the main conversation as it is now. A report queued before tokens (#84) has one made and kept before it
  * is first sent, so every later try knows it by the same token.
  */
-export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, status, deliver, report, amend }: TaskReportsDeps): Runner {
+export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
   return async (effects: readonly Effect[]) => {
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
@@ -152,6 +162,17 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     const kept = (effect: Effect<ReportPayload>, payload: ReportPayload): Effect<ReportPayload> | null =>
       (amend(effect, payload) ? { ...effect, payload } : null)
 
+    /** Read: its record kept, and so done (onRead); not kept now (the database busy), tried again after a wait. */
+    const readOutcome = (effect: Effect<ReportPayload>): Outcome => {
+      try {
+        onRead(effect)
+        return 'wait'
+      } catch {
+        // Said where it failed (compose.ts onRead); here only when to try again.
+        return 'retry'
+      }
+    }
+
     const unsent: Array<Effect<ReportPayload>> = []
     for (const original of mine) {
       // A token before anything else, kept: the same on every try from now on.
@@ -161,7 +182,9 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       const where = effect.payload.deliveredTo ?? bound
       const now = still(effect) ? await status(where, effect.key, token) : 'unavailable'
       if (!still(effect)) outcomes.set(effect.key, 'wait')
-      else if (now === 'read') outcomes.set(effect.key, 'done')
+      // Read: done once its record is kept (onRead), not before; kept where it was read, which is where it went (one
+      // queued before `deliveredTo` was kept says so now).
+      else if (now === 'read') outcomes.set(effect.key, readOutcome(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where } }))
       // Lost where it went (or never sent): to the main conversation as it is now.
       else if (now === 'none') unsent.push(effect)
       else outcomes.set(effect.key, now === 'failed' ? 'retry' : 'wait')
@@ -170,18 +193,25 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     for (const effect of unsent) {
       if (state !== 'busy') { forTurn.push(effect); continue }
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
-      const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound }) : null
+      const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
       const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string, noteFor([endedOf(sending)], { inTurn: true })) : 'unavailable'
-      if (sent === 'read') outcomes.set(effect.key, 'done')
+      if (sent === 'read') outcomes.set(effect.key, readOutcome(sending ?? effect))
       else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
     }
     // A turn of its own, once nothing runs, for those still theirs right now: done when their reading is confirmed.
     if (conversation() === 'idle') {
-      const opening = forTurn.filter(still).flatMap((effect) => kept(effect, { ...effect.payload, deliveredTo: bound }) ?? [])
+      const opening = forTurn.filter(still).flatMap((effect) => kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn' }) ?? [])
       if (opening.length) report(noteFor(opening.map(endedOf)))
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     return outcomes
   }
 }
+
+/**
+ * The conversation's record of a report read (renderer/view/report-record.ts): the note as the model was given it,
+ * without its token, as it went (into a running turn, or a turn of its own).
+ */
+export const recordedNote = (payload: ReportPayload): string =>
+  shownNote(noteFor([endedOf({ kind: REPORT, key: reportId(payload.taskId, payload.runId), payload, generation: 0, attempts: 0 })], { inTurn: payload.via === 'steer' }))

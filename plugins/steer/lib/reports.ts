@@ -1,3 +1,5 @@
+import { TOKEN_MARK } from '../../../src/shared/task-report.ts'
+
 /**
  * A background task's result, delivered into the main conversation at most once and confirmed read
  * (docs/system-design.md §12.4). The app names each report (`reportId`, a task's run) and gives it a `token`: a
@@ -17,8 +19,8 @@
 export const REPORT_SOURCE = 'viva-report'
 /** The message identity of a report: the same on every try, so one already delivered is known. */
 export const reportMessageId = (reportId: string): string => `viva-report:${reportId}`
-/** How a note carries its reports' tokens, one line each (task-reports.ts noteFor). */
-export const TOKEN_MARK = '回报凭据：'
+/** How a note carries its reports' tokens, one line each (task-reports.ts noteFor; the format in src/shared). */
+export { TOKEN_MARK }
 const MAX_ID_CHARS = 200
 /** A token: 32 or more hex digits, as the app makes them (randomUUID without its dashes). */
 const TOKEN = /^[0-9a-f]{32,128}$/
@@ -64,8 +66,11 @@ export interface ReportDeskDeps {
    * `user/message` messages, or null when no such session is stored.
    */
   stored?: (sessionId: string) => Promise<readonly ReportMessage[] | null>
-  /** To the app: a report read, or lost, in that session. */
-  send: (message: { type: 'report_read' | 'report_dropped', sessionId: string, reportId: string }) => void
+  /**
+   * To the app: a report written in that session's history (said at once, so the conversation shows it where it came,
+   * before what the model says next), read (written and flushed), or lost.
+   */
+  send: (message: { type: 'report_written' | 'report_read' | 'report_dropped', sessionId: string, reportId: string }) => void
   log?: (message: string) => void
 }
 
@@ -136,7 +141,10 @@ export function createReportDesk({ agentOf, stored = async () => null, send, log
   async function written(sessionId: string, message: ReportMessage) {
     const ids = reportsIn(sessionId, message)
     if (!ids.length) return
-    for (const id of ids) claimed.get(sessionId)?.delete(id)
+    for (const id of ids) {
+      claimed.get(sessionId)?.delete(id)
+      send({ type: 'report_written', sessionId, reportId: id })
+    }
     const agent = agentOf(sessionId)
     let flushed = false
     try {

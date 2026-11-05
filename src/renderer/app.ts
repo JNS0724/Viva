@@ -272,7 +272,7 @@ async function loadHistory() {
     const saved = await api.loadHistory()
     if (!saved) return
     dispatch({
-      type: 'history_loaded', conversationId: saved.id, messages: saved.messages, savedAt: saved.updatedAt, folds: saved.folds ?? [],
+      type: 'history_loaded', conversationId: saved.id, messages: saved.messages, records: saved.records ?? [], savedAt: saved.updatedAt, folds: saved.folds ?? [],
       parentId: saved.parentId ?? null, createdAt: saved.createdAt ?? null,
     })
     dom.follower.jumpToLatest()
@@ -832,6 +832,8 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   /** What a background task says, asks and how it ends (tasks-state.ts). */
   task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now() }),
   task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
+  /** A background task's result the model read (report-records.ts): its record in the conversation, where it came. */
+  report_delivered: (event) => ({ type: 'report_delivered', conversationId: event.conversationId, sessionId: event.sessionId, reportId: event.reportId, text: event.text, at: event.at }),
   task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now() }),
   task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now() }),
   task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now() }),

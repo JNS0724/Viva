@@ -2,9 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Effect, Outcome } from '../src/backend/effects.ts'
 import type { ReportState } from '../src/backend/steer-channel.ts'
-import { createTaskReports, noteFor, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
+import { createTaskReports, noteFor, recordedNote, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
+import { earlierRows, historyMessages } from '../src/renderer/selectors.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { isSilentReply, SILENT_REPLY } from '../src/shared/task-report.ts'
+import { recordsAt } from '../src/renderer/report-state.ts'
+import { isSilentReply, reportRecordOf, shownNote, SILENT_REPLY } from '../src/shared/task-report.ts'
 
 /**
  * A background task's result comes back to the main conversation: into the turn running there, or as a turn of its
@@ -24,11 +26,12 @@ const t3 = effect(payload('t3', '别处的任务', 'c9', '做完了'))
 type State = 'idle' | 'busy' | 'away'
 
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
-  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {} } = {}) {
+  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
   const asked: Array<[string, string, string]> = []
   const kept: ReportPayload[] = []
+  const reads: Array<[string, string | null | undefined]> = []
   const world = { here, session: 's1' as string | null, released: new Set<string>(), atWork, amends: true }
   const run = createTaskReports({
     conversation: () => state,
@@ -40,9 +43,13 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     deliver: async (session, reportId, _token, text) => { delivered.push([session, reportId, text]); return steered },
     report: (note) => { turns.push(note); return true },
     amend: (_effect, payload) => { if (world.amends) kept.push(payload); return world.amends },
+    onRead: (effect) => {
+      if (!keeps) throw new Error('disk full')
+      reads.push([effect.key, effect.payload.deliveredTo])
+    },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
-  return { outcomes, turns, delivered, world, asked, kept }
+  return { outcomes, turns, delivered, world, asked, kept, reads }
 }
 
 test('idle: reports due together for the conversation on screen share one turn, done once read', async () => {
@@ -52,7 +59,8 @@ test('idle: reports due together for the conversation on screen share one turn, 
   assert.ok(turns[0].includes('整理发布说明') && turns[0].includes('核对发票'))
   assert.equal(turns[0].match(/回报凭据：[0-9a-f]{32}/g)?.length, 2, 'the note carries each report\'s token')
   const later = setup({ known: { 't1:run-1': 'read', 't2:run-1': 'read' } })
-  assert.deepEqual(await later.outcomes([t1, t2]), { 't1:run-1': 'done', 't2:run-1': 'done' }, 'read: done, nothing sent again')
+  assert.deepEqual(await later.outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'wait' }, 'read: nothing sent again, done once its record is kept')
+  assert.deepEqual(later.reads, [['t1:run-1', 's1'], ['t2:run-1', 's1']], 'its record kept where it was read')
   assert.equal(later.turns.length, 0)
 })
 
@@ -66,9 +74,10 @@ test('a turn running: each report goes into it, as not the user\'s words; read, 
 })
 
 test('there already (pending, or read): never sent again', async () => {
-  const { outcomes, turns, delivered } = setup({ state: 'busy', known: { 't1:run-1': 'pending', 't2:run-1': 'read' } })
-  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'done' })
+  const { outcomes, turns, delivered, reads } = setup({ state: 'busy', known: { 't1:run-1': 'pending', 't2:run-1': 'read' } })
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'wait' })
   assert.deepEqual([delivered.length, turns.length], [0, 0])
+  assert.deepEqual(reads.map(([key]) => key), ['t2:run-1'], 'read: its record is kept, then it is done')
 })
 
 test('steering finds the turn just ended: a turn of its own instead, once the conversation is free', async () => {
@@ -171,7 +180,8 @@ const tokened = (base: Effect, extra: Partial<ReportPayload> = {}): Effect => ({
 test('delivered before to another session (the conversation on another topic since): asked there first', async () => {
   const elsewhere = tokened(t1, { deliveredTo: 's-old' })
   const read = setup({ state: 'busy', known: { 's-old t1:run-1': 'read' } })
-  assert.deepEqual(await read.outcomes([elsewhere]), { 't1:run-1': 'done' }, 'read where it went: done, not sent again')
+  assert.deepEqual(await read.outcomes([elsewhere]), { 't1:run-1': 'wait' }, 'read where it went: not sent again')
+  assert.deepEqual(read.reads, [['t1:run-1', 's-old']], 'its record goes where it was read, not to the topic on screen')
   assert.deepEqual(read.asked.map(([session]) => session), ['s-old'])
   assert.equal(read.delivered.length, 0)
   const pending = setup({ state: 'busy', known: { 's-old t1:run-1': 'pending' } })
@@ -195,4 +205,119 @@ test('a report queued before tokens gets one, kept before it is first asked abou
   refused.world.amends = false
   assert.deepEqual(await refused.outcomes([legacy]), { 't1:run-1': 'wait' }, 'its token could not be kept: not sent')
   assert.equal(refused.turns.length, 0)
+})
+
+test('a note read back for its record: the tasks it tells of, whether it came into a turn; its token never shown', () => {
+  const token = 'e'.repeat(32)
+  const ended = { taskId: 'task-0001', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了', token }
+  const own = noteFor([ended, { ...ended, taskId: 'task-0002', title: '核对发票' }])
+  assert.deepEqual(reportRecordOf(own), { tasks: [{ title: '整理发布说明', taskId: 'task-0001' }, { title: '核对发票', taskId: 'task-0002' }], inTurn: false })
+  assert.equal(reportRecordOf(noteFor([ended], { inTurn: true }))?.inTurn, true)
+  assert.ok(!shownNote(own).includes(token) && shownNote(own).includes('整理发布说明'), 'the token line goes, the rest stays')
+  assert.equal(reportRecordOf('用户自己写的：任务：「假的」（x）'), null, 'no note: no record')
+  const payload: ReportPayload = { taskId: 'task-0001', runId: 'run-1', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了', token, via: 'steer' }
+  const recorded = recordedNote(payload)
+  assert.ok(!recorded.includes(token))
+  assert.equal(reportRecordOf(recorded)?.inTurn, true, 'recorded as it went: into the running turn')
+})
+
+const stream = (key: string, kind: 'delta' | 'settle', text: string) => (kind === 'delta'
+  ? { sessionUpdate: 'viva_stream', key, kind, index: 0, blockType: 'text', text }
+  : { sessionUpdate: 'viva_stream', key, kind, blocks: text ? [{ type: 'text', text }] : [] })
+const inTurnText = shownNote(noteFor([{ taskId: 'task-0001', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了' }], { inTurn: true }))
+const delivered = (conversationId: string, at = 12, sessionId = 's1') => ({ type: 'report_delivered', conversationId, sessionId, reportId: 'task-0001:run-1', text: inTurnText, at })
+
+/** The conversation as the window draws it: each message, and each record after the messages before it. */
+type WindowState = ReturnType<typeof reduce>
+const layout = (state: WindowState) => [...recordsAt(state, 0).map(() => 'record'),
+  ...state.messages.flatMap((message, i) => [message.role, ...recordsAt(state, i + 1).map(() => 'record')])]
+
+test('in the window: a delivered report is a record where it came; what the agent says next comes below it; once only', () => {
+  const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
+  const writing = reduce(reduce(start, { type: 'agent_turn_started', at: 10 }), { type: 'acp_update', update: chunk('我先看一下。'), at: 11 })
+  const recorded = reduce(writing, delivered('c1'))
+  assert.deepEqual(layout(recorded), ['user', 'assistant', 'record'])
+  assert.equal(recorded.messages[1].open, false, 'what the agent was writing closed')
+  const after = reduce(recorded, { type: 'acp_update', update: chunk('插一句：后台查完了。'), at: 13 })
+  assert.deepEqual(layout(after), ['user', 'assistant', 'record', 'assistant'], 'its next words below the record')
+  assert.equal(reduce(recorded, delivered('c1', 14)), recorded, 'the same report again: nothing')
+  assert.equal(reduce(writing, delivered('c-other')), writing, 'one for another conversation is not drawn on this one')
+  assert.deepEqual(historyMessages(reduce(after, { type: 'turn_end', stopReason: 'end_turn', at: 14 })).map((m) => m.role), ['user', 'assistant', 'assistant'],
+    'not saved with the messages: the backend keeps it')
+})
+
+test('in the window, with the model\'s streamed attempts: a late settle stays above the record, a retried attempt goes, the next one comes below', () => {
+  const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
+  const turn = reduce(start, { type: 'agent_turn_started', at: 10 })
+  const step1 = reduce(turn, { type: 'acp_update', update: stream('op:1:a', 'delta', '我先看'), at: 11 })
+  // The record comes on another channel than the stream: the first attempt's settle may come after it.
+  const recorded = reduce(step1, delivered('c1'))
+  const settled = reduce(recorded, { type: 'acp_update', update: stream('op:1:a', 'settle', '我先看一下。'), at: 13 })
+  const next = reduce(reduce(settled, { type: 'acp_update', update: stream('op:2:a', 'delta', '后台查完了'), at: 14 }),
+    { type: 'acp_update', update: stream('op:2:a', 'settle', '后台查完了：写好了。'), at: 15 })
+  assert.deepEqual(layout(next), ['user', 'assistant', 'record', 'assistant'])
+  assert.deepEqual(next.messages.map((m) => m.text), ['看看 README', '我先看一下。', '后台查完了：写好了。'])
+  // An attempt retried (settled with nothing): it goes; the record stays where it came, the retry below it.
+  const retried = reduce(reduce(recorded, { type: 'acp_update', update: stream('op:1:a', 'settle', ''), at: 13 }),
+    { type: 'acp_update', update: stream('op:1:b', 'delta', '重来一次'), at: 14 })
+  assert.deepEqual(layout(retried), ['user', 'assistant', 'record'], 'the retry after the record')
+  assert.equal(retried.messages[1].text, '重来一次')
+})
+
+test('a conversation loaded with its records: each after the messages before it, its time kept; a malformed one left out', () => {
+  const at = 1_730_800_000_000
+  const loaded = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', savedAt: 2,
+    messages: [{ role: 'user', text: '看看 README' }, { role: 'assistant', text: '好的。' }],
+    records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }, { reportId: 'task-0002:run-1', at, text: inTurnText, after: 9 },
+      { reportId: '', at, text: 'x', after: 0 }, { reportId: 'task-0003:run-1', at: 'soon', text: 'x', after: 0 }] })
+  assert.deepEqual(layout(loaded), ['user', 'record', 'assistant', 'record'], 'one after more messages than there are: after the last')
+  assert.equal(loaded.records[0].at, at)
+  assert.equal(reduce(loaded, delivered('c1')), loaded, 'loaded again, the same report is still one record')
+  const opened = reduce(loaded, { type: 'conversation_opened', info: initialState.info,
+    conversation: { id: 'c2', messages: [{ role: 'user', text: '另一个话题' }], records: [{ reportId: 'task-0009:run-1', at, text: inTurnText, after: 0 }], updatedAt: 3 } })
+  assert.deepEqual(layout(opened), ['record', 'user'], 'another conversation opened: its own records')
+})
+
+test('read, but its record cannot be kept now: tried again after a wait, not left waiting for a wake that may not come', async () => {
+  const found = setup({ known: { 't1:run-1': 'read' }, keeps: false })
+  assert.deepEqual(await found.outcomes([t1]), { 't1:run-1': 'retry' })
+  const steered = setup({ state: 'busy', steered: 'read', keeps: false })
+  assert.deepEqual(await steered.outcomes([t1]), { 't1:run-1': 'retry' }, 'the same when it is found read as it is sent')
+})
+
+test('a blank new topic (no id in the window yet): a record for its session is drawn; for another session, or a topic being left, not', () => {
+  const blank = { ...reduce(initialState, { type: 'new_session', info: { ...initialState.info, sessionId: 's-fresh' }, at: 1 }) }
+  assert.equal(blank.conversationId, null)
+  const recorded = reduce(blank, delivered('c-backend-id', 12, 's-fresh'))
+  assert.deepEqual(layout(recorded), ['record'], 'drawn on the topic of that session')
+  assert.equal(reduce(blank, delivered('c-backend-id', 12, 's-other')), blank, 'another session: not here')
+  const leaving = reduce(blank, { type: 'new_session_pending', at: 2 })
+  assert.equal(reduce(leaving, delivered('c-backend-id', 12, 's-fresh')).records.length, 0, 'a topic being left for a new one: not drawn on it')
+  const saved = reduce(recorded, { type: 'conversation_saved', id: 'c-backend-id' })
+  assert.equal(reduce(saved, delivered('c-backend-id', 13, 's-fresh')), saved, 'saved, it is known by its id, and the record is one')
+})
+
+test('in the timeline: an earlier topic draws its records after the messages before them; the topic left keeps those it had', () => {
+  const at = 1_730_800_000_000
+  const segment = { id: 'c-old', cwd: '/w', parentId: null, createdAt: at,
+    messages: [{ seq: 0, role: 'user', text: '整理一下', receipt: null, at }, { seq: 1, role: 'assistant', text: '好的。', receipt: null, at }],
+    records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }, { reportId: 'task-0002:run-1', at, text: inTurnText, after: 5 }] }
+  const rows = earlierRows({ segments: [segment], hasMore: false, loading: false }, { now: at })
+  assert.deepEqual(rows.filter((row) => row.kind !== 'day').map((row) => row.kind === 'message' ? row.role : row.kind), ['user', 'record', 'assistant', 'record'])
+  const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
+  const left = reduce(reduce(start, delivered('c1')), { type: 'new_session', info: initialState.info, at: 2 })
+  assert.deepEqual(left.records, [], 'the new topic has none')
+  assert.deepEqual(left.earlier.segments.at(-1)?.records?.map((record: ReportRecord) => record.reportId), ['task-0001:run-1'], 'the topic left keeps its record')
+})
+
+test('going back, a path opened, back onto a path: the window takes the records each comes with, and lets go of those closed', () => {
+  const at = 1_730_800_000_000
+  const loaded = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '做周报' }], savedAt: 1,
+    records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }] })
+  const rewound = reduce(loaded, { type: 'rewound', info: {}, folds: [],
+    conversation: { id: 'c2', messages: [{ role: 'user', text: '做周报' }], records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }] } })
+  assert.deepEqual(layout(rewound), ['user', 'record'], 'the shared part\'s record kept on screen')
+  const opened = reduce(rewound, { type: 'fold_opened', id: 'c1', messages: [{ role: 'assistant', text: '改了' }], records: [{ reportId: 'task-0002:run-1', at, text: inTurnText, after: 1 }] })
+  assert.deepEqual(opened.rewind.openRecords.c1.map((record: ReportRecord) => record.reportId), ['task-0002:run-1'])
+  assert.deepEqual(reduce(opened, { type: 'fold_closed', id: 'c1' }).rewind.openRecords, {})
 })

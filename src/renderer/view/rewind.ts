@@ -11,7 +11,11 @@ import { h } from './dom.ts'
 /** Over a message of the user's, on hover: say it again from here, or change it first. */
 /** A part of the timeline folded away (rewind-state.ts): its id, how many messages, and whether a task took it. */
 type Fold = { id: string, count: number, kind?: string | null }
-type FoldOptions = { opened: readonly ThreadMessage[] | undefined, handlers: Handlers, messageView: (message: ThreadMessage) => View, tasks?: State['tasks'] }
+type FoldOptions = {
+  opened: readonly ThreadMessage[] | undefined, handlers: Handlers, messageView: (message: ThreadMessage) => View, tasks?: State['tasks'],
+  /** The opened path's task records, each after the messages before it, and how one is drawn (view/report-record.ts). */
+  records?: readonly ReportRecord[], recordView?: (record: ReportRecord) => View,
+}
 /** Where the editor's cursor was, before the thread was rebuilt. */
 type EditorFocus = { start: number | null, end: number | null }
 
@@ -106,8 +110,8 @@ export function renderRewindConfirm(root: HTMLElement, state: State, handlers: H
  * A path left behind, folded where the conversation went another way: opened, what it holds is shown under it,
  * read-only; switched to, it is the conversation again and this one folds in its place.
  */
-export function foldStrip(fold: Fold, { opened, handlers, messageView, tasks }: FoldOptions): View[] {
-  if (fold.kind === 'task') return taskStrip(fold, { opened, handlers, messageView, tasks })
+export function foldStrip(fold: Fold, { opened, handlers, messageView, tasks, records, recordView }: FoldOptions): View[] {
+  if (fold.kind === 'task') return taskStrip(fold, { opened, handlers, messageView, tasks, records, recordView })
   const strip = h('div', { class: 'fold', role: 'group', 'aria-label': t("rewind.another.branch"), 'data-fold': fold.id },
     h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '⑂' }),
     h('span', { text: t("rewind.another.branch.2") }),
@@ -115,12 +119,15 @@ export function foldStrip(fold: Fold, { opened, handlers, messageView, tasks }: 
     h('span', { class: 'fold-actions' },
       h('button', { class: 'fold-act', type: 'button', 'aria-expanded': String(Boolean(opened)), text: opened ? t("rewind.collapse") : t("rewind.expand.to.view"), onClick: () => handlers.toggleFold(fold.id) }),
       h('button', { class: 'fold-act', type: 'button', text: t("rewind.switch.to.this.branch"), onClick: () => handlers.switchPath(fold.id) })))
-  return withBody(strip, fold, { opened, messageView })
+  return withBody(strip, fold, { opened, messageView, records, recordView })
 }
 
-function withBody(strip: HTMLElement, fold: Fold, { opened, messageView }: Pick<FoldOptions, 'opened' | 'messageView'>): View[] {
+function withBody(strip: HTMLElement, fold: Fold, { opened, messageView, records = [], recordView }: Pick<FoldOptions, 'opened' | 'messageView' | 'records' | 'recordView'>): View[] {
   if (!opened) return [strip]
-  return [strip, h('div', { class: 'fold-body' }, ...opened.flatMap((message, i) => [messageView({ ...message, id: `${fold.id}-${i}` })].flat()))]
+  // A record after the messages before it; one after them all (or more than there are), at the end.
+  const recordsAt = (after: number) => (recordView ? records.filter((record) => Math.min(record.after, opened.length) === after).map(recordView) : [])
+  return [strip, h('div', { class: 'fold-body' }, ...recordsAt(0).flat(),
+    ...opened.flatMap((message, i) => [messageView({ ...message, id: `${fold.id}-${i}` }), ...recordsAt(i + 1)].flat()))]
 }
 
 let TASK_STATUS: Readonly<Record<string, string>> = { running: t("rewind.running.in.background"), waiting: t("rewind.waiting.for.you.in.background"), done: t("island-view.done"), stopped: t("island-view.stopped.2"), error: t("island-view.something.went.wrong") }
@@ -129,7 +136,7 @@ let TASK_STATUS: Readonly<Record<string, string>> = { running: t("rewind.running
  * Where a turn moved to the background in an earlier version (tasks-state.ts): what it is doing now; once it is
  * no longer running, what it said can be opened like a path.
  */
-function taskStrip(fold: Fold, { opened, handlers, messageView, tasks }: FoldOptions) {
+function taskStrip(fold: Fold, { opened, handlers, messageView, tasks, records, recordView }: FoldOptions) {
   const task: BackgroundTask | undefined = tasks?.list.find((entry: BackgroundTask) => entry.segmentId === fold.id)
   const status = task?.status === 'running' && task.now ? t("island-tasks.currently", { now: task.now }) : TASK_STATUS[task?.status ?? ''] ?? t("rewind.messages", { count: fold.count })
   const live = task?.status === 'running' || task?.status === 'waiting'
@@ -140,7 +147,7 @@ function taskStrip(fold: Fold, { opened, handlers, messageView, tasks }: FoldOpt
     h('span', { class: 'fold-status', text: `· ${status}` }),
     h('span', { class: 'fold-actions' },
       live ? null : h('button', { class: 'fold-act', type: 'button', 'aria-expanded': String(Boolean(opened)), text: opened ? t("rewind.collapse") : t("rewind.expand.to.view"), onClick: () => handlers.toggleFold(fold.id) })))
-  return withBody(strip, fold, { opened: live ? undefined : opened, messageView })
+  return withBody(strip, fold, { opened: live ? undefined : opened, messageView, records, recordView })
 }
 
 onLocaleChange(() => {

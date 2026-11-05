@@ -30,7 +30,7 @@ export interface SteerDesk {
 export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS, onReport = () => {} }: {
   send: (message: object) => void, sessionId: () => string | null, timeoutMs?: number,
   /** The plugin said a report was read (written and flushed), or lost, in that session. */
-  onReport?: (event: { type: 'report_read' | 'report_dropped', reportId: string, sessionId: string }) => void,
+  onReport?: (event: { type: 'report_written' | 'report_read' | 'report_dropped', reportId: string, sessionId: string }) => void,
 }): SteerDesk {
   const waiting = new Map<string, { resolve: (result: SteerResult) => void, timer: ReturnType<typeof setTimeout> }>()
   const reporting = new Map<string, { resolve: (state: ReportState) => void, timer: ReturnType<typeof setTimeout> }>()
@@ -78,7 +78,7 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS,
     if (message?.type === 'report_result' && typeof message.id === 'string') {
       return settleReport(message.id, REPORT_STATES.has(message.status) ? message.status : NO_PLUGIN)
     }
-    if ((message?.type === 'report_read' || message?.type === 'report_dropped') && typeof message.reportId === 'string' && typeof message.sessionId === 'string') {
+    if ((message?.type === 'report_written' || message?.type === 'report_read' || message?.type === 'report_dropped') && typeof message.reportId === 'string' && typeof message.sessionId === 'string') {
       // Said with its session: the app checks it is the one the report went to (compose.ts).
       return onReport({ type: message.type, reportId: message.reportId, sessionId: message.sessionId })
     }

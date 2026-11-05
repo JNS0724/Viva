@@ -2,6 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { approvalTitle, optionName } from './approval.ts'
 import { assistantStream } from './assistant-stream.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
+import { recordsFrom, REPORT_ACTIONS } from './report-state.ts'
 import { FILES_ACTIONS, initialFiles } from './files-state.ts'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.ts'
 import { REVIEW_ACTIONS, initialReview } from './review-state.ts'
@@ -29,6 +30,8 @@ export const initialState = Object.freeze({
   /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
   phase: 'idle' as 'idle' | 'working' | 'waiting' | 'asking' | 'error',
   messages: [] as ThreadMessage[],
+  /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
+  records: [] as readonly ReportRecord[],
   thoughts: [] as Untyped[],
   tools: {} as Record<string, ToolCall>,
   timeline: [] as Untyped[],
@@ -335,7 +338,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   }),
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
-  history_loaded: (state, { conversationId = null, messages, savedAt, folds = [], parentId = null, createdAt = null }) => {
+  history_loaded: (state, { conversationId = null, messages, records = [], savedAt, folds = [], parentId = null, createdAt = null }) => {
     if (state.messages.length > 0 || state.newTopicPending || !Array.isArray(messages) || (!messages.length && !conversationId)) return state
     return {
       ...state,
@@ -346,6 +349,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
       messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
       })),
+      records: recordsFrom(records),
       restored: messages.length ? { count: messages.length, savedAt } : null,
     }
   },
@@ -409,7 +413,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   /** Picked from the history panel: start over with that conversation's messages and close the panel. */
   conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded(
     { ...ACTION_HANDLERS.new_session(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false } },
-    { conversationId: conversation.id, messages: conversation.messages, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
+    { conversationId: conversation.id, messages: conversation.messages, records: conversation.records, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
   ),
 
   /** Restored trace goes first: it happened before anything the live session has added since. */
@@ -461,6 +465,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...REVIEW_ACTIONS,
   ...RESUME_ACTIONS,
   ...EARLIER_ACTIONS,
+  ...REPORT_ACTIONS,
   ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
   ...taskActions(HANDLERS),
   ...WORKDIR_ACTIONS,

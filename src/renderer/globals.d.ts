@@ -71,6 +71,11 @@ interface ThreadMessage {
   cardsAfter?: readonly string[]
   [field: string]: any
 }
+/**
+ * A background task's result the model read, as a conversation draws it (report-state.ts): which report, when it
+ * came (ms), the note as given, and how many of the conversation's messages come before it.
+ */
+interface ReportRecord { readonly reportId: string, readonly at: number, readonly text: string, readonly after: number }
 /** A message of an earlier segment, as the history keeps it: `seq` counts the segment's saved messages. */
 interface SegmentMessage {
   seq: number
@@ -89,6 +94,8 @@ interface Segment {
   parentId?: string | null
   createdAt: number
   messages: ReadonlyArray<SegmentMessage>
+  /** Its task records, each after the messages before it (history-db.ts recordsOf). */
+  records?: ReadonlyArray<ReportRecord>
   [field: string]: any
 }
 /**

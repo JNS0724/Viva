@@ -55,8 +55,15 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, cu
       [...kept, { role: 'user', text, receipt: null }],
     )
     db.fold(previous.id, { into: next.id, at: keep })
+    db.moveRecords({ from: previous.id, to: next.id, upTo: keep })
     setCurrent(next)
-    return { ok: true, info: forked.info, conversation: { id: next.id, messages: kept }, folds: db.foldsOf(next.id) }
+    return { ok: true, info: forked.info, conversation: { id: next.id, messages: kept, ...withRecords(next.id) }, folds: db.foldsOf(next.id) }
+  }
+
+  /** A conversation's task records (history-db.ts report_records), when it has any. */
+  const withRecords = (id: string) => {
+    const records = db.recordsOf(id)
+    return records.length ? { records } : {}
   }
 
   /** A path folded off the conversation on screen, or null. */
@@ -67,10 +74,16 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, cu
     return found ? { fold, found } : null
   }
 
-  /** What a folded path holds after the part it shares with the conversation on screen, to read in place. */
+  /**
+   * What a folded path holds after the part it shares with the conversation on screen, to read in place: its
+   * messages, and its task records placed among them (after the shared part, so counted from there).
+   */
   function folded(id: unknown) {
     const path = foldedOff(id)
-    return { messages: path ? path.found.messages.slice(path.fold.at) : [] }
+    if (!path) return { messages: [] }
+    const at = path.fold.at
+    const records = path.found.records.filter((record) => record.after > at).map((record) => ({ ...record, after: record.after - at }))
+    return { messages: path.found.messages.slice(at), ...(records.length ? { records } : {}) }
   }
 
   /**
@@ -86,11 +99,12 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, cu
     const started = await switchAgent(conversation.sessionId, conversation.cwd)
     db.unfold(id)
     db.fold(previous.id, { into: id, at: path.fold.at })
+    db.moveRecords({ from: previous.id, to: conversation.id, upTo: path.fold.at })
     setCurrent({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
     return {
       ok: true,
       info: { ...started, remembersHistory: started.resumed },
-      conversation: { id, messages },
+      conversation: { id, messages, ...withRecords(conversation.id) },
       folds: db.foldsOf(id),
     }
   }

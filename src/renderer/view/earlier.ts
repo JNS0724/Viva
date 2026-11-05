@@ -7,6 +7,7 @@ import { rowPlace } from '../stars.ts'
 import { topicBlocks, topicStart, topicTitle, turnsOf } from '../topics.ts'
 import { h } from './dom.ts'
 import { markMessage, pastMessageView } from './thread.ts'
+import { reportRecord } from './report-record.ts'
 import { reconcileChildren } from './reconcile.ts'
 
 /**
@@ -36,6 +37,7 @@ const ROW_VIEWS: { [K in EarlierRow['kind']]: (row: RowOf<K>, handlers: Handlers
   day: (row) => h('div', { class: 'timeline-day', role: 'separator', text: row.label }),
   workdir: (row) => workdirLine(row),
   message: (row, handlers) => markMessage(pastMessageView(row, handlers), row.id),
+  record: (row, handlers) => reportRecord(row.record, handlers),
 }
 const rowView = (row: EarlierRow, handlers: Handlers) => (ROW_VIEWS[row.kind] as (row: EarlierRow, handlers: Handlers) => View)(row, handlers)
 const rowViews = (rows: readonly EarlierRow[], handlers: Handlers): View[] => rows.flatMap((row) => rowView(row, handlers))
