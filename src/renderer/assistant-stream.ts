@@ -1,6 +1,6 @@
 /** Provisional blocks belong to one model attempt. Settlement replaces them; a retry removes them. */
 type Visible = { type: string, text: string }
-export function assistantStream(state: State, update: any, at: number): State {
+export function assistantStream(state: ConversationView, update: any, at: number): ConversationView {
   const key = update.key as string
   const settled = update.kind === 'settle'
   function change(list: readonly any[], type: string) {

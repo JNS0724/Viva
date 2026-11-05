@@ -285,7 +285,7 @@ function questionCard(question: AskedQuestion, handlers: Handlers) {
 const workingMaids: MaidSlots = new Map()
 
 /** Where the next answer will appear: Viva at work and what she is doing now (the island keeps the time). */
-function workingRow(state: State) {
+function workingRow(state: ThreadView) {
   return h('div', { class: 'msg-working', role: 'status' },
     h('span', { class: 'maid-avatar', 'aria-hidden': 'true' },
       maidFor(workingMaids, 'working', maidMood(catMood(state)), { size: AVATAR_PX, framing: 'face', moving: true })),
@@ -335,7 +335,7 @@ const elementsOf = (view: View): Element[] => [view].flat().filter((el): el is E
  * A message with what going back adds to it: over the user's words the bar to go back there (or the editor, in
  * place, with what would fold after it dimmed), and after it the paths folded where it went another way.
  */
-function messageEntries(state: State, views: readonly View[], handlers: Handlers, start: number): View[][] {
+function messageEntries(state: ThreadView, views: readonly View[], handlers: Handlers, start: number): View[][] {
   const editing = state.messages.findIndex((message) => message.id === state.rewind.editing)
   const later = editing < 0 ? 0 : state.messages.length - editing - 1
   const folds = foldAfter(state)
@@ -424,7 +424,7 @@ export const THREAD_MAX = 200
 export const threadStart = (state: Pick<State, 'messages'>) => Math.max(0, state.messages.length - THREAD_MAX)
 
 /** The line above what is drawn of a long conversation: how many are before it, read in 回顾 from the last of them. */
-function restLine(state: State, start: number, handlers: Handlers) {
+function restLine(state: ThreadView, start: number, handlers: Handlers) {
   const seq = state.messages.slice(0, start).filter((message) => !message.open).length - 1
   const segmentId = state.conversationId
   return h('button', {
@@ -433,8 +433,16 @@ function restLine(state: State, start: number, handlers: Handlers) {
   })
 }
 
+/**
+ * What the conversation column draws (system-design §12.7 step 5): one conversation (the one on screen, or a background
+ * task's), and around it what goes with it there. The window's state is one; the 后台 page makes one for a task
+ * (view/tasks-page.ts), with no more than this.
+ */
+export type ThreadView = ConversationView & Pick<State, 'records' | 'conversationId' | 'restored' | 'restoredTrace' | 'rewind' | 'folds'
+  | 'proposals' | 'tasks' | 'taskCards' | 'info' | 'followups'>
+
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
-export function renderThread(container: HTMLElement, state: State, handlers: Handlers, now: number) {
+export function renderThread(container: HTMLElement, state: ThreadView, handlers: Handlers, now: number) {
   const maids = containerMaids.get(container) ?? new Map()
   containerMaids.set(container, maids)
   const streams = containerStreams.get(container) ?? new Map<string, MarkdownStream>()

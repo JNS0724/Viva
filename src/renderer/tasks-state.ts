@@ -1,11 +1,12 @@
 import type { TaskOpening } from '../shared/ipc-results.ts'
+import { reduceConversation } from './conversation-state.ts'
 import { currentAction } from './selectors.ts'
 
 /**
  * Background tasks in the window: work that goes on in sessions of its own (backend/task-ipc.ts) beside the
- * conversation on screen. Each keeps a view shaped like the state, updated by the same handlers the
- * conversation uses, so what it is doing, what it said and what it asks are worked out the same way. Pure and
- * immutable like `state.ts`, which merges these in.
+ * conversation on screen. Each keeps a conversation of its own (`view`, conversation-state.ts ConversationView),
+ * reduced by the same pure reducer as the one on screen, so what it is doing, what it said and what it asks are worked
+ * out the same way, and nothing of the window's gets into it. Pure and immutable like `state.ts`, which merges these in.
  */
 export const initialTasks = Object.freeze({
   submissions: [] as Array<{ id: string, text: string, origin: string | null, status: string, problem?: string }>,
@@ -197,16 +198,18 @@ const markOf = (mark: unknown): { runId?: string, seq?: number, revision?: numbe
 const isStale = (snapshot: { revision?: unknown }, task: BackgroundTask) =>
   typeof snapshot.revision === 'number' && typeof task.revision === 'number' && snapshot.revision <= task.revision
 
-/** @param handlers state.ts's handlers: a task's view is updated the way the conversation is */
-export function taskActions(handlers: Record<string, Reducer>): Record<string, Reducer> {
-  const inView = (state: State, taskId: string, type: string, action: Action) => mapTask(state, taskId, (task) => ({ ...task, view: handlers[type](task.view, action) }))
+/** A task's view goes on as any conversation does (conversation-state.ts), by the action's type. */
+const inView = (state: State, taskId: string, type: string, action: Action) =>
+  mapTask(state, taskId, (task) => ({ ...task, view: reduceConversation(task.view, { ...action, type }) }))
+
+export function taskActions(): Record<string, Reducer> {
 
   /** A task's turn ended: how, in its view and on its card; something new, so unseen again. */
   function ended(state: State, { taskId, stopReason, message = null, at }: Action): State {
     const task = state.tasks.list.find((entry) => entry.id === taskId)
     if (!task) return state
     const status = ENDED[stopReason] ?? 'done'
-    const turnEnded = handlers.turn_end(task.view, { stopReason, at })
+    const turnEnded = reduceConversation(task.view, { type: 'turn_end', stopReason, at })
     // Failed: why, as the conversation shows it (its error row), and on the card when it said nothing.
     const view = message ? { ...turnEnded, phase: 'error', error: message } : turnEnded
     const list = state.tasks.list.map((entry) => (entry.id === taskId ? { ...entry, view, status, now: null, endedAt: at } : entry))
@@ -277,8 +280,8 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       const restored = list.map(({ task, status, endedAt, startedAt = null, messages, waits = null, mark }: RestoredTask) => {
         if (endedAt !== null) return settled({ ...task, ...markOf(mark), startedAt: endedAt, endedAt, status, now: null, view: savedView(messages) })
         const at = startedAt ?? 0
-        const asked = (waits?.permissions ?? []).reduce<BackgroundTask['view']>((view, wait) => handlers.permission_request(view, { ...wait, at }), savedView(messages, at))
-        const view = (waits?.questions ?? []).reduce<BackgroundTask['view']>((current, wait) => handlers.question_request(current, { ...wait, at }), asked)
+        const asked = (waits?.permissions ?? []).reduce<ConversationView>((view, wait) => reduceConversation(view, { ...wait, type: 'permission_request', at }), savedView(messages, at))
+        const view = (waits?.questions ?? []).reduce<ConversationView>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at }), asked)
         return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
       // A task the window knows already stays as it is: it has had every piece and snapshot of it since it knew it,
@@ -296,7 +299,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
      * its line in the conversation saying so.
      */
     task_asked: (state, { taskId, text, at }) =>
-      mapTask({ ...state, ...hostTask(state, taskId) }, taskId, (task) => ({ ...task, startedAt: at, endedAt: null, view: handlers.user_prompt(task.view, { text, at }) })),
+      mapTask({ ...state, ...hostTask(state, taskId) }, taskId, (task) => ({ ...task, startedAt: at, endedAt: null, view: reduceConversation(task.view, { type: 'user_prompt', text, at }) })),
     /**
      * 后台做: the request belongs to the task's own conversation. Only its card joins the main thread,
      * whether the foreground is idle or busy.
@@ -355,16 +358,16 @@ const ASKED_OF_TASK = new Set(['question_pick', 'question_answered'])
  * instead of the conversation's.
  * @returns the state, or null when the action is the conversation's own
  */
-export function routeToTask(state: State, action: Action, handlers: Record<string, Reducer>): State | null {
+export function routeToTask(state: State, action: Action): State | null {
   if (ASKED_OF_TASK.has(action.type ?? '') && action.taskId) {
-    return mapTask(state, action.taskId, (task) => ({ ...task, view: handlers[action.type ?? ''](task.view, action) }))
+    return mapTask(state, action.taskId, (task) => ({ ...task, view: reduceConversation(task.view, action) }))
   }
   if (action.type === 'permission_request' && action.taskId) {
-    return takePiece(state, action, (taken) => mapTask(taken, action.taskId, (task) => ({ ...task, view: handlers.permission_request(task.view, action) })))
+    return takePiece(state, action, (taken) => mapTask(taken, action.taskId, (task) => ({ ...task, view: reduceConversation(task.view, action) })))
   }
   if (action.type === 'permission_resolved' && state.permission?.requestId !== action.requestId) {
     const owner = state.tasks.list.find((task) => task.view.permission?.requestId === action.requestId)
-    if (owner) return mapTask(state, owner.id, (task) => ({ ...task, view: handlers.permission_resolved(task.view, action) }))
+    if (owner) return mapTask(state, owner.id, (task) => ({ ...task, view: reduceConversation(task.view, action) }))
   }
   return null
 }
