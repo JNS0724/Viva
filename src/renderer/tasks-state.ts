@@ -242,6 +242,8 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       const task = state.tasks.list.find((entry) => entry.id === snapshot.taskId)
       const opening: TaskOpening | undefined = snapshot.opening
       if (!task) return opening?.task ? made(state, snapshot, opening) : state
+      // Older than what the window has (one that waited for a read of the tasks): how it stood then, not now.
+      if (!opening && typeof snapshot.taskSeq === 'number' && snapshot.taskSeq < (task.seq ?? 0)) return state
       const begun = opening && snapshot.runId !== task.runId
         ? ACTIONS.task_asked(state, { taskId: task.id, text: opening.words, at: snapshot.startedAt }) : state
       // How it stands is the snapshot's, as it says it (not worked out again from its view).

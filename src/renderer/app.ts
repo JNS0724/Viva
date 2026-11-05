@@ -516,7 +516,7 @@ async function provideSecrets(values: Record<string, string> | null) {
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
 const taskActions = createTaskActions({
-  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage,
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
 })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
 const resumeActions = createResumeActions({
@@ -1048,8 +1048,8 @@ async function boot() {
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
-    // While the tasks are read, where each one's stream got to, so a read behind it is read again.
-    taskActions.saw(event)
+    // While the tasks are read, what comes of one the window does not know yet waits for the read (task-actions.ts).
+    if (taskActions.hold(event)) return undefined
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])
