@@ -24,6 +24,15 @@ const SAMPLES = [
   '1. x\n*x',
   '- x\n*x',
   '> 引用\n*x\n\n- a\n- b\n*c 续上',
+  // codex's second review of #80: a line that turns what is above it into something else, with no blank line.
+  'p\n1.\n|---|---|x',
+  'a\n<!--\n-->\nb\n=',
+  // codex's third: a block with the same source reads differently once a table delimiter follows it.
+  '===\n    a\n|---|---|\n',
+  // A definition later on changes a link before it; a loose list goes on past blank lines.
+  '见[文档][d]和[另一处][e]。\n\n中间一段。\n\n[d]: https://example.com/d\n\n[e]: https://example.com/e "标题"\n\n后文',
+  '- 一\n\n- 二\n\n  续上第二项\n\n- 三\n\n结束',
+  '    缩进代码\n\n    空行后还是代码\n\n正文',
   '前言\n\n```js\n' + Array.from({ length: 40 }, (_, i) => `const v${i} = ${i} // 第 ${i} 行`).join('\n') + '\n```\n\n后记',
 ]
 
@@ -48,9 +57,10 @@ export async function checkStreamMarkdown(win: SmokeWindow): Promise<string[]> {
         drawn = streamMarkdown(drawn, text.slice(0, end), ctx)
         frames += 1
         const whole = renderMarkdown(text.slice(0, end), ctx)
-        // A growing code block keeps its text in more than one node: the same once adjacent text is joined.
+        // Text can sit in more than one adjacent node (a growing code block; inline runs drawn whole): compared joined.
         const joined = drawn.el.cloneNode(true)
         joined.normalize()
+        whole.normalize()
         if (!joined.isEqualNode(whole) && mismatches.length < 3) mismatches.push({ sample, step, end, got: drawn.el.innerHTML.slice(-160), want: whole.innerHTML.slice(-160) })
         // SAMPLE's heading is finished once the paragraph after it has begun.
         if (sample === 0 && end > 40) {
