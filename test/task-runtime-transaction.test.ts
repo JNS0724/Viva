@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openAppDb } from '../src/backend/app-db.ts'
+import { createEffects } from '../src/backend/effects.ts'
 import { createEventCore } from '../src/backend/event-core.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { createTaskRuntime } from '../src/backend/task-runtime.ts'
@@ -26,6 +27,7 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const app = openAppDb({ file: path.join(dir, 'app.db') })
   t.after(() => { app.close(); fs.rmSync(dir, { recursive: true, force: true }) })
   const core = createEventCore({ app, publish: () => {} })
+  const effects = createEffects({ db: app.db, apply: (kind, data, write) => core.apply(kind, data, write) })
   const history = openHistoryDb({ db: app.db })
   const main = history.save(history.create({ sessionId: 'main', cwd: '/w' }), [{ role: 'user', text: '做周报', receipt: null }])
   /** Writes that fail, as a full disk would: the task store's ending, or what the task said. */
@@ -60,6 +62,7 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
     apply: (kind, data, write) => core.apply(kind, data, write),
     publish: ({ snapshot }) => { snapshots.push(snapshot) },
     onEnd: (taskId, status) => { reported.push([taskId, status]) },
+    effects,
     newRunId: () => `run-${++runs}`,
     timers: {
       later: (run: () => void) => { due = [...due, run]; return run },
@@ -70,7 +73,8 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const status = (runtime = tasks) => (runtime.agent.query({ op: 'get', taskId: 'task-0001' }, { taskId: 'task-0001' }) as { task: { status: string } }).task.status
   const kept = () => realStore.list().find((entry) => entry.id === 'task-0001')
   const ended = () => core.since(0).filter((event) => event.kind === 'task.ended')
-  return { tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history }
+  const reports = () => effects.list().filter((effect) => effect.kind === 'report').map((effect) => effect.key)
+  return { tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports }
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
@@ -161,4 +165,31 @@ test('a try that runs after its run was replaced ends nothing: the run guards it
   assert.ok(due() > 0, 'the old try is still there')
   runDue()
   assert.deepEqual([ended().length, status(), kept()?.runId, reported.length], [0, 'running', 'run-2', 0])
+})
+
+test('a run\'s end queues its report in the same transaction: an end not kept queues none', async (t) => {
+  const { tasks, failing, runDue, reports } = setup(t)
+  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  failing.ending = true
+  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
+  assert.deepEqual(reports(), [], 'no report for an end not kept')
+  failing.ending = false
+  runDue()
+  assert.deepEqual(reports(), [`${task.id}:run-1`], 'kept with its end, keyed by its run')
+})
+
+test('a new run, or the task closed, lets the report of the run before go; a report is there after a relaunch', async (t) => {
+  const { tasks, make, reports } = setup(t)
+  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
+  const later = make()
+  assert.deepEqual(reports(), [`${task.id}:run-1`], 'still there after a relaunch')
+  assert.equal(later.reports.stillEnded(task.id, 'run-1'), true, 'and still to be reported: the run it ended with')
+  await later.agent.message(task.id, '再加上已知问题')
+  assert.deepEqual(reports(), [], '接着问: the old result is not reported')
+  assert.equal(later.reports.stillEnded(task.id, 'run-1'), false)
+  later.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
+  assert.deepEqual(reports(), [`${task.id}:run-2`])
+  await later.window.close(task.id)
+  assert.deepEqual(reports(), [], 'closed: nothing left to report')
 })

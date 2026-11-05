@@ -26,7 +26,8 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
-import { createTaskReports } from './task-reports.ts'
+import { createTaskReports, REPORT } from './task-reports.ts'
+import { createEffects, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
 import type { TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
@@ -347,7 +348,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       .then((info) => info && emitToRenderer({ type: 'config', info }))
       .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
       // A task's result held back while the session was reattached comes back now.
-      .finally(() => taskReports.flush())
+      .finally(wakeEffects)
   }
 
   /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
@@ -408,19 +409,24 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   const taskReports = createTaskReports({
     isIdle: () => Boolean(bridge) && !turn.active && !bridge?.isSwitching() && !quitting,
     currentConversation: () => conversation.id,
-    describe: (taskId, status) => taskRuntime?.reports.describe(taskId, status) ?? null,
-    stillEnded: (taskId) => taskRuntime?.reports.stillEnded(taskId) ?? false,
+    conversationExists: (conversationId) => Boolean(historyDb?.get(conversationId)),
+    stillEnded: (taskId, runId) => taskRuntime?.reports.stillEnded(taskId, runId) ?? false,
     report: (note) => {
       const agent = bridge
-      if (!agent) return
+      if (!agent) return false
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task' })
       agent.prompt(note).catch((err: Error) => {
         turn = { ...turn, active: false }
         emitToRenderer({ type: 'error', message: err.message })
       })
+      return true
     },
   })
+  /** What is still to be done outside (effects.ts): results of tasks to report, after a restart too. */
+  let effects: Effects | null = null
+  /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
+  const wakeEffects = () => { void effects?.wake() }
 
   /** Only the app's selected provider credentials reach dsh; inherited endpoints remain isolated. */
   function dshSettings(config: Config) {
@@ -488,7 +494,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
       emitToRenderer({ type: 'ready', info })
       // Results of tasks that ended while dsh was away come back once it is here again.
-      taskReports.flush()
+      wakeEffects()
       return info
     } catch (err: any) {
       console.error('[main] failed to start agent bridge:', err)
@@ -655,7 +661,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         reportTurnMemories()
         if (mcpReloadDue) reloadMcpAfterTurn()
         // A task that ended while this turn ran comes back now that the conversation is free.
-        taskReports.flush()
+        wakeEffects()
       },
       // How a task's turn ended is kept (task-runtime.ts); its result goes back to the conversation; a gap follows.
       // How it ended is kept by the task runtime, tried again until it is; then onEnd (openHistory) reports it.
@@ -876,7 +882,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       dshHome: dshHomeOf(config),
       traceDb: () => traceDb,
       current: () => conversation,
-      setCurrent: (next) => { conversation = next },
+      // A report waiting for this conversation (task-reports.ts) may go now.
+      setCurrent: (next) => { conversation = next; wakeEffects() },
       agentInfo: () => lastInfo,
       switchAgent,
       chooseExportPath,
@@ -888,7 +895,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     registerRewindIpc(ipcMain, {
       db: historyDb,
       current: () => conversation,
-      setCurrent: (next) => { conversation = next },
+      // A report waiting for this conversation (task-reports.ts) may go now.
+      setCurrent: (next) => { conversation = next; wakeEffects() },
       isBusy: () => turn.active,
       agentInfo: () => lastInfo,
       forkAgent: forkBack,
@@ -898,6 +906,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app). Only the task
     // runtime writes them, each change with its event (task.started, task.ended, …).
     taskStore = createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) })
+    effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => console.error('[effects]', err instanceof Error ? err.message : String(err)) })
+    effects.runs(REPORT, taskReports)
     taskRuntime = createTaskRuntime({
       db: historyDb,
       store: taskStore,
@@ -909,10 +919,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       apply: applyChange,
       publish: emitToRenderer,
       // Once a task's end is kept: its result back to the conversation, and a gap.
-      onEnd: (taskId, status) => {
-        taskReports.ended(taskId, status)
+      onEnd: () => {
+        wakeEffects()
         followups?.gap()
       },
+      effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
   }
