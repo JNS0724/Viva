@@ -60,6 +60,9 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const due = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY due_at, rowid')
   const next = db.prepare('SELECT MIN(due_at) AS at FROM effects WHERE due_at > ?')
   const all = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects ORDER BY rowid')
+  const holding = db.prepare('SELECT 1 AS held FROM effects WHERE kind = ? AND key = ? AND generation = ?')
+  const one = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE kind = ? AND key = ?')
+  const rewrite = db.prepare('UPDATE effects SET payload = ? WHERE kind = ? AND key = ? AND generation = ?')
   const runners = new Map<string, Runner>()
   let timer: unknown = null
   let running = false
@@ -76,6 +79,34 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   /** Not to be done any more (its reason went): the row goes, whatever generation it is at. */
   function cancel(kind: string, key: string) {
     dropOne.run(kind, key)
+  }
+
+  /** The effect queued under a key now, or null. */
+  function get(kind: string, key: string): Effect | null {
+    const row = one.get(kind, key) as Row | undefined
+    return row ? effectOf(row) : null
+  }
+
+  /**
+   * What a try learned that the next one must know (a report's token, where it was delivered), written into the
+   * effect at the generation the try holds, as one change with its event: false when that generation is gone.
+   */
+  function amend<P extends object>(effect: Effect<P>, payload: P): boolean {
+    return apply('effect.amended', { kind: effect.kind, key: effect.key, generation: effect.generation },
+      () => Number(rewrite.run(JSON.stringify(payload), effect.kind, effect.key, effect.generation).changes) > 0).value
+  }
+
+  /** Whether an effect is still queued at that generation: not done, cancelled or queued again since a try took it. */
+  function holds(effect: Pick<Effect, 'kind' | 'key' | 'generation'>): boolean {
+    return Boolean(holding.get(effect.kind, effect.key, effect.generation))
+  }
+
+  /**
+   * Done, said from outside a try (a report confirmed read, after the try that delivered it waited): the row goes,
+   * whatever generation it is at, as one change with its event.
+   */
+  function finish(kind: string, key: string) {
+    apply('effect.done', { kind, key }, () => dropOne.run(kind, key))
   }
 
   /** Every effect of `kind` whose key starts so (all the reports of one task, `taskId:`): none to be done any more. */
@@ -172,6 +203,10 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   return {
     queue,
     cancel,
+    finish,
+    holds,
+    get,
+    amend,
     cancelStarting,
     list,
     wake,

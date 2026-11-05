@@ -26,7 +26,7 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
-import { createTaskReports, REPORT } from './task-reports.ts'
+import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts'
 import { createEffects, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
 import type { TaskAction } from './tasks-channel.ts'
@@ -370,6 +370,15 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       emit: (event) => {
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
+        // A task's result read (written and flushed) in the session it was delivered to: its report is done. Lost:
+        // sent again. Said of another session, it is not this report's: the next pass asks again.
+        if (event.type === 'report_read' || event.type === 'report_dropped') {
+          const reportId = String(event.reportId)
+          const queued = effects?.get(REPORT, reportId)
+          if (!queued || (queued.payload as ReportPayload).deliveredTo !== event.sessionId) return undefined
+          if (event.type === 'report_read') effects?.finish(REPORT, reportId)
+          return wakeEffects()
+        }
         emitToRenderer(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams.
@@ -403,13 +412,19 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   }
 
   /**
-   * Results of background tasks, back in the conversation on screen as a turn of their own (task-reports.ts), once
-   * nothing runs there. The window is told the turn began, as it is told nothing else of it: no words of the user's.
+   * Results of background tasks, back in the conversation on screen (task-reports.ts): into the turn running there,
+   * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
+   * it: no words of the user's.
    */
   const taskReports = createTaskReports({
-    isIdle: () => Boolean(bridge) && !turn.active && !bridge?.isSwitching() && !quitting,
+    conversation: () => (!bridge || bridge.isSwitching() || quitting ? 'away' : turn.active ? 'busy' : 'idle'),
+    session: () => bridge?.currentSession() ?? null,
+    holds: (effect) => effects?.holds(effect) ?? false,
+    status: (session, reportId, token) => bridge?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
+    deliver: (session, reportId, token, text) => bridge?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable'),
+    // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
+    amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
     currentConversation: () => conversation.id,
-    conversationExists: (conversationId) => Boolean(historyDb?.get(conversationId)),
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: (note) => {
       const agent = bridge

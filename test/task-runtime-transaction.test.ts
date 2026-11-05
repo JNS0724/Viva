@@ -74,7 +74,7 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const kept = () => realStore.list().find((entry) => entry.id === 'task-0001')
   const ended = () => core.since(0).filter((event) => event.kind === 'task.ended')
   const reports = () => effects.list().filter((effect) => effect.kind === 'report').map((effect) => effect.key)
-  return { tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore }
+  return { tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
@@ -168,7 +168,7 @@ test('a try that runs after its run was replaced ends nothing: the run guards it
 })
 
 test('a run\'s end queues its report in the same transaction: an end not kept queues none', async (t) => {
-  const { tasks, failing, runDue, reports } = setup(t)
+  const { tasks, failing, runDue, reports, effects } = setup(t)
   const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
   failing.ending = true
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
@@ -176,6 +176,10 @@ test('a run\'s end queues its report in the same transaction: an end not kept qu
   failing.ending = false
   runDue()
   assert.deepEqual(reports(), [`${task.id}:run-1`], 'kept with its end, keyed by its run')
+  const [queued] = effects().filter((effect) => effect.kind === 'report')
+  const payload = queued.payload as { request: string, topic: string | null, by: string, startedAt: number, token: string }
+  assert.deepEqual([payload.request, payload.by, typeof payload.startedAt], ['整理发布说明', 'user', 'number'], 'its background kept with it: what it was asked, by whom, when')
+  assert.match(payload.token, /^[0-9a-f]{32}$/, 'and a token no one else knows')
 })
 
 test('a new run, or the task closed, lets the report of the run before go; a report is there after a relaunch', async (t) => {
