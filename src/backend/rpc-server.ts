@@ -197,7 +197,9 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
     const after = given === null ? null : Number(given)
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
     if (after !== null && Number.isFinite(after)) for (const stored of since(after)) res.write(sseMessage('stored', stored))
-    const stop = remote.listen((call) => res.write(sseMessage('host', call)))
+    // And the last host call it ran: those kept after it come first (remote-host.ts), so none is lost between streams.
+    const ran = Number(url.searchParams.get('after') ?? 0)
+    const stop = remote.listen((call) => res.write(sseMessage('host', call)), Number.isInteger(ran) && ran > 0 ? ran : 0)
     const alive = setInterval(() => res.write(': alive\n\n'), KEEP_ALIVE_MS)
     req.on('close', () => {
       clearInterval(alive)

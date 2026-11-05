@@ -29,9 +29,13 @@ export interface Connection {
   callback(id: number, args: unknown[]): Promise<void>
   /**
    * Listens for what the backend asks of the desktop; `ended` when the stream closes. Listening again, `since` is the
-   * last stored event seen, and the ones after it come first.
+   * last stored event seen, and the ones after it come first; the host calls after the last one run come first too,
+   * each run once. Some the backend no longer had (a gap in their numbers): `lost`, with how many.
    */
-  listen(handlers: { host: (call: HostCall) => unknown, stored?: (event: StoredEvent) => void, ended: (err?: Error) => void, since?: number }): () => void
+  listen(handlers: {
+    host: (call: HostCall) => unknown, stored?: (event: StoredEvent) => void, ended: (err?: Error) => void, since?: number,
+    lost?: (count: number) => void,
+  }): () => void
 }
 
 /** Talks to a backend at `port` (on loopback) with `token`. */
@@ -129,7 +133,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
     async callback(id, args) {
       await call(`/callback/${id}`, args, false)
     },
-    listen({ host, stored = () => {}, ended, since }) {
+    listen({ host, stored = () => {}, ended, since, lost = () => {} }) {
       const answerHost = (id: number, answer: Answer) => {
         request('POST', `/host/${id}`, Buffer.from(JSON.stringify(encodeValue(answer))), { 'content-type': 'application/json' })
           .catch((err: Error) => console.error('[backend] could not answer a host call:', err.message))
@@ -159,6 +163,9 @@ export function connect({ port, token }: { port: number, token: string }): Conne
       const read = sseReader((event, data) => {
         if (event === 'host') {
           const hostCall = data as HostCall
+          // Run already (a stream before this one had it): once is all.
+          if (hostCall.n <= ran) return
+          if (hostCall.n > ran + 1) lost(hostCall.n - ran - 1)
           run(hostCall)
           advance(hostCall.n)
         } else if (event === 'stored') stored(data as StoredEvent)
@@ -168,7 +175,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
         ended(err)
       }
       listening = true
-      const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: since === undefined ? '/events' : `/events?since=${since}`, headers: { [TOKEN_HEADER]: bearer(token) } }, (res) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: `/events?${new URLSearchParams({ ...(since === undefined ? {} : { since: String(since) }), after: String(ran) })}`, headers: { [TOKEN_HEADER]: bearer(token) } }, (res) => {
         if (res.statusCode !== 200) {
           end(new Error(`the backend refused its events: ${res.statusCode}`))
           res.resume()
