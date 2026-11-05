@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import { readSessionTrace } from './dsh-log.ts'
 import { exportFileName, toMarkdown } from './history-export.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
-import { assertId, normalizeMessages, type StoredMessage } from './history-schema.ts'
+import { assertId } from './history-schema.ts'
 import { CARRY_TURNS, carriedRecords } from './history-carry.ts'
 import { ResumeError } from './resume-failure.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
@@ -51,14 +51,11 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   workDir?: () => string | null,
   /** Records to go with the first question of a conversation (main.ts agent:prompt). */
   carryNext?: (conversationId: string, text: string) => void,
-  /** The window's messages, kept: what waited on them being kept may be done (report-records.ts saved). */
-  onSaved?: (messages: readonly StoredMessage[]) => void,
 }) {
   const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
   const folderExists = deps.folderExists ?? (() => true)
   const workDir = deps.workDir ?? (() => null)
   const carryNext = deps.carryNext ?? (() => {})
-  const onSaved = deps.onSaved ?? (() => {})
   const isBusy = deps.isBusy ?? (() => false)
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref?.())
   const handle = handlerOf(ipcMain)
@@ -73,7 +70,6 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const { mode, model } = agentInfo()
     const saved = db.save({ ...current(), mode, model }, messages)
     setCurrent(saved)
-    onSaved(normalizeMessages(messages))
     return summaryOf(saved)
   })
 

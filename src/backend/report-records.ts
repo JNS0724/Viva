@@ -10,9 +10,11 @@ import { recordedNote, REPORT, type ReportPayload } from './task-reports.ts'
  * topic since). A report is done only once its record is kept there, so neither is lost on a restart, and the same
  * report is never recorded twice.
  *
- * - That conversation on screen: the window keeps its messages (a save from it rewrites them), so the record is shown
- *   there, where it came, and the report is done when the window saves it (`saved`).
- * - Another one: the record is written into it and the report done, in one change.
+ * Read, the record is written into that conversation and the report done, in one change, whichever conversation it
+ * is: a write that fails leaves the report queued, tried again after the queue's wait. That conversation on screen,
+ * the window draws the record where it came (`written`, as soon as the note is in the session) and keeps it in its own
+ * saves: the window's save is the whole list, the record in it where it came, so it rewrites the stored order from
+ * the first message it differs at (history-db.ts syncMessages), the record included, never twice.
  */
 
 /** What of the history is used here. */
@@ -66,9 +68,16 @@ export function createReportRecords({ history, effects, apply, current, show, no
    */
   function written(effect: Effect<ReportPayload>) {
     const target = targetOf(effect)
-    if (!target || target.id !== current().id || history()?.hasReport(target.id, effect.key)) return
-    const record = recordOf(effect, now())
-    show({ type: 'report_delivered', conversationId: target.id, sessionId: effect.payload.deliveredTo as string, reportId: effect.key, text: record.text, at: record.report.at })
+    if (!target || target.id !== current().id) return
+    // When it came, kept with it: the record written when it is read says the same time.
+    const at = effect.payload.recordedAt ?? now()
+    if (effect.payload.recordedAt === undefined) effects()?.amend(effect, { ...effect.payload, recordedAt: at })
+    showOn(target, effect, at)
+  }
+
+  function showOn(target: Conversation, effect: Effect<ReportPayload>, at: number) {
+    const record = recordOf(effect, at)
+    show({ type: 'report_delivered', conversationId: target.id, sessionId: effect.payload.deliveredTo as string, reportId: effect.key, text: record.text, at })
   }
 
   /**
@@ -81,29 +90,18 @@ export function createReportRecords({ history, effects, apply, current, show, no
     if (!queue || !store) return
     const target = targetOf(effect)
     if (!target || store.hasReport(target.id, effect.key)) return queue.finish(REPORT, effect.key)
-    if (target.id === current().id) {
-      // Done when the window saves it (saved); shown again, should the window not have it yet (it dedupes).
-      if (!effect.payload.read) queue.amend(effect, { ...effect.payload, read: true })
-      return written(effect)
-    }
+    const onScreen = target.id === current().id
     const found = store.get(target.id)
-    if (!found) return queue.finish(REPORT, effect.key)
+    // Not stored: only the conversation on screen, before its first save, has its record written as its first message.
+    if (!found && !onScreen) return queue.finish(REPORT, effect.key)
+    const at = effect.payload.recordedAt ?? now()
     apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
-      store.save(found.conversation, [...found.messages, recordOf(effect, now())])
+      store.save(found?.conversation ?? target, [...(found?.messages ?? []), recordOf(effect, at)])
       queue.finish(REPORT, effect.key)
     })
+    // Drawn by the window, should it not have it yet (it draws a report once).
+    if (onScreen) showOn(target, effect, at)
   }
 
-  /** The window saved the conversation on screen: a report read whose record it now keeps is done. */
-  function saved(messages: readonly StoredMessage[]) {
-    const queue = effects()
-    if (!queue) return
-    for (const message of messages) {
-      if (message.role !== 'report' || !message.report) continue
-      const queued = queue.get(REPORT, message.report.reportId) as Effect<ReportPayload> | null
-      if (queued?.payload.read) queue.finish(REPORT, queued.key)
-    }
-  }
-
-  return { written, read, saved }
+  return { written, read }
 }

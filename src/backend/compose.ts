@@ -931,7 +931,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       folderExists: (dir) => isFolder(dir),
       workDir: () => workDirNow() ?? null,
       carryNext: (conversationId, text) => { carry = { conversationId, text } },
-      onSaved: (messages) => records.saved(messages),
     })
     registerRewindIpc(ipcMain, {
       db: historyDb,

@@ -57,8 +57,8 @@ export interface ReportPayload {
   deliveredTo?: string | null
   /** How it went there: into a running turn, or a turn of its own. */
   via?: 'steer' | 'turn'
-  /** Read there, waiting for its record to be kept by the window (report-records.ts). */
-  read?: boolean
+  /** When its record came (ms): drawn as the note was written, written so when read (report-records.ts). */
+  recordedAt?: number
 }
 /** The start of what a task was asked, as much as a report keeps and its note gives. */
 export const REQUEST_CHARS = 1000
