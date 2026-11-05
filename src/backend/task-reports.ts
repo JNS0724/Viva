@@ -18,6 +18,8 @@ export const GATHER_MS = 300
 /** The effect kind (effects.ts) and its key: one report per run's end. */
 export const REPORT = 'report'
 export const reportId = (taskId: string, runId: string): string => `${taskId}:${runId}`
+/** The start every report key of one task shares, whichever run. */
+export const reportsOf = (taskId: string): string => `${taskId}:`
 
 /** What a report keeps, from the moment the run ended: enough to word its note after a restart. */
 export interface ReportPayload { taskId: string, runId: string, title: string, status: string, host: string | null, output: string }

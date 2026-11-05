@@ -3,7 +3,7 @@ import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
 import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
-import { GATHER_MS, REPORT, reportId, type ReportPayload } from './task-reports.ts'
+import { GATHER_MS, REPORT, reportId, reportsOf, type ReportPayload } from './task-reports.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
@@ -100,7 +100,7 @@ export interface TaskRuntimeDeps {
    */
   onEnd?: (taskId: string, status: string) => void
   /** The effects queue (effects.ts): a run's report is queued with its end. Without it, no report is queued. */
-  effects?: Pick<Effects, 'queue' | 'cancel'> | null
+  effects?: Pick<Effects, 'queue' | 'cancel' | 'cancelStarting'> | null
   now?: () => number
   newRunId?: () => string
 }
@@ -242,7 +242,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   async function close(taskId: string): Promise<void> {
     taskById(taskId)
     change('task.closed', { taskId }, () => {
-      cancelReport(store.list().find((entry) => entry.id === taskId))
+      // Every report of the task, whether it is still kept or was let go among the oldest ended meanwhile.
+      effects?.cancelStarting(REPORT, reportsOf(taskId))
       store.remove(taskId)
       registry.remove(taskId)
     })

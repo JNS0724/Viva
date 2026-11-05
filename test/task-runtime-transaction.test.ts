@@ -204,3 +204,14 @@ test('a task let go among the oldest ended still has its result reported: only a
   assert.deepEqual(reports(), [`${task.id}:run-1`], 'its report still queued')
   assert.equal(tasks.reports.superseded(task.id, 'run-1'), false, 'and not moot: it is reported')
 })
+
+test('a task let go among the oldest ended, then closed by the user: its report goes with it', async (t) => {
+  const { tasks, store, reports } = setup(t)
+  for (let i = 0; i < KEEP_ENDED; i++) store.add({ id: `kept-${i}`, segmentId: 'seg', title: `${i}`, endedAt: Date.now() + 1e9 + i, status: 'done' })
+  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
+  assert.equal(store.list().some((entry) => entry.id === task.id), false, 'let go from the store')
+  assert.deepEqual(reports(), [`${task.id}:run-1`])
+  await tasks.window.close(task.id)
+  assert.deepEqual(reports(), [], 'closed: its report cancelled though its row was gone')
+})

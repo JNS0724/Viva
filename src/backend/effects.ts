@@ -54,6 +54,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const newGeneration = db.prepare(`INSERT INTO effect_counter (id, last) VALUES (1, 1)
     ON CONFLICT (id) DO UPDATE SET last = last + 1 RETURNING last`)
   const dropOne = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ?')
+  const dropStarting = db.prepare('DELETE FROM effects WHERE kind = ? AND substr(key, 1, length(?)) = ?')
   const dropDone = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ? AND generation = ?')
   const putOff = db.prepare('UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE kind = ? AND key = ? AND generation = ?')
   const due = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY due_at, rowid')
@@ -75,6 +76,11 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   /** Not to be done any more (its reason went): the row goes, whatever generation it is at. */
   function cancel(kind: string, key: string) {
     dropOne.run(kind, key)
+  }
+
+  /** Every effect of `kind` whose key starts so (all the reports of one task, `taskId:`): none to be done any more. */
+  function cancelStarting(kind: string, prefix: string) {
+    dropStarting.run(kind, prefix, prefix)
   }
 
   const effectOf = (row: Row): Effect => ({ kind: row.kind, key: row.key, payload: JSON.parse(row.payload), generation: Number(row.generation), attempts: Number(row.attempts) })
@@ -166,6 +172,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   return {
     queue,
     cancel,
+    cancelStarting,
     list,
     wake,
     /** How the effects of `kind` are done. */

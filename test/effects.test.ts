@@ -144,3 +144,11 @@ test('a pass the queue cannot finish (its database refusing a write) runs again 
   assert.deepEqual(effects.list(), [], 'done once the database takes it')
   assert.deepEqual(timers().filter((entry) => entry !== timer), [], 'and nothing more to wake for (the one that fired aside)')
 })
+
+test('cancelling by a key\'s start takes every run of that task, and no other task\'s', (t) => {
+  const { effects } = setup(t)
+  for (const key of ['task-1:run-1', 'task-1:run-2', 'task-10:run-1', 'task-2:run-1']) effects.queue('report', key, {})
+  effects.queue('other', 'task-1:run-1', {})
+  effects.cancelStarting('report', 'task-1:')
+  assert.deepEqual(effects.list().map(({ kind, key }) => `${kind} ${key}`), ['report task-10:run-1', 'report task-2:run-1', 'other task-1:run-1'])
+})
