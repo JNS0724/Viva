@@ -20,6 +20,12 @@ type Failed = { ok: false, problem: string }
 const isFailed = (value: unknown): value is Failed =>
   Boolean(value) && typeof value === 'object' && (value as { ok?: unknown }).ok === false && typeof (value as { problem?: unknown }).problem === 'string'
 
+/** The task an event from the main process is of, if any. */
+const taskOf = (event: AgentEvent): string | null => {
+  const taskId = event.snapshot?.taskId ?? event.taskId
+  return typeof taskId === 'string' && taskId ? taskId : null
+}
+
 const pause = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
 
 export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, wait = pause }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
@@ -35,7 +41,12 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * the read is, over it. Null when no read is under way.
    */
   let held: AgentEvent[] | null = null
-  /** More came while the tasks were read than is held: the read is begun again. */
+  /**
+   * The tasks some of whose events were let go while the tasks were read (more came than is held): the window cannot
+   * go on from what it has of them, so the read is begun again and is their baseline. The others' events still wait.
+   */
+  let gaps = new Set<string>()
+  /** Events were let go during this read: it is not taken, and is begun again. */
   let overflowed = false
 
   /** What the main process answered, or why it could not be asked. */
@@ -79,10 +90,12 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    */
   function hold(event: AgentEvent): boolean {
     if (!held) return false
-    const taskId = event.snapshot?.taskId ?? event.taskId
-    if (typeof taskId !== 'string' || !taskId) return false
-    if (held.length >= MAX_HELD) overflowed = true
-    else held = [...held, event]
+    const taskId = taskOf(event)
+    if (!taskId) return false
+    if (held.length >= MAX_HELD) {
+      overflowed = true
+      if (!gaps.has(taskId)) gaps = new Set([...gaps, taskId])
+    } else held = [...held, event]
     return true
   }
 
@@ -93,34 +106,36 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    *
    * - A task the window knows already (made by the snapshot that began it, on the live channel) has its whole stream
    *   here: the read leaves it as it is, with what it did (its tools, its thoughts), and what waited follows on it.
-   * - Each other task the read has is put back to it, its baseline: each piece the read already had is left out by its
-   *   number, the snapshots that waited bring it to how it stands.
-   * - More came than can wait: what was let go is not here for any task, so the read is begun again and taken as the
-   *   baseline of every task it has, known or not. One that fails then is tried again, with a wait, until one is read:
-   *   the handoff does not end on a part of what came.
+   * - Each other task the read has is put back to it, its baseline (with the tool calls it has at work): each piece the
+   *   read already had is left out by its number, the snapshots that waited bring it to how it stands.
+   * - More came than can wait: the tasks whose events were let go (`gaps`) are not whole here, known or not, so the read
+   *   is begun again and is their baseline; what waited of the others still waits. One that fails then is tried again,
+   *   with a wait, until one is read: the handoff does not end on a part of what came.
    */
   async function loadKept() {
-    let lost = false
+    held = []
+    gaps = new Set()
     let failures = 0
     for (;;) {
-      held = []
       overflowed = false
       const kept = await call(() => api.finishedTasks())
-      if (overflowed) {
-        lost = true
-        console.error('[tasks] more came while the tasks were read than could wait; reading them again')
+      const failed = !Array.isArray(kept)
+      if (overflowed || (failed && gaps.size)) {
+        // What waited of a task with a gap is in the next read; the rest goes on waiting, for the tasks kept as they are.
+        held = (held ?? []).filter((event) => !gaps.has(taskOf(event) ?? ''))
+        if (overflowed) console.error('[tasks] more came while the tasks were read than could wait; reading them again')
+        else {
+          console.error('[tasks] the tasks could not be read after some of what came was let go; reading them again', isFailed(kept) ? kept.problem : kept)
+          await wait(Math.min(RETRY_MS * 2 ** failures, MAX_RETRY_MS))
+          failures += 1
+        }
         continue
       }
-      if (!Array.isArray(kept) && lost) {
-        console.error('[tasks] the tasks could not be read after some of what came was let go; reading them again', isFailed(kept) ? kept.problem : kept)
-        await wait(Math.min(RETRY_MS * 2 ** failures, MAX_RETRY_MS))
-        failures += 1
-        continue
-      }
-      const waited = held
+      const waited = held ?? []
       held = null
       const known = new Set(getState().tasks.list.map((task: BackgroundTask) => task.id))
-      const taken = Array.isArray(kept) ? kept.filter((entry) => lost || !known.has(entry.task.id)) : []
+      const taken = failed ? [] : kept.filter((entry) => gaps.has(entry.task.id) || !known.has(entry.task.id))
+      gaps = new Set()
       if (taken.length) dispatch({ type: 'tasks_restored', list: taken })
       for (const event of waited) deliver(event)
       return

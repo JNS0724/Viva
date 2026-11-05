@@ -444,6 +444,16 @@ test('words into a task\'s turn are in a read of it exactly when its mark counts
   await delivering
 })
 
+test('a task read at work gives the tool calls it has at work, for its card; one done is not among them', async () => {
+  const { call, emit } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '读提交记录', status: 'in_progress' } })
+  emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call', toolCallId: 't2', title: '列出文件', status: 'in_progress' } })
+  emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call_update', toolCallId: 't2', status: 'completed' } })
+  const [listed] = await call<Array<Kept & { tools?: unknown }>>('task:finished')
+  assert.deepEqual(listed.tools, [{ toolCallId: 't1', title: '读提交记录' }])
+})
+
 /** What `task:finished` lists of the tasks kept, for a window that opens. */
 const setupKept = (call: <T>(channel: string, ...args: unknown[]) => Promise<T>) => call<Kept[]>('task:finished')
 

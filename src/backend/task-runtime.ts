@@ -365,7 +365,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const stands = registry.snapshotOf(entry.id)
       const status = stands?.status ?? (isEnded(entry) ? entry.status : 'interrupted')
       if (status === 'running' || status === 'waiting') {
-        return [{ task: restoredSummary(entry), status, endedAt: null, startedAt: stands?.startedAt ?? entry.startedAt ?? null, messages, waits: waitsOf(entry.id), ...mark }]
+        return [{ task: restoredSummary(entry), status, endedAt: null, startedAt: stands?.startedAt ?? entry.startedAt ?? null, messages, waits: waitsOf(entry.id), tools: registry.activeTools(entry.id), ...mark }]
       }
       return [{ task: restoredSummary(entry), status, endedAt: stands?.endedAt ?? entry.endedAt ?? entry.startedAt ?? now(), messages, ...mark }]
     })

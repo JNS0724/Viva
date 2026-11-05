@@ -224,3 +224,46 @@ test('words the agent said into a task the read has already: not shown twice; th
   await loading
   assert.deepEqual(texts(win.state()), ['整理发布说明', '先看提交…', '加上版本号', '还有已知问题'])
 })
+
+test('two tasks, only B has more than can wait: A, known with its tool at work, keeps what it did and what waited of it; B is read again', async () => {
+  const first = deferred<unknown>()
+  const second = deferred<unknown>()
+  const win = windowWith([first.promise, second.promise])
+  const b = { id: 's2', segmentId: 'c-task-2', title: '翻译', words: '翻译' }
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 1,
+    update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '读提交记录', status: 'in_progress' } })
+  const loading = win.actions.loadKept()
+  const logged = console.error
+  console.error = () => {}
+  try {
+    // A says one thing while the first read is under way; then B floods the channel, its end among what is let go.
+    win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 2, update: chunk('三组改动。') })
+    for (let n = 1; n <= 2_000; n++) win.arrive({ type: 'task_update', taskId: 's2', runId: 'run-b', taskSeq: n, update: chunk('字') })
+    win.arrive({ type: 'task_end', taskId: 's2', runId: 'run-b', taskSeq: 2_001, stopReason: 'end_turn' })
+    first.resolve([])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.equal(win.asked(), 2, 'read again, for B')
+    second.resolve([
+      { ...running(1, 'run-1', ['整理发布说明']), tools: [{ toolCallId: 't1', title: '读提交记录' }], mark: { runId: 'run-1', seq: 2, revision: 1 } },
+      { task: b, status: 'done', endedAt: 9, mark: { runId: 'run-b', seq: 2_001, revision: 4 },
+        messages: [{ role: 'user', text: '翻译', receipt: null }, { role: 'assistant', text: '字'.repeat(2_000), receipt: null }] },
+    ])
+    await loading
+  } finally {
+    console.error = logged
+  }
+  const [a, readB] = win.state().tasks.list
+  assert.deepEqual([a.id, a.now, a.view.timeline.map((entry) => entry.kind), a.seq], ['s1', '读提交记录', ['tool'], 2], 'A as it was, its tool at work')
+  assert.deepEqual(taskMessages(a).map((m: { text: string }) => m.text), ['整理发布说明', '三组改动。'], 'what waited of A through the read begun again, taken once')
+  assert.deepEqual([readB.id, readB.status, readB.seq], ['s2', 'done', 2_001], 'B put back to the read')
+})
+
+test('a task read at work with a tool going: its card says the tool, from the read', async () => {
+  const win = windowWith([Promise.resolve([{ ...running(1, 'run-1', ['整理发布说明']), tools: [{ toolCallId: 't1', title: '读提交记录' }] }])])
+  await win.actions.loadKept()
+  const [task] = win.state().tasks.list
+  assert.deepEqual([task.now, task.view.timeline.map((entry) => entry.kind)], ['读提交记录', ['tool']])
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 2, update: { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' } })
+  assert.notEqual(win.state().tasks.list[0].now, '读提交记录', 'and it ends as any tool does')
+})

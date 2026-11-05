@@ -1,4 +1,4 @@
-import type { TaskOpening } from '../shared/ipc-results.ts'
+import type { ActiveTool, TaskOpening } from '../shared/ipc-results.ts'
 import { reduceConversation } from './conversation-state.ts'
 import { currentAction } from './selectors.ts'
 
@@ -48,11 +48,23 @@ const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = nu
 type RestoredTask = {
   task: BackgroundTask, status: string, endedAt: number | null, startedAt?: number | null, messages: SavedMessage[],
   waits?: { permissions: Array<Record<string, unknown>>, questions: Array<Record<string, unknown>> } | null,
+  /** The tool calls it has at work (task-registry.ts activeTools), so its card says what it is doing. */
+  tools?: readonly ActiveTool[] | null,
   /** The run it is at and the last piece of its stream in what it said (ipc-results.ts TaskMark). */
   mark?: unknown,
 }
 
 const LIVE = new Set(['running', 'waiting'])
+
+/**
+ * A task read at work, with the tool calls it has at work: in its view as the live channel would have left them (at
+ * work, each a step), without closing what it is writing, which they may have begun before.
+ */
+const withTools = (view: ConversationView, tools: readonly ActiveTool[], at: number): ConversationView => (tools.length ? {
+  ...view,
+  tools: { ...view.tools, ...Object.fromEntries(tools.map((tool) => [tool.toolCallId, { id: tool.toolCallId, title: tool.title, kind: 'other', status: 'in_progress', locations: [], at }])) },
+  timeline: [...view.timeline, ...tools.map((tool) => ({ kind: 'tool', ref: tool.toolCallId, at }))],
+} : view)
 
 /**
  * What a task's card shows of its conversation: what it is doing now (its tool, or replying), and what it waits on
@@ -278,11 +290,11 @@ export function taskActions(): Record<string, Reducer> {
     tasks_restored: (state, { list }) => {
       // One still at work (a reloaded window) goes on from what it said so far, with what it waits on the user for;
       // the others are at rest.
-      const restored = list.map(({ task, status, endedAt, startedAt = null, messages, waits = null, mark }: RestoredTask) => {
+      const restored = list.map(({ task, status, endedAt, startedAt = null, messages, waits = null, tools = null, mark }: RestoredTask) => {
         // How it stands is what the backend says (its snapshot): at rest, or at work with what it waits on.
         if (!LIVE.has(status)) return settled({ ...task, ...markOf(mark), startedAt: endedAt ?? undefined, endedAt, status, view: savedView(messages) })
         const at = startedAt ?? 0
-        const asked = (waits?.permissions ?? []).reduce<ConversationView>((view, wait) => reduceConversation(view, { ...wait, type: 'permission_request', at }), savedView(messages, at))
+        const asked = (waits?.permissions ?? []).reduce<ConversationView>((view, wait) => reduceConversation(view, { ...wait, type: 'permission_request', at }), withTools(savedView(messages, at), tools ?? [], at))
         const view = (waits?.questions ?? []).reduce<ConversationView>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at }), asked)
         return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
