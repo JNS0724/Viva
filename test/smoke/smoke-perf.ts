@@ -31,7 +31,11 @@ const BUDGET = Object.freeze({
   heapGrowthMb: 30,
   /** From 详情 to the 200 KB answer drawn. */
   markdownMs: 150,
-  /** One frame of typing out the end of a 60 000-character answer (smoke-streaming.ts): it draws the last block, not all. */
+  /**
+   * One frame of typing out the end of a long answer (smoke-streaming.ts): 60 000 characters of short blocks, or a
+   * 120 000-character code block. It draws the last blocks, and a code block grows in place; one very long paragraph
+   * is still drawn again each frame (reported, not budgeted).
+   */
   streamFrameP95Ms: 8,
   /** Unfolding 过程 of a task of 1000 steps: its latest steps only (tasks-page.ts STEPS_SHOWN). */
   stepsExpandMs: 16,
@@ -259,6 +263,7 @@ function judge(expect: Expect, seen: Record<string, any>, platform: string) {
   strict(reader.heapMb[1] - reader.heapMb[0] <= BUDGET.heapGrowthMb, `the heap grows by at most ${BUDGET.heapGrowthMb} MB reading a long topic end to end`, reader.heapMb)
   strict(markdown && markdown.ms <= BUDGET.markdownMs, `the 200 KB answer shows within ${BUDGET.markdownMs} ms`, markdown)
   strict(streaming.answer.p95Ms <= BUDGET.streamFrameP95Ms, `typing out a ${streaming.answer.chars}-character answer: p95 frame ≤ ${BUDGET.streamFrameP95Ms} ms`, streaming.answer)
+  strict(streaming.code.p95Ms <= BUDGET.streamFrameP95Ms, `typing out a ${streaming.code.chars}-character code block: p95 frame ≤ ${BUDGET.streamFrameP95Ms} ms`, streaming.code)
   strict(streaming.steps.expandMs <= BUDGET.stepsExpandMs, `unfolding 过程 of ${streaming.steps.steps} steps ≤ ${BUDGET.stepsExpandMs} ms`, streaming.steps)
   expect(streaming.steps.rows > 0 && streaming.steps.rows <= streaming.steps.shown, `unfolded, 过程 draws its latest ${streaming.steps.shown} steps`, streaming.steps)
   expect(far?.inView && far.foldedBefore === far.foldedAfter, `a message ${FAR_TOPICS} topics back should be read at once, in view, without reading the timeline back`, far)

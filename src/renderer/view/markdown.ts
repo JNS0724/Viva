@@ -116,38 +116,67 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
   return h('div', { class: 'msg-text markdown' }, blocks(new Lexer({ gfm: true }).lex(text), { openLink, image }))
 }
 
-/** A top-level block of an answer: the source it came from, its kind, and the nodes built for it. */
-type BuiltBlock = Readonly<{ raw: string, type: string, nodes: readonly ChildNode[] }>
+/**
+ * A top-level block of an answer: the source it came from, its kind, the nodes built for it, and for a code block
+ * its language and text (so it can grow in place).
+ */
+type BuiltBlock = Readonly<{ raw: string, type: string, nodes: readonly ChildNode[], code?: Readonly<{ lang: string, text: string }> }>
 /**
  * An answer still being typed out, kept between frames (renderer/view/thread.ts): its element, the text drawn, and
- * its blocks. Only the last block can still change as text is added, so each frame lexes and builds from there on.
+ * its blocks. Only its last blocks can still change as text is added, so each frame lexes and builds from there on.
  */
 export type MarkdownStream = Readonly<{ el: HTMLElement, text: string, blocks: readonly BuiltBlock[] }>
 
 /** marked reads `\r\n` as `\n`; the stream does too, so the blocks' sources add up to the text. */
 const lineEnds = (text: string) => text.replace(/\r\n?/g, '\n')
 
-/** `text` as blocks, or null when their sources do not add up to it (then the whole answer is drawn afresh). */
-function builtBlocks(text: string, ctx: Context): BuiltBlock[] | null {
+/** `text`'s top-level tokens, or null when their sources do not add up to it (then the answer is drawn afresh). */
+function lexed(text: string): Token[] | null {
   const tokens = new Lexer({ gfm: true }).lex(text)
-  if (tokens.reduce((length, token) => length + token.raw.length, 0) !== text.length) return null
-  return tokens.map((token) => {
-    const holder = h('div', null, block(token, ctx, { tight: false }))
-    return { raw: token.raw, type: token.type, nodes: [...holder.childNodes] }
-  })
+  return tokens.reduce((length, token) => length + token.raw.length, 0) === text.length ? tokens : null
 }
 
-function freshStream(text: string, ctx: Context): MarkdownStream {
-  const blocks = builtBlocks(text, ctx)
-  const el = blocks ? h('div', { class: 'msg-text markdown' }, blocks.flatMap((built) => built.nodes)) : renderMarkdown(text, ctx)
-  return { el, text, blocks: blocks ?? [] }
+/** A fenced or indented code block (marked's token union has a generic member, so the type alone does not narrow it). */
+const isCode = (token: Token): token is Tokens.Code => token.type === 'code'
+
+function built(token: Token, ctx: Context): BuiltBlock {
+  const holder = h('div', null, block(token, ctx, { tight: false }))
+  return {
+    raw: token.raw, type: token.type, nodes: [...holder.childNodes],
+    ...(isCode(token) ? { code: { lang: token.lang ?? '', text: token.text } } : {}),
+  }
 }
 
 /**
- * The answer so far, drawn from where it was last frame: blocks before the last one keep their nodes; the last one
- * (and the blank lines after it: a list goes on past one) is lexed again with what came since. Anything but more text
- * at the end (a different start, nothing kept) draws it afresh. Links to a definition earlier in the answer show as
- * text until the answer ends, when it is drawn whole (renderMarkdown).
+ * The block for `token`, from the one drawn in its place last frame where it can be: the same source keeps its
+ * nodes; a code block that only grew gets the new text as a text node of its own after the rest (a long listing is
+ * neither built nor laid out again; drawn whole once the answer ends, it is one text node again).
+ */
+function rebuilt(before: BuiltBlock | undefined, token: Token, ctx: Context): BuiltBlock {
+  if (before && before.raw === token.raw && before.type === token.type) return before
+  const code = before?.code && isCode(token) && (token.lang ?? '') === before.code.lang && token.text.startsWith(before.code.text)
+    ? (before.nodes[0] as Element | undefined)?.querySelector('code') : null
+  if (!before?.code || !code || !isCode(token)) return built(token, ctx)
+  // Before the caret, if it is in there (thread.ts typeOn puts it back after).
+  const caret = code.querySelector('.caret')
+  code.insertBefore(document.createTextNode(token.text.slice(before.code.text.length)), caret)
+  return { raw: token.raw, type: token.type, nodes: before.nodes, code: { lang: before.code.lang, text: token.text } }
+}
+
+function freshStream(text: string, ctx: Context): MarkdownStream {
+  const tokens = lexed(text)
+  if (!tokens) return { el: renderMarkdown(text, ctx), text, blocks: [] }
+  const blocks = tokens.map((token) => built(token, ctx))
+  return { el: h('div', { class: 'msg-text markdown' }, blocks.flatMap((block) => block.nodes)), text, blocks }
+}
+
+/**
+ * The answer so far, drawn from where it was last frame. Text is only added at the end, so only the last blocks can
+ * change: the last one as it grows, and the one before it, which the last can still turn out to belong to (`*` is an
+ * empty item of its own until `*x` makes it a line of the item above). Those two, and the blank lines between and
+ * after, are lexed again with what came since; what comes out the same keeps its nodes where they are. Anything but
+ * more text at the end (a different start, nothing kept) draws it afresh. Links to a definition earlier in the
+ * answer show as text until it ends, when it is drawn whole (renderMarkdown).
  * @param previous last frame's, of the same answer in the same view
  */
 export function streamMarkdown(previous: MarkdownStream | null, input: string, ctx: Context): MarkdownStream {
@@ -155,14 +184,25 @@ export function streamMarkdown(previous: MarkdownStream | null, input: string, c
   if (!previous || !previous.blocks.length || !text.startsWith(previous.text)) return freshStream(text, ctx)
   if (text === previous.text) return previous
   let keep = previous.blocks.length
-  while (keep > 0 && previous.blocks[keep - 1].type === 'space') keep -= 1
-  keep = Math.max(0, keep - 1)
+  for (let back = 0; back < 2; back += 1) {
+    while (keep > 0 && previous.blocks[keep - 1].type === 'space') keep -= 1
+    keep = Math.max(0, keep - 1)
+  }
   const kept = previous.blocks.slice(0, keep)
-  const offset = kept.reduce((length, built) => length + built.raw.length, 0)
-  const tail = builtBlocks(text.slice(offset), ctx)
-  if (!tail) return freshStream(text, ctx)
-  for (const dropped of previous.blocks.slice(keep)) for (const node of dropped.nodes) node.remove()
-  previous.el.append(...tail.flatMap((built) => built.nodes))
+  const offset = kept.reduce((length, block) => length + block.raw.length, 0)
+  const tokens = lexed(text.slice(offset))
+  if (!tokens) return freshStream(text, ctx)
+  const redone = previous.blocks.slice(keep)
+  const tail = tokens.map((token, i) => rebuilt(redone[i], token, ctx))
+  const wanted = new Set(tail.flatMap((block) => block.nodes))
+  for (const block of redone) for (const node of block.nodes) if (!wanted.has(node)) node.remove()
+  // In order after what is kept, moving none that is already in place (a moved node is laid out again).
+  const lastKept = kept.flatMap((block) => block.nodes).at(-1)
+  let cursor: ChildNode | null = lastKept ? lastKept.nextSibling : previous.el.firstChild
+  for (const node of wanted) {
+    if (node === cursor) cursor = cursor.nextSibling
+    else previous.el.insertBefore(node, cursor)
+  }
   return { el: previous.el, text, blocks: [...kept, ...tail] }
 }
 

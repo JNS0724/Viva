@@ -16,6 +16,18 @@ const SAMPLE = [
 ].join('')
 
 /**
+ * Texts whose last line changes what it belongs to as it is typed (`*` an empty item until `*x` makes it a line of
+ * the item above: codex's review of #80), and a code block that grows long; each checked like SAMPLE.
+ */
+const SAMPLES = [
+  SAMPLE,
+  '1. x\n*x',
+  '- x\n*x',
+  '> 引用\n*x\n\n- a\n- b\n*c 续上',
+  '前言\n\n```js\n' + Array.from({ length: 40 }, (_, i) => `const v${i} = ${i} // 第 ${i} 行`).join('\n') + '\n```\n\n后记',
+]
+
+/**
  * Streamed in chunks of every size, each frame matches the whole text drawn afresh, and the first heading, once
  * finished, keeps its node.
  * @returns problems
@@ -23,11 +35,11 @@ const SAMPLE = [
 export async function checkStreamMarkdown(win: SmokeWindow): Promise<string[]> {
   const seen = await run(win, `(async () => {
     const { renderMarkdown, streamMarkdown } = await import('./view/markdown.js')
-    const text = ${JSON.stringify(SAMPLE)}
     const ctx = { openLink: () => {}, image: null }
     const mismatches = []
     let frames = 0
     let headingsKept = 0
+    for (const [sample, text] of ${JSON.stringify(SAMPLES)}.entries())
     for (const step of [1, 3, 7, 19, 64]) {
       let drawn = null
       let firstHeading = null
@@ -36,15 +48,19 @@ export async function checkStreamMarkdown(win: SmokeWindow): Promise<string[]> {
         drawn = streamMarkdown(drawn, text.slice(0, end), ctx)
         frames += 1
         const whole = renderMarkdown(text.slice(0, end), ctx)
-        if (!drawn.el.isEqualNode(whole) && mismatches.length < 3) mismatches.push({ step, end, got: drawn.el.innerHTML.slice(-160), want: whole.innerHTML.slice(-160) })
-        // The heading is finished once the paragraph after it has begun.
-        if (end > 40) {
+        // A growing code block keeps its text in more than one node: the same once adjacent text is joined.
+        const joined = drawn.el.cloneNode(true)
+        joined.normalize()
+        if (!joined.isEqualNode(whole) && mismatches.length < 3) mismatches.push({ sample, step, end, got: drawn.el.innerHTML.slice(-160), want: whole.innerHTML.slice(-160) })
+        // SAMPLE's heading is finished once the paragraph after it has begun.
+        if (sample === 0 && end > 40) {
           const heading = drawn.el.querySelector('.md-heading')
           firstHeading ??= heading
           kept &&= heading !== null && heading === firstHeading
         }
         if (end === text.length) break
       }
+      if (sample !== 0) continue
       if (kept) headingsKept += 1
       else mismatches.push({ step, problem: 'the finished heading was drawn again' })
     }
@@ -54,9 +70,16 @@ export async function checkStreamMarkdown(win: SmokeWindow): Promise<string[]> {
   return seen.mismatches.length ? [`a streamed answer should draw what the whole text draws, at every step: ${JSON.stringify(seen.mismatches)}`] : []
 }
 
+/** Each frame's work typing out the end of an answer in the thread. */
+type FrameCost = { chars: number, frames: number, medianMs: number, p95Ms: number }
+
 export interface StreamingCost {
-  /** Typing out the end of a 60 000-character answer in the thread: each frame's work. */
-  answer: { chars: number, frames: number, medianMs: number, p95Ms: number }
+  /** A 60 000-character answer of many short blocks. */
+  answer: FrameCost
+  /** A 120 000-character answer that is one code block, still open. */
+  code: FrameCost
+  /** A 60 000-character answer that is one paragraph: drawn again each frame (diagnostic, no budget). */
+  paragraph: FrameCost
   /** Unfolding 过程 of a task of 1000 steps: the click's work, the rows drawn, and how many it should draw. */
   steps: { steps: number, rows: number, shown: number, expandMs: number }
 }
@@ -76,21 +99,29 @@ export async function measureStreaming(win: SmokeWindow): Promise<StreamingCost>
     }
     const pick = (list, q) => +[...list].sort((a, b) => a - b)[Math.min(list.length - 1, Math.floor(list.length * q))].toFixed(2)
 
-    const block = '## 第 N 步\\n\\n这一步读取了笔记，记录了进展、遇到的**阻塞**和第二天的计划。\\n\\n- 待办一：接口联调\\n- 待办二：测试环境\\n\\n\`\`\`ts\\nconst result = await check(step)\\n\`\`\`\\n\\n'
-    const chars = 60000
-    const text = block.repeat(Math.ceil(chars / block.length)).slice(0, chars)
     const base = reduce(initialState, { type: 'history_loaded', conversationId: 'stream-fixture', savedAt: 1, messages: [{ role: 'user', text: '写长一点' }, { role: 'assistant', text: 'x' }] })
-    const at = (shown) => ({ ...base, messages: base.messages.map((m, i) => i === base.messages.length - 1 ? { ...m, text, shown, open: true } : m) })
-    const thread = offscreen()
-    const times = []
-    try {
-      for (let shown = chars - 20000; shown <= chars; shown += 250) {
-        const t0 = performance.now()
-        renderThread(thread, at(shown), handlers, Date.now())
-        thread.getBoundingClientRect()
-        if (shown >= chars - 15000) times.push(performance.now() - t0)
-      }
-    } finally { thread.remove() }
+    /** The last 15 000 characters of \`text\` typed out, 250 a frame, after a first 5 000 to settle. */
+    const typeOut = (text) => {
+      const at = (shown) => ({ ...base, messages: base.messages.map((m, i) => i === base.messages.length - 1 ? { ...m, text, shown, open: true } : m) })
+      const thread = offscreen()
+      const times = []
+      try {
+        for (let shown = text.length - 20000; shown <= text.length; shown += 250) {
+          const t0 = performance.now()
+          renderThread(thread, at(shown), handlers, Date.now())
+          thread.getBoundingClientRect()
+          if (shown >= text.length - 15000) times.push(performance.now() - t0)
+        }
+      } finally { thread.remove() }
+      return { chars: text.length, frames: times.length, medianMs: pick(times, 0.5), p95Ms: pick(times, 0.95) }
+    }
+    const fill = (unit, chars) => unit.repeat(Math.ceil(chars / unit.length)).slice(0, chars)
+    const blocks = fill('## 第 N 步\\n\\n这一步读取了笔记，记录了进展、遇到的**阻塞**和第二天的计划。\\n\\n- 待办一：接口联调\\n- 待办二：测试环境\\n\\n\`\`\`ts\\nconst result = await check(step)\\n\`\`\`\\n\\n', 60000)
+    const code = '\`\`\`ts\\n' + fill('const result = await check(step) // 核对这一步\\n', 120000)
+    const paragraph = fill('这一步读取了笔记，记录了进展、遇到的**阻塞**和第二天的计划。', 60000)
+    const answer = typeOut(blocks)
+    const codeCost = typeOut(code)
+    const paragraphCost = typeOut(paragraph)
 
     let state = reduce(initialState, { type: 'task_started', task: { id: 'cost', segmentId: 'seg', title: '整理笔记', words: '整理笔记' }, text: '整理笔记', submissionId: 's', origin: 'composer', at: Date.now() })
     for (let i = 0; i < 1000; i += 1) {
@@ -109,7 +140,7 @@ export async function measureStreaming(win: SmokeWindow): Promise<StreamingCost>
       rows = page.querySelectorAll('.trace-row').length
     } finally { page.remove() }
     return {
-      answer: { chars, frames: times.length, medianMs: pick(times, 0.5), p95Ms: pick(times, 0.95) },
+      answer, code: codeCost, paragraph: paragraphCost,
       steps: { steps: 1000, rows, shown: STEPS_SHOWN, expandMs },
     }
   })()`) as StreamingCost
