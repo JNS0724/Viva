@@ -149,6 +149,17 @@ test('a session no agent holds now is read as stored: there, read; not there, or
   assert.equal(await reports.status('old', 't1:run-1', T1), 'read', 'in its stored history')
   assert.equal(await reports.status('old', 't2:run-1', T2), 'none', 'not there: lost there')
   assert.equal(await reports.status('gone', 't1:run-1', T1), 'none', 'no such session')
-  assert.equal(await reports.status('broken', 't1:run-1', T1), null, 'it cannot be read: not known, asked again later')
+  await assert.rejects(reports.status('broken', 't1:run-1', T1), /disk/, 'it cannot be read: an error, for the app to try again later')
   assert.equal(await reports.deliver('old', 't2:run-1', T2, 'note'), null, 'never steered into a session no agent holds')
+})
+
+test('a stored session that cannot be read is answered failed, so the app tries again after a wait', async () => {
+  const sent: Array<Record<string, unknown>> = []
+  let onMessage: (message: unknown) => void = () => {}
+  const reports = createReportDesk({ agentOf: () => null, stored: async () => { throw new Error('disk busy') }, send: () => {} })
+  createSteerChannel({ send: (message) => { sent.push(message as Record<string, unknown>) }, on: (_: string, fn: (message: unknown) => void) => { onMessage = fn }, off: () => {} },
+    () => null, () => {}, reports)
+  onMessage({ type: 'report_status', id: 'r1', sessionId: 'old', reportId: 't1:run-1', token: T1 })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(sent, [{ type: 'report_result', id: 'r1', status: 'failed' }])
 })

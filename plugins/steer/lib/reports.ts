@@ -99,16 +99,17 @@ export function createReportDesk({ agentOf, stored = async () => null, send, log
 
   /**
    * How a report stands in a session. One no agent holds now is read as stored: in its history it is read (a session
-   * let go is written out); not there, or no such session, it is lost there. null when it cannot be read.
+   * let go is written out); not there, or no such session, it is lost there; a read that fails throws.
    */
   async function statusNow(sessionId: string, reportId: string, token: string): Promise<ReportStatus | null> {
     const agent = agentOf(sessionId)
     if (!agent) {
+      // A read that fails (the disk busy) throws: the channel answers `failed`, which the app tries again after a
+      // wait. Only a session not stored at all, or one whose history has no such report, is lost there.
       const history = await stored(sessionId).catch((err) => {
         log(`could not read a stored session for a report: ${err instanceof Error ? err.message : String(err)}`)
-        return undefined
+        throw err
       })
-      if (history === undefined) return null
       return history?.some((message) => isReport(message, reportId, token)) ? 'read' : 'none'
     }
     register(sessionId, reportId, token)
