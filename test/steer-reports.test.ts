@@ -5,7 +5,7 @@ import { createReportDesk, REPORT_SOURCE, TOKEN_MARK, type ReportAgent, type Rep
 import { createSteerDesk, NO_PLUGIN } from '../src/backend/steer-channel.ts'
 
 /**
- * Background tasks' results through viva-steer (plugins/steer/lib/reports.ts, system-design §12.4): known only by
+ * Background tasks' results through viva-steer (plugins/steer/lib/reports.ts, system-design §11.5): known only by
  * what no one else writes (the source steered in, or a token the app gave that session), read once written and
  * flushed, lost when a turn drops them; and the app's side of the channel.
  */

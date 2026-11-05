@@ -477,8 +477,10 @@ test('a window reloaded while a task waits on the user shows what it waits for, 
   const permission = { requestId: 'p1', toolCall: { toolCallId: 't1', title: '写入 docs/release.md' }, options: [{ optionId: 'ok', name: '允许', kind: 'allow_once' }] }
   const question = { questionId: 'q1', questions: [{ id: 'city', question: '哪个城市？', options: [{ label: '上海' }] }] }
   for (const [name, waits] of [['permission', { permissions: [permission], questions: [] }], ['question', { permissions: [], questions: [question] }]] as const) {
-    const { call } = setup({ waits })
+    const { call, emit } = setup({ waits })
     const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+    // It waits on the user, as dsh said (the registry's); what it waits for is dsh's (waitsOf).
+    emit(name === 'permission' ? { type: 'permission', taskId: task.id, requestId: 'p1' } : { type: 'task_question', taskId: task.id, questionId: 'q1', questions: [] })
     const listed = await call<Kept[]>('task:finished')
     const state = reduce(initialState, { type: 'tasks_restored', list: listed })
     const [restored] = state.tasks.list

@@ -11,7 +11,7 @@ import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary }
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
 /**
- * TaskRuntime (docs/system-design.md §12.2): the one writer of the background tasks. 后台做 starts a task in a
+ * TaskRuntime (docs/system-design.md §11.2): the one writer of the background tasks. 后台做 starts a task in a
  * session of its own, forked from the conversation (before the turn running there, if one is), its segment hanging
  * off the conversation, out of the timeline. It holds each task's life (task-registry.ts: at work, waiting, how it
  * ended), what the task says (task-words.ts) and what is kept of it (task-store.ts); no other module writes these.
@@ -24,7 +24,7 @@ import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
  *   `reports` (task-reports.ts, for results back in the conversation).
  * - A run's end queues its `report` (effects.ts) in the same transaction, keyed by the run (`reportId`); a new run,
  *   or the task closed, cancels the report of the run before.
- * - The window's order (§12.2): what a task's run says reaches the window from here, each piece numbered (`taskSeq`,
+ * - The window's order (§11.3): what a task's run says reaches the window from here, each piece numbered (`taskSeq`,
  *   one count per task; not the event core's `seq`, which a push to the window carries too) with its `runId`, after it is taken in and before the snapshot it changed; each snapshot says the
  *   last piece it already includes. The snapshot that makes a task, or begins a new run of it, goes out (with what
  *   the run begins with: `opening`) before the run's first piece, since the run is asked only once it is kept. What
@@ -350,24 +350,26 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   }
 
   /**
-   * Every task kept, for a window that opens (at launch, or reloaded while tasks go on): with what it said, to be
-   * closed or messaged by the agent. Those this launch holds and that have not ended are at work (no `endedAt`),
-   * with what they said so far; those an earlier launch quit on are interrupted, taken up only when messaged.
+   * Every task kept, for a window that opens (at launch, or reloaded while tasks go on): how it stands, as its
+   * snapshot says it (the registry's, the one place that works it out: at work, waiting, ended, interrupted), with
+   * what it said, and, at work, what it waits on the user for (dsh's, for the window to show and answer it).
    */
   function finished(): KeptTask[] {
     return store.list().flatMap((entry) => {
       const found = db.get(entry.segmentId)
       if (!found) return []
       if (!tasks.has(entry.id)) tasks.set(entry.id, entry)
-      const ended = isEnded(entry)
       const held = attached.has(entry.id)
       const messages = (held ? taskWords.current(entry.id) : null) ?? found.messages.slice(entry.keep)
       // What it said so far includes its stream to here: a piece in flight at or below this is not taken again.
       const mark = typeof entry.runId === 'string' && entry.runId
         ? { mark: { runId: entry.runId, seq: seqOf(entry.id), revision: registry.revisionOf(entry.id) ?? 0 } } : {}
-      if (ended) return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages, ...mark }]
-      if (held) return [{ task: restoredSummary(entry), status: 'running', endedAt: null, startedAt: entry.startedAt ?? null, messages, waits: waitsOf(entry.id), ...mark }]
-      return [{ task: restoredSummary(entry), status: 'interrupted', endedAt: entry.startedAt ?? Date.now(), messages, ...mark }]
+      const stands = registry.snapshotOf(entry.id)
+      const status = stands?.status ?? (isEnded(entry) ? entry.status : 'interrupted')
+      if (status === 'running' || status === 'waiting') {
+        return [{ task: restoredSummary(entry), status, endedAt: null, startedAt: stands?.startedAt ?? entry.startedAt ?? null, messages, waits: waitsOf(entry.id), ...mark }]
+      }
+      return [{ task: restoredSummary(entry), status, endedAt: stands?.endedAt ?? entry.endedAt ?? entry.startedAt ?? now(), messages, ...mark }]
     })
   }
 

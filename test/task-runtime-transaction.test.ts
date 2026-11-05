@@ -12,7 +12,7 @@ import { createTaskStore, type StoredTask } from '../src/backend/task-store.ts'
 import type { TaskSnapshot } from '../src/backend/task-registry.ts'
 
 /**
- * TaskRuntime over the real thing (system-design §12.2): one app database holding the history, the task store and
+ * TaskRuntime over the real thing (system-design §11.2): one app database holding the history, the task store and
  * the events, and the event core's apply, as compose.ts wires them. A change that cannot be written leaves nothing:
  * not in the database, and not in memory. dsh says a turn ended once, so an end not kept is tried again (its waits
  * run here by hand), for that run only, and its result goes back to the conversation only once it is kept.

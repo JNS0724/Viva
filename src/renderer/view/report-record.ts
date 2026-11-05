@@ -5,7 +5,7 @@ import { h } from './dom.ts'
 import { statusMark } from './task-card.ts'
 
 /**
- * A background task's result the model was given (system-design §12.4 point 7), as one quiet line where it came:
+ * A background task's result the model was given (system-design §11.5), as one quiet line where it came:
  * which task, how it went (into the turn that was running, or a turn of its own), and when; opened, the note as the
  * model was given it and a way to the task's page. The backend keeps it (report-records.ts); it is drawn after the
  * message it came after (view/thread.ts, view/earlier.ts).

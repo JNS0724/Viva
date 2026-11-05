@@ -13,7 +13,7 @@ import { startFakeLlm } from './fixtures/fake-llm.js'
 import { randomUUID } from 'node:crypto'
 
 /**
- * A background task's result into the main conversation, on the real dsh with Viva's plugins (system-design §12.4):
+ * A background task's result into the main conversation, on the real dsh with Viva's plugins (system-design §11.5):
  * steered into the running turn and confirmed read once written and flushed; lost when the turn stops before its
  * next step; and a turn of its own named by the note, confirmed the same way. Never sent twice.
  */

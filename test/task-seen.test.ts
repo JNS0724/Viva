@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { initialState, reduce } from '../src/renderer/state.ts'
+import { initialState, reduce } from './fixtures/task-window.ts'
 import { shownOnPage, unseenEnded } from '../src/renderer/tasks-state.ts'
 import { islandView } from '../src/renderer/island-view.ts'
 

@@ -7,7 +7,7 @@ import { openAppDb, transaction } from '../src/backend/app-db.ts'
 import { createEffects, RETRY_MS, type Effect, type Outcome } from '../src/backend/effects.ts'
 
 /**
- * The effects queue (system-design §12.3) on a real app database: queued with the change that calls for it, run after,
+ * The effects queue (system-design §11.4) on a real app database: queued with the change that calls for it, run after,
  * kept across a restart; a try acts on the generation it was given only.
  */
 

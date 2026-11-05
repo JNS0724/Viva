@@ -30,7 +30,7 @@ export interface TaskMark { runId: string, seq: number, revision?: number }
 /** A task as `task:finished` gives it back: ended; at work in this launch (a reloaded window); or one Viva quit on. */
 export type KeptTask = ({ mark?: TaskMark }) & (
   | { task: TaskSummary, status: string, endedAt: number, messages: readonly KeptMessage[] }
-  | { task: TaskSummary, status: 'running', endedAt: null, startedAt: number | null, messages: readonly KeptMessage[],
+  | { task: TaskSummary, status: 'running' | 'waiting', endedAt: null, startedAt: number | null, messages: readonly KeptMessage[],
     waits: { permissions: readonly unknown[], questions: readonly unknown[] } }
   | { task: TaskSummary, status: 'interrupted', endedAt: number, messages: readonly KeptMessage[] })
 

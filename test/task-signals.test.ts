@@ -8,8 +8,8 @@ import { createEventCore, type DshTaskEvent, type Routes } from '../src/backend/
 import { createTaskSignals, taskEventOf } from '../src/backend/task-signals.ts'
 
 /**
- * What dsh reports of a task reaches the task runtime by way of its signal, as compose.ts wires it, on a real event
- * core; and reaches it all the same when the signal cannot be recorded, since dsh says each once.
+ * What dsh reports of a task reaches the task runtime first, as compose.ts wires it, on a real event core; its signal
+ * is recorded after, for the record only, and one that cannot be recorded loses nothing.
  */
 
 function setup(t: TestContext, { failReceive = false } = {}) {
@@ -31,8 +31,8 @@ function setup(t: TestContext, { failReceive = false } = {}) {
   const routes: Routes = {
     'chat.said': idle, 'agent.turn_ended': idle, 'agent.followup_proposed': idle, 'clock.reminder_due': idle,
     'clock.prepare_window': idle, 'system.woke': idle, 'system.user_returned': idle, 'window.foreground': idle, 'user.command': idle,
-    'agent.task_ended': ({ event }) => signals.routed(event),
-    'agent.task_waits': ({ event }) => signals.routed(event),
+    'agent.task_ended': idle,
+    'agent.task_waits': idle,
   }
   core.route(routes)
   /** The database refuses every new event, as a full disk would. */
@@ -43,7 +43,7 @@ function setup(t: TestContext, { failReceive = false } = {}) {
 
 const end = (): DshTaskEvent => ({ type: 'task_end', taskId: 'task-0001', stopReason: 'end_turn' })
 
-test('a task\'s end and its waits go by way of their signals, recorded by kind and task; what it says goes straight on', (t) => {
+test('a task\'s end and its waits reach the runtime, then are recorded as signals by kind and task; what it says only reaches it', (t) => {
   const { signals, received, recorded } = setup(t)
   signals.report({ type: 'task_update', taskId: 'task-0001', update: {} })
   signals.report({ type: 'task_question', taskId: 'task-0001', questionId: 'q1', questions: [] })
@@ -55,7 +55,7 @@ test('a task\'s end and its waits go by way of their signals, recorded by kind a
   ])
 })
 
-test('a signal that cannot be recorded still gets its event to the runtime, once, and says why', (t) => {
+test('a signal that cannot be recorded: its event reached the runtime already, once, and why is said', (t) => {
   const { signals, received, problems, refuseEvents, recorded } = setup(t)
   refuseEvents()
   signals.report(end())
@@ -64,10 +64,20 @@ test('a signal that cannot be recorded still gets its event to the runtime, once
   assert.match(String(problems[0]), /disk full/)
 })
 
-test('an event its route handed on is not handed again when the runtime fails after it', (t) => {
-  const { signals, received } = setup(t, { failReceive: true })
+test('the runtime failing on an event: it is not handed again, and its signal is still recorded', (t) => {
+  const { signals, received, recorded } = setup(t, { failReceive: true })
   assert.throws(() => signals.report(end()), /the runtime failed/)
   assert.equal(received.length, 1)
+  assert.deepEqual(recorded().map(([kind]) => kind), ['signal.agent.task_ended'])
+})
+
+test('the record comes after the runtime: an end is kept by the runtime before its signal is written', (t) => {
+  const order: string[] = []
+  const { signals } = setup(t)
+  const tracked = createTaskSignals({ signal: () => { order.push('recorded') }, receive: () => { order.push('received') } })
+  tracked.report(end())
+  signals.report({ type: 'task_update', taskId: 'task-0001', update: {} })
+  assert.deepEqual(order, ['received', 'recorded'])
 })
 
 test('only a task\'s events are its: the conversation\'s own permission names no task', () => {

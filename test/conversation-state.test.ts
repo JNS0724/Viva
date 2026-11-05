@@ -5,7 +5,7 @@ import { initialState, reduce } from '../src/renderer/state.ts'
 import { threadState } from '../src/renderer/view/tasks-page.ts'
 
 /**
- * One conversation, reduced on its own (conversation-state.ts, system-design §12.7 step 5): the one on screen and each
+ * One conversation, reduced on its own (conversation-state.ts, system-design §11.3): the one on screen and each
  * background task's go by the same pure reducer, and a task's view stays a conversation, nothing of the window's in
  * it; the thread is drawn from a view that names what it needs (view/thread.ts ThreadView).
  */
@@ -74,4 +74,18 @@ test('a task\'s thread is drawn from its own conversation only: not the records,
   const view = threadState(screen as never, { id: 's1', title: '查一下', status: 'done', view: reduceConversation(initialConversation as ConversationView, turn[0]) } as never)
   assert.deepEqual([view.records, view.proposals, view.taskCards, view.tasks.list, view.conversationId], [[], [], [], [], null])
   assert.deepEqual(view.messages.map((m) => [m.text, m.shown]), [['查一下', 3]], 'all of what it said shown')
+})
+
+test('how a task stands is its snapshots\' alone: its end, or a wait, in its stream changes its view, not its status', () => {
+  const made = reduce(initialState, { type: 'task_snapshot', snapshot: { taskId: 's1', runId: 'run-1', title: '查一下', status: 'running',
+    currentAction: null, waitingFor: null, startedAt: 1, updatedAt: 1, endedAt: null, resultPreview: '', revision: 1, taskSeq: 0,
+    opening: { words: '查一下', task: { id: 's1', segmentId: 'c-task', title: '查一下', words: '查一下' }, hostSession: null } } })
+  const asked = reduce(made, { type: 'permission_request', taskId: 's1', requestId: 'p1', toolCall: { title: '写文件' }, options: [], at: 2, runId: 'run-1', seq: 1 })
+  assert.deepEqual([asked.tasks.list[0].status, asked.tasks.list[0].view.phase, asked.tasks.list[0].permission?.requestId], ['running', 'waiting', 'p1'],
+    'what it waits for is shown at once; that it waits, its snapshot says')
+  const ended = reduce(asked, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 3, runId: 'run-1', seq: 2 })
+  assert.deepEqual([ended.tasks.list[0].status, ended.tasks.list[0].endedAt, ended.tasks.list[0].view.phase], ['running', null, 'idle'])
+  const told = reduce(ended, { type: 'task_snapshot', snapshot: { ...made.tasks.list[0], taskId: 's1', runId: 'run-1', status: 'done',
+    currentAction: null, waitingFor: null, startedAt: 1, updatedAt: 3, endedAt: 3, resultPreview: '', revision: 3, taskSeq: 2 } })
+  assert.deepEqual([told.tasks.list[0].status, told.tasks.list[0].endedAt, told.tasks.list[0].now], ['done', 3, null])
 })

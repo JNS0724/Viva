@@ -60,7 +60,7 @@ test('read while the task goes on and ends: what came meanwhile waits, then is t
   win.arrive(snapshot({ taskSeq: 1 }))
   win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 2, update: chunk('写好了。') })
   win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 3, stopReason: 'end_turn' })
-  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 3 }))
+  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 3, revision: 3 }))
   assert.deepEqual(win.state().tasks.list, [], 'nothing of it taken before the read')
   read.resolve([running(1)])
   await loading
@@ -121,18 +121,19 @@ test('more came during the read than can wait: the read is not taken, and is beg
   assert.equal(errors.length, 1, 'said once')
 })
 
-test('a task the window knows already is not read over: neither an older read, nor an older snapshot, puts it back', async () => {
-  const win = windowWith([Promise.resolve([running(1)])])
+test('a read is the baseline for the tasks it has; a snapshot no newer than what the window has changes nothing', async () => {
+  const win = windowWith([Promise.resolve([{ ...running(1), mark: { runId: 'run-1', seq: 1, revision: 4 } }])])
   await win.actions.loadKept()
   win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 2, stopReason: 'end_turn' })
-  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2 }))
-  win.dispatch({ type: 'tasks_restored', list: [running(1)] })
-  assert.deepEqual([win.state().tasks.list[0].status, win.state().tasks.list[0].seq], ['done', 2], 'an older read does not put it back at work')
-  win.dispatch(snapshot({ status: 'running', taskSeq: 1 }))
-  assert.equal(win.state().tasks.list[0].status, 'done', 'nor an older snapshot')
+  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2, revision: 6 }))
+  assert.deepEqual([win.state().tasks.list[0].status, win.state().tasks.list[0].seq], ['done', 2])
+  win.dispatch(snapshot({ status: 'running', taskSeq: 1, revision: 5 }))
+  assert.equal(win.state().tasks.list[0].status, 'done', 'an older snapshot does not put it back at work')
+  win.dispatch({ type: 'tasks_restored', list: [done(5)] })
+  assert.equal(win.state().tasks.list[0].seq, 5, 'a read puts the tasks it has to what it says')
 })
 
-test('a task known while the read is under way: its words that came meanwhile (no snapshot after them) are not read over', async () => {
+test('a task known while the read is under way: its words that came meanwhile (no snapshot after them) wait, and follow the read', async () => {
   const read = deferred<unknown>()
   const win = windowWith([read.promise])
   // Started from this window as the read began: made by its first snapshot, so known, its pieces taken as they come.
@@ -140,7 +141,9 @@ test('a task known while the read is under way: its words that came meanwhile (n
   const loading = win.actions.loadKept()
   for (let n = 1; n <= 11; n++) win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: n, update: chunk(`${n}、`) })
   // The read was made at piece 10, after many changes (revision 11); piece 11 came before its answer.
-  read.resolve([{ ...running(10, 'run-1', ['整理发布说明', '1、2、3、4、5、6、7、8、9、10、']), mark: { runId: 'run-1', seq: 10, revision: 11 } }])
+  // As the backend gives a task held (task-words.ts current): the answer it is writing, marked open.
+  const reading = running(10, 'run-1', ['整理发布说明', '1、2、3、4、5、6、7、8、9、10、'])
+  read.resolve([{ ...reading, messages: [reading.messages[0], { ...reading.messages[1], open: true }], mark: { runId: 'run-1', seq: 10, revision: 11 } }])
   await loading
   const [task] = win.state().tasks.list
   assert.equal(task.seq, 11, 'its last piece, the window\'s')

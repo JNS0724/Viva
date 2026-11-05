@@ -1,7 +1,7 @@
 import { closeStreams } from './streams.ts'
 
 /**
- * Background tasks' results the model read, as the records the conversation on screen draws (system-design §12.4
+ * Background tasks' results the model read, as the records the conversation on screen draws (system-design §11.5
  * point 7). They are not messages: the backend keeps them (report-records.ts), the window only draws them, each
  * after the message it came after (`after`: how many messages came before it), so a record never moves a message
  * nor a message's place in the history. Pure and immutable like the rest of `state.ts`, which merges these handlers.

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { hubPage } from '../src/renderer/hub-state.ts'
-import { initialState, reduce } from '../src/renderer/state.ts'
+import { initialState, reduce } from './fixtures/task-window.ts'
 import { liveTasks, pageGroups, pageTask, taskMessages } from '../src/renderer/tasks-state.ts'
 
 /**

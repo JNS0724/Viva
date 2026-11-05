@@ -4,7 +4,7 @@ import type { Effect, Outcome, Runner } from './effects.ts'
 import type { ReportState } from './steer-channel.ts'
 
 /**
- * Results back to the main conversation (system-design §11.2, §12.4): when a background task's run ends, a `report`
+ * Results back to the main conversation (system-design §11.5): when a background task's run ends, a `report`
  * effect is queued with its end (task-runtime.ts, effects.ts), keyed by the run (`reportId`), so it is still there
  * after a restart. The model is given a note (which task, how it ended, the end of what it said) and decides what to
  * tell the user:

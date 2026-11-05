@@ -79,7 +79,7 @@ function pluginManagerLines(pnpmCommand: string | null) {
   ]
 }
 /**
- * dsh's sub-agents, used within a turn only (system-design §11.5): in the foreground, so the main conversation waits
+ * dsh's sub-agents, used within a turn only (system-design §11.7): in the foreground, so the main conversation waits
  * for the result in the same turn; with read-only tools for looking things up, by allow list, so tools dsh or a
  * plugin adds later are not given to them; and unable to delegate further. Work that runs long, should be seen by
  * the user or asked about later goes to Viva's background tasks instead. The follow-up tools (send_message,

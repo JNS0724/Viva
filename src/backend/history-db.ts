@@ -82,7 +82,7 @@ const SCHEMA = `
     INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
   END;
   CREATE TABLE IF NOT EXISTS id_counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
-  -- A background task's result the model read, as the record its conversation shows (system-design §12.4 point 7).
+  -- A background task's result the model read, as the record its conversation shows (system-design §11.5).
   -- Only the backend writes these, with the report done (report-records.ts); the window's saves never touch them.
   -- after_seq: how many of the conversation's messages were stored when it came, the place it is drawn at.
   CREATE TABLE IF NOT EXISTS report_records (

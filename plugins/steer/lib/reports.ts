@@ -2,7 +2,7 @@ import { TOKEN_MARK } from '../../../src/shared/task-report.ts'
 
 /**
  * A background task's result, delivered into the main conversation at most once and confirmed read
- * (docs/system-design.md §12.4). The app names each report (`reportId`, a task's run) and gives it a `token`: a
+ * (docs/system-design.md §11.5). The app names each report (`reportId`, a task's run) and gives it a `token`: a
  * random secret it keeps with the report. This side finds the report in the session and says how it stands:
  *
  * - `read`: its message is in the session's history and the session was flushed (`sessions.flush` true).

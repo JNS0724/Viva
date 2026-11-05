@@ -24,9 +24,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 }) {
   let submissionCounter = 0
   /**
-   * While the tasks are read (loadKept): what the live channel says meanwhile of a task the window does not know yet,
-   * in order, to be taken once the read is (the window would not take it now, the task unknown). Null when no read
-   * is under way.
+   * While the tasks are read (loadKept): what the live channel says meanwhile of any task, in order, to be taken once
+   * the read is, over it. Null when no read is under way.
    */
   let held: AgentEvent[] | null = null
   /** More came while the tasks were read than is held: the read is begun again. */
@@ -72,13 +71,14 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
    * (interrupted), which the agent takes up again when asked (message_background_task).
    */
   /**
-   * An event from the main process, before it is reduced: while the tasks are read, one of a task the window does
-   * not know yet waits for the read. True when it is held (app.ts then leaves it).
+   * An event from the main process, before it is reduced: while the tasks are read, any task's waits for the read,
+   * known to the window or not (the read is the baseline the tasks it has are put back to; what came after it follows,
+   * in order). True when it is held (app.ts then leaves it).
    */
   function hold(event: AgentEvent): boolean {
     if (!held) return false
     const taskId = event.snapshot?.taskId ?? event.taskId
-    if (typeof taskId !== 'string' || !taskId || getState().tasks.list.some((task) => task.id === taskId)) return false
+    if (typeof taskId !== 'string' || !taskId) return false
     if (held.length >= MAX_HELD) overflowed = true
     else held = [...held, event]
     return true

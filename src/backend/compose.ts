@@ -189,10 +189,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     else host.window.send({ ...event, seq: 0, transient: true })
   }
 
-  /**
-   * What dsh reports of tasks, to the task runtime: by way of their signals, and straight there when a signal cannot be
-   * recorded (task-signals.ts), since dsh says each once.
-   */
+  /** What dsh reports of tasks: to the task runtime first, then its signal recorded (task-signals.ts). */
   const taskSignals = createTaskSignals({
     signal: (input) => signal(input),
     receive: (event) => taskRuntime?.dsh.receive(event),
@@ -705,8 +702,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       },
       // How a task's turn ended is kept (task-runtime.ts); its result goes back to the conversation; a gap follows.
       // How it ended is kept by the task runtime, tried again until it is; then onEnd (openHistory) reports it.
-      'agent.task_ended': ({ event }) => taskSignals.routed(event),
-      'agent.task_waits': ({ event }) => taskSignals.routed(event),
+      // Recorded only: dsh's word went to the task runtime already (task-signals.ts), which keeps it.
+      'agent.task_ended': () => undefined,
+      'agent.task_waits': () => undefined,
       // The same proposal turned down lately is not shown again.
       'agent.followup_proposed': ({ event }) => {
         const proposal = followups?.admitProposal(event.proposal as ProposalView)
