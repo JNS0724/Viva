@@ -281,15 +281,12 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
         const view = (waits?.questions ?? []).reduce<BackgroundTask['view']>((current, wait) => handlers.question_request(current, { ...wait, at }), asked)
         return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
-      // What the window has of a task already, as new as what was read or newer (by the last piece of its stream,
-      // one count across its runs), stays: a read that came back late never puts a task back to where it was.
-      const fresher = (task: BackgroundTask) => {
-        const known = state.tasks.list.find((entry) => entry.id === task.id)
-        if (!known) return false
-        if (typeof task.revision === 'number' && typeof known.revision === 'number') return known.revision >= task.revision
-        return typeof task.seq === 'number' && typeof known.seq === 'number' && known.seq >= task.seq
-      }
-      const taken = restored.filter((task: BackgroundTask) => !fresher(task))
+      // A task the window knows already stays as it is: it has had every piece and snapshot of it since it knew it,
+      // and a push and the answer to a call come in the order the main process sent them, so whatever the read saw of
+      // it the window has too, and its words since (which no snapshot follows). Only one it does not know is read in;
+      // what the live channel said of that one meanwhile waited, and follows (task-actions.ts loadKept).
+      const known = (task: BackgroundTask) => state.tasks.list.some((entry) => entry.id === task.id)
+      const taken = restored.filter((task: BackgroundTask) => !known(task))
       return withTasks(state, {
         list: [...state.tasks.list.filter((entry) => !taken.some((task: BackgroundTask) => task.id === entry.id)), ...taken],
       })

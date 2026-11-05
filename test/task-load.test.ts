@@ -121,7 +121,7 @@ test('more came during the read than can wait: the read is not taken, and is beg
   assert.equal(errors.length, 1, 'said once')
 })
 
-test('a read that comes back later than what the window has puts nothing back', async () => {
+test('a task the window knows already is not read over: neither an older read, nor an older snapshot, puts it back', async () => {
   const win = windowWith([Promise.resolve([running(1)])])
   await win.actions.loadKept()
   win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 2, stopReason: 'end_turn' })
@@ -130,8 +130,21 @@ test('a read that comes back later than what the window has puts nothing back', 
   assert.deepEqual([win.state().tasks.list[0].status, win.state().tasks.list[0].seq], ['done', 2], 'an older read does not put it back at work')
   win.dispatch(snapshot({ status: 'running', taskSeq: 1 }))
   assert.equal(win.state().tasks.list[0].status, 'done', 'nor an older snapshot')
-  win.dispatch({ type: 'tasks_restored', list: [done(5)] })
-  assert.equal(win.state().tasks.list[0].seq, 5, 'a newer read is taken')
+})
+
+test('a task known while the read is under way: its words that came meanwhile (no snapshot after them) are not read over', async () => {
+  const read = deferred<unknown>()
+  const win = windowWith([read.promise])
+  // Started from this window as the read began: made by its first snapshot, so known, its pieces taken as they come.
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  const loading = win.actions.loadKept()
+  for (let n = 1; n <= 11; n++) win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: n, update: chunk(`${n}、`) })
+  // The read was made at piece 10, after many changes (revision 11); piece 11 came before its answer.
+  read.resolve([{ ...running(10, 'run-1', ['整理发布说明', '1、2、3、4、5、6、7、8、9、10、']), mark: { runId: 'run-1', seq: 10, revision: 11 } }])
+  await loading
+  const [task] = win.state().tasks.list
+  assert.equal(task.seq, 11, 'its last piece, the window\'s')
+  assert.deepEqual(texts(win.state()), ['整理发布说明', '1、2、3、4、5、6、7、8、9、10、11、'], 'no word lost, none twice')
 })
 
 test('the read has a later run already: the older run\'s beginning, end and pieces that waited change nothing, the later run\'s new words are taken once', async () => {
