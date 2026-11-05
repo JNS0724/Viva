@@ -28,7 +28,6 @@ import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
 import { createTaskReports } from './task-reports.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
-import { endedStatus } from './task-registry.ts'
 import type { TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
@@ -658,17 +657,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         taskReports.flush()
       },
       // How a task's turn ended is kept (task-runtime.ts); its result goes back to the conversation; a gap follows.
-      'agent.task_ended': ({ event }) => {
-        try {
-          taskRuntime?.dsh.receive(event)
-        } catch (err) {
-          // Not kept, so nothing changed: the task stays at work, and its result is not reported as if it were.
-          console.error('[tasks] could not keep how a task ended:', err instanceof Error ? err.message : String(err))
-          return
-        }
-        taskReports.ended(event.taskId, endedStatus(event.stopReason))
-        followups?.gap()
-      },
+      // How it ended is kept by the task runtime, tried again until it is; then onEnd (openHistory) reports it.
+      'agent.task_ended': ({ event }) => taskRuntime?.dsh.receive(event),
       'agent.task_waits': ({ event }) => taskRuntime?.dsh.receive(event),
       // The same proposal turned down lately is not shown again.
       'agent.followup_proposed': ({ event }) => {
@@ -917,6 +907,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       waitsOf: (taskId) => bridge?.taskWaits(taskId) ?? { permissions: [], questions: [] },
       apply: applyChange,
       publish: emitToRenderer,
+      // Once a task's end is kept: its result back to the conversation, and a gap.
+      onEnd: (taskId, status) => {
+        taskReports.ended(taskId, status)
+        followups?.gap()
+      },
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
   }

@@ -39,6 +39,11 @@ const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remov
 /** Without the event core (tests that do not look at events), a change is only its write. */
 const NO_EVENTS: Apply = (_kind, _data, write) => ({ value: write() })
 /**
+ * dsh says a turn ended once; an end that could not be kept (the database refused it) is kept again after these
+ * waits, the last repeated, for as long as that run is the task's: a later run, or dsh gone, lets it go.
+ */
+export const END_RETRY_MS: readonly number[] = Object.freeze([1_000, 5_000, 30_000, 60_000])
+/**
  * Ended tasks kept to be asked again, the latest so many: the user no longer closes each one once read (a task
  * seen stops reminding), so enough are kept that the 后台 page's 做完了 rarely offers one already let go.
  */
@@ -85,12 +90,21 @@ export interface TaskRuntimeDeps {
   apply?: Apply
   /** To the window, once a change has committed: a task's snapshot (`task_snapshot`). */
   publish?: (push: { type: 'task_snapshot', taskId: string, snapshot: TaskSnapshot }) => void
+  /**
+   * A task's run ended and that is kept (after the commit): its result goes back to the conversation, a gap follows
+   * (compose.ts). Not called for an end that could not be kept yet.
+   */
+  onEnd?: (taskId: string, status: string) => void
   now?: () => number
   newRunId?: () => string
 }
 
 export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, announce = () => {},
-  waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
+  waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
+  const later = timers.later ?? setTimeout
+  const cancel = timers.cancel ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
+  /** taskId → the end of its run still to be kept, and its next try. */
+  const pendingEnds = new Map<string, { runId: string, timer: unknown }>()
   /** Snapshots of a change still being written, and what is let go of once it commits (`change`), not before. */
   let queued: TaskSnapshot[] = []
   let afterCommit: Array<() => void> = []
@@ -222,6 +236,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       store.remove(taskId)
       registry.remove(taskId)
     })
+    letEndGo(taskId)
     taskWords.drop(taskId)
     tasks.delete(taskId)
     detach(taskId)
@@ -360,10 +375,39 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       registry.receive(event)
       return
     }
-    change('task.ended', { taskId, runId, status: endedStatus(event.stopReason) }, () => {
-      taskWords.receive(event, { strict: true })
-      registry.receive(event)
-    })
+    endRun(taskId, runId, event, 0)
+  }
+
+  /**
+   * A run's end, kept: what it said, how it ended and `task.ended` together; then the window's snapshot and its result
+   * back to the conversation. Refused by the database, nothing changed, so it is tried again later, with the same run.
+   */
+  function endRun(taskId: string, runId: string, event: Record<string, unknown>, attempt: number) {
+    const status = endedStatus(event.stopReason)
+    try {
+      change('task.ended', { taskId, runId, status }, () => {
+        taskWords.receive(event, { strict: true })
+        registry.receive(event)
+      })
+    } catch (err) {
+      const wait = END_RETRY_MS[Math.min(attempt, END_RETRY_MS.length - 1)]
+      console.error(`[tasks] could not keep how a task ended, trying again in ${wait / 1000}s:`, err instanceof Error ? err.message : String(err))
+      const timer = later(() => {
+        pendingEnds.delete(taskId)
+        // Only the same run: one asked again, taken up, or interrupted since is not ended by this.
+        if (registry.runOf(taskId) === runId) endRun(taskId, runId, event, attempt + 1)
+      }, wait)
+      pendingEnds.set(taskId, { runId, timer })
+      return
+    }
+    onEnd(taskId, status)
+  }
+
+  /** An end still to be kept is let go: its task closed, or dsh gone. */
+  function letEndGo(taskId: string) {
+    const pending = pendingEnds.get(taskId)
+    if (pending) cancel(pending.timer)
+    pendingEnds.delete(taskId)
   }
 
   /**
@@ -373,6 +417,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   function gone() {
     taskWords.flush()
     attached = new Set()
+    ;[...pendingEnds.keys()].forEach(letEndGo)
     registry.interrupt()
   }
 
