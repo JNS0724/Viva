@@ -153,6 +153,8 @@ export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>>
 
   /** dsh names only the tool call; what it does comes from that call, announced just before (approval.js). */
   permission_request: (view, { requestId, toolCall, options, at }) => {
+    // Shown already (one read on opening and also come live, read-handoff.ts): once.
+    if (view.timeline.some((entry) => entry.kind === 'permission' && entry.ref === requestId)) return view
     const known = toolCall?.toolCallId ? view.tools[toolCall.toolCallId] : null
     const title = toolCall?.title || approvalTitle(known) || t("selectors.needs.your.approval")
     return {
@@ -203,14 +205,12 @@ export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>>
   },
 
   /**
-   * What the conversation waits on the user for, read when the window opened on a dsh at work (a reload): each one not
-   * shown yet is shown as when it was asked, so it can be answered; one shown already (it came live meanwhile) once.
+   * What the conversation waits on the user for, read when the window opened on a dsh at work (a reload): each shown
+   * as when it was asked, so it can be answered; one shown already, once (the requests' own check).
    */
   waits_restored: (view, { permissions = [], questions = [], at }) => {
-    const asked = (permissions as Action[]).reduce<ConversationView>((current, wait) => (current.permission?.requestId === wait.requestId
-      ? current : CONVERSATION_ACTIONS.permission_request(current, { ...wait, type: 'permission_request', at })), view)
-    return (questions as Action[]).reduce<ConversationView>((current, wait) => (current.question?.questionId === wait.questionId
-      ? current : CONVERSATION_ACTIONS.question_request(current, { ...wait, type: 'question_request', at })), asked)
+    const asked = (permissions as Action[]).reduce<ConversationView>((current, wait) => CONVERSATION_ACTIONS.permission_request(current, { ...wait, type: 'permission_request', at }), view)
+    return (questions as Action[]).reduce<ConversationView>((current, wait) => CONVERSATION_ACTIONS.question_request(current, { ...wait, type: 'question_request', at }), asked)
   },
 
   error: (view, { message }) => ({

@@ -33,6 +33,8 @@ function togglePick(item: QuestionItem, current: readonly string[], label: strin
 /** The conversation's questions (conversation-state.ts), in the conversation on screen or a task's. */
 export const QUESTION_ACTIONS: Readonly<Record<string, (state: ConversationView, action: Action) => ConversationView>> = {
   question_request: (state, { questionId, questions, at }) => {
+    // Shown already (one read on opening and also come live, read-handoff.ts): once.
+    if (state.timeline.some((entry: { kind: string, ref: unknown }) => entry.kind === 'question' && entry.ref === questionId)) return state
     const closed = closeStreams(state)
     return {
       ...closed,

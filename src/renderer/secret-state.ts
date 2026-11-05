@@ -6,12 +6,16 @@ import { closeStreams } from './streams.ts'
  * which server asks for which names, and the trace only that it was asked and whether it was filled in.
  */
 export const SECRET_ACTIONS: Record<string, Reducer> = {
-  secret_request: (state, { requestId, server, names, at }) => ({
-    ...closeStreams(state),
-    phase: 'asking',
-    secret: { requestId, server, names },
-    timeline: [...state.timeline, { kind: 'secret', ref: requestId, at, title: `${server}：${names.join('、')}` }],
-  }),
+  secret_request: (state, { requestId, server, names, at }) => {
+    // Shown already (one read on opening and also come live, read-handoff.ts): once.
+    if (state.timeline.some((entry) => entry.kind === 'secret' && entry.ref === requestId)) return state
+    return {
+      ...closeStreams(state),
+      phase: 'asking',
+      secret: { requestId, server, names },
+      timeline: [...state.timeline, { kind: 'secret', ref: requestId, at, title: `${server}：${names.join('、')}` }],
+    }
+  },
   secret_resolved: (state, { requestId, provided, at }) => {
     if (state.secret?.requestId !== requestId) return state
     return {
@@ -21,9 +25,8 @@ export const SECRET_ACTIONS: Record<string, Reducer> = {
       timeline: [...state.timeline, { kind: 'secret_answer', ref: requestId, at, title: state.secret.server, provided }],
     }
   },
-  /** Keys still asked for, read when the window opened on a dsh at work (a reload): shown unless shown already. */
-  secrets_restored: (state, { secrets = [], at }) => (secrets as Action[]).reduce<State>((current, wait) => (current.secret?.requestId === wait.requestId
-    ? current : SECRET_ACTIONS.secret_request(current, { ...wait, type: 'secret_request', at })), state),
+  /** Keys still asked for, read when the window opened on a dsh at work (a reload): shown, one shown already once. */
+  secrets_restored: (state, { secrets = [], at }) => (secrets as Action[]).reduce<State>((current, wait) => SECRET_ACTIONS.secret_request(current, { ...wait, type: 'secret_request', at }), state),
   secret_closed: (state, { requestId }) => (state.secret?.requestId === requestId
     ? { ...state, phase: state.phase === 'asking' ? 'working' : state.phase, secret: null }
     : state),

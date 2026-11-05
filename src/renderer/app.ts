@@ -1,3 +1,4 @@
+import { createReadHandoff } from './read-handoff.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { initializeLanguage, registerLanguageDocument } from './language.ts'
@@ -1019,6 +1020,9 @@ function reportMcpProblems(info: AgentInfo | undefined) {
 }
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
+/** What the conversation waits on the user for, read on opening and handed over to the live channel. */
+const waitsHandoff = createReadHandoff<AgentEvent>((event) => handleEvent(event))
+
 function handleEvent(event: AgentEvent) {
   if (state.newTopicPending && isPreviousTopicEvent(event)) return
   const toAction = EVENT_ACTIONS[event?.type ?? '']
@@ -1050,6 +1054,8 @@ async function boot() {
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
     // While the tasks are read, what comes of any task waits for the read (task-actions.ts).
     if (taskActions.hold(event)) return undefined
+    // While what the conversation waits for is read, all that comes waits for the read (read-handoff.ts).
+    if (waitsHandoff.hold(event)) return undefined
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])
@@ -1074,13 +1080,12 @@ async function boot() {
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })
-  // Opened on a dsh at work (a reload): what the conversation waits on the user for, read after the live channel is
-  // listened to, so one asked meanwhile comes live and one asked before is here (system-design §12.1).
-  const waits = await api.waits().catch((err: unknown) => { console.error('[app] could not read what the conversation waits for:', err); return null })
-  if (waits) {
+  // Opened on a dsh at work (a reload): what the conversation waits on the user for, read as a baseline, and what the
+  // live channel said meanwhile taken after it (read-handoff.ts, system-design §12.1).
+  await waitsHandoff.read(() => api.waits(), (waits) => {
     dispatch({ type: 'waits_restored', permissions: waits.permissions, questions: waits.questions, at: Date.now() })
     dispatch({ type: 'secrets_restored', secrets: waits.secrets, at: Date.now() })
-  }
+  }, (err) => console.error('[app] could not read what the conversation waits for:', err))
   dom.input.focus()
 }
 
