@@ -123,8 +123,9 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     }
     publish(task)
   }
-  function interrupt() {
-    for (const task of tasks.values()) if (!terminal.has(task.status)) {
+  /** dsh went: the tasks at work are interrupted, but for those whose end came already and is still being kept. */
+  function interrupt(ending: ReadonlySet<string> = new Set()) {
+    for (const task of tasks.values()) if (!terminal.has(task.status) && !ending.has(task.taskId)) {
       task.status = 'interrupted'; task.currentAction = null; task.waitingFor = null; publish(task)
     }
     waits.clear(); tools.clear(); streams.clear(); early.clear()

@@ -125,18 +125,29 @@ test('a task\'s run is kept with it: after a relaunch it is the run it ended wit
   assert.equal(kept()?.runId, 'run-2', '接着问: a run of its own, kept')
 })
 
-test('an end still to be kept is for its run only: dsh gone, the task taken up again, the old try ends nothing', async (t) => {
+test('dsh restarting while an end is still to be kept: the end is kept on its next try, the task not interrupted', async (t) => {
   const { tasks, failing, runDue, due, status, kept, ended, reported } = setup(t)
   const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
   failing.ending = true
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   tasks.dsh.gone()
-  assert.equal(due(), 0, 'dsh gone: the try is let go')
+  assert.equal(status(), 'running', 'its end came: not interrupted')
+  assert.ok(due() > 0, 'the try is still there')
   failing.ending = false
-  assert.deepEqual(await tasks.agent.message(task.id, '接着做'), { taskId: task.id, delivered: 'taken up again' })
-  assert.equal(kept()?.runId, 'run-2')
   runDue()
-  assert.deepEqual([ended().length, status(), reported.length], [0, 'running', 0], 'the new run goes on, not ended by the old one')
+  assert.deepEqual([ended().length, status(), kept()?.status, kept()?.runId], [1, 'done', 'done', 'run-1'])
+  assert.deepEqual(reported, [[task.id, 'done']])
+})
+
+test('closing a task lets its end still to be kept go', async (t) => {
+  const { tasks, failing, runDue, due, ended, reported } = setup(t)
+  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  failing.ending = true
+  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
+  await tasks.window.close(task.id)
+  failing.ending = false
+  runDue()
+  assert.deepEqual([due(), ended().length, reported.length], [0, 0, 0])
 })
 
 test('a try that runs after its run was replaced ends nothing: the run guards it, not only its cancelling', async (t) => {

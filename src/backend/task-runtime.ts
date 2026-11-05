@@ -40,7 +40,8 @@ const NO_STORE: TaskStore = Object.freeze({ list: () => [], add: () => {}, remov
 const NO_EVENTS: Apply = (_kind, _data, write) => ({ value: write() })
 /**
  * dsh says a turn ended once; an end that could not be kept (the database refused it) is kept again after these
- * waits, the last repeated, for as long as that run is the task's: a later run, or dsh gone, lets it go.
+ * waits, the last repeated, for as long as that run is the task's (dsh restarting meanwhile too): a later run of the
+ * task, or its closing, lets it go.
  */
 export const END_RETRY_MS: readonly number[] = Object.freeze([1_000, 5_000, 30_000, 60_000])
 /**
@@ -306,6 +307,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       store.add(running)
       registry.restart(taskId, runId)
     })
+    letEndGo(taskId)
     tasks.set(taskId, running)
     attached = new Set([...attached, taskId])
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
@@ -403,7 +405,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     onEnd(taskId, status)
   }
 
-  /** An end still to be kept is let go: its task closed, or dsh gone. */
+  /** An end still to be kept is let go: its task closed, or a new run of it begun (the end was of the run before). */
   function letEndGo(taskId: string) {
     const pending = pendingEnds.get(taskId)
     if (pending) cancel(pending.timer)
@@ -412,13 +414,13 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
 
   /**
    * dsh went (stopped, restarted, crashed): what tasks said is saved now; no task's session is held any more, so the
-   * next message to one takes it up again in the new dsh first; those at work are interrupted.
+   * next message to one takes it up again in the new dsh first; those at work are interrupted. One whose end came
+   * already is not: that end is still kept, on its next try.
    */
   function gone() {
     taskWords.flush()
     attached = new Set()
-    ;[...pendingEnds.keys()].forEach(letEndGo)
-    registry.interrupt()
+    registry.interrupt(new Set(pendingEnds.keys()))
   }
 
   /** A task that ended, as the note back in the conversation gives it (task-reports.ts); null once it is not known. */

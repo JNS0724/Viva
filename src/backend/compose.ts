@@ -49,7 +49,8 @@ import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
 import { openFollowupStore } from './followup-store.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
-import { createEventCore, type DshTaskEvent, type EventCore, type Signal } from './event-core.ts'
+import { createEventCore, type EventCore, type Signal } from './event-core.ts'
+import { createTaskSignals, taskEventOf } from './task-signals.ts'
 import { type Apply, journaled } from './journal.ts'
 import { commandIpc } from './commands.ts'
 import type { HostCapabilities, HostEvent } from './host.ts'
@@ -77,14 +78,6 @@ type AgentInfo = { mode: string, model: string, cwd: string, reason?: string, [f
 /** What the model may change from the conversation (config-channel.ts), the app performing it. */
 type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configActions']>
 type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
-
-/** What a background task reports that is a signal of its waiting on the user, beginning or ending (acp-bridge.ts). */
-const TASK_WAITS: ReadonlySet<string> = new Set(['permission', 'task_permission_closed', 'task_question', 'task_question_closed'])
-const TASK_EVENTS: ReadonlySet<string> = new Set(['task_update', 'task_end', ...TASK_WAITS])
-/** An event of a background task's (it names one), or null: the conversation's own permission has no taskId. */
-function taskEventOf(event: { type: string, [field: string]: unknown }): DshTaskEvent | null {
-  return TASK_EVENTS.has(event.type) && typeof event.taskId === 'string' && event.taskId ? event as DshTaskEvent : null
-}
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
 const HISTORY_WRITES = Object.freeze(['save', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
@@ -193,6 +186,16 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     if (core) core.transient(event)
     else host.window.send({ ...event, seq: 0, transient: true })
   }
+
+  /**
+   * What dsh reports of tasks, to the task runtime: by way of their signals, and straight there when a signal cannot be
+   * recorded (task-signals.ts), since dsh says each once.
+   */
+  const taskSignals = createTaskSignals({
+    signal: (input) => signal(input),
+    receive: (event) => taskRuntime?.dsh.receive(event),
+    onError: (err) => console.error('[tasks] could not record what a task reported; it goes on all the same:', err instanceof Error ? err.message : String(err)),
+  })
 
   /** One input to the backend (event-core.ts): recorded, then routed. */
   const signal = (input: Signal) => {
@@ -370,9 +373,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams.
         const task = taskEventOf(event)
-        if (task?.type === 'task_end') return signal({ kind: 'agent.task_ended', event: task })
-        if (task && TASK_WAITS.has(task.type)) return signal({ kind: 'agent.task_waits', event: task })
-        if (task) taskRuntime?.dsh.receive(task)
+        if (task) return taskSignals.report(task)
         if (event.type === 'error') reportTurnMemories()
         return undefined
       },
@@ -658,8 +659,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       },
       // How a task's turn ended is kept (task-runtime.ts); its result goes back to the conversation; a gap follows.
       // How it ended is kept by the task runtime, tried again until it is; then onEnd (openHistory) reports it.
-      'agent.task_ended': ({ event }) => taskRuntime?.dsh.receive(event),
-      'agent.task_waits': ({ event }) => taskRuntime?.dsh.receive(event),
+      'agent.task_ended': ({ event }) => taskSignals.routed(event),
+      'agent.task_waits': ({ event }) => taskSignals.routed(event),
       // The same proposal turned down lately is not shown again.
       'agent.followup_proposed': ({ event }) => {
         const proposal = followups?.admitProposal(event.proposal as ProposalView)
