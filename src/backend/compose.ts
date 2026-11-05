@@ -180,12 +180,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** What the window is told of the agent (session-info.ts, acp-bridge.ts): mode, model, session, what it remembers. */
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
 
+  // How a task ends is decided by the registry; the task service is the one that keeps it (task-ipc.ts ended).
   const taskRegistry = createTaskRegistry({ changed: snapshot => {
     emitToRenderer({ type: 'task_snapshot', taskId: snapshot.taskId, snapshot })
-    if (snapshot.endedAt !== null) {
-      const stored = taskStore?.list().find(task => task.id === snapshot.taskId)
-      if (stored) taskStore?.add({ ...stored, status: snapshot.status, endedAt: snapshot.endedAt, resultPreview: snapshot.resultPreview })
-    }
+    taskService?.ended(snapshot)
   } })
 
   /** A push for the window, numbered by the event core (a transient one: what changes state goes through apply). */

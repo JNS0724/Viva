@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { KEEP_ENDED, MAX_RUNNING, registerTaskIpc, type TaskService } from '../src/backend/task-ipc.ts'
-import { createTaskRegistry } from '../src/backend/task-registry.ts'
+import { createTaskRegistry, type TaskSnapshot } from '../src/backend/task-registry.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks } from '../src/renderer/tasks-state.ts'
 import type { StoredTask } from '../src/backend/task-store.ts'
@@ -37,9 +37,11 @@ function setup({ resumable, stored = [], steerable = true, waits }: { resumable?
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
   let kept = stored
+  /** Every write of the store, in order: what each kept. */
+  const writes: StoredTask[] = []
   const store = {
     list: () => kept,
-    add: (task: StoredTask) => { kept = [...kept.filter((entry) => entry.id !== task.id), task] },
+    add: (task: StoredTask) => { writes.push(task); kept = [...kept.filter((entry) => entry.id !== task.id), task] },
     remove: (id: string) => { kept = kept.filter((entry) => entry.id !== id) },
   }
   let pending: Array<() => void> = []
@@ -53,10 +55,13 @@ function setup({ resumable, stored = [], steerable = true, waits }: { resumable?
 
   function register() {
     const calls: Call[] = []
-    const registry = createTaskRegistry()
+    const snapshots: TaskSnapshot[] = []
+    // As compose.ts wires them: the registry decides how a task ends, the task service keeps it.
+    let service: TaskService | null = null
+    const registry = createTaskRegistry({ changed: (snapshot) => { snapshots.push(snapshot); service?.ended(snapshot) } })
     const handlers: Record<string, Handler> = {}
     const ipc = { handle: (channel: string, fn: Handler) => { handlers[channel] = fn } } as unknown as Pick<IpcRegistry, 'handle'>
-    const service: TaskService = registerTaskIpc(ipc, {
+    service = registerTaskIpc(ipc, {
       db,
       store,
       timers,
@@ -77,16 +82,16 @@ function setup({ resumable, stored = [], steerable = true, waits }: { resumable?
     const call = async <T = unknown>(channel: string, ...args: unknown[]) => await handlers[channel]({}, ...args) as T
     /** The agent says `text` in the task's turn. */
     /** An event from the agent, as compose.ts passes it on: to the registry and to the task service. */
-    const emit = (event: object) => { registry.receive(event); service.receive(event) }
+    const emit = (event: object) => { registry.receive(event); service?.receive(event) }
     const says = (taskId: string, text: string) => emit({ type: 'task_update', taskId, update: chunk(text) })
     const ends = (taskId: string, stopReason = 'end_turn') => emit({ type: 'task_end', taskId, stopReason })
-    return { call, calls, service, says, ends }
+    return { call, calls, service: service as TaskService, says, ends, snapshots }
   }
 
   const first = register()
   const texts = (segmentId: string) => db.get(segmentId)?.messages.map((m: Message) => m.text)
   const runPending = () => { const runs = pending; pending = []; runs.forEach((run) => run()) }
-  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, texts, runPending, pending: () => pending.length, announced }
+  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, texts, runPending, pending: () => pending.length, announced }
 }
 
 test('what the task says is saved along the way, once however much it says meanwhile, and at once when it ends', async () => {
@@ -107,6 +112,21 @@ test('what the task says is saved along the way, once however much it says meanw
   const [done] = kept()
   assert.deepEqual([done.status, Number.isFinite(done.endedAt)], ['done', true], 'ended: kept, to be asked again')
   assert.deepEqual((await setupKept(call)).map((entry) => entry.status), ['done'], 'listed for a window that opens, as it ended')
+})
+
+test('a task\'s ending is kept once, as the registry decided it: the store and the window say the same', async () => {
+  const { call, says, ends, kept, writes, snapshots } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  says(task.id, '写好了。')
+  const before = writes.length
+  ends(task.id, 'cancelled')
+  const ending = snapshots.findLast((snapshot) => snapshot.taskId === task.id)
+  const endings = writes.slice(before).filter((entry) => entry.id === task.id && Number.isFinite(entry.endedAt))
+  assert.equal(endings.length, 1, 'one write for one ending')
+  const [stored] = kept()
+  assert.deepEqual([stored.status, stored.endedAt, stored.resultPreview], [ending?.status, ending?.endedAt, ending?.resultPreview],
+    'kept with the registry\'s status, time and last words')
+  assert.equal(stored.status, 'stopped', 'stopped by the user')
 })
 
 test('flushed when Viva quits: what the task said so far is saved, and the next launch lists it as interrupted', async () => {
