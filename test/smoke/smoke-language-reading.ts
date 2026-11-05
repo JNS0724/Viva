@@ -34,7 +34,7 @@ export async function checkReadingLanguage(win: SmokeAppWindow): Promise<string[
       selection.removeAllRanges();
       setLocale('zh-CN');
       const page=document.createElement('div');page.className='tasks-page';page.style.cssText='display:flex;height:400px;width:900px';host.append(page);
-      let stateTask=reduce(initialState,{type:'task_started',task:{id:'reading-task',title:'Task fixture',segmentId:'reading-segment'},text:'Fixture request',at:1});
+      let stateTask=reduce(initialState,{type:'task_snapshot',snapshot:{taskId:'reading-task',runId:'run-1',title:'Task fixture',status:'running',currentAction:null,waitingFor:null,startedAt:1,updatedAt:1,endedAt:null,resultPreview:'',revision:1,taskSeq:0,opening:{words:'Fixture request',task:{id:'reading-task',title:'Task fixture',words:'Fixture request',segmentId:'reading-segment'},hostSession:null}}});
       const task=stateTask.tasks.list[0];stateTask={...stateTask,tasks:{...stateTask.tasks,list:[{...task,view:{...task.view,messages:[...task.view.messages,{id:'task-answer',role:'assistant',text,shown:text.length}]}}],page:{open:true,selected:task.id,steps:false}}};
       renderTasksPage(page,stateTask,handlers);page.querySelector('.answer-more').click();
       const answer=page.querySelector('.markdown'),scroller=page.querySelector('.tp-scroll');

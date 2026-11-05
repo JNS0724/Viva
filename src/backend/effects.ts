@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { Apply } from './journal.ts'
 
 /**
- * The effects queue (docs/system-design.md §12.3): what the backend still has to do outside itself, kept in the app
+ * The effects queue (docs/system-design.md §11.4): what the backend still has to do outside itself, kept in the app
  * database. An effect is queued in the same transaction as the change that calls for it, and run once that commits;
  * one not done yet is still there after a restart, and run then.
  *

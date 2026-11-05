@@ -6,7 +6,7 @@ import { QUESTION_ACTIONS } from './question-state.ts'
 import { closeLast, closeStreams } from './streams.ts'
 
 /**
- * One conversation as it is reduced (system-design §12.7 step 5): what was said and done in it, and where its turn is.
+ * One conversation as it is reduced (system-design §11.3): what was said and done in it, and where its turn is.
  * The conversation on screen is one (state.ts keeps it among the window's state), and so is each background task's
  * (tasks-state.ts `view`). Pure and immutable: every handler returns the view it was given spread with what changed,
  * so a view with more to it (the window's state) keeps the rest; none reads or writes anything else.

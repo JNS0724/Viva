@@ -434,7 +434,7 @@ function restLine(state: ThreadView, start: number, handlers: Handlers) {
 }
 
 /**
- * What the conversation column draws (system-design §12.7 step 5): one conversation (the one on screen, or a background
+ * What the conversation column draws (system-design §11.3): one conversation (the one on screen, or a background
  * task's), and around it what goes with it there. The window's state is one; the 后台 page makes one for a task
  * (view/tasks-page.ts), with no more than this.
  */

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { createTaskRegistry, parseTaskQuery } from '../src/backend/task-registry.ts'
 import { createTasksDesk, parseTaskAction } from '../src/backend/tasks-channel.ts'
 import { createTasksChannel } from '../plugins/tasks/lib/channel.ts'
-import { initialState, reduce } from '../src/renderer/state.ts'
+import { initialState, reduce } from './fixtures/task-window.ts'
 
 test('task projection tracks simultaneous waits, tools, streamed output and terminal state without a renderer', () => {
   let time = 10

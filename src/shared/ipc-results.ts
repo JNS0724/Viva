@@ -26,12 +26,14 @@ export type TaskStartResult = { ok: true, task: TaskSummary } | { ok: false, pro
  * below that piece, and a snapshot at or below that revision, are not the window's to take again.
  */
 export interface TaskMark { runId: string, seq: number, revision?: number }
+/** A tool call a task's run has at work, as its registry knows it (task-registry.ts activeTools). */
+export interface ActiveTool { toolCallId: string, title: string }
 
 /** A task as `task:finished` gives it back: ended; at work in this launch (a reloaded window); or one Viva quit on. */
 export type KeptTask = ({ mark?: TaskMark }) & (
   | { task: TaskSummary, status: string, endedAt: number, messages: readonly KeptMessage[] }
-  | { task: TaskSummary, status: 'running', endedAt: null, startedAt: number | null, messages: readonly KeptMessage[],
-    waits: { permissions: readonly unknown[], questions: readonly unknown[] } }
+  | { task: TaskSummary, status: 'running' | 'waiting', endedAt: null, startedAt: number | null, messages: readonly KeptMessage[],
+    waits: { permissions: readonly unknown[], questions: readonly unknown[] }, tools: readonly ActiveTool[] }
   | { task: TaskSummary, status: 'interrupted', endedAt: number, messages: readonly KeptMessage[] })
 
 /**

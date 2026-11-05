@@ -6,9 +6,9 @@ import { taskMessages } from '../src/renderer/tasks-state.ts'
 
 /**
  * A window that opens while tasks go on (task-actions.ts loadKept): the read of the tasks and the live channel hand
- * over without a gap. What comes of a task on the live channel while it is read is not taken (the window does not know
- * the task yet); a read that comes back behind that is read again, and a read never puts back a task the window has
- * newer.
+ * over without a gap. What comes of any task on the live channel while it is read waits and follows the read. A task
+ * the window knows already keeps what it has, with what it did; the others are put back to the read, each piece it
+ * had left out by its number. More than can wait came: read again, until a read comes back, and taken for all.
  */
 
 type Event = Record<string, any>
@@ -29,7 +29,7 @@ function deferred<T>() {
 }
 
 /** A window over the real reducer, its reads of the tasks answered when the test likes; events as app.ts takes them. */
-function windowWith(reads: Array<Promise<unknown>>) {
+function windowWith(reads: Array<Promise<unknown>>, waited: number[] = []) {
   let state = initialState as ReturnType<typeof reduce>
   const dispatch = (action: Event) => { state = reduce(state, action) }
   let asked = 0
@@ -37,11 +37,13 @@ function windowWith(reads: Array<Promise<unknown>>) {
     task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
     task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: 5, runId: event.runId, seq: event.taskSeq }),
     task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, at: 9, runId: event.runId, seq: event.taskSeq }),
+    task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: 6, runId: event.runId, seq: event.taskSeq }),
   }
   const deliver = (event: Event) => dispatch(toAction[String(event.type)](event))
   const actions = createTaskActions({
     api: { finishedTasks: () => reads[asked++] } as never,
     getState: () => state, dispatch, showToast: () => {}, errorMessage: (err: unknown) => String(err), deliver,
+    wait: async (ms: number) => { waited.push(ms) },
   })
   // As app.ts takes an event: held while the tasks are read, else reduced.
   const arrive = (event: Event) => { if (!actions.hold(event)) deliver(event) }
@@ -60,7 +62,7 @@ test('read while the task goes on and ends: what came meanwhile waits, then is t
   win.arrive(snapshot({ taskSeq: 1 }))
   win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 2, update: chunk('写好了。') })
   win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 3, stopReason: 'end_turn' })
-  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 3 }))
+  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 3, revision: 3 }))
   assert.deepEqual(win.state().tasks.list, [], 'nothing of it taken before the read')
   read.resolve([running(1)])
   await loading
@@ -121,18 +123,19 @@ test('more came during the read than can wait: the read is not taken, and is beg
   assert.equal(errors.length, 1, 'said once')
 })
 
-test('a task the window knows already is not read over: neither an older read, nor an older snapshot, puts it back', async () => {
-  const win = windowWith([Promise.resolve([running(1)])])
+test('a read is the baseline for the tasks it has; a snapshot no newer than what the window has changes nothing', async () => {
+  const win = windowWith([Promise.resolve([{ ...running(1), mark: { runId: 'run-1', seq: 1, revision: 4 } }])])
   await win.actions.loadKept()
   win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 2, stopReason: 'end_turn' })
-  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2 }))
-  win.dispatch({ type: 'tasks_restored', list: [running(1)] })
-  assert.deepEqual([win.state().tasks.list[0].status, win.state().tasks.list[0].seq], ['done', 2], 'an older read does not put it back at work')
-  win.dispatch(snapshot({ status: 'running', taskSeq: 1 }))
-  assert.equal(win.state().tasks.list[0].status, 'done', 'nor an older snapshot')
+  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2, revision: 6 }))
+  assert.deepEqual([win.state().tasks.list[0].status, win.state().tasks.list[0].seq], ['done', 2])
+  win.dispatch(snapshot({ status: 'running', taskSeq: 1, revision: 5 }))
+  assert.equal(win.state().tasks.list[0].status, 'done', 'an older snapshot does not put it back at work')
+  win.dispatch({ type: 'tasks_restored', list: [done(5)] })
+  assert.equal(win.state().tasks.list[0].seq, 5, 'a read puts the tasks it has to what it says')
 })
 
-test('a task known while the read is under way: its words that came meanwhile (no snapshot after them) are not read over', async () => {
+test('a task known while the read is under way: its words that came meanwhile (no snapshot after them) wait, and follow the read', async () => {
   const read = deferred<unknown>()
   const win = windowWith([read.promise])
   // Started from this window as the read began: made by its first snapshot, so known, its pieces taken as they come.
@@ -140,7 +143,9 @@ test('a task known while the read is under way: its words that came meanwhile (n
   const loading = win.actions.loadKept()
   for (let n = 1; n <= 11; n++) win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: n, update: chunk(`${n}、`) })
   // The read was made at piece 10, after many changes (revision 11); piece 11 came before its answer.
-  read.resolve([{ ...running(10, 'run-1', ['整理发布说明', '1、2、3、4、5、6、7、8、9、10、']), mark: { runId: 'run-1', seq: 10, revision: 11 } }])
+  // As the backend gives a task held (task-words.ts current): the answer it is writing, marked open.
+  const reading = running(10, 'run-1', ['整理发布说明', '1、2、3、4、5、6、7、8、9、10、'])
+  read.resolve([{ ...reading, messages: [reading.messages[0], { ...reading.messages[1], open: true }], mark: { runId: 'run-1', seq: 10, revision: 11 } }])
   await loading
   const [task] = win.state().tasks.list
   assert.equal(task.seq, 11, 'its last piece, the window\'s')
@@ -169,4 +174,125 @@ test('the read has a later run already: the older run\'s beginning, end and piec
   assert.deepEqual([task.status, task.runId, task.seq, task.endedAt], ['running', 'run-2', 6, null], 'at work on run 2, not put back to run 1 nor ended')
   assert.deepEqual(texts(win.state()), ['整理发布说明', '先看提交…写好了。', '再加上已知问题', '加好了。', '还有一处。'],
     'no question twice, no word twice; the piece after the read taken')
+})
+
+test('more came during the read than can wait, and the read after fails: it is tried again, after a wait, till one comes back', async () => {
+  const first = deferred<unknown>()
+  const waited: number[] = []
+  const win = windowWith([first.promise, Promise.reject(new Error('gone')), Promise.reject(new Error('gone')), Promise.resolve([done(2_003)])], waited)
+  const loading = win.actions.loadKept()
+  const errors: unknown[] = []
+  const logged = console.error
+  console.error = (...args: unknown[]) => { errors.push(args) }
+  try {
+    // Its end and the snapshot that says so are among what was let go.
+    for (let n = 2; n <= 2_002; n++) win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: n, update: chunk('字') })
+    win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 2_003, stopReason: 'end_turn' })
+    win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2_003, revision: 3 }))
+    first.resolve([running(1)])
+    await loading
+  } finally {
+    console.error = logged
+  }
+  const [task] = win.state().tasks.list
+  assert.deepEqual([win.asked(), waited], [4, [500, 1_000]], 'read again till it came back, waiting longer each time')
+  assert.deepEqual([task.status, task.seq, task.endedAt], ['done', 2_003, 9], 'its end, let go meanwhile, is the read\'s')
+  assert.equal(errors.length, 3, 'said each time')
+})
+
+test('a task the window knows, its tool at work, nothing of it during the read: it keeps what it did', async () => {
+  const win = windowWith([Promise.resolve([{ ...running(1, 'run-1', ['整理发布说明']), mark: { runId: 'run-1', seq: 1, revision: 1 } }])])
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 1,
+    update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '读提交记录', status: 'in_progress' } })
+  const before = win.state().tasks.list[0]
+  await win.actions.loadKept()
+  const [task] = win.state().tasks.list
+  assert.deepEqual([task.now, Object.keys(task.view.tools), task.view.timeline.map((entry) => entry.kind)], [before.now, ['t1'], ['tool']],
+    'its tool still at work, not 思考中')
+  assert.equal(task.now, '读提交记录')
+  assert.deepEqual(texts(win.state()), ['整理发布说明'])
+})
+
+test('words the agent said into a task the read has already: not shown twice; those after it, once', async () => {
+  const read = deferred<unknown>()
+  const win = windowWith([read.promise])
+  const loading = win.actions.loadKept()
+  win.arrive({ type: 'task_steered', taskId: 's1', runId: 'run-1', taskSeq: 2, text: '加上版本号' })
+  win.arrive({ type: 'task_steered', taskId: 's1', runId: 'run-1', taskSeq: 3, text: '还有已知问题' })
+  read.resolve([running(2, 'run-1', ['整理发布说明', '先看提交…', '加上版本号'])])
+  await loading
+  assert.deepEqual(texts(win.state()), ['整理发布说明', '先看提交…', '加上版本号', '还有已知问题'])
+})
+
+test('two tasks, only B has more than can wait: A, known with its tool at work, keeps what it did and what waited of it; B is read again', async () => {
+  const first = deferred<unknown>()
+  const second = deferred<unknown>()
+  const win = windowWith([first.promise, second.promise])
+  const b = { id: 's2', segmentId: 'c-task-2', title: '翻译', words: '翻译' }
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 1,
+    update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '读提交记录', status: 'in_progress' } })
+  const loading = win.actions.loadKept()
+  const logged = console.error
+  console.error = () => {}
+  try {
+    // A says one thing while the first read is under way; then B floods the channel, its end among what is let go.
+    win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 2, update: chunk('三组改动。') })
+    for (let n = 1; n <= 2_000; n++) win.arrive({ type: 'task_update', taskId: 's2', runId: 'run-b', taskSeq: n, update: chunk('字') })
+    win.arrive({ type: 'task_end', taskId: 's2', runId: 'run-b', taskSeq: 2_001, stopReason: 'end_turn' })
+    first.resolve([])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.equal(win.asked(), 2, 'read again, for B')
+    second.resolve([
+      { ...running(1, 'run-1', ['整理发布说明']), tools: [{ toolCallId: 't1', title: '读提交记录' }], mark: { runId: 'run-1', seq: 2, revision: 1 } },
+      { task: b, status: 'done', endedAt: 9, mark: { runId: 'run-b', seq: 2_001, revision: 4 },
+        messages: [{ role: 'user', text: '翻译', receipt: null }, { role: 'assistant', text: '字'.repeat(2_000), receipt: null }] },
+    ])
+    await loading
+  } finally {
+    console.error = logged
+  }
+  const [a, readB] = win.state().tasks.list
+  assert.deepEqual([a.id, a.now, a.view.timeline.map((entry) => entry.kind), a.seq], ['s1', '读提交记录', ['tool'], 2], 'A as it was, its tool at work')
+  assert.deepEqual(taskMessages(a).map((m: { text: string }) => m.text), ['整理发布说明', '三组改动。'], 'what waited of A through the read begun again, taken once')
+  assert.deepEqual([readB.id, readB.status, readB.seq], ['s2', 'done', 2_001], 'B put back to the read')
+})
+
+test('a task read at work with a tool going: its card says the tool, from the read', async () => {
+  const win = windowWith([Promise.resolve([{ ...running(1, 'run-1', ['整理发布说明']), tools: [{ toolCallId: 't1', title: '读提交记录' }] }])])
+  await win.actions.loadKept()
+  const [task] = win.state().tasks.list
+  assert.deepEqual([task.now, task.view.timeline.map((entry) => entry.kind)], ['读提交记录', ['tool']])
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 2, update: { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' } })
+  assert.notEqual(win.state().tasks.list[0].now, '读提交记录', 'and it ends as any tool does')
+})
+
+test('a known task whose end was let go, and the read again no longer has it (let go among the oldest ended): it leaves the window, not left at work', async () => {
+  const first = deferred<unknown>()
+  const second = deferred<unknown>()
+  const win = windowWith([first.promise, second.promise])
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  const loading = win.actions.loadKept()
+  const logged = console.error
+  console.error = () => {}
+  try {
+    for (let n = 1; n <= 2_000; n++) win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: n, update: chunk('字') })
+    win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 2_001, stopReason: 'end_turn' })
+    win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2_001, revision: 3 }))
+    first.resolve([])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    second.resolve([])
+    await loading
+  } finally {
+    console.error = logged
+  }
+  assert.deepEqual([win.asked(), win.state().tasks.list], [2, []])
+})
+
+test('a read that has nothing of a known task with no gap leaves it as it is', async () => {
+  const win = windowWith([Promise.resolve([])])
+  win.arrive(snapshot({ revision: 1, taskSeq: 0, opening: { words: '整理发布说明', task: summary, hostSession: null } }))
+  await win.actions.loadKept()
+  assert.deepEqual(win.state().tasks.list.map((task) => [task.id, task.status]), [['s1', 'running']])
 })

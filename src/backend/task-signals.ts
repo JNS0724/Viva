@@ -1,11 +1,11 @@
 import type { DshTaskEvent, Signal } from './event-core.ts'
 
 /**
- * What dsh reports of a background task (acp-bridge.ts), on its way to the task runtime (task-runtime.ts). A turn's
- * end and the start or end of a wait on the user are signals of the event core, recorded and then routed; what a task
- * says streams straight to the runtime. dsh says each of these once, so one must reach the runtime even when its
- * signal cannot be recorded (the database busy or full): then it goes straight there, and the runtime, which keeps
- * an end it cannot write yet, tries again (task-runtime.ts endRun).
+ * What dsh reports of a background task (acp-bridge.ts), on its way to the task runtime (task-runtime.ts). dsh says
+ * each once, so it goes to the runtime first, always, and the runtime is what keeps it (an end it cannot write yet is
+ * tried again, task-runtime.ts endRun). A turn's end and the start or end of a wait on the user are then recorded as
+ * signals of the event core, for the record only: what follows from a task ending follows from the runtime's kept
+ * `task.ended`, never from this signal, and a signal that cannot be recorded loses nothing.
  */
 
 /** What a background task reports that is a signal of its waiting on the user, beginning or ending. */
@@ -18,7 +18,7 @@ export function taskEventOf(event: { type: string, [field: string]: unknown }): 
 }
 
 export interface TaskSignalsDeps {
-  /** The event core's signal: recorded, then routed (to `routed` below). */
+  /** The event core's signal: recorded (its route does nothing more, compose.ts). */
   signal: (input: Extract<Signal, { kind: 'agent.task_ended' | 'agent.task_waits' }>) => unknown
   /** The task runtime's receive. */
   receive: (event: DshTaskEvent) => void
@@ -26,27 +26,21 @@ export interface TaskSignalsDeps {
 }
 
 export function createTaskSignals({ signal, receive, onError = () => {} }: TaskSignalsDeps) {
-  /** Events their route has handed on: not handed again if what follows the route fails. */
-  const handed = new WeakSet<DshTaskEvent>()
-
-  /** An event dsh reported of a task: by way of its signal, or straight on when it is no signal or one not recorded. */
-  function report(event: DshTaskEvent): unknown {
-    const kind = event.type === 'task_end' ? 'agent.task_ended' as const : TASK_WAITS.has(event.type) ? 'agent.task_waits' as const : null
-    if (!kind) return receive(event)
+  /** An event dsh reported of a task: to the runtime, then, a signal, recorded. */
+  function report(event: DshTaskEvent): void {
     try {
-      return signal({ kind, event })
-    } catch (err) {
-      if (handed.has(event)) throw err
-      onError(err)
-      return receive(event)
+      receive(event)
+    } finally {
+      const kind = event.type === 'task_end' ? 'agent.task_ended' as const : TASK_WAITS.has(event.type) ? 'agent.task_waits' as const : null
+      if (kind) {
+        try {
+          signal({ kind, event })
+        } catch (err) {
+          onError(err)
+        }
+      }
     }
   }
 
-  /** The signals' route: the event to the runtime. */
-  function routed(event: DshTaskEvent) {
-    handed.add(event)
-    receive(event)
-  }
-
-  return { report, routed }
+  return { report }
 }

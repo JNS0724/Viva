@@ -4,7 +4,7 @@ import type { Conversation } from './history-db.ts'
 import { recordedNote, REPORT, type ReportPayload } from './task-reports.ts'
 
 /**
- * Where a background task's result the model read is kept (system-design §12.4 point 7): as a record of the
+ * Where a background task's result the model read is kept (system-design §11.5): as a record of the
  * conversation of the session it was delivered to, which need not be the one on screen now (the user moved to another
  * topic since). Records have one writer, this one, in a table of their own (history-db.ts report_records): the
  * window's saves of its messages never touch them, and a record never moves a message.

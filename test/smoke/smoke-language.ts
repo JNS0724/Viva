@@ -49,7 +49,7 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
     const original = getLocale();
     const dock = document.createElement('div'), dialog = document.createElement('div');
     const handlers = new Proxy({}, { get: () => () => {} });
-    const taskState = reduce(initialState, { type: 'task_started', task: { id: 'language-test', title: 'User 标题', words: 'User text' }, text: 'User text', at: 1 });
+    const taskState = reduce(initialState, {type:'task_snapshot',snapshot:{taskId:'language-test',runId:'run-1',title:'User 标题',status:'running',currentAction:null,waitingFor:null,startedAt:1,updatedAt:1,endedAt:null,resultPreview:'',revision:1,taskSeq:0,opening:{words:'User text',task:{id:'language-test',title:'User 标题',words:'User text'},hostSession:null}}});
     const state = { ...reduce(taskState, { type: 'tasks_page_open', taskId: 'language-test' }), review: { ...initialState.review, loaded: true, hasMore: false } };
     const asked = { stage: 'gone', segmentId: 'language-test', cwd: '/user/资料' };
     const earlier = document.createElement('div');

@@ -11,8 +11,12 @@ export const TASK_CARD_RETENTION = `(async()=>{
   const handlers=new Proxy({}, {get:(_,name)=>(...args)=>calls.push({name,args})})
   const taskId='smoke-card-retention'
   let state=reduce(initialState,{type:'history_loaded',conversationId:'card-fixture',messages:[{role:'assistant',text:'主对话保持不变'}],savedAt:1})
-  state=reduce(state,{type:'task_started',task:{id:taskId,title:'后台整理',words:'后台整理'},text:'后台整理',at:1000})
+  // Made as the backend makes a task (task-runtime.ts): by the snapshot that begins it, its line on the conversation of this session.
+  state={...state,info:{...state.info,sessionId:'card-session'}}
+  state=reduce(state,{type:'task_snapshot',snapshot:{taskId:taskId,runId:'run-1',title:'后台整理',status:'running',currentAction:null,waitingFor:null,startedAt:1000,updatedAt:1000,endedAt:null,resultPreview:'',revision:1,taskSeq:0,opening:{words:'后台整理',task:{id:taskId,title:'后台整理',words:'后台整理'},hostSession:'card-session'}}})
   const chunk=text=>({type:'task_update',taskId,at:1100,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text}}})
+  // How it stands, as the backend's snapshots say it after each wait and its end (task-runtime.ts).
+  const stands=(revision,fields)=>({type:'task_snapshot',snapshot:{taskId,runId:'run-1',title:'后台整理',status:'running',currentAction:null,waitingFor:null,startedAt:1000,updatedAt:1000,endedAt:null,resultPreview:'',revision,taskSeq:0,...fields}})
   try{
     state=reduce(state,chunk('开始：'));renderThread(container,state,handlers,1200)
     const card=container.querySelector('.task-card'),answer=container.querySelector('.msg-agent')
@@ -24,13 +28,13 @@ export const TASK_CARD_RETENTION = `(async()=>{
     card.click()
     renderThread(container,state,handlers,61000)
     const elapsed=container.querySelector('.task-card')?.textContent??''
-    state=reduce(state,{type:'permission_request',taskId,requestId:'p-card',toolCall:{toolCallId:'tool-card',title:'运行校验'},options:[],at:62000})
+    state=reduce(reduce(state,{type:'permission_request',taskId,requestId:'p-card',toolCall:{toolCallId:'tool-card',title:'运行校验'},options:[],at:62000}),stands(2,{status:'waiting',waitingFor:'permission'}))
     renderThread(container,state,handlers,62000)
     const waiting=container.querySelector('.task-card')?.dataset.status==='waiting'&&container.querySelector('.task-card')?.textContent.includes('运行校验')
-    state=reduce(state,{type:'permission_request',taskId,requestId:'p-card-2',toolCall:{toolCallId:'tool-card-2',title:'检查输出'},options:[],at:62001})
+    state=reduce(reduce(state,{type:'permission_request',taskId,requestId:'p-card-2',toolCall:{toolCallId:'tool-card-2',title:'检查输出'},options:[],at:62001}),stands(3,{status:'waiting',waitingFor:'permission'}))
     renderThread(container,state,handlers,62001)
     const permissionChanged=container.querySelector('.task-card')?.textContent.includes('检查输出')
-    state=reduce(state,{type:'task_end',taskId,stopReason:'end_turn',at:63000})
+    state=reduce(reduce(state,{type:'task_end',taskId,stopReason:'end_turn',at:63000}),stands(4,{status:'done',endedAt:63000}))
     renderThread(container,state,handlers,63000)
     const done=container.querySelector('.task-card')
     const preview=taskPreview(state.tasks.list[0].view)

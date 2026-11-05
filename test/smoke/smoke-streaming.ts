@@ -133,7 +133,7 @@ export async function measureStreaming(win: SmokeWindow): Promise<StreamingCost>
     const codeCost = typeOut(code)
     const paragraphCost = typeOut(paragraph)
 
-    let state = reduce(initialState, { type: 'task_started', task: { id: 'cost', segmentId: 'seg', title: '整理笔记', words: '整理笔记' }, text: '整理笔记', submissionId: 's', origin: 'composer', at: Date.now() })
+    let state = reduce(initialState, {type:'task_snapshot',snapshot:{taskId:'cost',runId:'run-1',title:'整理笔记',status:'running',currentAction:null,waitingFor:null,startedAt:Date.now(),updatedAt:Date.now(),endedAt:null,resultPreview:'',revision:1,taskSeq:0,opening:{words:'整理笔记',task:{id:'cost',title:'整理笔记',words:'整理笔记',segmentId:'seg'},hostSession:null}}})
     for (let i = 0; i < 1000; i += 1) {
       state = reduce(state, { type: 'task_update', taskId: 'cost', at: Date.now(), update: { sessionUpdate: 'tool_call', toolCallId: 't' + i, title: '读取 notes/' + i + '.md', kind: 'read', status: 'completed', rawInput: { path: 'notes/' + i + '.md' } } })
     }
