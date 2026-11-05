@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 /**
- * Background tasks (task-ipc.ts), kept in the app database (src/backend/app-db.ts): dsh ends with the app, so a task
+ * Background tasks (task-runtime.ts, their one writer), kept in the app database (src/backend/app-db.ts): dsh ends with the app, so a task
  * that had not finished is offered again at the next launch, to go on with or let go, and one that ended (`endedAt`,
  * `status`) comes back to be asked again. A task leaves the store when it is closed or undone, or when it is among
  * the oldest of those that ended.
@@ -13,7 +13,7 @@ const SCHEMA = `
   );
 `
 
-/** A task as kept; task-ipc.ts adds what else it needs (words, cwd, startedAt, endedAt, status). */
+/** A task as kept; task-runtime.ts adds what else it needs (words, cwd, startedAt, endedAt, status). */
 export interface StoredTask { id: string, segmentId: string, title: string, [field: string]: any }
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0

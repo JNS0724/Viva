@@ -24,7 +24,7 @@ function backendIn(t: TestContext) {
   const commands = commandIpc(raw, (input) => core.signal(input))
   const idle = () => undefined
   const routes: Routes = {
-    'chat.said': idle, 'agent.turn_ended': idle, 'agent.task_ended': idle, 'agent.followup_proposed': idle,
+    'chat.said': idle, 'agent.turn_ended': idle, 'agent.task_ended': idle, 'agent.task_waits': idle, 'agent.followup_proposed': idle,
     'clock.reminder_due': idle, 'clock.prepare_window': idle, 'system.woke': idle, 'system.user_returned': idle,
     'window.foreground': idle, 'user.command': (input) => commands.route(input),
   }

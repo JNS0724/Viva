@@ -5,7 +5,7 @@ import type { TaskQuery } from './task-registry.ts'
 
 /**
  * The viva-tasks plugin's requests (plugins/tasks): queries (list, get) answered from the task registry, and the
- * agent's actions on tasks (start, stop, message), carried out by the task service (task-ipc.ts).
+ * agent's actions on tasks (start, stop, message), carried out by the task runtime (task-runtime.ts).
  */
 export type TaskRead = (request: TaskQuery, sessionId: string) => unknown
 export type TaskAction = { op: 'start', brief: string } | { op: 'stop', taskId: string } | { op: 'message', taskId: string, text: string }

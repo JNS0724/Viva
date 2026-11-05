@@ -6,6 +6,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
+import { createTaskRuntime } from '../src/backend/task-runtime.ts'
 import { createTaskStore } from '../src/backend/task-store.ts'
 import { checkedIpc, type RawIpc } from '../src/shared/ipc-contract.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
@@ -37,10 +38,10 @@ test('persisted side links restore only retained tasks through the real IPC, at 
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
   const unexpected = () => { throw new Error('restoring history must not contact the agent') }
-  registerTaskIpc(ipc, { db, store: createTaskStore({ db: tasks }), current: () => main,
+  registerTaskIpc(ipc, createTaskRuntime({ db, store: createTaskStore({ db: tasks }), current: () => main,
     agentInfo: () => ({}),
     agent: { closeTask: unexpected, cancelTask: unexpected,
-      steerTask: unexpected, resumeTask: unexpected, startTask: unexpected, promptTask: unexpected } })
+      steerTask: unexpected, resumeTask: unexpected, startTask: unexpected, promptTask: unexpected } }).window)
   const list = await handlers.get('task:finished')!({}) as Array<ReturnType<typeof restored>>
   assert.deepEqual(list.map(item => [item.task.id, item.task.host.conversationId, item.task.host.at]), [['before', main.id, 0], ['middle', main.id, 1]])
   const loaded = reduce(initialState, { type: 'history_loaded', conversationId: main.id, messages: db.get(main.id)!.messages, savedAt: 1 })
@@ -69,9 +70,9 @@ test('后台做 before the first foreground message persists its empty parent in
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
   const unexpected = () => { throw new Error('unexpected agent operation') }
-  registerTaskIpc(ipc, { db, current: () => main,
+  registerTaskIpc(ipc, createTaskRuntime({ db, current: () => main,
     agentInfo: () => ({}), agent: { closeTask: unexpected, cancelTask: unexpected,
-      steerTask: unexpected, resumeTask: unexpected, startTask: async () => ({ ok: true, taskId: 'only-background' }), promptTask: () => {} } })
+      steerTask: unexpected, resumeTask: unexpected, startTask: async () => ({ ok: true, taskId: 'only-background' }), promptTask: () => {} } }).window)
   const result = await handlers.get('task:start')!({}, { text: '只在后台做，不发前台消息' }) as { task: { segmentId: string } }
   assert.deepEqual(db.get(main.id)?.messages, [])
   assert.equal(db.latest()?.conversation.id, main.id)

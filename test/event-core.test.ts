@@ -18,7 +18,7 @@ function core(t: TestContext) {
 }
 
 const noRoutes = (): Routes => ({
-  'chat.said': () => 'asked', 'agent.turn_ended': () => {}, 'agent.task_ended': () => {}, 'agent.followup_proposed': () => {},
+  'chat.said': () => 'asked', 'agent.turn_ended': () => {}, 'agent.task_ended': () => {}, 'agent.task_waits': () => {}, 'agent.followup_proposed': () => {},
   'clock.reminder_due': () => {}, 'clock.prepare_window': () => {}, 'system.woke': () => {}, 'system.user_returned': () => {}, 'window.foreground': () => {},
   'user.command': () => {},
 })
@@ -63,6 +63,13 @@ test('signals are recorded (never what was said) and routed; without routes, or 
   events.signal({ kind: 'window.foreground' })
   events.signal({ kind: 'system.woke' })
   assert.deepEqual(events.since(0).map((event) => [event.kind, event.data]), [['signal.chat.said', { chars: 10, images: 0 }], ['signal.system.woke', {}]])
+  // What a task reported: its kind and the task only, never what it said or asked.
+  events.signal({ kind: 'agent.task_ended', event: { type: 'task_end', taskId: 'task-1', stopReason: 'end_turn', message: '结果是机密' } })
+  events.signal({ kind: 'agent.task_waits', event: { type: 'task_question', taskId: 'task-1', questions: [{ question: '密码？' }] } })
+  assert.deepEqual(events.since(2).map((event) => [event.kind, event.data]), [
+    ['signal.agent.task_ended', { type: 'task_end', taskId: 'task-1' }],
+    ['signal.agent.task_waits', { type: 'task_question', taskId: 'task-1' }],
+  ])
   const { 'system.woke': _woke, ...partial } = noRoutes()
   events.route(partial as unknown as Routes)
   assert.throws(() => events.signal({ kind: 'system.woke' }), /no route for signal system.woke/)

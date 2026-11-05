@@ -25,12 +25,12 @@ import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
-import { registerTaskIpc, type TaskService } from './task-ipc.ts'
+import { registerTaskIpc } from './task-ipc.ts'
 import { createTaskReports } from './task-reports.ts'
-import { ENDED_STATUS } from './task-words.ts'
+import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
+import { endedStatus } from './task-registry.ts'
 import type { TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
-import { createTaskRegistry } from './task-registry.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
 import { createMcpConfigStore, editServer, parseServerInput, type ServerChanges } from './mcp-config.ts'
@@ -50,7 +50,7 @@ import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
 import { openFollowupStore } from './followup-store.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
-import { createEventCore, type EventCore, type Signal } from './event-core.ts'
+import { createEventCore, type DshTaskEvent, type EventCore, type Signal } from './event-core.ts'
 import { type Apply, journaled } from './journal.ts'
 import { commandIpc } from './commands.ts'
 import type { HostCapabilities, HostEvent } from './host.ts'
@@ -79,9 +79,16 @@ type AgentInfo = { mode: string, model: string, cwd: string, reason?: string, [f
 type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configActions']>
 type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
 
+/** What a background task reports that is a signal of its waiting on the user, beginning or ending (acp-bridge.ts). */
+const TASK_WAITS: ReadonlySet<string> = new Set(['permission', 'task_permission_closed', 'task_question', 'task_question_closed'])
+const TASK_EVENTS: ReadonlySet<string> = new Set(['task_update', 'task_end', ...TASK_WAITS])
+/** An event of a background task's (it names one), or null: the conversation's own permission has no taskId. */
+function taskEventOf(event: { type: string, [field: string]: unknown }): DshTaskEvent | null {
+  return TASK_EVENTS.has(event.type) && typeof event.taskId === 'string' && event.taskId ? event as DshTaskEvent : null
+}
+
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
 const HISTORY_WRITES = Object.freeze(['save', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
-const TASK_WRITES = Object.freeze(['add', 'remove'] as const)
 /** The user's own changes on the 关于你 page; what the agent saves is recorded when the app reads it (memory.learned). */
 const MEMORY_WRITES = Object.freeze(['setProfile', 'addMemory', 'updateMemory', 'deleteMemory', 'restoreMemory', 'reviveMemory', 'setOnboarding'] as const)
 
@@ -147,8 +154,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let traceDb: ReturnType<typeof openTraceDb> | null = null
   /** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
   let taskStore: ReturnType<typeof createTaskStore> | null = null
-  /** What background tasks say, kept and saved by the backend (task-ipc.ts). */
-  let taskService: TaskService | null = null
+  /** The background tasks, their one writer (task-runtime.ts); set once the history is open. */
+  let taskRuntime: TaskRuntime | null = null
   /** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
   let followups: Followups | null = null
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
@@ -179,12 +186,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let quitting = false
   /** What the window is told of the agent (session-info.ts, acp-bridge.ts): mode, model, session, what it remembers. */
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
-
-  // How a task ends is decided by the registry; the task service is the one that keeps it (task-ipc.ts ended).
-  const taskRegistry = createTaskRegistry({ changed: snapshot => {
-    emitToRenderer({ type: 'task_snapshot', taskId: snapshot.taskId, snapshot })
-    taskService?.ended(snapshot)
-  } })
 
   /** A push for the window, numbered by the event core (a transient one: what changes state goes through apply). */
   function emitToRenderer(event: HostEvent) {
@@ -361,17 +362,18 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       configActions: configActions(config),
       historySearch: (query, range) => (historyDb ? historyRecall(historyDb).search(query, range) : []),
       historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
-      taskRead: (request, sessionId) => taskRegistry.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
+      taskRead: (request, sessionId) => requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
       taskAct: (request, sessionId) => actOnTask(request, sessionId),
       emit: (event) => {
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
         emitToRenderer(event)
-        taskRegistry.receive(event)
-        taskService?.receive(event)
-        if (event.type === 'task_end') taskReports.ended(String(event.taskId), ENDED_STATUS[String(event.stopReason)] ?? 'done')
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
-        if (event.type === 'task_end') return signal({ kind: 'agent.task_ended' })
+        // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams.
+        const task = taskEventOf(event)
+        if (task?.type === 'task_end') return signal({ kind: 'agent.task_ended', event: task })
+        if (task && TASK_WAITS.has(task.type)) return signal({ kind: 'agent.task_waits', event: task })
+        if (task) taskRuntime?.dsh.receive(task)
         if (event.type === 'error') reportTurnMemories()
         return undefined
       },
@@ -387,11 +389,16 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    */
   async function actOnTask(request: TaskAction, sessionId: string) {
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
-    if (!taskService) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-    if (request.op === 'start') return taskService.agentStart(request.brief)
-    taskRegistry.query({ op: 'get', taskId: request.taskId }, { cwd: workDirNow() ?? '' })
-    if (request.op === 'stop') return taskService.agentStop(request.taskId)
-    return taskService.agentMessage(request.taskId, request.text)
+    const tasks = requireTasks().agent
+    if (request.op === 'start') return tasks.start(request.brief)
+    tasks.query({ op: 'get', taskId: request.taskId }, { cwd: workDirNow() ?? '' })
+    if (request.op === 'stop') return tasks.stop(request.taskId)
+    return tasks.message(request.taskId, request.text)
+  }
+
+  function requireTasks(): TaskRuntime {
+    if (!taskRuntime) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+    return taskRuntime
   }
 
   /**
@@ -401,23 +408,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   const taskReports = createTaskReports({
     isIdle: () => Boolean(bridge) && !turn.active && !bridge?.isSwitching() && !quitting,
     currentConversation: () => conversation.id,
-    describe: (taskId, status) => {
-      const host = taskService?.hostOf(taskId) ?? null
-      try {
-        const { task } = taskRegistry.query({ op: 'get', taskId, includeOutput: true }, { taskId }) as { task: { title: string, resultPreview?: string } }
-        return { taskId, title: task.title, status, host, output: task.resultPreview ?? '' }
-      } catch {
-        return null
-      }
-    },
-    stillEnded: (taskId) => {
-      try {
-        const { task } = taskRegistry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string } }
-        return ['done', 'stopped', 'error'].includes(task.status)
-      } catch {
-        return false
-      }
-    },
+    describe: (taskId, status) => taskRuntime?.reports.describe(taskId, status) ?? null,
+    stillEnded: (taskId) => taskRuntime?.reports.stillEnded(taskId) ?? false,
     report: (note) => {
       const agent = bridge
       if (!agent) return
@@ -437,9 +429,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
   function recoverFromCrash({ message }: { message: string }) {
-    taskService?.flush()
-    taskService?.detachAll()
-    taskRegistry.interrupt()
+    taskRuntime?.dsh.gone()
     console.error('[dsh] exited unexpectedly:', message)
     bridge = null
     turn = { active: false, startedAt: 0 }
@@ -460,9 +450,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
   async function stopBridge() {
-    taskService?.flush()
-    taskService?.detachAll()
-    taskRegistry.interrupt()
+    taskRuntime?.dsh.gone()
     clearTimeout(restartTimer)
     const running = bridge
     bridge = null
@@ -626,7 +614,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     ipcMain.handle('agent:answer', (_event, questionId, answers) => {
       const id = assertText(questionId, 'questionId', 200)
       // Held first: dsh closes the question while it takes the answer, and what was asked goes with it.
-      const keep = taskService?.holdQuestion(id) ?? null
+      const keep = taskRuntime?.dsh.holdQuestion(id) ?? null
       const accepted = bridge?.answerQuestion(id, answers) ?? false
       if (accepted) keep?.(answers)
       return accepted
@@ -669,7 +657,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         // A task that ended while this turn ran comes back now that the conversation is free.
         taskReports.flush()
       },
-      'agent.task_ended': () => followups?.gap(),
+      // How a task's turn ended is kept (task-runtime.ts); its result goes back to the conversation; a gap follows.
+      'agent.task_ended': ({ event }) => {
+        taskRuntime?.dsh.receive(event)
+        taskReports.ended(event.taskId, endedStatus(event.stopReason))
+        followups?.gap()
+      },
+      'agent.task_waits': ({ event }) => taskRuntime?.dsh.receive(event),
       // The same proposal turned down lately is not shown again.
       'agent.followup_proposed': ({ event }) => {
         const proposal = followups?.admitProposal(event.proposal as ProposalView)
@@ -904,17 +898,21 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       switchAgent,
       traceDb: () => traceDb,
     })
-    taskService = registerTaskIpc(ipcMain, {
-      registry: taskRegistry,
+    // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app). Only the task
+    // runtime writes them, each change with its event (task.started, task.ended, …).
+    taskStore = createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) })
+    taskRuntime = createTaskRuntime({
       db: historyDb,
-      // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app).
-      store: taskStore = journaled(createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) }), 'task', TASK_WRITES, applyChange),
+      store: taskStore,
       current: () => conversation,
       agentInfo: () => lastInfo,
       agent: taskAgent,
       announce: emitToRenderer,
       waitsOf: (taskId) => bridge?.taskWaits(taskId) ?? { permissions: [], questions: [] },
+      apply: applyChange,
+      publish: emitToRenderer,
     })
+    registerTaskIpc(ipcMain, taskRuntime.window)
   }
 
   /** Opens the stores and registers the backend's channels, before the window loads. */

@@ -88,7 +88,8 @@ flowchart TB
 | --- | --- | --- |
 | `chat.said` | 用户在对话里发了话（`agent:prompt`） | 直接进 dsh 会话，不经过模型分类 |
 | `user.command` | 页面上除查询以外的操作（`src/backend/commands.ts`） | 那个通道原来的处理函数 |
-| `agent.turn_ended`、`agent.task_ended` | 前台一轮、后台任务结束 | 空档判断；汇报这一轮存下的记忆 |
+| `agent.turn_ended` | 前台一轮结束 | 空档判断；汇报这一轮存下的记忆；送出等着的任务结果 |
+| `agent.task_ended`、`agent.task_waits` | 后台任务的一轮结束；开始或不再等用户 | TaskRuntime（`task-runtime.ts`）记下怎么结束的；结果送回对话；空档判断 |
 | `agent.followup_proposed` | 模型通过 `viva-followups` 提出跟进 | 等用户决定的建议卡片 |
 | `clock.reminder_due`、`clock.prepare_window` | 提醒定时器、后台准备定时器 | 通知规划、后台准备 |
 | `system.woke`、`system.user_returned` | 电脑唤醒或解锁；离开 15 分钟后回来 | 补发错过的提醒；空档 |
@@ -98,7 +99,7 @@ flowchart TB
 
 **`apply` 与事件表。** `apply(kind, data, write)` 在一个事务里执行写入，再往 `app_events` 插一行；写入抛错就两样都不留。嵌套的写入用 savepoint，内层失败只撤回自己。推给窗口的每条消息都带序号：存下的事件用它自己的，流式文字这类临时推送带最新的序号。事件表只留最近 100,000 条，序号不会重复使用。
 
-**存储的写操作。** 跟进、历史和后台任务的存储都套一层 `journaled`（`src/backend/journal.ts`）：列出的写操作经过 `apply`，读操作原样穿过。什么都没改的写入（返回 `false`、`0` 或 `null`）不记事件。
+**存储的写操作。** 跟进和历史的存储都套一层 `journaled`（`src/backend/journal.ts`）：列出的写操作经过 `apply`，读操作原样穿过。什么都没改的写入（返回 `false`、`0` 或 `null`）不记事件。后台任务只有一个写入方 TaskRuntime（`src/backend/task-runtime.ts`），只在它自己的变化里写：`task.started`、`task.restarted`、`task.ended`、`task.closed`，都带 `taskId` 和这次运行的 `runId`。任务结束时，保存它说的话、记下怎么结束的、记 `task.ended`，在同一个事务里完成；推给窗口的快照等事务提交之后才发。
 
 **只记形状，不记内容。** 事件从不记用户说的话或模型写的内容：
 
@@ -387,8 +388,8 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 ### 12.7 实施顺序
 
-1. 任务终态只有一个写入方：一次运行怎么结束（状态、时间、最后说的话）由注册表决定，只由任务服务写进 `task-store`。
-2. TaskRuntime：任务信号经事件核心路由，删掉 `compose.ts` 里的手工分发；每个变化都带 `taskId` 和 `runId`，落实 §12.2 的事务边界。IPC 契约里任务相关的接口补上返回值类型。
+1. 任务终态只有一个写入方：一次运行怎么结束（状态、时间、最后说的话）由注册表决定，只由任务服务写进 `task-store`。（已完成。）
+2. TaskRuntime：任务信号经事件核心路由，删掉 `compose.ts` 里的手工分发；每个变化都带 `taskId` 和 `runId`，落实 §12.2 的事务边界。IPC 契约里任务相关的接口补上返回值类型。（已完成：`task-runtime.ts`，`task-ipc.ts` 只剩窗口的通道；返回值类型在 `src/shared/ipc-results.ts`。副作用随第 3 步加上。）
 3. 带 generation 的副作用表（§12.3），回报经它发出（§12.4）：`reportId`，`viva-steer` 区分读到（写进历史并落盘）和丢掉，每次送达前在会话历史和 inbox 里查 `reportId`。
 4. 对话里送达的结果：一条可折叠的系统记录，展开是模型拿到的原文（§12.4 第 7 条）。
 5. 窗口：先落实快照与流式内容的顺序约定（§12.2），再改为第一份快照即建任务、删掉早到缓冲；纯对话 reducer 和窄的对话视图类型。
