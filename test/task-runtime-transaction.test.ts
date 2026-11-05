@@ -49,6 +49,8 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
     },
   }) as typeof history
   const snapshots: TaskSnapshot[] = []
+  /** Sessions let go (agent.closeTask). */
+  const closed: string[] = []
   /** Ends kept, as compose.ts hears of them to report their results. */
   const reported: Array<[string, string]> = []
   /** Waits the runtime asked for (tries again, saves along the way): run by hand. */
@@ -59,7 +61,7 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
     db, store, current: () => main, agentInfo: () => ({ mode: 'live', model: 'V4' }),
     agent: {
       startTask: async () => ({ ok: true, taskId: 'task-0001' }), promptTask: () => {}, steerTask: () => ({ ok: true }),
-      resumeTask: () => ({ ok: true }), cancelTask: () => {}, closeTask: () => {},
+      resumeTask: () => ({ ok: true }), cancelTask: () => {}, closeTask: (taskId: string) => { closed.push(taskId) },
     },
     apply: (kind, data, write) => core.apply(kind, data, write),
     publish: (push) => {
@@ -79,7 +81,7 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const kept = () => realStore.list().find((entry) => entry.id === 'task-0001')
   const ended = () => core.since(0).filter((event) => event.kind === 'task.ended')
   const reports = () => effects.list().filter((effect) => effect.kind === 'report').map((effect) => effect.key)
-  return { window, tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
+  return { window, closed, tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
@@ -236,4 +238,15 @@ test('through the event core to the window, a piece keeps its own number: the pu
   assert.ok(pieces.every((push) => typeof push.seq === 'number'), 'each also carries the event log\'s number, which is not the task\'s')
   const last = window.filter((push) => push.type === 'task_snapshot').at(-1) as { snapshot: { taskSeq: number, status: string } }
   assert.deepEqual([last.snapshot.status, last.snapshot.taskSeq], ['done', 3], 'the snapshot of its end includes it')
+})
+
+test('a task whose start cannot be kept: its session let go, its place given back, nothing of it kept', async (t) => {
+  const { tasks, failing, closed, store } = setup(t)
+  failing.words = true
+  await assert.rejects(tasks.window.start({ text: '整理发布说明' }), /disk full/)
+  assert.deepEqual(closed, ['task-0001'], 'the session dsh made for it, let go')
+  assert.deepEqual(store.list(), [], 'no task kept')
+  failing.words = false
+  const again = await tasks.window.start({ text: '整理发布说明' }) as Started
+  assert.equal(again.ok, true, 'its place given back')
 })
