@@ -1,47 +1,48 @@
 /**
  * A background task's result, delivered into the main conversation at most once and confirmed read
- * (docs/system-design.md §12.4). The app names each report (`reportId`, a task's run); this side finds it in the
- * session and says how it stands:
+ * (docs/system-design.md §12.4). The app names each report (`reportId`, a task's run) and gives it a `token`: a
+ * random secret it keeps with the report. This side finds the report in the session and says how it stands:
  *
  * - `read`: its message is in the session's history and the session was flushed (`sessions.flush` true).
  * - `pending`: it waits in the inbox, or a step took it and has not written it yet.
  * - `none`: it is nowhere: never delivered, or lost (a turn stopped before its step, a step rejected).
  *
- * A report is delivered by steering it into the running turn (its message identified by the report), or by the app
- * opening a turn with a note that names it (`REPORT_MARK`). Either way, it is found again by its id: in the
- * message's source, or in the note's words.
+ * A report is known only by what no one else can write: the source of a message this plugin steered in (`viva-report`,
+ * with its report and token), or, in a turn the app opened over ACP (whose messages are the user's), the report's
+ * token in the note's words, for a token the app registered for that session. A report id in someone's words is no
+ * report; nor is a token another session was given.
  */
 
 /** The message source of a report steered in: who produced it, and which report it is. */
 export const REPORT_SOURCE = 'viva-report'
 /** The message identity of a report: the same on every try, so one already delivered is known. */
 export const reportMessageId = (reportId: string): string => `viva-report:${reportId}`
-/** How a note names its reports, one line each (task-reports.ts noteFor): a turn opened over ACP has no other mark. */
-export const REPORT_MARK = '回报编号：'
-const MARKED = new RegExp(`${REPORT_MARK}(\\S+)`, 'g')
-const MAX_REPORT_ID_CHARS = 200
+/** How a note carries its reports' tokens, one line each (task-reports.ts noteFor). */
+export const TOKEN_MARK = '回报凭据：'
+const MAX_ID_CHARS = 200
+/** A token: 32 or more hex digits, as the app makes them (randomUUID without its dashes). */
+const TOKEN = /^[0-9a-f]{32,128}$/
 
 export type ReportStatus = 'read' | 'pending' | 'none'
 
-/** What of a dsh message is read here: its identity, its source, its words. */
+/** What of a dsh message is read here: its source and its words. */
 export interface ReportMessage {
   readonly id?: unknown
-  readonly source?: { readonly kind?: unknown, readonly reportId?: unknown } | null
+  readonly source?: { readonly kind?: unknown, readonly reportId?: unknown, readonly token?: unknown } | null
   readonly content?: ReadonlyArray<{ readonly type?: unknown, readonly text?: unknown }>
 }
 
-const isReportId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_REPORT_ID_CHARS
+export const isReportId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS
+export const isToken = (value: unknown): value is string => typeof value === 'string' && TOKEN.test(value)
 
-/** The reports a message is: the one its source names (steered in), and those its words name (a note). */
-export function reportIdsOf(message: ReportMessage | null | undefined): string[] {
-  if (!message) return []
-  const ids = new Set<string>()
-  if (message.source?.kind === REPORT_SOURCE && isReportId(message.source.reportId)) ids.add(message.source.reportId)
-  for (const block of message.content ?? []) {
-    if (block?.type !== 'text' || typeof block.text !== 'string') continue
-    for (const match of block.text.matchAll(MARKED)) if (isReportId(match[1])) ids.add(match[1])
-  }
-  return [...ids]
+const wordsOf = (message: ReportMessage): string => (message.content ?? [])
+  .flatMap((block) => (block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n')
+
+/** Whether a message is this report: steered in under it, or a note bearing its token. */
+function isReport(message: ReportMessage | null | undefined, reportId: string, token: string): boolean {
+  if (!message) return false
+  if (message.source?.kind === REPORT_SOURCE) return message.source.reportId === reportId && message.source.token === token
+  return wordsOf(message).includes(`${TOKEN_MARK}${token}`)
 }
 
 /** What this side reads of an agent (the main conversation's), kept narrow so it can be tested without dsh. */
@@ -53,17 +54,19 @@ export interface ReportAgent {
   /** Writes the session out: true only when a persistence listener took it. */
   flush: () => Promise<boolean>
   /** Steers a report's message into the running turn. */
-  steer: (reportId: string, text: string) => void
+  steer: (reportId: string, token: string, text: string) => void
 }
 
 export interface ReportDeskDeps {
   agentOf: (sessionId: string) => ReportAgent | null
-  /** To the app: a report read, or lost. */
+  /** To the app: a report read, or lost, in that session. */
   send: (message: { type: 'report_read' | 'report_dropped', sessionId: string, reportId: string }) => void
   log?: (message: string) => void
 }
 
 export function createReportDesk({ agentOf, send, log = () => {} }: ReportDeskDeps) {
+  /** The reports the app asked about, by session: report id → its token. Only these are looked for in words. */
+  const known = new Map<string, Map<string, string>>()
   /** sessionId → reports a step took and has not written yet. */
   const claimed = new Map<string, Set<string>>()
   /** The app's requests, one at a time: a report looked for and steered in one go, never two of them at once. */
@@ -74,16 +77,28 @@ export function createReportDesk({ agentOf, send, log = () => {} }: ReportDeskDe
     return done
   }
 
-  const inHistory = (agent: ReportAgent, reportId: string) => agent.history().some((message) => reportIdsOf(message).includes(reportId))
-  const inInbox = (agent: ReportAgent, reportId: string) =>
-    [...agent.inbox.nextStep, ...agent.inbox.nextTurn].some((message) => reportIdsOf(message).includes(reportId))
+  function register(sessionId: string, reportId: string, token: string) {
+    known.set(sessionId, new Map([...(known.get(sessionId) ?? []), [reportId, token]]))
+  }
+
+  /** The reports of this session a message is: by the source it was steered in with, or a registered token. */
+  function reportsIn(sessionId: string, message: ReportMessage): string[] {
+    const mine = known.get(sessionId)
+    if (!mine) return []
+    return [...mine].filter(([reportId, token]) => isReport(message, reportId, token)).map(([reportId]) => reportId)
+  }
+
+  const inHistory = (agent: ReportAgent, reportId: string, token: string) => agent.history().some((message) => isReport(message, reportId, token))
+  const inInbox = (agent: ReportAgent, reportId: string, token: string) =>
+    [...agent.inbox.nextStep, ...agent.inbox.nextTurn].some((message) => isReport(message, reportId, token))
 
   /** How a report stands in a session; null when there is no live agent for it. */
-  async function statusNow(sessionId: string, reportId: string): Promise<ReportStatus | null> {
+  async function statusNow(sessionId: string, reportId: string, token: string): Promise<ReportStatus | null> {
     const agent = agentOf(sessionId)
     if (!agent) return null
-    if (inHistory(agent, reportId)) return (await agent.flush()) ? 'read' : 'pending'
-    if (inInbox(agent, reportId) || claimed.get(sessionId)?.has(reportId)) return 'pending'
+    register(sessionId, reportId, token)
+    if (inHistory(agent, reportId, token)) return (await agent.flush()) ? 'read' : 'pending'
+    if (inInbox(agent, reportId, token) || claimed.get(sessionId)?.has(reportId)) return 'pending'
     return 'none'
   }
 
@@ -91,19 +106,19 @@ export function createReportDesk({ agentOf, send, log = () => {} }: ReportDeskDe
    * Into the running turn, once: one already there is not sent again. `idle` when no turn runs (the app opens one);
    * `steered` when it went in (its `report_read` comes once written).
    */
-  async function deliverNow(sessionId: string, reportId: string, text: string): Promise<ReportStatus | 'steered' | 'idle' | null> {
-    const now = await statusNow(sessionId, reportId)
+  async function deliverNow(sessionId: string, reportId: string, token: string, text: string): Promise<ReportStatus | 'steered' | 'idle' | null> {
+    const now = await statusNow(sessionId, reportId, token)
     if (now !== 'none') return now
     const agent = agentOf(sessionId)
     if (!agent) return null
     if (agent.status !== 'running') return 'idle'
-    agent.steer(reportId, text)
+    agent.steer(reportId, token, text)
     return 'steered'
   }
 
-  /** A message entered the history: a report written; confirmed once the session is flushed. */
+  /** A message entered a session's history: a report of that session written; confirmed once it is flushed. */
   async function written(sessionId: string, message: ReportMessage) {
-    const ids = reportIdsOf(message)
+    const ids = reportsIn(sessionId, message)
     if (!ids.length) return
     for (const id of ids) claimed.get(sessionId)?.delete(id)
     const agent = agentOf(sessionId)
@@ -114,19 +129,22 @@ export function createReportDesk({ agentOf, send, log = () => {} }: ReportDeskDe
       log(`could not flush the session after a report: ${err instanceof Error ? err.message : String(err)}`)
     }
     // Not flushed: no confirmation now; the app asks again (status), which flushes again.
-    if (flushed) for (const reportId of ids) send({ type: 'report_read', sessionId, reportId })
+    if (!flushed) return
+    for (const reportId of ids) {
+      known.get(sessionId)?.delete(reportId)
+      send({ type: 'report_read', sessionId, reportId })
+    }
   }
 
   /** A message left the inbox for a step: pending until it is written, or the turn ends without it. */
   function taken(sessionId: string, message: ReportMessage) {
-    const ids = reportIdsOf(message)
-    if (!ids.length) return
-    claimed.set(sessionId, new Set([...(claimed.get(sessionId) ?? []), ...ids]))
+    const ids = reportsIn(sessionId, message)
+    if (ids.length) claimed.set(sessionId, new Set([...(claimed.get(sessionId) ?? []), ...ids]))
   }
 
   /** A message was discarded from the inbox (the turn stopped): that report is lost. */
   function discarded(sessionId: string, message: ReportMessage) {
-    for (const reportId of reportIdsOf(message)) send({ type: 'report_dropped', sessionId, reportId })
+    for (const reportId of reportsIn(sessionId, message)) send({ type: 'report_dropped', sessionId, reportId })
   }
 
   /** The agent is idle: a report a step took and never wrote (the step rejected) is lost. */
@@ -134,12 +152,15 @@ export function createReportDesk({ agentOf, send, log = () => {} }: ReportDeskDe
     const ids = claimed.get(sessionId)
     claimed.delete(sessionId)
     const agent = agentOf(sessionId)
-    for (const reportId of ids ?? []) if (!agent || !inHistory(agent, reportId)) send({ type: 'report_dropped', sessionId, reportId })
+    for (const reportId of ids ?? []) {
+      const token = known.get(sessionId)?.get(reportId)
+      if (!agent || !token || !inHistory(agent, reportId, token)) send({ type: 'report_dropped', sessionId, reportId })
+    }
   }
 
   return {
-    status: (sessionId: string, reportId: string) => inTurn(() => statusNow(sessionId, reportId)),
-    deliver: (sessionId: string, reportId: string, text: string) => inTurn(() => deliverNow(sessionId, reportId, text)),
+    status: (sessionId: string, reportId: string, token: string) => inTurn(() => statusNow(sessionId, reportId, token)),
+    deliver: (sessionId: string, reportId: string, token: string, text: string) => inTurn(() => deliverNow(sessionId, reportId, token, text)),
     written, taken, discarded, idle,
   }
 }

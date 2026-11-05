@@ -370,9 +370,15 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       emit: (event) => {
         if (generation !== bridgeGeneration) return
         if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
-        // A task's result read in the conversation (written and flushed): its report is done. Lost: sent again.
-        if (event.type === 'report_read' && typeof event.reportId === 'string') return effects?.finish(REPORT, event.reportId)
-        if (event.type === 'report_dropped') return wakeEffects()
+        // A task's result read (written and flushed) in the session it was delivered to: its report is done. Lost:
+        // sent again. Said of another session, it is not this report's: the next pass asks again.
+        if (event.type === 'report_read' || event.type === 'report_dropped') {
+          const reportId = String(event.reportId)
+          if (deliveredTo.get(reportId) !== event.sessionId) return undefined
+          deliveredTo.delete(reportId)
+          if (event.type === 'report_read') effects?.finish(REPORT, reportId)
+          return wakeEffects()
+        }
         emitToRenderer(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams.
@@ -410,16 +416,29 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
    * it: no words of the user's.
    */
+  /** Reports delivered this launch, and the session each went to: only that session's word on it counts. */
+  const deliveredTo = new Map<string, string>()
   const taskReports = createTaskReports({
     conversation: () => (!bridge || bridge.isSwitching() || quitting ? 'away' : turn.active ? 'busy' : 'idle'),
-    status: (reportId) => bridge?.reportStatus(reportId) ?? Promise.resolve('unavailable'),
-    deliver: (reportId, text) => bridge?.deliverReport(reportId, text) ?? Promise.resolve('unavailable'),
+    session: () => bridge?.currentSession() ?? null,
+    holds: (effect) => effects?.holds(effect) ?? false,
+    status: async (session, reportId, token) => {
+      const state = bridge ? await bridge.reportStatus(session, reportId, token) : 'unavailable'
+      // Waiting in that session (delivered before a restart, say): its word on it is awaited too.
+      if (state === 'pending') deliveredTo.set(reportId, session)
+      return state
+    },
+    deliver: (session, reportId, token, text) => {
+      if (!bridge) return Promise.resolve('unavailable')
+      deliveredTo.set(reportId, session)
+      return bridge.deliverReport(session, reportId, token, text)
+    },
     currentConversation: () => conversation.id,
-    conversationExists: (conversationId) => Boolean(historyDb?.get(conversationId)),
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
-    report: (note) => {
+    report: (note, reports) => {
       const agent = bridge
       if (!agent) return false
+      for (const { reportId, session } of reports) deliveredTo.set(reportId, session)
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task' })
       agent.prompt(note).catch((err: Error) => {

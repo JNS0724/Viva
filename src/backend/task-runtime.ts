@@ -3,7 +3,7 @@ import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
 import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
-import { GATHER_MS, REPORT, reportId, reportsOf, type ReportPayload } from './task-reports.ts'
+import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
@@ -209,7 +209,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(text), words: text }
-      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now() })
+      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: how.afresh ? 'agent' : 'user' })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
       return begun
     })
@@ -231,7 +231,11 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
     store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
-      host: typeof entry.next === 'string' ? entry.next : null, output: snapshot.resultPreview }
+      host: typeof entry.next === 'string' ? entry.next : null, output: snapshot.resultPreview, token: randomUUID().replaceAll('-', ''),
+      // Its background, for a note given while the conversation is on another topic.
+      request: typeof entry.words === 'string' ? entry.words.slice(0, REQUEST_CHARS) : '',
+      topic: typeof entry.next === 'string' ? db.get(entry.next)?.conversation.title || null : null,
+      startedAt: typeof entry.startedAt === 'number' ? entry.startedAt : null, by: entry.by === 'agent' || entry.by === 'user' ? entry.by : null }
     effects?.queue(REPORT, reportId(snapshot.taskId, snapshot.runId), report, now() + GATHER_MS)
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED).forEach((old) => {
       store.remove(old.id)

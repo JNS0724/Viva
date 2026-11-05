@@ -18,7 +18,7 @@ import { createReportDesk, REPORT_SOURCE, reportMessageId, type ReportAgent, typ
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     /** A background task's result the app steered in (lib/reports.ts), named by its report. */
-    'viva-report': { kind: 'viva-report', reportId: string } & ContextFormed
+    'viva-report': { kind: 'viva-report', reportId: string, token: string } & ContextFormed
   }
 }
 
@@ -52,11 +52,11 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
       // A synchronous read of the live session, as plugins/fork does: a resumed session holds its whole stored log.
       history: () => agent.session.snapshotEvents().filter((event) => event.type === 'user/message').map((event) => event.data as ReportMessage),
       flush: () => ctx.sessions.flush(agent.session),
-      steer: (reportId, text) => agent.steer(freezeMessage({
+      steer: (reportId, token, text) => agent.steer(freezeMessage({
         id: MessageId(reportMessageId(reportId)),
         role: 'user' as const,
         content: [{ type: 'text' as const, text }],
-        source: { kind: REPORT_SOURCE, reportId, form: 'notice' as const, summary: '后台任务的结果' },
+        source: { kind: REPORT_SOURCE, reportId, token, form: 'notice' as const, summary: '后台任务的结果' },
       })),
     }
   }

@@ -18,10 +18,10 @@ const REPORT_STATES: ReadonlySet<string> = new Set(['read', 'pending', 'none', '
 export interface SteerDesk {
   /** @param session the turn to steer: the main conversation's, or a background task's */
   steer: (text: string, session?: string | null) => Promise<SteerResult>
-  /** A report into the main conversation's running turn, unless it is there already. */
-  report: (reportId: string, text: string) => Promise<ReportState>
-  /** How a report stands in the main conversation. */
-  reportStatus: (reportId: string) => Promise<ReportState>
+  /** A report into the running turn of `session` (the main conversation's), unless it is there already. */
+  report: (session: string, reportId: string, token: string, text: string) => Promise<ReportState>
+  /** How a report stands in `session`. */
+  reportStatus: (session: string, reportId: string, token: string) => Promise<ReportState>
   receive: (message: any) => void
   /** dsh is going away or the session is switched: nothing will answer. */
   closeAll: () => void
@@ -29,8 +29,8 @@ export interface SteerDesk {
 
 export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS, onReport = () => {} }: {
   send: (message: object) => void, sessionId: () => string | null, timeoutMs?: number,
-  /** The plugin said a report of the main conversation was read (written and flushed), or lost. */
-  onReport?: (event: { type: 'report_read' | 'report_dropped', reportId: string }) => void,
+  /** The plugin said a report was read (written and flushed), or lost, in that session. */
+  onReport?: (event: { type: 'report_read' | 'report_dropped', reportId: string, sessionId: string }) => void,
 }): SteerDesk {
   const waiting = new Map<string, { resolve: (result: SteerResult) => void, timer: ReturnType<typeof setTimeout> }>()
   const reporting = new Map<string, { resolve: (state: ReportState) => void, timer: ReturnType<typeof setTimeout> }>()
@@ -63,8 +63,7 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS,
     entry.resolve(state)
   }
 
-  function ask(fields: { type: 'report' | 'report_status', reportId: string, text?: string }): Promise<ReportState> {
-    const session = sessionId()
+  function ask(session: string, fields: { type: 'report' | 'report_status', reportId: string, token: string, text?: string }): Promise<ReportState> {
     if (!session) return Promise.resolve(NO_PLUGIN)
     const id = `r${++seq}-${Date.now().toString(36)}`
     return new Promise((resolve) => {
@@ -79,10 +78,9 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS,
     if (message?.type === 'report_result' && typeof message.id === 'string') {
       return settleReport(message.id, REPORT_STATES.has(message.status) ? message.status : NO_PLUGIN)
     }
-    if ((message?.type === 'report_read' || message?.type === 'report_dropped') && typeof message.reportId === 'string') {
-      // Only the main conversation's reports are the app's; a session switched since is no longer asked.
-      if (message.sessionId === sessionId()) onReport({ type: message.type, reportId: message.reportId })
-      return
+    if ((message?.type === 'report_read' || message?.type === 'report_dropped') && typeof message.reportId === 'string' && typeof message.sessionId === 'string') {
+      // Said with its session: the app checks it is the one the report went to (compose.ts).
+      return onReport({ type: message.type, reportId: message.reportId, sessionId: message.sessionId })
     }
     if (message?.type !== 'steer_result' || typeof message.id !== 'string' || typeof message.ok !== 'boolean') return
     settle(message.id, message.ok ? { ok: true } : { ok: false, reason: typeof message.reason === 'string' ? message.reason : NO_PLUGIN })
@@ -95,8 +93,8 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS,
 
   return {
     steer,
-    report: (reportId, text) => ask({ type: 'report', reportId, text }),
-    reportStatus: (reportId) => ask({ type: 'report_status', reportId }),
+    report: (session, reportId, token, text) => ask(session, { type: 'report', reportId, token, text }),
+    reportStatus: (session, reportId, token) => ask(session, { type: 'report_status', reportId, token }),
     receive,
     closeAll,
   }

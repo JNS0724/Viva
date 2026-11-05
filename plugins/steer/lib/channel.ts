@@ -1,3 +1,5 @@
+import { isReportId, isToken } from './reports.ts'
+
 /**
  * The steer contract (version 2) between this plugin, inside dsh, and the app that started dsh. The messages
  * go over Node's IPC channel (`process.send` / `process.on('message')`); the app keeps the same shapes in
@@ -8,8 +10,8 @@
  *
  * A background task's result (lib/reports.ts), at most once and confirmed read:
  *
- *   app → plugin  { type: 'report', id, sessionId, reportId, text }   into the running turn, unless already there
- *   app → plugin  { type: 'report_status', id, sessionId, reportId }  how it stands, before the app opens a turn
+ *   app → plugin  { type: 'report', id, sessionId, reportId, token, text }   into the running turn, unless already there
+ *   app → plugin  { type: 'report_status', id, sessionId, reportId, token }  how it stands, before the app opens a turn
  *   plugin → app  { type: 'report_result', id, status }              read · pending · none · steered · idle · missing · failed
  *   plugin → app  { type: 'report_read' | 'report_dropped', sessionId, reportId }   written and flushed, or lost
  */
@@ -37,8 +39,8 @@ const isText = (value: unknown, max: number): value is string => typeof value ==
  */
 /** The report requests (lib/reports.ts createReportDesk): null when no live agent has that session. */
 export interface ReportHandlers {
-  deliver: (sessionId: string, reportId: string, text: string) => Promise<string | null>
-  status: (sessionId: string, reportId: string) => Promise<string | null>
+  deliver: (sessionId: string, reportId: string, token: string, text: string) => Promise<string | null>
+  status: (sessionId: string, reportId: string, token: string) => Promise<string | null>
 }
 
 export function createSteerChannel(
@@ -50,10 +52,12 @@ export function createSteerChannel(
   function onReport(message: Incoming) {
     if (!isText(message.id, MAX_ID_CHARS)) return log('ignored a report request without an id')
     const reply = (status: string) => port.send({ type: 'report_result', id: message.id, status })
-    const valid = reports && isText(message.sessionId, MAX_ID_CHARS) && isText(message.reportId, MAX_ID_CHARS)
+    const valid = reports && isText(message.sessionId, MAX_ID_CHARS) && isReportId(message.reportId) && isToken(message.token)
       && (message.type === 'report_status' || isText(message.text, MAX_TEXT_CHARS))
     if (!valid) return reply(REASONS.failed)
-    const asked = message.type === 'report' ? reports.deliver(message.sessionId, message.reportId, message.text) : reports.status(message.sessionId, message.reportId)
+    const asked = message.type === 'report'
+      ? reports.deliver(message.sessionId, message.reportId, message.token, message.text)
+      : reports.status(message.sessionId, message.reportId, message.token)
     asked.then((status) => reply(status ?? REASONS.missing), (err: any) => {
       log(`could not handle a report: ${err?.message ?? err}`)
       reply(REASONS.failed)

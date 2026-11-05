@@ -651,10 +651,12 @@ export function createAcpBridge({
    * plugin's reasons).
    */
   const steer = (text: string) => steering.steer(text)
-  /** A background task's result into the main conversation's running turn, at most once (task-reports.ts). */
-  const deliverReport = (reportId: string, text: string) => steering.report(reportId, text)
-  /** How a background task's result stands in the main conversation: read, pending, or nowhere. */
-  const reportStatus = (reportId: string) => steering.reportStatus(reportId)
+  /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
+  const deliverReport = (session: string, reportId: string, token: string, text: string) => steering.report(session, reportId, token, text)
+  /** How a background task's result stands in `session`: read, pending, or nowhere. */
+  const reportStatus = (session: string, reportId: string, token: string) => steering.reportStatus(session, reportId, token)
+  /** The main conversation's session, as dsh knows it; null while there is none. */
+  const currentSession = (): string | null => sessionId
 
   /** optionId: the option picked, or null to turn it down without one. */
   function respondPermission(requestId: string, optionId: string | null) {
@@ -719,5 +721,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, deliverReport, reportStatus, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }

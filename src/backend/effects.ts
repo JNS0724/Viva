@@ -60,6 +60,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const due = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY due_at, rowid')
   const next = db.prepare('SELECT MIN(due_at) AS at FROM effects WHERE due_at > ?')
   const all = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects ORDER BY rowid')
+  const holding = db.prepare('SELECT 1 AS held FROM effects WHERE kind = ? AND key = ? AND generation = ?')
   const runners = new Map<string, Runner>()
   let timer: unknown = null
   let running = false
@@ -76,6 +77,11 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   /** Not to be done any more (its reason went): the row goes, whatever generation it is at. */
   function cancel(kind: string, key: string) {
     dropOne.run(kind, key)
+  }
+
+  /** Whether an effect is still queued at that generation: not done, cancelled or queued again since a try took it. */
+  function holds(effect: Pick<Effect, 'kind' | 'key' | 'generation'>): boolean {
+    return Boolean(holding.get(effect.kind, effect.key, effect.generation))
   }
 
   /**
@@ -181,6 +187,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     queue,
     cancel,
     finish,
+    holds,
     cancelStarting,
     list,
     wake,

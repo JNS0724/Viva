@@ -54,6 +54,8 @@ test('the plugins shipped with the app all pass, each with its data file under u
   assert.match(PERSONA.prefix, /memory_remember/, 'and to keep what the user told it')
   assert.match(PERSONA.prefix, /必须先用 list_background_tasks/)
   assert.match(PERSONA.prefix, /它们为空不能证明 Viva 没有后台任务/)
+  assert.match(PERSONA.prefix, /后台任务都归你管，不论它是在哪个话题里开的/, 'the main conversation owns every task')
+  assert.match(PERSONA.prefix, /不论你此刻在聊什么，都要把结果反馈给用户/)
   assert.match(PERSONA.prefix, /不能回答没有任务/)
   assert.doesNotMatch(PERSONA.prefix, /coding agent/)
 })
