@@ -19,8 +19,6 @@ interface Asked { taskId: string, questions: Array<{ id: string, question: strin
 export interface TaskWordsDeps {
   /** What the task has said, from its own words on, into its segment. */
   persist: (taskId: string, messages: SavedMessage[]) => void
-  /** Its turn ended, how (done, stopped, error): kept to be asked again. */
-  end: (taskId: string, status: string) => void
   later?: (run: () => void, ms: number) => unknown
   cancel?: (timer: unknown) => void
   everyMs?: number
@@ -50,7 +48,7 @@ function askedOf(event: AgentEvent): Asked | null {
   return { taskId: text(event.taskId), questions }
 }
 
-export function createTaskWords({ persist, end, later = setTimeout, cancel = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+export function createTaskWords({ persist, later = setTimeout, cancel = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
   everyMs = SAVE_EVERY_MS, onError = () => {} }: TaskWordsDeps) {
   /** taskId → what it has said; only tasks this launch holds. */
   const transcripts = new Map<string, Transcript>()
@@ -110,7 +108,6 @@ export function createTaskWords({ persist, end, later = setTimeout, cancel = (ti
     if (event.type === 'task_end') {
       transcripts.set(taskId, ended(transcript, event.stopReason))
       save(taskId)
-      end(taskId, ENDED_STATUS[text(event.stopReason)] ?? 'done')
     }
   }
 

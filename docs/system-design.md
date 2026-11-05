@@ -387,16 +387,16 @@ Threads, subscriptions and correlations, an outbox with channels, source plugins
 
 ### 12.7 Order of work
 
-1. Changes with no change in behaviour: unused code and stale comments removed, result types for the IPC contract.
-2. One writer of a task's end.
-3. TaskRuntime: task signals routed through the core, the fan-out in `compose.ts` removed; `taskId` and `runId` on every change, and the transaction boundary of §12.2.
-4. The effects table with generations (§12.3), and reports through it (§12.4): `reportId`, `viva-steer` telling read (written and flushed) from discarded, and the check for a `reportId` in the session's history and inbox before every delivery.
+1. One writer of a task's end: the registry decides how a run ended (status, time, last words); the task service alone keeps it in `task-store`.
+2. TaskRuntime: task signals routed through the core, the fan-out in `compose.ts` removed; `taskId` and `runId` on every change, and the transaction boundary of §12.2. Result types for the task channels of the IPC contract.
+3. The effects table with generations (§12.3), and reports through it (§12.4): `reportId`, `viva-steer` telling read (written and flushed) from discarded, and the check for a `reportId` in the session's history and inbox before every delivery.
+4. The delivered result in the conversation: a collapsed system record that opens on what the model was given (§12.4 point 7).
 5. The window: the order of snapshots and stream pieces (§12.2), then a task created by its first snapshot and the early buffers removed; a pure conversation reducer and a narrow view type for the thread.
-6. Triggers.
-7. Proactive follow-ups removed.
+6. Triggers; their proposal card is shown as a design before it is built.
+7. Proactive follow-ups removed, once triggers do all they did.
 8. Pages catch up by sequence number after a reconnect instead of reloading.
 
-Each step is its own pull request with its tests; steps 3 to 5 also run the smoke tests.
+Each step is its own pull request with its tests; steps 2 to 5 also run the smoke tests. Unused code, stale comments (a `.js` named for a module now `.ts`) and loose IPC result types are cleaned in the files a step touches, not in a step of their own.
 
 ### 12.8 Review's answers, for the owner to confirm
 

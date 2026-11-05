@@ -2,7 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
-import type { TaskRegistry } from './task-registry.ts'
+import type { TaskRegistry, TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
@@ -81,7 +81,6 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   }
   const taskWords = createTaskWords({
     ...timers, persist,
-    end: (taskId, status) => { const task = tasks.get(taskId); if (task) keepEnded(task, status) },
     onError: (err) => console.error('[tasks] could not save what the task said:', err.message),
   })
 
@@ -127,10 +126,16 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
     return { ok: true as const, task }
   }
 
-  /** Ended: kept with how it ended; beyond the latest few, the oldest are let go. */
-  function keepEnded(task: StoredTask, status: string) {
-    const entry = store.list().find((item) => item.id === task.id) ?? task
-    store.add({ ...entry, endedAt: Date.now(), status: ENDED_STATUSES.has(status) ? status : 'done' })
+  /**
+   * A task's run ended, as the registry decided it (compose.ts passes on its snapshots): the one place its ending is
+   * kept, with the registry's status, time and last words, so the store and the window say the same. Beyond the
+   * latest few ended, the oldest are let go. A snapshot already kept (a task restored at launch) changes nothing.
+   */
+  function ended(snapshot: TaskSnapshot) {
+    if (snapshot.endedAt === null || !ENDED_STATUSES.has(snapshot.status)) return
+    const entry = store.list().find((item) => item.id === snapshot.taskId)
+    if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
+    store.add({ ...entry, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED)
       .forEach((old) => { store.remove(old.id); registry?.remove(old.id) })
   }
@@ -263,6 +268,7 @@ export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, stor
   return {
     /** An event from the agent: what a task says, asks and how its turn ends. */
     receive: taskWords.receive,
+    ended,
     /** The user's answer to a question dsh took: it joins the task that asked it. */
     answer: taskWords.answer,
     /** Before the answer goes to dsh (which closes the question as it takes it): how to keep it once taken. */
