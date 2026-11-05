@@ -333,7 +333,9 @@ Why: a background task's state is worked out in five places (`task-registry`, `t
 
 ### 12.1 The event core routes everything
 
-- What dsh reports about a task becomes signals of the core (a task ended, waits, stopped waiting); streamed text stays a transient push, as the main conversation's does. The hand-made fan-out in `compose.ts` goes; every consumer is a route.
+- The main conversation already goes through the core: what the user says is `chat.said`, a command from the window `user.command`, the end of a turn `agent.turn_ended`. They stay; `agent.turn_ended` also wakes the reports still unread (§12.4).
+- What dsh reports about a task becomes signals of the core too (a task ended, waits, stopped waiting). The hand-made fan-out in `compose.ts` goes; every consumer is a route.
+- Streamed text is not a signal, in the main conversation or a task: a transient push to the window, many times a second, and what was said, which events never hold. dsh keeps it in the session's history.
 - The stores stay the truth. Events drive what reacts to a change; state is not rebuilt from events.
 - The rules for what an event may hold (§4: ids, numbers and lengths, never what was said) do not change.
 
