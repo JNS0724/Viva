@@ -9,6 +9,7 @@ import { createEventCore } from '../src/backend/event-core.ts'
 import { openHistoryDb, type Conversation } from '../src/backend/history-db.ts'
 import { journaled } from '../src/backend/journal.ts'
 import { createReportRecords, type RecordShown } from '../src/backend/report-records.ts'
+import { registerRewindIpc } from '../src/backend/rewind-ipc.ts'
 import { createTaskReports, REPORT, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
 
 /**
@@ -157,3 +158,36 @@ for (const [where, session] of [['another conversation', 's-old'], ['the convers
     assert.equal(effects.get(REPORT, ID), null, 'and done')
   })
 }
+
+test('a blank topic whose record is kept before its first save: stored with it, so it comes back after a restart', (t) => {
+  const { app, history, records, world, queue } = setup(t)
+  world.current = history.create({ sessionId: 's-fresh' })
+  records.read(queue('s-fresh'))
+  const again = openHistoryDb({ db: app.db })
+  assert.equal(again.latest()?.conversation.id, world.current.id, 'the topic is there, the latest')
+  assert.deepEqual(again.get(world.current.id)?.records.map(({ reportId, after }) => ({ reportId, after })), [{ reportId: ID, after: 0 }])
+})
+
+test('going back, and back onto the path left: the records of the shared part go with the path on screen, the others stay with the folded one', async (t) => {
+  const app = open(t)
+  let n = 0
+  const history = openHistoryDb({ db: app.db, newId: () => `c-${String(++n).padStart(4, '0')}` })
+  const words = ['做周报', '写好了', '太正式了', '改了']
+  let current = history.save(history.create({ sessionId: 's1', cwd: '/w' }), words.map((text, i) => ({ role: i % 2 ? 'assistant' : 'user', text, receipt: null }))) as Conversation
+  const before = current
+  history.addRecord({ conversationId: before.id, reportId: 'task-0001:run-1', at: 1, text: 'r1' }) // after 4 messages: on the part left
+  app.db.prepare('UPDATE report_records SET after_seq = 1 WHERE report_id = ?').run('task-0001:run-1') // after the first: shared
+  history.addRecord({ conversationId: before.id, reportId: 'task-0002:run-1', at: 2, text: 'r2' }) // after the fourth: the part left
+  const handlers: Record<string, (event: unknown, request: unknown) => Promise<any> | any> = {}
+  registerRewindIpc({ handle: (channel: string, fn: (event: unknown, request: unknown) => unknown) => { handlers[channel] = fn as never } } as never, {
+    db: history, current: () => current, setCurrent: (next) => { current = next }, isBusy: () => false, agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    forkAgent: async () => ({ ok: true, info: { sessionId: 's2', mode: 'live', model: 'V4', cwd: '/w' } as never }),
+    switchAgent: async (sessionId) => ({ sessionId, cwd: '/w', resumed: true, mode: 'live', model: 'V4' } as never),
+  })
+  const rewound = await handlers['timeline:rewind']({}, { words: '太正式了', occurrence: 0, keep: 2, text: '口语一点' })
+  assert.deepEqual(rewound.conversation.records.map((r: { reportId: string, after: number }) => [r.reportId, r.after]), [['task-0001:run-1', 1]], 'the shared part\'s record, on screen')
+  const opened = await handlers['timeline:folded']({}, before.id)
+  assert.deepEqual(opened.records.map((r: { reportId: string, after: number }) => [r.reportId, r.after]), [['task-0002:run-1', 2]], 'the path left: its own, placed in what it holds after the shared part')
+  const back = await handlers['timeline:switch-path']({}, before.id)
+  assert.deepEqual(back.conversation.records.map((r: { reportId: string }) => r.reportId), ['task-0001:run-1', 'task-0002:run-1'], 'back onto it: all of its records again')
+})

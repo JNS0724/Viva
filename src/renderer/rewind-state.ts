@@ -3,6 +3,8 @@
  * and what is on screen once the agent went back (main/rewind-ipc.js). Pure and immutable like `state.js`,
  * which merges these handlers into its reducer.
  */
+import { recordsFrom } from './report-state.ts'
+
 export const initialRewind = Object.freeze({
   /** The message being edited in place (改了重发), by id. */
   editing: null as string | null,
@@ -10,6 +12,8 @@ export const initialRewind = Object.freeze({
   busy: false,
   /** Folded paths opened in place to be read: their messages after the shared part, by path id. */
   open: {} as Record<string, Untyped>,
+  /** Their task records, each after the messages of that part before it (report-state.ts), by path id. */
+  openRecords: {} as Record<string, readonly ReportRecord[]>,
   /** Going back over changes to the computer waits on the user: { id, text, effects } (main/side-effects.js). */
   confirm: null as Untyped,
 })
@@ -62,9 +66,12 @@ export function rewindActions(newSession: Reducer): Record<string, Reducer> {
     rewind_confirm: (state, { id, text, effects }) => withRewind(state, { confirm: { id, text, effects } }),
     rewind_confirm_cancel: (state) => withRewind(state, { confirm: null }),
     rewind_failed: (state) => withRewind(state, { busy: false }),
-    fold_opened: (state, { id, messages }) => withRewind(state, { open: { ...state.rewind.open, [id]: messages } }),
+    fold_opened: (state, { id, messages, records }) => withRewind(state, {
+      open: { ...state.rewind.open, [id]: messages }, openRecords: { ...state.rewind.openRecords, [id]: recordsFrom(records) },
+    }),
     fold_closed: (state, { id }) => withRewind(state, {
       open: Object.fromEntries(Object.entries(state.rewind.open).filter(([key]) => key !== id)),
+      openRecords: Object.fromEntries(Object.entries(state.rewind.openRecords).filter(([key]) => key !== id)),
     }),
     /**
      * The agent went back: on screen are what came before that point, as it was, and the path left behind,
@@ -79,6 +86,8 @@ export function rewindActions(newSession: Reducer): Record<string, Reducer> {
       messages: conversation.messages.map((m: SegmentMessage, i: number) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, ...(m.images ? { images: m.images } : {}),
       })),
+      // The task records of the part kept, and, back onto a path, those of that path (main/rewind-ipc.ts).
+      records: recordsFrom(conversation.records),
       folds,
     }),
   }

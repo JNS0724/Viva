@@ -348,7 +348,8 @@ function messageEntries(state: State, views: readonly View[], handlers: Handlers
       const bar = elementsOf(view)[0]?.querySelector<HTMLElement>('.rewind-bar')
       if (bar) bar.hidden = !canRewindMessage(state, message)
     }
-    const strip = (fold: Untyped) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past: ThreadMessage) => pastMessageView(past, handlers), tasks: state.tasks })
+    const strip = (fold: Untyped) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past: ThreadMessage) => pastMessageView(past, handlers), tasks: state.tasks,
+      records: state.rewind.openRecords[fold.id], recordView: (record: ReportRecord) => reportRecord(record, handlers) })
     const strips = (folds[message.id] ?? []).flatMap(strip)
     const before = i === start ? (folds[''] ?? []).flatMap(strip) : []
     return [...before, ...[view].flat(), ...strips]

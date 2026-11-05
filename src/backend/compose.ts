@@ -82,7 +82,7 @@ type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configAc
 type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
-const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
+const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
 /** The user's own changes on the 关于你 page; what the agent saves is recorded when the app reads it (memory.learned). */
 const MEMORY_WRITES = Object.freeze(['setProfile', 'addMemory', 'updateMemory', 'deleteMemory', 'restoreMemory', 'reviveMemory', 'setOnboarding'] as const)
 

@@ -236,6 +236,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
     hasRecord: db.prepare('SELECT 1 AS held FROM report_records WHERE report_id = ?'),
+    moveRecords: db.prepare('UPDATE report_records SET conversation_id = ? WHERE conversation_id = ? AND after_seq <= ?'),
     bySession: db.prepare('SELECT * FROM conversations WHERE session_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
     count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
@@ -321,6 +322,13 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     const records = recordsOf(id)
     return records.length ? { records } : {}
   }
+
+  /**
+   * The records of the part two paths share (going back, or back onto a folded path): with the path that goes on.
+   * Those after it stay with the path folded.
+   */
+  const moveRecords = ({ from, to, upTo }: { from: string, to: string, upTo: number }): number =>
+    Number(sql.moveRecords.run(assertId(to), assertId(from), Math.max(0, Math.trunc(upTo))).changes)
 
   /** Whether a report's record is kept. */
   const hasRecord = (reportId: string): boolean => Boolean(sql.hasRecord.get(reportId))
@@ -528,7 +536,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
   return {
-    addRecord, hasRecord, recordsOf, bySession,
+    addRecord, hasRecord, moveRecords, recordsOf, bySession,
     create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.

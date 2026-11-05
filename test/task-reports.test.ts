@@ -309,3 +309,15 @@ test('in the timeline: an earlier topic draws its records after the messages bef
   assert.deepEqual(left.records, [], 'the new topic has none')
   assert.deepEqual(left.earlier.segments.at(-1)?.records?.map((record: ReportRecord) => record.reportId), ['task-0001:run-1'], 'the topic left keeps its record')
 })
+
+test('going back, a path opened, back onto a path: the window takes the records each comes with, and lets go of those closed', () => {
+  const at = 1_730_800_000_000
+  const loaded = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '做周报' }], savedAt: 1,
+    records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }] })
+  const rewound = reduce(loaded, { type: 'rewound', info: {}, folds: [],
+    conversation: { id: 'c2', messages: [{ role: 'user', text: '做周报' }], records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }] } })
+  assert.deepEqual(layout(rewound), ['user', 'record'], 'the shared part\'s record kept on screen')
+  const opened = reduce(rewound, { type: 'fold_opened', id: 'c1', messages: [{ role: 'assistant', text: '改了' }], records: [{ reportId: 'task-0002:run-1', at, text: inTurnText, after: 1 }] })
+  assert.deepEqual(opened.rewind.openRecords.c1.map((record: ReportRecord) => record.reportId), ['task-0002:run-1'])
+  assert.deepEqual(reduce(opened, { type: 'fold_closed', id: 'c1' }).rewind.openRecords, {})
+})
