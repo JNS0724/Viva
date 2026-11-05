@@ -44,7 +44,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error', 'task_started'])
+const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error', 'task_started', 'report_delivered'])
 let STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
 const api = window.agent
 /** A part of the page (index.html): one missing is a broken page, said at once rather than at its first use. */
@@ -832,6 +832,8 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   /** What a background task says, asks and how it ends (tasks-state.ts). */
   task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now() }),
   task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
+  /** A background task's result the model read (task-reports.ts): its record in the conversation, where it came. */
+  report_delivered: (event) => ({ type: 'report_delivered', reportId: event.reportId, text: event.text, at: Date.now() }),
   task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now() }),
   task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now() }),
   task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now() }),

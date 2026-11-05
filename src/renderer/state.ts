@@ -252,6 +252,17 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     return { ...closed, messages: [...closed.messages, message] }
   },
 
+  /**
+   * A background task's result the model read (system-design §12.4): a record of it where it came, in a turn running
+   * on something else or at the start of a turn of its own. What the agent was writing closes, so what it says next
+   * comes below the record. The same report twice is one record.
+   */
+  report_delivered: (state, { reportId, text, at }) => {
+    if (typeof text !== 'string' || !text || state.messages.some((message) => message.role === 'report' && message.reportId === reportId)) return state
+    const closed = closeStreams(state)
+    return { ...closed, messages: [...closed.messages, { id: `m${closed.messages.length}`, role: 'report', text, open: false, receipt: null, reportId, at }] }
+  },
+
   /** The words could not reach the agent: they stay in the thread, marked as not sent. */
   steer_failed: (state, { id }) => ({
     ...state,

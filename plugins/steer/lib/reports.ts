@@ -1,3 +1,5 @@
+import { TOKEN_MARK } from '../../../src/shared/task-report.ts'
+
 /**
  * A background task's result, delivered into the main conversation at most once and confirmed read
  * (docs/system-design.md §12.4). The app names each report (`reportId`, a task's run) and gives it a `token`: a
@@ -17,8 +19,8 @@
 export const REPORT_SOURCE = 'viva-report'
 /** The message identity of a report: the same on every try, so one already delivered is known. */
 export const reportMessageId = (reportId: string): string => `viva-report:${reportId}`
-/** How a note carries its reports' tokens, one line each (task-reports.ts noteFor). */
-export const TOKEN_MARK = '回报凭据：'
+/** How a note carries its reports' tokens, one line each (task-reports.ts noteFor; the format in src/shared). */
+export { TOKEN_MARK }
 const MAX_ID_CHARS = 200
 /** A token: 32 or more hex digits, as the app makes them (randomUUID without its dashes). */
 const TOKEN = /^[0-9a-f]{32,128}$/

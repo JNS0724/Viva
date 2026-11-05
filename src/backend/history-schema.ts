@@ -7,14 +7,15 @@ const MAX_TEXT_CHARS = 200_000
 const MAX_STOP_REASON_CHARS = 40
 const MAX_TITLE_CHARS = 80
 const AUTO_TITLE_CHARS = 20
-const ROLES = new Set(['user', 'assistant', 'note'])
+/** `report`: a background task's result as the model was given it (renderer/view/report-record.ts). */
+const ROLES = new Set(['user', 'assistant', 'note', 'report'])
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/
 
 /** What a finished answer took: time, tool calls, thoughts, and why it stopped. */
 export interface Receipt { ms: number, tools: number, thoughts: number, stopReason: string }
 
 /** A message as it is kept. */
-export interface StoredMessage { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[] }
+export interface StoredMessage { role: 'user' | 'assistant' | 'note' | 'report', text: string, receipt: Receipt | null, images?: ImageRef[] }
 
 const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0
 

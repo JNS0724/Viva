@@ -13,6 +13,7 @@ import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { foldKey, foldTall } from './message-fold.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
 import { reconcileChildren } from './reconcile.ts'
+import { reportRecord } from './report-record.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
@@ -195,6 +196,7 @@ const MESSAGE_VIEWS: Readonly<Record<string, (message: ThreadMessage, handlers: 
   note: (message, handlers, traceReady) => h('div', { class: 'msg-note' },
     h('span', { text: message.text }),
     hasReceipt(message) ? receiptButton(message, handlers, traceReady) : null),
+  report: (message, handlers) => reportRecord(message, handlers),
 }
 
 const STILL: Look = Object.freeze({ latest: false, mood: 'idle' })
@@ -213,6 +215,7 @@ export function markMessage<T extends View>(view: T, id: string): T {
 export function pastMessageView(message: ThreadMessage, handlers: Handlers): View {
   if (message.role === 'user') return userView(message)
   if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
+  if (message.role === 'report') return reportRecord(message, handlers)
   return h('div', { class: 'msg-agent' },
     avatar(message, STILL),
     h('div', { class: 'msg-body' },

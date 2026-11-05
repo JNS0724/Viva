@@ -391,7 +391,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 1. 任务终态只有一个写入方：一次运行怎么结束（状态、时间、最后说的话）由注册表决定，只由任务服务写进 `task-store`。（已完成。）
 2. TaskRuntime：任务信号经事件核心路由，删掉 `compose.ts` 里的手工分发；每个变化都带 `taskId` 和 `runId`，落实 §12.2 的事务边界。IPC 契约里任务相关的接口补上返回值类型。（已完成：`task-runtime.ts`，`task-ipc.ts` 只剩窗口的通道；返回值类型在 `src/shared/ipc-results.ts`。副作用随第 3 步加上。）
 3. 带 generation 的副作用表（§12.3），回报经它发出（§12.4）：`reportId`，`viva-steer` 区分读到（写进历史并落盘）和丢掉，每次送达前在会话历史和 inbox 里查 `reportId`。（已完成：`effects` 表（`src/backend/effects.ts`）；一次运行结束时按 `reportId` 排一个 `report`，和结束在同一个事务里；经 `viva-steer`（`plugins/steer/lib/reports.ts`）插进正在跑的一轮，或开一轮、说明里带上它的凭据（随回报一起存下的随机密钥；回报只认消息的 `viva-report` 来源、或 Viva 给这个会话登记过的凭据，不认正文里的字）；每一轮处理都绑定开始时的会话，发送前再核对一次；送出前先把投递目标存进回报，切换话题后先回到那里核对（没有 agent 时读它存下的会话），在那里确认丢了才改送当前对话；收到投递那个会话的 `report_read` 才算完成，`report_dropped` 后再送；在真实 dsh 上测过（`test/steer-reports-dsh.test.ts`）。）
-4. 对话里送达的结果：一条可折叠的系统记录，展开是模型拿到的原文（§12.4 第 7 条）。
+4. 对话里送达的结果：一条可折叠的系统记录，展开是模型拿到的原文（§12.4 第 7 条）。（已完成：`src/renderer/view/report-record.ts`；它是角色为 `report` 的消息，存进历史，画在确认读到的位置，不显示凭据；说明的格式放在 `src/shared/task-report.ts`，两边共用。）
 5. 窗口：先落实快照与流式内容的顺序约定（§12.2），再改为第一份快照即建任务、删掉早到缓冲；纯对话 reducer 和窄的对话视图类型。
 6. 触发器；提议卡片先出设计图再做。
 7. 触发器能完全替代主动跟进之后，去掉主动跟进。

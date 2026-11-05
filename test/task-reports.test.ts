@@ -2,9 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Effect, Outcome } from '../src/backend/effects.ts'
 import type { ReportState } from '../src/backend/steer-channel.ts'
-import { createTaskReports, noteFor, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
+import { createTaskReports, noteFor, recordedNote, reportId, type ReportPayload } from '../src/backend/task-reports.ts'
+import { normalizeMessages } from '../src/backend/history-schema.ts'
+import { historyMessages } from '../src/renderer/selectors.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { isSilentReply, SILENT_REPLY } from '../src/shared/task-report.ts'
+import { isSilentReply, reportRecordOf, shownNote, SILENT_REPLY } from '../src/shared/task-report.ts'
 
 /**
  * A background task's result comes back to the main conversation: into the turn running there, or as a turn of its
@@ -195,4 +197,32 @@ test('a report queued before tokens gets one, kept before it is first asked abou
   refused.world.amends = false
   assert.deepEqual(await refused.outcomes([legacy]), { 't1:run-1': 'wait' }, 'its token could not be kept: not sent')
   assert.equal(refused.turns.length, 0)
+})
+
+test('a note read back for its record: the tasks it tells of, whether it came into a turn; its token never shown', () => {
+  const token = 'e'.repeat(32)
+  const ended = { taskId: 'task-0001', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了', token }
+  const own = noteFor([ended, { ...ended, taskId: 'task-0002', title: '核对发票' }])
+  assert.deepEqual(reportRecordOf(own), { tasks: [{ title: '整理发布说明', taskId: 'task-0001' }, { title: '核对发票', taskId: 'task-0002' }], inTurn: false })
+  assert.equal(reportRecordOf(noteFor([ended], { inTurn: true }))?.inTurn, true)
+  assert.ok(!shownNote(own).includes(token) && shownNote(own).includes('整理发布说明'), 'the token line goes, the rest stays')
+  assert.equal(reportRecordOf('用户自己写的：任务：「假的」（x）'), null, 'no note: no record')
+  const payload: ReportPayload = { taskId: 'task-0001', runId: 'run-1', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了', token, via: 'steer' }
+  const recorded = recordedNote(payload)
+  assert.ok(!recorded.includes(token))
+  assert.equal(reportRecordOf(recorded)?.inTurn, true, 'recorded as it went: into the running turn')
+})
+
+test('in the window: a delivered report is a record where it came; what the agent says next comes below it; once only', () => {
+  const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })
+  const writing = reduce(reduce(start, { type: 'agent_turn_started', at: 10 }), { type: 'acp_update', update: chunk('我先看一下。'), at: 11 })
+  const text = shownNote(noteFor([{ taskId: 'task-0001', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了' }], { inTurn: true }))
+  const recorded = reduce(writing, { type: 'report_delivered', reportId: 'task-0001:run-1', text, at: 12 })
+  assert.deepEqual(recorded.messages.map((m) => m.role), ['user', 'assistant', 'report'])
+  assert.equal(recorded.messages[1].open, false, 'what the agent was writing closed')
+  const after = reduce(recorded, { type: 'acp_update', update: chunk('插一句：后台查完了。'), at: 13 })
+  assert.deepEqual(after.messages.map((m) => m.role), ['user', 'assistant', 'report', 'assistant'], 'its next words below the record')
+  assert.equal(reduce(recorded, { type: 'report_delivered', reportId: 'task-0001:run-1', text, at: 14 }), recorded, 'the same report again: nothing')
+  assert.deepEqual(historyMessages(recorded).map((m) => m.role), ['user', 'assistant', 'report'], 'kept in the history like any message')
+  assert.deepEqual(normalizeMessages(historyMessages(recorded)).map((m) => m.role), ['user', 'assistant', 'report'])
 })

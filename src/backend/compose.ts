@@ -26,7 +26,7 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
-import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts'
+import { createTaskReports, recordedNote, REPORT, type ReportPayload } from './task-reports.ts'
 import { createEffects, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
 import type { TaskAction } from './tasks-channel.ts'
@@ -376,7 +376,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
           const reportId = String(event.reportId)
           const queued = effects?.get(REPORT, reportId)
           if (!queued || (queued.payload as ReportPayload).deliveredTo !== event.sessionId) return undefined
-          if (event.type === 'report_read') effects?.finish(REPORT, reportId)
+          if (event.type === 'report_read') {
+            effects?.finish(REPORT, reportId)
+            // The conversation shows what the model was given, as a collapsed record where it came (report-record.ts).
+            emitToRenderer({ type: 'report_delivered', reportId, text: recordedNote(queued.payload as ReportPayload) })
+          }
           return wakeEffects()
         }
         emitToRenderer(event)

@@ -391,6 +391,20 @@ html:not([data-platform="darwin"]) .titlebar {
 .task-line[data-status="error"] .task-state { color: var(--red); }
 .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-state { flex: none; font-size: 13px; font-weight: 400; color: var(--ink-3); }
+/* A background task's result the model was given, where it came (view/report-record.ts): one quiet line, opened on the note. */
+.msg-delivered { margin-left: 62px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--ink-3); }
+.delivered-row { display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; }
+.delivered-row .task-name { flex: 0 1 auto; max-width: 40%; color: var(--ink-2); }
+.delivered-more { flex: none; }
+.delivered-said { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delivered-when { flex: none; font-family: var(--font-mono); font-size: 11px; }
+.delivered-row .fold-act { margin-left: 2px; }
+.delivered-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.delivered-text {
+  margin: 0; max-height: 280px; overflow: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.7;
+  color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.delivered-actions { display: flex; gap: 4px; margin-left: -10px; }
 /* Where a turn moved to the background (view/rewind.js taskStrip). */
 .fold-task { border-style: solid; }
 .fold-tag { max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
