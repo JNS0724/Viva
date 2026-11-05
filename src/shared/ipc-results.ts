@@ -54,7 +54,8 @@ export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: 
 export interface IpcResults {
   'task:start': TaskStartResult
   'task:finished': KeptTask[]
-  'agent:waits': SessionWaits
+  /** Said on the live channel (`waits`, a SessionWaits), in its place among the pushes. */
+  'agent:waits': true
   'task:close': void
   'task:stop': void
 }

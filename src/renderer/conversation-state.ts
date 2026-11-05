@@ -153,8 +153,6 @@ export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>>
 
   /** dsh names only the tool call; what it does comes from that call, announced just before (approval.js). */
   permission_request: (view, { requestId, toolCall, options, at }) => {
-    // Shown already (one read on opening and also come live, read-handoff.ts): once.
-    if (view.timeline.some((entry) => entry.kind === 'permission' && entry.ref === requestId)) return view
     const known = toolCall?.toolCallId ? view.tools[toolCall.toolCallId] : null
     const title = toolCall?.title || approvalTitle(known) || t("selectors.needs.your.approval")
     return {
@@ -202,15 +200,6 @@ export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>>
       if (silent) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }
     }
     return { ...ended, messages: attachReceipt(closed.messages, receipt) }
-  },
-
-  /**
-   * What the conversation waits on the user for, read when the window opened on a dsh at work (a reload): each shown
-   * as when it was asked, so it can be answered; one shown already, once (the requests' own check).
-   */
-  waits_restored: (view, { permissions = [], questions = [], at }) => {
-    const asked = (permissions as Action[]).reduce<ConversationView>((current, wait) => CONVERSATION_ACTIONS.permission_request(current, { ...wait, type: 'permission_request', at }), view)
-    return (questions as Action[]).reduce<ConversationView>((current, wait) => CONVERSATION_ACTIONS.question_request(current, { ...wait, type: 'question_request', at }), asked)
   },
 
   error: (view, { message }) => ({

@@ -1,4 +1,3 @@
-import { createReadHandoff } from './read-handoff.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { initializeLanguage, registerLanguageDocument } from './language.ts'
@@ -851,6 +850,8 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now(), ...streamPlace(event) }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
+  /** What the conversation on screen waits on the user for, asked for on opening (waits-state.ts). */
+  waits: (event) => ({ type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at: Date.now() }),
   secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
   secret_closed: (event) => ({ type: 'secret_closed', requestId: event.requestId }),
   turn_end: (event) => ({ type: 'turn_end', stopReason: event.stopReason, at: Date.now() }),
@@ -1020,9 +1021,6 @@ function reportMcpProblems(info: AgentInfo | undefined) {
 }
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
-/** What the conversation waits on the user for, read on opening and handed over to the live channel. */
-const waitsHandoff = createReadHandoff<AgentEvent>((event) => handleEvent(event))
-
 function handleEvent(event: AgentEvent) {
   if (state.newTopicPending && isPreviousTopicEvent(event)) return
   const toAction = EVENT_ACTIONS[event?.type ?? '']
@@ -1054,8 +1052,6 @@ async function boot() {
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
     // While the tasks are read, what comes of any task waits for the read (task-actions.ts).
     if (taskActions.hold(event)) return undefined
-    // While what the conversation waits for is read, all that comes waits for the read (read-handoff.ts).
-    if (waitsHandoff.hold(event)) return undefined
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])
@@ -1080,12 +1076,9 @@ async function boot() {
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })
-  // Opened on a dsh at work (a reload): what the conversation waits on the user for, read as a baseline, and what the
-  // live channel said meanwhile taken after it (read-handoff.ts, system-design §12.1).
-  await waitsHandoff.read(() => api.waits(), (waits) => {
-    dispatch({ type: 'waits_restored', permissions: waits.permissions, questions: waits.questions, at: Date.now() })
-    dispatch({ type: 'secrets_restored', secrets: waits.secrets, at: Date.now() })
-  }, (err) => console.error('[app] could not read what the conversation waits for:', err))
+  // Opened on a dsh at work (a reload): what the conversation waits on the user for, which the backend says on the
+  // live channel, in its place among the pushes (waits-state.ts, system-design §12.1).
+  await api.waits().catch((err: unknown) => console.error('[app] could not ask what the conversation waits for:', err))
   dom.input.focus()
 }
 

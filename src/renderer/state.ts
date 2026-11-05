@@ -12,6 +12,7 @@ import { initialPlugins, PLUGIN_ACTIONS } from './plugins-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
 import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
+import { WAITS_ACTIONS } from './waits-state.ts'
 import { FOLLOWUP_ACTIONS, initialFollowups } from './followup-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
@@ -276,6 +277,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...PLUGIN_ACTIONS,
   ...FILES_ACTIONS,
   ...SECRET_ACTIONS,
+  ...WAITS_ACTIONS,
   ...FOLLOWUP_ACTIONS,
 }
 

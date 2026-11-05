@@ -109,8 +109,8 @@ test('a window opened on a dsh at work shows what the conversation waits for, to
 
 test('keys a server still asks for, read on opening: shown to be filled in, once', () => {
   const s1 = { requestId: 's1', server: 'github', names: ['GITHUB_TOKEN'] }
-  const opened = reduce(initialState, { type: 'secrets_restored', secrets: [s1], at: 5 })
+  const opened = reduce(initialState, { type: 'waits_restored', secrets: [s1], at: 5 })
   assert.deepEqual([opened.secret?.requestId, opened.phase], ['s1', 'asking'])
-  assert.equal(reduce(opened, { type: 'secrets_restored', secrets: [s1], at: 6 }).timeline.length, 1, 'shown once')
+  assert.equal(reduce(opened, { type: 'waits_restored', secrets: [s1], at: 6 }).timeline.length, 1, 'shown once')
   assert.equal(reduce(opened, { type: 'secret_resolved', requestId: 's1', provided: true, at: 7 }).secret, null)
 })

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 /** The answer the ACP agent gets for a permission request. */
 export type PermissionOutcome = { outcome: { outcome: 'selected', optionId: string } | { outcome: 'cancelled' } }
 
@@ -11,9 +13,11 @@ interface PermissionParams { sessionId?: string, options?: Array<{ optionId: str
 export function createPermissionBroker() {
   const pending = new Map<string, { resolve: (outcome: PermissionOutcome) => void, params: PermissionParams }>()
   let seq = 0
+  /** This broker's own: a dsh started again counts from 1, and a window that lived through it must not take one for another. */
+  const launch = randomUUID().slice(0, 8)
 
   function create(params: PermissionParams): { requestId: string, promise: Promise<PermissionOutcome> } {
-    const requestId = `perm-${++seq}`
+    const requestId = `perm-${launch}-${++seq}`
     const promise = new Promise<PermissionOutcome>((resolve) => {
       pending.set(requestId, { resolve, params })
     })

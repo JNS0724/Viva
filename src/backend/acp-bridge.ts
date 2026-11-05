@@ -1,3 +1,4 @@
+import type { SessionWaits } from '../shared/ipc-results.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -672,7 +673,7 @@ export function createAcpBridge({
    * asks for, each as it was
    * asked, for a window that opens meanwhile (a reload on the same dsh), which shows them to be answered.
    */
-  const sessionWaits = () => (sessionId
+  const sessionWaits = (): SessionWaits => (sessionId
     ? { permissions: broker.pendingFor(sessionId), questions: questions.pendingOf(null), secrets: config?.pendingSecrets() ?? [] }
     : { permissions: [], questions: [], secrets: [] })
   /** @returns false when no key is asked for any more; throws when the values do not fit */
