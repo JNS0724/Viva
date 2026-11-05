@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: process.platform,
   getInfo: () => ipcRenderer.invoke('agent:info'),
+  waits: () => ipcRenderer.invoke('agent:waits'),
   /** @param {{ id: string }[]} [images] pictures kept by keepImage, sent with the words */
   prompt: (text, images = []) => ipcRenderer.invoke('agent:prompt', text, images),
   /** A pasted or dropped picture into the pictures folder: { id, mimeType, size } (main/image-store.js). */

@@ -850,6 +850,8 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now(), ...streamPlace(event) }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
+  /** What the conversation on screen waits on the user for, asked for on opening (waits-state.ts). */
+  waits: (event) => ({ type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at: Date.now() }),
   secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
   secret_closed: (event) => ({ type: 'secret_closed', requestId: event.requestId }),
   turn_end: (event) => ({ type: 'turn_end', stopReason: event.stopReason, at: Date.now() }),
@@ -1074,6 +1076,9 @@ async function boot() {
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })
+  // Opened on a dsh at work (a reload): what the conversation waits on the user for, which the backend says on the
+  // live channel, in its place among the pushes (waits-state.ts, system-design §12.1).
+  await api.waits().catch((err: unknown) => console.error('[app] could not ask what the conversation waits for:', err))
   dom.input.focus()
 }
 

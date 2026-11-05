@@ -226,7 +226,10 @@ function startBackend(onExit: (code: number | null, signal: NodeJS.Signals | nul
 
 /**
  * Does what `started` asks of the desktop. A stream that ends while the backend runs is listened to again, from
- * the last push's number, so what the backend stored meanwhile comes first.
+ * the last push's number, so what the backend stored meanwhile comes first, and from the last host call run, so every
+ * one after it comes, in order (remote-host.ts keeps them): the window misses nothing and has nothing to recover.
+ * Only when more went by than the backend keeps (a gap in their numbers) does the window reload, opening as at
+ * first load (system-design §11.3) on the same backend and dsh.
  */
 function listenTo(started: BackendProcess, since?: number) {
   let last = since
@@ -239,6 +242,11 @@ function listenTo(started: BackendProcess, since?: number) {
     since,
     host,
     stored: (event) => { last = Math.max(last ?? 0, event.seq) },
+    lost: (count) => {
+      console.error(`[backend] ${count} host calls were let go before they reached the window; reloading it`)
+      const shown = win && !win.isDestroyed() ? win : null
+      shown?.webContents.reload()
+    },
     ended: (err) => {
       if (quitting || keeper.running() !== started) return
       console.error('[backend] its events ended; listening again:', err?.message ?? '')

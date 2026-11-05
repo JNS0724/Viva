@@ -241,5 +241,8 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
     }
   }
 
-  return { receive, provideSecrets, closeAll }
+  /** The keys still asked for (all the conversation on screen's), for a window that opens meanwhile (a reload). */
+  const pendingSecrets = () => [...pending].map(([requestId, { spec }]) => ({ requestId, server: spec.name, names: spec.secrets }))
+
+  return { receive, provideSecrets, closeAll, pendingSecrets }
 }

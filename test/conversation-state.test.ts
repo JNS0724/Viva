@@ -89,3 +89,28 @@ test('how a task stands is its snapshots\' alone: its end, or a wait, in its str
     currentAction: null, waitingFor: null, startedAt: 1, updatedAt: 3, endedAt: 3, resultPreview: '', revision: 3, taskSeq: 2 } })
   assert.deepEqual([told.tasks.list[0].status, told.tasks.list[0].endedAt, told.tasks.list[0].now], ['done', 3, null])
 })
+
+test('a window opened on a dsh at work shows what the conversation waits for, to be approved, refused or answered; one shown already, once', () => {
+  const p1 = { requestId: 'p1', toolCall: { toolCallId: 't1', title: '写入 notes.md' }, options: [{ optionId: 'ok', kind: 'allow_once', name: '允许' }, { optionId: 'no', kind: 'reject_once', name: '拒绝' }] }
+  const q1 = { questionId: 'q1', questions: [{ id: 'c', question: '哪个城市？', header: '', options: [{ label: '上海' }], multiSelect: false }] }
+  const opened = reduce(initialState, { type: 'waits_restored', permissions: [p1], questions: [], at: 5 })
+  assert.deepEqual([opened.permission?.requestId, opened.phase, opened.timeline.map((entry) => entry.kind)], ['p1', 'waiting', ['permission']])
+  const again = reduce(opened, { type: 'waits_restored', permissions: [p1], questions: [], at: 6 })
+  assert.equal(again.timeline.length, 1, 'shown once')
+  const refused = reduce(opened, { type: 'permission_resolved', requestId: 'p1', optionId: 'no', at: 7 })
+  assert.deepEqual([refused.permission, refused.timeline.at(-1)?.allowed], [null, false], 'refused as any approval is')
+  const allowed = reduce(opened, { type: 'permission_resolved', requestId: 'p1', optionId: 'ok', at: 7 })
+  assert.equal(allowed.timeline.at(-1)?.allowed, true)
+  const asking = reduce(initialState, { type: 'waits_restored', permissions: [], questions: [q1], at: 5 })
+  assert.deepEqual([asking.question?.questionId, asking.phase], ['q1', 'asking'])
+  const answered = reduce(asking, { type: 'question_answered', questionId: 'q1', answers: [{ id: 'c', selected: ['上海'] }], at: 8 })
+  assert.equal(answered.question, null, 'answered as any question is')
+})
+
+test('keys a server still asks for, read on opening: shown to be filled in, once', () => {
+  const s1 = { requestId: 's1', server: 'github', names: ['GITHUB_TOKEN'] }
+  const opened = reduce(initialState, { type: 'waits_restored', secrets: [s1], at: 5 })
+  assert.deepEqual([opened.secret?.requestId, opened.phase], ['s1', 'asking'])
+  assert.equal(reduce(opened, { type: 'waits_restored', secrets: [s1], at: 6 }).timeline.length, 1, 'shown once')
+  assert.equal(reduce(opened, { type: 'secret_resolved', requestId: 's1', provided: true, at: 7 }).secret, null)
+})

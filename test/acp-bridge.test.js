@@ -429,3 +429,24 @@ test('acp bridge explains a launch failure: missing Node.js versus a missing wor
   assert.ok(missingNode(), JSON.stringify(messages))
   assert.ok(missingDir(), JSON.stringify(messages))
 })
+
+test('what the conversation on screen waits on is there to read while it waits, and gone once answered', async () => {
+  const log = []
+  const seen = []
+  const bridge = createAcpBridge({
+    dshBin: '/fake/dsh', cwd: '/work', env: {},
+    spawnFn: () => fakeDsh(scriptedAgent(log)),
+    emit: (event) => {
+      if (event.type !== 'permission') return
+      seen.push(bridge.sessionWaits())
+      setImmediate(() => bridge.respondPermission(event.requestId, 'yes'))
+    },
+  })
+  assert.deepEqual(bridge.sessionWaits(), { permissions: [], questions: [], secrets: [] }, 'no session yet: nothing')
+  await bridge.start()
+  await bridge.prompt('写个笔记')
+  assert.deepEqual(seen.map((waits) => [waits.permissions.map((wait) => wait.toolCall.title), waits.questions]), [[['写入 notes.md'], []]])
+  assert.equal(seen[0].permissions[0].options.length > 0, true, 'with the options it was asked with')
+  assert.deepEqual(bridge.sessionWaits(), { permissions: [], questions: [], secrets: [] }, 'answered: no longer waiting')
+  bridge.dispose()
+})

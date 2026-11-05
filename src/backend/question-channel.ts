@@ -134,8 +134,8 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null 
   /** A background task is closed: what it still asked goes unanswered. */
   const declineTask = (taskId: string) => decline((entry) => entry.taskId !== taskId)
 
-  /** What a background task still asks, for a window that opens meanwhile (a reload). */
-  const pendingOf = (taskId: string) => [...pending.values()].filter((entry) => entry.taskId === taskId)
+  /** What a background task still asks (null: the conversation on screen), for a window that opens meanwhile (a reload). */
+  const pendingOf = (taskId: string | null) => [...pending.values()].filter((entry) => entry.taskId === taskId)
     .map((entry) => ({ questionId: entry.question.id, questions: entry.question.questions }))
 
   return { receive, answer, declineAll, declineTask, pendingOf }

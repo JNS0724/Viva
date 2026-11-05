@@ -177,6 +177,7 @@ interface AgentApi extends LanguageApi {
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: string
   getInfo: Invoke<'agent:info'>
+  waits: Invoke<'agent:waits'>
   prompt: Invoke<'agent:prompt'>
   keepImage: Invoke<'images:keep'>
   imagesUsage: Invoke<'images:usage'>

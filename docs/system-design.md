@@ -66,7 +66,7 @@ Shell and backend talk over loopback HTTP and SSE; only the start message uses t
 | `POST /control/<op>` | shell → backend | The shell's own calls: start dsh, update the mirror, close, and so on |
 | `POST /blob` | shell → backend | Bytes uploaded first (a pasted picture); the call then passes only an id |
 | `GET /image?url=` | shell → backend | A `viva-image://` picture, read by the backend from the pictures folder |
-| `GET /events?since=` | backend → shell (SSE) | What the backend asks of the desktop (host calls); on reconnect, the stored events after `since` come first |
+| `GET /events?since=&after=` | backend → shell (SSE) | What the backend asks of the desktop (host calls); on reconnect, the stored events after `since`, then the host calls after `after`, come first |
 | `POST /host/<id>` | shell → backend | The answer to a host call with an id (which file a dialog picked) |
 | `POST /callback/<id>` | shell → backend | A callback that comes later, such as a notification being clicked |
 
@@ -209,7 +209,7 @@ Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, 
 - A page's call made meanwhile waits up to 20 seconds; after that the page is told the backend is restarting.
 - On giving up, an error box explains it and Viva quits.
 
-**Event stream drops.** If the backend is still running but SSE dropped, the shell reconnects after 1 second with `since` set to the last number it saw, and the backend first replays the events stored after it. While no shell listens, the backend queues host calls in order (up to 10,000) and delivers them on reconnect. A first connection replays nothing.
+**Event stream drops.** If the backend is still running but SSE dropped, the shell reconnects after 1 second with `since` set to the last number it saw, and the backend first replays the events stored after it. The backend keeps its latest 10,000 host calls, numbered, whether a shell listens or not, and the shell reconnects with `after` set to the last one it ran: every call after it comes, in order, those made while none listened and those written to the stream as it ended, and the shell runs each once. A first connection replays no stored events, and gets the host calls made before it.
 
 **dsh exits unexpectedly.** The backend restarts dsh with the same backoff and resumes the current conversation; on giving up, it says why in the conversation. When the key or the models change, the old dsh exits fully before the new one starts, so two never write the same session.
 
@@ -346,7 +346,7 @@ What §11 does not do yet. Each step is its own pull request, saying what it rem
 Two faults, kept apart:
 
 - **The backend restarts.** The shell reloads the window (`backendUp` in `src/shell/main.ts`), and the window opens as at first load (§11.3). Nothing of the old window's state, or of its calls still in flight, is kept. Done.
-- **The push channel ends and the backend goes on (the same generation).** The shell subscribes again (`listenTo`), and its `stored` callback only moves its cursor: the window's state is not caught up, and it does not reload. To do (B2): the window starts a recovery as at first load, its tasks' events waiting, the read the baseline, what waited following. For the conversation on screen, each part has its source: its messages stored (the history), its records (`report_records`), what it waits on (dsh's pending permissions and questions, as `taskWaits` reads them for a task). What it is streaming and has not stored has none yet: first see whether dsh's session can give the turn in progress; only if not, the backend keeps a transcript of that turn alone (sharing the text-block reduction with the task transcript), dropped when the turn ends. Stored messages and records keep their one writer each. Out-of-order cases are written first: words during the read, an end or a new run during the read, a push of an older generation, a wait arriving during recovery, a read older or newer than the live channel.
+- **The push channel ends and the backend goes on (the same generation).** The shell listens again (`listenTo`): its `stored` callback moves its cursor, and the host calls after the last it ran come first (`after`, `src/backend/remote-host.ts`), so the window has every push, in order, and nothing to recover; it does not reload. Only when more went by than the backend keeps (a gap in the calls' numbers, `lost` in `src/shell/backend-client.ts`) does the shell reload the window, which opens as at first load (§11.3) on the same backend and dsh. The page listens to the live channel before it reads anything, so what is pushed while it loads is covered by its reads: the history, its tasks (§11.3), the agent's info, and what the conversation on screen waits on the user for (`agent:waits`: the approvals, questions and keys dsh still waits on, from `sessionWaits` in `src/backend/acp-bridge.ts`), to be approved, refused, answered or filled in. The backend says these on the live channel (`waits`), not in the call's answer: a push sent after an answer may reach the page before it, but pushes keep their order, so `waits` comes in its place among them, how things stood there. What was asked or closed before it is in it or not; what comes after it follows (`src/renderer/waits-state.ts`). One shown already, or answered on this page before dsh had the answer, is not asked again. Approval ids are the dsh launch's own (`permission-broker.ts`), so one of a dsh started again is never taken for an older one. That is the one path with a limit: what the conversation on screen was streaming and had not stored when the gap began is not shown again (there is no source for a turn in progress), and a turn still going on shows from the reload on. Done.
 
 ### 12.2 Triggers
 
@@ -368,7 +368,6 @@ Moved one capability at a time, each closing the old way in the same pull reques
 
 ### 12.3 Order of work
 
-1. B2, the recovery of §12.1, if the same-generation reconnect needs more than the first-load handoff.
-2. Triggers by capability (§12.2): reminders, then preparation, then files; proactive follow-ups go once the last of what they did has moved.
+1. Triggers by capability (§12.2): reminders, then preparation, then files; proactive follow-ups go once the last of what they did has moved.
 
-Done before this: one writer of a task's end; TaskRuntime; the effects queue and reports; the record in the conversation; the window's order, the snapshots that make tasks, one conversation reducer; run admission; lifecycle from snapshots and the first-load handoff.
+Done before this: one writer of a task's end; TaskRuntime; the effects queue and reports; the record in the conversation; the window's order, the snapshots that make tasks, one conversation reducer; run admission; lifecycle from snapshots and the first-load handoff; a same-generation reconnect that misses no push (§12.1).

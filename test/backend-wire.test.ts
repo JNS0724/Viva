@@ -170,3 +170,65 @@ test('SSE survives chunks cut anywhere, and bytes survive JSON both ways', () =>
   const back = decodeValue(JSON.parse(JSON.stringify(encodeValue(value)))) as typeof value
   assert.deepEqual([[...back.picture], [...back.list[0]], back.plain], [[0, 255, 7], [1], 'x'])
 })
+
+/** Listens until `count` host calls have run, then stops; what ran and how many were lost, by number. */
+function listenFor(connection: ReturnType<typeof connect>, count: number, since?: number) {
+  const ran: number[] = []
+  const lost: number[] = []
+  return new Promise<{ ran: number[], lost: number[] }>((resolve) => {
+    const stop = connection.listen({
+      ...(since === undefined ? {} : { since }),
+      host: (call) => {
+        ran.push(call.n)
+        if (ran.length === count) { stop(); resolve({ ran, lost }) }
+        return undefined
+      },
+      lost: (missed) => { lost.push(missed) },
+      ended: () => {},
+    })
+  })
+}
+
+test('a stream ends and the shell listens again: every host call after the last it ran comes, in order, each once, those written to the stream that ended included', { timeout: 5_000 }, async (t) => {
+  const { remote, connection } = await backendWith(t, {})
+  remote.host.window.send({ type: 'update', seq: 0 })
+  remote.host.window.send({ type: 'update', seq: 0 })
+  const first = await listenFor(connection, 2)
+  // Made at once, before the backend has seen the stream go: written to it, never run.
+  remote.host.window.send({ type: 'update', seq: 0 })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  // Made while no shell listens.
+  remote.host.window.send({ type: 'update', seq: 0 })
+  const again = await listenFor(connection, 2, 0)
+  assert.deepEqual([first.ran, again.ran, [...first.lost, ...again.lost]], [[1, 2], [3, 4], []])
+})
+
+test('more went by than the backend keeps: the shell is told how many it lost, and goes on from what came', { timeout: 10_000 }, async (t) => {
+  const dropped: number[] = []
+  const remote = createRemoteHost({ start: START, secrets: createEnvelope({ key: randomBytes(32) }), onDropped: (n) => { dropped.push(n) } })
+  const server = createRpcServer({ token: TOKEN, channels: new Map(), controls: {}, remote, since: () => [], image: () => new Response(null, { status: 404 }) })
+  const port = await server.listen()
+  t.after(() => server.close())
+  const connection = connect({ port, token: TOKEN })
+  remote.host.window.send({ type: 'update', seq: 0 })
+  await listenFor(connection, 1)
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  for (let i = 0; i < 10_002; i++) remote.host.window.send({ type: 'update', seq: 0 })
+  const again = await listenFor(connection, 10_000, 0)
+  assert.deepEqual([again.ran[0], again.ran.at(-1), again.lost], [4, 10_003, [2]], 'calls 2 and 3 were let go: said once, as two')
+  assert.deepEqual(dropped, [2], 'the backend said so once, from the first let go')
+})
+
+test('the backend hands a shell listening again only the calls after the one it names', () => {
+  const remote = createRemoteHost({ start: START, secrets: createEnvelope({ key: randomBytes(32) }) })
+  const gone: number[] = []
+  const stop = remote.listen((call) => { gone.push(call.n) })
+  remote.host.window.send({ type: 'update', seq: 0 })
+  remote.host.window.send({ type: 'update', seq: 0 })
+  stop()
+  remote.host.window.send({ type: 'update', seq: 0 })
+  const seen: number[] = []
+  remote.listen((call) => { seen.push(call.n) }, 1)
+  remote.host.window.send({ type: 'update', seq: 0 })
+  assert.deepEqual([gone, seen], [[1, 2], [2, 3, 4]])
+})
