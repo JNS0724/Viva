@@ -434,14 +434,19 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     registry.interrupt(new Set(pendingEnds.keys()))
   }
 
-  /** Whether a task is still as that run ended: asked again, taken up or closed since, that run's result is not reported. */
-  function stillEnded(taskId: string, runId: string): boolean {
+  /**
+   * Whether that run's result is moot: the task is at work again (asked again, taken up) or at another run. A task no
+   * longer known is not: one let go among the oldest ended still has its result reported (the report holds all it
+   * needs); one the user closed had its report cancelled with it.
+   */
+  function superseded(taskId: string, runId: string): boolean {
+    let task: { status: string, runId: string }
     try {
-      const { task } = registry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string, runId: string } }
-      return ENDED_STATUSES.has(task.status) && task.runId === runId
+      task = (registry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string, runId: string } }).task
     } catch {
       return false
     }
+    return !ENDED_STATUSES.has(task.status) || task.runId !== runId
   }
 
   /** The report of a task's run before, which a new run or its closing makes moot. */
@@ -477,7 +482,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       gone,
     },
     /** Results back in the conversation (task-reports.ts). */
-    reports: { stillEnded },
+    reports: { superseded },
   }
 }
 export type TaskRuntime = ReturnType<typeof createTaskRuntime>

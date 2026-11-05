@@ -7,7 +7,7 @@ import { openAppDb } from '../src/backend/app-db.ts'
 import { createEffects } from '../src/backend/effects.ts'
 import { createEventCore } from '../src/backend/event-core.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
-import { createTaskRuntime } from '../src/backend/task-runtime.ts'
+import { createTaskRuntime, KEEP_ENDED } from '../src/backend/task-runtime.ts'
 import { createTaskStore, type StoredTask } from '../src/backend/task-store.ts'
 import type { TaskSnapshot } from '../src/backend/task-registry.ts'
 
@@ -74,7 +74,7 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const kept = () => realStore.list().find((entry) => entry.id === 'task-0001')
   const ended = () => core.since(0).filter((event) => event.kind === 'task.ended')
   const reports = () => effects.list().filter((effect) => effect.kind === 'report').map((effect) => effect.key)
-  return { tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports }
+  return { tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore }
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
@@ -184,12 +184,23 @@ test('a new run, or the task closed, lets the report of the run before go; a rep
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   const later = make()
   assert.deepEqual(reports(), [`${task.id}:run-1`], 'still there after a relaunch')
-  assert.equal(later.reports.stillEnded(task.id, 'run-1'), true, 'and still to be reported: the run it ended with')
+  assert.equal(later.reports.superseded(task.id, 'run-1'), false, 'and still to be reported: the run it ended with')
   await later.agent.message(task.id, '再加上已知问题')
   assert.deepEqual(reports(), [], '接着问: the old result is not reported')
-  assert.equal(later.reports.stillEnded(task.id, 'run-1'), false)
+  assert.equal(later.reports.superseded(task.id, 'run-1'), true)
   later.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   assert.deepEqual(reports(), [`${task.id}:run-2`])
   await later.window.close(task.id)
   assert.deepEqual(reports(), [], 'closed: nothing left to report')
+})
+
+test('a task let go among the oldest ended still has its result reported: only a new run or closing it makes it moot', async (t) => {
+  const { tasks, store, reports } = setup(t)
+  // The latest kept have ended later than this one will: it is the oldest, let go as it ends.
+  for (let i = 0; i < KEEP_ENDED; i++) store.add({ id: `kept-${i}`, segmentId: 'seg', title: `${i}`, endedAt: Date.now() + 1e9 + i, status: 'done' })
+  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
+  assert.equal(store.list().some((entry) => entry.id === task.id), false, 'let go from the store')
+  assert.deepEqual(reports(), [`${task.id}:run-1`], 'its report still queued')
+  assert.equal(tasks.reports.superseded(task.id, 'run-1'), false, 'and not moot: it is reported')
 })

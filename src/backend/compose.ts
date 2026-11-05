@@ -410,7 +410,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     isIdle: () => Boolean(bridge) && !turn.active && !bridge?.isSwitching() && !quitting,
     currentConversation: () => conversation.id,
     conversationExists: (conversationId) => Boolean(historyDb?.get(conversationId)),
-    stillEnded: (taskId, runId) => taskRuntime?.reports.stillEnded(taskId, runId) ?? false,
+    superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: (note) => {
       const agent = bridge
       if (!agent) return false

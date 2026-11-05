@@ -105,3 +105,42 @@ test('woken while a pass runs, another pass follows: nothing queued meanwhile wa
   assert.deepEqual(seen.map((batch) => batch.map((effect) => effect.key)), [['a'], ['b']])
   assert.deepEqual(effects.list(), [])
 })
+
+test('a key cancelled and queued again gets a generation never given before: a try for the old one settles nothing', async (t) => {
+  const { effects } = setup(t)
+  effects.queue('report', 'a', { n: 1 })
+  const first = effects.list()[0].generation
+  let release: () => void = () => {}
+  effects.runs('report', async (batch) => {
+    await new Promise<void>((resolve) => { release = resolve })
+    return new Map(batch.map((effect) => [effect.key, 'done' as const]))
+  })
+  const running = effects.wake()
+  await Promise.resolve()
+  effects.cancel('report', 'a')
+  effects.queue('report', 'a', { n: 2 })
+  const second = effects.list()[0].generation
+  assert.ok(second > first, `${second} after ${first}`)
+  release()
+  await running
+  assert.deepEqual(effects.list().map(({ payload, generation }) => [payload, generation]), [[{ n: 2 }, second]], 'the old try did not settle the new row')
+})
+
+test('a pass the queue cannot finish (its database refusing a write) runs again after a growing wait', async (t) => {
+  const { app, effects, advance, timers } = setup(t)
+  effects.queue('report', 'a', {})
+  effects.runs('report', async (batch) => new Map(batch.map((effect) => [effect.key, 'done' as const])))
+  app.db.exec("CREATE TRIGGER refuse BEFORE DELETE ON effects BEGIN SELECT RAISE(FAIL, 'disk full'); END")
+  await effects.wake()
+  assert.equal(effects.list().length, 1, 'not done: the row could not go')
+  assert.deepEqual(timers().map((timer) => timer.ms), [RETRY_MS[0]], 'woken again although the row is due already')
+  await effects.wake()
+  assert.deepEqual(timers().map((timer) => timer.ms), [RETRY_MS[1]], 'failing again: a longer wait')
+  app.db.exec('DROP TRIGGER refuse')
+  advance(RETRY_MS[1])
+  const [timer] = timers()
+  timer.run()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(effects.list(), [], 'done once the database takes it')
+  assert.deepEqual(timers().filter((entry) => entry !== timer), [], 'and nothing more to wake for (the one that fired aside)')
+})

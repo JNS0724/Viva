@@ -51,14 +51,14 @@ export interface TaskReportsDeps {
   currentConversation: () => string
   /** Whether a conversation is still there to report into (not deleted). */
   conversationExists?: (conversationId: string) => boolean
-  /** Whether the task is still as that run ended: asked again or taken up since, its old result is not reported. */
-  stillEnded: (taskId: string, runId: string) => boolean
+  /** Whether that run's result is moot: the task asked again or taken up since (task-runtime.ts superseded). */
+  superseded: (taskId: string, runId: string) => boolean
   /** Opens the turn with the note; false when it could not be opened now (the agent away). */
   report: (note: string) => boolean
 }
 
 /** The runner of the `report` effects (effects.ts): those due for the conversation on screen, in one turn. */
-export function createTaskReports({ isIdle, currentConversation, conversationExists = () => true, stillEnded, report }: TaskReportsDeps): Runner {
+export function createTaskReports({ isIdle, currentConversation, conversationExists = () => true, superseded, report }: TaskReportsDeps): Runner {
   return async (effects: readonly Effect[]) => {
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
@@ -66,7 +66,7 @@ export function createTaskReports({ isIdle, currentConversation, conversationExi
     for (const effect of effects as ReadonlyArray<Effect<ReportPayload>>) {
       const { taskId, runId, host } = effect.payload
       // Superseded (asked again, taken up, closed) or with nowhere to go: let go.
-      if (!stillEnded(taskId, runId) || !host || !conversationExists(host)) outcomes.set(effect.key, 'done')
+      if (superseded(taskId, runId) || !host || !conversationExists(host)) outcomes.set(effect.key, 'done')
       else if (host !== here || !isIdle()) outcomes.set(effect.key, 'wait')
       else mine.push(effect)
     }

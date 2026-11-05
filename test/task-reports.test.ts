@@ -25,7 +25,7 @@ function setup({ idle = true, opens = true, here = 'c1', gone = new Set<string>(
     isIdle: () => idle,
     currentConversation: () => here,
     conversationExists: (conversationId) => !gone.has(conversationId),
-    stillEnded: (taskId) => !atWork.has(taskId),
+    superseded: (taskId) => atWork.has(taskId),
     report: (note) => { if (opens) reported.push(note); return opens },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>

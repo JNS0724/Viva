@@ -6,11 +6,13 @@ import type { Apply } from './journal.ts'
  * database. An effect is queued in the same transaction as the change that calls for it, and run once that commits;
  * one not done yet is still there after a restart, and run then.
  *
- * - One row per kind and key. Queued again, the row takes the new payload and its `generation` grows by one.
+ * - One row per kind and key. Queued, the row takes the payload and a new `generation`: a number never given before,
+ *   even to a row of the same key cancelled since (one counter for the whole queue, `effect_counter`).
  * - Each try holds the generation it was given: done, tried again later or cancelled, it acts on that generation
  *   only, so a late answer never settles a newer payload.
  * - A try says how it went: `done` (the row goes), `wait` (not now: the conversation busy, dsh restarting; no
  *   failure, run again when woken), or `retry` (it failed: run again after a growing wait).
+ * - A pass the queue itself could not finish (its database refusing a write) is run again after a growing wait.
  */
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS effects (
@@ -22,6 +24,7 @@ const SCHEMA = `
     attempts INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (kind, key)
   );
+  CREATE TABLE IF NOT EXISTS effect_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL);
 `
 
 /** Waits after a failed try, the last repeated. */
@@ -46,8 +49,10 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   onError?: (err: unknown) => void
 }) {
   db.exec(SCHEMA)
-  const upsert = db.prepare(`INSERT INTO effects (kind, key, payload, generation, due_at, attempts) VALUES (?, ?, ?, 1, ?, 0)
-    ON CONFLICT (kind, key) DO UPDATE SET payload = excluded.payload, generation = generation + 1, due_at = excluded.due_at, attempts = 0`)
+  const upsert = db.prepare(`INSERT INTO effects (kind, key, payload, generation, due_at, attempts) VALUES (?, ?, ?, ?, ?, 0)
+    ON CONFLICT (kind, key) DO UPDATE SET payload = excluded.payload, generation = excluded.generation, due_at = excluded.due_at, attempts = 0`)
+  const newGeneration = db.prepare(`INSERT INTO effect_counter (id, last) VALUES (1, 1)
+    ON CONFLICT (id) DO UPDATE SET last = last + 1 RETURNING last`)
   const dropOne = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ?')
   const dropDone = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ? AND generation = ?')
   const putOff = db.prepare('UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE kind = ? AND key = ? AND generation = ?')
@@ -58,10 +63,13 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   let timer: unknown = null
   let running = false
   let again = false
+  /** Passes in a row the queue could not finish: how long until the next try. */
+  let failedPasses = 0
 
   /** Queued, in the transaction of the change that calls for it; run once woken (`wake`) after that commits. */
   function queue(kind: string, key: string, payload: unknown, dueAt = now()) {
-    upsert.run(kind, key, JSON.stringify(payload), dueAt)
+    const generation = Number((newGeneration.get() as { last: number }).last)
+    upsert.run(kind, key, JSON.stringify(payload), generation, dueAt)
   }
 
   /** Not to be done any more (its reason went): the row goes, whatever generation it is at. */
@@ -111,11 +119,25 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     // `wait`: left as it is, due; run again when woken.
   }
 
+  function wakeIn(ms: number) {
+    if (timer !== null) cancelTimer(timer)
+    timer = later(() => { timer = null; void wake() }, ms)
+  }
+
+  /** The next wake: after a pass that failed, a growing wait; else when the soonest effect put off is due. */
   function schedule() {
+    if (failedPasses > 0) return wakeIn(RETRY_MS[Math.min(failedPasses - 1, RETRY_MS.length - 1)])
+    let at: number | null
+    try {
+      at = (next.get(now()) as { at: number | null }).at
+    } catch (err) {
+      onError(err)
+      failedPasses = 1
+      return wakeIn(RETRY_MS[0])
+    }
     if (timer !== null) cancelTimer(timer)
     timer = null
-    const at = (next.get(now()) as { at: number | null }).at
-    if (at !== null) timer = later(() => { timer = null; void wake() }, Math.max(0, Number(at) - now()))
+    if (at !== null) wakeIn(Math.max(0, Number(at) - now()))
   }
 
   /**
@@ -130,7 +152,10 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
         again = false
         await pass()
       } while (again)
+      failedPasses = 0
     } catch (err) {
+      // The queue's own database refused it (busy, full): what was due is still due, run again after a wait.
+      failedPasses += 1
       onError(err)
     } finally {
       running = false
