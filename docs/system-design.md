@@ -313,7 +313,7 @@ Tested with real dsh on 2026-11-04 (a script with a fake model): by default a su
 
 ### 11.6 Not now
 
-Looked at again once this works in use: 放到后台 and automatic handoff of long turns, forking the main conversation after a handoff, triggers (proactive follow-ups stay as they are for now and get a plan of their own), queueing when full, permission levels per session, stuck detection.
+Looked at again once this works in use: 放到后台 and automatic handoff of long turns, forking the main conversation after a handoff, triggers (now planned in §12; proactive follow-ups stay as they are until then), queueing when full, permission levels per session, stuck detection.
 
 ### 11.7 Order of work
 
@@ -323,3 +323,85 @@ Looked at again once this works in use: 放到后台 and automatic handoff of lo
 4. Results come back to the main conversation. (Done: `task-reports.ts`; "silent" is the reply `[silent]`, and the window shows nothing for that turn.)
 
 Each step is its own commit, with the smoke tests rewritten to match and run.
+
+
+## 12. Plan: an event-driven backend
+
+> Status: **plan for review, code unchanged.** Builds on §4 and §11; once carried out, §4, §8 and the feature description are rewritten and this section is removed. Date: 2026-11-05.
+
+Why: a background task's state is worked out in five places (`task-registry`, `task-ipc` with `task-words`, `task-reports`, and in the window `task-actions` and `tasks-state`); `compose.ts` hands each dsh event to three of them by hand; two places write a task's end into `task-store`; a result waiting to be reported lives only in memory and is lost when Viva quits; and the events the core records are consumed by nothing (§10). The model for the changes below is DeepSeek's own event-driven agent, [`dsh-superagent-prototype`](https://github.com/deepseek-ai/dsh-superagent-prototype), read in source: one engine writes its records, side effects go through a durable queue, and an input counts as delivered only once the session wrote it into its history.
+
+### 12.1 The event core routes everything
+
+- The main conversation already goes through the core: what the user says is `chat.said`, a command from the window `user.command`, the end of a turn `agent.turn_ended`. They stay; `agent.turn_ended` also wakes the reports still unread (§12.4).
+- What dsh reports about a task becomes signals of the core too (a task ended, waits, stopped waiting). The hand-made fan-out in `compose.ts` goes; every consumer is a route.
+- Streamed text is not a signal, in the main conversation or a task: a transient push to the window, many times a second, and what was said, which events never hold. dsh keeps it in the session's history.
+- The stores stay the truth. Events drive what reacts to a change; state is not rebuilt from events.
+- The rules for what an event may hold (§4: ids, numbers and lengths, never what was said) do not change.
+
+### 12.2 TaskRuntime: one writer for background tasks
+
+- One module owns each task's lifecycle (running, waiting, done, stopped, failed, interrupted), what it waits on, the running slots (at most 5), what it said, and a `revision` that grows with every change. `task-registry` and `task-words` merge into it; `task-ipc` keeps only the commands.
+- **Identities.** `taskId` names a task. `runId` names one run of it: from the turn that starts it, or a message that sets it going again, to that turn's end. Every change, event and effect about a task carries both.
+- Each caller gets a narrow interface: the window (snapshots, approve, stop), the agent's tools (start, stop, message, list, get), dsh (what happened).
+- **The transaction.** Storing is part of the change, not a subscriber: the task's state, its event and the effects it queues commit together, in one transaction (`apply`). Pushing to the window and running effects come only after that commit.
+- **The window's order.** The snapshot that creates a task, or starts a new run of it, is pushed before the first piece of that run's stream. Each piece carries its `runId` and a sequence number; each snapshot carries the last sequence number it already includes. The window drops pieces of another run and pieces at or below that mark; its words are still reduced by the conversation's reducer. Only once this holds (§12.7 step 5) do the early-event buffers (in the backend and in the window) and the matching of submissions go; until then they stay, bounded.
+
+### 12.3 Effects: a durable queue for side effects
+
+- A table `effects` in `app.db`: kind, key, payload, `generation`, when due, attempts. An effect is queued in the same transaction as the change that causes it, and runs only after that commits.
+- One row per kind and key. Queuing it again replaces the payload and adds one to its `generation`. An attempt remembers the generation it took: it completes, retries or cancels only that generation, so a late answer never settles a newer payload.
+- A failure is retried with growing delays; "not now" (the conversation is busy, dsh is restarting) waits without counting as a failure. Rows survive a restart and run after it.
+- Kinds to begin with: `report` (§12.4). Later: starting and messaging a task that a trigger asks for (§12.5).
+
+### 12.4 A task's result reaches the main conversation in time
+
+The agent starts tasks itself, and often waits on them within the same turn, so a result must not wait for that turn to end.
+
+1. A run ends: in one transaction TaskRuntime writes how it ended, records `task.ended`, and queues a `report` keyed by its `reportId`, which names that run's end (`taskId` and `runId`). A later run of the same task has its own report and its own row; a report whose task has started a new run before it was delivered is cancelled (by its generation), since the new run supersedes it.
+2. The report runs at once (runs ending within a moment of each other share one):
+   - **A turn of the conversation the task was started from is running:** the result goes into that turn (`viva-steer`, the way words typed during a turn do), marked as Viva's and not the user's, with the task's name and the `reportId`; the model gets it at its next step.
+   - **The steer finds the turn just ended** (`idle`), **or the conversation is idle:** a turn is opened with the note, as in §11.2, its message also carrying the `reportId`.
+   - **It cannot be delivered now** (dsh restarting, a session switching, the plugin missing): later.
+   - A result goes into that conversation's running turn even when the turn is about something else; the note says it is not the user's words, and the model decides what to do with it.
+   - A result never goes to another conversation than the one the task was started from; one whose conversation is not on screen waits for it.
+3. **Delivered is not read.** Tested with real dsh on 2026-11-05: words steered into a turn that is then stopped before its next step are lost, although the steer answered `ok`. ACP's cancel discards the session's inbox (`agent.cancel({ kind: 'user' })` without `keepInbox`); and a message taken into a step that is then refused disappears without a `discarded` event.
+4. **Read means written and flushed.** dsh updates the session in memory and announces the event before its persistence writes it out. So a report is confirmed only once its message is in the session's history (`session/event`, `user/message`) **and** the session was flushed: `await sessions.flush(session)` must return `true` (it returns `false` when no persistence is listening; `false` or a throw leaves the report open). Then `viva-steer` sends `read` with the `reportId`. A message discarded (`agent/inbox/discarded`) sends `dropped`. A report stays open until `read`; one `dropped`, or still unread when its turn ends, is delivered again once the conversation is idle.
+5. **At most once is decided in the session.** Before any delivery, the first or a retry, `viva-steer` checks the session for the `reportId`, one report at a time per session. **Found in the history:** it is confirmed (`read`, once flushed as in 4) instead of sent again. **Found in the pending inbox, or taken into a step but not yet in the history:** it is not queued again, but the report stays open and its effects row stays, since stopping the turn can still discard it. Checking the history in the app and then sending is not enough on its own.
+6. After a restart, open reports are delivered once the main session is connected, whatever their age, and whether or not the user opened the task on the 后台 page: the model needs the result either way.
+7. In the conversation the delivered note shows as a collapsed system record (it stays in dsh's history so it can be traced); the model's answer shows as usual.
+
+### 12.5 Triggers
+
+As planned in #70, revisited on top of the above:
+
+- A table `triggers` in `app.db`: a condition and an action. Creating, firing and cancelling one each record an event.
+- Conditions are signals: a time arrives (`clock.trigger_due`, one timer set for the next one due), a file changed and then stayed still for 10 minutes (`file.changed`), a task ended (`agent.task_ended`); later, signals from plugins the user installs (a new mail).
+- The model proposes one with a tool; a card says when, what, and which files it reads, and only the user's yes creates it. What the yes allowed is kept with the trigger and checked again before it fires; a task a trigger starts is read-only.
+- Firing is idempotent (the trigger's id and the time it was due), so catching up after a wake never fires one twice. The action goes through the effects queue.
+- Triggers replace proactive follow-ups once they work. A two-stage check (a rule, then the model) is added only when plugin signals arrive; times and files need only the rule.
+
+### 12.6 Not taken from Super-agent
+
+Threads, subscriptions and correlations, an outbox with channels, source plugins, versioned policies, and a task split into a ticket and its assignments serve a team bot that watches many channels. Viva is one person's desktop assistant; none of them is needed now.
+
+### 12.7 Order of work
+
+1. Changes with no change in behaviour: unused code and stale comments removed, result types for the IPC contract.
+2. One writer of a task's end.
+3. TaskRuntime: task signals routed through the core, the fan-out in `compose.ts` removed; `taskId` and `runId` on every change, and the transaction boundary of §12.2.
+4. The effects table with generations (§12.3), and reports through it (§12.4): `reportId`, `viva-steer` telling read (written and flushed) from discarded, and the check for a `reportId` in the session's history and inbox before every delivery.
+5. The window: the order of snapshots and stream pieces (§12.2), then a task created by its first snapshot and the early buffers removed; a pure conversation reducer and a narrow view type for the thread.
+6. Triggers.
+7. Proactive follow-ups removed.
+8. Pages catch up by sequence number after a reconnect instead of reloading.
+
+Each step is its own pull request with its tests; steps 3 to 5 also run the smoke tests.
+
+### 12.8 Review's answers, for the owner to confirm
+
+The review of this plan (2026-11-05) proposed these answers, written into §12.4 above; they wait for the owner's confirmation:
+
+- A result is delivered after a restart whatever its age; opening the task on the 后台 page does not count as the model having it. A 24-hour limit is for proactive reminders, not for results.
+- A result goes, in time, only into the conversation the task was started from, marked with the task and its run, even while that conversation is on another subject; never into another conversation.
+- The delivered note stays in dsh's history so it can be traced, and shows in the conversation as a collapsed system record.
