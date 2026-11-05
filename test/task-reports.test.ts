@@ -27,19 +27,22 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
   steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {} } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
-  const world = { here, session: 's1' as string | null, released: new Set<string>(), atWork }
+  const asked: Array<[string, string, string]> = []
+  const kept: ReportPayload[] = []
+  const world = { here, session: 's1' as string | null, released: new Set<string>(), atWork, amends: true }
   const run = createTaskReports({
     conversation: () => state,
     currentConversation: () => world.here,
     session: () => world.session,
     superseded: (taskId) => world.atWork.has(taskId),
     holds: (effect) => !world.released.has(effect.key),
-    status: async (_session, reportId) => { whileAsking(reportId); return known[reportId] ?? 'none' },
+    status: async (session, reportId, token) => { asked.push([session, reportId, token]); whileAsking(reportId); return known[`${session} ${reportId}`] ?? known[reportId] ?? 'none' },
     deliver: async (session, reportId, _token, text) => { delivered.push([session, reportId, text]); return steered },
     report: (note) => { turns.push(note); return true },
+    amend: (_effect, payload) => { if (world.amends) kept.push(payload); return world.amends },
   })
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
-  return { outcomes, turns, delivered, world }
+  return { outcomes, turns, delivered, world, asked, kept }
 }
 
 test('idle: reports due together for the conversation on screen share one turn, done once read', async () => {
@@ -161,4 +164,35 @@ test('into a running turn, the note says it may come from an earlier topic, and 
   assert.match(note, /可能来自之前的话题/)
   assert.match(note, /来自话题：「发布准备」/)
   assert.ok(!note.includes(SILENT_REPLY))
+})
+
+const tokened = (base: Effect, extra: Partial<ReportPayload> = {}): Effect => ({ ...base, payload: { ...(base.payload as ReportPayload), token: 'f'.repeat(32), ...extra } })
+
+test('delivered before to another session (the conversation on another topic since): asked there first', async () => {
+  const elsewhere = tokened(t1, { deliveredTo: 's-old' })
+  const read = setup({ state: 'busy', known: { 's-old t1:run-1': 'read' } })
+  assert.deepEqual(await read.outcomes([elsewhere]), { 't1:run-1': 'done' }, 'read where it went: done, not sent again')
+  assert.deepEqual(read.asked.map(([session]) => session), ['s-old'])
+  assert.equal(read.delivered.length, 0)
+  const pending = setup({ state: 'busy', known: { 's-old t1:run-1': 'pending' } })
+  assert.deepEqual(await pending.outcomes([elsewhere]), { 't1:run-1': 'wait' }, 'waiting where it went: not sent here as well')
+  assert.equal(pending.delivered.length, 0)
+  const lost = setup({ state: 'busy' })
+  await lost.outcomes([elsewhere])
+  assert.deepEqual(lost.delivered.map(([session]) => session), ['s1'], 'lost where it went: to the main conversation as it is now')
+  assert.equal(lost.kept.at(-1)?.deliveredTo, 's1', 'where it goes now kept before it is sent')
+})
+
+test('a report queued before tokens gets one, kept before it is first asked about or sent; the same on the next pass', async () => {
+  const legacy = effect({ ...(t1.payload as ReportPayload) })
+  const first = setup()
+  await first.outcomes([legacy])
+  const token = first.kept[0]?.token
+  assert.match(token ?? '', /^[0-9a-f]{32}$/, 'made and kept first')
+  assert.equal(first.asked[0][2], token, 'asked about by the token kept')
+  assert.ok(first.turns[0].includes(`回报凭据：${token}`), 'and sent with it')
+  const refused = setup()
+  refused.world.amends = false
+  assert.deepEqual(await refused.outcomes([legacy]), { 't1:run-1': 'wait' }, 'its token could not be kept: not sent')
+  assert.equal(refused.turns.length, 0)
 })

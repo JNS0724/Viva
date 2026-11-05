@@ -82,6 +82,12 @@ test('real dsh: a report steered into the running turn is read once written and 
   assert.equal(await bridge.deliverReport(session(), reportId, secret, note('task-0001', secret)), 'read', 'there already: confirmed, not sent again')
   assert.ok(carrying(secret) >= 1, 'the model was given it in that turn')
   assert.equal(await bridge.reportStatus(session(), reportId, token()), 'none', 'another token: not this report')
+  // The conversation moves to another topic (a new session): the report is still found where it went, read.
+  const first = session()
+  await bridge.newSession()
+  assert.notEqual(session(), first)
+  assert.equal(await bridge.reportStatus(first, reportId, secret), 'read', 'asked where it went, after the switch')
+  assert.equal(await bridge.reportStatus(session(), reportId, secret), 'none', 'not in the new session')
 })
 
 test('real dsh: a report steered in, then the turn stopped before its next step, is lost and said so', { timeout: 90_000 }, async (t) => {

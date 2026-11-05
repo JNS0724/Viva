@@ -53,6 +53,8 @@ export interface ReportPayload {
   request?: string, topic?: string | null
   /** When it was started, and by whom: the model (start_background_task) or the user (后台做). */
   startedAt?: number | null, by?: 'agent' | 'user' | null
+  /** The session it was delivered to (steered in, or a turn opened), kept before it is sent: asked there first after. */
+  deliveredTo?: string | null
 }
 /** The start of what a task was asked, as much as a report keeps and its note gives. */
 export const REQUEST_CHARS = 1000
@@ -105,32 +107,27 @@ export interface TaskReportsDeps {
   /** A report into that session's running turn, unless it is there already (acp-bridge.ts deliverReport). */
   deliver: (session: string, reportId: string, token: string, text: string) => Promise<ReportState>
   /** Opens a turn with the note in the main conversation; false when it could not be opened now. */
-  report: (note: string, reports: ReadonlyArray<{ reportId: string, session: string }>) => boolean
-}
-
-/**
- * A report's token: the one queued with it. One queued before tokens were (none in its payload) gets one for this pass
- * only: found again by it within the pass, and sent again at worst after a restart.
- */
-const tokens = new WeakMap<object, string>()
-const tokenOf = (effect: Effect<ReportPayload>): string => {
-  if (effect.payload.token) return effect.payload.token
-  const made = tokens.get(effect.payload) ?? randomUUID().replaceAll('-', '')
-  tokens.set(effect.payload, made)
-  return made
+  report: (note: string) => boolean
+  /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
+  amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
 }
 
 const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
   const { payload } = effect
-  return { taskId: payload.taskId, title: payload.title, status: payload.status, host: payload.host, output: payload.output, token: tokenOf(effect),
+  return { taskId: payload.taskId, title: payload.title, status: payload.status, host: payload.host, output: payload.output, token: payload.token,
     request: payload.request ?? '', topic: payload.topic ?? null, startedAt: payload.startedAt ?? null, by: payload.by ?? null }
 }
 
 /**
  * The runner of the `report` effects (effects.ts). A report is only `done` once read; delivered, it waits for that
  * (`finish` on viva-steer's `report_read`); failed to be asked, it is tried again later.
+ *
+ * A report delivered before is asked about where it went first (`deliveredTo`, kept before sending), even when the
+ * conversation has moved to another topic since: there, read is done and pending waits; only one lost there is sent
+ * again, to the main conversation as it is now. A report queued before tokens (#84) has one made and kept before it
+ * is first sent, so every later try knows it by the same token.
  */
-export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, status, deliver, report }: TaskReportsDeps): Runner {
+export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, status, deliver, report, amend }: TaskReportsDeps): Runner {
   return async (effects: readonly Effect[]) => {
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
@@ -151,25 +148,39 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     /** Still this pass's moment: the same conversation and session, the run not superseded, its effect still queued. */
     const still = (effect: Effect<ReportPayload>) => currentConversation() === here && session() === bound
       && !superseded(effect.payload.taskId, effect.payload.runId) && holds(effect)
+    /** The effect with what this try learned, kept first; null when it could not be kept (its generation gone). */
+    const kept = (effect: Effect<ReportPayload>, payload: ReportPayload): Effect<ReportPayload> | null =>
+      (amend(effect, payload) ? { ...effect, payload } : null)
+
     const unsent: Array<Effect<ReportPayload>> = []
-    for (const effect of mine) {
-      const now = still(effect) ? await status(bound, effect.key, tokenOf(effect)) : 'unavailable'
+    for (const original of mine) {
+      // A token before anything else, kept: the same on every try from now on.
+      const effect = original.payload.token ? original : kept(original, { ...original.payload, token: randomUUID().replaceAll('-', '') })
+      if (!effect) { outcomes.set(original.key, 'wait'); continue }
+      const token = effect.payload.token as string
+      const where = effect.payload.deliveredTo ?? bound
+      const now = still(effect) ? await status(where, effect.key, token) : 'unavailable'
       if (!still(effect)) outcomes.set(effect.key, 'wait')
       else if (now === 'read') outcomes.set(effect.key, 'done')
+      // Lost where it went (or never sent): to the main conversation as it is now.
       else if (now === 'none') unsent.push(effect)
       else outcomes.set(effect.key, now === 'failed' ? 'retry' : 'wait')
     }
     const forTurn: Array<Effect<ReportPayload>> = []
     for (const effect of unsent) {
       if (state !== 'busy') { forTurn.push(effect); continue }
-      const sent = still(effect) ? await deliver(bound, effect.key, tokenOf(effect), noteFor([endedOf(effect)], { inTurn: true })) : 'unavailable'
+      // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
+      const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound }) : null
+      const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string, noteFor([endedOf(sending)], { inTurn: true })) : 'unavailable'
       if (sent === 'read') outcomes.set(effect.key, 'done')
-      else if (sent === 'idle') forTurn.push(effect)
+      else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
     }
     // A turn of its own, once nothing runs, for those still theirs right now: done when their reading is confirmed.
-    const opening = forTurn.filter(still)
-    if (opening.length && conversation() === 'idle') report(noteFor(opening.map(endedOf)), opening.map((effect) => ({ reportId: effect.key, session: bound })))
+    if (conversation() === 'idle') {
+      const opening = forTurn.filter(still).flatMap((effect) => kept(effect, { ...effect.payload, deliveredTo: bound }) ?? [])
+      if (opening.length) report(noteFor(opening.map(endedOf)))
+    }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     return outcomes
   }

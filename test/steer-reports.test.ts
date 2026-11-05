@@ -107,6 +107,7 @@ test('the channel answers report requests, one at a time; a request without what
   onMessage({ type: 'report', id: 'r1', sessionId: 's1', reportId: 't1:run-1', token: T1, text: 'note' })
   onMessage({ type: 'report_status', id: 'r2', sessionId: 's1', reportId: 't1:run-1', token: T1 })
   onMessage({ type: 'report', id: 'r3', sessionId: 's1', reportId: 't1:run-1', token: T1 })
+  // A session neither live nor stored: the report is lost there, to be sent again where the conversation is now.
   onMessage({ type: 'report_status', id: 'r4', sessionId: 's9', reportId: 't1:run-1', token: T1 })
   onMessage({ type: 'report_status', id: 'r5', sessionId: 's1', reportId: 't1:run-1', token: 'not-a-token' })
   await new Promise((resolve) => setTimeout(resolve, 10))
@@ -115,7 +116,7 @@ test('the channel answers report requests, one at a time; a request without what
     { type: 'report_result', id: 'r1', status: 'steered' },
     { type: 'report_result', id: 'r2', status: 'pending' },
     { type: 'report_result', id: 'r3', status: 'failed' },
-    { type: 'report_result', id: 'r4', status: 'missing' },
+    { type: 'report_result', id: 'r4', status: 'none' },
     { type: 'report_result', id: 'r5', status: 'failed' },
   ])
 })
@@ -132,4 +133,22 @@ test('the app\'s side: each report request goes to its session, answered by the 
   steering.receive({ type: 'report_read', sessionId: 's2', reportId: 't1:run-1' })
   steering.receive({ type: 'report_read', reportId: 't9:run-1' })
   assert.deepEqual(heard, [{ type: 'report_read', reportId: 't1:run-1', sessionId: 's2' }], 'one without its session is ignored')
+})
+
+test('a session no agent holds now is read as stored: there, read; not there, or no such session, lost there', async () => {
+  const sent: unknown[] = []
+  const store: Record<string, ReportMessage[]> = { old: [noted(T1), said('其他的话')] }
+  const reports = createReportDesk({
+    agentOf: () => null,
+    stored: async (sessionId) => {
+      if (sessionId === 'broken') throw new Error('disk')
+      return store[sessionId] ?? null
+    },
+    send: (message) => { sent.push(message) },
+  })
+  assert.equal(await reports.status('old', 't1:run-1', T1), 'read', 'in its stored history')
+  assert.equal(await reports.status('old', 't2:run-1', T2), 'none', 'not there: lost there')
+  assert.equal(await reports.status('gone', 't1:run-1', T1), 'none', 'no such session')
+  assert.equal(await reports.status('broken', 't1:run-1', T1), null, 'it cannot be read: not known, asked again later')
+  assert.equal(await reports.deliver('old', 't2:run-1', T2, 'note'), null, 'never steered into a session no agent holds')
 })

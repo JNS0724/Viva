@@ -59,12 +59,17 @@ export interface ReportAgent {
 
 export interface ReportDeskDeps {
   agentOf: (sessionId: string) => ReportAgent | null
+  /**
+   * The history of a session no agent holds now (the conversation moved to another topic since), as stored: its
+   * `user/message` messages, or null when no such session is stored.
+   */
+  stored?: (sessionId: string) => Promise<readonly ReportMessage[] | null>
   /** To the app: a report read, or lost, in that session. */
   send: (message: { type: 'report_read' | 'report_dropped', sessionId: string, reportId: string }) => void
   log?: (message: string) => void
 }
 
-export function createReportDesk({ agentOf, send, log = () => {} }: ReportDeskDeps) {
+export function createReportDesk({ agentOf, stored = async () => null, send, log = () => {} }: ReportDeskDeps) {
   /** The reports the app asked about, by session: report id → its token. Only these are looked for in words. */
   const known = new Map<string, Map<string, string>>()
   /** sessionId → reports a step took and has not written yet. */
@@ -92,10 +97,20 @@ export function createReportDesk({ agentOf, send, log = () => {} }: ReportDeskDe
   const inInbox = (agent: ReportAgent, reportId: string, token: string) =>
     [...agent.inbox.nextStep, ...agent.inbox.nextTurn].some((message) => isReport(message, reportId, token))
 
-  /** How a report stands in a session; null when there is no live agent for it. */
+  /**
+   * How a report stands in a session. One no agent holds now is read as stored: in its history it is read (a session
+   * let go is written out); not there, or no such session, it is lost there. null when it cannot be read.
+   */
   async function statusNow(sessionId: string, reportId: string, token: string): Promise<ReportStatus | null> {
     const agent = agentOf(sessionId)
-    if (!agent) return null
+    if (!agent) {
+      const history = await stored(sessionId).catch((err) => {
+        log(`could not read a stored session for a report: ${err instanceof Error ? err.message : String(err)}`)
+        return undefined
+      })
+      if (history === undefined) return null
+      return history?.some((message) => isReport(message, reportId, token)) ? 'read' : 'none'
+    }
     register(sessionId, reportId, token)
     if (inHistory(agent, reportId, token)) return (await agent.flush()) ? 'read' : 'pending'
     if (inInbox(agent, reportId, token) || claimed.get(sessionId)?.has(reportId)) return 'pending'

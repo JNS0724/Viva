@@ -26,7 +26,7 @@ import { createImageStore } from './image-store.ts'
 import { registerHistoryIpc } from './history-ipc.ts'
 import { registerRewindIpc } from './rewind-ipc.ts'
 import { registerTaskIpc } from './task-ipc.ts'
-import { createTaskReports, REPORT } from './task-reports.ts'
+import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts'
 import { createEffects, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
 import type { TaskAction } from './tasks-channel.ts'
@@ -374,8 +374,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         // sent again. Said of another session, it is not this report's: the next pass asks again.
         if (event.type === 'report_read' || event.type === 'report_dropped') {
           const reportId = String(event.reportId)
-          if (deliveredTo.get(reportId) !== event.sessionId) return undefined
-          deliveredTo.delete(reportId)
+          const queued = effects?.get(REPORT, reportId)
+          if (!queued || (queued.payload as ReportPayload).deliveredTo !== event.sessionId) return undefined
           if (event.type === 'report_read') effects?.finish(REPORT, reportId)
           return wakeEffects()
         }
@@ -416,29 +416,19 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
    * it: no words of the user's.
    */
-  /** Reports delivered this launch, and the session each went to: only that session's word on it counts. */
-  const deliveredTo = new Map<string, string>()
   const taskReports = createTaskReports({
     conversation: () => (!bridge || bridge.isSwitching() || quitting ? 'away' : turn.active ? 'busy' : 'idle'),
     session: () => bridge?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
-    status: async (session, reportId, token) => {
-      const state = bridge ? await bridge.reportStatus(session, reportId, token) : 'unavailable'
-      // Waiting in that session (delivered before a restart, say): its word on it is awaited too.
-      if (state === 'pending') deliveredTo.set(reportId, session)
-      return state
-    },
-    deliver: (session, reportId, token, text) => {
-      if (!bridge) return Promise.resolve('unavailable')
-      deliveredTo.set(reportId, session)
-      return bridge.deliverReport(session, reportId, token, text)
-    },
+    status: (session, reportId, token) => bridge?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
+    deliver: (session, reportId, token, text) => bridge?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable'),
+    // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
+    amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
     currentConversation: () => conversation.id,
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
-    report: (note, reports) => {
+    report: (note) => {
       const agent = bridge
       if (!agent) return false
-      for (const { reportId, session } of reports) deliveredTo.set(reportId, session)
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task' })
       agent.prompt(note).catch((err: Error) => {
