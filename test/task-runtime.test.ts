@@ -32,7 +32,14 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
  * The IPC over a history db and a task store. relaunch() registers it afresh on the same db and store, as the
  * next launch does: nothing in memory, what was kept on disk. Saves along the way wait in `pending` until run.
  */
-function setup({ resumable, stored = [], steerable = true, waits }: { resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean, waits?: { permissions: readonly unknown[], questions: readonly unknown[] } } = {}) {
+function setup({ resumable, stored = [], steerable = true, waits, startable = () => true, gate = async () => {}, onPrompt = () => {} }: {
+  resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean, waits?: { permissions: readonly unknown[], questions: readonly unknown[] },
+  startable?: () => boolean,
+  /** Waited on before dsh answers a task's start: the test lets each through when it likes. */
+  gate?: () => Promise<void>,
+  /** As a task's turn is asked (just after its start is kept). */
+  onPrompt?: (taskId: string) => void,
+} = {}) {
   let n = 0
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
@@ -100,8 +107,14 @@ function setup({ resumable, stored = [], steerable = true, waits }: { resumable?
         cancelTask: async (taskId: string) => { calls.push(['cancelTask', taskId]) },
         steerTask: async (taskId: string, text: string) => { calls.push(['steerTask', taskId, text]); return { ok: steerable } },
         resumeTask: async (request: { taskId: string }) => { calls.push(['resumeTask', request.taskId]); return resumable ?? { ok: true } },
-        promptTask: async (taskId: string, text: string) => { calls.push(['promptTask', taskId, text]) },
-        startTask: async (request: unknown) => { calls.push(['startTask', request]); started += 1; return { ok: true, taskId: started === 1 ? 's9' : `s9-${started}` } },
+        promptTask: async (taskId: string, text: string) => { calls.push(['promptTask', taskId, text]); onPrompt(taskId) },
+        startTask: async (request: unknown) => {
+          calls.push(['startTask', request])
+          await gate()
+          if (!startable()) return { ok: false, reason: 'missing' }
+          started += 1
+          return { ok: true, taskId: started === 1 ? 's9' : `s9-${started}` }
+        },
       },
     })
     registerTaskIpc(ipc, tasks.window)
@@ -556,4 +569,78 @@ test('what dsh says of a task unknown, or no longer at work, goes nowhere; the w
   assert.equal(pushes.length, before, 'ended: what comes after is no run\'s')
   const [kept] = await call<Array<{ mark?: { runId: string, seq: number } }>>('task:finished')
   assert.deepEqual([kept.mark?.runId, kept.mark?.seq, typeof (kept.mark as { revision?: unknown })?.revision], ['run-1', 2, 'number'], 'what it said, up to its end, and how many times it changed')
+})
+
+const refusal = (promise: Promise<unknown>) => promise.then(() => 'ok', (err: Error) => err.message)
+
+test(`runs begun together: no more than ${MAX_RUNNING} pass, the place counted before anything is awaited`, async () => {
+  const { tasks } = setup()
+  const results = await Promise.all(Array.from({ length: MAX_RUNNING + 1 }, (_, i) => refusal(tasks.agent.start(`任务 ${i}`))))
+  assert.equal(results.filter((result) => result === 'ok').length, MAX_RUNNING)
+  assert.match(results.find((result) => result !== 'ok') ?? '', /最多 5 个/)
+})
+
+test(`${MAX_RUNNING} at work: a task asked again, or taken up, waits its turn like a new one`, async () => {
+  const { tasks, says, ends, relaunch } = setup()
+  const { taskId: done } = await tasks.agent.start('先做完的')
+  ends(done)
+  const { taskId: unfinished } = await tasks.agent.start('没做完的')
+  says(unfinished, '先看…')
+  tasks.dsh.flush()
+  const later = relaunch()
+  await later.call('task:finished')
+  for (let i = 0; i < MAX_RUNNING; i++) await later.tasks.agent.start(`任务 ${i}`)
+  await assert.rejects(later.tasks.agent.message(done, '再加一条'), /最多 5 个/, 'asked again: refused while full')
+  await assert.rejects(later.tasks.agent.message(unfinished, '接着做'), /最多 5 个/, 'taken up: refused while full')
+})
+
+test('one task, one new run at a time: asked again twice at once, the second is told it is going', async () => {
+  const { tasks, ends, relaunch } = setup()
+  const { taskId } = await tasks.agent.start('整理发布说明')
+  ends(taskId)
+  const later = relaunch()
+  await later.call('task:finished')
+  // Not held by this launch: asking it takes up its session first (awaited), so the two asks overlap.
+  const [first, second] = await Promise.all([refusal(later.tasks.agent.message(taskId, '再加一条')), refusal(later.tasks.agent.message(taskId, '再加两条'))])
+  assert.equal(first, 'ok')
+  assert.notEqual(second, 'ok', 'the second does not take the same session for a turn of its own')
+  assert.deepEqual(later.calls.filter(([kind]) => kind === 'promptTask').map(([, , text]) => text), ['再加一条'])
+})
+
+test('a run that could not begin gives its place back: refused by dsh, the places are as before', async () => {
+  let fails = 2
+  const { tasks } = setup({ startable: () => fails-- <= 0 })
+  for (let i = 0; i < 2; i++) await assert.rejects(tasks.agent.start(`失败 ${i}`))
+  const results = await Promise.all(Array.from({ length: MAX_RUNNING }, (_, i) => refusal(tasks.agent.start(`任务 ${i}`))))
+  assert.deepEqual(results, Array(MAX_RUNNING).fill('ok'), 'all five places free again')
+})
+
+test('a run whose beginning throws (dsh gone mid-way) gives its place back too', async () => {
+  let fails = 2
+  const { tasks } = setup({ startable: () => { if (fails-- > 0) throw new Error('dsh went away'); return true } })
+  for (let i = 0; i < 2; i++) await assert.rejects(tasks.agent.start(`失败 ${i}`), /dsh went away/)
+  const results = await Promise.all(Array.from({ length: MAX_RUNNING }, (_, i) => refusal(tasks.agent.start(`任务 ${i}`))))
+  assert.deepEqual(results, Array(MAX_RUNNING).fill('ok'))
+})
+
+test('a run kept is counted once: its place goes to the registry as its start commits, not a step later', async () => {
+  const gates: Array<() => void> = []
+  let fifth: Promise<string> | null = null
+  const { tasks } = setup({
+    gate: () => new Promise<void>((resolve) => { gates.push(resolve) }),
+    // Just after the first is kept, before anything after it runs: one more is begun.
+    onPrompt: () => { fifth ??= refusal(tasks.agent.start('第五个')) },
+  })
+  const four = Array.from({ length: 4 }, (_, i) => refusal(tasks.agent.start(`任务 ${i}`)))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(gates.length, 4, 'four waiting on dsh')
+  gates[0]()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  gates.slice(1).forEach((open) => open())
+  gates.at(-1)?.()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  gates.forEach((open) => open())
+  assert.ok(fifth, 'the fifth was begun as the first was kept')
+  assert.deepEqual(await Promise.all(four), ['ok', 'ok', 'ok', 'ok'])
+  assert.equal(await fifth, 'ok', 'four places taken, not five: the fifth has one')
 })
