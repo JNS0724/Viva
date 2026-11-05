@@ -3,23 +3,19 @@ import { answersFrom, type QuestionAnswer } from './question-state.ts'
 import { runningTurn } from './tasks-state.ts'
 
 /**
- * Background tasks from the window: 后台做 starts a task of its own (backend/task-ipc.ts task:start). What the
- * task says can arrive before the window knows the task, so it waits and is passed on (`deliver`) once it does.
+ * Background tasks from the window: 后台做 starts a task of its own (backend/task-ipc.ts task:start). The task is
+ * made by the snapshot that begins it, which comes before anything it says (backend/task-runtime.ts); what the call
+ * answers then only settles the submission.
  */
-/** What the main process says of the agent (acp-bridge.ts), as far as holding it back reads it. */
-type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
 /** A call that did not get through, or a refusal from the main process, in words for the user. */
 type Failed = { ok: false, problem: string }
 const isFailed = (value: unknown): value is Failed =>
   Boolean(value) && typeof value === 'object' && (value as { ok?: unknown }).ok === false && typeof (value as { problem?: unknown }).problem === 'string'
 
-export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
+export function createTaskActions({ api, getState, dispatch, showToast, errorMessage }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
   api: Pick<AgentApi, 'startTask' | 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
-  deliver: (event: AgentEvent) => void,
 }) {
   let submissionCounter = 0
-  let starting = 0
-  const earlyTasks = new Map<string, AgentEvent[]>()
 
   /** What the main process answered, or why it could not be asked. */
   async function call<T>(request: () => Promise<T>): Promise<T | Failed> {
@@ -28,13 +24,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     } catch (err) {
       return { ok: false, problem: errorMessage(err) }
     }
-  }
-
-  /** @returns {boolean} whether the event waits for a task being started */
-  function hold(event: AgentEvent) {
-    if (!starting || !event.taskId || getState().tasks.list.some(task => task.id === event.taskId)) return false
-    earlyTasks.set(event.taskId, [...(earlyTasks.get(event.taskId) ?? []), event])
-    return true
   }
 
   /**
@@ -52,20 +41,12 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     const id = retryId ?? `submission-${Date.now()}-${++submissionCounter}`
     const words = runningTurn(getState())?.words
     dispatch({ type: 'task_submitting', submission: { id, text, origin, status: 'pending' } })
-    starting++
     const result = await call(() => api.startTask(words ? { text, words } : { text }))
     if (!result.ok) {
       dispatch({ type: 'task_submit_failed', id, problem: result.problem ?? t("task-actions.could.not.start.in.the.background") })
-      starting--
-      if (!starting) { const events = [...earlyTasks.values()].flat(); earlyTasks.clear(); events.forEach(deliver) }
       return false
     }
     dispatch({ type: 'task_started', task: result.task, text, submissionId: id, origin, at: Date.now() })
-    const events = earlyTasks.get(result.task.id) ?? []
-    earlyTasks.delete(result.task.id)
-    starting--
-    events.forEach(deliver)
-    if (!starting) { const rest = [...earlyTasks.values()].flat(); earlyTasks.clear(); rest.forEach(deliver) }
     return true
   }
 
@@ -113,7 +94,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   return {
-    hold,
     startTask,
     stopTask,
     closeTask,

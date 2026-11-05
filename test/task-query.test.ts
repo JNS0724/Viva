@@ -41,14 +41,14 @@ test('restored and disconnected tasks are interrupted until explicitly resumed; 
   assert.equal(registry.query({ op: 'get', taskId: 'b', includeOutput: true }, { taskId: 'b' }).task!.resultPreview, '已完成')
 })
 
-test('pending question and completion arriving during spin-off are replayed when metadata arrives', () => {
+test('what is said of a task not known yet is no task\'s: nothing waits for it, and the task once made starts clean', () => {
   const registry = createTaskRegistry()
   registry.receive({ type: 'task_question', taskId: 'a', questionId: 'q' })
-  registry.put({ id: 'a', title: 'task' })
-  assert.equal(registry.query({ op: 'get', taskId: 'a' }, { taskId: 'a' }).task!.status, 'waiting')
   registry.receive({ type: 'task_end', taskId: 'b', stopReason: 'cancelled' })
+  registry.put({ id: 'a', title: 'task' })
   registry.put({ id: 'b', title: 'task' })
-  assert.equal(registry.query({ op: 'get', taskId: 'b' }, { taskId: 'b' }).task!.status, 'stopped')
+  assert.equal(registry.query({ op: 'get', taskId: 'a' }, { taskId: 'a' }).task!.status, 'running')
+  assert.equal(registry.query({ op: 'get', taskId: 'b' }, { taskId: 'b' }).task!.status, 'running')
 })
 
 test('queries restrict workspace and background callers, paginate, and omit request/output by default', () => {

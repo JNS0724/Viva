@@ -516,7 +516,7 @@ async function provideSecrets(values: Record<string, string> | null) {
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
 const taskActions = createTaskActions({
-  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, deliver: handleEvent,
+  api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage,
 })
 const timelineActions = createTimelineActions({ api, getState: () => state, dispatch, scroll: dom.scroll })
 const resumeActions = createResumeActions({
@@ -820,6 +820,12 @@ async function applySettingsChange(
 /** What the main process says of the agent (main.ts agent:event): its type, and what goes with it. */
 type AgentEvent = { type?: string, [field: string]: any }
 
+/**
+ * A piece of a task's stream, where it is in it (task-runtime.ts): its run and number (`taskSeq`; the push's own
+ * `seq` is the event core's), for the window to take it once.
+ */
+const streamPlace = (event: AgentEvent) => (typeof event.taskSeq === 'number' && typeof event.runId === 'string' ? { runId: event.runId, seq: event.taskSeq } : {})
+
 const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   ready: (event) => ({ type: 'ready', info: event.info }),
   config: (event) => ({ type: 'config_applied', info: event.info }),
@@ -827,21 +833,21 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   /** A turn the app started (a background task's result coming back): no words of the user's. */
   turn_started: (event) => ({ type: 'agent_turn_started', by: event.by ?? null, at: Date.now() }),
   permission: (event) => ({
-    type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at: Date.now(),
+    type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at: Date.now(), ...streamPlace(event),
   }),
-  /** What a background task says, asks and how it ends (tasks-state.ts). */
-  task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now() }),
+  /** What a background task says, asks and how it ends (tasks-state.ts), each with its place in the task's stream. */
+  task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now(), ...streamPlace(event) }),
   task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
   /** A background task's result the model read (report-records.ts): its record in the conversation, where it came. */
   report_delivered: (event) => ({ type: 'report_delivered', conversationId: event.conversationId, sessionId: event.sessionId, reportId: event.reportId, text: event.text, at: event.at }),
-  task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now() }),
-  task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now() }),
-  task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now() }),
-  /** What the agent did with a task (viva-tasks): started one, asked one again, said something into one, took one up. */
-  task_created: (event) => ({ type: 'task_started', task: event.task, text: event.text, at: Date.now() }),
-  task_asked: (event) => ({ type: 'task_asked', taskId: event.taskId, text: event.text, at: Date.now() }),
+  task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now(), ...streamPlace(event) }),
+  task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now(), ...streamPlace(event) }),
+  task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now(), ...streamPlace(event) }),
+  /**
+   * What the agent said into a task's turn (viva-tasks). A task it starts, asks again or takes up comes by the
+   * snapshot that begins the run (task_snapshot), before what the run says.
+   */
   task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now() }),
-  task_resumed: (event) => ({ type: 'task_resumed', task: event.task, messages: event.messages, at: Date.now() }),
   question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
   question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
   secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
@@ -1042,8 +1048,6 @@ async function boot() {
   api.onEvent((event) => {
     if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
     if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
-    // While a turn moves to or from the background, what it says waits for the window to move it too.
-    if (taskActions.hold(event)) return undefined
     return handleEvent(event)
   })
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])

@@ -5,8 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
-import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskRuntime } from '../src/backend/task-runtime.ts'
-import type { TaskSnapshot } from '../src/backend/task-registry.ts'
+import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPush, type TaskRuntime, type WindowSnapshot } from '../src/backend/task-runtime.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks } from '../src/renderer/tasks-state.ts'
 import type { StoredTask } from '../src/backend/task-store.ts'
@@ -63,7 +62,9 @@ function setup({ resumable, stored = [], steerable = true, waits }: { resumable?
 
   function register() {
     const calls: Call[] = []
-    const snapshots: TaskSnapshot[] = []
+    const snapshots: WindowSnapshot[] = []
+    /** Everything that went to the window, in order: snapshots and the pieces of tasks' streams. */
+    const pushes: TaskPush[] = []
     let runs = 0
     const handlers: Record<string, Handler> = {}
     const ipc = { handle: (channel: string, fn: Handler) => { handlers[channel] = fn } } as unknown as Pick<IpcRegistry, 'handle'>
@@ -84,7 +85,11 @@ function setup({ resumable, stored = [], steerable = true, waits }: { resumable?
           writing = outer
         }
       },
-      publish: ({ snapshot }) => { snapshots.push(snapshot); if (depth > 0) pushedInside += 1 },
+      publish: (push) => {
+        pushes.push(push)
+        if (push.type === 'task_snapshot') snapshots.push((push as { snapshot: WindowSnapshot }).snapshot)
+        if (depth > 0) pushedInside += 1
+      },
       newRunId: () => `run-${++runs}`,
       announce: (event) => { announced.push(event) },
       ...(waits ? { waitsOf: () => waits } : {}),
@@ -106,7 +111,7 @@ function setup({ resumable, stored = [], steerable = true, waits }: { resumable?
     const emit = (event: object) => tasks.dsh.receive(event)
     const says = (taskId: string, text: string) => emit({ type: 'task_update', taskId, update: chunk(text) })
     const ends = (taskId: string, stopReason = 'end_turn') => emit({ type: 'task_end', taskId, stopReason })
-    return { call, calls, tasks, says, ends, snapshots }
+    return { call, calls, tasks, says, ends, snapshots, pushes, emit }
   }
 
   const first = register()
@@ -239,7 +244,7 @@ test('a task is kept while it goes on and once it ended, until it is closed; clo
 })
 
 test('at the next launch an unfinished task is listed as interrupted; messaged, it is taken up and goes on from what it had said', async () => {
-  const { call, says, tasks, relaunch, texts, announced } = setup()
+  const { call, says, tasks, relaunch, texts } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
   says(task.id, '先看提交…')
   tasks.dsh.flush()
@@ -251,7 +256,8 @@ test('at the next launch an unfinished task is listed as interrupted; messaged, 
   assert.deepEqual([kept.status, kept.messages.map((m) => m.text)], ['interrupted', ['整理发布说明', '先看提交…']])
   assert.deepEqual(await later.tasks.agent.message(task.id, '接着做'), { taskId: task.id, delivered: 'taken up again' })
   assert.deepEqual(later.calls, [['resumeTask', task.id], ['promptTask', task.id, '接着做']])
-  assert.equal((announced.at(-1)?.messages as Message[]).at(-1)?.text, '接着做', 'the window gets what it said, with the new words')
+  const begun = later.snapshots.findLast((snapshot) => snapshot.taskId === task.id)
+  assert.deepEqual([begun?.runId, begun?.opening?.words], ['run-1', '接着做'], 'the window gets the new run by its snapshot, with the words it goes on from')
   later.says(task.id, '写好了')
   later.ends(task.id)
   assert.deepEqual(texts(task.segmentId), ['整理发布说明', '先看提交…', '接着做', '写好了'], 'going on from what it had said')
@@ -352,11 +358,14 @@ test('what an agent says in a task this launch does not hold, or in the conversa
 })
 
 test('the agent starts a task afresh from its brief; the window is told, and the card says the brief', async () => {
-  const { tasks, calls, announced, texts, kept } = setup()
+  const { tasks, calls, announced, texts, kept, snapshots } = setup()
   const result = await tasks.agent.start('把 docs 里的发布说明按版本整理好，输出中文')
   assert.deepEqual(result, { taskId: 's9', title: '把 docs 里的发布说明按版本整理好，输出中文', status: 'running' })
   assert.deepEqual(calls.slice(0, 2), [['startTask', { afresh: true }], ['promptTask', 's9', '把 docs 里的发布说明按版本整理好，输出中文']])
-  assert.deepEqual(announced.map((event) => [event.type, (event.task as { id: string }).id, event.text]), [['task_created', 's9', '把 docs 里的发布说明按版本整理好，输出中文']])
+  const [made] = snapshots
+  assert.deepEqual([made.taskId, made.opening?.words, made.opening?.task?.id, made.opening?.hostSession], ['s9', '把 docs 里的发布说明按版本整理好，输出中文', 's9', 's1'],
+    'the window is told by the snapshot that makes it: the brief, and the conversation its card goes in')
+  assert.deepEqual(announced, [], 'nothing else to tell')
   assert.deepEqual(texts(kept()[0].segmentId), ['把 docs 里的发布说明按版本整理好，输出中文'])
 })
 
@@ -371,7 +380,7 @@ test(`at most ${MAX_RUNNING} tasks work at once: one more is refused, not queued
 })
 
 test('the agent messages a task: into its turn while it works, its next question once it ended', async () => {
-  const { tasks, calls, announced, says, ends, texts, kept } = setup()
+  const { tasks, calls, announced, says, ends, texts, kept, snapshots } = setup()
   const { taskId } = await tasks.agent.start('整理发布说明')
   assert.deepEqual(await tasks.agent.message(taskId, '加上版本号'), { taskId, delivered: 'into its turn' })
   assert.deepEqual(calls.at(-1), ['steerTask', taskId, '加上版本号'])
@@ -379,7 +388,8 @@ test('the agent messages a task: into its turn while it works, its next question
   ends(taskId)
   assert.deepEqual(await tasks.agent.message(taskId, '再加上已知问题'), { taskId, delivered: 'next question' })
   assert.deepEqual(calls.at(-1), ['promptTask', taskId, '再加上已知问题'])
-  assert.deepEqual(announced.map((event) => event.type), ['task_created', 'task_steered', 'task_asked'])
+  assert.deepEqual(announced.map((event) => event.type), ['task_steered'], 'into its turn: said; a new run comes by its snapshot')
+  assert.equal(snapshots.findLast((snapshot) => snapshot.opening)?.opening?.words, '再加上已知问题')
   ends(taskId)
   assert.deepEqual(texts(kept()[0].segmentId), ['整理发布说明', '加上版本号', '写好了', '再加上已知问题', '本轮没有文字回复。'])
 })
@@ -505,4 +515,45 @@ test('an answer streamed and settled, then a reload, then the turn falling back 
   tasks.dsh.flush()
   const [kept] = await call<Kept[]>('task:finished')
   assert.deepEqual(kept.messages.map((m) => m.text), ['整理发布说明', '回答'], 'and what is kept')
+})
+
+test('the window\'s order: the snapshot that begins a run first, then each piece numbered with its run, each snapshot after the pieces it includes', async () => {
+  const { call, says, ends, pushes, emit, tasks } = setup()
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  says(task.id, '先看提交…')
+  emit({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [] })
+  ends(task.id)
+  await tasks.agent.message(task.id, '再加上已知问题')
+  says(task.id, '加好了')
+  const mine = pushes.filter((push) => push.taskId === task.id)
+  const line = (push: TaskPush) => push.type === 'task_snapshot'
+    ? `snapshot ${(push as { snapshot: WindowSnapshot }).snapshot.runId} ≤${(push as { snapshot: WindowSnapshot }).snapshot.taskSeq}${(push as { snapshot: WindowSnapshot }).snapshot.opening ? ' begins' : ''}`
+    : `${push.type} ${(push as TaskPiece).runId} #${(push as TaskPiece).taskSeq}`
+  const shown = mine.map(line)
+  assert.equal(shown[0], 'snapshot run-1 ≤0 begins', 'made before anything it says')
+  assert.deepEqual(shown.filter((entry) => !entry.startsWith('snapshot')), ['task_update run-1 #1', 'task_question run-1 #2', 'task_end run-1 #3', 'task_update run-2 #4'],
+    'numbered in order, one count across its runs')
+  const firstOfRun2 = shown.indexOf('task_update run-2 #4')
+  assert.ok(shown.slice(0, firstOfRun2).includes('snapshot run-2 ≤3 begins'), 'the new run begins before its first piece')
+  const asking = mine.find((push) => push.type === 'task_snapshot' && (push as { snapshot: WindowSnapshot }).snapshot.waitingFor === 'answer')
+  assert.equal((asking as { snapshot: WindowSnapshot } | undefined)?.snapshot.taskSeq, 2, 'the snapshot waiting on the answer includes the question that made it so')
+  for (const [i, entry] of shown.entries()) {
+    const said = /≤(\d+)/.exec(entry)
+    if (said) assert.equal(Number(said[1]), shown.slice(0, i).filter((before) => before.includes('#')).length, `${entry}: includes the pieces before it, no more`)
+  }
+})
+
+test('what dsh says of a task unknown, or no longer at work, goes nowhere; the window opening gets each task\'s mark', async () => {
+  const { call, says, ends, pushes, emit } = setup()
+  emit({ type: 'task_update', taskId: 'nobody', update: chunk('谁的？') })
+  emit({ type: 'task_question', taskId: 'nobody', questionId: 'q1', questions: [] })
+  assert.deepEqual(pushes.filter((push) => push.taskId === 'nobody'), [], 'no task\'s: nothing waits for it to be known')
+  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  says(task.id, '写好了')
+  ends(task.id)
+  const before = pushes.length
+  says(task.id, '结束之后又说的')
+  assert.equal(pushes.length, before, 'ended: what comes after is no run\'s')
+  const [kept] = await call<Array<{ mark?: { runId: string, seq: number } }>>('task:finished')
+  assert.deepEqual(kept.mark, { runId: 'run-1', seq: 2 }, 'what it said, up to its end')
 })
