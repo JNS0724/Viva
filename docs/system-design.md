@@ -340,13 +340,15 @@ Why: a background task's state is worked out in five places (`task-registry`, `t
 ### 12.2 TaskRuntime: one writer for background tasks
 
 - One module owns each task's lifecycle (running, waiting, done, stopped, failed, interrupted), what it waits on, the running slots (at most 5), what it said, and a `revision` that grows with every change. `task-registry` and `task-words` merge into it; `task-ipc` keeps only the commands.
+- **Identities.** `taskId` names a task. `runId` names one run of it: from the turn that starts it, or a message that sets it going again, to that turn's end. Every change, event and effect about a task carries both.
 - Each caller gets a narrow interface: the window (snapshots, approve, stop), the agent's tools (start, stop, message, list, get), dsh (what happened).
-- What reacts to a change subscribes to it: storing (the only writer of `task-store` and of the task's history), reporting (§12.4), and the window's snapshot.
-- The window creates a task when its first snapshot arrives and drops a snapshot older than the one it has; the task's words are still reduced by the conversation's reducer. The early-event buffers (in the backend and in the window) and the matching of submissions go.
+- **The transaction.** Storing is part of the change, not a subscriber: the task's state, its event and the effects it queues commit together, in one transaction (`apply`). Pushing to the window and running effects come only after that commit.
+- **The window's order.** The snapshot that creates a task, or starts a new run of it, is pushed before the first piece of that run's stream. Each piece carries its `runId` and a sequence number; each snapshot carries the last sequence number it already includes. The window drops pieces of another run and pieces at or below that mark; its words are still reduced by the conversation's reducer. Only once this holds (§12.7 step 5) do the early-event buffers (in the backend and in the window) and the matching of submissions go; until then they stay, bounded.
 
 ### 12.3 Effects: a durable queue for side effects
 
-- A table `effects` in `app.db`: kind, key, payload, when due, attempts. An effect is queued in the same transaction as the change that causes it, and runs only after that commits. One row per kind and key: queuing it again replaces the payload.
+- A table `effects` in `app.db`: kind, key, payload, `generation`, when due, attempts. An effect is queued in the same transaction as the change that causes it, and runs only after that commits.
+- One row per kind and key. Queuing it again replaces the payload and adds one to its `generation`. An attempt remembers the generation it took: it completes, retries or cancels only that generation, so a late answer never settles a newer payload.
 - A failure is retried with growing delays; "not now" (the conversation is busy, dsh is restarting) waits without counting as a failure. Rows survive a restart and run after it.
 - Kinds to begin with: `report` (§12.4). Later: starting and messaging a task that a trigger asks for (§12.5).
 
@@ -354,14 +356,17 @@ Why: a background task's state is worked out in five places (`task-registry`, `t
 
 The agent starts tasks itself, and often waits on them within the same turn, so a result must not wait for that turn to end.
 
-1. A task ends: in one transaction TaskRuntime writes how it ended, records `task.ended`, and queues a `report` keyed by the task.
-2. The report runs at once (tasks ending within a moment of each other share one):
-   - **A turn of the main conversation is running:** the result goes into that turn (`viva-steer`, the way words typed during a turn do), marked as Viva's and not the user's, with the report's id; the model gets it at its next step.
-   - **The steer finds the turn just ended** (`idle`), **or the conversation is idle:** a turn is opened with the note, as in §11.2.
+1. A run ends: in one transaction TaskRuntime writes how it ended, records `task.ended`, and queues a `report` keyed by its `reportId`, which names that run's end (`taskId` and `runId`). A later run of the same task has its own report and its own row; a report whose task has started a new run before it was delivered is cancelled (by its generation), since the new run supersedes it.
+2. The report runs at once (runs ending within a moment of each other share one):
+   - **A turn of the conversation the task was started from is running:** the result goes into that turn (`viva-steer`, the way words typed during a turn do), marked as Viva's and not the user's, with the task's name and the `reportId`; the model gets it at its next step.
+   - **The steer finds the turn just ended** (`idle`), **or the conversation is idle:** a turn is opened with the note, as in §11.2, its message also carrying the `reportId`.
    - **It cannot be delivered now** (dsh restarting, a session switching, the plugin missing): later.
-3. **Delivered is not read.** Tested with real dsh on 2026-11-05: words steered into a turn that is then stopped before its next step are lost, although the steer answered `ok`. ACP's cancel discards the session's inbox (`agent.cancel({ kind: 'user' })` without `keepInbox`); and a message taken into a step that is then refused disappears without a `discarded` event. So `viva-steer` tells the app when the report's message is written into the session's history (`session/event`, `user/message`) and when it was discarded (`agent/inbox/discarded`). A report stays open until it was read; one discarded, or still unread when the turn ends, is opened as a turn once the conversation is idle, after checking the history for its id, so it is delivered at most once.
-4. As now, a task reports to the conversation it was started from; one started from another conversation than the one on screen is left to its line.
-5. After a restart, open reports are delivered once the main session is connected, unless they are older than 24 hours or the user already opened that task's result on the 后台 page (to be decided, §12.8).
+   - A result never goes to another conversation than the one the task was started from; one whose conversation is not on screen waits for it.
+3. **Delivered is not read.** Tested with real dsh on 2026-11-05: words steered into a turn that is then stopped before its next step are lost, although the steer answered `ok`. ACP's cancel discards the session's inbox (`agent.cancel({ kind: 'user' })` without `keepInbox`); and a message taken into a step that is then refused disappears without a `discarded` event.
+4. **Read means written and flushed.** dsh updates the session in memory and announces the event before its persistence writes it out. So a report is confirmed only once its message is in the session's history (`session/event`, `user/message`) **and** the session was flushed (`sessions.flush(session)` resolved): then `viva-steer` sends `read` with the `reportId`. A message discarded (`agent/inbox/discarded`) sends `dropped`. A report stays open until `read`; one `dropped`, or still unread when its turn ends, is delivered again once the conversation is idle.
+5. **At most once is decided in the session.** Before any delivery, the first or a retry, `viva-steer` checks the session's history and its pending inbox for the `reportId`, one report at a time per session; a report already there is confirmed instead of sent again. Checking the history in the app and then sending is not enough on its own.
+6. After a restart, open reports are delivered once the main session is connected, whatever their age, and whether or not the user opened the task on the 后台 page: the model needs the result either way.
+7. In the conversation the delivered note shows as a collapsed system record (it stays in dsh's history so it can be traced); the model's answer shows as usual.
 
 ### 12.5 Triggers
 
@@ -381,17 +386,19 @@ Threads, subscriptions and correlations, an outbox with channels, source plugins
 
 1. Changes with no change in behaviour: unused code and stale comments removed, result types for the IPC contract.
 2. One writer of a task's end.
-3. TaskRuntime: task signals routed through the core; the fan-out in `compose.ts` removed.
-4. The effects table, and reports through it (§12.4), with `viva-steer` telling read from discarded.
-5. The window: a task created by its first snapshot, the early buffers removed; a pure conversation reducer and a narrow view type for the thread.
+3. TaskRuntime: task signals routed through the core, the fan-out in `compose.ts` removed; `taskId` and `runId` on every change, and the transaction boundary of §12.2.
+4. The effects table with generations (§12.3), and reports through it (§12.4): `reportId`, `viva-steer` telling read (written and flushed) from discarded, and the check for a `reportId` in the session's history and inbox before every delivery.
+5. The window: the order of snapshots and stream pieces (§12.2), then a task created by its first snapshot and the early buffers removed; a pure conversation reducer and a narrow view type for the thread.
 6. Triggers.
 7. Proactive follow-ups removed.
 8. Pages catch up by sequence number after a reconnect instead of reloading.
 
-Each step is its own pull request with its tests; steps 3 and 4 also run the smoke tests.
+Each step is its own pull request with its tests; steps 3 to 5 also run the smoke tests.
 
-### 12.8 Open questions
+### 12.8 Questions settled in review
 
-- Reports after a restart: is 24 hours right, and does opening the task's result on the 后台 page count as seen?
-- A report steered into a turn about something else: always (the note says it is not the user's words and the model decides), or only for tasks started from that turn? The proposal is always.
-- Whether a report's message, which has its own source, shows in the conversation's history or only its answer does.
+The review of this plan (2026-11-05) proposed these answers, written into §12.4 above; they wait for the owner's confirmation:
+
+- A result is delivered after a restart whatever its age; opening the task on the 后台 page does not count as the model having it. A 24-hour limit is for proactive reminders, not for results.
+- A result goes, in time, only into the conversation the task was started from, marked with the task and its run; never into another conversation.
+- The delivered note stays in dsh's history so it can be traced, and shows in the conversation as a collapsed system record.
