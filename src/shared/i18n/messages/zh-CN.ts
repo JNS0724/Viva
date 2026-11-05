@@ -703,6 +703,7 @@ export const zhCN = {
   "tasks-page.activity.steps": "过程 · {length} 步　{value2}",
   "tasks-page.collapse": "收起 ▴",
   "tasks-page.expand": "展开 ▾",
+  "tasks-page.earlier.steps": "显示更早的 {count} 步",
   "tasks-page.interruption": "插话",
   "tasks-page.no.background.work.yet.type.a.request": "后台还没有事。要很久的事，直接让助手放到后台做；它做完会告诉你。",
   "tasks-page.close.this.task": "关掉这件",

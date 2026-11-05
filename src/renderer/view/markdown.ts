@@ -116,6 +116,56 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
   return h('div', { class: 'msg-text markdown' }, blocks(new Lexer({ gfm: true }).lex(text), { openLink, image }))
 }
 
+/** A top-level block of an answer: the source it came from, its kind, and the nodes built for it. */
+type BuiltBlock = Readonly<{ raw: string, type: string, nodes: readonly ChildNode[] }>
+/**
+ * An answer still being typed out, kept between frames (renderer/view/thread.ts): its element, the text drawn, and
+ * its blocks. Only the last block can still change as text is added, so each frame lexes and builds from there on.
+ */
+export type MarkdownStream = Readonly<{ el: HTMLElement, text: string, blocks: readonly BuiltBlock[] }>
+
+/** marked reads `\r\n` as `\n`; the stream does too, so the blocks' sources add up to the text. */
+const lineEnds = (text: string) => text.replace(/\r\n?/g, '\n')
+
+/** `text` as blocks, or null when their sources do not add up to it (then the whole answer is drawn afresh). */
+function builtBlocks(text: string, ctx: Context): BuiltBlock[] | null {
+  const tokens = new Lexer({ gfm: true }).lex(text)
+  if (tokens.reduce((length, token) => length + token.raw.length, 0) !== text.length) return null
+  return tokens.map((token) => {
+    const holder = h('div', null, block(token, ctx, { tight: false }))
+    return { raw: token.raw, type: token.type, nodes: [...holder.childNodes] }
+  })
+}
+
+function freshStream(text: string, ctx: Context): MarkdownStream {
+  const blocks = builtBlocks(text, ctx)
+  const el = blocks ? h('div', { class: 'msg-text markdown' }, blocks.flatMap((built) => built.nodes)) : renderMarkdown(text, ctx)
+  return { el, text, blocks: blocks ?? [] }
+}
+
+/**
+ * The answer so far, drawn from where it was last frame: blocks before the last one keep their nodes; the last one
+ * (and the blank lines after it: a list goes on past one) is lexed again with what came since. Anything but more text
+ * at the end (a different start, nothing kept) draws it afresh. Links to a definition earlier in the answer show as
+ * text until the answer ends, when it is drawn whole (renderMarkdown).
+ * @param previous last frame's, of the same answer in the same view
+ */
+export function streamMarkdown(previous: MarkdownStream | null, input: string, ctx: Context): MarkdownStream {
+  const text = lineEnds(input)
+  if (!previous || !previous.blocks.length || !text.startsWith(previous.text)) return freshStream(text, ctx)
+  if (text === previous.text) return previous
+  let keep = previous.blocks.length
+  while (keep > 0 && previous.blocks[keep - 1].type === 'space') keep -= 1
+  keep = Math.max(0, keep - 1)
+  const kept = previous.blocks.slice(0, keep)
+  const offset = kept.reduce((length, built) => length + built.raw.length, 0)
+  const tail = builtBlocks(text.slice(offset), ctx)
+  if (!tail) return freshStream(text, ctx)
+  for (const dropped of previous.blocks.slice(keep)) for (const node of dropped.nodes) node.remove()
+  previous.el.append(...tail.flatMap((built) => built.nodes))
+  return { el: previous.el, text, blocks: [...kept, ...tail] }
+}
+
 /**
  * Expand a finished answer without detaching its unchanged opening blocks. Parse the whole source first:
  * reference definitions later in the answer can change an earlier block. Only exactly equal blocks keep

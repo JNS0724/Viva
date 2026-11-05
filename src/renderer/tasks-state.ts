@@ -10,8 +10,11 @@ export const initialTasks = Object.freeze({
   submissions: [] as Array<{ id: string, text: string, origin: string | null, status: string, problem?: string }>,
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
   list: [] as BackgroundTask[],
-  /** The 后台 page (view/tasks-page.js): open or not, the task shown whole, and whether its steps are unfolded. */
-  page: Object.freeze({ open: false, selected: null as string | null, steps: false }),
+  /**
+   * The 后台 page (view/tasks-page.js): open or not, the task shown whole, whether its steps are unfolded, and whether
+   * all of them are drawn or only the latest (tasks-page.ts STEPS_SHOWN).
+   */
+  page: Object.freeze({ open: false, selected: null as string | null, steps: false, allSteps: false }),
   /** The 后台 page's list folded to a narrow strip by the user (view/tasks-page.ts), kept for the next launch. */
   listFolded: false,
   /**
@@ -238,16 +241,17 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       const known = (id: string | null) => state.tasks.list.some((task) => task.id === id)
       const selected = [taskId, state.tasks.page.selected].find((id) => id && known(id)) ?? firstOnPage(state)
       // Opened again, its steps start folded; the task shown, if ended, is seen.
-      return markSeen(withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false } }), selected)
+      return markSeen(withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false, allSteps: false } }), selected)
     },
     /** Left, the task it showed has been seen, also when the page picked it by itself (shownOnPage). */
     tasks_page_close: (state) => withTasks(markSeen(state, state.tasks.page.open ? shownOnPage(state) : null), { page: { ...state.tasks.page, open: false } }),
-    tasks_page_select: (state, { taskId }) => markSeen(withTasks(state, { page: { ...state.tasks.page, selected: taskId } }), taskId),
+    tasks_page_select: (state, { taskId }) => markSeen(withTasks(state, { page: { ...state.tasks.page, selected: taskId, allSteps: false } }), taskId),
     /** The tasks seen by the last launch, so a relaunch does not remind of them again. */
     tasks_seen_restored: (state, { ids }) => withTasks(state, {
       seen: [...new Set([...state.tasks.seen, ...(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [])])],
     }),
-    tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps } }),
+    tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps, allSteps: false } }),
+    tasks_page_all_steps: (state) => withTasks(state, { page: { ...state.tasks.page, allSteps: true } }),
 
     /** Words into that task's turn (task-ipc.js task:steer), shown in its part of the conversation. */
     task_steer: (state, { taskId, text, at }) => inView(state, taskId, 'user_steer', { text, via: null, at }),

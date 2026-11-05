@@ -724,6 +724,7 @@ const handlers = {
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
+  showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
   inputProblem: (message: string) => historyActions.showToast(message),
   toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
   async setDeskIsland(on: boolean) {
