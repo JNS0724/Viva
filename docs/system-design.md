@@ -88,7 +88,8 @@ Every input to the backend is a signal, and every state change goes through `app
 | --- | --- | --- |
 | `chat.said` | The user said something in the conversation (`agent:prompt`) | Straight into the dsh session, with no model classification |
 | `user.command` | Any page action that is not a query (`src/backend/commands.ts`) | That channel's own handler |
-| `agent.turn_ended`, `agent.task_ended` | A foreground turn or a background task ended | Gap detection; reporting the memories saved in the turn |
+| `agent.turn_ended` | A foreground turn ended | Gap detection; reporting the memories saved in the turn; results of tasks held back |
+| `agent.task_ended`, `agent.task_waits` | A background task's turn ended; it began or stopped waiting on the user | TaskRuntime (`task-runtime.ts`), which keeps how it ended; its result back to the conversation; gap detection |
 | `agent.followup_proposed` | The model proposed a follow-up through `viva-followups` | A suggestion card that waits for the user |
 | `clock.reminder_due`, `clock.prepare_window` | The reminder timer, the background preparation timer | Notice planning, background preparation |
 | `system.woke`, `system.user_returned` | The computer woke or was unlocked; the user came back after 15 minutes away | Catching up missed reminders; gaps |
@@ -98,7 +99,7 @@ Every input to the backend is a signal, and every state change goes through `app
 
 **`apply` and the event table.** `apply(kind, data, write)` runs the write and inserts a row into `app_events` in one transaction; a write that throws leaves neither. Nested writes use savepoints, so an inner failure undoes only itself. Every push to the window carries a number: a stored event its own, a transient push (streamed text) the latest. The event table keeps the latest 100,000 events, and numbers are never reused.
 
-**Store writes.** The follow-up, history and background-task stores are wrapped in `journaled` (`src/backend/journal.ts`): the listed writes go through `apply`, and reads pass straight through. A write that changed nothing (it returns `false`, `0` or `null`) records no event.
+**Store writes.** The follow-up and history stores are wrapped in `journaled` (`src/backend/journal.ts`): the listed writes go through `apply`, and reads pass straight through. A write that changed nothing (it returns `false`, `0` or `null`) records no event. The background tasks have one writer, TaskRuntime (`src/backend/task-runtime.ts`), which writes them only in changes of its own: `task.started`, `task.restarted`, `task.ended`, `task.closed`, each with the `taskId` and the run's `runId`. A task's end saves what it said, keeps how it ended and records `task.ended` in one transaction, a failed save failing it; the window's snapshot goes out once it commits. A change that fails is undone in memory too (how the task stands, what it said), and since dsh says a turn ended only once, an end not kept is tried again (after 1, 5, 30, then every 60 seconds) for as long as that run is the task's, dsh restarting meanwhile too; its result goes back to the conversation once it is kept. A task's end or wait reaches the runtime even when its signal cannot be recorded (`task-signals.ts`). The run's `runId` is kept with the task, and back after a relaunch.
 
 **Shapes, not contents.** Events never record what the user said or what a model wrote:
 
@@ -387,8 +388,8 @@ Threads, subscriptions and correlations, an outbox with channels, source plugins
 
 ### 12.7 Order of work
 
-1. One writer of a task's end: the registry decides how a run ended (status, time, last words); the task service alone keeps it in `task-store`.
-2. TaskRuntime: task signals routed through the core, the fan-out in `compose.ts` removed; `taskId` and `runId` on every change, and the transaction boundary of §12.2. Result types for the task channels of the IPC contract.
+1. One writer of a task's end: the registry decides how a run ended (status, time, last words); the task service alone keeps it in `task-store`. (Done.)
+2. TaskRuntime: task signals routed through the core, the fan-out in `compose.ts` removed; `taskId` and `runId` on every change, and the transaction boundary of §12.2. Result types for the task channels of the IPC contract. (Done: `task-runtime.ts`, with `task-ipc.ts` its window channels only; results in `src/shared/ipc-results.ts`. The effects come with step 3.)
 3. The effects table with generations (§12.3), and reports through it (§12.4): `reportId`, `viva-steer` telling read (written and flushed) from discarded, and the check for a `reportId` in the session's history and inbox before every delivery.
 4. The delivered result in the conversation: a collapsed system record that opens on what the model was given (§12.4 point 7).
 5. The window: the order of snapshots and stream pieces (§12.2), then a task created by its first snapshot and the early buffers removed; a pure conversation reducer and a narrow view type for the thread.

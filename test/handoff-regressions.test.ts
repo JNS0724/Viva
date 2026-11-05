@@ -12,7 +12,8 @@ import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import { materialsFor } from '../src/backend/prepare-materials.ts'
 import type { Followup } from '../src/backend/followup-store.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
-import { registerTaskIpc, taskProblems } from '../src/backend/task-ipc.ts'
+import { registerTaskIpc } from '../src/backend/task-ipc.ts'
+import { createTaskRuntime, taskProblems } from '../src/backend/task-runtime.ts'
 
 test('approval shows the complete command and every additional argument', () => {
   const command = 'Write-Output "' + '完整命令'.repeat(500) + '"; Remove-Item important.txt'
@@ -67,9 +68,9 @@ test('connecting background submission fails before creating a task, then can re
   const idle = async () => ({ ok: true })
   registerTaskIpc({ handle(channel, listener) {
     if (channel === 'task:start') invoke = async () => await Reflect.apply(listener, undefined, [null, { text: '完整保留的请求' }]) as { ok: boolean, problem?: string }
-  } }, { db, current: () => conversation, agentInfo: () => ({ mode }),
+  } }, createTaskRuntime({ db, current: () => conversation, agentInfo: () => ({ mode }),
     agent: { closeTask: idle, cancelTask: idle, steerTask: idle, resumeTask: idle,
-      startTask: async () => { calls++; return { ok: true, taskId: 'task1' } }, promptTask: idle } })
+      startTask: async () => { calls++; return { ok: true, taskId: 'task1' } }, promptTask: idle } }).window)
   assert.ok(invoke)
   assert.deepEqual(await invoke(), { ok: false, problem: taskProblems().connecting })
   assert.equal(calls, 0)

@@ -4,7 +4,9 @@
 // What comes back is not typed yet.
 
 type Args<C extends import('../shared/ipc-contract.ts').Channel> = import('../shared/ipc-contract.ts').ChannelArgs<C>
-type Invoke<C extends import('../shared/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<any>
+type IpcResults = import('../shared/ipc-results.ts').IpcResults
+/** A channel's call: its arguments, and its answer where written out (ipc-results.ts), else `any` for now. */
+type Invoke<C extends import('../shared/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<C extends keyof IpcResults ? IpcResults[C] : any>
 type Unlisten = () => void
 
 /** A part of the state whose shape is not written out yet: what an empty start (null, []) was before strict. */

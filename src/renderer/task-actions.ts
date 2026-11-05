@@ -8,6 +8,10 @@ import { runningTurn } from './tasks-state.ts'
  */
 /** What the main process says of the agent (acp-bridge.ts), as far as holding it back reads it. */
 type AgentEvent = { type?: string, taskId?: string, sessionId?: string, [field: string]: any }
+/** A call that did not get through, or a refusal from the main process, in words for the user. */
+type Failed = { ok: false, problem: string }
+const isFailed = (value: unknown): value is Failed =>
+  Boolean(value) && typeof value === 'object' && (value as { ok?: unknown }).ok === false && typeof (value as { problem?: unknown }).problem === 'string'
 
 export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
   api: Pick<AgentApi, 'startTask' | 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
@@ -18,7 +22,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   const earlyTasks = new Map<string, AgentEvent[]>()
 
   /** What the main process answered, or why it could not be asked. */
-  async function call(request: () => Promise<any>): Promise<any> {
+  async function call<T>(request: () => Promise<T>): Promise<T | Failed> {
     try {
       return await request()
     } catch (err) {
@@ -99,12 +103,12 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   async function stopTask(taskId: string) {
     const result = await call(() => api.stopTask(taskId))
-    if (result?.ok === false) showToast(result.problem)
+    if (isFailed(result)) showToast(result.problem)
   }
 
   async function closeTask(taskId: string) {
     const result = await call(() => api.closeTask(taskId))
-    if (result?.ok === false) return showToast(result.problem)
+    if (isFailed(result)) return showToast(result.problem)
     return dispatch({ type: 'task_closed', taskId })
   }
 

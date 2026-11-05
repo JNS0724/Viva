@@ -8,12 +8,17 @@ import { type AppDb, transaction } from './app-db.ts'
  * carries a number: a stored event its own, a transient push (streamed text, live task snapshots) the latest stored
  * one, marked transient. After a disconnect the shell asks for what came after the last number it saw (`since`).
  */
+/** What dsh reports of a background task (acp-bridge.ts): its kind, the task, and the rest as it came. */
+export type DshTaskEvent = { type: string, taskId: string, [field: string]: unknown }
+
 export type Signal =
   /** The user asked something in the conversation (agent:prompt). */
   | { kind: 'chat.said', text: string, images: readonly unknown[] }
-  /** A turn of the user's, or a background task of theirs, ended (acp-bridge turn_end / task_end). */
+  /** A turn of the user's ended (acp-bridge turn_end). */
   | { kind: 'agent.turn_ended' }
-  | { kind: 'agent.task_ended' }
+  /** A background task's turn ended (task_end), or it began or stopped waiting on the user (a permission or question). */
+  | { kind: 'agent.task_ended', event: DshTaskEvent }
+  | { kind: 'agent.task_waits', event: DshTaskEvent }
   /** The model proposed a follow-up (viva-followups), for a card the user decides on. */
   | { kind: 'agent.followup_proposed', event: { type: string, proposal: unknown, [field: string]: unknown } }
   /** A reminder's time came (followup-notifier's timer). */
@@ -59,6 +64,7 @@ function shapeOf(value: unknown): unknown {
 function signalData(signal: Signal): Record<string, unknown> {
   if (signal.kind === 'chat.said') return { chars: signal.text.length, images: signal.images.length }
   if (signal.kind === 'user.command') return { channel: signal.channel, args: signal.args.map(shapeOf) }
+  if (signal.kind === 'agent.task_ended' || signal.kind === 'agent.task_waits') return { type: signal.event.type, taskId: signal.event.taskId }
   return {}
 }
 

@@ -3,18 +3,22 @@ import path from 'node:path'
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'
 export interface TaskSnapshot {
-  taskId: string, title: string, status: TaskStatus, currentAction: string | null,
+  /** The task, and its run: from the turn that started it, or the message that set it going again, to that turn's end. */
+  taskId: string, runId: string, title: string, status: TaskStatus, currentAction: string | null,
   waitingFor: 'permission' | 'answer' | null, startedAt: number, updatedAt: number,
   endedAt: number | null, resultPreview: string, revision: number,
 }
 interface Task extends TaskSnapshot { cwd: string, request: string }
-export interface TaskMetadata { id: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string }
+export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string }
 export type TaskScope = { cwd: string } | { taskId: string }
 export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean }
 const statuses = new Set<string>(['running', 'waiting', 'done', 'stopped', 'error', 'interrupted'])
 const terminal = new Set<TaskStatus>(['done', 'stopped', 'error', 'interrupted'])
+/** How a task's turn ended (acp-bridge task_end's stopReason), as its status. */
+export const endedStatus = (stopReason: unknown): TaskStatus => stopReason === 'cancelled' ? 'stopped' : stopReason === 'error' ? 'error' : 'done'
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {}
 const text = (value: unknown) => typeof value === 'string' ? value : ''
+const copy = <K, V>(map: Map<K, V> | undefined): Map<K, V> | undefined => map ? new Map(map) : undefined
 const directory = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
 
 /** Main-process projection: no renderer round trip and no disk read on a tool query. */
@@ -39,7 +43,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const previous = tasks.get(meta.id)
     if (previous && !restored) return
     const status: TaskStatus = restored ? (Number.isFinite(meta.endedAt) && ['done', 'stopped', 'error'].includes(meta.status ?? '') ? meta.status as TaskStatus : 'interrupted') : 'running'
-    const task: Task = { taskId: meta.id, title: meta.title.slice(0, 200), cwd: meta.cwd ?? '', request: (meta.words ?? '').slice(0, 20_000),
+    const task: Task = { taskId: meta.id, runId: meta.runId ?? '', title: meta.title.slice(0, 200), cwd: meta.cwd ?? '', request: (meta.words ?? '').slice(0, 20_000),
       status, currentAction: null, waitingFor: null, startedAt: meta.startedAt ?? now(), updatedAt: now(), endedAt: status === 'interrupted' ? null : meta.endedAt ?? null,
       resultPreview: (meta.resultPreview ?? '').slice(-4000), revision: 0 }
     tasks.set(meta.id, task)
@@ -47,11 +51,23 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const pending = early.get(meta.id) ?? []; early.delete(meta.id)
     for (const event of pending) receive(event)
   }
-  function restart(id: string) {
+  function restart(id: string, runId = '') {
     const task = tasks.get(id); if (!task) return
     waits.delete(id); tools.delete(id); streams.delete(id)
-    Object.assign(task, { status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', startedAt: now() })
+    Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', startedAt: now() })
     publish(task)
+  }
+  /** How a task is now in every map, to be put back if the change it was part of is undone. */
+  function checkpoint(id: string): () => void {
+    const task = tasks.get(id)
+    const saved = { task: task ? { ...task } : undefined, waits: copy(waits.get(id)), tools: copy(tools.get(id)), published: published.get(id),
+      stream: (() => { const stream = streams.get(id); return stream ? { key: stream.key, blocks: new Map(stream.blocks) } : undefined })() }
+    const put = <V>(map: Map<string, V>, value: V | undefined) => { if (value === undefined) map.delete(id); else map.set(id, value) }
+    return () => {
+      put(tasks, saved.task ? { ...saved.task } : undefined)
+      put(waits, copy(saved.waits)); put(tools, copy(saved.tools)); put(published, saved.published)
+      put(streams, saved.stream ? { key: saved.stream.key, blocks: new Map(saved.stream.blocks) } : undefined)
+    }
   }
   function remove(id: string) { tasks.delete(id); waits.delete(id); tools.delete(id); streams.delete(id); early.delete(id); published.delete(id) }
   function receive(raw: unknown) {
@@ -100,15 +116,16 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     task.waitingFor = [...pending.values()].includes('permission') ? 'permission' : [...pending.values()][0] ?? null
     task.status = task.waitingFor ? 'waiting' : 'running'
     if (type === 'task_end') {
-      task.status = event.stopReason === 'cancelled' ? 'stopped' : event.stopReason === 'error' ? 'error' : 'done'
+      task.status = endedStatus(event.stopReason)
       task.endedAt = now(); task.waitingFor = null; task.currentAction = null
       if (event.message) task.resultPreview = text(event.message).slice(-4000)
       waits.delete(id); tools.delete(id); streams.delete(id)
     }
     publish(task)
   }
-  function interrupt() {
-    for (const task of tasks.values()) if (!terminal.has(task.status)) {
+  /** dsh went: the tasks at work are interrupted, but for those whose end came already and is still being kept. */
+  function interrupt(ending: ReadonlySet<string> = new Set()) {
+    for (const task of tasks.values()) if (!terminal.has(task.status) && !ending.has(task.taskId)) {
       task.status = 'interrupted'; task.currentAction = null; task.waitingFor = null; publish(task)
     }
     waits.clear(); tools.clear(); streams.clear(); early.clear()
@@ -127,9 +144,14 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     return { observedAt: now(), total: list.length, nextOffset: offset + limit < list.length ? offset + limit : null,
       tasks: list.slice(offset, offset + limit).map(task => ({ ...snapshot(task), resultPreview: undefined })) }
   }
+  /** The run a task is at, while it works or waits on the user; null for one unknown or no longer at work. */
+  const runOf = (id: string): string | null => {
+    const task = tasks.get(id)
+    return task && !terminal.has(task.status) ? task.runId : null
+  }
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, receive, interrupt, query, live }
+  return { put, restart, remove, receive, interrupt, query, live, runOf, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 
