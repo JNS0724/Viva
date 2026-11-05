@@ -606,6 +606,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function registerAgentIpc() {
     let newSessionPending: Promise<AgentInfo> | null = null
     ipcMain.handle('agent:info', () => lastInfo)
+    // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload).
+    ipcMain.handle('agent:waits', () => bridge?.sessionWaits() ?? { permissions: [], questions: [], secrets: [] })
     ipcMain.handle('agent:prompt', (_event, text, images = []) => {
       if (newSessionPending) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
       // With pictures the words may be left out.

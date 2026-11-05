@@ -25,6 +25,15 @@ export type TaskStartResult = { ok: true, task: TaskSummary } | { ok: false, pro
  * what it was given, and how many times it had changed (its snapshots' `revision`). A piece of another run, or at or
  * below that piece, and a snapshot at or below that revision, are not the window's to take again.
  */
+/**
+ * What the conversation on screen waits on the user for (acp-bridge.ts sessionWaits): approvals, questions and keys
+ * asked for, each as the window was first told of it (`permission`, `question`, `secret_request`).
+ */
+export interface SessionWaits {
+  permissions: ReadonlyArray<{ requestId: string, toolCall: unknown, options: unknown }>
+  questions: ReadonlyArray<{ questionId: string, questions: unknown }>
+  secrets: ReadonlyArray<{ requestId: string, server: string, names: readonly string[] }>
+}
 export interface TaskMark { runId: string, seq: number, revision?: number }
 /** A tool call a task's run has at work, as its registry knows it (task-registry.ts activeTools). */
 export interface ActiveTool { toolCallId: string, title: string }
@@ -45,6 +54,7 @@ export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: 
 export interface IpcResults {
   'task:start': TaskStartResult
   'task:finished': KeptTask[]
+  'agent:waits': SessionWaits
   'task:close': void
   'task:stop': void
 }

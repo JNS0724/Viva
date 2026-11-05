@@ -1074,6 +1074,13 @@ async function boot() {
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })
+  // Opened on a dsh at work (a reload): what the conversation waits on the user for, read after the live channel is
+  // listened to, so one asked meanwhile comes live and one asked before is here (system-design §12.1).
+  const waits = await api.waits().catch((err: unknown) => { console.error('[app] could not read what the conversation waits for:', err); return null })
+  if (waits) {
+    dispatch({ type: 'waits_restored', permissions: waits.permissions, questions: waits.questions, at: Date.now() })
+    dispatch({ type: 'secrets_restored', secrets: waits.secrets, at: Date.now() })
+  }
   dom.input.focus()
 }
 

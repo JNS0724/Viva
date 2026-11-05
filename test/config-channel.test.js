@@ -54,6 +54,7 @@ test('keys are asked of the window, never of the model, and only then is the ser
   await settle()
   assert.deepEqual(shown, [{ type: 'secret_request', requestId: 'c1', server: 'github', names: ['GITHUB_TOKEN'] }])
   assert.deepEqual([sent, done], [[], []], 'nothing happens until the user fills them in')
+  assert.deepEqual(it.pendingSecrets(), [{ requestId: 'c1', server: 'github', names: ['GITHUB_TOKEN'] }], 'still asked for, for a window that opens meanwhile')
 
   assert.throws(() => it.provideSecrets('c1', { GITHUB_TOKEN: 'a\nb' }), /一行/)
   assert.throws(() => it.provideSecrets('c1', {}), /GITHUB_TOKEN/)
@@ -63,6 +64,7 @@ test('keys are asked of the window, never of the model, and only then is the ser
   assert.deepEqual(sent, [{ type: 'config_result', id: 'c1', ok: true, text: '已接入「github」' }])
   assert.ok(!JSON.stringify(sent).includes('ghp_secret'), 'the key never goes back to dsh')
   assert.equal(it.provideSecrets('c1', { GITHUB_TOKEN: 'again' }), false, 'answered once')
+  assert.deepEqual(it.pendingSecrets(), [], 'filled in: no longer asked for')
 })
 
 test('declining the keys, stopping the turn or leaving the conversation adds nothing', async () => {

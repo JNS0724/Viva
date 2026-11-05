@@ -30,6 +30,7 @@ export const IPC_ARGS = Object.freeze({
   'language:get': read(none),
   'language:set': z.tuple([z.enum(['system', 'zh-CN', 'en'])]),
   'agent:info': read(none),
+  'agent:waits': read(none),
   'agent:prompt': z.tuple([text, images.optional()]),
   'agent:steer': z.tuple([text]),
   'agent:cancel': none,

@@ -21,6 +21,9 @@ export const SECRET_ACTIONS: Record<string, Reducer> = {
       timeline: [...state.timeline, { kind: 'secret_answer', ref: requestId, at, title: state.secret.server, provided }],
     }
   },
+  /** Keys still asked for, read when the window opened on a dsh at work (a reload): shown unless shown already. */
+  secrets_restored: (state, { secrets = [], at }) => (secrets as Action[]).reduce<State>((current, wait) => (current.secret?.requestId === wait.requestId
+    ? current : SECRET_ACTIONS.secret_request(current, { ...wait, type: 'secret_request', at })), state),
   secret_closed: (state, { requestId }) => (state.secret?.requestId === requestId
     ? { ...state, phase: state.phase === 'asking' ? 'working' : state.phase, secret: null }
     : state),

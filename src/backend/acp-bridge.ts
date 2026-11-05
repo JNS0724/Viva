@@ -667,6 +667,14 @@ export function createAcpBridge({
   const answerQuestion = (questionId: string, answers: unknown): boolean => questions.answer(questionId, answers)
   /** What a background task waits on the user for, still: its approvals and its questions (a reloaded window shows them). */
   const taskWaits = (taskId: string) => (tasks.has(taskId) ? { permissions: broker.pendingFor(taskId), questions: questions.pendingOf(taskId) } : { permissions: [], questions: [] })
+  /**
+   * What the conversation on screen waits on the user for, still: its approvals, its questions and the keys a server
+   * asks for, each as it was
+   * asked, for a window that opens meanwhile (a reload on the same dsh), which shows them to be answered.
+   */
+  const sessionWaits = () => (sessionId
+    ? { permissions: broker.pendingFor(sessionId), questions: questions.pendingOf(null), secrets: config?.pendingSecrets() ?? [] }
+    : { permissions: [], questions: [], secrets: [] })
   /** @returns false when no key is asked for any more; throws when the values do not fit */
   const provideSecrets = (requestId: string, values: Record<string, unknown> | null) => config?.provideSecrets(requestId, values) ?? false
 
@@ -721,5 +729,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }
