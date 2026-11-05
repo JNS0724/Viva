@@ -305,7 +305,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const held = attached.has(entry.id)
       const messages = (held ? taskWords.current(entry.id) : null) ?? found.messages.slice(entry.keep)
       // What it said so far includes its stream to here: a piece in flight at or below this is not taken again.
-      const mark = typeof entry.runId === 'string' && entry.runId ? { mark: { runId: entry.runId, seq: seqOf(entry.id) } } : {}
+      const mark = typeof entry.runId === 'string' && entry.runId
+        ? { mark: { runId: entry.runId, seq: seqOf(entry.id), revision: registry.revisionOf(entry.id) ?? 0 } } : {}
       if (ended) return [{ task: restoredSummary(entry), status: entry.status, endedAt: entry.endedAt, messages, ...mark }]
       if (held) return [{ task: restoredSummary(entry), status: 'running', endedAt: null, startedAt: entry.startedAt ?? null, messages, waits: waitsOf(entry.id), ...mark }]
       return [{ task: restoredSummary(entry), status: 'interrupted', endedAt: entry.startedAt ?? Date.now(), messages, ...mark }]

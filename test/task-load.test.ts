@@ -133,3 +133,27 @@ test('a read that comes back later than what the window has puts nothing back', 
   win.dispatch({ type: 'tasks_restored', list: [done(5)] })
   assert.equal(win.state().tasks.list[0].seq, 5, 'a newer read is taken')
 })
+
+test('the read has a later run already: the older run\'s beginning, end and pieces that waited change nothing, the later run\'s new words are taken once', async () => {
+  const read = deferred<unknown>()
+  const win = windowWith([read.promise])
+  const loading = win.actions.loadKept()
+  const begins = (runId: string, taskSeq: number, revision: number, words: string, extra = {}) =>
+    snapshot({ runId, taskSeq, revision, startedAt: revision, opening: { words, task: summary, hostSession: null }, ...extra })
+  // All of it on the live channel while the read was under way: run 1 begun, said, ended; run 2 begun (its first
+  // snapshot saying the same last piece, 4, as run 1's end), said; then one piece more of run 2, after the read.
+  win.arrive(begins('run-1', 0, 2, '整理发布说明'))
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 3, update: chunk('写好了。') })
+  win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 4, stopReason: 'end_turn' })
+  win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 4, revision: 5 }))
+  win.arrive(begins('run-2', 4, 6, '再加上已知问题'))
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-2', taskSeq: 5, update: chunk('加好了。') })
+  win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-2', taskSeq: 6, update: chunk('还有一处。') })
+  // The read: run 2 at work, up to piece 5 and revision 8.
+  read.resolve([{ ...running(5, 'run-2', ['整理发布说明', '先看提交…写好了。', '再加上已知问题', '加好了。']), mark: { runId: 'run-2', seq: 5, revision: 8 } }])
+  await loading
+  const [task] = win.state().tasks.list
+  assert.deepEqual([task.status, task.runId, task.seq, task.endedAt], ['running', 'run-2', 6, null], 'at work on run 2, not put back to run 1 nor ended')
+  assert.deepEqual(texts(win.state()), ['整理发布说明', '先看提交…写好了。', '再加上已知问题', '加好了。', '还有一处。'],
+    'no question twice, no word twice; the piece after the read taken')
+})

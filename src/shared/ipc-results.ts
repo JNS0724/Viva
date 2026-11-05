@@ -21,10 +21,11 @@ export interface KeptMessage { role: string, text: string, [field: string]: unkn
 export type TaskStartResult = { ok: true, task: TaskSummary } | { ok: false, problem: string }
 
 /**
- * Where a task's stream is as the window got it (task-runtime.ts): the run it is at, and the last piece of its stream
- * already in what it was given. A piece of another run, or at or below that, is not the window's to take again.
+ * Where a task is as the window got it (task-runtime.ts): the run it is at, the last piece of its stream already in
+ * what it was given, and how many times it had changed (its snapshots' `revision`). A piece of another run, or at or
+ * below that piece, and a snapshot at or below that revision, are not the window's to take again.
  */
-export interface TaskMark { runId: string, seq: number }
+export interface TaskMark { runId: string, seq: number, revision?: number }
 
 /** A task as `task:finished` gives it back: ended; at work in this launch (a reloaded window); or one Viva quit on. */
 export type KeptTask = ({ mark?: TaskMark }) & (

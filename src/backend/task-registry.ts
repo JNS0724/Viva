@@ -142,9 +142,11 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const task = tasks.get(id)
     return task && !terminal.has(task.status) ? task.runId : null
   }
+  /** How many times a task has changed (its snapshots' `revision`), or null for one unknown. */
+  const revisionOf = (id: string): number | null => tasks.get(id)?.revision ?? null
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, receive, interrupt, query, live, runOf, checkpoint }
+  return { put, restart, remove, receive, interrupt, query, live, runOf, revisionOf, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 

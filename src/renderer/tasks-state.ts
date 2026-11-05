@@ -183,10 +183,19 @@ function takePiece(state: State, action: Action, take: (state: State) => State):
 }
 
 /** A task's mark from what the window was given of it (task:finished): the run it is at, the last piece in it. */
-const markOf = (mark: unknown): { runId?: string, seq?: number } => {
-  const { runId, seq } = (mark && typeof mark === 'object' ? mark : {}) as { runId?: unknown, seq?: unknown }
-  return typeof runId === 'string' && typeof seq === 'number' ? { runId, seq } : {}
+const markOf = (mark: unknown): { runId?: string, seq?: number, revision?: number } => {
+  const { runId, seq, revision } = (mark && typeof mark === 'object' ? mark : {}) as { runId?: unknown, seq?: unknown, revision?: unknown }
+  if (typeof runId !== 'string' || typeof seq !== 'number') return {}
+  return { runId, seq, ...(typeof revision === 'number' ? { revision } : {}) }
 }
+
+/**
+ * Whether a snapshot is older than what the window has of its task, or the same: by its revision, which grows with
+ * every change of the task (task-registry.ts), across its runs. The last piece of the stream cannot tell, as several
+ * snapshots say the same one (a run ending, the next beginning).
+ */
+const isStale = (snapshot: { revision?: unknown }, task: BackgroundTask) =>
+  typeof snapshot.revision === 'number' && typeof task.revision === 'number' && snapshot.revision <= task.revision
 
 /** @param handlers state.ts's handlers: a task's view is updated the way the conversation is */
 export function taskActions(handlers: Record<string, Reducer>): Record<string, Reducer> {
@@ -214,7 +223,7 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
   function made(state: State, snapshot: Untyped, opening: TaskOpening): State {
     const { task, words, hostSession = null } = opening
     if (!task) return state
-    const entry = settled({ ...task, runId: snapshot.runId, seq: snapshot.taskSeq ?? 0, startedAt: snapshot.startedAt, endedAt: null,
+    const entry = settled({ ...task, runId: snapshot.runId, seq: snapshot.taskSeq ?? 0, revision: snapshot.revision, startedAt: snapshot.startedAt, endedAt: null,
       status: snapshot.status, now: snapshot.currentAction ?? null, view: savedView([{ role: 'user', text: words }], snapshot.startedAt) })
     const here = !state.newTopicPending && hostSession !== null && hostSession === (state.info.sessionId ?? null)
     const host = here ? hostTask(state, entry.id) : { messages: state.messages, taskCards: state.taskCards }
@@ -242,8 +251,9 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       const task = state.tasks.list.find((entry) => entry.id === snapshot.taskId)
       const opening: TaskOpening | undefined = snapshot.opening
       if (!task) return opening?.task ? made(state, snapshot, opening) : state
-      // Older than what the window has (one that waited for a read of the tasks): how it stood then, not now.
-      if (!opening && typeof snapshot.taskSeq === 'number' && snapshot.taskSeq < (task.seq ?? 0)) return state
+      // Older than what the window has, or the same (one that waited for a read of the tasks, the beginning of a run
+      // the read has already): how it stood then, not now; nor a run begun again.
+      if (isStale(snapshot, task)) return state
       const begun = opening && snapshot.runId !== task.runId
         ? ACTIONS.task_asked(state, { taskId: task.id, text: opening.words, at: snapshot.startedAt }) : state
       // How it stands is the snapshot's, as it says it (not worked out again from its view).
@@ -275,7 +285,9 @@ export function taskActions(handlers: Record<string, Reducer>): Record<string, R
       // one count across its runs), stays: a read that came back late never puts a task back to where it was.
       const fresher = (task: BackgroundTask) => {
         const known = state.tasks.list.find((entry) => entry.id === task.id)
-        return Boolean(known && typeof task.seq === 'number' && typeof known.seq === 'number' && known.seq >= task.seq)
+        if (!known) return false
+        if (typeof task.revision === 'number' && typeof known.revision === 'number') return known.revision >= task.revision
+        return typeof task.seq === 'number' && typeof known.seq === 'number' && known.seq >= task.seq
       }
       const taken = restored.filter((task: BackgroundTask) => !fresher(task))
       return withTasks(state, {

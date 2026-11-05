@@ -555,5 +555,5 @@ test('what dsh says of a task unknown, or no longer at work, goes nowhere; the w
   says(task.id, '结束之后又说的')
   assert.equal(pushes.length, before, 'ended: what comes after is no run\'s')
   const [kept] = await call<Array<{ mark?: { runId: string, seq: number } }>>('task:finished')
-  assert.deepEqual(kept.mark, { runId: 'run-1', seq: 2 }, 'what it said, up to its end')
+  assert.deepEqual([kept.mark?.runId, kept.mark?.seq, typeof (kept.mark as { revision?: unknown })?.revision], ['run-1', 2, 'number'], 'what it said, up to its end, and how many times it changed')
 })
