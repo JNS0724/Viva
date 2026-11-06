@@ -1,5 +1,5 @@
 import { hubPage } from '../hub-state.ts'
-import type { Dom } from '../app.ts'
+import type { Dom } from '../page-elements.ts'
 
 /**
  * 搜索 · 关于你 · 设置, one page over the conversation under the title bar. The sidebar and the pages are

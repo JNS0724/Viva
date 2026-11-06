@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-04",
+  "reviewedOn": "2026-11-06",
   "pairs": [
     {
       "en": "README.md",
@@ -71,8 +71,14 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "3df102cf64e0e1684096563b3dc81ba3ddbdc426a19ecbf74e4fe3679fad6855",
-      "zhHash": "af9090aaa4030cfa12ccd916da11086806e6ceb054003c6dca58a7cfaf2e7704"
+      "enHash": "2d1b42e26fe7883c357cc8e8422cce167fd6a7ae3e3fd1731eaa5a716911a70d",
+      "zhHash": "63ba9c36c2bd86a0d29cd8852c5c80a304dc1e96347ff49535f7aa91a1086aac"
+    },
+    {
+      "en": "docs/architecture-health.md",
+      "zh": "docs/architecture-health.zh-CN.md",
+      "enHash": "a96fca80905081fb02950d27665c9edd890ebaac875054513a38483c0ca842ec",
+      "zhHash": "5ae7a7d0d0d438fadc0462d77d94b2ec2c4769a344a60c7ded7617bbaaec19f1"
     }
   ],
   "bilingual": [
