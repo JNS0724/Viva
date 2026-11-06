@@ -3,10 +3,10 @@
  * Each keeps its own slice (history, memory, settings) and its own open and close actions; this keeps
  * only one of them open and remembers which to open on next. Pure, like the rest of `state.js`.
  */
-export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks'] as const)
+export const HUB_PAGES = Object.freeze(['search', 'profile', 'settings', 'tasks', 'feed'] as const)
 type HubPage = typeof HUB_PAGES[number]
 /** Every page, 后台 too, is one of the hub's: the 关于你 icon opens on whichever was shown last. */
-const REMEMBERED = new Set<string>(HUB_PAGES)
+const REMEMBERED = new Set<string>(HUB_PAGES.filter((page) => page !== 'feed'))
 
 export const initialHub = Object.freeze({
   /** The page it opens on when opened without naming one: the one last shown. */
@@ -18,8 +18,9 @@ const IS_OPEN: Record<HubPage, (state: State) => boolean> = {
   profile: (state) => state.memory.open,
   settings: (state) => state.settings.open,
   tasks: (state) => state.tasks.page.open,
+  feed: (state) => state.feed.open,
 }
-const CLOSE_ACTION: Record<HubPage, string> = { search: 'history_close', profile: 'memory_close', settings: 'settings_close', tasks: 'tasks_page_close' }
+const CLOSE_ACTION: Record<HubPage, string> = { search: 'history_close', profile: 'memory_close', settings: 'settings_close', tasks: 'tasks_page_close', feed: 'feed_close' }
 
 /** The page that is open, or null. */
 export const hubPage = (state: State): HubPage | null => HUB_PAGES.find((page) => IS_OPEN[page](state)) ?? null

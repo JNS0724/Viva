@@ -13,6 +13,8 @@ import { renderHistoryPanel, renderToast } from './history-panel.ts'
 import { renderHome } from './home.ts'
 import { renderHub } from './hub.ts'
 import { renderTasksPage } from './tasks-page.ts'
+import { renderFeedPage } from './feed-page.ts'
+import { feedCount } from '../feed-state.ts'
 import { icon } from './icons.ts'
 import { renderIsland } from './island.ts'
 import { renderModelPicker } from './model-picker.ts'
@@ -121,6 +123,18 @@ function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
 }
 
 let renderedTasksPage: unknown[] = []
+let renderedFeedPage: unknown[] = []
+
+/** 动态 depends on the follow-ups and on itself; its count in the title bar on the follow-ups alone. */
+function renderFeedIfChanged(dom: Dom, state: State, handlers: Handlers, now: number) {
+  const inputs = [localeRevision(), state.followups, state.feed]
+  if (inputs.every((value, i) => value === renderedFeedPage[i])) return
+  renderedFeedPage = inputs
+  const count = feedCount(state)
+  dom.feedCount.hidden = count === 0
+  dom.feedCount.textContent = String(count)
+  if (state.feed.open) renderFeedPage(dom.feedPage, state, handlers, now)
+}
 
 /** The 后台 page depends on the tasks, the follow-ups and on itself; a task at work changes it as it goes. */
 function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
@@ -194,6 +208,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderProfileIfChanged(dom.profile, state.memory, handlers)
   renderHub(dom, state)
   renderTasksPageIfChanged(dom.tasksPage, state, handlers, now)
+  renderFeedIfChanged(dom, state, handlers, now)
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)

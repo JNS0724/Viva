@@ -34,8 +34,8 @@
   --titlebar-h: 56px;
   --island-h: 36px;
   --titlebar-gutter: 12px;
-  /* 2 title bar buttons (36px) with a 6px gap */
-  --titlebar-actions: 78px;
+  /* the 动态 button (about 96px) and 2 title bar buttons (36px), with 6px gaps */
+  --titlebar-actions: 180px;
   /* macOS: room for the traffic lights */
   --reserve-left: 84px;
   --reserve-right: 0px;
@@ -94,6 +94,14 @@ html:not([data-platform="darwin"]) .titlebar {
 }
 .titlebar-right { display: flex; justify-content: flex-end; gap: 6px; }
 .titlebar .icon-btn { width: 36px; height: 36px; }
+/* 动态's way in (view/feed-page.ts): a title bar button with its word and, when something is new, a count. */
+.feed-btn {
+  height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-2);
+  background: var(--panel); color: var(--ink-2); font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.feed-btn:hover { color: var(--ink); border-color: var(--ink-3); }
+.feed-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.feed-btn .feed-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: var(--bg); font: 600 11px/20px var(--font-mono); text-align: center; }
 
 .icon-btn {
   width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
@@ -826,6 +834,15 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   .hub-foot { display: none; }
   .hub-page { padding: 20px 16px 40px; }
 }
+
+/* ---------- 动态 page (view/feed-page.ts): a page of its own, no hub sidebar; her line, the groups, the one picked ---------- */
+.hub[data-page="feed"] .hub-side { display: none; }
+.feed-side { width: 340px; gap: 4px; }
+.feed-title { flex: 1; margin: 0; font-size: 22px; font-weight: 700; line-height: 1.2; }
+.feed-close { height: 34px; display: flex; align-items: center; gap: 6px; }
+.feed-her { display: flex; align-items: center; gap: 12px; padding: 10px 12px 14px; }
+.feed-say { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.3; }
+.feed-empty { align-items: center; justify-content: center; }
 
 /* ---------- 后台 page (view/tasks-page.ts): one of the hub's pages, its list and the task picked side by side ---------- */
 .hub-page.hub-tasks { width: 100%; height: 100%; margin: 0; padding: 0; display: flex; min-height: 0; }

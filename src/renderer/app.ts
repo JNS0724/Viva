@@ -92,6 +92,8 @@ const elements = {
   historyList: byId('history-list'),
   toast: byId('toast-root'),
   openProfile: byId('open-profile'),
+  openFeed: byId('open-feed'),
+  feedCount: byId('feed-count'),
   profile: byId('profile-root'),
   /** 搜索 · 关于你 · 设置, one page under the title bar (view/hub.js). */
   hub: byId('hub'),
@@ -101,6 +103,7 @@ const elements = {
   hubSearchKey: byId('hub-search-key'),
   /** 后台: every background task and the one picked (view/tasks-page.js). */
   tasksPage: byId('tasks-page'),
+  feedPage: byId('feed-page'),
   main: byId('main'),
 }
 /** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */
@@ -221,6 +224,8 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   task: ({ taskId }) => handlers.openTasks(taskId),
   /** The count at the island's tail: the 后台 page. */
   tasks: () => handlers.openTasks(),
+  /** A follow-up's notification, or the tray's count: the 动态 page (system-design §12.2). */
+  feed: () => dispatch({ type: 'feed_open' }),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
@@ -537,7 +542,6 @@ const followupActions = createFollowupActions({
     dom.input.dispatchEvent(new Event('input'))
     dom.input.focus()
   },
-  startTask: (text) => taskActions.startTask(text),
 })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
@@ -723,6 +727,9 @@ const handlers = {
     followupActions.loadFollowups()
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
+  selectFeed: (id: string) => dispatch({ type: 'feed_select', id }),
+  openFeed: () => dispatch({ type: 'feed_open' }),
+  toggleFeed: () => (state.feed.open ? handlers.closeHub() : dispatch({ type: 'feed_open' })),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
   inputProblem: (message: string) => historyActions.showToast(message),
@@ -789,7 +796,7 @@ const handlers = {
 /** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */
 const HUB_OPENERS: Readonly<Record<string, () => unknown>> = {
   search: () => handlers.openSearch(),
-  // Background tasks and follow-ups: a page of its own in the same place (view/tasks-page.js).
+  // Background tasks: a page of its own in the same place (view/tasks-page.ts).
   tasks: () => handlers.openTasks(),
   profile: () => handlers.openProfile(),
   settings: () => handlers.openSettings(),
@@ -900,6 +907,7 @@ function wireComposer() {
 
 function wireHub() {
   dom.openProfile.addEventListener('click', () => handlers.toggleHub())
+  dom.openFeed.addEventListener('click', () => handlers.toggleFeed())
   dom.hubBack.addEventListener('click', () => handlers.closeHub())
   for (const nav of dom.hubNavs) {
     nav.addEventListener('click', () => {

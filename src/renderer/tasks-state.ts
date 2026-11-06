@@ -107,17 +107,9 @@ export function pageGroups(state: State): Array<{ key: string, tasks: Background
 export const pageTask = (state: State): BackgroundTask | null => state.tasks.list.find((task) => task.id === state.tasks.page.selected) ?? null
 const firstOnPage = (state: State): string | null => pageGroups(state)[0]?.tasks[0]?.id ?? null
 
-/** Follow-ups on the 后台 page are picked by this prefix, beside the tasks' ids. */
-export const FOLLOWUP_KEY = 'followup:'
-const LISTED_FOLLOWUPS = ['ready', 'preparing', 'scheduled'] as const
-
-/** The keys on the page's list, in its order: follow-ups by group, then the tasks. */
+/** The keys on the page's list, in its order: the tasks by group. */
 function listedKeys(state: State): string[] {
-  const followups = LISTED_FOLLOWUPS.flatMap((status) => state.followups.followups
-    .filter((item: Untyped) => item.status === status)
-    .map((item: Untyped) => `${FOLLOWUP_KEY}${item.id}`))
-  const tasks = pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
-  return [...followups, ...tasks]
+  return pageGroups(state).flatMap((group) => group.tasks.map((task) => task.id))
 }
 
 /** What the 后台 page shows: the one picked while it is still listed, else the first listed (view/tasks-page.ts onPage). */
