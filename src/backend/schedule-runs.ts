@@ -36,6 +36,9 @@ const SCHEMA = `
   );
 `
 
+/** What a run came to, to be kept: an item in 动态 (its answer, or that it kept failing), or another try later. */
+type Outcome = { kind: 'deliver', body: string } | { kind: 'retry', attempts: number }
+
 interface Run { key: string, scheduleId: string, at: string, title: string, prompt: string, cwd: string, attempts: number, dueAt: number }
 type Row = Record<string, unknown>
 const runOf = (row: Row): Run => ({
@@ -77,8 +80,11 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   /** Changes that failed in a row, and nothing is tried before `holdUntil`: a database refusing is not hammered. */
   let failures = 0
   let holdUntil = 0
-  /** Answers got whose item could not be kept yet: kept on the next try, the model not asked again. */
-  let answered = new Map<string, string>()
+  /**
+   * What a run came to and is not kept yet (the database refusing): kept on the next try, the model not asked again
+   * for that try, whatever it said.
+   */
+  let outcomes = new Map<string, Outcome>()
 
   const queue = (occurrence: Occurrence) => db.prepare(`INSERT OR IGNORE INTO schedule_runs (key, schedule_id, at, title, prompt, cwd, attempts, due_at)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`).run(occurrence.key, occurrence.schedule.id, occurrence.at, occurrence.schedule.record.title, occurrence.schedule.record.prompt, occurrence.schedule.cwd, now())
@@ -87,7 +93,7 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     const row = db.prepare('SELECT MIN(due_at) AS at FROM schedule_runs').get() as { at: number | null }
     return row.at === null ? null : Number(row.at)
   }
-  const forget = (key: string) => { answered = new Map([...answered].filter(([one]) => one !== key)) }
+  const forget = (key: string) => { outcomes = new Map([...outcomes].filter(([one]) => one !== key)) }
 
   /** A change failed: tried again after a growing wait. */
   function failed(err: unknown): void {
@@ -136,20 +142,28 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     if (made) delivered()
   }
 
-  /** Its answer, or why there is none: asked once, kept until its item is. */
-  async function answerOf(item: Run): Promise<string | 'unavailable' | null> {
-    const kept = answered.get(item.key)
-    if (kept !== undefined) return kept
+  /** What a run came to: no dsh (nothing to keep), or what to keep: its item, or another try later. */
+  async function outcomeOf(item: Run): Promise<Outcome | { kind: 'unavailable' }> {
+    const pending = outcomes.get(item.key)
+    if (pending) return pending
     const result = await run(item.prompt, item.cwd)
-    if (!result.ok && result.unavailable) return 'unavailable'
-    if (!result.ok && item.attempts + 1 < MAX_ATTEMPTS) {
-      change('schedule.retry', { key: item.key, attempts: item.attempts + 1 }, () => db.prepare('UPDATE schedule_runs SET attempts = ?, due_at = ? WHERE key = ?')
-        .run(item.attempts + 1, now() + RETRY_MS * (item.attempts + 1), item.key))
-      return null
+    if (!result.ok && result.unavailable) return { kind: 'unavailable' }
+    const attempts = item.attempts + 1
+    const outcome: Outcome = result.ok ? { kind: 'deliver', body: result.text }
+      : attempts < MAX_ATTEMPTS ? { kind: 'retry', attempts }
+        : { kind: 'deliver', body: t('main.schedule-runs.failed', { value1: result.problem }) }
+    outcomes = new Map([...outcomes, [item.key, outcome]])
+    return outcome
+  }
+
+  /** Kept: its item made, or its next try set; then the outcome is let go. */
+  function commit(item: Run, outcome: Outcome): void {
+    if (outcome.kind === 'deliver') deliver(item, outcome.body)
+    else {
+      change('schedule.retry', { key: item.key, attempts: outcome.attempts }, () => db.prepare('UPDATE schedule_runs SET attempts = ?, due_at = ? WHERE key = ?')
+        .run(outcome.attempts, now() + RETRY_MS * outcome.attempts, item.key))
     }
-    const body = result.ok ? result.text : t('main.schedule-runs.failed', { value1: result.problem })
-    answered = new Map([...answered, [item.key, body]])
-    return body
+    forget(item.key)
   }
 
   /** false: dsh is not there. */
@@ -158,13 +172,12 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     // Paused or deleted since it was taken: that occurrence is let go.
     if (!schedule || schedule.status === 'paused') {
       change('schedule.dropped', { key: item.key }, () => db.prepare('DELETE FROM schedule_runs WHERE key = ?').run(item.key))
+      forget(item.key)
       return true
     }
-    const body = await answerOf(item)
-    if (body === 'unavailable') return false
-    if (body === null) return true
-    deliver(item, body)
-    forget(item.key)
+    const outcome = await outcomeOf(item)
+    if (outcome.kind === 'unavailable') return false
+    commit(item, outcome)
     return true
   }
 

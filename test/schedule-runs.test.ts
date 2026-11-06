@@ -163,6 +163,43 @@ test('its item not kept (the database refusing): tried again after a growing wai
   assert.deepEqual([asked.length, kept.map((item) => item.body), runs()], [1, ['答：起草周报'], 0])
 })
 
+test('a failed try whose retry is not kept: the retry is kept later without asking the model again, so the tries stay counted', async () => {
+  const fail: RunResult = { ok: false, problem: '模型出错' }
+  const { store, asked, kept, timers, fire, make, settle, go, fail: refuse } = setup(Array(MAX_ATTEMPTS).fill(fail))
+  store.create({ title: '汇总', prompt: '汇总本周进展', cwd: '/work', rule: ONCE })
+  go('2026-11-06T11:00:00+08:00')
+  refuse('schedule.retry', 2)
+  make().wake()
+  await settle()
+  assert.deepEqual([asked.length, timers().map((timer) => timer.ms)], [1, [HOLD_MS[0]]])
+  go('2026-11-06T11:00:05+08:00')
+  fire()
+  await settle()
+  go('2026-11-06T11:00:35+08:00')
+  fire()
+  await settle()
+  assert.deepEqual([asked.length, timers().map((timer) => timer.ms)], [1, [RETRY_MS]], 'kept the third time, the model asked once; the next try a minute on')
+  for (const minute of ['01:35', '03:35']) {
+    go(`2026-11-06T11:${minute}+08:00`)
+    fire()
+    await settle()
+  }
+  assert.deepEqual([asked.length, kept.length], [MAX_ATTEMPTS, 1], 'three tries in all, then the item saying so')
+})
+
+test('an answer that reads "unavailable" is an answer like any other', async () => {
+  const { store, asked, kept, fire, make, settle, go, fail: refuse } = setup([{ ok: true, text: 'unavailable' }])
+  store.create({ title: '状态', prompt: '服务现在怎样', cwd: '/work', rule: ONCE })
+  go('2026-11-06T11:00:00+08:00')
+  refuse('schedule.ran', 1)
+  make().wake()
+  await settle()
+  go('2026-11-06T11:00:05+08:00')
+  fire()
+  await settle()
+  assert.deepEqual([asked.length, kept.map((item) => item.body)], [1, ['unavailable']])
+})
+
 test('woken while a run was finding no dsh: it looks again, so a one-off is not left waiting for good', async () => {
   let unavailable!: (result: RunResult) => void
   const first = new Promise<RunResult>((resolve) => { unavailable = resolve })
