@@ -92,9 +92,15 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   })()`)
   await capture(win, outDir, 'memory-intro')
   await run(win, `document.querySelector('.intro-form').requestSubmit()`)
-  await wait(UI_WAIT_MS)
-  const afterIntro = await run(win, `({ panel: Boolean(document.querySelector('.profile')), intro: Boolean(document.getElementById('start-intro')) })`)
-  expect(!afterIntro.panel && !afterIntro.intro, 'saving the intro should close it and retire the home tile', afterIntro)
+  // Saving the profile and marking onboarding done are separate IPCs. The tile can disappear before the form closes.
+  const afterIntro = await until(win, `(() => {
+    const state = { panel: Boolean(document.querySelector('.profile')), intro: Boolean(document.getElementById('start-intro')),
+      error: document.querySelector('.intro-form [role="alert"]')?.textContent ?? '' }
+    return state.error || (!state.panel && !state.intro) ? state : null
+  })()`, 'the intro save and onboarding to finish')
+  expect(!afterIntro.error && !afterIntro.panel && !afterIntro.intro, 'saving the intro should close it and retire the home tile', afterIntro)
+  const keptIntro = await run(win, `window.agent.getMemory().then(({ profile, onboarding }) => ({ role: profile.role?.value, onboarding }))`)
+  expect(keptIntro.role === ROLE && keptIntro.onboarding === 'done', 'the intro role and completed onboarding should both be persisted', keptIntro)
 
   await submit(win, `记住：${FACT}`)
   const asked = await finishTurn(win)
