@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { formatListTime } from '../src/renderer/selectors.ts'
 
-function deepFreeze(value) {
+function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     Object.freeze(value)
     Object.values(value).forEach(deepFreeze)
@@ -11,14 +11,13 @@ function deepFreeze(value) {
   return value
 }
 
-const run = (actions, start = initialState) => actions.reduce((state, action) => reduce(deepFreeze(state), action), start)
+const run = (actions: readonly Action[], start: State = initialState): State => actions.reduce<State>((state, action) => reduce(deepFreeze(state), action), start)
 const NOW = new Date(2026, 9, 18, 15, 0).getTime()
-const at = (month, day, hour = 10, year = 2026) => new Date(year, month - 1, day, hour).getTime()
-const opened = {
-  type: 'conversation_opened',
-  conversation: { id: 'b', title: '对话 b', updatedAt: at(10, 18, 9), messages: [{ role: 'user', text: '旧问题', receipt: null }] },
-  info: { mode: 'live', model: 'V4', remembersHistory: true },
+const at = (month: number, day: number, hour = 10, year = 2026) => new Date(year, month - 1, day, hour).getTime()
+const saved: Extract<Action, { type: 'history_loaded' }> = {
+  type: 'history_loaded', conversationId: 'b', savedAt: at(10, 18, 9), messages: [{ role: 'user', text: '旧问题', receipt: null }],
 }
+const info = { ...initialState.info, mode: 'live', model: 'V4', remembersHistory: true }
 
 test('the search panel opens over the island and the model menu, closes, and toggles', () => {
   const opened = run([{ type: 'toggle_island' }, { type: 'history_open' }])
@@ -35,19 +34,20 @@ test('search results only apply to the query that is still typed', () => {
   const stale = reduce(typed, { type: 'history_results', query: '联', results: [] })
   const cleared = reduce(answered, { type: 'history_query', query: '  ' })
 
-  assert.deepEqual(answered.history.results.map((r) => r.segmentId), ['c'])
+  assert.deepEqual(answered.history.results.map((r: { segmentId: string }) => r.segmentId), ['c'])
   assert.equal(stale, typed)
   assert.deepEqual([cleared.history.query, cleared.history.results], ['  ', null])
 })
 
-test('opening a conversation replaces the thread, closes the panel, and waits for its trace', () => {
+test('saved history cannot overwrite a live thread; a cleared page restores it and waits for its trace', () => {
   const busy = run([
     { type: 'history_open' },
     { type: 'user_prompt', text: '现在的问题', at: NOW },
     { type: 'toast_show', toast: { key: 1, text: '已导出' } },
   ])
 
-  const state = reduce(busy, opened)
+  assert.equal(reduce(busy, saved), busy, 'late loading cannot replace an active conversation')
+  const state = run([{ type: 'new_session', info }, { type: 'history_close' }, saved], busy)
 
   assert.deepEqual(state.messages.map((m) => [m.text, m.restored]), [['旧问题', true]])
   assert.deepEqual([state.conversationId, state.phase, state.restoredTrace, state.info.remembersHistory], ['b', 'idle', 'loading', true])
@@ -57,12 +57,12 @@ test('opening a conversation replaces the thread, closes the panel, and waits fo
 })
 
 test('a restored trace goes before anything the live session adds; a missing one is reported', () => {
-  const restoredTrace = {
+  const restoredTrace: NonNullable<Extract<Action, { type: 'trace_restored' }>['trace']> = {
     thoughts: [{ id: 'log-1', text: '旧的思考', open: false, at: 1 }],
     tools: { 's:c1': { id: 's:c1', title: '读取 a.md', kind: 'read', status: 'completed', locations: [], at: 2 } },
     timeline: [{ kind: 'thought', ref: 'log-1', at: 1 }, { kind: 'tool', ref: 's:c1', at: 2 }],
   }
-  const live = run([opened, { type: 'user_prompt', text: '新问题', at: NOW }, { type: 'acp_update', at: NOW, update: { sessionUpdate: 'tool_call', toolCallId: 'live', title: '新工具' } }])
+  const live = run([saved, { type: 'user_prompt', text: '新问题', at: NOW }, { type: 'acp_update', at: NOW, update: { sessionUpdate: 'tool_call', toolCallId: 'live', title: '新工具' } }])
 
   const merged = reduce(live, { type: 'trace_restored', conversationId: 'b', trace: restoredTrace, available: true })
   const missing = reduce(live, { type: 'trace_restored', conversationId: 'b', trace: { thoughts: [], tools: {}, timeline: [] }, available: false })
@@ -76,7 +76,7 @@ test('a restored trace goes before anything the live session adds; a missing one
 })
 
 test('history_loaded at launch remembers which conversation is on screen', () => {
-  const state = run([{ type: 'history_loaded', conversationId: 'b', messages: opened.conversation.messages, savedAt: NOW }])
+  const state = run([{ ...saved, savedAt: NOW }])
   assert.deepEqual([state.conversationId, state.restoredTrace], ['b', 'loading'])
   assert.equal(run([{ type: 'conversation_saved', id: 'z' }]).conversationId, 'z')
 })

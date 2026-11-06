@@ -217,12 +217,6 @@ const ACTION_HANDLERS: ActionHandlers = {
   }),
   topic_menu: (state, { open }) => (state.topic.menu === open ? state : { ...state, topic: { ...state.topic, menu: open } }),
 
-  /** Picked from the history panel: start over with that conversation's messages and close the panel. */
-  conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded!(
-    { ...ACTION_HANDLERS.new_session!(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false } },
-    { conversationId: conversation.id, messages: conversation.messages, records: conversation.records, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
-  ),
-
   /** Restored trace goes first: it happened before anything the live session has added since. */
   trace_restored: (state, { conversationId, trace, available }) => {
     if (conversationId !== state.conversationId) return state

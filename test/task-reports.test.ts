@@ -273,8 +273,8 @@ test('a conversation loaded with its records: each after the messages before it,
   assert.deepEqual(layout(loaded), ['user', 'record', 'assistant', 'record'], 'one after more messages than there are: after the last')
   assert.equal(loaded.records[0].at, at)
   assert.equal(reduce(loaded, delivered('c1')), loaded, 'loaded again, the same report is still one record')
-  const opened = reduce(loaded, { type: 'conversation_opened', info: initialState.info,
-    conversation: { id: 'c2', messages: [{ role: 'user', text: '另一个话题' }], records: [{ reportId: 'task-0009:run-1', at, text: inTurnText, after: 0 }], updatedAt: 3 } })
+  const opened = reduce(reduce(loaded, { type: 'new_session', info: initialState.info }), { type: 'history_loaded', conversationId: 'c2',
+    messages: [{ role: 'user', text: '另一个话题' }], records: [{ reportId: 'task-0009:run-1', at, text: inTurnText, after: 0 }], savedAt: 3 })
   assert.deepEqual(layout(opened), ['record', 'user'], 'another conversation opened: its own records')
 })
 

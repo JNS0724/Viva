@@ -24,7 +24,6 @@ export interface ActionPayloads extends ConversationPayloads {
   workdir_switched: { info: Info }
   topic_resumed: { info: Info, parentId: string, at?: number | null, carried?: number | null }
   topic_menu: { open: boolean }
-  conversation_opened: { info: Info, conversation: ReadConversation }
   trace_restored: { conversationId: string, available: boolean, trace: null | Pick<ConversationView, 'thoughts' | 'tools' | 'timeline'> }
   reveal_tick: { dt: number }
   picker_toggle: {}

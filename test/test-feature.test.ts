@@ -26,3 +26,16 @@ test('multiple groups deduplicate files, keep shared boundary checks and reject 
   assert.throws(() => selectTests([], ['tasks']), /No tests/)
   assert.throws(() => selectTests(files, ['conversation', '--arbitrary-node-flag']), /Unknown feature/)
 })
+
+test('focused sets include the production event, lifecycle and proposal contracts shared across features', () => {
+  const files = discoverTests(path.resolve(import.meta.dirname, '..'))
+  const examples = {
+    conversation: ['state.test.js', 'secret-state.test.js', 'agent-events.test.ts', 'conversation-session.test.ts'],
+    runtime: ['acp-task-sessions.test.ts', 'dsh-lifecycle.test.ts', 'backend-keeper.test.ts', 'question-desk.test.ts'],
+    tasks: ['task-runtime.test.ts', 'proposal-state.test.ts', 'agent-events.test.ts'],
+  }
+  for (const [feature, names] of Object.entries(examples)) {
+    const selected = selectTests(files, [feature]).map(file => path.basename(file))
+    for (const name of names) assert.ok(selected.includes(name), `${feature} includes ${name}`)
+  }
+})
