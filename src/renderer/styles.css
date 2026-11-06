@@ -1043,7 +1043,8 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
 .fu-scroll { display: flex; flex-direction: column; gap: 12px; padding: 16px 32px 32px; }
 .fu-draft { padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); }
 .fu-actions { margin-top: 4px; }
-.fu-row[data-status="ready"] .tp-meta { color: var(--accent); }
+.fu-row[data-status="new"] .tp-meta { color: var(--accent); }
+.fu-row[data-status="paused"] .tp-meta { color: var(--ink-3); }
 .fu-state { margin: 4px 12px 0; font-size: 12px; line-height: 1.5; color: var(--ink-3); }
 .fu-state[data-on="true"] { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .fu-card .pulse-dot { animation: none; } }

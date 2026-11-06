@@ -1,73 +1,82 @@
+import { t } from '../shared/i18n/translate.ts'
+
 /**
  * 动态 (system-design §12.2): what the app brings on its own, apart from 后台 (what the user asked for). Its page is
- * opened from the title bar; it lists what is new (ready to look at), what comes next (scheduled), and what was
- * seen, and says in one line how things stand. For now its items are the follow-ups (followup-state.ts); a source's
- * items join them later. Pure and immutable; `state.ts` merges it.
+ * opened from the title bar; it lists what is new (items not looked at yet), what comes next (the schedules) and what
+ * was seen, and says in one line how things stand. Pure and immutable; `state.ts` merges it.
  */
+/** An item as the main process lists it (backend/feed-store.ts). */
+export interface FeedItemView { id: string, source: string, key: string, title: string, body: string, origin: { label: string, ref?: string }, createdAt: number, seenAt: number | null }
+/** A schedule as the main process lists it (backend/schedules.ts). */
+export interface ScheduleView { id: string, title: string, prompt: string, kind: string, nextAt: string, status: string }
+/** What is shown on the right: an item, or a schedule. */
+export interface FeedPick { kind: 'item' | 'schedule', id: string }
+
 export const initialFeed = Object.freeze({
   open: false,
-  /** The follow-up shown on the right, by id; none picked, the first new one. */
-  selected: null as string | null,
+  /** The one shown on the right; none picked, the first new item. */
+  selected: null as FeedPick | null,
+  items: Object.freeze([]) as readonly FeedItemView[],
+  schedules: Object.freeze([]) as readonly ScheduleView[],
+  /** A change is on its way to the main process. */
+  busy: false,
+  error: null as string | null,
 })
 
 /** How many seen ones are listed, latest first. */
 const SEEN_LISTED = 20
-const NEW = new Set(['ready'])
-const NEXT = new Set(['scheduled', 'preparing'])
-const SEEN = new Set(['done', 'dismissed'])
 
-type FeedFollowup = { id: string, status: string, draftAt?: number | null, createdAt?: number, remindAt?: number | null, prepareBy?: number | null }
-const followupsOf = (state: State): FeedFollowup[] => state.followups.followups as FeedFollowup[]
-/** When a scheduled one next comes: its preparation or its reminder, whichever is first. */
-const dueOf = (item: FeedFollowup) => Math.min(item.prepareBy ?? Infinity, item.remindAt ?? Infinity)
+const itemsOf = (state: State): readonly FeedItemView[] => state.feed.items as readonly FeedItemView[]
+const schedulesOf = (state: State): readonly ScheduleView[] => state.feed.schedules as readonly ScheduleView[]
+/** Active ones by their next time, then the paused. */
+const nextOrder = (a: ScheduleView, b: ScheduleView) => Number(a.status === 'paused') - Number(b.status === 'paused') || Date.parse(a.nextAt) - Date.parse(b.nextAt)
 
-/** The page's three groups: new (latest first), next (soonest first), seen (latest first, the last few). */
-export function feedGroups(state: State): { fresh: FeedFollowup[], next: FeedFollowup[], seen: FeedFollowup[] } {
-  const list = followupsOf(state)
-  const latest = (a: FeedFollowup, b: FeedFollowup) => (b.draftAt ?? b.createdAt ?? 0) - (a.draftAt ?? a.createdAt ?? 0)
+/** The page's three groups: new items (latest first), the schedules (soonest first), seen items (latest, the last few). */
+export function feedGroups(state: State): { fresh: FeedItemView[], next: ScheduleView[], seen: FeedItemView[] } {
+  const items = itemsOf(state)
   return {
-    fresh: list.filter((item) => NEW.has(item.status)).toSorted(latest),
-    next: list.filter((item) => NEXT.has(item.status)).toSorted((a, b) => dueOf(a) - dueOf(b)),
-    seen: list.filter((item) => SEEN.has(item.status)).toSorted(latest).slice(0, SEEN_LISTED),
+    fresh: items.filter((item) => item.seenAt === null),
+    next: schedulesOf(state).toSorted(nextOrder),
+    seen: items.filter((item) => item.seenAt !== null).slice(0, SEEN_LISTED),
   }
 }
 
-/** The title bar's count: what is new, waiting to be looked at. */
+/** The title bar's count: new items, waiting to be looked at. */
 export const feedCount = (state: State): number => feedGroups(state).fresh.length
 
-/** The one shown on the right: the one picked while it is listed, else the first new one, else none. */
-export function feedShown(state: State): FeedFollowup | null {
+export type FeedShown = { kind: 'item', item: FeedItemView, fresh: boolean } | { kind: 'schedule', schedule: ScheduleView }
+
+/** The one shown on the right: the one picked while it is listed, else the first new item, else none. */
+export function feedShown(state: State): FeedShown | null {
   const { fresh, next, seen } = feedGroups(state)
-  const listed = [...fresh, ...next, ...seen]
-  return listed.find((item) => item.id === state.feed.selected) ?? fresh[0] ?? null
+  const picked = state.feed.selected as FeedPick | null
+  if (picked?.kind === 'schedule') {
+    const schedule = next.find((item) => item.id === picked.id)
+    if (schedule) return { kind: 'schedule', schedule }
+  }
+  const item = (picked?.kind === 'item' ? [...fresh, ...seen].find((one) => one.id === picked.id) : null) ?? fresh[0]
+  return item ? { kind: 'item', item, fresh: item.seenAt === null } : null
 }
 
 /** Her line at the page's head: what is new and what comes next, as counts (the view words them). */
 export function feedLine(state: State): { fresh: number, next: number } {
   const { fresh, next } = feedGroups(state)
-  return { fresh: fresh.length, next: next.length }
+  return { fresh: fresh.length, next: next.filter((schedule) => schedule.status === 'active').length }
 }
 
-/** What can be done with a follow-up opened on 动态, by its standing. */
-export type FeedAction = 'continue' | 'dismiss' | 'prepare-now' | 'wake' | 'delete'
-export function feedActionsOf(item: { status: string, draft?: string | null }): FeedAction[] {
-  if (item.status === 'ready') return ['continue', 'dismiss']
-  // Seen: looked back at; its draft, if it had one, can still go into the conversation. Nothing else is left to do.
-  if (SEEN.has(item.status)) return item.draft ? ['continue'] : []
-  if (item.status === 'preparing') return ['wake', 'delete']
-  return ['prepare-now', 'delete']
-}
-
-/** Whether its draft is shown: ready, or seen and kept. */
-export const showsDraft = (item: { status: string, draft?: string | null }): boolean => Boolean(item.draft) && (item.status === 'ready' || SEEN.has(item.status))
-
-/** Whether it still waits on preparation (what to say instead of a draft). */
-export const awaitsPreparation = (item: { status: string }): boolean => NEXT.has(item.status)
+/** 在对话里继续: what goes into the input, for the user to read and send: where it came from, then the item. */
+export const continueText = (item: Pick<FeedItemView, 'title' | 'body'>): string => `${t('feed.continue.from', { title: item.title })}\n\n${item.body}`
 
 const withFeed = (state: State, changes: Partial<State['feed']>): State => ({ ...state, feed: { ...state.feed, ...changes } })
+const pickOf = (kind: unknown, id: unknown): FeedPick | null => ((kind === 'item' || kind === 'schedule') && typeof id === 'string' ? { kind, id } : null)
 
 export const FEED_ACTIONS: Readonly<Record<string, Reducer>> = {
-  feed_open: (state, { id = null }) => withFeed({ ...state, island: false }, { open: true, selected: typeof id === 'string' ? id : state.feed.selected }),
+  feed_open: (state, { kind, id }) => withFeed({ ...state, island: false }, { open: true, selected: pickOf(kind, id) ?? state.feed.selected }),
   feed_close: (state) => withFeed(state, { open: false }),
-  feed_select: (state, { id }) => withFeed(state, { selected: typeof id === 'string' ? id : null }),
+  feed_select: (state, { kind, id }) => withFeed(state, { selected: pickOf(kind, id) }),
+  feed_loaded: (state, { items, schedules }) => withFeed(state, {
+    ...(Array.isArray(items) ? { items } : {}), ...(Array.isArray(schedules) ? { schedules } : {}), busy: false, error: null,
+  }),
+  feed_busy: (state) => withFeed(state, { busy: true, error: null }),
+  feed_failed: (state, { message }) => withFeed(state, { busy: false, error: typeof message === 'string' ? message : null }),
 }

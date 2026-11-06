@@ -272,6 +272,10 @@ interface AgentApi extends LanguageApi {
   listSchedules: Invoke<'schedules:list'>
   acceptSchedule: Invoke<'schedules:accept'>
   declineSchedule: Invoke<'schedules:decline'>
+  pauseSchedule: Invoke<'schedules:pause'>
+  deleteSchedule: Invoke<'schedules:delete'>
+  listFeed: Invoke<'feed:list'>
+  markFeedSeen: Invoke<'feed:seen'>
   getFollowups: Invoke<'followups:get'>
   acceptFollowup: Invoke<'followups:accept'>
   declineFollowup: Invoke<'followups:decline'>

@@ -1,4 +1,5 @@
 import { t } from '../../shared/i18n/translate.ts'
+import { feedGroups } from '../feed-state.ts'
 import { isProfileEmpty } from '../personal-state.ts'
 import { catMood, greeting, setupView, statusView } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
@@ -44,22 +45,21 @@ function hero(state: State, now: number) {
 }
 
 const endOfDay = (ts: number) => new Date(ts).setHours(23, 59, 59, 999)
-const OPEN = new Set(['scheduled', 'preparing', 'ready'])
 
 /**
- * 今天: what waits for the user (drafts ready) and what will be reminded of before the day
- * ends; only on a day with something, and the way to the 后台 page.
+ * 今天: what 动态 has that is new, and the schedules that run before the day ends; only on a day with something,
+ * and the way to 动态.
  */
 export function todayCard(state: State, handlers: Handlers, now: number) {
-  const followups: readonly Untyped[] = state.followups.followups
-  const ready = followups.filter((f) => f.status === 'ready').length
-  const later = followups.filter((f) => OPEN.has(f.status) && f.status !== 'ready' && f.remindAt && f.remindAt > now && f.remindAt <= endOfDay(now)).length
+  const { fresh, next } = feedGroups(state)
+  const ready = fresh.length
+  const later = next.filter((schedule) => schedule.status === 'active' && Date.parse(schedule.nextAt) <= endOfDay(now)).length
   if (!ready && !later) return null
   const parts = [ready ? t("home.ready", { ready: ready }) : null, later ? t("home.reminders.today", { later: later }) : null].filter(Boolean)
   return h('section', { class: 'home-card home-today', 'aria-label': t("selectors.today") },
     h('div', { class: 'home-card-copy' },
       h('h2', { class: 'setup-title', text: t("selectors.today") }),
-      h('p', { class: 'setup-body', text: t("home.nothing.has.been.acted.on.waiting.for", { value1: parts.join(' · ') }) })),
+      h('p', { class: 'setup-body', text: parts.join(' · ') })),
     h('button', { class: 'btn btn-accent btn-small', type: 'button', text: t("home.take.a.look"), onClick: () => handlers.openFeed() }))
 }
 

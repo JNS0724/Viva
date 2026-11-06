@@ -136,6 +136,10 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   listSchedules: () => ipcRenderer.invoke('schedules:list'),
   acceptSchedule: (proposalId) => ipcRenderer.invoke('schedules:accept', proposalId),
   declineSchedule: (proposalId) => ipcRenderer.invoke('schedules:decline', proposalId),
+  pauseSchedule: (id, paused) => ipcRenderer.invoke('schedules:pause', id, paused),
+  deleteSchedule: (id) => ipcRenderer.invoke('schedules:delete', id),
+  listFeed: () => ipcRenderer.invoke('feed:list'),
+  markFeedSeen: (id) => ipcRenderer.invoke('feed:seen', id),
   getFollowups: () => ipcRenderer.invoke('followups:get'),
   /** 跟进 on a card: { title, ask, remindAt, prepareBy, files, conversationId }. */
   acceptFollowup: (proposal) => ipcRenderer.invoke('followups:accept', proposal),

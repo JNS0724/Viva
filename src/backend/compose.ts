@@ -79,6 +79,8 @@ const QUIT_WAIT_MS = 5_000
 const CRASH_WINDOW_MS = 10 * 60_000
 /** How much of a 动态 item a notification shows. */
 const NOTICE_BODY_CHARS = 200
+/** How many 动态 items the window is given, the latest first. */
+const FEED_LISTED = 100
 
 type HistoryDb = ReturnType<typeof openHistoryDb>
 type Bridge = ReturnType<typeof createAcpBridge>
@@ -895,10 +897,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     registerPersonalIpc(config)
     const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
     schedules = createSchedules({ db: appDb.db, emit: emitToRenderer, changed: () => { scheduleRuns?.arm(); schedulesChanged() } })
+    const feed = openFeedStore({ db: appDb.db })
     scheduleRuns = createScheduleRuns({
       db: appDb.db,
       store: schedules.store,
-      feed: openFeedStore({ db: appDb.db }),
+      feed,
       run: unattended.run,
       delivered: feedDelivered,
       changed: schedulesChanged,
@@ -907,6 +910,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
     ipcMain.handle('schedules:accept', (_event, proposalId) => requireSchedules().accept(String(proposalId)))
     ipcMain.handle('schedules:decline', (_event, proposalId) => { requireSchedules().decline(String(proposalId)) })
+    // 动态's 接下来: pause, resume and delete by hand too (the conversation does the rest).
+    ipcMain.handle('schedules:pause', (_event, id, paused) => requireSchedules().update(String(id), { paused: Boolean(paused) }))
+    ipcMain.handle('schedules:delete', (_event, id) => requireSchedules().remove(String(id)))
+    ipcMain.handle('feed:list', () => feed.list(FEED_LISTED))
+    ipcMain.handle('feed:seen', (_event, id) => {
+      feed.markSeen(String(id))
+      return feed.list(FEED_LISTED)
+    })
     followups = openFollowups({
       ipcMain,
       db: appDb.db,
