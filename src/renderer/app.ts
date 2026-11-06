@@ -18,7 +18,9 @@ import { mountHistorySearchFrame } from './history-search-frame.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
 import { createPluginActions } from './plugin-actions.ts'
-import { createNewTopicAction, isPreviousTopicEvent } from './new-topic-actions.ts'
+import { createNewTopicAction } from './new-topic-actions.ts'
+import { createConversationIngress } from './conversation-ingress.ts'
+import { createEventActions } from './agent-event-actions.ts'
 import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
 import { answersFrom } from './question-state.ts'
@@ -91,6 +93,9 @@ let state: State = [
   { type: 'tasks_list_folded', folded: storedFlag(TASK_LIST_KEY) },
   { type: 'tasks_seen_restored', ids: storedSeen() },
 ].reduce((before: State, action) => reduce(before, action), initialState)
+let conversationIngress: ReturnType<typeof createConversationIngress<AgentEvent>> | undefined
+let beforeSelection = () => {}
+const SELECTION_STARTS = new Set(['new_session_pending', 'session_switching', 'rewind_busy', 'workdir_switching'])
 
 // The column's width as the user dragged it, kept within the main area as the window and the drawer change it.
 const column = attachColumnResize(dom.main, [dom.leftGrip, dom.rightGrip])
@@ -105,6 +110,7 @@ let afterRender: (() => void) | null = null
 const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
+  if (SELECTION_STARTS.has(action.type ?? '')) beforeSelection()
   const timing = action.type === 'new_session_pending' ? performance.now() : null
   const next = reduce(state, action)
   if (timing !== null) recordRendererTiming('history-state', performance.now() - timing)
@@ -124,6 +130,7 @@ function dispatch(action: Action) {
   publishIsland()
   afterRender?.()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
+  conversationIngress?.stateChanged()
 }
 
 let publishedIsland = ''
@@ -363,6 +370,7 @@ const conversationActions = createConversationActions({
   beforePrompt: () => dom.follower.resetForPrompt(), keepPicture: pictureKept,
 })
 const { ask, answer, provideSecrets, sendAfterTurn } = conversationActions
+beforeSelection = conversationActions.clearAfterTurn
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
@@ -664,6 +672,7 @@ async function applySettingsChange(
   noticeFor: (info: AgentInfo | null | undefined) => string,
 ) {
   if (state.settings.busy || state.switching) return
+  conversationActions.clearAfterTurn()
   dispatch({ type: 'settings_busy' })
   try {
     const { settings, info } = await request()
@@ -677,49 +686,6 @@ async function applySettingsChange(
 /** What the main process says of the agent (main.ts agent:event): its type, and what goes with it. */
 type AgentEvent = { type?: string, [field: string]: any }
 
-/**
- * A piece of a task's stream, where it is in it (task-runtime.ts): its run and number (`taskSeq`; the push's own
- * `seq` is the event core's), for the window to take it once.
- */
-const streamPlace = (event: AgentEvent) => (typeof event.taskSeq === 'number' && typeof event.runId === 'string' ? { runId: event.runId, seq: event.taskSeq } : {})
-
-const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
-  ready: (event) => ({ type: 'ready', info: event.info }),
-  config: (event) => ({ type: 'config_applied', info: event.info }),
-  update: (event) => ({ type: 'acp_update', update: event.update, at: Date.now() }),
-  /** A turn the app started (a background task's result coming back): no words of the user's. */
-  turn_started: (event) => ({ type: 'agent_turn_started', by: event.by ?? null, at: Date.now() }),
-  permission: (event) => ({
-    type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at: Date.now(), ...streamPlace(event),
-  }),
-  /** What a background task says, asks and how it ends (tasks-state.ts), each with its place in the task's stream. */
-  task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: Date.now(), ...streamPlace(event) }),
-  task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
-  /** A background task's result the model read (report-records.ts): its record in the conversation, where it came. */
-  report_delivered: (event) => ({ type: 'report_delivered', conversationId: event.conversationId, sessionId: event.sessionId, reportId: event.reportId, text: event.text, at: event.at }),
-  task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at: Date.now(), ...streamPlace(event) }),
-  task_question: (event) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at: Date.now(), ...streamPlace(event) }),
-  task_question_closed: (event) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at: Date.now(), ...streamPlace(event) }),
-  /**
-   * What the agent said into a task's turn (viva-tasks), a piece of its stream like what the task says. A task it
-   * starts, asks again or takes up comes by the snapshot that begins the run (task_snapshot), before what the run says.
-   */
-  task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: Date.now(), ...streamPlace(event) }),
-  question: (event) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at: Date.now() }),
-  question_closed: (event) => ({ type: 'question_closed', questionId: event.questionId, at: Date.now() }),
-  /** What the conversation on screen waits on the user for, asked for on opening (waits-state.ts). */
-  waits: (event) => ({ type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at: Date.now() }),
-  secret_request: (event) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at: Date.now() }),
-  secret_closed: (event) => ({ type: 'secret_closed', requestId: event.requestId }),
-  turn_end: (event) => ({ type: 'turn_end', stopReason: event.stopReason, at: Date.now() }),
-  memory_context: (event) => ({ type: 'memory_context', injected: event.injected }),
-  error: (event) => ({ type: 'error', message: event.message }),
-  /** The conversation goes on in another working directory (work-dir-ipc.js): a new part of the timeline. */
-  workdir: (event) => ({ type: 'workdir_switched', info: event.info }),
-  /** The model proposed a follow-up: a card under the conversation, for the user to decide on. */
-  /** A schedule the model proposed (schedules.ts): its card under the conversation. */
-  schedule_propose: (event) => ({ type: 'schedule_proposed', proposal: event.proposal }),
-}
 
 function wireComposer() {
   dom.composer.addEventListener('submit', (event) => {
@@ -878,10 +844,10 @@ function reportMcpProblems(info: AgentInfo | undefined) {
 }
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
-function handleEvent(event: AgentEvent) {
-  if (state.newTopicPending && isPreviousTopicEvent(event)) return
-  const toAction = EVENT_ACTIONS[event?.type ?? '']
-  if (toAction) dispatch(toAction(event))
+const eventAction = createEventActions()
+function applyEvent(event: AgentEvent, receivedAt?: number) {
+  const action = eventAction(event, receivedAt)
+  if (action) dispatch(action)
   if (event?.type === 'ready') reportMcpProblems(event.info)
   if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
   if (event?.type === 'turn_end') {
@@ -894,6 +860,19 @@ function handleEvent(event: AgentEvent) {
   // A schedule ran (a new item), or the schedules changed (kept, paused, ended, changed by asking).
   if (event?.type === 'feed_changed' || event?.type === 'schedules_changed') feedActions.loadFeed()
 }
+
+conversationIngress = createConversationIngress<AgentEvent>({
+  initialized: false,
+  current: () => ({
+    pending: state.newTopicPending || state.switching || state.workDir.switching || state.rewind.busy || state.settings.busy,
+    context: {
+      conversationId: state.conversationId ?? state.info.conversationId ?? null,
+      sessionId: state.info.sessionId ?? null,
+    },
+  }),
+  deliver: applyEvent,
+})
+function handleEvent(event: AgentEvent) { conversationIngress!.receive(event) }
 
 async function boot() {
   if (api) await initializeLanguage(api, () => render(dom, state, handlers))
@@ -934,6 +913,7 @@ async function boot() {
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })
+  conversationIngress!.initialize()
   // Opened on a dsh at work (a reload): what the conversation waits on the user for, which the backend says on the
   // live channel, in its place among the pushes (waits-state.ts, system-design §12.1).
   await api.waits().catch((err: unknown) => console.error('[app] could not ask what the conversation waits for:', err))

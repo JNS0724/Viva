@@ -23,11 +23,11 @@ function setup({ exportPath = null } = {}) {
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
     agentInfo: () => info,
-    switchAgent: async (sessionId) => {
+    selectSession: async work => work({ select: next => { conversation = next }, switchAgent: async (sessionId) => {
       switches.push(sessionId)
       info = { ...info, sessionId: sessionId === 'gone' ? 'live-new' : sessionId, resumed: sessionId !== 'gone' }
       return info
-    },
+    } }),
     chooseExportPath: async () => (exportPath ? path.join(dir, exportPath) : null),
     schedule: (fn, ms) => scheduled.push({ fn, ms }),
   })

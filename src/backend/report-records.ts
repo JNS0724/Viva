@@ -1,6 +1,7 @@
 import type { Apply } from './journal.ts'
 import type { Effect } from './effects.ts'
 import type { Conversation } from './history-db.ts'
+import type { ConversationContext } from '../shared/conversation-context.ts'
 import { recordedNote, REPORT, type ReportPayload } from './task-reports.ts'
 
 /**
@@ -35,7 +36,7 @@ export interface RecordEffects {
  * A record for the window to draw where it came (state.ts report_delivered): for that conversation, or, before its
  * first save (the window knows no id for it yet), for the topic on that session.
  */
-export interface RecordShown { type: 'report_delivered', conversationId: string, sessionId: string, reportId: string, text: string, at: number }
+export interface RecordShown { type: 'report_delivered', conversationId: string, sessionId: string, reportId: string, text: string, at: number, context: ConversationContext }
 
 export interface ReportRecordsDeps {
   history: () => RecordHistory | null
@@ -61,7 +62,8 @@ export function createReportRecords({ history, effects, apply, current, show, no
   const timeOf = (effect: Effect<ReportPayload>) => effect.payload.recordedAt ?? now()
 
   function drawOn(target: Conversation, effect: Effect<ReportPayload>, at: number) {
-    show({ type: 'report_delivered', conversationId: target.id, sessionId: effect.payload.deliveredTo as string, reportId: effect.key, text: recordedNote(effect.payload), at })
+    const context = { conversationId: target.id, sessionId: effect.payload.deliveredTo as string }
+    show({ type: 'report_delivered', conversationId: target.id, sessionId: context.sessionId, reportId: effect.key, text: recordedNote(effect.payload), at, context })
   }
 
   /** Written in the session it went to: that conversation on screen, its record is drawn now, where it came. */

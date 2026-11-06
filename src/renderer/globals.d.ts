@@ -31,6 +31,7 @@ interface AgentInfo {
   mode: string
   model: string
   cwd: string
+  conversationId?: string
   reason?: string
   /** Why the agent cannot start ('no-key', 'no-dsh'), in setup mode. */
   problem?: string

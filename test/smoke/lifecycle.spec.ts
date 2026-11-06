@@ -1,5 +1,5 @@
-import { test, expect } from './fixtures.ts'
-import { finishTurn, run, submit, until } from './smoke-kit.ts'
+import { test } from './fixtures.ts'
+import { finishTurn, newTopic, run, submit, until } from './smoke-kit.ts'
 
 test('intentional dsh restarts settle the old foreground turn @lifecycle', async ({ scenario }) => {
   const app = await scenario({ phase: 'memory', bridge: 'real' })
@@ -21,7 +21,12 @@ test('intentional dsh restarts settle the old foreground turn @lifecycle', async
       return send?.dataset.busy === 'false' && !send.disabled && !document.querySelector('.ask')
     })()`, `the ${restart} restart settling the old question`, 15_000)
     // Exercise the backend busy guard too; merely hiding the card would leave new topics blocked.
-    expect(await run(win, `window.agent.newSession().then(info => Boolean(info.sessionId))`)).toBe(true)
+    const previous = await run(win, `window.agent.getInfo().then(info => info.sessionId)`)
+    await newTopic(win)
+    await until(win, `(async () => {
+      const info = await window.agent.getInfo(), send = document.getElementById('send-btn')
+      return info.sessionId && info.sessionId !== ${JSON.stringify(previous)} && !send.disabled && send.dataset.busy === 'false'
+    })()`, 'the new-topic UI and backend busy guard both accepting the next session')
   }
 
   const title = '生命周期重启后的后台任务'

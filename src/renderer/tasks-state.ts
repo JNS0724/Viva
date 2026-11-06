@@ -277,6 +277,8 @@ export function taskActions(): Record<string, Reducer> {
       inView(taken, action.taskId, 'question_request', { questionId: action.questionId, questions: action.questions, at: action.at })),
     task_question_closed: (state, action) => takePiece(state, action, (taken) =>
       inView(taken, action.taskId, 'question_closed', { questionId: action.questionId, at: action.at })),
+    task_permission_closed: (state, action) => takePiece(state, action, (taken) =>
+      inView(taken, action.taskId, 'permission_closed', { requestId: action.requestId, at: action.at })),
 
     /** Tasks that had ended by the last launch (task-store.js): back as they were, to be asked again or closed. */
     tasks_restored: (state, { list }) => {

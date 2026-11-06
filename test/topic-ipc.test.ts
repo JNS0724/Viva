@@ -30,14 +30,14 @@ function setup({ busy = false } = {}) {
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
     agentInfo: () => info,
-    switchAgent: async (sessionId, cwd, options = {}) => {
+    selectSession: async work => work({ select: next => { conversation = next }, switchAgent: async (sessionId, cwd, options = {}) => {
       switches.push([sessionId, cwd, Boolean(options.exactly)])
       if (options.exactly && !(cwd && FOLDERS.has(cwd))) throw new ResumeError('missing-dir', `这个话题的工作目录不在了：${cwd}`)
       if (sessionId === 'gone') throw new ResumeError('gone', 'session is not resumable: gone', { ...info, resumed: true })
       if (sessionId === 'flaky') throw new ResumeError('unavailable', 'connection reset', { ...info, resumed: true })
       info = { ...info, sessionId: sessionId ?? `new-${switches.length}`, cwd: cwd ?? '/w', resumed: sessionId !== null }
       return info
-    },
+    } }),
     chooseExportPath: async () => null,
     isBusy: () => busy,
     folderExists: (dir) => FOLDERS.has(dir),

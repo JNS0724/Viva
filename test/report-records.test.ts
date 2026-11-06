@@ -180,9 +180,9 @@ test('going back, and back onto the path left: the records of the shared part go
   history.addRecord({ conversationId: before.id, reportId: 'task-0002:run-1', at: 2, text: 'r2' }) // after the fourth: the part left
   const handlers: Record<string, (event: unknown, request: unknown) => Promise<any> | any> = {}
   registerRewindIpc({ handle: (channel: string, fn: (event: unknown, request: unknown) => unknown) => { handlers[channel] = fn as never } } as never, {
-    db: history, current: () => current, setCurrent: (next) => { current = next }, isBusy: () => false, agentInfo: () => ({ mode: 'live', model: 'V4' }),
-    forkAgent: async () => ({ ok: true, info: { sessionId: 's2', mode: 'live', model: 'V4', cwd: '/w' } as never }),
-    switchAgent: async (sessionId) => ({ sessionId, cwd: '/w', resumed: true, mode: 'live', model: 'V4' } as never),
+    db: history, current: () => current, isBusy: () => false, agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    selectSession: async work => work({ select: next => { current = next }, forkAgent: async () => ({ ok: true, info: { sessionId: 's2', mode: 'live', model: 'V4', cwd: '/w' } as never }),
+    switchAgent: async (sessionId) => ({ sessionId, cwd: '/w', resumed: true, mode: 'live', model: 'V4' } as never) }),
   })
   const rewound = await handlers['timeline:rewind']({}, { words: '太正式了', occurrence: 0, keep: 2, text: '口语一点' })
   assert.deepEqual(rewound.conversation.records.map((r: { reportId: string, after: number }) => [r.reportId, r.after]), [['task-0001:run-1', 1]], 'the shared part\'s record, on screen')

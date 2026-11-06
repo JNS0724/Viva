@@ -54,6 +54,18 @@ test('setup, topic switches, empty and oversized questions do not reach the agen
   assert.deepEqual(h.prompts, [])
 })
 
+test('directory, rewind and settings transitions refuse new questions and interjections without adding unsent words', () => {
+  for (const type of ['workdir_switching', 'rewind_busy', 'settings_busy']) {
+    for (const phase of ['idle', 'working']) {
+      const h = harness(); h.change({ phase }); h.dispatch({ type })
+      assert.equal(h.actions.ask('wait for selection', { via: 'island' }), false, `${type}/${phase}`)
+      assert.equal(h.actions.ask('picture', { images: [{ id: 'p' }] }), false)
+      assert.deepEqual(h.prompts, []); assert.deepEqual(h.steers, [])
+      assert.deepEqual(h.state().messages, [])
+    }
+  }
+})
+
 test('busy questions steer; images stay unsent until the turn has ended', async () => {
   const h = harness(); h.change({ phase: 'working' })
   assert.equal(h.actions.ask('also this'), true)
@@ -139,4 +151,38 @@ test('question and credential replies use their request ids and never save crede
   await h.actions.provideSecrets({ TOKEN: 'test-only' })
   assert.deepEqual(replies, ['q', 'keys']); assert.equal(h.state().secret, null)
   assert.equal(JSON.stringify(h.state()).includes('test-only'), false)
+})
+
+test('an old prompt RPC cannot fail a new selected topic or an in-progress new-topic preparation', async () => {
+  for (const committed of [false, true]) {
+    const receipt = deferred<void>(), h = harness({ prompt: () => receipt.promise })
+    h.change({ conversationId: 'c-old', info: { mode: 'live', model: '', cwd: '/w', sessionId: 's-old', conversationId: 'c-old' } })
+    h.actions.ask('old question')
+    if (committed) h.change({ conversationId: 'c-new', info: { mode: 'live', model: '', cwd: '/w', sessionId: 's-new', conversationId: 'c-new' }, phase: 'working', error: null })
+    else h.change({ newTopicPending: true, phase: 'idle', error: null })
+    receipt.reject(new Error('late old failure')); await settle()
+    assert.equal(h.state().error, null)
+    assert.equal(h.state().phase, committed ? 'working' : 'idle')
+  }
+})
+
+test('cancellation and a newer prompt invalidate an older RPC even when the session is resumed unchanged', async () => {
+  const receipt = deferred<void>(); let asked = 0
+  const h = harness({ prompt: () => ++asked === 1 ? receipt.promise : Promise.resolve() })
+  h.actions.ask('old question'); h.actions.sendAfterTurn('cancelled'); h.change({ phase: 'idle' })
+  h.actions.ask('new question')
+  receipt.reject(new Error('old process closed')); await settle()
+  assert.equal(h.state().error, null); assert.equal(h.state().phase, 'working')
+})
+
+test('an old steer receipt cannot resend words or mark a reused message id in the new topic', async () => {
+  const receipt = deferred<{ ok: boolean, reason?: string }>(), h = harness({ steer: () => receipt.promise })
+  h.change({ conversationId: 'c-old', info: { mode: 'live', model: '', cwd: '/w', sessionId: 's-old', conversationId: 'c-old' }, phase: 'working' })
+  h.actions.ask('old interjection')
+  const id = h.state().messages.at(-1)!.id
+  h.change({ conversationId: 'c-new', info: { mode: 'live', model: '', cwd: '/w', sessionId: 's-new', conversationId: 'c-new' }, messages: [{ id, role: 'user', text: 'new question' }] })
+  receipt.resolve({ ok: false, reason: 'idle' }); await settle()
+  assert.deepEqual(h.prompts, [])
+  assert.equal(h.state().messages[0]?.failed, undefined)
+  assert.deepEqual(h.toasts, [])
 })

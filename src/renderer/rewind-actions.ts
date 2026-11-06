@@ -46,6 +46,9 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
       return showToast(result.problem ?? FAILED)
     }
     dispatch({ type: 'rewound', conversation: result.conversation, info: result.info, folds: result.folds })
+    // Selection commits schedule the foreground ingress drain. Observe its turn_started before
+    // deciding whether these words are a new prompt or an interjection into a report already running.
+    await Promise.resolve()
     return ask(words)
   }
 

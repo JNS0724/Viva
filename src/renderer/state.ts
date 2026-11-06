@@ -165,7 +165,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     ...(state.newTopicPending ? state : ACTION_HANDLERS.new_session(state, { at })),
     switching: true, newTopicPending: true, phase: 'idle', error: null,
   }),
-  new_session_ready: (state, { info }) => ({ ...state, info, switching: false, newTopicPending: false, phase: 'idle', error: null }),
+  new_session_ready: (state, { info }) => ({ ...state, info, conversationId: typeof info.conversationId === 'string' ? info.conversationId : state.conversationId, switching: false, newTopicPending: false, phase: 'idle', error: null }),
   new_session_failed: (state, { message }) => ({ ...state, switching: false, phase: 'error', error: t("state.could.not.prepare.a.new.topic.your", { message: message }) }),
 
   /**
@@ -186,6 +186,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     ...initialState,
     topic: { ...initialTopic, startedAt: at },
     info: info ?? state.info,
+    conversationId: typeof info?.conversationId === 'string' ? info.conversationId : null,
     drawer: state.drawer,
     settings: state.settings,
     history: state.history,
