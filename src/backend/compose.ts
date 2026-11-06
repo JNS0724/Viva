@@ -779,7 +779,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     cancelTask: (taskId: string) => dsh.current?.cancelTask(taskId),
     steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
     resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (dsh.current ? dsh.current.resumeTask(request) : { ok: false, reason: 'unavailable' }),
-    startTask: (request: Parameters<Bridge['startTask']>[0]) => (dsh.current ? dsh.current.startTask(request) : { ok: false, reason: 'unavailable' }),
+    startTask: (request: Parameters<Bridge['startTask']>[0]) => (dsh.current && !sessions.isChanging() ? dsh.current.startTask(request) : { ok: false, reason: 'unavailable' }),
     promptTask: (taskId: string, text: string) => dsh.current?.promptTask(taskId, text),
   }
 

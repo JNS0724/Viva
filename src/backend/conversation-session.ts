@@ -148,6 +148,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
 
   function switchDirectory(dir: string) {
     requireIdle()
+    if (uncommitted) throw preparing()
     return transition(async () => {
       const previous = current(), stored = Boolean(history().get(previous.id)), runtime = agent(), token = selectionToken
       if (!runtime) {
@@ -177,6 +178,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
   }
 
   async function forkBack(request: { words: string, occurrence: number }) {
+    if (uncommitted) throw preparing()
     const runtime = agent(), token = selectionToken
     if (!runtime) return { ok: false as const, reason: 'unavailable' }
     const previousUncommitted = uncommitted

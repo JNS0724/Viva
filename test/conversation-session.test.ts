@@ -106,6 +106,8 @@ test('a model failure after acquisition keeps prompts and reports gated until a 
   assert.equal(h.sessions.isChanging(), true, 'cached info cannot prove which session the runtime already opened')
   h.sessions.select(h.db.save(previous, [{ role: 'user', text: 'saved while preparing', receipt: null }]))
   assert.equal(h.sessions.isChanging(), true, 'a metadata save cannot commit a failed runtime transition')
+  assert.throws(() => h.sessions.switchDirectory('/other'), 'cannot fork an uncommitted runtime as a child of the old segment')
+  await assert.rejects(h.forkBack({ words: 'saved words', occurrence: 0 }))
   h.model(null); await h.sessions.newTopic()
   assert.notEqual(h.sessions.current().id, previous.id)
   assert.equal(h.sessions.isChanging(), false)
