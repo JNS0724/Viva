@@ -26,7 +26,7 @@ export const ANSWER_EXPANSION = `(async()=>{
     const revealed=markdown.querySelectorAll('table').length===100&&!markdown.querySelector('.answer-more')
     const followsAfterExpand=follower.isFollowing(),jumpOffered=!jump.hidden
     const settled=state
-    state={...state,phase:'error'}
+    state={...state,phase:'error',error:'连接中断'}
     renderThread(thread,state,handlers,2);await settle()
     const during=thread.querySelector('.msg-agent'),moodKept=during===answer&&during?.querySelector('.markdown')===markdown
     const stillExpanded=during?.querySelectorAll('table').length===100&&!during?.querySelector('.answer-more')
