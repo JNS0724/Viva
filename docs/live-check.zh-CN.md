@@ -66,6 +66,7 @@ npm run live -- --app "/Applications/Viva.app/Contents/MacOS/Viva"   # 测装好
 | files-outside-allow | 文件 | 读工作区外的文件先弹授权卡；允许后读到里面的编号 | ✓ |
 | files-outside-deny | 文件 | 同上，拒绝后回答里没有那个编号 | |
 | steer | 工作中插话 | 写长文写到一半插话「改成英文」，送达且最后的回答是英文 | ✓ |
+| steer-another | 工作中插话 | 评审代码仓刚开始就插一句「再发个今日简报给我」，简报给了，评审也做了，不停下来等「继续」 | ✓ |
 | ask-question | 助手反问 | 问「明天天气怎么样」先反问地点；回答后接着做 | ✓ |
 | ask-remembered | 助手反问 | 记忆里有「我常住杭州」时不再反问，直接按杭州答 | |
 | memory-recall | 记忆 | 「记住…」不弹授权、记进记忆；新话题里问得出来 | ✓ |

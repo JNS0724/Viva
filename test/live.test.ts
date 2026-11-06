@@ -9,9 +9,9 @@ import { summarize } from '../scripts/live-report.mjs'
 
 const FEATURES = fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', 'features.zh-CN.md'), 'utf8')
 
-test('there are 21 scenarios, each named once, each covering a section of features.md', () => {
+test('there are 22 scenarios, each named once, each covering a section of features.md', () => {
   const ids = LIVE_SCENARIOS.map((scenario) => scenario.id)
-  assert.equal(ids.length, 21)
+  assert.equal(ids.length, 22)
   assert.equal(new Set(ids).size, ids.length)
   for (const scenario of LIVE_SCENARIOS) {
     assert.ok(scenario.title && typeof scenario.run === 'function', scenario.id)
@@ -20,7 +20,7 @@ test('there are 21 scenarios, each named once, each covering a section of featur
 })
 
 test('the scenarios picked: all, the core ones, or those named', () => {
-  assert.equal(selectScenarios({}).length, 21)
+  assert.equal(selectScenarios({}).length, 22)
   const core = selectScenarios({ LIVE_SET: 'core' })
   assert.ok(core.length >= 10 && core.every((scenario) => scenario.core))
   assert.ok(core.some((scenario) => scenario.id === 'history'), 'the core set takes the app started again')

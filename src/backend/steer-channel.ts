@@ -11,6 +11,15 @@ const STEER_TIMEOUT_MS = 5_000
 export const NO_PLUGIN = 'unavailable'
 
 export type SteerResult = { ok: boolean, reason?: string }
+
+/** What marks the user's words as said mid-turn, for the model only (the window shows them as typed). */
+export const INTERJECTION_MARK = '【插话】'
+/**
+ * The user's words said while the agent works, as the model reads them: marked as an interjection into work under
+ * way, so it is not taken for a new request that replaces the one in hand (the persona says what to do with one,
+ * app-plugins.ts).
+ */
+export const interjection = (words: string): string => `${INTERJECTION_MARK}你还在处理用户之前交代的事时，用户又说了下面这句（原话）：\n${words}`
 /** How a report stands, or what became of delivering it (plugins/steer/lib/channel.ts report_result). */
 export type ReportState = 'read' | 'pending' | 'none' | 'steered' | 'idle' | 'missing' | 'failed' | typeof NO_PLUGIN
 const REPORT_STATES: ReadonlySet<string> = new Set(['read', 'pending', 'none', 'steered', 'idle', 'missing', 'failed'])

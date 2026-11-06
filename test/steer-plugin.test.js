@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { INTERJECTION_MARK } from '../src/backend/steer-channel.ts'
 
 /** The steer plugin inside the real dsh: words sent mid-turn reach the model within that same turn. */
 
@@ -20,6 +21,7 @@ test('words sent while a turn runs reach the model in that turn, which ends once
 
   const after = llm.requests.findIndex((request) => JSON.stringify(request.messages).includes(NOTE))
   assert.ok(after > 0, 'a later request of the turn carries the words')
+  assert.ok(JSON.stringify(llm.requests[after].messages).includes(INTERJECTION_MARK), 'marked as said mid-turn, so the work in hand is not dropped')
   assert.equal(events.filter((event) => event.type === 'turn_end').length, 1, 'one turn, not a second prompt')
   assert.equal(events.some((event) => event.type === 'error'), false)
 })
