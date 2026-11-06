@@ -45,7 +45,7 @@ History and rewind commands use a mandatory selection callback. The admission ga
 
 Focused contracts use real in-memory history/effects stores and the real history/rewind IPC handlers. They cover concurrent new topics, failures and retries, exact resume and recovery info, directory forks with saved/unsaved predecessors, stale runtime results, carried records, deferred reports and selection commits. These tests do not replace the full application smoke or both platforms' CI.
 
-Conversation pushes now carry the history segment and runtime session captured when their prompt or plugin request began. The renderer buffers foreground pushes during bootstrap and while a selection RPC commits, then replays only the selected context in receive order and with the original receive timestamps. Task streams remain live. This closes the interval in which an immediately delivered background report could arrive before the page received its new-topic response. Questions and credential closures retain their original context; late prompt failures and interjection receipts cannot affect a newly selected topic. Rewind waits for queued reports before deciding whether its automatic follow-up is a new prompt or an interjection. The production event mapper also handles task permission closure without inventing a user decision. Offline directory changes publish the committed segment too. MCP reattachment reconciles a cold replacement session through the same owner and publishes configuration before releasing queued reports; sends are refused during directory, rewind and settings transitions. Full event decoding and exhaustive action unions remain the next batch.
+Conversation pushes now carry the history segment and runtime session captured when their prompt or plugin request began. The renderer buffers foreground pushes during bootstrap and while a selection RPC commits, then replays only the selected context in receive order and with the original receive timestamps. Task streams remain live. This closes the interval in which an immediately delivered background report could arrive before the page received its new-topic response. Questions and credential closures retain their original context; late prompt failures and interjection receipts cannot affect a newly selected topic. Rewind waits for queued reports before deciding whether its automatic follow-up is a new prompt or an interjection. The production event mapper also handles task permission closure without inventing a user decision. Offline directory changes publish the committed segment too. MCP reattachment reconciles a cold replacement session through the same owner and publishes configuration before releasing queued reports; sends are refused during directory, rewind and settings transitions. The next section describes the event decoding and exhaustive action owner.
 
 ## Renderer event and action contracts
 
@@ -63,7 +63,13 @@ Production-entry tests cover bootstrap replay, omitted config fields preserving 
 
 Owner contracts cover cancellation with a non-returning RPC, delayed results and finally blocks after session reuse, disposal during stream binding and native acquisition, configuration snapshots, boolean requests, and cleanup after configuration/read-only failures. Existing public-bridge, stream, resume, resource-barrier and TaskRuntime tests remain the wiring and behavior gates.
 
-## Subsequent batches and delivery criteria
+## Test feedback and retired entry points
+
+`npm run test:feature -- conversation` runs the conversation contracts, including event ingress, the core reducer and credentials, plus shared IPC/page API and module-boundary checks. The other curated groups are `runtime`, `tasks` and `architecture`; multiple groups are deduplicated and `--list` shows the chosen files. Runtime checks include the keeper and desktop questions; task checks include proposal state. The groups are a local feedback aid, not an automatic transitive dependency analysis. Unknown names and empty groups fail before launching; the child test exit status is preserved. Discovery includes both `.test.js` and `.test.ts`, skips installed dependencies and symlinks, and launches Electron with an argument array rather than a shell command. The script participates in typechecking; tests cover mixed discovery, a directory cycle, invalid selections and representative cross-feature contracts. Full `npm test` and coverage discovery are unchanged.
+
+The unused `openConversation` page API, `history:open` argument contract/handler and `conversation_opened` action/handler are removed together. Source search found no product caller: review reads through `history:read`, and continuing a topic or undoing a new topic uses `history:resume-topic`; recovery from records still uses `history:continue-from-records`. History tests now exercise these live paths instead of manufacturing an obsolete open action. Real-database tests retain save/delete/restore/search/export and verify that reading old history cannot switch the selected agent. Session-unavailable, missing-directory, busy, carried-record and late-load refusal contracts remain.
+
+## Batch scope and delivery criteria
 
 | Order | Scope | Done when |
 | --- | --- | --- |
@@ -78,11 +84,13 @@ Each batch changes one explainable responsibility: establish state ownership, mo
 
 Local full-test baseline: 919 passing tests, approximately 14.8 seconds on this machine with existing dependencies, measured once. This excludes remote CI queueing, dependency installation, build, packaging and smoke. Record remote waiting separately from source comprehension cost.
 
-Track four things per batch: modules touched by a representative feature change, whether the entry still contains that feature's business logic, focused test time, and full verification results. The first batch's feature and architecture tests can run directly:
+Track four things per batch: modules touched by a representative feature change, whether the entry still contains that feature's business logic, focused test time, and full verification results. With the cleanup, a local conversation-group sample passes 239 tests in approximately 1.1 seconds. This is one measurement with installed dependencies, not a promised product or development-speed percentage. Use the responsibility being edited for quick feedback, then run the full gates:
 
 ```sh
-npx cross-env ELECTRON_RUN_AS_NODE=1 electron --test test/conversation-actions.test.ts test/config-actions.test.ts test/module-boundaries.test.ts
+npm run test:feature -- conversation
+npm run test:feature -- runtime tasks --list
 npm run typecheck
+npm test
 ```
 
 Final validation still includes `npm test` and `npm run check:i18n`. Major architectural changes run build and full smoke locally before checking macOS/Windows CI at the PR's current commit. Do not promise a percentage improvement before comparing equivalent development tasks before and after.

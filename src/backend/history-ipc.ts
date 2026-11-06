@@ -98,18 +98,6 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:stars-in', (ids) => db.starsIn(ids))
   handle('history:starred', () => db.starredMessages())
 
-  /** Shows an older conversation and reattaches the agent to its dsh session when it still can. */
-  handle('history:open', async (id) => {
-    const found = db.get(assertId(id))
-    if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
-    if (found.conversation.id === current().id) return { conversation: viewOf(found), info: agentInfo() }
-    return selectSession(async ({ switchAgent, select }) => {
-      const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
-      select({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
-      return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed, conversationId: found.conversation.id } }
-    })
-  })
-
   /**
    * Before 继续这个话题: the directory it goes on in, whether that is still there, and whether it is the one the
    * agent is in now (the window says so before switching, and asks for another when it is gone).

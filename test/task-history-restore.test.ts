@@ -87,7 +87,7 @@ test('restored rows stay in their own topic, survive being seen, and do not resu
   assert.deepEqual(unseenEnded(state).map((task) => task.id), ['other'], 'seen state survives result reconstruction')
   const elsewhere = reduce(state, { type: 'new_session', at: 20 })
   assert.deepEqual(cardedTasks(elsewhere), [])
-  const reopened = reduce(elsewhere, { type: 'conversation_opened', conversation: { id: 'own', messages: [user('front')] }, info: initialState.info })
+  const reopened = reduce(elsewhere, { type: 'history_loaded', conversationId: 'own', messages: [user('front')], savedAt: 1 })
   assert.deepEqual(cardedTasks(reopened).map((task) => task.id), ['a'])
   const closed = reduce(reopened, { type: 'task_closed', taskId: 'a' })
   assert.deepEqual(cardedTasks(closed), [])
