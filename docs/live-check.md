@@ -45,6 +45,7 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | files-outside-allow | Outside-workspace read asks permission, then retrieves the identifier | ✓ |
 | files-outside-deny | Denial prevents revealing the identifier | |
 | steer | A mid-turn request to switch to English is delivered and honored | ✓ |
+| steer-another | A review interrupted at once by "send me today's brief too": the brief is given and the review still done, without waiting for "continue" | ✓ |
 | ask-question | Weather request asks for location then continues | ✓ |
 | ask-remembered | Known home city prevents repeated location question | |
 | memory-recall | Explicit save needs no approval and is recalled in a new topic | ✓ |

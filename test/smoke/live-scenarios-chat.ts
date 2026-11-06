@@ -134,6 +134,40 @@ const steer: LiveScenario = {
   },
 }
 
+/** A small project with the usual signs of decay, for a review that takes a while. */
+const REVIEW_REPO: Readonly<Record<string, string>> = {
+  'shop/README.md': '# shop\n\n订单、库存和通知三个模块。\n',
+  'shop/src/orders.js': "import { stock } from './inventory.js'\nimport { send } from './notify.js'\nexport const orders = []\nexport function place(item, n) {\n  if (stock[item] < n) return false\n  stock[item] -= n\n  orders.push({ item, n })\n  send('order ' + item)\n  return true\n}\n",
+  'shop/src/inventory.js': "import { orders } from './orders.js'\nexport const stock = { apple: 3, pear: 0 }\n// TODO: 和 orders 互相引用，先这样\nexport function restock(item, n) { stock[item] = (stock[item] ?? 0) + n; return orders.length }\n",
+  'shop/src/notify.js': "export function send(text) { console.log('[notify]', text) }\nexport function sendAgain(text) { console.log('[notify]', text) }\n",
+}
+const REVIEW_ASK = '看一下工作区里的 shop 代码仓，深度评审一下当前的代码架构，重点审视腐化程度。'
+const REVIEW_STEER = '再发个今日简报给我'
+
+const steerAnother: LiveScenario = {
+  id: 'steer-another',
+  title: '评审代码仓刚开始就插一句「再发个今日简报给我」，简报给了，评审也没丢下',
+  feature: '工作中插话',
+  core: true,
+  async run(ctx) {
+    const { win, expect } = ctx
+    for (const [rel, content] of Object.entries(REVIEW_REPO)) writeWorkspace(ctx, rel, content)
+    await fresh(win)
+    await submit(win, REVIEW_ASK)
+    await until(win, `document.getElementById('send-btn').dataset.busy === 'true'`, 'the review starting', 15_000)
+    // Said a moment in, as the owner did: before the review has got anywhere.
+    await wait(1_500)
+    await submit(win, REVIEW_STEER)
+    await settle(win)
+    const said: string = await run(win, `[...document.querySelectorAll('#thread .msg-agent')].map((el) => el.textContent).join('\\n')`)
+    expect(/简报/.test(said), 'the brief asked for mid-turn should be given', clip(said, 300))
+    const reviewed = (said.match(/耦合|循环|依赖|腐化|重复|分层|边界/g) ?? []).length
+    expect(reviewed >= 3, 'the review should still be done, not put off until asked again', clip(said, 600))
+    expect(!/你说一声|说一声我就|要不要我继续|需要我继续/.test(said), 'the review should not wait for a 继续', clip(said, 600))
+    await ctx.shot('steer-another')
+  },
+}
+
 const CITIES = ['上海', '北京', '杭州', '广州', '深圳']
 
 const askQuestion: LiveScenario = {
@@ -177,4 +211,4 @@ const askRemembered: LiveScenario = {
   },
 }
 
-export const CHAT_SCENARIOS: readonly LiveScenario[] = [chat, filesCsv, filesWrite, filesOutsideAllow, filesOutsideDeny, steer, askQuestion, askRemembered]
+export const CHAT_SCENARIOS: readonly LiveScenario[] = [chat, filesCsv, filesWrite, filesOutsideAllow, filesOutsideDeny, steer, steerAnother, askQuestion, askRemembered]

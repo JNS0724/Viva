@@ -10,7 +10,7 @@ import type { McpServer, RequestPermissionRequest, SessionNotification } from '@
 import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
-import { createSteerDesk } from './steer-channel.ts'
+import { createSteerDesk, interjection } from './steer-channel.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createReadOnlyDesk } from './read-only-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
@@ -666,7 +666,8 @@ export function createAcpBridge({
    * caller asks it as a new question), else when it could not be sent (steer-channel.js NO_PLUGIN, or the
    * plugin's reasons).
    */
-  const steer = (text: string) => steering.steer(text)
+  /** The user's words into the running turn of the conversation on screen, marked as said mid-turn. */
+  const steer = (text: string) => steering.steer(interjection(text))
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
   const deliverReport = (session: string, reportId: string, token: string, text: string) => steering.report(session, reportId, token, text)
   /** How a background task's result stands in `session`: read, pending, or nowhere. */
