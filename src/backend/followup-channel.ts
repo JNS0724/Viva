@@ -17,7 +17,7 @@ const MAX_PROBLEM_CHARS = 500
 export const PREPARE_TIMEOUT_MS = 4 * 60 * 1000
 
 /** What the model proposed, as the card shows it; times as the model wrote them, checked when accepted. */
-export interface ProposalView { title: string, ask: string, remindAt: string | null, prepareBy: string | null, files: string[], watchFile: string | null }
+export interface ProposalView { title: string, ask: string, remindAt: string | null, prepareBy: string | null, files: string[] }
 export interface PrepareCall { provider: string, model: string, system: string, input: string, maxTokens: number, requireComplete?: boolean }
 /** `called: false`: no model was asked (the agent down, no model, stopped before sending); it costs no call. */
 export type Prepared = { ok: true, text: string } | { ok: false, problem: string, called?: false }
@@ -31,12 +31,11 @@ export function proposalOf(raw: any): ProposalView | null {
   if (!title || !ask) return null
   const remindAt = text(raw?.remindAt, MAX_TIME_CHARS)
   const prepareBy = text(raw?.prepareBy, MAX_TIME_CHARS)
-  const watchFile = text(raw?.watchFile, MAX_PATH_CHARS)
-  if (!remindAt && !prepareBy && !watchFile) return null
+  if (!remindAt && !prepareBy) return null
   const files = Array.isArray(raw?.files)
     ? raw.files.map((file: unknown) => text(file, MAX_PATH_CHARS)).filter((file: string | null): file is string => file !== null).slice(0, MAX_FILES)
     : []
-  return { title, ask, remindAt, prepareBy, files, watchFile }
+  return { title, ask, remindAt, prepareBy, files }
 }
 
 type Emit = (event: { type: string, [field: string]: unknown }) => void

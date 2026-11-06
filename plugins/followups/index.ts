@@ -78,7 +78,6 @@ const proposalOf = (args: Record<string, any>): Proposal => ({
   ...(args.remind_at ? { remindAt: String(args.remind_at) } : {}),
   ...(args.prepare_by ? { prepareBy: String(args.prepare_by) } : {}),
   ...(Array.isArray(args.files) ? { files: args.files.slice(0, MAX_FILES).map(String) } : {}),
-  ...(args.watch_file ? { watchFile: String(args.watch_file) } : {}),
 })
 
 function registerPropose(ctx: Context, port: Port) {
@@ -94,7 +93,6 @@ function registerPropose(ctx: Context, port: Port) {
       remind_at: { type: 'string', description: '什么时候提醒用户（ISO 8601）' },
       prepare_by: { type: 'string', description: '要在什么时候之前在后台准备好草稿（ISO 8601）；只提醒、不用准备就不写' },
       files: { type: 'array', items: { type: 'string' }, description: '准备时要读的文件（用户点名的），最多 5 个；没有就不写' },
-      watch_file: { type: 'string', description: '用户说「这个文件变了就帮我……」时，要盯着的那个文件；这时可以不写时间' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },

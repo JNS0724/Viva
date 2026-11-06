@@ -29,10 +29,6 @@ export interface Followup {
   prepareBy: number | null
   /** Files the user named, read when preparing (absolute paths). */
   files: string[]
-  /** A file whose change starts a preparation, or null. */
-  watchPath: string | null
-  /** When the watched file was last changed as far as Viva knows: its next change starts a preparation. */
-  watchMtime: number | null
   status: FollowupStatus
   draft: string | null
   draftAt: number | null
@@ -44,7 +40,7 @@ export interface Followup {
   cue: string | null
 }
 
-export type NewFollowup = Pick<Followup, 'title' | 'ask' | 'origin'> & Partial<Pick<Followup, 'remindAt' | 'prepareBy' | 'files' | 'watchPath' | 'cue'>>
+export type NewFollowup = Pick<Followup, 'title' | 'ask' | 'origin'> & Partial<Pick<Followup, 'remindAt' | 'prepareBy' | 'files' | 'cue'>>
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS followups (
@@ -56,15 +52,13 @@ const SCHEMA = `
     remind_at INTEGER,
     prepare_by INTEGER,
     files TEXT,
-    watch_path TEXT,
     status TEXT NOT NULL,
     draft TEXT,
     draft_at INTEGER,
     read_files TEXT,
     reminded_at INTEGER,
     late_from INTEGER,
-    cue TEXT,
-    watch_mtime INTEGER
+    cue TEXT
   );
   CREATE INDEX IF NOT EXISTS followups_status ON followups (status);
   CREATE TABLE IF NOT EXISTS notices (
@@ -113,8 +107,6 @@ function followupOf(row: Row): Followup {
     remindAt: numberOrNull(row.remind_at),
     prepareBy: numberOrNull(row.prepare_by),
     files: parseJson<string[]>(row.files, []),
-    watchPath: textOrNull(row.watch_path),
-    watchMtime: numberOrNull(row.watch_mtime),
     status: (FOLLOWUP_STATUSES as readonly string[]).includes(String(row.status)) ? row.status as FollowupStatus : 'scheduled',
     draft: textOrNull(row.draft),
     draftAt: numberOrNull(row.draft_at),
@@ -136,7 +128,7 @@ function checkNew(input: NewFollowup) {
   const ask = input.ask.trim()
   if (!title || title.length > MAX_TITLE_CHARS) throw new Error(t("main.followup-store.title.must.contain.characters", { MAX_TITLE_CHARS: MAX_TITLE_CHARS }))
   if (!ask || ask.length > MAX_ASK_CHARS) throw new Error(t("main.followup-store.task.description.must.contain.characters", { MAX_ASK_CHARS: MAX_ASK_CHARS }))
-  if (input.remindAt == null && input.prepareBy == null && !input.watchPath) throw new Error(t("main.followup-store.a.follow.up.needs.a.reminder.time"))
+  if (input.remindAt == null && input.prepareBy == null) throw new Error(t("main.followup-store.a.follow.up.needs.a.reminder.time"))
   return { title, ask }
 }
 
@@ -159,10 +151,10 @@ export function openFollowupStore({ file, db: given, now = Date.now }: { file?: 
   function add(input: NewFollowup): Followup {
     const { title, ask } = checkNew(input)
     const id = randomUUID()
-    db.prepare(`INSERT INTO followups (id, title, ask, origin, created_at, remind_at, prepare_by, files, watch_path, status, cue)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`)
+    db.prepare(`INSERT INTO followups (id, title, ask, origin, created_at, remind_at, prepare_by, files, status, cue)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`)
       .run(id, title, ask, JSON.stringify(input.origin), now(), input.remindAt ?? null, input.prepareBy ?? null,
-        JSON.stringify(input.files ?? []), input.watchPath ?? null, input.cue ?? null)
+        JSON.stringify(input.files ?? []), input.cue ?? null)
     return get(id) as Followup
   }
 
@@ -214,18 +206,6 @@ export function openFollowupStore({ file, db: given, now = Date.now }: { file?: 
     if (!current) return null
     db.prepare('UPDATE followups SET remind_at = ?, prepare_by = ?, reminded_at = NULL, late_from = NULL WHERE id = ?')
       .run(changes.remindAt === undefined ? current.remindAt : changes.remindAt, changes.prepareBy === undefined ? current.prepareBy : changes.prepareBy, id)
-    return get(id)
-  }
-
-  /** What the watched file's change time is now known to be. */
-  function setWatchMtime(id: string, mtimeMs: number): void {
-    db.prepare('UPDATE followups SET watch_mtime = ? WHERE id = ?').run(mtimeMs, id)
-  }
-
-  /** A watched file changed: the follow-up is to be prepared again by `prepareBy`, whatever it was at. */
-  function rearm(id: string, prepareBy: number, from = now()): Followup | null {
-    // Counted from now (created_at is what windows are reckoned from), so a long-watched file is not prepared in a window long past.
-    db.prepare(`UPDATE followups SET status = 'scheduled', prepare_by = ?, created_at = ?, reminded_at = NULL, late_from = NULL WHERE id = ?`).run(prepareBy, from, id)
     return get(id)
   }
 
@@ -281,7 +261,7 @@ export function openFollowupStore({ file, db: given, now = Date.now }: { file?: 
     return Number((db.prepare('SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?').get(kind, since) as Row).n)
   }
 
-  return { add, get, list, setStatus, saveDraft, finishPreparing, moveStatus, markReminded, reschedule, setWatchMtime, rearm, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, logEvent, declinedSince, eventsSince, countEvents, close: () => { if (!given) db.close() } }
+  return { add, get, list, setStatus, saveDraft, finishPreparing, moveStatus, markReminded, reschedule, remove, logNotice, interruptionsOn, noticedOn, lastToldAt, logEvent, declinedSince, eventsSince, countEvents, close: () => { if (!given) db.close() } }
 }
 
 export type FollowupStore = ReturnType<typeof openFollowupStore>

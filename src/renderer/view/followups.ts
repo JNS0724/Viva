@@ -50,7 +50,6 @@ function proposalLines(proposal: Untyped, now: number) {
     Number.isFinite(prepareBy) ? line(t("followups.before", { value1: whenText(prepareBy, now) }), t("followups.prepare.a.draft.in.the.background.read")) : null,
     Number.isFinite(remindAt) ? line(whenText(remindAt, now), t("followups.remind.you.to.review")) : null,
     proposal.files?.length ? line(t("followups.will.read"), proposal.files.join('、')) : null,
-    proposal.watchFile ? line(t("followups.watch"), t("followups.when.changes.after.quiet.minutes.prepare.in", { watchFile: proposal.watchFile })) : null,
   ]
 }
 
@@ -105,7 +104,6 @@ export function proposalCard(card: ProposalCard, handlers: Handlers, now = Date.
 export function followupStanding(followup: Untyped, now = Date.now()): string {
   if (followup.status === 'ready') return followup.draftAt ? t("followups.ready.at", { value1: formatHM(new Date(followup.draftAt)) }) : t("followups.ready")
   if (followup.status === 'preparing') return t("followups.preparing")
-  if (followup.watching && !followup.prepareBy) return t("followups.watching", { watching: followup.watching })
   if (followup.prepareBy) return t("followups.prepare.before", { value1: whenText(followup.prepareBy, now) })
   if (followup.remindAt) return t("followups.remind.at", { value1: whenText(followup.remindAt, now) })
   return ''
@@ -140,7 +138,6 @@ export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Ha
     followup.prepareBy ? t("followups.ready.before", { value1: whenText(followup.prepareBy, now) }) : null,
     followup.remindAt ? t("followups.remind.at", { value1: whenText(followup.remindAt, now) }) : null,
     followup.files?.length ? t("followups.will.read.2", { value1: followup.files.join('、') }) : null,
-    followup.watching ? t("followups.watching.prepare.when.it.changes", { watching: followup.watching }) : null,
   ].filter(Boolean).join(' · ')
   const waiting = followup.status === 'preparing' ? t("followups.preparing.in.the.background", { value1: prepare?.queued ? t("followups.more.queued", { queued: prepare.queued }) : '' }) : prepare?.waiting ? t("handoff.prepare.waiting", { reason: prepare.waiting }) : PREPARE_PROMISE
   return h('div', { class: 'tp-main fu-main', 'data-followup': followup.id },
