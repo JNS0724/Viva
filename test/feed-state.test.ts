@@ -38,3 +38,44 @@ test('opened, it is the hub page shown and closes the island; another page opene
   assert.deepEqual([hubPage(settings), settings.feed.open], ['settings', false])
   assert.equal(reduce(opened, { type: 'feed_close' }).feed.open, false)
 })
+
+test('what can be done with one opened: ready, continue or not; seen, its draft can still go into the conversation; scheduled, prepare now or delete', async () => {
+  const { feedActionsOf, showsDraft, awaitsPreparation } = await import('../src/renderer/feed-state.ts')
+  assert.deepEqual(feedActionsOf({ status: 'ready', draft: '草稿' }), ['continue', 'dismiss'])
+  assert.deepEqual(feedActionsOf({ status: 'done', draft: '草稿' }), ['continue'], 'seen with a draft: looked back at, taken on')
+  assert.deepEqual(feedActionsOf({ status: 'dismissed', draft: null }), [], 'seen with nothing kept: nothing to do, never 现在就准备')
+  assert.deepEqual([feedActionsOf({ status: 'preparing' }), feedActionsOf({ status: 'scheduled' })], [['wake', 'delete'], ['prepare-now', 'delete']])
+  assert.deepEqual([showsDraft({ status: 'done', draft: '草稿' }), showsDraft({ status: 'dismissed', draft: '草稿' }), showsDraft({ status: 'done', draft: null }), showsDraft({ status: 'scheduled', draft: '旧' })],
+    [true, true, false, false])
+  assert.deepEqual([awaitsPreparation({ status: 'done' }), awaitsPreparation({ status: 'scheduled' })], [false, true])
+})
+
+test('the home page\'s 今天 card opens 动态, where the follow-ups are', async () => {
+  // Just enough of a document for view/dom.ts h(): elements with attributes, text, children and listeners.
+  class FakeNode {}
+  class FakeElement extends FakeNode {
+    className = ''; textContent = ''; children: unknown[] = []; attrs: Record<string, string> = {}; listeners: Record<string, () => unknown> = {}
+    tagName: string
+    constructor(tagName: string) { super(); this.tagName = tagName }
+    setAttribute(key: string, value: string) { this.attrs[key] = value }
+    addEventListener(type: string, fn: () => unknown) { this.listeners[type] = fn }
+    append(child: unknown) { this.children.push(child) }
+  }
+  const globals = globalThis as unknown as Record<string, unknown>
+  const before = { document: globals.document, Node: globals.Node }
+  globals.Node = FakeNode
+  globals.document = { createElement: (tag: string) => new FakeElement(tag), createTextNode: (text: string) => Object.assign(new FakeNode(), { text }) }
+  try {
+    const { todayCard } = await import('../src/renderer/view/home.ts')
+    const state = reduce(initialState, { type: 'followups_loaded', view: { followups: [item('r1', 'ready', { draftAt: 1 })] } })
+    const opened: string[] = []
+    const handlers = new Proxy({}, { get: (_target, name: string) => () => { opened.push(name) } })
+    const card = todayCard(state, handlers as never, 0) as unknown as FakeElement
+    const button = card.children.find((child) => child instanceof FakeElement && child.tagName === 'button') as FakeElement
+    button.listeners.click()
+    assert.deepEqual(opened, ['openFeed'])
+  } finally {
+    globals.document = before.document
+    globals.Node = before.Node
+  }
+})

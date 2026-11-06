@@ -50,7 +50,7 @@ const OPEN = new Set(['scheduled', 'preparing', 'ready'])
  * 今天: what waits for the user (drafts ready) and what will be reminded of before the day
  * ends; only on a day with something, and the way to the 后台 page.
  */
-function todayCard(state: State, handlers: Handlers, now: number) {
+export function todayCard(state: State, handlers: Handlers, now: number) {
   const followups: readonly Untyped[] = state.followups.followups
   const ready = followups.filter((f) => f.status === 'ready').length
   const later = followups.filter((f) => OPEN.has(f.status) && f.status !== 'ready' && f.remindAt && f.remindAt > now && f.remindAt <= endOfDay(now)).length
@@ -60,7 +60,7 @@ function todayCard(state: State, handlers: Handlers, now: number) {
     h('div', { class: 'home-card-copy' },
       h('h2', { class: 'setup-title', text: t("selectors.today") }),
       h('p', { class: 'setup-body', text: t("home.nothing.has.been.acted.on.waiting.for", { value1: parts.join(' · ') }) })),
-    h('button', { class: 'btn btn-accent btn-small', type: 'button', text: t("home.take.a.look"), onClick: () => handlers.openTasks() }))
+    h('button', { class: 'btn btn-accent btn-small', type: 'button', text: t("home.take.a.look"), onClick: () => handlers.openFeed() }))
 }
 
 /** While the agent cannot start: what is missing and how to fix it. */

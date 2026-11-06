@@ -48,6 +48,22 @@ export function feedLine(state: State): { fresh: number, next: number } {
   return { fresh: fresh.length, next: next.length }
 }
 
+/** What can be done with a follow-up opened on 动态, by its standing. */
+export type FeedAction = 'continue' | 'dismiss' | 'prepare-now' | 'wake' | 'delete'
+export function feedActionsOf(item: { status: string, draft?: string | null }): FeedAction[] {
+  if (item.status === 'ready') return ['continue', 'dismiss']
+  // Seen: looked back at; its draft, if it had one, can still go into the conversation. Nothing else is left to do.
+  if (SEEN.has(item.status)) return item.draft ? ['continue'] : []
+  if (item.status === 'preparing') return ['wake', 'delete']
+  return ['prepare-now', 'delete']
+}
+
+/** Whether its draft is shown: ready, or seen and kept. */
+export const showsDraft = (item: { status: string, draft?: string | null }): boolean => Boolean(item.draft) && (item.status === 'ready' || SEEN.has(item.status))
+
+/** Whether it still waits on preparation (what to say instead of a draft). */
+export const awaitsPreparation = (item: { status: string }): boolean => NEXT.has(item.status)
+
 const withFeed = (state: State, changes: Partial<State['feed']>): State => ({ ...state, feed: { ...state.feed, ...changes } })
 
 export const FEED_ACTIONS: Readonly<Record<string, Reducer>> = {

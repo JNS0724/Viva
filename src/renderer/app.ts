@@ -728,6 +728,7 @@ const handlers = {
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
   selectFeed: (id: string) => dispatch({ type: 'feed_select', id }),
+  openFeed: () => dispatch({ type: 'feed_open' }),
   toggleFeed: () => (state.feed.open ? handlers.closeHub() : dispatch({ type: 'feed_open' })),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
