@@ -10,7 +10,7 @@ test('local process disclosure is isolated, but content and navigation changes i
   assert.equal(onlyTaskStepsChanged(expanded, opened), true)
   assert.equal(onlyTaskStepsChanged(opened, opened), false)
   assert.equal(onlyTaskStepsChanged(opened, { ...expanded, tasks: { ...expanded.tasks, list: [...expanded.tasks.list] } }), false)
-  assert.equal(onlyTaskStepsChanged(opened, { ...expanded, followups: { ...expanded.followups } }), false)
+  assert.equal(onlyTaskStepsChanged(opened, { ...expanded, feed: { ...expanded.feed } }), false)
   assert.equal(onlyTaskStepsChanged(opened, { ...expanded, tasks: { ...expanded.tasks, page: { ...expanded.tasks.page, selected: 'other' } } }), false)
   assert.equal(onlyTaskStepsChanged(opened, reduce(expanded, { type: 'tasks_page_close' })), false)
 })

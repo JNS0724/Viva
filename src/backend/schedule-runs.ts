@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { t } from '../shared/i18n/translate.ts'
 import { transaction } from './app-db.ts'
+import type { Apply } from './journal.ts'
 import type { FeedItem, FeedStore } from './feed-store.ts'
 import type { Occurrence, ScheduleStore } from './schedule-store.ts'
 import type { RunResult } from './unattended-runs.ts'
@@ -10,7 +11,8 @@ import type { RunResult } from './unattended-runs.ts'
  * due is taken from the schedules and kept as runs in the same transaction, so quitting between loses nothing and a
  * run not finished is run again on the next launch. Runs go one at a time, each prompt with read-only tools
  * (unattended-runs.ts); its answer becomes one item in 动态 (keyed by the occurrence, so never two) and a notice.
- * One that keeps failing becomes an item saying so.
+ * One that keeps failing becomes an item saying so. Each step is a change with its event (event-core.ts apply):
+ * `schedule.taken`, `schedule.ran`, `schedule.retry`.
  */
 export const SCHEDULE_SOURCE = 'schedule'
 export const MAX_ATTEMPTS = 3
@@ -40,6 +42,8 @@ const runOf = (row: Row): Run => ({
 
 export interface ScheduleRunsDeps {
   db: DatabaseSync
+  /** The event core's apply; without it (tests), a plain transaction. */
+  apply?: Apply
   store: ScheduleStore
   feed: FeedStore
   /** Runs one prompt where nobody watches. */
@@ -54,8 +58,9 @@ export interface ScheduleRunsDeps {
   onError?: (err: unknown) => void
 }
 
-export function createScheduleRuns({ db, store, feed, run, delivered, changed = () => {}, now = Date.now, later = setTimeout, cancel = clearTimeout, onError = () => {} }: ScheduleRunsDeps) {
+export function createScheduleRuns({ db, apply, store, feed, run, delivered, changed = () => {}, now = Date.now, later = setTimeout, cancel = clearTimeout, onError = () => {} }: ScheduleRunsDeps) {
   db.exec(SCHEMA)
+  const change: Apply = apply ?? ((_kind, _data, write) => ({ value: transaction(db, write) }))
   let timer: unknown = null
   let pumping = false
   let again = false
@@ -73,8 +78,9 @@ export function createScheduleRuns({ db, store, feed, run, delivered, changed = 
 
   /** What is due, taken and kept as runs together. */
   function take(): void {
-    const taken = transaction(db, () => store.takeDue().map(queue).length)
-    if (taken) changed()
+    if ((store.nextDueAt() ?? Infinity) > now()) return
+    change('schedule.taken', {}, () => store.takeDue().map(queue))
+    changed()
   }
 
   function arm(): void {
@@ -99,11 +105,11 @@ export function createScheduleRuns({ db, store, feed, run, delivered, changed = 
 
   /** Done with a run: its item made (or the one made before), the run gone, together. */
   function deliver(item: Run, body: string): void {
-    const made = transaction(db, () => {
+    const made = change('schedule.ran', { key: item.key }, () => {
       const added = feed.add({ source: SCHEDULE_SOURCE, key: item.key, title: item.title, body, origin: { label: t('main.schedule-runs.origin'), ref: item.scheduleId } })
       db.prepare('DELETE FROM schedule_runs WHERE key = ?').run(item.key)
       return added.made ? added.item : null
-    })
+    }).value
     if (made) delivered(made)
   }
 
@@ -120,7 +126,7 @@ export function createScheduleRuns({ db, store, feed, run, delivered, changed = 
       deliver(item, t('main.schedule-runs.failed', { value1: result.problem }))
       return true
     }
-    db.prepare('UPDATE schedule_runs SET attempts = ?, due_at = ? WHERE key = ?').run(attempts, now() + RETRY_MS * attempts, item.key)
+    change('schedule.retry', { key: item.key, attempts }, () => db.prepare('UPDATE schedule_runs SET attempts = ?, due_at = ? WHERE key = ?').run(attempts, now() + RETRY_MS * attempts, item.key))
     return true
   }
 

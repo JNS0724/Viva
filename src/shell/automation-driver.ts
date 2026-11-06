@@ -1,7 +1,7 @@
 import type { createDeskIsland } from './desk-island.ts'
 
-/** A follow-up already prepared, as the showcase shows it (server.ts seedPrepared). */
-export interface PreparedFollowup { title: string, ask: string, prepareBy: number, draft: string }
+/** An item in 动态, as the showcase shows it (server.ts seedFeed). */
+export interface SeededItem { title: string, body: string }
 
 /**
  * Explicit control surface for an external Electron automation client; never loads or runs test code. What is the
@@ -12,7 +12,7 @@ export interface AutomationDriver {
   /** The backend process's pid, for a smoke run that checks it is started again (backend-keeper.ts). */
   backendPid: () => number | null
   desk: () => ReturnType<typeof createDeskIsland> | null
-  seedPrepared: (item: PreparedFollowup) => Promise<void>
+  seedFeed: (item: SeededItem) => Promise<void>
 }
 
 declare global {

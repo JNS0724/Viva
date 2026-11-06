@@ -1,7 +1,7 @@
 import { t } from '../shared/i18n/translate.ts'
 import { isBusy } from './state.ts'
 
-const PREVIOUS_TOPIC_EVENTS = new Set(['update', 'config', 'turn_end', 'memory_context', 'question', 'question_closed', 'secret_request', 'secret_closed', 'followup_propose'])
+const PREVIOUS_TOPIC_EVENTS = new Set(['update', 'config', 'turn_end', 'memory_context', 'question', 'question_closed', 'secret_request', 'secret_closed', 'schedule_propose'])
 /** Background tasks remain live while the old foreground session finishes closing. */
 export function isPreviousTopicEvent(event: { type?: string, taskId?: string }) {
   return PREVIOUS_TOPIC_EVENTS.has(event.type ?? '') || (event.type === 'permission' && !event.taskId)

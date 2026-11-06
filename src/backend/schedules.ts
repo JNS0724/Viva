@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { t } from '../shared/i18n/translate.ts'
+import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
 import type { ScheduleAction } from './tasks-channel.ts'
 
@@ -18,8 +19,13 @@ const viewOf = (schedule: Schedule): ScheduleView => ({
   nextAt: schedule.record.scheduledAt, status: schedule.status,
 })
 
-export function createSchedules({ db, emit, changed = () => {}, now = Date.now, newId = () => `p${crypto.randomUUID().slice(0, 8)}` }: {
+/** The schedules' writes made by the user or the model, each an event (journal.ts); being run is schedule-runs.ts's. */
+const SCHEDULE_WRITES = Object.freeze(['create', 'update', 'setPaused', 'remove'] as const)
+
+export function createSchedules({ db, apply, emit, changed = () => {}, now = Date.now, newId = () => `p${crypto.randomUUID().slice(0, 8)}` }: {
   db: DatabaseSync
+  /** The event core's apply: each write and its event together. Without it (tests), plain writes. */
+  apply?: Apply
   /** To the window: a proposal for its card. */
   emit: (event: { type: 'schedule_propose', proposal: ScheduleProposal }) => void
   /** The list changed (the timer looks again; the window reloads it). */
@@ -27,7 +33,8 @@ export function createSchedules({ db, emit, changed = () => {}, now = Date.now, 
   now?: () => number
   newId?: () => string
 }) {
-  const store = openScheduleStore({ db, now })
+  const opened = openScheduleStore({ db, now })
+  const store = apply ? journaled(opened, 'schedule', SCHEDULE_WRITES, apply) : opened
   /** Proposals waiting on the user's yes, by id: kept in memory, gone with the app (the card then says so). */
   let proposals = new Map<string, ScheduleProposal & { conversationId: string | null }>()
 

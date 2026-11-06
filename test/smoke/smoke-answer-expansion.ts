@@ -25,27 +25,28 @@ export const ANSWER_EXPANSION = `(async()=>{
     const after=pane.scrollTop,shift=anchor?.isConnected?Math.abs(anchor.getBoundingClientRect().top-anchorTop):null
     const revealed=markdown.querySelectorAll('table').length===100&&!markdown.querySelector('.answer-more')
     const followsAfterExpand=follower.isFollowing(),jumpOffered=!jump.hidden
-    state=reduce(state,{type:'prepare_state',prepare:{running:true,current:null,queued:0,nextAt:null,waiting:null}})
+    const settled=state
+    state={...state,phase:'error'}
     renderThread(thread,state,handlers,2);await settle()
-    const during=thread.querySelector('.msg-agent'),preparationKept=during===answer&&during?.querySelector('.markdown')===markdown
+    const during=thread.querySelector('.msg-agent'),moodKept=during===answer&&during?.querySelector('.markdown')===markdown
     const stillExpanded=during?.querySelectorAll('table').length===100&&!during?.querySelector('.answer-more')
-    const sleeping=Boolean(during?.querySelector('[data-mood="sleeping"]'))
-    state=reduce(state,{type:'prepare_state',prepare:{running:false,current:null,queued:0,nextAt:null,waiting:null}})
+    const moodShown=Boolean(during?.querySelector('[data-mood="error"]'))
+    state=settled
     renderThread(thread,state,handlers,3);await settle()
     const restored=thread.querySelector('.msg-agent')
     const settledKept=restored===answer&&restored?.querySelector('.markdown')===markdown
     const awake=Boolean(restored?.querySelector('[data-mood="idle"],[data-mood="done"]'))
     follower.jumpToLatest();await settle()
-    return{before,after,offsetShift:Math.abs(after-before),anchorShift:shift,revealed,followsAfterExpand,jumpOffered,preparationKept,stillExpanded,sleeping,settledKept,awake,jumpStillWorks:Math.abs(pane.scrollHeight-pane.scrollTop-pane.clientHeight)<=1&&follower.isFollowing()}
+    return{before,after,offsetShift:Math.abs(after-before),anchorShift:shift,revealed,followsAfterExpand,jumpOffered,moodKept,stillExpanded,moodShown,settledKept,awake,jumpStillWorks:Math.abs(pane.scrollHeight-pane.scrollTop-pane.clientHeight)<=1&&follower.isFollowing()}
   }finally{observer.disconnect();pane.remove();jump.remove()}
 })()`
 
-interface ExpansionProbe {before:number,after:number,offsetShift:number,anchorShift:number|null,revealed:boolean,followsAfterExpand:boolean,jumpOffered:boolean,preparationKept:boolean,stillExpanded:boolean,sleeping:boolean,settledKept:boolean,awake:boolean,jumpStillWorks:boolean}
+interface ExpansionProbe {before:number,after:number,offsetShift:number,anchorShift:number|null,revealed:boolean,followsAfterExpand:boolean,jumpOffered:boolean,moodKept:boolean,stillExpanded:boolean,moodShown:boolean,settledKept:boolean,awake:boolean,jumpStillWorks:boolean}
 export async function checkAnswerExpansion(win: SmokeWindow, expect: Expect): Promise<void> {
   const seen=await run(win,ANSWER_EXPANSION) as ExpansionProbe
   report(`answer expansion: ${JSON.stringify(seen)}`)
   expect(seen.revealed&&seen.offsetShift<=2&&seen.anchorShift!==null&&seen.anchorShift<=2&&!seen.followsAfterExpand&&seen.jumpOffered&&seen.jumpStillWorks,
     'expanding at the preview bottom preserves the reading position and leaves the jump button working',seen)
-  expect(seen.preparationKept&&seen.stillExpanded&&seen.sleeping&&seen.settledKept&&seen.awake,
-    'background preparation updates the avatar without replacing or folding the expanded answer',seen)
+  expect(seen.moodKept&&seen.stillExpanded&&seen.moodShown&&seen.settledKept&&seen.awake,
+    'a change of her mood updates the avatar without replacing or folding the expanded answer',seen)
 }

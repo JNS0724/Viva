@@ -13,7 +13,6 @@ import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk } from './steer-channel.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createReadOnlyDesk } from './read-only-channel.ts'
-import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
 import { createPluginsDesk, type PluginsOp, type PluginsResult } from './plugins-channel.ts'
@@ -148,11 +147,6 @@ export function createAcpBridge({
   // Sessions nobody watches (a schedule's run): read-only tools, nothing asked of the user (viva-permission).
   const readOnlyDesk = createReadOnlyDesk({ send: toPlugins })
   const unattended = new Set<string>()
-  // Follow-ups proposed in a conversation, and background preparation's tool-less model calls (viva-followups).
-  const followupDesk = createFollowupDesk({ send: toPlugins, emit: event => {
-    if (event.type === 'followup_propose' && event.sessionId !== sessionId && !tasks.has(String(event.sessionId))) return
-    emit(event)
-  } })
   // The plugins page, through dsh's plugin manager (viva-plugins).
   const pluginsDesk = createPluginsDesk({ send: toPlugins })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || tasks.has(id) })
@@ -207,7 +201,6 @@ export function createAcpBridge({
       steering.receive(message)
       forking.receive(message)
       readOnlyDesk.receive(message)
-      followupDesk.receive(message)
       tasksDesk.receive(message)
       historyDesk.receive(message)
       pluginsDesk.receive(message)
@@ -220,7 +213,6 @@ export function createAcpBridge({
     proc.on('exit', (code, signal) => {
       fresh.dispose()
       streams.close()
-      followupDesk.close()
       pluginsDesk.close()
       readOnlyDesk.closeAll()
       if (disposed) return
@@ -718,7 +710,6 @@ export function createAcpBridge({
     streams.close()
     broker.cancelAll()
     steering.closeAll()
-    followupDesk.close()
     pluginsDesk.close()
     readOnlyDesk.closeAll()
     if (!child || !isRunning(child)) return Promise.resolve()
@@ -736,16 +727,10 @@ export function createAcpBridge({
     return [...running.keys()].filter(id => isTask(id) && !running.get(id)?.released && !waiting.has(id as string)).length
   }
 
-  /** Background preparation: one model call with no tools, from the followups plugin; nothing while dsh is down. */
   /** One call to dsh's plugin manager for the plugins page; refused while dsh is not running. */
   function plugins(op: PluginsOp, args: Record<string, unknown> = {}): Promise<PluginsResult> {
     if (!child?.connected) return Promise.resolve({ ok: false, problem: 'disconnected' })
     return pluginsDesk.call(op, args)
-  }
-
-  function prepareText(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
-    if (!child?.connected) return Promise.resolve({ ok: false, problem: t("main.acp-bridge.the.assistant.is.not.ready.yet"), called: false })
-    return followupDesk.prepare(call, signal)
   }
 
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
@@ -753,5 +738,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid }
 }

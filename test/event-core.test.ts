@@ -18,8 +18,8 @@ function core(t: TestContext) {
 }
 
 const noRoutes = (): Routes => ({
-  'chat.said': () => 'asked', 'agent.turn_ended': () => {}, 'agent.task_ended': () => {}, 'agent.task_waits': () => {}, 'agent.followup_proposed': () => {},
-  'clock.reminder_due': () => {}, 'clock.prepare_window': () => {}, 'system.woke': () => {}, 'system.user_returned': () => {}, 'window.foreground': () => {},
+  'chat.said': () => 'asked', 'agent.turn_ended': () => {}, 'agent.task_ended': () => {}, 'agent.task_waits': () => {},
+  'system.woke': () => {}, 'window.foreground': () => {},
   'user.command': () => {},
 })
 

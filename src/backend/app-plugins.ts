@@ -48,7 +48,7 @@ export const PERSONA = Object.freeze({
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, followups: 1, stream: 1, tasks: 2, history: 1, plugins: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
@@ -87,7 +87,6 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-config', dir: 'plugins/config', contract: 'config', config: () => ({}) },
   { name: 'viva-steer', dir: 'plugins/steer', contract: 'steer', config: () => ({}) },
   { name: 'viva-fork', dir: 'plugins/fork', contract: 'fork', config: () => ({}) },
-  { name: 'viva-followups', dir: 'plugins/followups', contract: 'followups', config: () => ({}) },
   { name: 'viva-plugins', dir: 'plugins/plugins', contract: 'plugins', config: () => ({}) },
   {
     name: 'viva-permission', dir: 'plugins/permission', contract: 'permission',

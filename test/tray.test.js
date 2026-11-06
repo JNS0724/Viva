@@ -39,11 +39,11 @@ test('macOS gets a template image for the menu bar, and a click shows the menu',
   assert.deepEqual([made.image, made.template, made.handlers.click], [path.join('/icons', 'trayTemplate.png'), true, undefined])
 })
 
-test('ready follow-ups show as a count beside the icon on macOS and in the tooltip, leading to them from the menu', () => {
+test('what is new in 动态 shows as a count beside the icon on macOS and in the tooltip, leading to it from the menu', () => {
   const { made, deps } = fakes()
   const calls = []
   const tray = createTray({ ...deps, platform: 'darwin', onOpen() {}, onQuit() {}, onPending: () => calls.push('pending'), pending: 2 })
-  assert.deepEqual([made.title, made.tooltip, made.menu[0].label], ['2', 'Viva · 2 件等你看', '2 件等你看'])
+  assert.deepEqual([made.title, made.tooltip, made.menu[0].label], ['2', 'Viva · 动态里有 2 件新的', '动态里有 2 件新的'])
   made.menu[0].click()
   tray.setPending(0)
   assert.deepEqual([made.title, made.tooltip, made.menu[0].label, calls], ['', 'Viva', '打开 Viva', ['pending']])

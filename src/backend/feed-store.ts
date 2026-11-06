@@ -70,16 +70,15 @@ export function openFeedStore({ db, now = Date.now, newId = () => crypto.randomU
   const list = (limit = MAX_FEED_ITEMS): FeedItem[] =>
     (db.prepare('SELECT * FROM feed_items ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit) as Row[]).map(itemOf)
 
-  /** Looked at: no longer new. */
-  function markSeen(id: string): void {
-    db.prepare('UPDATE feed_items SET seen_at = ? WHERE id = ? AND seen_at IS NULL').run(now(), id)
-  }
+  /** Looked at: no longer new. False when it was not new (or is gone). */
+  const markSeen = (id: string): boolean => Number(db.prepare('UPDATE feed_items SET seen_at = ? WHERE id = ? AND seen_at IS NULL').run(now(), id).changes) > 0
 
-  function remove(id: string): void {
-    db.prepare('DELETE FROM feed_items WHERE id = ?').run(id)
-  }
+  const remove = (id: string): boolean => Number(db.prepare('DELETE FROM feed_items WHERE id = ?').run(id).changes) > 0
 
   return { add, list, markSeen, remove }
 }
+
+/** Its writes, each an event when it changed something (journal.ts). */
+export const FEED_WRITES = Object.freeze(['add', 'markSeen', 'remove'] as const)
 
 export type FeedStore = ReturnType<typeof openFeedStore>

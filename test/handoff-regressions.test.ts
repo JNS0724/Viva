@@ -9,8 +9,6 @@ import { userError } from '../src/renderer/user-error.ts'
 import { recallCandidates, recallMatches, MIN_COVERAGE } from '../plugins/memory/lib/match.ts'
 import { memoryTools } from '../plugins/memory/lib/tools.ts'
 import { openMemoryDb } from '../plugins/memory/lib/store.ts'
-import { materialsFor } from '../src/backend/prepare-materials.ts'
-import type { Followup } from '../src/backend/followup-store.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
 import { createTaskRuntime, taskProblems } from '../src/backend/task-runtime.ts'
@@ -46,16 +44,6 @@ test('recall tool labels partial matches and never recovers invalidated memories
   assert.match(recall.run({ query: '常住 城市 地点' }), /分词补查候选[\s\S]*我常住杭州/)
   db.invalidateMemory(memory.id, { by: 'user' })
   assert.doesNotMatch(recall.run({ query: '常住 城市 地点' }), /我常住杭州/)
-})
-
-test('preparation receives the accepted stage before untrusted conversation material', () => {
-  const followup: Followup = { id: 'f1', title: '周报', ask: '起草周报', origin: { kind: 'chat', conversationId: 'c1' }, createdAt: 1,
-    remindAt: null, prepareBy: null, files: [], status: 'scheduled', draft: null,
-    draftAt: null, readFiles: [], remindedAt: null, lateFrom: null, cue: null }
-  const { input } = materialsFor(followup, { conversation: () => [{ role: 'assistant', text: '是否接受这项跟进？' }], profile: () => null, now: () => 1 })
-  assert.match(input, /用户已经接受[\s\S]*直接给出可用草稿/)
-  assert.ok(input.indexOf('【当前阶段】') < input.indexOf('【材料：对话节选】'))
-  assert.match(input, /【材料：对话节选】[\s\S]*是否接受这项跟进/)
 })
 
 test('connecting background submission fails before creating a task, then can retry when connected', async t => {

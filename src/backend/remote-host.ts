@@ -1,4 +1,3 @@
-import type { Notice } from './notice-plan.ts'
 import type { HostCapabilities, Secrets } from './host.ts'
 import type { Answer, HostCall, HostMethod, Mirror, StartMessage } from './wire.ts'
 
@@ -85,7 +84,7 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
       showItemInFolder: (file) => tell('shell.showItemInFolder', file),
       trash: (file) => ask('shell.trash', file),
     },
-    notify: (notice: Notice, opened) => tell('notify', notice, keep((afterMs) => opened(Number(afterMs)))),
+    notify: (notice, opened) => tell('notify', notice, keep((afterMs) => opened?.(Number(afterMs)))),
     power: { idleSeconds: () => mirror.idleSeconds },
     window: {
       send: (event) => tell('window.send', event),

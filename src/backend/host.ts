@@ -1,4 +1,5 @@
-import type { Notice } from './notice-plan.ts'
+/** A system notification: what 动态 has that is new. */
+export interface Notice { title: string, body: string }
 
 /**
  * What the backend may ask of the desktop it runs beside (the shell, src/shell/main.ts): the only way it reaches
@@ -46,8 +47,8 @@ export interface HostCapabilities {
     showItemInFolder(path: string): void
     trash(path: string): Promise<void>
   }
-  /** A follow-up's notice as a system notification; `opened` when the user clicks it. */
-  notify(notice: Notice, opened: (afterMs: number) => void): void
+  /** A system notification (clicked, the window opens on 动态); `opened` when the user clicks it. */
+  notify(notice: Notice, opened?: (afterMs: number) => void): void
   power: { idleSeconds(): number }
   window: {
     /** An event for the window's page (agent:event). */
@@ -55,7 +56,7 @@ export interface HostCapabilities {
     /** The language for every window (language:changed). */
     broadcastLanguage(state: unknown): void
     inFront(): boolean
-    /** The tray's count of what waits for the user. */
+    /** The tray's count of what is new in 动态. */
     setPending(count: number): void
     /** Native words (the tray menu) after the language changed. */
     refreshNative(): void

@@ -10,7 +10,7 @@ import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
-import { createFollowupActions } from './followup-actions.ts'
+import { createProposalActions } from './proposal-actions.ts'
 import { createFeedActions } from './feed-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
@@ -541,7 +541,7 @@ function fillComposer(text: string) {
   dom.input.dispatchEvent(new Event('input'))
   dom.input.focus()
 }
-const followupActions = createFollowupActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
+const proposalActions = createProposalActions({ api, getState: () => state, dispatch, errorMessage })
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
@@ -599,7 +599,7 @@ const handlers = {
   },
   ...memoryActions,
   ...extensionActions,
-  ...followupActions,
+  ...proposalActions,
   ...modelActions,
   ...pluginActions,
   ...filesActions,
@@ -706,7 +706,6 @@ const handlers = {
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
-    followupActions.loadFollowups()
     modelActions.loadModels()
     pluginActions.loadPlugins()
     try {
@@ -724,7 +723,6 @@ const handlers = {
   /** The 后台 page, on `taskId` or the one it was on (view/tasks-page.js). */
   openTasks: (taskId: string | null = null) => {
     dispatch({ type: 'tasks_page_open', taskId })
-    followupActions.loadFollowups()
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
   selectFeed: (kind: string, id: string) => dispatch({ type: 'feed_select', kind, id }),
@@ -876,8 +874,6 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   /** The model proposed a follow-up: a card under the conversation, for the user to decide on. */
   /** A schedule the model proposed (schedules.ts): its card under the conversation. */
   schedule_propose: (event) => ({ type: 'schedule_proposed', proposal: event.proposal }),
-  /** How background preparation goes (prepare-scheduler.ts). */
-  prepare_state: (event) => ({ type: 'prepare_state', prepare: event.state }),
 }
 
 function wireComposer() {
@@ -1050,7 +1046,6 @@ function handleEvent(event: AgentEvent) {
   if (event?.type === 'task_end') filesActions.filesAfterTurn()
   if (event?.type === 'error') afterTurn = []
   // A batch ended: drafts are ready, or the list changed.
-  if ((event?.type === 'prepare_state' && !event.state?.running) || event?.type === 'followups_changed') followupActions.loadFollowups()
   // A schedule ran (a new item), or the schedules changed (kept, paused, ended, changed by asking).
   if (event?.type === 'feed_changed' || event?.type === 'schedules_changed') feedActions.loadFeed()
 }
@@ -1072,7 +1067,7 @@ async function boot() {
     if (taskActions.hold(event)) return undefined
     return handleEvent(event)
   })
-  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups(), feedActions.loadFeed()])
+  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), feedActions.loadFeed()])
   // The tasks the last launch kept: ended ones, and those it quit on.
   await taskActions.loadKept()
   await timelineActions.loadEarlier()

@@ -1,5 +1,5 @@
 import { t } from '../../shared/i18n/translate.ts'
-import { feedGroups } from '../feed-state.ts'
+import { feedCount, feedGroups } from '../feed-state.ts'
 import { isProfileEmpty } from '../personal-state.ts'
 import { catMood, greeting, setupView, statusView } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
@@ -12,15 +12,15 @@ const GREETING_MS = 1400
 let greetingEnds: number | null = null
 const heroMaids: MaidSlots = new Map()
 
-const hasReady = (state: State) => state.followups.followups.some((f: Untyped) => f.status === 'ready')
+const hasNew = (state: State) => feedCount(state) > 0
 
-/** She waves once, then rests: holding up the ✓ card while something is ready, offline until a model is connected. */
+/** She waves once, then rests: holding up the ✓ card while 动态 has something new, offline until a model is connected. */
 function heroMood(state: State, tone: string, now: number): { mood: MaidMood, moving: boolean } {
   const mood = maidMood(catMood(state), tone)
   if (mood !== 'idle') return { mood, moving: true }
   greetingEnds ??= now + GREETING_MS
   if (now < greetingEnds) return { mood: 'greeting', moving: true }
-  return { mood: hasReady(state) ? 'done' : 'idle', moving: false }
+  return { mood: hasNew(state) ? 'done' : 'idle', moving: false }
 }
 
 /** The maid, whole, on her cream with a saucer's rim around it: the one bold thing on the page. */
@@ -29,10 +29,9 @@ function heroMaid(state: State, tone: string, now: number) {
   return h('div', { class: 'maid-hero' }, maidFor(heroMaids, 'hero', mood, { size: HERO_PX, moving }))
 }
 
-/** What the greeting says under it: the setup, the background at work, or the usual question. */
+/** What the greeting says under it: the setup, or the usual question. */
 function subtitle(state: State) {
   if (state.info.mode === 'setup') return t("home.connect.a.model.to.get.started")
-  if (state.followups.state?.running) return t("home.i.ll.review.your.to.dos.in")
   return t("home.what.can.i.help.you.with.today")
 }
 

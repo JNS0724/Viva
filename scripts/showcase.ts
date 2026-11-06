@@ -1,7 +1,7 @@
 // npm run showcase: the README's pictures and demo, made by the app itself (test/smoke/smoke-showcase.ts) on the
 // real dsh with the fake model's showcase answers, then fitted for the docs with ffmpeg:
 //   docs/images/*.png      the scenes, 1600 px wide
-//   docs/images/demo.gif   the follow-up's whole way, for the README
+//   docs/images/demo.gif   a schedule's whole way, for the README
 // Needs ffmpeg on PATH. Run after `npm run build` (the npm script does both).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -11,7 +11,7 @@ import { runExternalScenario } from '../test/smoke/run-external.ts'
 const ROOT = path.resolve(import.meta.dirname, '..')
 const OUT = path.join(ROOT, 'smoke', 'showcase')
 const IMAGES = path.join(ROOT, 'docs', 'images')
-const SHOTS = ['home', 'chat', 'followup-card', 'preparing', 'background', 'suggestion', 'approval', 'sources', 'prepare-settings', 'files', 'desk-island']
+const SHOTS = ['home', 'chat', 'schedule-card', 'feed-item', 'approval', 'files', 'desk-island']
 const SHOT_WIDTH = 1600
 const GIF_WIDTH = 1100
 const FPS = 10

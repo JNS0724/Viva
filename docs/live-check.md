@@ -53,26 +53,24 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | mcp-add-use | Approval, separate encrypted secret entry, usable MCP tool, draft without sending | |
 | skill-create | Approved skill appears in settings | |
 | mcp-import | Existing dsh MCP imports without approval | |
-| followup-propose | Follow-up card contains correct task/time and acceptance appears in background | |
-| followup-prepare | Prepare now creates a draft; Continue fills composer | ✓ |
-| followup-injection | Embedded delete-files instruction neither executes nor enters the draft as an instruction | |
-| followup-watch | File-watch follow-up is proposed | |
+| schedule-propose | The schedule card says the right task and time; once kept, it is in Activity's Coming up | ✓ |
+| schedule-by-talk | Asked in the conversation, a daily schedule's time changes, then it is deleted | |
 | task-background | Asked to, the assistant moves work to the background without occupying chat; a result card comes back | ✓ |
 | model-openai | Switch to OpenAI-compatible model, answer, switch back | |
 | errors | Wrong key/unreachable server has readable localized errors; recovery works | ✓ |
 | desk | Desktop-island file question produces a file-aware answer | ✓ |
 | history | Restart resumes the prior secret phrase and search finds it | ✓ |
 
-`model-openai` defaults to DeepSeek's compatible endpoint; override with `LIVE_OPENAI_URL`, `LIVE_OPENAI_MODEL`, and `LIVE_OPENAI_KEY`. History launches twice. Triage directly triggers the judging step instead of waiting for a window. File-watch only verifies proposing the watch, not the ten-minute quiet period.
+`model-openai` defaults to DeepSeek's compatible endpoint; override with `LIVE_OPENAI_URL`, `LIVE_OPENAI_MODEL`, and `LIVE_OPENAI_KEY`. History launches twice.
 
 ## Manual checks
 
 Run on both macOS and Windows before release:
 
-- [ ] Scheduled system notification opens the background page.
-- [ ] Closing retains tray/menu-bar presence; waiting count, open, and quit work.
+- [ ] A schedule's result sends a system notification that opens Activity.
+- [ ] Closing retains tray/menu-bar presence; the count of what is new in Activity, open, and quit work.
 - [ ] Installed app's launch-at-login starts in tray without opening its window.
-- [ ] Wake combines missed reminders with their original scheduled times.
+- [ ] A schedule missed while the computer slept runs once after it wakes.
 - [ ] Global shortcut works from another application and returns keyboard focus.
 - [ ] Desktop island stays above ordinary apps, is absent from macOS fullscreen, and excluded from capture/sharing.
 - [ ] A real Finder/Explorer file drop can be summarized.

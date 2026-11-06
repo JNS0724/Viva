@@ -19,16 +19,8 @@ export type Signal =
   /** A background task's turn ended (task_end), or it began or stopped waiting on the user (a permission or question). */
   | { kind: 'agent.task_ended', event: DshTaskEvent }
   | { kind: 'agent.task_waits', event: DshTaskEvent }
-  /** The model proposed a follow-up (viva-followups), for a card the user decides on. */
-  | { kind: 'agent.followup_proposed', event: { type: string, proposal: unknown, [field: string]: unknown } }
-  /** A reminder's time came (followup-notifier's timer). */
-  | { kind: 'clock.reminder_due' }
-  /** Something was due for background preparation (prepare-scheduler's timer). */
-  | { kind: 'clock.prepare_window' }
   /** The computer woke or was unlocked. */
   | { kind: 'system.woke' }
-  /** The user came back to the computer after a while away (createGapWatch). */
-  | { kind: 'system.user_returned' }
   /** The window came to the front. */
   | { kind: 'window.foreground' }
   /** The user did something in a page: a channel of ipc-contract.ts that is no query (commands.ts). */

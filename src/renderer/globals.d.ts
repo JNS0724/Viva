@@ -276,15 +276,6 @@ interface AgentApi extends LanguageApi {
   deleteSchedule: Invoke<'schedules:delete'>
   listFeed: Invoke<'feed:list'>
   markFeedSeen: Invoke<'feed:seen'>
-  getFollowups: Invoke<'followups:get'>
-  acceptFollowup: Invoke<'followups:accept'>
-  declineFollowup: Invoke<'followups:decline'>
-  dismissFollowup: Invoke<'followups:dismiss'>
-  continueFollowup: Invoke<'followups:continue'>
-  prepareFollowupNow: Invoke<'followups:prepare-now'>
-  wakePreparation: Invoke<'followups:wake'>
-  setPrepareSchedule: Invoke<'followups:set-schedule'>
-  pausePreparation: Invoke<'followups:pause'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (...args: Args<'island:view'>) => void
   onFocusComposer: (callback: () => void) => Unlisten

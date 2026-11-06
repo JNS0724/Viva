@@ -29,8 +29,7 @@ function setup(t: TestContext, { failReceive = false } = {}) {
   })
   const idle = () => undefined
   const routes: Routes = {
-    'chat.said': idle, 'agent.turn_ended': idle, 'agent.followup_proposed': idle, 'clock.reminder_due': idle,
-    'clock.prepare_window': idle, 'system.woke': idle, 'system.user_returned': idle, 'window.foreground': idle, 'user.command': idle,
+    'chat.said': idle, 'agent.turn_ended': idle, 'system.woke': idle, 'window.foreground': idle, 'user.command': idle,
     'agent.task_ended': idle,
     'agent.task_waits': idle,
   }
