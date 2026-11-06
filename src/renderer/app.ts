@@ -1,4 +1,4 @@
-import { onLocaleChange } from '../shared/i18n/locale.ts'
+import { createConversationActions } from './conversation-actions.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { initializeLanguage, registerLanguageDocument } from './language.ts'
 import { icon } from './view/icons.ts'
@@ -21,7 +21,7 @@ import { createPluginActions } from './plugin-actions.ts'
 import { createNewTopicAction, isPreviousTopicEvent } from './new-topic-actions.ts'
 import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
-import { answersFrom, type QuestionAnswer } from './question-state.ts'
+import { answersFrom } from './question-state.ts'
 import { hubPage } from './hub-state.ts'
 import { historyMessages, setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
@@ -32,7 +32,7 @@ import { createTimelineActions } from './timeline-actions.ts'
 import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.ts'
-import { createScrollFollower } from './view/scroll-follow.ts'
+import { createPageElements } from './page-elements.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
 import { openEarlierRow } from './view/earlier.ts'
@@ -46,73 +46,11 @@ const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
 const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error', 'task_started'])
-let STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
 const api = window.agent
-/** A part of the page (index.html): one missing is a broken page, said at once rather than at its first use. */
-function byId(id: string): HTMLElement {
-  const el = document.getElementById(id)
-  if (!el) throw new Error(`index.html has no #${id}`)
-  return el
-}
-/** The fields and buttons the page reads or switches, as what they are. */
-const fieldById = (id: string) => byId(id) as HTMLTextAreaElement & HTMLInputElement
-const buttonById = (id: string) => byId(id) as HTMLButtonElement
-/** The title bar makes room for the system window buttons: traffic lights on macOS, caption buttons elsewhere. */
 const platform = api?.platform ?? 'darwin'
-document.documentElement.dataset.platform = platform
-
-const elements = {
-  island: byId('island'),
-  scroll: byId('scroll'),
-  home: byId('home'),
-  earlier: byId('earlier'),
-  thread: byId('thread'),
-  drawer: byId('drawer'),
-  composer: byId('composer'),
-  input: fieldById('composer-input'),
-  /** Pictures pasted or dropped into the input, above the words (draft-images.js). */
-  draftPics: byId('draft-pics'),
-  sendBtn: buttonById('send-btn'),
-  context: buttonById('composer-context'),
-  workdirArea: document.querySelector<HTMLElement>('.workdir-area'),
-  /** 本话题 · N 条 · 已用 X% by the input, and its menu (view/topic-label.js). */
-  ctxArea: byId('ctx-area'),
-  /** What the assistant may do without asking, by the input (view/permission-picker.js). */
-  permArea: byId('perm-area'),
-  workdirMenu: byId('workdir-menu'),
-  workdirConfirm: byId('workdir-confirm-root'),
-  rewindConfirm: byId('rewind-confirm-root'),
-  resumeDialog: byId('resume-root'),
-  toggleDrawer: byId('toggle-drawer'),
-  settings: byId('settings-root'),
-  modelArea: byId('model-area'),
-  modelBtn: buttonById('model-btn'),
-  modelMenu: byId('model-menu'),
-  jumpLatest: byId('jump-latest'),
-  historySearch: fieldById('history-search'),
-  historyList: byId('history-list'),
-  toast: byId('toast-root'),
-  openProfile: byId('open-profile'),
-  openFeed: byId('open-feed'),
-  feedCount: byId('feed-count'),
-  profile: byId('profile-root'),
-  /** 搜索 · 关于你 · 设置, one page under the title bar (view/hub.js). */
-  hub: byId('hub'),
-  hubBack: byId('hub-back'),
-  hubNavs: [...document.querySelectorAll<HTMLElement>('.hub-nav')],
-  hubPages: [...document.querySelectorAll<HTMLElement>('.hub-page')],
-  hubSearchKey: byId('hub-search-key'),
-  /** 后台: every background task and the one picked (view/tasks-page.js). */
-  tasksPage: byId('tasks-page'),
-  feedPage: byId('feed-page'),
-  main: byId('main'),
-}
-/** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */
-const dom = { ...elements, follower: createScrollFollower(elements.scroll, elements.jumpLatest) }
-/** The page's elements, as the views draw into them. */
-export type Dom = typeof dom
+const dom = createPageElements(document, platform)
 new ResizeObserver(() => dom.follower.onContentResize()).observe(dom.thread)
-attachTurnRail(dom.scroll, byId('turn-rail'))
+attachTurnRail(dom.scroll, dom.turnRail)
 
 const TASK_LIST_KEY = 'viva:tasks-list-folded'
 /** A choice kept for the next launch (the 后台 page's list folded); storage refused, false. */
@@ -155,7 +93,7 @@ let state: State = [
 ].reduce((before: State, action) => reduce(before, action), initialState)
 
 // The column's width as the user dragged it, kept within the main area as the window and the drawer change it.
-const column = attachColumnResize(dom.main, [byId('col-grip-left'), byId('col-grip-right')])
+const column = attachColumnResize(dom.main, [dom.leftGrip, dom.rightGrip])
 new ResizeObserver(column.fit).observe(dom.main)
 let pendingReveal: (() => void) | null = null
 let lastFrameAt = 0
@@ -420,104 +358,11 @@ function revealRow(row: HTMLElement) {
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
 }
 
-/**
- * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
- * `via: 'island'` when it was asked on the desktop island; `images`: pictures pasted with it, which go only
- * as a new question (not into a running turn).
- * @returns {boolean} false when the agent can't take it now
- */
-function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
-  if (text.length > MAX_MESSAGE_CHARS) {
-    historyActions.showToast(MESSAGE_TOO_LONG)
-    return false
-  }
-  if ((!text && !images.length) || setupView(state.info) || state.switching || state.newTopicPending) return false
-  if (images.length) return askWithImages(text, images, via)
-  if (isBusy(state)) return steer(text, via)
-  dom.follower.resetForPrompt()
-  dispatch({ type: 'user_prompt', text, at: Date.now(), via })
-  api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
-  return true
-}
-
-let IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
-
-/** A question with pictures: only as the next question of the conversation on screen. */
-function askWithImages(text: string, images: Array<{ id: string }>, via: string | null) {
-  if (isBusy(state)) {
-    historyActions.showToast(IMAGES_WAIT)
-    return false
-  }
-  dom.follower.resetForPrompt()
-  // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
-  for (const { id } of images) pictureKept(id)
-  dispatch({ type: 'user_prompt', text, at: Date.now(), via, images })
-  api.prompt(text, images).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
-  return true
-}
-
-/** Words said as a turn was ending: sent as the next question once it has ended. */
-let afterTurn: string[] = []
-
-/**
- * Said while the agent works: into the running turn, which reads it at its next step (the viva-steer plugin).
- * Should that turn have just ended, the words go as the next question; should they not get through at all,
- * they stay in the thread marked as not sent.
- */
-function steer(text: string, via: string | null) {
-  dispatch({ type: 'user_steer', text, via })
-  // The words just said, the last message now (user_steer above).
-  const id = state.messages.at(-1)?.id
-  api.steer(text)
-    .then((result) => {
-      if (result.ok) return
-      if (result.reason !== 'idle') throw new Error(STEER_LOST)
-      if (isBusy(state)) afterTurn = [...afterTurn, text]
-      else resend(text)
-    })
-    .catch((err) => {
-      dispatch({ type: 'steer_failed', id })
-      historyActions.showToast(errorMessage(err) || STEER_LOST)
-    })
-  return true
-}
-
-function resend(text: string) {
-  dispatch({ type: 'steer_resent', at: Date.now() })
-  api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
-}
-
-function sendAfterTurn() {
-  if (!afterTurn.length) return
-  const text = afterTurn.join('\n\n')
-  afterTurn = []
-  resend(text)
-}
-
-/** What the user answers to each question: the options picked, and words of their own. */
-type Answers = QuestionAnswer[]
-
-/** Answers the agent's open question; the reply shows at once, like an approval. */
-function answer(answers: Answers) {
-  const question = state.question
-  if (!question) return
-  dispatch({ type: 'question_answered', questionId: question.questionId, answers, at: Date.now() })
-  api.answerQuestion(question.questionId, answers)
-    .then((accepted) => accepted || historyActions.showToast(t("app.this.question.has.ended.your.answer.was")))
-    .catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
-}
-
-async function provideSecrets(values: Record<string, string> | null) {
-  const secret = state.secret
-  if (!secret) return
-  try {
-    const accepted = await api.provideSecrets(secret.requestId, values)
-    if (!accepted) historyActions.showToast(t("app.this.connection.request.has.ended"))
-    dispatch({ type: 'secret_resolved', requestId: secret.requestId, provided: values !== null, at: Date.now() })
-  } catch (err) {
-    historyActions.showToast(errorMessage(err))
-  }
-}
+const conversationActions = createConversationActions({
+  api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast,
+  beforePrompt: () => dom.follower.resetForPrompt(), keepPicture: pictureKept,
+})
+const { ask, answer, provideSecrets, sendAfterTurn } = conversationActions
 
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
@@ -1044,7 +889,7 @@ function handleEvent(event: AgentEvent) {
     sendAfterTurn()
   }
   if (event?.type === 'task_end') filesActions.filesAfterTurn()
-  if (event?.type === 'error') afterTurn = []
+  if (event?.type === 'error') conversationActions.clearAfterTurn()
   // A batch ended: drafts are ready, or the list changed.
   // A schedule ran (a new item), or the schedules changed (kept, paused, ended, changed by asking).
   if (event?.type === 'feed_changed' || event?.type === 'schedules_changed') feedActions.loadFeed()
@@ -1096,8 +941,3 @@ async function boot() {
 }
 
 boot().catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
-
-onLocaleChange(() => {
-  STEER_LOST = t("app.your.message.did.not.reach.the.assistant")
-  IMAGES_WAIT = t("app.the.assistant.is.working.send.images.after")
-})

@@ -218,7 +218,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 | 目录 | 放什么 | 规则 |
 | --- | --- | --- |
-| `src/shell` | 外壳的 14 个模块：入口 `main.ts`、窗口、托盘、桌面岛、快捷键、后端的客户端和 keeper、数据密钥、图片协议的注册 | 运行时只引用后端的 `wire.ts` 和 `envelope.ts`；其它后端模块只引类型 |
+| `src/shell` | 外壳模块：入口 `main.ts`、窗口、托盘、桌面岛、快捷键、后端的客户端和 keeper、数据密钥、图片协议的注册 | 运行时只引用后端的 `wire.ts` 和 `envelope.ts`；其它后端模块只引类型 |
 | `src/backend` | 后端的入口 `server.ts`、组装 `compose.ts`、事件内核、各存储和通道、acp-bridge 等 | 运行时不导入 `electron`，不加载 `src/shell` |
 | `src/shared` | 两个进程和页面都用的代码：IPC 契约、i18n、图片 id、重启退避 | 不用 Node，页面也能跑 |
 | `src/shared/node` | 两个进程共用、要用 Node 的代码，现在只有应用根目录的计算 | 页面的 tsconfig 不包含它 |
@@ -228,13 +228,14 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 守住这些边界的测试：
 
 - `test/backend-boundary.test.ts`：从 `src/backend/server.ts` 出发遍历后端的模块树，确认没有运行时 `electron` 导入，也没有 `src/shell` 的文件；检查外壳只引用 `wire.ts` 和 `envelope.ts`；确认 `src/main` 不再存在。
+- `test/module-boundaries.test.ts`：功能模块不能反向导入 `app.ts` 或 `compose.ts`；源码依赖保持无环，包括类型导入。
 - `test/ipc-contract.test.js`：契约表、预加载脚本和外壳、后端注册的处理函数三者一致。
 - `test/commands.test.ts`：命令先记信号再处理，只记形状；查询不记事件。
 - `test/event-core.test.ts`、`test/journal.test.ts`：改动和事件同在一个事务里；信号路由缺一种就通不过类型检查。
 - `test/backend-wire.test.ts`、`test/backend-keeper.test.ts`：调用顺序、令牌、回答等推送、后端重启和放弃。
 - 冒烟测试的记忆组会杀掉后端进程，检查新后端起来、对话还在、下一个问题能正常回答；打包后的应用也跑这一组。
 
-仓库现在有 793 个单元测试和 7 组冒烟测试；CI 在 macOS 和 Windows 上各跑一遍。
+完整测试集合由 `npm test` 发现；CI 在 macOS 和 Windows 上运行单元测试和完整冒烟。2026-11-06 的职责审查、第一批模块拆分及后续验收标准见[架构整治](architecture-health.zh-CN.md)。
 
 ## 10. 已知限制与演进方向
 
@@ -244,7 +245,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 - 4 个 JSON 设置文件还没进 `app.db`，它们的写入不带事件。合并时要设计好加密字段和文件权限。
 - 记忆的事件和写入不在同一个事务里，因为文件归插件。
-- 后端重启后页面是重新加载，不是补齐状态：输入框里没发出去的字会丢；重启前弹出的通知，重启后再点只记日志。
+- B2 已补齐同一 generation 的断线推送回放；generation 改变或回放有真缺口时仍重载页面。重载会丢主对话未落盘的流式尾部和未发送草稿，不能视为完整恢复；重启前弹出的通知，重启后再点只记日志。
 - 事件现在主要用于记录和断线补发，还没有其它消费者。
 - 语言文案的 key 仍按旧文件路径命名（如 `main.history-db.*`），只影响名字好不好看，没有改。
 

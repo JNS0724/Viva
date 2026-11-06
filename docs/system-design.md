@@ -218,7 +218,7 @@ Folders match processes. Dependencies may point from the shell to the backend, n
 
 | Folder | Contents | Rule |
 | --- | --- | --- |
-| `src/shell` | The shell's 14 modules: the entry `main.ts`, window, tray, desk island, shortcut, the backend's client and keeper, the data key, the image scheme's registration | At run time it loads only the backend's `wire.ts` and `envelope.ts`; other backend modules only for their types |
+| `src/shell` | Shell modules: the entry `main.ts`, window, tray, desk island, shortcut, the backend's client and keeper, the data key, the image scheme's registration | At run time it loads only the backend's `wire.ts` and `envelope.ts`; other backend modules only for their types |
 | `src/backend` | The backend's entry `server.ts`, composition `compose.ts`, event core, stores and channels, acp-bridge and the rest | No `electron` import at run time; nothing from `src/shell` |
 | `src/shared` | Code both processes and the pages use: the IPC contract, i18n, image ids, the restart backoff | No Node, so pages can run it |
 | `src/shared/node` | Code both processes share that needs Node; today only the app's root folders | Left out of the pages' tsconfig |
@@ -228,13 +228,14 @@ Folders match processes. Dependencies may point from the shell to the backend, n
 The tests that keep these boundaries:
 
 - `test/backend-boundary.test.ts`: walks the backend's module tree from `src/backend/server.ts` and checks that it has no run-time `electron` import and no file from `src/shell`. It also checks that the shell loads only `wire.ts` and `envelope.ts`, and that `src/main` is gone.
+- `test/module-boundaries.test.ts`: features cannot import `app.ts` or `compose.ts` backwards; source dependencies remain acyclic, including type imports.
 - `test/ipc-contract.test.js`: the contract table, the preload scripts and the handlers the shell and backend register agree.
 - `test/commands.test.ts`: a command is recorded as a signal before it is handled, by shape only; queries record no event.
 - `test/event-core.test.ts`, `test/journal.test.ts`: a change and its event share one transaction; a routing table missing a signal fails the type check.
 - `test/backend-wire.test.ts`, `test/backend-keeper.test.ts`: call order, the token, answers waiting for pushes, backend restart and giving up.
 - The memory smoke group kills the backend process, then checks that a new backend is up, the conversation is still there, and the next question is answered. The packaged app runs this group too.
 
-The repository has 793 unit tests and 7 smoke groups; CI runs them on macOS and Windows.
+`npm test` discovers the full test collection; CI runs unit tests and full smoke on macOS and Windows. See the [architecture cleanup](architecture-health.md) for the 2026-11-06 responsibility audit, first module extractions and subsequent delivery criteria.
 
 ## 10. Known limits and direction
 
@@ -244,7 +245,7 @@ The boundaries are drawn so that the backend could later run elsewhere, but the 
 
 - The 4 JSON settings files are not in `app.db`, and their writes carry no events. Merging them needs a design for the encrypted fields and file permissions.
 - Memory events are not in the same transaction as the memory write, because the file belongs to the plugin.
-- After a backend restart the page reloads instead of catching up. A draft that was never sent is lost, and a notification shown before the restart is only logged when clicked after it.
+- B2 replays pushes after a same-generation disconnect; a changed generation or a real replay gap still reloads the page. Reloading loses the foreground stream tail not yet persisted and unsent drafts, so this is not complete recovery. A notification shown before the restart is only logged when clicked after it.
 - Events serve recording and replay after a drop; nothing else consumes them yet.
 - Interface string keys are still named after the old file paths (such as `main.history-db.*`). It only affects how the names read, so they were left as they are.
 

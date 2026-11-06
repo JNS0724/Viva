@@ -1,3 +1,4 @@
+import { createConfigActions } from './config-actions.ts'
 import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
 import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
@@ -15,7 +16,7 @@ import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, re
 import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
 import { DSH_PROFILE, resolveConfig } from './config.ts'
 import { createAcpBridge, switchingMessage } from './acp-bridge.ts'
-import { expandHome, importDshServers, importSummary, userDshHome } from './dsh-mcp-import.ts'
+import { importDshServers, userDshHome } from './dsh-mcp-import.ts'
 import { ensureDshProfile, vivaLayerFile } from './dsh-profile.ts'
 import { pnpmLauncher } from './pnpm-launcher.ts'
 import { dshEnv } from './dsh-runtime.ts'
@@ -38,7 +39,7 @@ import type { ScheduleAction, TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
-import { createMcpConfigStore, editServer, parseServerInput, type ServerChanges } from './mcp-config.ts'
+import { createMcpConfigStore } from './mcp-config.ts'
 import { registerMemoryIpc } from './memory-ipc.ts'
 import { createModelStore, defaultModel, modelValue, parseModelValue, piAiProviders, providerEnv } from './model-providers.ts'
 import { registerModelsIpc } from './models-ipc.ts'
@@ -47,7 +48,7 @@ import { createPreferences } from './preferences.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { sessionTiming } from './session-timing.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
-import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
+import { skillRoots } from './skills.ts'
 import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
@@ -83,9 +84,6 @@ const FEED_LISTED = 100
 type HistoryDb = ReturnType<typeof openHistoryDb>
 type Bridge = ReturnType<typeof createAcpBridge>
 type AgentInfo = { mode: string, model: string, cwd: string, reason?: string, [field: string]: any }
-/** What the model may change from the conversation (config-channel.ts), the app performing it. */
-type ConfigActions = NonNullable<Parameters<typeof createAcpBridge>[0]['configActions']>
-type ServerUpdate = Parameters<ConfigActions['updateServer']>[0]
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
 const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
@@ -104,23 +102,6 @@ function assertText(value: unknown, name: string, maxLength: number): string {
   if (typeof value !== 'string' || value.trim() === '' || value.length > maxLength) throw new Error(`invalid ${name}`)
   return value
 }
-
-/** The settings form's shape, which parseServerInput checks: keys as "NAME=value" lines, env or headers by type. */
-function serverForm(spec: { name: string, url?: string, command?: string, args: readonly string[] }, secrets: Readonly<Record<string, unknown>>) {
-  const pairs = Object.entries(secrets).map(([name, value]) => `${name}=${value}`).join('\n')
-  const http = Boolean(spec.url)
-  return { name: spec.name, type: http ? 'http' : 'stdio', command: spec.command, args: spec.args.join('\n'), url: spec.url, env: http ? '' : pairs, headers: http ? pairs : '' }
-}
-
-/** A change the model asked for (config-channel.ts ServerUpdate) as editServer takes it: what it names, and the keys typed. */
-const updateChanges = (spec: ServerUpdate, secrets: Readonly<Record<string, string>>): ServerChanges => ({
-  name: spec.newName || undefined,
-  type: spec.url ? 'http' : spec.command ? 'stdio' : undefined,
-  command: spec.command || undefined,
-  args: spec.args ?? undefined,
-  url: spec.url || undefined,
-  values: secrets,
-})
 
 export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcRegistry }) {
   const userData = host.paths.userData
@@ -291,12 +272,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   const takenServerNames = () => mcpStore.list().map((server) => server.name)
 
-  function serverNamed(name: string) {
-    const server = mcpStore.list().find((item) => item.name === name)
-    if (!server) throw new Error(t("main.main.no.mcp.server.named", { name: name }))
-    return server
-  }
-
   /** Takes the MCP servers of a dsh home over, keys and all (dsh-mcp-import.ts); names already in use are skipped. */
   const importDsh = (dir: string) => importDshServers({ dir, store: mcpStore, takenNames: takenServerNames })
 
@@ -304,52 +279,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * What the model may change from the conversation (viva-config plugin, config-channel.ts), each after the
    * user approved it on the card: MCP servers through the encrypted store, skills in the app's own folder.
    */
-  function configActions(config: Config): ConfigActions {
-    const roots = () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd })
-    const userRoot = () => {
-      const root = roots().find((item) => item.managed)
-      if (!root) throw new Error('the app has no skill folder of its own')
-      return root.dir
-    }
-    return {
-      listServers: () => mcpStore.list().map((server) => `${server.name}（${server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')}）`
-        + (server.missing.length ? t("main.main.missing.credentials", { value1: server.missing.join('、') }) : '')),
-      prepareServer: (spec) => {
-        parseServerInput(serverForm(spec, Object.fromEntries(spec.secrets.map((name) => [name, 'x']))), takenServerNames())
-      },
-      addServer: (spec, secrets) => {
-        mcpStore.add(parseServerInput(serverForm(spec, secrets), takenServerNames()))
-        mcpReloadDue = true
-        return t("main.main.connected.mcp.server.takes.effect.after.this", { name: spec.name, value2: spec.secrets.length ? t("main.main.credentials.are.entered.in.the.window.by") : '' })
-      },
-      removeServer: (name) => {
-        if (!takenServerNames().includes(name)) throw new Error(t("main.main.no.mcp.server.named", { name: name }))
-        mcpStore.remove(name)
-        mcpReloadDue = true
-        return t("main.main.removed.mcp.server.takes.effect.after.this", { name: name })
-      },
-      prepareUpdate: (spec) => {
-        editServer(serverNamed(spec.name), updateChanges(spec, Object.fromEntries(spec.secrets.map((name) => [name, 'x']))), takenServerNames())
-      },
-      updateServer: (spec, secrets) => {
-        const next = editServer(serverNamed(spec.name), updateChanges(spec, secrets), takenServerNames())
-        mcpStore.update(spec.name, next)
-        mcpReloadDue = true
-        return t("main.main.updated.mcp.server.takes.effect.after.this", { name: next.name, value2: next.missing.length ? t("main.main.still.needs.the.user.can.enter.these", { value1: next.missing.join('、') }) : '' })
-      },
-      /** No card: the servers and keys are the user's own, already set up in dsh (they asked for it this way). */
-      importServers: async (dir) => {
-        const target = dir ? expandHome(dir) : userDshHome()
-        const result = await importDsh(target)
-        if (result.added.length) mcpReloadDue = true
-        if (target !== userDshHome()) preferences.set('dshImportDir', target)
-        return importSummary(result, { forModel: true })
-      },
-      listSkills: () => listSkills(roots()).map((skill) => `${skill.id}：${skill.name}${skill.description ? ` — ${skill.description}` : ''}${skill.problem ? `（${skill.problem}）` : ''}`),
-      createSkill: (spec) => t("main.main.created.skill.it.will.be.available.for", { value1: createSkill(spec, userRoot()) }),
-      installSkill: (source) => t("main.main.installed.skill", { value1: importSkill(source, userRoot()) }),
-      removeSkill: async (id) => t("main.main.deleted.skill.it.can.be.recovered.from", { value1: await removeSkill(id, roots(), (file) => host.shell.trash(file)) }),
-    }
+  function configActions(config: Config) {
+    return createConfigActions({
+      store: mcpStore,
+      roots: () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd }),
+      onMcpChange: () => { mcpReloadDue = true }, importDsh,
+      rememberDshDir: (dir) => preferences.set('dshImportDir', dir), trash: (file) => host.shell.trash(file),
+    })
   }
 
   function reloadMcpAfterTurn() {
