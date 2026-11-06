@@ -7,13 +7,18 @@ import { discoverTests, selectTests } from '../scripts/test-feature.ts'
 
 test('discovery finds nested JS and TS tests without running type fixtures or following links', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'viva test discovery '))
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const loop = path.join(root, 'test', 'loop')
+  t.after(() => {
+    // Windows recursive removal cannot traverse a self-referencing junction. Remove the link itself first.
+    if (fs.lstatSync(loop, { throwIfNoEntry: false })) fs.unlinkSync(loop)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
   for (const file of ['test/a.test.js', 'test/nested/b.test.ts', 'test/contract.types.ts', 'test/a.spec.ts', 'test/node_modules/hidden.test.ts']) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
     fs.writeFileSync(path.join(root, file), '')
   }
   // A directory junction needs no Windows symlink privilege and exercises the same Dirent exclusion.
-  fs.symlinkSync(path.join(root, 'test'), path.join(root, 'test', 'loop'), process.platform === 'win32' ? 'junction' : 'dir')
+  fs.symlinkSync(path.join(root, 'test'), loop, process.platform === 'win32' ? 'junction' : 'dir')
   assert.deepEqual(discoverTests(root), [path.join('test', 'a.test.js'), path.join('test', 'nested', 'b.test.ts')])
 })
 
