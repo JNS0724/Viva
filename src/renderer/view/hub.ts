@@ -8,7 +8,10 @@ import type { Dom } from '../app.ts'
 export function renderHub(dom: Dom, state: State) {
   const page = hubPage(state)
   dom.hub.dataset.open = String(Boolean(page))
-  dom.openProfile.setAttribute('aria-pressed', String(Boolean(page)))
+  // 动态 is a page of its own (system-design §12.2): no hub sidebar beside it.
+  dom.hub.dataset.page = page ?? ''
+  dom.openProfile.setAttribute('aria-pressed', String(Boolean(page) && page !== 'feed'))
+  dom.openFeed.setAttribute('aria-pressed', String(page === 'feed'))
   for (const nav of dom.hubNavs) {
     if (nav.dataset.page === page) nav.setAttribute('aria-current', 'page')
     else nav.removeAttribute('aria-current')

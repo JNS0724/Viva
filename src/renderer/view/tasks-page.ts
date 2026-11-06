@@ -1,12 +1,11 @@
 import { getLocale } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
-import { FOLLOWUP_KEY, pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
+import { pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread, type ThreadView } from './thread.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
-import { followupDetail, followupStanding, whenText } from './followups.ts'
 
 /**
  * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
@@ -17,8 +16,6 @@ import { followupDetail, followupStanding, whenText } from './followups.ts'
  */
 const groupNames = (): Readonly<Record<string, string>> => ({ waiting: t("task.status.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") })
 const LIVE = new Set(['running', 'waiting'])
-export { FOLLOWUP_KEY }
-const followupGroupsCopy = (): ReadonlyArray<[string, string]> => ([['ready', t("tasks-page.for.your.review")], ['preparing', t("tasks-page.preparing")], ['scheduled', t("tasks-page.scheduled")]])
 
 /**
  * The page as it is drawn: what was picked, while it is still on the list; once it is gone from there (deleted,
@@ -31,32 +28,6 @@ export function onPage(state: State): State {
 
 /** A group's name and how many it holds, set apart by a gap rather than joined by a middle dot. */
 const groupHead = (name: string, count: number) => h('div', { class: 'tp-group' }, name, h('span', { class: 'tp-group-count', text: String(count) }))
-
-function followupGroups(state: State, selected: string | null, handlers: Handlers, now: number) {
-  const list: readonly Untyped[] = state.followups.followups
-  return followupGroupsCopy().flatMap(([status, name]) => {
-    const group = list.filter((followup) => followup.status === status)
-    if (!group.length) return []
-    return [
-      groupHead(name, group.length),
-      ...group.map((followup) => h('button', {
-        class: 'tp-row fu-row', type: 'button', 'data-status': status, 'aria-current': `${FOLLOWUP_KEY}${followup.id}` === selected ? 'page' : null,
-        onClick: () => handlers.selectTask(`${FOLLOWUP_KEY}${followup.id}`),
-      },
-      h('span', { class: 'tp-name', text: followup.title }),
-      h('span', { class: 'tp-meta', text: followupStanding(followup, now) }))),
-    ]
-  })
-}
-
-/** One line on background preparation: preparing now, waiting on the user, or when it looks next. */
-function prepareLine(state: State, now: number) {
-  const prepare = state.followups.state
-  if (prepare?.running) return h('p', { class: 'fu-state', 'data-on': 'true', text: t("tasks-page.preparing.in.background", { current: prepare.current }) })
-  if (prepare?.waiting) return h('p', { class: 'fu-state', text: t("tasks-page.preparing.later", { waiting: prepare.waiting }) })
-  if (prepare?.nextAt) return h('p', { class: 'fu-state', text: t("tasks-page.next.background.preparation", { value1: whenText(prepare.nextAt, now) }) })
-  return null
-}
 
 /**
  * Folded by the user: a narrow strip where the list was, » to unfold it, and how many wait on the user so none
@@ -86,8 +57,6 @@ function sideView(state: State, handlers: Handlers, now: number) {
         class: 'icon-btn tp-fold', type: 'button', title: t("task.list.collapse"), 'aria-label': t("task.list.collapse"), 'aria-expanded': 'true',
         onClick: () => handlers.foldTaskList(true),
       }, h('span', { text: '«', 'aria-hidden': 'true' }))),
-    prepareLine(state, now),
-    ...followupGroups(state, selected, handlers, now),
     ...pageGroups(state).flatMap(({ key, tasks }) => [
       groupHead(groupNames()[key], tasks.length),
       ...tasks.map((task) => h('button', {
@@ -186,20 +155,8 @@ function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
   return section
 }
 
-/** The follow-up picked, or, with nothing picked and no task, the first that waits for the user. */
-function pickedFollowup(state: State): Untyped | null {
-  const list: readonly Untyped[] = state.followups.followups
-  const selected = state.tasks.page.selected
-  if (selected?.startsWith(FOLLOWUP_KEY)) return list.find((followup) => `${FOLLOWUP_KEY}${followup.id}` === selected) ?? null
-  if (selected || pageTask(state)) return null
-  return list.find((followup) => followup.status === 'ready') ?? null
-}
-
 function mainView(state: State, handlers: Handlers, now: number) {
-  const selected = state.tasks.page.selected
-  const followup = pickedFollowup(state)
-  if (followup) return followupDetail(followup, state.followups.state, handlers, now)
-  const task = selected?.startsWith(FOLLOWUP_KEY) ? null : pageTask(state)
+  const task = pageTask(state)
   if (!task) {
     return h('div', { class: 'tp-main tp-empty' },
       h('p', { class: 'help', text: t("tasks-page.no.background.work.yet.type.a.request") }))

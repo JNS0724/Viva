@@ -18,7 +18,7 @@ const detailMood = (status: string) => (status === 'ready' ? 'done' : status ===
  * when, when the user is reminded; 跟进 / 不用 / 以后别问这类), and on the 后台 page each follow-up with its draft.
  * The copy says what happens and what it gives back; the background preparation's codename stays out of it.
  */
-const BUTTON = Object.freeze({ primary: 'btn btn-primary', secondary: 'btn btn-secondary', text: 'btn btn-text' })
+const BUTTON = Object.freeze({ primary: 'btn btn-primary', accent: 'btn btn-accent', secondary: 'btn btn-secondary', text: 'btn btn-text' })
 let WEEKDAYS = [t("followups.sunday"), t("followups.monday"), t("followups.tuesday"), t("followups.wednesday"), t("followups.thursday"), t("followups.friday"), t("followups.saturday")]
 const DAY_MS = 24 * 60 * 60 * 1000
 const WEEK_DAYS = 7
@@ -117,9 +117,8 @@ function detailActions(followup: Untyped, handlers: Handlers) {
   const button = (kind: keyof typeof BUTTON, text: string, onClick: () => unknown) => h('button', { class: BUTTON[kind], type: 'button', text, onClick })
   if (followup.status === 'ready') {
     return [
-      button('primary', t("followups.continue"), () => handlers.continueFollowup(followup.id)),
-      button('secondary', t("followups.run.in.background"), () => handlers.followupInBackground(followup.id)),
-      button('text', t("followups.dismiss"), () => handlers.dismissFollowup(followup.id)),
+      button('accent', t('feed.continue'), () => handlers.continueFollowup(followup.id)),
+      button('text', t('feed.no'), () => handlers.dismissFollowup(followup.id)),
     ]
   }
   return [
@@ -130,7 +129,7 @@ function detailActions(followup: Untyped, handlers: Handlers) {
   ]
 }
 
-/** A follow-up picked on the 后台 page: what it is, when, its draft, and what can be done with it. */
+/** A follow-up picked on the 动态 page (view/feed-page.ts): what it is, when, its draft, and what can be done with it. */
 export function followupDetail(followup: Untyped, prepare: Untyped, handlers: Handlers, now = Date.now()) {
   const ready = followup.status === 'ready'
   const facts = [

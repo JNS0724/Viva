@@ -92,6 +92,8 @@ const elements = {
   historyList: byId('history-list'),
   toast: byId('toast-root'),
   openProfile: byId('open-profile'),
+  openFeed: byId('open-feed'),
+  feedCount: byId('feed-count'),
   profile: byId('profile-root'),
   /** 搜索 · 关于你 · 设置, one page under the title bar (view/hub.js). */
   hub: byId('hub'),
@@ -101,6 +103,7 @@ const elements = {
   hubSearchKey: byId('hub-search-key'),
   /** 后台: every background task and the one picked (view/tasks-page.js). */
   tasksPage: byId('tasks-page'),
+  feedPage: byId('feed-page'),
   main: byId('main'),
 }
 /** The page's elements, and what keeps the thread scrolled to the latest (view/scroll-follow.ts). */
@@ -537,7 +540,6 @@ const followupActions = createFollowupActions({
     dom.input.dispatchEvent(new Event('input'))
     dom.input.focus()
   },
-  startTask: (text) => taskActions.startTask(text),
 })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
@@ -723,6 +725,8 @@ const handlers = {
     followupActions.loadFollowups()
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
+  selectFeed: (id: string) => dispatch({ type: 'feed_select', id }),
+  toggleFeed: () => (state.feed.open ? handlers.closeHub() : dispatch({ type: 'feed_open' })),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
   inputProblem: (message: string) => historyActions.showToast(message),
@@ -900,6 +904,7 @@ function wireComposer() {
 
 function wireHub() {
   dom.openProfile.addEventListener('click', () => handlers.toggleHub())
+  dom.openFeed.addEventListener('click', () => handlers.toggleFeed())
   dom.hubBack.addEventListener('click', () => handlers.closeHub())
   for (const nav of dom.hubNavs) {
     nav.addEventListener('click', () => {

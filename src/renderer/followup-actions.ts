@@ -6,11 +6,9 @@ import type { ProposalCard } from './followup-state.ts'
  * windows), and the 后台 page's 接着做 (the draft into the input, for the user to send), 后台做 (to a task of its
  * own), 不用了, 现在就准备, 叫醒它; settings' 后台准备.
  */
-export function createFollowupActions({ api, getState, dispatch, errorMessage, fillComposer, startTask }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
+export function createFollowupActions({ api, getState, dispatch, errorMessage, fillComposer }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
   /** Puts `text` in the input, the window in front, for the user to read and send. */
   fillComposer: (text: string) => void
-  /** 后台做 with `text` (task-actions.ts). */
-  startTask: (text: string) => unknown
 }) {
   const fail = (err: unknown) => dispatch({ type: 'followups_failed', message: errorMessage(err) })
   const cardOf = (id: string): ProposalCard | undefined => getState().proposals.find((card: ProposalCard) => card.id === id)
@@ -77,10 +75,6 @@ export function createFollowupActions({ api, getState, dispatch, errorMessage, f
     async continueFollowup(id: string) {
       const view = await change(() => api.continueFollowup(id))
       if (view?.text) fillComposer(view.text)
-    },
-    async followupInBackground(id: string) {
-      const view = await change(() => api.continueFollowup(id))
-      if (view?.text) startTask(view.text)
     },
     prepareFollowupNow: (id: string) => change(() => api.prepareFollowupNow(id), t("followup-actions.preparing.in.the.background.now")),
     wakePreparation: () => change(() => api.wakePreparation(), t("followup-actions.awake.preparation.will.resume.shortly")),
