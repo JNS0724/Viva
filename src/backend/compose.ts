@@ -1,3 +1,4 @@
+import { createDshLifecycle, type DshLifetime } from './dsh-lifecycle.ts'
 import { createConfigActions } from './config-actions.ts'
 import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
@@ -20,7 +21,6 @@ import { importDshServers, userDshHome } from './dsh-mcp-import.ts'
 import { ensureDshProfile, vivaLayerFile } from './dsh-profile.ts'
 import { pnpmLauncher } from './pnpm-launcher.ts'
 import { dshEnv } from './dsh-runtime.ts'
-import { restartDelay } from '../shared/restart-delay.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
 import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
@@ -71,9 +71,6 @@ const FALLBACK_PROFILE = 'acp'
 /** After a turn the memory plugin's background pass may still write; look again this often, this long. */
 const LATE_MEMORY_POLL_MS = 2_000
 const LATE_MEMORY_WINDOW_MS = 30_000
-/** How long quitting waits for dsh to finish before the app goes anyway. */
-const QUIT_WAIT_MS = 5_000
-const CRASH_WINDOW_MS = 10 * 60_000
 /** How much of a 动态 item a notification shows. */
 const NOTICE_BODY_CHARS = 200
 /** The effects queue's kind for a new 动态 item's notification. */
@@ -161,13 +158,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    */
   let workDir: string | null = null
   let defaultWorkDir: string | null = null
-  let bridge: Bridge | null = null
-  let bridgeGeneration = 0
-  /** When dsh died on its own lately; see restartDelay. */
-  let crashes: number[] = []
-  let restartTimer: ReturnType<typeof setTimeout> | undefined
-  /** Set once quitting has begun: dsh is being stopped and must not be started again. */
-  let quitting = false
   /** What the window is told of the agent (session-info.ts, acp-bridge.ts): mode, model, session, what it remembers. */
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
 
@@ -187,7 +177,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   })
 
   /** Prompts run where nobody watches, read-only (a schedule's): their sessions' events are theirs, not 后台's. */
-  const unattended = createUnattendedRuns({ agent: () => bridge })
+  const unattended = createUnattendedRuns({ agent: () => dsh.current })
 
   /** One input to the backend (event-core.ts): recorded, then routed. */
   const signal = (input: Signal) => {
@@ -213,10 +203,48 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** Where a conversation goes on: in its own directory while that is still there, else in the app's. */
   const workDirFor = (segment: { cwd?: string | null } | null | undefined, config: Config) => (segment?.cwd && isFolder(segment.cwd) ? segment.cwd : config.cwd)
 
+  type DshContext = { config: Config, cwd: string, resumeSessionId: string | null }
+  const dsh = createDshLifecycle({
+    create: ({ config, cwd }: DshContext, lifetime) => {
+      launchedAt = Date.now()
+      return createBridge(config, cwd, lifetime)
+    },
+    connect: (instance: Bridge, context: DshContext) => instance.start({ resumeSessionId: context.resumeSessionId }),
+    onReady: (started, context) => {
+      const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
+      workDir = context.cwd
+      conversation = { ...conversation, sessionId: info.sessionId, cwd: context.cwd }
+      emitToRenderer({ type: 'ready', info })
+      wakeEffects()
+      scheduleRuns?.wake()
+    },
+    onGone: () => {
+      taskRuntime?.dsh.gone(); unattended.gone()
+      // Retired generations cannot deliver a final error/turn_end. Settle the foreground here too,
+      // including deliberate model/key restarts, before publishing the replacement's readiness.
+      if (turn.active) {
+        emitToRenderer({ type: 'turn_end', stopReason: 'cancelled' })
+        reportTurnMemories()
+      }
+    },
+    onCrash: ({ message }, delay) => {
+      turn = { active: false, startedAt: 0 }
+      console.error('[dsh] exited unexpectedly:', message)
+      emitToRenderer({ type: 'error', message: delay === null
+        ? t("main.main.the.assistant.exited.repeatedly.retrying.has.stopped", { message })
+        : t("main.main.the.assistant.exited.unexpectedly.reconnecting.in.seconds", { value1: Math.round(delay / 1000) }) })
+    },
+    restart: async (): Promise<unknown> => startBridge(),
+    onRestartError: error => {
+      console.error('[dsh] could not restart:', error)
+      emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: error instanceof Error ? error.message : String(error) }) })
+    },
+  })
+
   /** Tells the window what the agent remembered or replaced, and what background the plugin sent. */
-  function reportMemoryChanges() {
+  function reportMemoryChanges(segment = conversation) {
     try {
-      const report = personal.collect({ conversationId: conversation.id, sessionId: conversation.sessionId })
+      const report = personal.collect({ conversationId: segment.id, sessionId: segment.sessionId })
       if (report?.memories.length || report?.invalidated.length) {
         // What the agent wrote, through the plugin in dsh: recorded here once the app has read it.
         applyChange('memory.learned', { memories: report.memories.length, invalidated: report.invalidated.length }, () => undefined)
@@ -232,11 +260,17 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function reportTurnMemories() {
     if (!turn.active) return
     turn = { ...turn, active: false }
-    reportMemoryChanges()
+    const segment = conversation
+    reportMemoryChanges(segment)
     clearInterval(lateMemoryTimer)
     const until = Date.now() + LATE_MEMORY_WINDOW_MS
     lateMemoryTimer = setInterval(() => {
-      reportMemoryChanges()
+      // Memory claiming has a global watermark. Never let an old turn's poll claim a new
+      // topic's writes, or writes made while the next foreground turn is still running.
+      if (conversation.id !== segment.id || conversation.sessionId !== segment.sessionId || turn.active) {
+        clearInterval(lateMemoryTimer); return
+      }
+      reportMemoryChanges(segment)
       if (Date.now() >= until) clearInterval(lateMemoryTimer)
     }, LATE_MEMORY_POLL_MS)
   }
@@ -298,8 +332,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   }
 
   /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
-  function createBridge(config: Config, cwd: string) {
-    const generation = ++bridgeGeneration
+  function createBridge(config: Config, cwd: string, lifetime: DshLifetime) {
     return createAcpBridge({
       prewarmSessions: true,
       dshBin: config.dshBin,
@@ -314,7 +347,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       taskRead: (request, sessionId) => requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
       taskAct: (request, sessionId) => actOnTask(request, sessionId),
       emit: (event) => {
-        if (generation !== bridgeGeneration) return
+        if (!lifetime.isCurrent()) return
         // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
         // session it was delivered to; said of another session, it is not this report's. Read but its record not kept
         // (the database busy): a pass now, which puts it off to try again.
@@ -341,9 +374,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         if (event.type === 'error') reportTurnMemories()
         return undefined
       },
-      onExit: (exit) => {
-        if (generation === bridgeGeneration) recoverFromCrash(exit)
-      },
+      onExit: lifetime.onExit,
     })
   }
 
@@ -386,11 +417,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * it: no words of the user's.
    */
   const taskReports = createTaskReports({
-    conversation: () => (!bridge || bridge.isSwitching() || quitting ? 'away' : turn.active ? 'busy' : 'idle'),
-    session: () => bridge?.currentSession() ?? null,
+    conversation: () => (!dsh.current || dsh.current.isSwitching() || dsh.isQuitting() ? 'away' : turn.active ? 'busy' : 'idle'),
+    session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
-    status: (session, reportId, token) => bridge?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
-    deliver: (session, reportId, token, text) => bridge?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable'),
+    status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
+    deliver: (session, reportId, token, text) => dsh.current?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable'),
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
     amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
     onRead: (effect) => {
@@ -404,7 +435,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     currentConversation: () => conversation.id,
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: (note) => {
-      const agent = bridge
+      const agent = dsh.current
       if (!agent) return false
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task' })
@@ -434,40 +465,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return { DEEPSEEK_API_KEY: config.apiKey, ...providerEnv(modelStore.list()) }
   }
 
-  /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
-  function recoverFromCrash({ message }: { message: string }) {
-    taskRuntime?.dsh.gone()
-    unattended.gone()
-    console.error('[dsh] exited unexpectedly:', message)
-    bridge = null
-    turn = { active: false, startedAt: 0 }
-    if (quitting) return
-    const now = Date.now()
-    crashes = [...crashes.filter((at) => now - at < CRASH_WINDOW_MS), now]
-    const delay = restartDelay(crashes, now)
-    if (delay === null) {
-      emitToRenderer({ type: 'error', message: t("main.main.the.assistant.exited.repeatedly.retrying.has.stopped", { message: message }) })
-      return
-    }
-    emitToRenderer({ type: 'error', message: t("main.main.the.assistant.exited.unexpectedly.reconnecting.in.seconds", { value1: Math.round(delay / 1000) }) })
-    clearTimeout(restartTimer)
-    restartTimer = setTimeout(() => {
-      if (!bridge && !quitting) startBridge()
-    }, delay)
-  }
-
-  /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
-  async function stopBridge() {
-    taskRuntime?.dsh.gone()
-    unattended.gone()
-    clearTimeout(restartTimer)
-    const running = bridge
-    bridge = null
-    await running?.dispose()
-  }
-
-  /** dsh stopped (it may still be writing the session), but no longer than QUIT_WAIT_MS. */
-  const stopBridgeInTime = () => Promise.race([stopBridge(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT_MS))])
+  const stopBridge = dsh.stop
 
   /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
   const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '' })
@@ -475,11 +473,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let SETUP_MESSAGES = setupMessages()
 
   function requireBridge() {
-    if (!bridge) throw new Error(SETUP_MESSAGES[lastInfo.problem] ?? t("main.main.the.assistant.is.not.connected.yet"))
-    return bridge
+    if (!dsh.current) throw new Error(SETUP_MESSAGES[lastInfo.problem] ?? t("main.main.the.assistant.is.not.connected.yet"))
+    return dsh.current
   }
 
-  async function startBridge() {
+  async function startBridge(): Promise<AgentInfo | null> {
+    if (dsh.isQuitting()) return null
     const config = currentConfig()
     if (config.problem) {
       const info = setupInfo(config)
@@ -487,22 +486,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       return info
     }
     fs.mkdirSync(config.cwd, { recursive: true })
-    launchedAt = Date.now()
     workDir = workDirFor(conversation, config)
-    bridge = createBridge(config, workDir)
     try {
-      const started = await bridge.start({ resumeSessionId: conversation.sessionId })
-      // The agent knows the conversation on screen if it resumed it, or if there was nothing to know yet.
-      const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
-      conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
-      emitToRenderer({ type: 'ready', info })
-      // Results of tasks that ended while dsh was away come back once it is here again; schedules due meanwhile run.
-      wakeEffects()
-      scheduleRuns?.wake()
-      return info
-    } catch (err: any) {
+      const started = await dsh.start({ config, cwd: workDir, resumeSessionId: conversation.sessionId })
+      return started ? lastInfo : null
+    } catch (err) {
       console.error('[main] failed to start agent bridge:', err)
-      emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: err.message }) })
+      emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: err instanceof Error ? err.message : String(err) }) })
       return null
     }
   }
@@ -527,8 +517,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** A new key (or none) means a different agent, so the conversation starts over. */
   async function restartWithNewConversation() {
-    conversation = historyDb.create({ cwd: workDirNow() })
     await stopBridge()
+    conversation = historyDb.create({ cwd: workDirNow() })
     return startBridge()
   }
 
@@ -576,7 +566,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
     // on the live channel, so it comes in its place among the pushes (renderer waits-state.ts), not in the answer.
     ipcMain.handle('agent:waits', () => {
-      emitToRenderer({ type: 'waits', ...(bridge?.sessionWaits() ?? { permissions: [], questions: [], secrets: [] }) })
+      emitToRenderer({ type: 'waits', ...(dsh.current?.sessionWaits() ?? { permissions: [], questions: [], secrets: [] }) })
       return true
     })
     ipcMain.handle('agent:prompt', (_event, text, images = []) => {
@@ -596,17 +586,17 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       if (!turn.active) return { ok: false, reason: 'idle' }
       return requireBridge().steer(words)
     })
-    ipcMain.handle('agent:cancel', () => bridge?.cancel())
+    ipcMain.handle('agent:cancel', () => dsh.current?.cancel())
     ipcMain.handle('agent:new-session', () => {
       if (newSessionPending) return newSessionPending
       if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before.2"))
       const measure = sessionTiming()
       newSessionPending = measure('new-topic.total', async () => {
-        if (!bridge) {
+        if (!dsh.current) {
           conversation = historyDb.create({ cwd: workDirNow() })
           return lastInfo
         }
-        const opened = await bridge.newSession()
+        const opened = await dsh.current.newSession()
         const info = { ...await measure('new-topic.model', () => withLastModel(opened)), remembersHistory: true }
         conversation = historyDb.create({ sessionId: info.sessionId, cwd: workDirNow() })
         lastInfo = info
@@ -625,13 +615,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     ipcMain.handle('agent:permission', (_event, requestId, optionId) => {
       const id = assertText(requestId, 'requestId', 200)
       const option = optionId === null ? null : assertText(optionId, 'optionId', 200)
-      return bridge?.respondPermission(id, option) ?? false
+      return dsh.current?.respondPermission(id, option) ?? false
     })
     ipcMain.handle('agent:answer', (_event, questionId, answers) => {
       const id = assertText(questionId, 'questionId', 200)
       // Held first: dsh closes the question while it takes the answer, and what was asked goes with it.
       const keep = taskRuntime?.dsh.holdQuestion(id) ?? null
-      const accepted = bridge?.answerQuestion(id, answers) ?? false
+      const accepted = dsh.current?.answerQuestion(id, answers) ?? false
       if (accepted) keep?.(answers)
       return accepted
     })
@@ -639,7 +629,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     ipcMain.handle('agent:secrets', (_event, requestId, values) => {
       const id = assertText(requestId, 'requestId', 200)
       if (values !== null && (typeof values !== 'object' || Array.isArray(values))) throw new Error('invalid secrets')
-      return bridge?.provideSecrets(id, values) ?? false
+      return dsh.current?.provideSecrets(id, values) ?? false
     })
   }
 
@@ -709,15 +699,15 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    */
   async function switchAgent(sessionId: string | null, cwd?: string | null, { exactly = false } = {}) {
     if (exactly && !(cwd && isFolder(cwd))) throw new ResumeError('missing-dir', t('resume.missing.directory', { cwd: cwd ?? t('resume.folder.unrecorded') }))
-    if (exactly && !bridge) throw new ResumeError('unavailable', '助手还没准备好')
+    if (exactly && !dsh.current) throw new ResumeError('unavailable', '助手还没准备好')
     const target = cwd && isFolder(cwd) ? cwd : workDirNow()
-    if (!bridge) {
+    if (!dsh.current) {
       workDir = target
       return { ...lastInfo, sessionId, cwd: target, resumed: false }
     }
     // With a bridge the agent has started somewhere, so there is a folder in use.
     try {
-      const info = await bridge.switchSession(sessionId, target ?? undefined, { exactly })
+      const info = await dsh.current.switchSession(sessionId, target ?? undefined, { exactly })
       workDir = target
       lastInfo = { ...info, remembersHistory: info.resumed }
       return info
@@ -744,12 +734,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   async function switchWorkDir(dir: string) {
     const previous = conversation
     const stored = Boolean(historyDb.get(previous.id))
-    if (!bridge) {
+    if (!dsh.current) {
       workDir = dir
       conversation = historyDb.create({ cwd: dir, parentId: stored ? previous.id : null })
       return { ...lastInfo, cwd: dir }
     }
-    const forked = await bridge.fork({ cwd: dir })
+    const forked = await dsh.current.fork({ cwd: dir })
     if (!forked.ok) throw new Error(FORK_PROBLEMS[forked.reason] ?? t("main.main.could.not.change.working.directory", { reason: forked.reason }))
     workDir = dir
     lastInfo = { ...forked.info, remembersHistory: true }
@@ -768,8 +758,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** Reattaches the session with the current MCP servers; not while a turn runs (it would be cancelled). */
   async function applyMcpChange() {
-    if (!bridge || turn.active) return null
-    const info = await bridge.reloadSession()
+    if (!dsh.current || turn.active) return null
+    const info = await dsh.current.reloadSession()
     lastInfo = { ...lastInfo, ...info, remembersHistory: info.resumed || lastInfo.remembersHistory }
     return lastInfo
   }
@@ -803,7 +793,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
     // The 插件 section: dsh's plugin manager, inside the running dsh (viva-plugins); nothing to ask while it is down.
     registerPluginsIpc(ipcMain, {
-      call: (op, args) => (bridge ? bridge.plugins(op, args) : Promise.resolve({ ok: false as const, problem: 'disconnected' })),
+      call: (op, args) => (dsh.current ? dsh.current.plugins(op, args) : Promise.resolve({ ok: false as const, problem: 'disconnected' })),
       profileDir: () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE),
     })
     registerExtensionsIpc(ipcMain, {
@@ -867,18 +857,18 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** The agent's side of background tasks. */
   const taskAgent = {
-    closeTask: (taskId: string) => bridge?.closeTask(taskId),
-    cancelTask: (taskId: string) => bridge?.cancelTask(taskId),
+    closeTask: (taskId: string) => dsh.current?.closeTask(taskId),
+    cancelTask: (taskId: string) => dsh.current?.cancelTask(taskId),
     steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
-    resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
-    startTask: (request: Parameters<Bridge['startTask']>[0]) => (bridge ? bridge.startTask(request) : { ok: false, reason: 'unavailable' }),
-    promptTask: (taskId: string, text: string) => bridge?.promptTask(taskId, text),
+    resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (dsh.current ? dsh.current.resumeTask(request) : { ok: false, reason: 'unavailable' }),
+    startTask: (request: Parameters<Bridge['startTask']>[0]) => (dsh.current ? dsh.current.startTask(request) : { ok: false, reason: 'unavailable' }),
+    promptTask: (taskId: string, text: string) => dsh.current?.promptTask(taskId, text),
   }
 
   /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
   async function forkBack(request: { words: string, occurrence: number }) {
-    if (!bridge) return { ok: false as const, reason: 'unavailable' }
-    const forked = await bridge.fork(request)
+    if (!dsh.current) return { ok: false as const, reason: 'unavailable' }
+    const forked = await dsh.current.fork(request)
     if (forked.ok) lastInfo = { ...forked.info, remembersHistory: true }
     return forked
   }
@@ -930,7 +920,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       current: () => conversation,
       agentInfo: () => lastInfo,
       agent: taskAgent,
-      waitsOf: (taskId) => bridge?.taskWaits(taskId) ?? { permissions: [], questions: [] },
+      waitsOf: (taskId) => dsh.current?.taskWaits(taskId) ?? { permissions: [], questions: [] },
       apply: applyChange,
       publish: emitToRenderer,
       // Once a task's end is kept: its result back to the conversation.
@@ -1027,13 +1017,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const added = requireFeed().add({ source: 'automation', key: crypto.randomUUID(), title, body, origin: { label: t('main.schedule-runs.origin') } })
       if (added.made) feedChanged()
     },
-    agentPid: () => bridge?.pid() ?? null,
-    hasBridge: () => Boolean(bridge),
-    isQuitting: () => quitting,
+    agentPid: () => dsh.current?.pid() ?? null,
+    hasBridge: () => Boolean(dsh.current),
+    isQuitting: dsh.isQuitting,
     /** Quitting has begun (or the session ends): dsh must not be started again. */
-    markQuitting: () => { quitting = true },
-    /** Stops dsh, waiting at most a few seconds. */
-    stop: stopBridgeInTime,
+    markQuitting: dsh.markQuitting,
+    /** Stops dsh, waiting at most a few seconds; the real release remains a barrier. */
+    stop: dsh.stopWithin,
     close,
   }
 }

@@ -71,14 +71,14 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "2d1b42e26fe7883c357cc8e8422cce167fd6a7ae3e3fd1731eaa5a716911a70d",
-      "zhHash": "63ba9c36c2bd86a0d29cd8852c5c80a304dc1e96347ff49535f7aa91a1086aac"
+      "enHash": "f610d86a19071687ecb076135e7c68d888df42a28302bca29344d4a9c623e12d",
+      "zhHash": "c607e9df39f7de256d40e497fa1f5b2a7b75c59ad1d58699632c209c43461800"
     },
     {
       "en": "docs/architecture-health.md",
       "zh": "docs/architecture-health.zh-CN.md",
-      "enHash": "91d586fbe402676cef575f71b5cf36f8533628b0c0d5d06ffe212ce316f60352",
-      "zhHash": "026f601ab9c779751754405e41295d388456c7e83687eea6dfea4d09b4101aff"
+      "enHash": "5c084bc983d5f8c08d8d4a36d0fab35372decd4ef2062652b3d4e048c2056ea6",
+      "zhHash": "c016dcf0dadbe27da5d5a369709c4a3619c2261542d8bd7d221cd83274f23674"
     }
   ],
   "bilingual": [
