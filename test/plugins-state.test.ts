@@ -1,3 +1,4 @@
+import { initialState, reduce } from '../src/renderer/state.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createPluginActions, problemText } from '../src/renderer/plugin-actions.ts'
@@ -5,8 +6,7 @@ import { initialPlugins, PLUGIN_ACTIONS } from '../src/renderer/plugins-state.ts
 import { setLocale } from '../src/shared/i18n/locale.ts'
 
 type Plugins = State['plugins']
-const start = (changes: Partial<Plugins> = {}) => ({ plugins: { ...initialPlugins, loaded: true, ...changes } }) as unknown as State
-const reduce = (state: State, action: { type: string, [field: string]: unknown }) => PLUGIN_ACTIONS[action.type](state, action as unknown as Action)
+const start = (changes: Partial<Plugins> = {}): State => ({ ...initialState, plugins: { ...initialPlugins, loaded: true, ...changes } })
 
 test('the reducers return new state and leave the old one as it was', () => {
   const before = start()
@@ -35,7 +35,7 @@ function harness(api: Record<string, (...args: unknown[]) => Promise<unknown>>, 
   const calls: unknown[][] = []
   const spied = Object.fromEntries(Object.entries(api).map(([name, fn]) => [name, (...args: unknown[]) => { calls.push([name, ...args]); return fn(...args) }]))
   const actions = createPluginActions({
-    api: spied as unknown as AgentApi, getState: () => state, dispatch: (action) => { state = reduce(state, action as unknown as { type: string }) },
+    api: spied as unknown as AgentApi, getState: () => state, dispatch: (action) => { state = reduce(state, action) },
     errorMessage: (err) => (err instanceof Error ? err.message : String(err)),
   })
   return { actions, calls, state: () => state }

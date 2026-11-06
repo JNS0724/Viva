@@ -1,3 +1,4 @@
+import type { AgentEvent } from './agent-event-types.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { answersFrom, type QuestionAnswer } from './question-state.ts'
 import { runningTurn } from './tasks-state.ts'
@@ -8,7 +9,7 @@ const MAX_HELD = 2_000
 const RETRY_MS = 500
 const MAX_RETRY_MS = 10_000
 /** What the main process says (app.ts), as far as holding it for a read of the tasks reads it. */
-type AgentEvent = { type?: string, taskId?: unknown, snapshot?: { taskId?: unknown }, [field: string]: unknown }
+
 
 /**
  * Background tasks from the window: 后台做 starts a task of its own (backend/task-ipc.ts task:start). The task is
@@ -22,7 +23,7 @@ const isFailed = (value: unknown): value is Failed =>
 
 /** The task an event from the main process is of, if any. */
 const taskOf = (event: AgentEvent): string | null => {
-  const taskId = event.snapshot?.taskId ?? event.taskId
+  const taskId = event.type === 'task_snapshot' ? event.snapshot.taskId : 'taskId' in event ? event.taskId : null
   return typeof taskId === 'string' && taskId ? taskId : null
 }
 
@@ -153,7 +154,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   function answerTask(taskId: string, answers: QuestionAnswer[]) {
     const question = questionOf(taskId)
     if (!question) return
-    dispatch({ type: 'question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
+    dispatch({ type: 'task_question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
     api.answerQuestion(question.questionId, answers)
       .then((accepted: boolean) => accepted || showToast(t("app.this.question.has.ended.your.answer.was")))
       .catch((err: unknown) => showToast(errorMessage(err)))
@@ -165,7 +166,7 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     if (!question) return
     const only = question.questions.length === 1 && !question.questions[0].multiSelect
     if (only) answerTask(taskId, [{ id, selected: [label] }])
-    else dispatch({ type: 'question_pick', taskId, id, label })
+    else dispatch({ type: 'task_question_pick', taskId, id, label })
   }
 
   async function stopTask(taskId: string) {

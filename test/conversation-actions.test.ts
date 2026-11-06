@@ -55,8 +55,8 @@ test('setup, topic switches, empty and oversized questions do not reach the agen
 })
 
 test('directory, rewind and settings transitions refuse new questions and interjections without adding unsent words', () => {
-  for (const type of ['workdir_switching', 'rewind_busy', 'settings_busy']) {
-    for (const phase of ['idle', 'working']) {
+  for (const type of ['workdir_switching', 'rewind_busy', 'settings_busy'] as const) {
+    for (const phase of ['idle', 'working'] as const) {
       const h = harness(); h.change({ phase }); h.dispatch({ type })
       assert.equal(h.actions.ask('wait for selection', { via: 'island' }), false, `${type}/${phase}`)
       assert.equal(h.actions.ask('picture', { images: [{ id: 'p' }] }), false)
@@ -144,10 +144,10 @@ test('question and credential replies use their request ids and never save crede
     answerQuestion: async id => { replies.push(id); return false },
     provideSecrets: async (id, values) => { replies.push(id); assert.deepEqual(values, { TOKEN: 'test-only' }); return true },
   })
-  h.dispatch({ type: 'question_request', questionId: 'q', questions: [{ id: 'city', question: 'City?', options: [] }] })
+  h.dispatch({ type: 'question_request', at: 1, questionId: 'q', questions: [{ id: 'city', question: 'City?', options: [] }] })
   h.actions.answer([{ id: 'city', selected: [], custom: 'Shanghai' }])
   await settle(); assert.deepEqual(replies, ['q']); assert.equal(h.toasts.length, 1)
-  h.dispatch({ type: 'secret_request', requestId: 'keys', server: 'mail', names: ['TOKEN'] })
+  h.dispatch({ type: 'secret_request', at: 1, requestId: 'keys', server: 'mail', names: ['TOKEN'] })
   await h.actions.provideSecrets({ TOKEN: 'test-only' })
   assert.deepEqual(replies, ['q', 'keys']); assert.equal(h.state().secret, null)
   assert.equal(JSON.stringify(h.state()).includes('test-only'), false)

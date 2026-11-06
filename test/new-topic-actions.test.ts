@@ -1,7 +1,8 @@
+import { isConversationEvent } from '../src/shared/conversation-context.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
-import { createNewTopicAction, isPreviousTopicEvent } from '../src/renderer/new-topic-actions.ts'
+import { createNewTopicAction } from '../src/renderer/new-topic-actions.ts'
 import { showsHome } from '../src/renderer/view/render.ts'
 
 test('new topic is visible and focused before runtime readiness; double clicks and retries keep one topic', async () => {
@@ -29,10 +30,10 @@ test('new topic is visible and focused before runtime readiness; double clicks a
   await pending
   assert.equal(state.switching, false)
   assert.equal(state.newTopicPending, true, 'sending remains blocked after failure')
-  assert.match(state.error, /MCP unavailable/)
-  state = reduce(state, { type: 'ready', info: { mode: 'live', sessionId: 'reconnected-old', cwd: '/w' } })
+  assert.match(state.error ?? '', /MCP unavailable/)
+  state = reduce(state, { type: 'ready', info: { mode: 'live', model: '', sessionId: 'reconnected-old', cwd: '/w' } })
   assert.equal(state.newTopicPending, true, 'a runtime reconnect cannot silently send the draft into its session')
-  assert.match(state.error, /MCP unavailable/)
+  assert.match(state.error ?? '', /MCP unavailable/)
   const earlier = state.earlier
   const topic = state.topic
   const retry = action()
@@ -48,12 +49,13 @@ test('new topic is visible and focused before runtime readiness; double clicks a
 })
 
 test('late foreground events are excluded while background task events remain usable', () => {
-  for (const type of ['update', 'turn_end', 'config', 'question', 'question_closed', 'memory_context', 'schedule_propose']) {
-    assert.equal(isPreviousTopicEvent({ type }), true, type)
+  for (const type of ['update', 'turn_started', 'turn_end', 'config', 'question', 'question_closed', 'memory_context', 'schedule_propose', 'waits', 'report_delivered']) {
+    assert.equal(isConversationEvent({ type }), true, type)
   }
-  assert.equal(isPreviousTopicEvent({ type: 'permission' }), true)
-  assert.equal(isPreviousTopicEvent({ type: 'permission', taskId: 'background' }), false)
-  for (const type of ['task_update', 'task_end', 'task_question', 'error']) assert.equal(isPreviousTopicEvent({ type }), false, type)
+  assert.equal(isConversationEvent({ type: 'permission' }), true)
+  assert.equal(isConversationEvent({ type: 'permission', taskId: 'background' }), false)
+  assert.equal(isConversationEvent({ type: 'error', context: { conversationId: 'c', sessionId: 's' } }), true)
+  for (const type of ['task_update', 'task_end', 'task_question', 'error']) assert.equal(isConversationEvent({ type }), false, type)
 })
 
 test('an empty topic still displays preparation failure instead of hiding it behind the welcome screen', () => {

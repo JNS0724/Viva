@@ -10,7 +10,7 @@ import type { ConversationContext } from '../src/shared/conversation-context.ts'
 const old = { conversationId: 'c-old', sessionId: 's-old' }
 const next = { conversationId: 'c-new', sessionId: 's-new' }
 const info = (context: ConversationContext): AgentInfo => ({ mode: 'live', model: 'local', cwd: '/w', ...context, conversationId: context.conversationId ?? undefined })
-const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk' as const, content: { type: 'text' as const, text } })
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void
@@ -58,7 +58,7 @@ test('boot subscription holds live foreground pushes until history and current i
   ingress.receive({ type: 'ready', info: info(next) })
   ingress.stateChanged(); await flush()
   assert.deepEqual(seen, ['ready'])
-  state = reduce(state, { type: 'history_loaded', conversations: [] })
+  state = reduce(state, { type: 'history_loaded', messages: [] })
   state = reduce(state, { type: 'ready', info: info(next) })
   ingress.initialize(); await flush()
   assert.deepEqual(state.messages.map(message => message.text), ['during boot'])
@@ -101,7 +101,7 @@ test('same-session old-segment updates, waits, closes and turn errors cannot aff
   const h = harness(), target = { ...next, sessionId: old.sessionId }, gate = deferred<AgentInfo>()
   const pending = h.begin(() => gate.promise)
   h.ingress.receive({ type: 'update', update: chunk('old'), context: old })
-  h.ingress.receive({ type: 'waits', permissions: [{ requestId: 'old-permission', toolCall: {}, options: [] }], context: old })
+  h.ingress.receive({ type: 'waits', questions: [], secrets: [], permissions: [{ requestId: 'old-permission', toolCall: {}, options: [] }], context: old })
   h.ingress.receive({ type: 'question', questionId: 'q', questions: [{ id: 'city', question: 'City?', options: [] }], context: target })
   h.ingress.receive({ type: 'question_closed', questionId: 'q', context: old })
   h.ingress.receive({ type: 'secret_request', requestId: 'key', server: 'test', names: ['TOKEN'], context: target })
@@ -144,7 +144,7 @@ test('drain reentry keeps newly arriving end events behind already queued update
 test('session-wide config may lack a segment, while content may not use null as a wildcard', async () => {
   const h = harness(), gate = deferred<AgentInfo>(), pending = h.begin(() => gate.promise)
   const context = { conversationId: null, sessionId: next.sessionId }
-  h.ingress.receive({ type: 'config', info: { model: 'chosen' }, context })
+  h.ingress.receive({ type: 'config', info: { ...info(next), model: 'chosen' }, context })
   h.ingress.receive({ type: 'update', update: chunk('unattributed'), context })
   gate.resolve(info(next)); await pending; await flush()
   assert.equal(h.state().info.model, 'chosen'); assert.deepEqual(h.state().messages, [])

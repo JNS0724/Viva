@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 import { fileItems } from './selectors.ts'
 
 /**
@@ -40,7 +41,7 @@ function withPage(current: PreviewPage | null, page: PreviewPage): PreviewPage {
 
 const withFiles = (state: State, changes: Partial<State['files']>): State => ({ ...state, files: { ...state.files, ...changes } })
 
-export const FILES_ACTIONS: Record<string, Reducer> = {
+export const FILES_ACTIONS= {
   files_listed: (state, { path, entries }) => withFiles(state, { folders: { ...state.files.folders, [path]: entries }, error: null }),
   files_toggled: (state, { path }) => withFiles(state, {
     expanded: state.files.expanded.includes(path) ? state.files.expanded.filter((item) => item !== path) : [...state.files.expanded, path],
@@ -55,7 +56,7 @@ export const FILES_ACTIONS: Record<string, Reducer> = {
   files_view: (state, { mode }) => withFiles(state, { view: mode }),
   files_failed: (state, { message }) => withFiles(state, { error: message, loading: null, loadingMore: false }),
   files_stale: (state) => withFiles(state, { folders: {} }),
-}
+} satisfies ActionHandlers
 
 const slashes = (value: unknown) => String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
 

@@ -1,3 +1,4 @@
+import { objectOf } from '../shared/unknown-value.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { permissionDetail } from './selectors.ts'
@@ -26,8 +27,8 @@ export function promptButtons(options: readonly PermissionOption[]): Array<Permi
  * An approval's title and what it is about. A command is titled as one and shown in full below, not in the
  * title; `command` is that text, the one line the island shows.
  */
-export function permissionCard(permission: { title: string, rawInput?: Record<string, any> | null }): { title: string, detail: string, command: string } {
-  const command = commandOf(permission.rawInput)
+export function permissionCard(permission: { title: string, rawInput?: unknown }): { title: string, detail: string, command: string } {
+  const command = commandOf(objectOf(permission.rawInput))
   return { title: command ? COMMAND_TITLE : permission.title, detail: permissionDetail(permission), command }
 }
 

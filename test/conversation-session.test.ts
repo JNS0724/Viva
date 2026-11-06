@@ -75,7 +75,7 @@ test('concurrent new topics share acquisition and commit only after model matchi
   const first = h.sessions.newTopic(), second = h.sessions.newTopic()
   assert.equal(first, second); assert.equal(h.sessions.isChanging(), true)
   assert.equal(h.sessions.current(), previous)
-  gate.resolve({ ...started(), models: [{ value: 'selected-model' }] })
+  gate.resolve({ ...started(), models: [{ value: 'selected-model', name: 'selected model' }] })
   assert.equal((await first).model, 'selected-model')
   assert.notEqual(h.sessions.current().id, previous.id)
   assert.equal(h.sessions.current().sessionId, 'new')
@@ -97,7 +97,7 @@ test('failed topic preparation releases admission for a retry without replacing 
 test('a model failure after acquisition keeps prompts and reports gated until a successful retry', async t => {
   let actualSession = 'old'
   const h = harness(t, {
-    newSession: async () => { actualSession = 'new'; return { ...started(), models: [{ value: 'chosen' }] } },
+    newSession: async () => { actualSession = 'new'; return { ...started(), models: [{ value: 'chosen', name: 'chosen' }] } },
     setConfig: async () => { throw new Error('model unavailable') },
   }, true), previous = h.sessions.current()
   h.model('chosen')

@@ -80,7 +80,7 @@ const FEED_LISTED = 100
 
 type HistoryDb = ReturnType<typeof openHistoryDb>
 type Bridge = ReturnType<typeof createAcpBridge>
-type AgentInfo = { mode: string, model: string, cwd: string, reason?: string, [field: string]: any }
+type AgentInfo = import('../shared/agent-info.ts').AgentInfo
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
 const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
@@ -470,12 +470,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   const stopBridge = dsh.stop
 
   /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
-  const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '', conversationId: sessions.current().id })
+  const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem ?? undefined, cwd: config.cwd, model: '', models: [], efforts: [], reason: '', conversationId: sessions.current().id })
   const setupMessages = (): Readonly<Record<string, string>> => ({ 'no-key': t("main.main.enter.a.deepseek.api.key.or.add"), 'no-dsh': t("main.main.deepseek.harness.not.found.run.npm.install") })
   let SETUP_MESSAGES = setupMessages()
 
   function requireBridge() {
-    if (!dsh.current) throw new Error(SETUP_MESSAGES[lastInfo.problem] ?? t("main.main.the.assistant.is.not.connected.yet"))
+    if (!dsh.current) throw new Error(SETUP_MESSAGES[lastInfo.problem ?? ''] ?? t("main.main.the.assistant.is.not.connected.yet"))
     return dsh.current
   }
 

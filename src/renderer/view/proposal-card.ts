@@ -1,3 +1,4 @@
+import type { ScheduleRuleView } from '../proposal-types.ts'
 import { calendarDays, formatDate } from '../../shared/i18n/format.ts'
 import { onLocaleChange, getLocale } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
@@ -26,7 +27,7 @@ export function whenText(ts: number, now = Date.now()): string {
 }
 
 /** How often a schedule runs, in words: once, every day, every week on its days, or its cron expression. */
-export function scheduleWhen(rule: Untyped, firstAt: string, now: number): string {
+export function scheduleWhen(rule: ScheduleRuleView, firstAt: string, now: number): string {
   const first = whenText(Date.parse(firstAt), now)
   if (rule?.kind === 'daily') return t('schedule.daily', { time: String(rule.daily?.time ?? '').slice(0, 5) })
   if (rule?.kind === 'weekly') {

@@ -52,6 +52,17 @@ export type KeptTask = ({ mark?: TaskMark }) & (
 export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
 export interface IpcResults {
+  'agent:info': import('./agent-info.ts').AgentInfo
+  'agent:prompt': void
+  'agent:steer': import('./agent-info.ts').SteerResult
+  'agent:cancel': void
+  'agent:new-session': import('./agent-info.ts').AgentInfo
+  'agent:set-config': import('./agent-info.ts').AgentInfo
+  'agent:permission': boolean
+  'agent:answer': boolean
+  'agent:secrets': boolean
+  'schedules:accept': { title: string, nextAt: string }
+  'schedules:decline': void
   'task:start': TaskStartResult
   'task:finished': KeptTask[]
   /** Said on the live channel (`waits`, a SessionWaits), in its place among the pushes. */
@@ -59,3 +70,11 @@ export interface IpcResults {
   'task:close': void
   'task:stop': void
 }
+
+export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'
+export interface TaskSnapshot {
+  taskId: string, runId: string, title: string, status: TaskStatus, currentAction: string | null,
+  waitingFor: 'permission' | 'answer' | null, startedAt: number, updatedAt: number,
+  endedAt: number | null, resultPreview: string, revision: number,
+}
+export type WindowSnapshot = TaskSnapshot & { taskSeq: number, opening?: TaskOpening }

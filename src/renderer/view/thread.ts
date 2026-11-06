@@ -1,3 +1,4 @@
+import { objectOf } from '../../shared/unknown-value.ts'
 import { localeRevision } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { fileName, splitFiles } from '../../shared/attachments.ts'
@@ -229,13 +230,14 @@ const cardHead = (text: string) => h('div', { class: 'confirm-head' }, h('span',
 
 /** The conversation's request; a background task's is asked on its card (view/task-card.js). */
 function permissionCard(permission: NonNullable<State['permission']>, handlers: Handlers) {
+  const rawInput = objectOf(permission.rawInput)
   const head = PROMPT_HEADS.permission
   const { title, detail, command } = cardOf(permission)
   return withMaid('confirm', head, 'confirm',
     cardHead(head),
     h('div', { class: 'confirm-title', text: title }),
-    permission.rawInput?.description && typeof permission.rawInput.description === 'string'
-      ? h('p', { class: 'confirm-reason', text: t("handoff.approval.reason", { reason: permission.rawInput.description }) }) : null,
+    rawInput?.description && typeof rawInput.description === 'string'
+      ? h('p', { class: 'confirm-reason', text: t("handoff.approval.reason", { reason: rawInput.description }) }) : null,
     command ? h('p', { class: 'confirm-hint', text: t("handoff.approval.command.scope") }) : null,
     detail ? h('details', { class: 'confirm-parameters', open: true },
       h('summary', { text: t("handoff.approval.parameters") }), h('pre', { class: 'confirm-detail', text: detail })) : null,
@@ -516,10 +518,10 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     // The schedules the model proposed in this conversation, each to be decided on (view/proposal-card.ts).
     ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
-    state.question ? part('question', [state.question], () => questionCard(state.question, handlers)) : '',
+    state.question ? part('question', [state.question], () => questionCard(state.question!, handlers)) : '',
     state.secret ? secretCard(state.secret, handlers) : '',
     state.phase === 'working' && !last?.open ? part('working', [catMood(state), currentAction(state)], () => workingRow(state)) : '',
-    state.phase === 'error' ? part('error', [state.error], () => errorRow(state.error)) : '',
+    state.phase === 'error' ? part('error', [state.error], () => errorRow(state.error ?? '')) : '',
   ].flat().filter(isContent)
   const changed = reconcileChildren(container, nodes)
   threadViews.set(container, cache)

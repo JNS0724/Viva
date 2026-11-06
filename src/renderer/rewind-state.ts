@@ -1,3 +1,4 @@
+import type { ActionHandlers, PayloadFor } from './action-types.ts'
 /**
  * Going back to something the user said (phase 2): which messages can be gone back to, the one being edited,
  * and what is on screen once the agent went back (main/rewind-ipc.js). Pure and immutable like `state.js`,
@@ -58,7 +59,7 @@ export function foldAfter(state: Pick<State, 'messages' | 'folds'>): Record<stri
 const withRewind = (state: State, changes: Partial<State['rewind']>): State => ({ ...state, rewind: { ...state.rewind, ...changes } })
 
 /** @param newSession state.ts's new_session, for the reset */
-export function rewindActions(newSession: Reducer): Record<string, Reducer> {
+export function rewindActions(newSession: (state: State, payload: PayloadFor<'new_session'>) => State) {
   return {
     rewind_edit: (state, { id }) => withRewind(state, { editing: id }),
     rewind_cancel: (state) => withRewind(state, { editing: null }),
@@ -83,12 +84,12 @@ export function rewindActions(newSession: Reducer): Record<string, Reducer> {
       // Going back is within the topic.
       topic: state.topic,
       conversationId: conversation.id,
-      messages: conversation.messages.map((m: SegmentMessage, i: number) => ({
+      messages: conversation.messages.map((m, i: number) => ({
         id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, ...(m.images ? { images: m.images } : {}),
       })),
       // The task records of the part kept, and, back onto a path, those of that path (main/rewind-ipc.ts).
       records: recordsFrom(conversation.records),
       folds,
     }),
-  }
+  } satisfies ActionHandlers
 }

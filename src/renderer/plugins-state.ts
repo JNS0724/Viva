@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 /**
  * The 插件 section of settings (plugins-ipc.ts): the dsh plugins the user installed, and an install in two steps:
  * what the spec names (`inspection`), then 安装; a first attempt may ask to allow dependency build scripts
@@ -21,7 +22,7 @@ export const initialPlugins = Object.freeze({
 
 const withPlugins = (state: State, changes: Partial<State['plugins']>): State => ({ ...state, plugins: { ...state.plugins, ...changes } })
 
-export const PLUGIN_ACTIONS: Record<string, Reducer> = {
+export const PLUGIN_ACTIONS= {
   plugins_loaded: (state, { view }) => withPlugins(state, { ...view, loaded: true, busy: false }),
   plugins_busy: (state) => withPlugins(state, { busy: true, error: null, notice: null }),
   plugins_failed: (state, { message }) => withPlugins(state, { busy: false, error: message }),
@@ -33,4 +34,4 @@ export const PLUGIN_ACTIONS: Record<string, Reducer> = {
     ...(pendingBuilds.length ? {} : { spec: '', inspection: null }),
   }),
   plugins_dismiss: (state) => withPlugins(state, { inspection: null, pendingBuilds: [], error: null }),
-}
+} satisfies ActionHandlers

@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 import { closeStreams } from './streams.ts'
 
 /**
@@ -5,7 +6,7 @@ import { closeStreams } from './streams.ts'
  * phase is 'asking'. The values go from the card straight to the main process; the state only ever holds
  * which server asks for which names, and the trace only that it was asked and whether it was filled in.
  */
-export const SECRET_ACTIONS: Record<string, Reducer> = {
+export const SECRET_ACTIONS= {
   secret_request: (state, { requestId, server, names, at }) => ({
     ...closeStreams(state),
     phase: 'asking',
@@ -18,10 +19,10 @@ export const SECRET_ACTIONS: Record<string, Reducer> = {
       ...state,
       phase: 'working',
       secret: null,
-      timeline: [...state.timeline, { kind: 'secret_answer', ref: requestId, at, title: state.secret.server, provided }],
+      timeline: [...state.timeline, { kind: 'secret_answer', ref: requestId, at, title: state.secret!.server, provided }],
     }
   },
   secret_closed: (state, { requestId }) => (state.secret?.requestId === requestId
     ? { ...state, phase: state.phase === 'asking' ? 'working' : state.phase, secret: null }
     : state),
-}
+} satisfies ActionHandlers

@@ -1,3 +1,4 @@
+import type { ConversationHandlers, AskedQuestion } from './conversation-types.ts'
 import { answerText, type QuestionAnswer } from '../shared/question-answer.ts'
 import { closeStreams } from './streams.ts'
 
@@ -9,7 +10,6 @@ export { answerText }
 export type { QuestionAnswer }
 
 /** What the agent asks while it waits (state.question): its questions, and what is picked so far, by question. */
-type AskedQuestion = { questionId: string, questions: readonly QuestionItem[], picks: Readonly<Record<string, readonly string[]>> }
 
 const askedText = (questions: readonly QuestionItem[]) => questions.map((question) => question.question).join('\n')
 
@@ -31,7 +31,7 @@ function togglePick(item: QuestionItem, current: readonly string[], label: strin
 }
 
 /** The conversation's questions (conversation-state.ts), in the conversation on screen or a task's. */
-export const QUESTION_ACTIONS: Readonly<Record<string, (state: ConversationView, action: Action) => ConversationView>> = {
+export const QUESTION_ACTIONS = {
   question_request: (state, { questionId, questions, at }) => {
     const closed = closeStreams(state)
     return {
@@ -43,10 +43,12 @@ export const QUESTION_ACTIONS: Readonly<Record<string, (state: ConversationView,
   },
 
   question_pick: (state, { id, label }) => {
-    const item = state.question?.questions.find((question: QuestionItem) => question.id === id)
+    const question = state.question
+    if (!question) return state
+    const item = question.questions.find((question: QuestionItem) => question.id === id)
     if (!item) return state
-    const picks = { ...state.question.picks, [id]: togglePick(item, state.question.picks[id] ?? [], label) }
-    return { ...state, question: { ...state.question, picks } }
+    const picks = { ...question.picks, [id]: togglePick(item, question.picks[id] ?? [], label) }
+    return { ...state, question: { ...question, picks } }
   },
 
   question_answered: (state, { questionId, answers, at }) => {
@@ -73,4 +75,4 @@ export const QUESTION_ACTIONS: Readonly<Record<string, (state: ConversationView,
       timeline: [...state.timeline, { kind: 'answer', ref: questionId, at, title: askedText(state.question.questions), answered: false }],
     }
   },
-}
+} satisfies ConversationHandlers

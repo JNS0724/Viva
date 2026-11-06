@@ -9,10 +9,14 @@ declare global { interface Window { vivaSmokeEvents?: unknown[] } }
 export async function recordMemoryEvents(session: SmokeApplication): Promise<void> {
   await session.page.evaluate(() => {
     window.vivaSmokeEvents = []
-    window.agent.onEvent(event => {
+    window.agent.onEvent(value => {
+      if (!value || typeof value !== 'object') return
+      const event = value as Record<string, unknown>
+      if (typeof event.type !== 'string') return
+      const info = event.info && typeof event.info === 'object' ? event.info as Record<string, unknown> : null
       if (!['ready', 'turn_end', 'memory_context', 'error'].includes(event.type)) return
       const items = window.vivaSmokeEvents!
-      items.push({ type: event.type, at: Date.now(), sessionId: event.info?.sessionId, injected: event.injected, message: event.type === 'error' ? event.message : undefined })
+      items.push({ type: event.type, at: Date.now(), sessionId: info?.sessionId, injected: event.injected, message: event.type === 'error' ? event.message : undefined })
       if (items.length > 200) items.shift()
     })
   })

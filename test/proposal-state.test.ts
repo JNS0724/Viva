@@ -5,7 +5,7 @@ import { initialState, reduce } from '../src/renderer/state.ts'
 
 /** A schedule's card under the conversation (proposal-state.ts, proposal-actions.ts): 定时 keeps it, 不用 lets it go. */
 
-const proposal = { proposalId: 'p1', title: '周报', prompt: '起草周报', rule: { kind: 'at', at: '2026-11-07T08:00:00.000Z' }, firstAt: '2026-11-07T08:00:00.000Z' }
+const proposal = { proposalId: 'p1', title: '周报', prompt: '起草周报', rule: { kind: 'at' as const, at: '2026-11-07T08:00:00.000Z' }, firstAt: '2026-11-07T08:00:00.000Z' }
 
 function setup(api: Record<string, (id: string) => Promise<unknown>>) {
   let state = reduce(initialState, { type: 'schedule_proposed', proposal }) as State
@@ -20,6 +20,7 @@ test('a proposal is one card, however often it is pushed; a push without an id i
   const once = reduce(initialState, { type: 'schedule_proposed', proposal })
   assert.deepEqual(once.proposals, [{ id: 'p1', proposal, status: 'open' }])
   assert.equal(reduce(once, { type: 'schedule_proposed', proposal }), once)
+  // @ts-expect-error Malformed storage/legacy input is also guarded at runtime.
   assert.equal(reduce(initialState, { type: 'schedule_proposed', proposal: { title: 'x' } }), initialState)
 })
 

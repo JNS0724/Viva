@@ -83,7 +83,7 @@ function lastAnswer(state: State) {
 }
 
 function afterTurn(state: State, base: IslandBase): IslandView {
-  const receipt = state.lastReceipt
+  const receipt = state.lastReceipt!
   if (receipt.stopReason === 'cancelled') return { ...base, form: 'idle', tone: 'idle', label: t("island-view.stopped"), detail: state.info.model || '' }
   return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: lastAnswer(state) }
 }

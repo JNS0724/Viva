@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 import { closeStreams } from './streams.ts'
 
 /**
@@ -40,7 +41,7 @@ const isRecordFor = (state: State, conversationId: unknown, sessionId: unknown) 
   ? conversationId === state.conversationId
   : !state.newTopicPending && typeof sessionId === 'string' && sessionId === state.info.sessionId)
 
-export const REPORT_ACTIONS: Record<string, Reducer> = {
+export const REPORT_ACTIONS= {
   /**
    * A task's result the model read, drawn where it came: after the messages there now. What the agent was writing
    * closes, so what it says next comes below the record. The same report twice is one record; one for a
@@ -52,4 +53,4 @@ export const REPORT_ACTIONS: Record<string, Reducer> = {
     const record = recordOf({ reportId, at, text, after: closed.messages.length })
     return record ? { ...closed, records: [...closed.records, record] } : state
   },
-}
+} satisfies ActionHandlers

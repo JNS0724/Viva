@@ -18,7 +18,7 @@ export function createModelActions({ api, getState, dispatch, errorMessage }: Pi
   const fail = (err: unknown) => dispatch({ type: 'models_failed', message: errorMessage(err) })
 
   /** What the main process answers a change with: the section as it is now, and the provider added or changed. */
-  type ModelsView = { added?: string, updated?: string, [field: string]: unknown }
+  type ModelsView = Partial<State['models']> & { added?: string, updated?: string }
 
   async function change(request: () => Promise<ModelsView>, noticeFor: (view: ModelsView) => string) {
     if (getState().models.busy) return
@@ -44,7 +44,7 @@ export function createModelActions({ api, getState, dispatch, errorMessage }: Pi
       }
     },
     /** The form, for a new provider or (given one) for changing it. */
-    openProviderForm: (provider?: { id: string, models: readonly unknown[] }) => dispatch({ type: 'models_draft_open', provider: provider ?? null }),
+    openProviderForm: (provider?: { id: string, models: readonly import('./model-state.ts').ModelEntry[] }) => dispatch({ type: 'models_draft_open', provider: provider ?? null }),
     closeProviderForm: () => dispatch({ type: 'models_draft_close' }),
     addModelRow: () => dispatch({ type: 'models_row_add' }),
     removeModelRow: (key: number) => dispatch({ type: 'models_row_remove', key }),

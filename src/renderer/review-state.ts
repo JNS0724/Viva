@@ -1,3 +1,6 @@
+import type { ReviewTask, ReviewTopic, ReaderMessage, ReviewFocus, ReaderWindow, ReaderEdge, ReadPart } from './review-types.ts'
+export type { ReviewTask, ReviewTopic, ReaderMessage, ReviewFocus, ReaderWindow, ReaderEdge, ReadPart } from './review-types.ts'
+import type { ActionHandlers } from './action-types.ts'
 import { getLocale } from '../shared/i18n/locale.ts'
 import { formatDate, calendarDays } from '../shared/i18n/format.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -11,36 +14,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { starKey } from './stars.ts'
 
 export const REVIEW_FILTERS = Object.freeze(['all', 'tasks', 'files', 'stars'] as const)
-
-/** A background task of a topic (history-review.ts ReviewTask). */
-export type ReviewTask = { id: string, createdAt: number, title: string, turns: number, hasFiles: boolean, stars: number }
-/** A topic as the history lists it (history-review.ts ReviewTopic). */
-export type ReviewTopic = {
-  id: string, title: string, startedAt: number, lastAt: number, turns: number, hasFiles: boolean, stars: number,
-  cwds: readonly string[], segments: readonly string[], head: string | null, tasks: readonly ReviewTask[],
-}
-/** A message read in 回顾, with the segment it is kept in. */
-export type ReaderMessage = SegmentMessage & { segmentId: string }
-/**
- * What is read at the top: opened from a hit, a link or a star; `found`, the message it named (its `data-msg`),
- * marked while it is open; `notice` when that message itself is not there.
- */
-export type ReviewFocus = { key: string, title: string, at: number | null, head: string | null, found: string | null, notice: string | null }
-
-/**
- * The part of what is read that is drawn: `messages` from place `from` of `total` (history-reader.ts), never more
- * than READER_MAX, so a topic of a thousand turns reads with no more on the page than a short one. Reading on at one
- * end lets go of as many at the other; `loading`, the end being read. `read` names the reading it came from (a part
- * asked for by an earlier one, opened before the topic was opened again elsewhere, is not taken); `whole`, a segment
- * read with the talk it shares, as every part read on of it is too.
- */
-export type ReaderWindow = {
-  key: string, read: number, whole: boolean, total: number, from: number, messages: readonly ReaderMessage[], loading: 'before' | 'after' | null,
-}
-export type ReaderEdge = 'before' | 'after'
 export const READER_MAX = 200
-/** A part read from the history: where it starts, what it holds. */
-export type ReadPart = { total: number, from: number, messages: readonly ReaderMessage[] }
 
 /** Whether a part read on joins the window at that end: right before its first message, or right after its last. */
 const joins = (window: ReaderWindow, edge: ReaderEdge, part: ReadPart) => (edge === 'before'
@@ -129,7 +103,7 @@ function recount(topic: ReviewTopic, segmentId: string, starred: boolean): Revie
   }
 }
 
-export const REVIEW_ACTIONS: Record<string, Reducer> = {
+export const REVIEW_ACTIONS= {
   review_loading: (state) => withReview(state, { loading: true }),
   /** A page of topics; `fresh`, the first page, read again each time the page opens or the filter changes. */
   review_loaded: (state, { topics, hasMore, fresh }) => {
@@ -184,4 +158,4 @@ export const REVIEW_ACTIONS: Record<string, Reducer> = {
     starred: starred || !state.review.starred ? state.review.starred
       : state.review.starred.filter((item: { segmentId: string, seq: number }) => item.segmentId !== segmentId || item.seq !== seq),
   }),
-}
+} satisfies ActionHandlers

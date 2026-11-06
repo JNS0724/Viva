@@ -6,8 +6,9 @@ import { islandView } from '../src/renderer/island-view.ts'
 
 /** An ended task, once seen on the 后台 page, is no longer reminded of at the island's tail. */
 
-const run = (actions: Action[], start: State = initialState): State => actions.reduce((state, action) => reduce(state, action), start)
-const started = (id: string, title: string, at: number): Action => ({ type: 'task_started', task: { id, title, words: title }, text: title, at })
+type FixtureAction = Parameters<typeof reduce>[1]
+const run = (actions: FixtureAction[], start: State = initialState): State => actions.reduce((state, action) => reduce(state, action), start)
+const started = (id: string, title: string, at: number): FixtureAction => ({ type: 'task_started', task: { id, title, words: title }, text: title, at })
 
 /** Two tasks ended (one done, one failed), one at work. */
 function twoEnded(): State {
@@ -75,7 +76,9 @@ test('the page left, what it showed is seen, also when it picked it by itself', 
 })
 
 test('seen by the last launch, a task is not reminded of again; what was kept that is not an id is ignored', () => {
+  // @ts-expect-error Invalid persisted ids are ignored defensively.
   const restored = reduce(twoEnded(), { type: 'tasks_seen_restored', ids: ['a', 7, null] })
   assert.deepEqual(ids(unseenEnded(restored)), ['b'])
+  // @ts-expect-error Invalid persisted collection is ignored defensively.
   assert.deepEqual(reduce(restored, { type: 'tasks_seen_restored', ids: 'not a list' }).tasks.seen, ['a'])
 })

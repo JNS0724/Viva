@@ -1,28 +1,6 @@
-/** A model of a provider, as the main process shows it (model-providers.ts ModelEntry). */
-export type ModelEntry = Readonly<{ id: string, contextWindow?: number, maxTokens?: number, image?: boolean }>
-/** A model the endpoint listed (model-discovery.ts). */
-export type DiscoveredModel = Readonly<{ id: string, name: string, contextWindow?: number, maxTokens?: number }>
-/** A row of the form: a key that names its fields, and what they start with; what is typed stays in them. */
-export type ModelRow = Readonly<{ key: number } & ModelEntry>
-
-/** 获取可用模型: what the endpoint listed, what the user searches and picks among it. */
-export type Discovery = Readonly<{
-  busy: boolean, error: string | null, found: readonly DiscoveredModel[] | null, query: string, picked: readonly string[],
-}>
-
-/** The add or edit form while open. */
-export type ModelDraft = Readonly<{
-  /** The provider edited, or null for a new one. */
-  editing: string | null
-  /**
-   * Another each time the form opens, never one used before (models.drafts): its fields start fresh (dom.ts
-   * keepingInput data-version), and an answer for a form since closed or opened again is told apart.
-   */
-  version: number
-  rows: readonly ModelRow[]
-  nextKey: number
-  discovery: Discovery
-}>
+import type { ModelEntry, DiscoveredModel, ModelRow, Discovery, ModelDraft } from './model-types.ts'
+export type { ModelEntry, DiscoveredModel, ModelRow, Discovery, ModelDraft } from './model-types.ts'
+import type { ActionHandlers } from './action-types.ts'
 
 const NO_DISCOVERY: Discovery = Object.freeze({ busy: false, error: null, found: null, query: '', picked: Object.freeze([]) })
 
@@ -91,7 +69,7 @@ export function adoptPicked(draft: ModelDraft, current: readonly ModelRow[]): Pi
   return { rows, nextKey: draft.nextKey + adding.length, discovery: NO_DISCOVERY }
 }
 
-export const MODEL_ACTIONS: Record<string, Reducer> = {
+export const MODEL_ACTIONS= {
   models_loaded: (state, { view }) => withModels(state, { ...view, loaded: true, busy: false }),
   models_busy: (state) => withModels(state, { busy: true, error: null, notice: null }),
   models_failed: (state, { message }) => withModels(state, { busy: false, error: message }),
@@ -113,4 +91,4 @@ export const MODEL_ACTIONS: Record<string, Reducer> = {
   }),
   models_discovery_close: (state) => withDiscovery(state, NO_DISCOVERY),
   models_adopt: (state, { rows }) => withDraft(state, (draft) => adoptPicked(draft, rows)),
-}
+} satisfies ActionHandlers

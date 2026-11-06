@@ -1,16 +1,7 @@
+import type { FeedItemView, ScheduleView, FeedPick, FeedShown } from './feed-types.ts'
+export type { FeedItemView, ScheduleView, FeedPick, FeedShown } from './feed-types.ts'
+import type { ActionHandlers } from './action-types.ts'
 import { t } from '../shared/i18n/translate.ts'
-
-/**
- * 动态 (system-design §12.2): what the app brings on its own, apart from 后台 (what the user asked for). Its page is
- * opened from the title bar; it lists what is new (items not looked at yet), what comes next (the schedules) and what
- * was seen, and says in one line how things stand. Pure and immutable; `state.ts` merges it.
- */
-/** An item as the main process lists it (backend/feed-store.ts). */
-export interface FeedItemView { id: string, source: string, key: string, title: string, body: string, origin: { label: string, ref?: string }, createdAt: number, seenAt: number | null }
-/** A schedule as the main process lists it (backend/schedules.ts). */
-export interface ScheduleView { id: string, title: string, prompt: string, kind: string, nextAt: string, status: string }
-/** What is shown on the right: an item, or a schedule. */
-export interface FeedPick { kind: 'item' | 'schedule', id: string }
 
 export const initialFeed = Object.freeze({
   open: false,
@@ -44,8 +35,6 @@ export function feedGroups(state: State): { fresh: FeedItemView[], next: Schedul
 /** The title bar's count: new items, waiting to be looked at. */
 export const feedCount = (state: State): number => feedGroups(state).fresh.length
 
-export type FeedShown = { kind: 'item', item: FeedItemView, fresh: boolean } | { kind: 'schedule', schedule: ScheduleView }
-
 /** The one shown on the right: the one picked while it is listed, else the first new item, else none. */
 export function feedShown(state: State): FeedShown | null {
   const { fresh, next, seen } = feedGroups(state)
@@ -70,7 +59,7 @@ export const continueText = (item: Pick<FeedItemView, 'title' | 'body'>): string
 const withFeed = (state: State, changes: Partial<State['feed']>): State => ({ ...state, feed: { ...state.feed, ...changes } })
 const pickOf = (kind: unknown, id: unknown): FeedPick | null => ((kind === 'item' || kind === 'schedule') && typeof id === 'string' ? { kind, id } : null)
 
-export const FEED_ACTIONS: Readonly<Record<string, Reducer>> = {
+export const FEED_ACTIONS= {
   feed_open: (state, { kind, id }) => withFeed({ ...state, island: false }, { open: true, selected: pickOf(kind, id) ?? state.feed.selected }),
   feed_close: (state) => withFeed(state, { open: false }),
   feed_select: (state, { kind, id }) => withFeed(state, { selected: pickOf(kind, id) }),
@@ -79,4 +68,4 @@ export const FEED_ACTIONS: Readonly<Record<string, Reducer>> = {
   }),
   feed_busy: (state) => withFeed(state, { busy: true, error: null }),
   feed_failed: (state, { message }) => withFeed(state, { busy: false, error: typeof message === 'string' ? message : null }),
-}
+} satisfies ActionHandlers

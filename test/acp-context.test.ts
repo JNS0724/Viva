@@ -1,3 +1,4 @@
+import { decodeAgentEvent } from '../src/renderer/agent-event-decoder.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
@@ -89,7 +90,7 @@ test('a cold MCP reattachment publishes the reconciled context before its next f
     dshBin: '/fixture/dsh', profile: 'viva', cwd: process.cwd(), env: {},
     spawnFn: (() => child as unknown as ChildProcess) as typeof spawn,
     conversationContext: id => { const context = sessions.context(); return context.sessionId === id ? context : { conversationId: null, sessionId: id } },
-    emit: event => { ingress.receive(event) },
+    emit: value => { const event = decodeAgentEvent(value); if (event) ingress.receive(event) },
   })
   const sessions = createConversationSession({
     history: () => db, agent: () => bridge, info: () => view, setInfo: value => { view = value },

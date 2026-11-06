@@ -17,7 +17,7 @@ const MAX_QUERY_CHARS = 200
 
 type HistoryDb = ReturnType<typeof openHistoryDb>
 /** The agent as it started on a session (acp-bridge.ts): the session, where it runs, whether dsh had it still. */
-export type StartedAgent = { sessionId: string | null, cwd?: string | null, resumed?: boolean, [field: string]: unknown }
+export type StartedAgent = Omit<Partial<import('../shared/agent-info.ts').AgentInfo>, 'cwd'> & { sessionId: string | null, cwd?: string | null, resumed?: boolean }
 type SwitchAgent = (sessionId: string | null, cwd?: string | null, options?: { exactly?: boolean }) => Promise<StartedAgent>
 type SelectSession = <T>(work: (ops: { switchAgent: SwitchAgent, select: (conversation: Conversation) => void }) => Promise<T>) => Promise<T>
 
@@ -43,7 +43,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   dshHome: string,
   traceDb?: () => ReturnType<typeof openTraceDb> | null,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
-  agentInfo: () => { mode: string | null, model: string | null, [field: string]: unknown },
+  agentInfo: () => { mode: string | null, model: string | null },
   selectSession: SelectSession,
   chooseExportPath: (defaultName: string) => Promise<string | null>,
   schedule?: (fn: () => void, ms: number) => void,
