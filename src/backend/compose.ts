@@ -1,4 +1,5 @@
 import { createDshLifecycle, type DshLifetime } from './dsh-lifecycle.ts'
+import { createConversationSession } from './conversation-session.ts'
 import { createConfigActions } from './config-actions.ts'
 import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
@@ -46,10 +47,8 @@ import { registerModelsIpc } from './models-ipc.ts'
 import { createPersonal } from './personal.ts'
 import { createPreferences } from './preferences.ts'
 import { CONFIG_IDS } from './session-info.ts'
-import { sessionTiming } from './session-timing.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
 import { skillRoots } from './skills.ts'
-import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
@@ -148,18 +147,18 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** The turn in progress: memories the agent saves during it are reported when it ends. */
   let turn = { active: false, startedAt: 0 }
   let lateMemoryTimer: ReturnType<typeof setInterval> | undefined
-  /** The conversation on screen: the latest one at launch, one picked from the history panel, or a fresh one. */
-  let conversation!: ReturnType<HistoryDb['create']>
-  /** Saved records a topic goes on from in a new session, to go with the first question asked in it (agent:prompt). */
-  let carry: { conversationId: string, text: string } | null = null
-  /**
-   * The working directory the agent works in now: the current conversation's own, or the app's (config.cwd,
-   * defaultWorkDir) when it has none or it is gone. The user switches it from the window (work-dir-ipc.ts).
-   */
-  let workDir: string | null = null
-  let defaultWorkDir: string | null = null
   /** What the window is told of the agent (session-info.ts, acp-bridge.ts): mode, model, session, what it remembers. */
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
+  const sessions = createConversationSession({
+    history: () => historyDb,
+    agent: () => dsh.current,
+    info: () => lastInfo,
+    setInfo: (info) => { lastInfo = info },
+    isBusy: () => turn.active,
+    folderExists: isFolder,
+    selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
+    changed: () => wakeEffects(),
+  })
 
   /** A push for the window, numbered by the event core (a transient one: what changes state goes through apply). */
   function emitToRenderer(event: HostEvent) {
@@ -199,9 +198,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** The pictures folder: where the user moved it, or in the app's data. */
   const imagesDir = () => preferences.get().imagesDir || path.join(userData, 'images')
-  const workDirNow = () => workDir ?? defaultWorkDir
-  /** Where a conversation goes on: in its own directory while that is still there, else in the app's. */
-  const workDirFor = (segment: { cwd?: string | null } | null | undefined, config: Config) => (segment?.cwd && isFolder(segment.cwd) ? segment.cwd : config.cwd)
+  const workDirNow = sessions.cwd
 
   type DshContext = { config: Config, cwd: string, resumeSessionId: string | null }
   const dsh = createDshLifecycle({
@@ -211,9 +208,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     },
     connect: (instance: Bridge, context: DshContext) => instance.start({ resumeSessionId: context.resumeSessionId }),
     onReady: (started, context) => {
-      const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
-      workDir = context.cwd
-      conversation = { ...conversation, sessionId: info.sessionId, cwd: context.cwd }
+      const info = sessions.ready(started, context.cwd)
       emitToRenderer({ type: 'ready', info })
       wakeEffects()
       scheduleRuns?.wake()
@@ -242,7 +237,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   })
 
   /** Tells the window what the agent remembered or replaced, and what background the plugin sent. */
-  function reportMemoryChanges(segment = conversation) {
+  function reportMemoryChanges(segment = sessions.current()) {
     try {
       const report = personal.collect({ conversationId: segment.id, sessionId: segment.sessionId })
       if (report?.memories.length || report?.invalidated.length) {
@@ -260,14 +255,15 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function reportTurnMemories() {
     if (!turn.active) return
     turn = { ...turn, active: false }
-    const segment = conversation
+    const segment = sessions.current()
     reportMemoryChanges(segment)
     clearInterval(lateMemoryTimer)
     const until = Date.now() + LATE_MEMORY_WINDOW_MS
     lateMemoryTimer = setInterval(() => {
       // Memory claiming has a global watermark. Never let an old turn's poll claim a new
       // topic's writes, or writes made while the next foreground turn is still running.
-      if (conversation.id !== segment.id || conversation.sessionId !== segment.sessionId || turn.active) {
+      const current = sessions.current()
+      if (current.id !== segment.id || current.sessionId !== segment.sessionId || turn.active) {
         clearInterval(lateMemoryTimer); return
       }
       reportMemoryChanges(segment)
@@ -386,7 +382,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
     if (request.op.startsWith('schedule_')) {
       if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-      return schedules.act(request as ScheduleAction, conversation.id, workDirNow() ?? '')
+      return schedules.act(request as ScheduleAction, sessions.current().id, workDirNow() ?? '')
     }
     const tasks = requireTasks().agent
     if (request.op !== 'start' && request.op !== 'stop' && request.op !== 'message') throw new Error(t('main.task-registry.unknown.task.query.operation'))
@@ -417,7 +413,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * it: no words of the user's.
    */
   const taskReports = createTaskReports({
-    conversation: () => (!dsh.current || dsh.current.isSwitching() || dsh.isQuitting() ? 'away' : turn.active ? 'busy' : 'idle'),
+    conversation: () => (!dsh.current || sessions.isChanging() || dsh.current.isSwitching() || dsh.isQuitting() ? 'away' : turn.active ? 'busy' : 'idle'),
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
     status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
@@ -432,7 +428,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         throw err
       }
     },
-    currentConversation: () => conversation.id,
+    currentConversation: () => sessions.current().id,
     superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: (note) => {
       const agent = dsh.current
@@ -454,7 +450,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     history: () => historyDb ?? null,
     effects: () => effects,
     apply: applyChange,
-    current: () => conversation,
+    current: sessions.current,
     show: emitToRenderer,
   })
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
@@ -486,9 +482,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       return info
     }
     fs.mkdirSync(config.cwd, { recursive: true })
-    workDir = workDirFor(conversation, config)
+    const context = sessions.startingIn(config.cwd)
     try {
-      const started = await dsh.start({ config, cwd: workDir, resumeSessionId: conversation.sessionId })
+      const started = await dsh.start({ config, ...context })
       return started ? lastInfo : null
     } catch (err) {
       console.error('[main] failed to start agent bridge:', err)
@@ -503,22 +499,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return startBridge()
   }
 
-  /**
-   * dsh starts a session in the same process on the model its profile named at launch; the user may have
-   * picked another one since, and new conversations follow the latest pick.
-   */
-  async function withLastModel<I extends { modelValue?: string, models?: ReadonlyArray<{ value: string }> }>(info: I) {
-    const last = modelStore.lastModel()
-    if (!last) return info
-    const value = modelValue(last)
-    if (info.modelValue === value || !info.models?.some((model) => model.value === value)) return info
-    return { ...info, ...await requireBridge().setConfig('model', value) }
-  }
-
   /** A new key (or none) means a different agent, so the conversation starts over. */
   async function restartWithNewConversation() {
     await stopBridge()
-    conversation = historyDb.create({ cwd: workDirNow() })
+    sessions.reset()
     return startBridge()
   }
 
@@ -561,7 +545,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   }
 
   function registerAgentIpc() {
-    let newSessionPending: Promise<AgentInfo> | null = null
     ipcMain.handle('agent:info', () => lastInfo)
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
     // on the live channel, so it comes in its place among the pushes (renderer waits-state.ts), not in the answer.
@@ -570,7 +553,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       return true
     })
     ipcMain.handle('agent:prompt', (_event, text, images = []) => {
-      if (newSessionPending) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
+      if (sessions.isChanging()) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
       // With pictures the words may be left out.
       const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
       const pictures = imagesForPrompt(imageStore, images)
@@ -587,23 +570,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       return requireBridge().steer(words)
     })
     ipcMain.handle('agent:cancel', () => dsh.current?.cancel())
-    ipcMain.handle('agent:new-session', () => {
-      if (newSessionPending) return newSessionPending
-      if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before.2"))
-      const measure = sessionTiming()
-      newSessionPending = measure('new-topic.total', async () => {
-        if (!dsh.current) {
-          conversation = historyDb.create({ cwd: workDirNow() })
-          return lastInfo
-        }
-        const opened = await dsh.current.newSession()
-        const info = { ...await measure('new-topic.model', () => withLastModel(opened)), remembersHistory: true }
-        conversation = historyDb.create({ sessionId: info.sessionId, cwd: workDirNow() })
-        lastInfo = info
-        return info
-      }).finally(() => { newSessionPending = null })
-      return newSessionPending
-    })
+    ipcMain.handle('agent:new-session', sessions.newTopic)
     ipcMain.handle('agent:set-config', async (_event, configId, value) => {
       if (!CONFIG_IDS.includes(configId)) throw new Error(`invalid config option: ${configId}`)
       const info = await requireBridge().setConfig(configId, assertText(value, 'config value', 200))
@@ -644,8 +611,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     turn = { active: true, startedAt: Date.now() }
     // A topic gone on from its saved records (history-ipc.ts continue-from-records): they go with the first question,
     // as background only; the window shows (and the history keeps) the question as it was typed.
-    const carried = carry && carry.conversationId === conversation.id ? carry.text : null
-    carry = null
+    const carried = sessions.takeCarried()
     return agent.prompt(carried ? `${carried}\n\n${question}` : question, pictures)
   }
 
@@ -692,62 +658,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   }
 
   /**
-   * Without an agent (setup state) an old conversation can still be read; it keeps its session for later.
-   * A conversation goes on in its own directory while that is still there.
-   * `exactly` (继续这个话题): that session in its own directory or none; never another directory in its place,
-   * nor a new session (resume-failure.ts says why not, and the agent stays on the conversation it was on).
-   */
-  async function switchAgent(sessionId: string | null, cwd?: string | null, { exactly = false } = {}) {
-    if (exactly && !(cwd && isFolder(cwd))) throw new ResumeError('missing-dir', t('resume.missing.directory', { cwd: cwd ?? t('resume.folder.unrecorded') }))
-    if (exactly && !dsh.current) throw new ResumeError('unavailable', '助手还没准备好')
-    const target = cwd && isFolder(cwd) ? cwd : workDirNow()
-    if (!dsh.current) {
-      workDir = target
-      return { ...lastInfo, sessionId, cwd: target, resumed: false }
-    }
-    // With a bridge the agent has started somewhere, so there is a folder in use.
-    try {
-      const info = await dsh.current.switchSession(sessionId, target ?? undefined, { exactly })
-      workDir = target
-      lastInfo = { ...info, remembersHistory: info.resumed }
-      return info
-    } catch (err) {
-      // Back where it was, or on a new session where that was gone too: the conversation on screen follows.
-      if (err instanceof ResumeError && err.info) {
-        lastInfo = { ...lastInfo, ...err.info, remembersHistory: Boolean(err.info.resumed) }
-        if (err.info.sessionId && err.info.sessionId !== conversation.sessionId) conversation = { ...conversation, sessionId: err.info.sessionId }
-      }
-      throw err
-    }
-  }
-
-  const forkProblems = (): Readonly<Record<string, string>> => Object.freeze({
-    unavailable: t("main.main.this.assistant.version.cannot.change.working.directories"),
-    missing: t("main.main.this.conversation.has.ended.try.again.later"),
-  })
-  let FORK_PROBLEMS = forkProblems()
-
-  /**
    * The user picked another working directory: the conversation goes on there, everything said so far with it
    * (a fork of the session into that directory), as a new segment of the timeline after the current one.
    */
   async function switchWorkDir(dir: string) {
-    const previous = conversation
-    const stored = Boolean(historyDb.get(previous.id))
-    if (!dsh.current) {
-      workDir = dir
-      conversation = historyDb.create({ cwd: dir, parentId: stored ? previous.id : null })
-      return { ...lastInfo, cwd: dir }
-    }
-    const forked = await dsh.current.fork({ cwd: dir })
-    if (!forked.ok) throw new Error(FORK_PROBLEMS[forked.reason] ?? t("main.main.could.not.change.working.directory", { reason: forked.reason }))
-    workDir = dir
-    lastInfo = { ...forked.info, remembersHistory: true }
-    conversation = historyDb.create({
-      sessionId: forked.info.sessionId, mode: lastInfo.mode, model: lastInfo.model, cwd: dir, parentId: stored ? previous.id : null,
-    })
-    emitToRenderer({ type: 'workdir', cwd: dir, info: lastInfo })
-    return lastInfo
+    const connected = Boolean(dsh.current)
+    const info = await sessions.switchDirectory(dir)
+    if (connected) emitToRenderer({ type: 'workdir', cwd: dir, info })
+    return info
   }
 
   const chooseWorkFolder = () => host.dialogs.chooseFolder({ title: t("main.main.choose.working.directory"), createDirectory: true })
@@ -865,43 +783,32 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     promptTask: (taskId: string, text: string) => dsh.current?.promptTask(taskId, text),
   }
 
-  /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
-  async function forkBack(request: { words: string, occurrence: number }) {
-    if (!dsh.current) return { ok: false as const, reason: 'unavailable' }
-    const forked = await dsh.current.fork(request)
-    if (forked.ok) lastInfo = { ...forked.info, remembersHistory: true }
-    return forked
-  }
-
   /** Opens the database and drops conversations whose undo window has passed. */
   function openHistory(config: Config) {
     historyDb = journaled(openHistoryDb({ db: appDb.db }), 'history', HISTORY_WRITES, applyChange)
     historyDb.purgeDeleted({ olderThanMs: 0 })
-    conversation = historyDb.latest()?.conversation ?? historyDb.create({ cwd: config.cwd })
+    sessions.open(config.cwd)
     registerHistoryIpc(ipcMain, {
       db: historyDb,
       dshHome: dshHomeOf(config),
       traceDb: () => traceDb,
-      current: () => conversation,
+      current: sessions.current,
       // A report waiting for this conversation (task-reports.ts) may go now.
-      setCurrent: (next) => { conversation = next; wakeEffects() },
+      setCurrent: sessions.select,
       agentInfo: () => lastInfo,
-      switchAgent,
+      selectSession: sessions.withSelection,
       chooseExportPath,
       isBusy: () => turn.active,
       folderExists: (dir) => isFolder(dir),
       workDir: () => workDirNow() ?? null,
-      carryNext: (conversationId, text) => { carry = { conversationId, text } },
+      carryNext: sessions.carryNext,
     })
     registerRewindIpc(ipcMain, {
       db: historyDb,
-      current: () => conversation,
-      // A report waiting for this conversation (task-reports.ts) may go now.
-      setCurrent: (next) => { conversation = next; wakeEffects() },
+      current: sessions.current,
       isBusy: () => turn.active,
       agentInfo: () => lastInfo,
-      forkAgent: forkBack,
-      switchAgent,
+      selectSession: sessions.withSelection,
       traceDb: () => traceDb,
     })
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app). Only the task
@@ -917,7 +824,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     taskRuntime = createTaskRuntime({
       db: historyDb,
       store: taskStore,
-      current: () => conversation,
+      current: sessions.current,
       agentInfo: () => lastInfo,
       agent: taskAgent,
       waitsOf: (taskId) => dsh.current?.taskWaits(taskId) ?? { permissions: [], questions: [] },
@@ -965,7 +872,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     registerAgentIpc()
     registerSettingsIpc()
     const config = currentConfig()
-    defaultWorkDir = config.cwd
     // Set just above, so the folder in use is always one from here on.
     const workDirInUse = () => workDirNow() ?? config.cwd
     registerFilesIpc(ipcMain, { root: workDirInUse, shell: host.shell, notify: emitToRenderer })
@@ -999,7 +905,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   onLocaleChange(() => {
     SETUP_MESSAGES = setupMessages()
-    FORK_PROBLEMS = forkProblems()
   })
 
   return {

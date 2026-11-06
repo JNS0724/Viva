@@ -18,6 +18,8 @@ const MAX_QUERY_CHARS = 200
 type HistoryDb = ReturnType<typeof openHistoryDb>
 /** The agent as it started on a session (acp-bridge.ts): the session, where it runs, whether dsh had it still. */
 export type StartedAgent = { sessionId: string | null, cwd?: string | null, resumed?: boolean, [field: string]: unknown }
+type SwitchAgent = (sessionId: string | null, cwd?: string | null, options?: { exactly?: boolean }) => Promise<StartedAgent>
+type SelectSession = <T>(work: (ops: { switchAgent: SwitchAgent, select: (conversation: Conversation) => void }) => Promise<T>) => Promise<T>
 
 const summaryOf = (conversation: Pick<Conversation, 'id' | 'title' | 'updatedAt'>) => ({ id: conversation.id, title: conversation.title, updatedAt: conversation.updatedAt })
 /** With what it goes on from and when it began: the window draws where its topic starts (renderer/topics.js). */
@@ -42,7 +44,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   traceDb?: () => ReturnType<typeof openTraceDb> | null,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null, [field: string]: unknown },
-  switchAgent: (sessionId: string | null, cwd?: string | null, options?: { exactly?: boolean }) => Promise<StartedAgent>,
+  selectSession: SelectSession,
   chooseExportPath: (defaultName: string) => Promise<string | null>,
   schedule?: (fn: () => void, ms: number) => void,
   isBusy?: () => boolean,
@@ -52,7 +54,8 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   /** Records to go with the first question of a conversation (main.ts agent:prompt). */
   carryNext?: (conversationId: string, text: string) => void,
 }) {
-  const { db, dshHome, traceDb, current, setCurrent, agentInfo, switchAgent, chooseExportPath } = deps
+  const { db, dshHome, traceDb, current, setCurrent, agentInfo, chooseExportPath } = deps
+  const selectSession = deps.selectSession
   const folderExists = deps.folderExists ?? (() => true)
   const workDir = deps.workDir ?? (() => null)
   const carryNext = deps.carryNext ?? (() => {})
@@ -100,9 +103,11 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const found = db.get(assertId(id))
     if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
     if (found.conversation.id === current().id) return { conversation: viewOf(found), info: agentInfo() }
-    const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
-    setCurrent({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
-    return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed } }
+    return selectSession(async ({ switchAgent, select }) => {
+      const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
+      select({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
+      return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed } }
+    })
   })
 
   /**
@@ -128,10 +133,12 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const { sessionId, cwd } = found.conversation
     if (!sessionId) return { ok: false as const, reason: 'gone' as const, message: GONE, cwd, info: null }
     try {
-      const started = await switchAgent(sessionId, cwd, { exactly: true })
-      const { mode, model } = agentInfo()
-      setCurrent(db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id }))
-      return { ok: true as const, info: { ...started, remembersHistory: true }, parentId: found.conversation.id }
+      return await selectSession(async ({ switchAgent, select }) => {
+        const started = await switchAgent(sessionId, cwd, { exactly: true })
+        const { mode, model } = agentInfo()
+        select(db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id }))
+        return { ok: true as const, info: { ...started, remembersHistory: true }, parentId: found.conversation.id }
+      })
     } catch (err) {
       if (!(err instanceof ResumeError)) throw err
       return { ok: false as const, reason: err.reason, message: err.message, cwd, info: err.info && { ...err.info, remembersHistory: Boolean(err.info.resumed) } }
@@ -150,12 +157,14 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const topicId = db.topicOf(found.conversation.id)
     const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
     const carried = carriedRecords(part?.messages ?? found.messages)
-    const started = await switchAgent(null, dir)
-    const { mode, model } = agentInfo()
-    const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id })
-    setCurrent(next)
-    if (carried.turns) carryNext(next.id, carried.text)
-    return { info: { ...started, remembersHistory: false }, parentId: found.conversation.id, turns: carried.turns }
+    return selectSession(async ({ switchAgent, select }) => {
+      const started = await switchAgent(null, dir)
+      const { mode, model } = agentInfo()
+      const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id })
+      select(next)
+      if (carried.turns) carryNext(next.id, carried.text)
+      return { info: { ...started, remembersHistory: false }, parentId: found.conversation.id, turns: carried.turns }
+    })
   })
 
   handle('history:trace', (id, until) => readSessionTrace({

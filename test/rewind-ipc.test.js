@@ -24,18 +24,17 @@ function setup({ busy = false, forkResult, traceSteps } = {}) {
   registerRewindIpc({ handle: (channel, fn) => { handlers[channel] = fn } }, {
     db,
     current: () => current,
-    setCurrent: (next) => { current = next },
     isBusy: () => busy,
     agentInfo: () => ({ mode: 'live', model: 'V4' }),
-    forkAgent: async (request) => {
+    selectSession: async work => work({ select: next => { current = next }, forkAgent: async (request) => {
       forks.push(request)
       return forkResult ?? { ok: true, info: { sessionId: 's2', mode: 'live', model: 'V4', cwd: '/w' } }
     },
-    traceDb: () => (traceSteps ? { stepsOf: traceSteps } : null),
     switchAgent: async (sessionId, cwd) => {
       switches.push([sessionId, cwd])
       return { sessionId, cwd, resumed: true, mode: 'live', model: 'V4' }
-    },
+    } }),
+    traceDb: () => (traceSteps ? { stepsOf: traceSteps } : null),
   })
   const rewind = (request) => handlers['timeline:rewind']({}, request)
   return { db, rewind, forks, switches, handlers, current: () => current }

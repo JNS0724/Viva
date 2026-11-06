@@ -218,6 +218,8 @@ Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, 
 
 `test/dsh-lifecycle.test.ts` independently verifies these contracts with fake instances and a controllable clock. Smoke exercises real dsh crashes, background reports and restart recovery; `test/smoke/lifecycle.spec.ts` specifically verifies model/key restarts during a foreground question, followed by new topics and a background result report.
 
+**Conversation selection.** `src/backend/conversation-session.ts` owns the selected segment, its directory, carried records and session-transition admission. History/rewind use a selection callback that holds admission through their database writes and segment commit, even when the session id stays the same. A partially prepared new topic stays gated after an error until retry or reconciliation; saving metadata cannot reopen admission. Transition exits wake deferred task reports. Real history/effects stores and IPC handlers exercise these contracts in `test/conversation-session.test.ts`.
+
 **Quit.** In `before-quit` the shell asks the backend to close. The backend stops dsh (closing its input, then ending the whole process tree after 1.5 seconds, with `taskkill /T` on Windows), closes the databases, and exits. A backend still running after 10 seconds is killed. If the shell disconnects, the backend shuts itself down.
 
 ## 9. Source layout and guard tests

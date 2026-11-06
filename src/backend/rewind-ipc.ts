@@ -12,6 +12,12 @@ import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { sideEffectsOf } from './side-effects.ts'
 
 const MAX_TEXT_CHARS = 20_000
+type SelectionOps = {
+  select: (conversation: Conversation) => void
+  forkAgent: (request: { words: string, occurrence: number }) => Promise<{ ok: true, info: StartedAgent } | { ok: false, reason: string }>
+  switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<StartedAgent>
+}
+type SelectSession = <T>(work: (ops: SelectionOps) => Promise<T>) => Promise<T>
 
 export let REWIND_PROBLEMS: Readonly<Record<string, string>> & { busy: string, unsaved: string } = Object.freeze({
   busy: t("main.rewind-ipc.stop.the.current.task.before.restarting.from"),
@@ -31,33 +37,35 @@ function checked(request: { words?: unknown, occurrence?: unknown, keep?: unknow
   return { words, occurrence, keep, text }
 }
 
-export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, current, setCurrent, isBusy, agentInfo, forkAgent, switchAgent, traceDb }: {
+export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   db: ReturnType<typeof openHistoryDb>,
-  current: () => Conversation, setCurrent: (conversation: Conversation) => void, isBusy: () => boolean,
+  current: () => Conversation, isBusy: () => boolean,
   agentInfo: () => { mode?: string | null, model?: string | null },
-  forkAgent: (request: { words: string, occurrence: number }) => Promise<{ ok: true, info: StartedAgent } | { ok: false, reason: string }>,
-  switchAgent: (sessionId: string | null, cwd?: string | null) => Promise<StartedAgent>,
+  selectSession: SelectSession,
   traceDb?: () => Pick<ReturnType<typeof openTraceDb>, 'stepsOf'> | null,
 }) {
+  const { db, current, isBusy, agentInfo, traceDb, selectSession } = deps
   async function rewind(request: Parameters<typeof checked>[0]) {
     const { words, occurrence, keep, text } = checked(request)
     if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
     const previous = current()
     const stored = db.get(previous.id)
     if (stored?.messages[keep]?.text !== words) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
-    const forked = await forkAgent({ words, occurrence })
-    if (!forked.ok) return { ok: false, problem: REWIND_PROBLEMS[forked.reason] ?? t("main.rewind-ipc.could.not.return.there", { reason: forked.reason }) }
-    const kept = stored.messages.slice(0, keep)
-    const { mode, model } = { ...agentInfo(), ...forked.info }
-    const next = db.save(
-      // Going back stays in the topic, even from its first segment (which has no parent to take it from).
-      db.create({ sessionId: forked.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) }),
-      [...kept, { role: 'user', text, receipt: null }],
-    )
-    db.fold(previous.id, { into: next.id, at: keep })
-    db.moveRecords({ from: previous.id, to: next.id, upTo: keep })
-    setCurrent(next)
-    return { ok: true, info: forked.info, conversation: { id: next.id, messages: kept, ...withRecords(next.id) }, folds: db.foldsOf(next.id) }
+    return selectSession(async ({ forkAgent, select }) => {
+      const forked = await forkAgent({ words, occurrence })
+      if (!forked.ok) return { ok: false, problem: REWIND_PROBLEMS[forked.reason] ?? t("main.rewind-ipc.could.not.return.there", { reason: forked.reason }) }
+      const kept = stored.messages.slice(0, keep)
+      const { mode, model } = { ...agentInfo(), ...forked.info }
+      const next = db.save(
+        // Going back stays in the topic, even from its first segment (which has no parent to take it from).
+        db.create({ sessionId: forked.info.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) }),
+        [...kept, { role: 'user', text, receipt: null }],
+      )
+      db.fold(previous.id, { into: next.id, at: keep })
+      db.moveRecords({ from: previous.id, to: next.id, upTo: keep })
+      select(next)
+      return { ok: true, info: forked.info, conversation: { id: next.id, messages: kept, ...withRecords(next.id) }, folds: db.foldsOf(next.id) }
+    })
   }
 
   /** A conversation's task records (history-db.ts report_records), when it has any. */
@@ -96,17 +104,19 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { db, cu
     if (!path) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
     const previous = current()
     const { conversation, messages } = path.found
-    const started = await switchAgent(conversation.sessionId, conversation.cwd)
-    db.unfold(id)
-    db.fold(previous.id, { into: id, at: path.fold.at })
-    db.moveRecords({ from: previous.id, to: conversation.id, upTo: path.fold.at })
-    setCurrent({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
-    return {
-      ok: true,
-      info: { ...started, remembersHistory: started.resumed },
-      conversation: { id, messages, ...withRecords(conversation.id) },
-      folds: db.foldsOf(id),
-    }
+    return selectSession(async ({ switchAgent, select }) => {
+      const started = await switchAgent(conversation.sessionId, conversation.cwd)
+      db.unfold(id)
+      db.fold(previous.id, { into: id, at: path.fold.at })
+      db.moveRecords({ from: previous.id, to: conversation.id, upTo: path.fold.at })
+      select({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
+      return {
+        ok: true,
+        info: { ...started, remembersHistory: started.resumed },
+        conversation: { id, messages, ...withRecords(conversation.id) },
+        folds: db.foldsOf(id),
+      }
+    })
   }
 
   /**
