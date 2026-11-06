@@ -146,7 +146,7 @@ test('resume failure preserves the segment and follows an explicit recovered ses
 test('failed directory forks do not create a segment or change the directory or agent view', async t => {
   const h = harness(t, { fork: async () => ({ ok: false, reason: 'missing' }) }, true)
   const previous = h.sessions.current(), view = h.view()
-  await assert.rejects(h.sessions.switchDirectory('/other'))
+  await assert.rejects(async () => h.sessions.switchDirectory('/other'))
   assert.equal(h.sessions.current(), previous); assert.equal(h.sessions.cwd(), '/work')
   assert.equal(h.view(), view); assert.equal(h.sessions.isChanging(), false)
 })
@@ -176,7 +176,7 @@ test('offline directory changes preserve the saved parent without fabricating a 
 test('different transitions cannot overlap with a pending new topic', async t => {
   const gate = deferred<StartedConversation>(), h = harness(t, { newSession: () => gate.promise })
   const pending = h.sessions.newTopic()
-  await assert.rejects(h.sessions.switchDirectory('/other'))
+  await assert.rejects(async () => h.sessions.switchDirectory('/other'))
   await assert.rejects(h.switchAgent('other', '/other'))
   await assert.rejects(h.forkBack({ words: 'old', occurrence: 0 }))
   assert.deepEqual(h.calls, [])
