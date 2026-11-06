@@ -1,3 +1,4 @@
+import { createSchedules, type Schedules } from './schedules.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
@@ -30,7 +31,7 @@ import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts
 import { createReportRecords } from './report-records.ts'
 import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
-import type { TaskAction } from './tasks-channel.ts'
+import type { ScheduleAction, TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
@@ -152,6 +153,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let taskRuntime: TaskRuntime | null = null
   /** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
   let followups: Followups | null = null
+  let schedules: Schedules | null = null
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
   let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
   /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.ts. */
@@ -404,11 +406,21 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    */
   async function actOnTask(request: TaskAction, sessionId: string) {
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
+    if (request.op.startsWith('schedule_')) {
+      if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+      return schedules.act(request as ScheduleAction, conversation.id)
+    }
     const tasks = requireTasks().agent
+    if (request.op !== 'start' && request.op !== 'stop' && request.op !== 'message') throw new Error(t('main.task-registry.unknown.task.query.operation'))
     if (request.op === 'start') return tasks.start(request.brief)
     tasks.query({ op: 'get', taskId: request.taskId }, { cwd: workDirNow() ?? '' })
     if (request.op === 'stop') return tasks.stop(request.taskId)
     return tasks.message(request.taskId, request.text)
+  }
+
+  function requireSchedules(): Schedules {
+    if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+    return schedules
   }
 
   function requireTasks(): TaskRuntime {
@@ -860,6 +872,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     mcpStore = createMcpConfigStore({ file: path.join(userData, 'mcp-servers.json'), crypto: host.secrets, onError: (err) => console.error('[mcp]', err.message) })
     personal = createPersonal({ memoryDb, historyDb, mcpStore })
     registerPersonalIpc(config)
+    schedules = createSchedules({ db: appDb.db, emit: emitToRenderer })
+    ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
+    ipcMain.handle('schedules:accept', (_event, proposalId) => requireSchedules().accept(String(proposalId)))
+    ipcMain.handle('schedules:decline', (_event, proposalId) => { requireSchedules().decline(String(proposalId)) })
     followups = openFollowups({
       ipcMain,
       db: appDb.db,

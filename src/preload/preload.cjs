@@ -133,6 +133,9 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   installPlugin: (spec, approvedBuilds) => ipcRenderer.invoke('plugins:install', spec, approvedBuilds),
   removePlugin: (name) => ipcRenderer.invoke('plugins:remove', name),
   setPluginEnabled: (name, enabled) => ipcRenderer.invoke('plugins:set-enabled', name, enabled),
+  listSchedules: () => ipcRenderer.invoke('schedules:list'),
+  acceptSchedule: (proposalId) => ipcRenderer.invoke('schedules:accept', proposalId),
+  declineSchedule: (proposalId) => ipcRenderer.invoke('schedules:decline', proposalId),
   getFollowups: () => ipcRenderer.invoke('followups:get'),
   /** 跟进 on a card: { title, ask, remindAt, prepareBy, files, conversationId }. */
   acceptFollowup: (proposal) => ipcRenderer.invoke('followups:accept', proposal),

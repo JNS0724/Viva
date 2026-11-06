@@ -125,7 +125,10 @@ export function openScheduleStore({ db, now = Date.now, newId = () => `s${crypto
     })
   }
 
-  return { create, update, setPaused, remove, get, list, nextDueAt, takeDue }
+  /** What `create` would keep, kept nowhere: for the card that asks the user (dsh throws on what it refuses). */
+  const preview = (input: { title: string, prompt: string, rule: ScheduleRule }): ScheduleRecord => recordOf('preview', input.title, input.prompt, input.rule, now())
+
+  return { create, update, setPaused, remove, get, list, nextDueAt, takeDue, preview }
 }
 
 export type ScheduleStore = ReturnType<typeof openScheduleStore>

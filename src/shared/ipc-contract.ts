@@ -134,6 +134,9 @@ export const IPC_ARGS = Object.freeze({
   'plugins:remove': z.tuple([id]),
   'plugins:set-enabled': z.tuple([id, z.boolean()]),
 
+  'schedules:list': read(none),
+  'schedules:accept': z.tuple([id]),
+  'schedules:decline': z.tuple([id]),
   'followups:get': read(none),
   'followups:accept': z.tuple([record]),
   'followups:decline': z.tuple([record]),
