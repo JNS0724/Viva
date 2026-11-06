@@ -7,7 +7,7 @@ import type { AcpServer } from './mcp-config.ts'
 import fs from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import type { McpServer, RequestPermissionRequest, SessionNotification } from '@agentclientprotocol/sdk'
+import type { McpServer, RequestPermissionRequest, SessionNotification, SessionConfigOption } from '@agentclientprotocol/sdk'
 import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
@@ -20,7 +20,8 @@ import { createPluginsDesk, type PluginsOp, type PluginsResult } from './plugins
 import type { TaskAct, TaskRead } from './tasks-channel.ts'
 import { createQuestionDesk } from './question-channel.ts'
 import { ResumeError, resumeReason } from './resume-failure.ts'
-import { stopInTime } from './stop-in-time.ts'
+import { createAcpOperations } from './acp-operations.ts'
+import { createAcpTaskSessions } from './acp-task-sessions.ts'
 import { createAssistantStream } from './assistant-stream.ts'
 import { createFreshSessions } from './fresh-sessions.ts'
 import { sessionTiming, type SessionTiming } from './session-timing.ts'
@@ -42,9 +43,7 @@ const NO_MCP = (): AcpServer[] => []
 export const MCP_RETRY_MS = 30_000
 type PromptBlocks = Parameters<ClientSideConnection['prompt']>[0]['prompt']
 /** One of a session's choices (model, effort), as dsh lists them; only these fields are read here. */
-type ConfigOption = { id: string, currentValue?: any, [field: string]: any }
-/** A background task's session: where it runs, and its choices as they were last reported. */
-type TaskSession = { cwd: string, config: ConfigOption[] | null }
+type ConfigOption = SessionConfigOption
 /** What the bridge tells its owner (main.ts): the agent's events, as plain objects. */
 type Emit = (event: { type: string, [field: string]: unknown }) => void
 
@@ -132,15 +131,11 @@ export function createAcpBridge({
    * Background tasks (phase 3): sessions that went on in the background, by id (the task's id is its
    * session's). They stay open beside the main conversation; what they report reaches the window as task_*.
    */
-  const tasks = new Map<string, TaskSession>()
-  /** Sessions with a turn running (a prompt not yet answered). */
-  type Running = { released: boolean, stream?: Awaited<ReturnType<typeof streams.begin>>, context?: ConversationContext | null }
-  const running = new Map<string | null, Running>()
-  const taskOf = (id: string) => (tasks.has(id) ? id : null)
-  const isTask = (id: string | null) => id !== null && tasks.has(id)
+  const taskOf = (id: string) => taskSessions.taskOf(id)
+  const isTask = (id: string | null) => id !== null && taskSessions.has(id)
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
-  const requestContext = conversationContext ? (id: string) => running.get(id)?.context ?? null : undefined
+  const requestContext = conversationContext ? (id: string) => operations.context(id) : undefined
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext })
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
   const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions, conversationContext: requestContext }) : null
@@ -151,16 +146,20 @@ export function createAcpBridge({
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
   // Sessions nobody watches (a schedule's run): read-only tools, nothing asked of the user (viva-permission).
   const readOnlyDesk = createReadOnlyDesk({ send: toPlugins })
-  const unattended = new Set<string>()
   // The plugins page, through dsh's plugin manager (viva-plugins).
   const pluginsDesk = createPluginsDesk({ send: toPlugins })
-  const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || tasks.has(id) })
-  const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || tasks.has(id) })
-  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
-    if (!running.has(id) || running.get(id)?.released) return
-    if (tasks.has(id)) emit({ type: 'task_update', taskId: id, update })
-    else if (id === sessionId) emit({ type: 'update', sessionId: id, update, ...scoped(running.get(id)?.context) })
-  } })
+  const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || taskSessions.has(id) })
+  const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || taskSessions.has(id) })
+  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
+  const operations = createAcpOperations({
+    connection: live, streams,
+    cancelPermissions: id => broker.cancelAll(id),
+    streamUpdate: (id, update, context) => {
+      if (taskSessions.has(id)) emit({ type: 'task_update', taskId: id, update })
+      else if (id === sessionId) emit({ type: 'update', sessionId: id, update, ...scoped(context) })
+    },
+  })
+
 
   /** The model options of the session in use, kept so a task taken back to the main conversation keeps its own. */
   let configNow: ConfigOption[] | null = null
@@ -171,27 +170,27 @@ export function createAcpBridge({
 
   const client = {
     async sessionUpdate(params: SessionNotification) {
-      if (running.get(params.sessionId)?.released) return
+      if (disposed || operations.isReleased(params.sessionId)) return
       if (streams.suppress(params.sessionId, params.update)) return
-      if (tasks.has(params.sessionId)) return emit({ type: 'task_update', taskId: params.sessionId, update: params.update })
+      if (taskSessions.has(params.sessionId)) return emit({ type: 'task_update', taskId: params.sessionId, update: params.update })
       if (params.sessionId !== sessionId) return
       if (params.update?.sessionUpdate === 'config_option_update') {
         emit({ type: 'config', info: infoFrom(params.update.configOptions), ...scoped(contextFor(params.sessionId)) })
         return
       }
       // The session goes with it: the window tells the turn it undid a move for from the one it left (task-actions.js).
-      const context = running.get(params.sessionId)?.context
+      const context = operations.context(params.sessionId)
       if (conversationContext && !context) return
       emit({ type: 'update', sessionId: params.sessionId, update: params.update, ...scoped(context) })
     },
     async requestPermission(params: RequestPermissionRequest) {
-      if (params.sessionId !== sessionId && !tasks.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
+      if (disposed || (params.sessionId !== sessionId && !taskSessions.has(params.sessionId))) return { outcome: { outcome: 'cancelled' as const } }
       // Nobody is there to answer: turned down.
-      if (unattended.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
-      if (conversationContext && !tasks.has(params.sessionId) && !running.get(params.sessionId)?.context) return { outcome: { outcome: 'cancelled' as const } }
+      if (taskSessions.isUnattended(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
+      if (conversationContext && !taskSessions.has(params.sessionId) && !operations.context(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
-      emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : scoped(running.get(params.sessionId)?.context ?? contextFor(params.sessionId))) })
+      emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : scoped(operations.context(params.sessionId) ?? contextFor(params.sessionId))) })
       return promise.finally(() => {
         const currentTask = taskOf(params.sessionId)
         if (currentTask) emit({ type: 'task_permission_closed', taskId: currentTask, requestId })
@@ -204,6 +203,7 @@ export function createAcpBridge({
     const proc = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
     child = proc
     proc.on('message', (message) => {
+      if (disposed) return
       questions.receive(message)
       config?.receive(message)
       steering.receive(message)
@@ -220,10 +220,12 @@ export function createAcpBridge({
     proc.on('error', (err) => emit({ type: 'error', message: launchError(err, { command, nodeBin, cwd }) }))
     proc.on('exit', (code, signal) => {
       fresh.dispose()
-      streams.close()
+      operations.dispose()
+      taskSessions.dispose()
       pluginsDesk.close()
       readOnlyDesk.closeAll()
       if (disposed) return
+      disposed = true
       const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
       if (onExit) onExit({ code, signal, message })
       else emit({ type: 'error', message })
@@ -290,6 +292,20 @@ export function createAcpBridge({
     if (prewarmSessions && !disposed && !closing.size && !failedCloses.size) fresh.prepare(freshKey(sessionCwd), sessionCwd)
     else fresh.clear()
   }
+
+  const taskSessions = createAcpTaskSessions({
+    connection: live,
+    acquire: {
+      resume: (id, cwd) => withMcpServers(servers => live().resumeSession({ sessionId: id, cwd, mcpServers: servers })),
+      fresh: async cwd => (await fresh.take(freshKey(cwd), cwd)).response,
+    },
+    foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
+    fork: forking.fork, operations, permissions: broker, questions,
+    steer: (id, text) => steering.steer(text, id), markReadOnly: readOnlyDesk.mark,
+    emit, describeError: error => describeError(error, stderrTail),
+    goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
+  })
+  const { resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
 
   async function openSession(beforeOpen?: () => Promise<unknown>) {
     const measure = sessionTiming(onTiming)
@@ -397,33 +413,23 @@ export function createAcpBridge({
       return
     }
     const asked = sessionId
-    const operation: Running = { released: false, context: contextFor(asked) }
-    running.set(asked, operation)
-    // Let go when stopped (cancelTask): it has ended on screen, and the task may be running a new turn by now.
-    try {
-      operation.stream = await streams.begin(opened(asked))
-      const blocks: PromptBlocks = [
-        ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
-        ...(text ? [{ type: 'text' as const, text }] : []),
-      ]
-      const response = await live().prompt({ sessionId: opened(asked), prompt: blocks })
-      if (operation.released) return
-      await streams.complete(operation.stream)
-      if (operation.released) return
-      if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
-      else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason, ...scoped(operation.context) })
-    } catch (err) {
-      if (operation.released) return
-      if (operation.stream) await streams.complete(operation.stream)
-      if (operation.released) return
-      const message = describeError(err, stderrTail)
-      // Viva quitting ends a task's turn too: it is not over, and the next launch offers it (task-store.js).
-      if (isTask(asked)) {
-        if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message })
-      } else if (asked === sessionId) emit({ type: 'error', message, ...scoped(operation.context) })
-    } finally {
-      if (running.get(asked) === operation) running.delete(asked)
-    }
+    const origin = contextFor(asked), context = origin ? { ...origin } : null
+    const blocks: PromptBlocks = [
+      ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
+      ...(text ? [{ type: 'text' as const, text }] : []),
+    ]
+    await operations.run({
+      sessionId: asked, prompt: blocks, context,
+      onEnd: response => {
+        if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
+        else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason, ...scoped(context) })
+      },
+      onError: error => {
+        const message = describeError(error, stderrTail)
+        if (isTask(asked)) { if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message }) }
+        else if (asked === sessionId) emit({ type: 'error', message, ...scoped(context) })
+      },
+    })
   }
 
   async function cancel() {
@@ -439,7 +445,7 @@ export function createAcpBridge({
   function retire(id: string, measure: ReturnType<typeof sessionTiming>) {
     if (closing.has(id)) return
     const cleanup = (async () => {
-      if (running.has(id)) {
+      if (operations.has(id)) {
         try { await measure('session.cancel', () => live().cancel({ sessionId: id })) }
         catch (err) { console.error('[acp-bridge] cancel failed; still closing session:', describeError(err)) }
       }
@@ -529,142 +535,6 @@ export function createAcpBridge({
     }
   }
 
-  /**
-   * A task from an earlier launch, taken up again (task-ipc.js task:resume): its session is reattached beside the
-   * main conversation's, as a task, with all it had; promptTask then asks it to go on.
-   */
-  async function resumeTask({ taskId, cwd = sessionCwd }: { taskId: string, cwd?: string }): Promise<{ ok: boolean, reason?: string }> {
-    if (!canResume) return { ok: false, reason: 'unavailable' }
-    try {
-      const response = await withMcpServers((servers) => live().resumeSession({ sessionId: taskId, cwd, mcpServers: servers }))
-      tasks.set(taskId, { cwd, config: response.configOptions ?? configNow })
-      return { ok: true }
-    } catch (err) {
-      console.error('[acp-bridge] could not take up the task again:', describeError(err))
-      return { ok: false, reason: 'missing' }
-    }
-  }
-
-  /** The task's session takes the choices the main conversation has now (its model, its effort) where they differ. */
-  async function matchMainConfig(taskId: string, taskOptions: readonly ConfigOption[], source = configNow) {
-    for (const option of source ?? []) {
-      const theirs = taskOptions.find((item) => item.id === option.id)
-      if (option.currentValue === undefined || theirs?.currentValue === option.currentValue) continue
-      const response = await live().setSessionConfigOption({ sessionId: taskId, configId: option.id, value: option.currentValue })
-      const task = tasks.get(taskId)
-      if (task) tasks.set(taskId, { ...task, config: response.configOptions ?? task.config })
-    }
-  }
-
-  /**
-   * 后台做 (task-ipc.js task:start): a task of its own, beside the main conversation, in a session forked from it
-   * as it is, or from before the turn running in it (named by its `words`), so it knows what was said; with
-   * nothing said yet, in a fresh session. promptTask then asks it.
-   */
-  async function startTask({ words, afresh = false, cwd: taskCwd }: { words?: string, afresh?: boolean, cwd?: string } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
-    if (!sessionId) return { ok: false, reason: 'missing' }
-    // A fresh task may be given its own working folder (a schedule's, kept from where it was made).
-    const originCwd = afresh && taskCwd ? taskCwd : sessionCwd
-    const originConfig = configNow
-    // A task the agent starts begins afresh from its brief; 后台做 goes on from the conversation as it is.
-    const forked = afresh ? { ok: false as const } : await forking.fork(words ? { words, occurrence: 0 } : {})
-    if (forked.ok) {
-      const taken = await resumeTask({ taskId: forked.sessionId, cwd: originCwd })
-      if (!taken.ok) return taken
-      // A fork of a conversation with nothing said yet starts on the profile's defaults too.
-      await matchMainConfig(forked.sessionId, tasks.get(forked.sessionId)?.config ?? [], originConfig)
-      return { ok: true, taskId: forked.sessionId }
-    }
-    try {
-      const { response } = await fresh.take(freshKey(originCwd), originCwd)
-      prepareFresh()
-      tasks.set(response.sessionId, { cwd: originCwd, config: response.configOptions ?? originConfig })
-      // A fresh session starts on the profile's defaults: the model picked here may be another (or the only one with a key).
-      await matchMainConfig(response.sessionId, response.configOptions ?? [], originConfig)
-      return { ok: true, taskId: response.sessionId }
-    } catch (err) {
-      console.error('[acp-bridge] could not start a task:', describeError(err))
-      return { ok: false, reason: 'missing' }
-    }
-  }
-
-  /**
-   * A schedule's run (schedule-runs.ts): a fresh session in the schedule's folder, like a task the agent starts, marked unattended before
-   * anything is asked of it, so it may only look things up and asks the user nothing. Not marked, it is closed.
-   */
-  async function startReadOnlyTask({ cwd: taskCwd }: { cwd: string }): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
-    const started = await startTask({ afresh: true, cwd: taskCwd })
-    if (!started.ok || !started.taskId) return started
-    unattended.add(started.taskId)
-    if (await readOnlyDesk.mark(started.taskId)) return started
-    await closeTask(started.taskId)
-    return { ok: false, reason: 'unavailable' }
-  }
-
-  /** A turn in a task's session: what it says arrives as task_update, its end as task_end (as for a spun-off turn). */
-  async function promptTask(taskId: string, text: string) {
-    // A session this dsh does not hold (taken up in a dsh since gone): said as the task's end, never left hanging.
-    if (!tasks.has(taskId)) {
-      emit({ type: 'task_end', taskId, stopReason: 'error', message: t('main.acp-bridge.task.session.gone') })
-      return
-    }
-    const operation: Running = { released: false }
-    running.set(taskId, operation)
-    try {
-      operation.stream = await streams.begin(taskId)
-      const response = await live().prompt({ sessionId: taskId, prompt: [{ type: 'text', text }] })
-      if (operation.released) return
-      await streams.complete(operation.stream)
-      if (operation.released) return
-      if (tasks.has(taskId)) emit({ type: 'task_end', taskId, stopReason: response.stopReason })
-    } catch (err) {
-      if (operation.released) return
-      if (operation.stream) await streams.complete(operation.stream)
-      if (operation.released) return
-      // As in prompt(): ended because Viva is quitting, it is not over.
-      if (tasks.has(taskId) && !disposed) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(err, stderrTail) })
-    } finally {
-      if (running.get(taskId) === operation) running.delete(taskId)
-    }
-  }
-
-  /**
-   * Stops what a task is doing; it stays, answered as cancelled (task_end). A turn that does not stop is let
-   * go after a while (stop-in-time.ts), so 停下 always ends it on screen; what dsh started may still be running.
-   */
-  async function cancelTask(taskId: string) {
-    if (!tasks.has(taskId)) return
-    const operation = running.get(taskId)
-    if (!operation) return
-    broker.cancelAll(taskId)
-    await stopInTime({
-      cancel: () => live().cancel({ sessionId: taskId }),
-      stillRunning: () => running.get(taskId) === operation && !operation.released && !disposed,
-      giveUp: () => {
-        if (operation.stream) streams.finish(operation.stream)
-        operation.released = true
-        emit({ type: 'task_end', taskId, stopReason: 'cancelled', message: stoppedMessage() })
-      },
-    })
-  }
-
-  /** The task is done with: its session closes, whatever it still asked goes unanswered. */
-  async function closeTask(taskId: string) {
-    if (!tasks.has(taskId)) return
-    await cancelTask(taskId)
-    questions.declineTask(taskId)
-    tasks.delete(taskId)
-    unattended.delete(taskId)
-    try {
-      await live().closeSession({ sessionId: taskId })
-    } catch (err) {
-      console.error('[acp-bridge] closing a task failed:', describeError(err))
-    }
-  }
-
-  /** Words for the turn a task is on (the viva-steer plugin), as steer() is for the main conversation's. */
-  const steerTask = (taskId: string, text: string) => (tasks.has(taskId) ? steering.steer(text, taskId) : Promise.resolve({ ok: false, reason: 'missing' }))
-
   const newSession = () => switchSession(null)
   /** Reattaches the current session, so a changed list of MCP servers takes effect without losing context. */
   const reloadSession = () => { failedMcp.clear(); fresh.reset(); return switchSession(sessionId) }
@@ -691,7 +561,7 @@ export function createAcpBridge({
   /** @returns false when the question is no longer waiting; throws when the answer does not fit it */
   const answerQuestion = (questionId: string, answers: unknown): boolean => questions.answer(questionId, answers)
   /** What a background task waits on the user for, still: its approvals and its questions (a reloaded window shows them). */
-  const taskWaits = (taskId: string) => (tasks.has(taskId) ? { permissions: broker.pendingFor(taskId), questions: questions.pendingOf(taskId) } : { permissions: [], questions: [] })
+  const taskWaits = taskSessions.waits
   /**
    * What the conversation on screen waits on the user for, still: its approvals, its questions and the keys a server
    * asks for, each as it was
@@ -717,7 +587,8 @@ export function createAcpBridge({
   function dispose() {
     disposed = true
     fresh.dispose()
-    streams.close()
+    operations.dispose()
+    taskSessions.dispose()
     broker.cancelAll()
     steering.closeAll()
     pluginsDesk.close()
@@ -732,10 +603,7 @@ export function createAcpBridge({
   }
 
   /** Background tasks working right now: a turn running, not waiting on the user's permission. */
-  const workingTasks = (): number => {
-    const waiting = broker.waitingSessions()
-    return [...running.keys()].filter(id => isTask(id) && !running.get(id)?.released && !waiting.has(id as string)).length
-  }
+  const workingTasks = taskSessions.workingCount
 
   /** One call to dsh's plugin manager for the plugins page; refused while dsh is not running. */
   function plugins(op: PluginsOp, args: Record<string, unknown> = {}): Promise<PluginsResult> {
