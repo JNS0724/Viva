@@ -65,7 +65,6 @@ export const IPC_ARGS = Object.freeze({
   'history:save': z.tuple([z.array(record).max(MAX_LIST)]),
   'history:list': read(z.tuple([count.optional()])),
   'history:search': read(z.tuple([text])),
-  'history:open': z.tuple([id]),
   'history:resume-topic': z.tuple([id]),
   'history:resume-check': read(z.tuple([id])),
   'history:continue-from-records': z.tuple([id, path]),

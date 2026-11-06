@@ -49,7 +49,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   saveHistory: (messages) => ipcRenderer.invoke('history:save', messages),
   listHistory: (offset) => ipcRenderer.invoke('history:list', offset),
   searchHistory: (query) => ipcRenderer.invoke('history:search', query),
-  openConversation: (id) => ipcRenderer.invoke('history:open', id),
   /** 回到这个话题 / 撤销 a new topic: { info, parentId } (history-ipc.js). */
   resumeTopic: (id) => ipcRenderer.invoke('history:resume-topic', id),
   /** Before 继续这个话题: its directory, whether it is there, whether it is the one in use. */

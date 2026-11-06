@@ -169,7 +169,6 @@ interface AgentApi extends LanguageApi {
   saveHistory: Invoke<'history:save'>
   listHistory: Invoke<'history:list'>
   searchHistory: Invoke<'history:search'>
-  openConversation: Invoke<'history:open'>
   resumeTopic: Invoke<'history:resume-topic'>
   resumeCheck: Invoke<'history:resume-check'>
   continueFromRecords: Invoke<'history:continue-from-records'>

@@ -18,6 +18,7 @@
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.plugins.json && tsc -p tsconfig.test.json",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.{js,ts}\"",
+    "test:feature": "node scripts/test-feature.ts",
     "coverage": "cross-env ELECTRON_RUN_AS_NODE=1 electron --test --experimental-test-coverage \"test/**/*.test.{js,ts}\"",
     "presmoke": "npm run build",
     "smoke": "playwright test -c test/smoke/playwright.config.ts --project=smoke --project=integration",
