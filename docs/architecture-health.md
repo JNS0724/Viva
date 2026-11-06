@@ -55,6 +55,14 @@ The global `Action` is now a union over a finite payload table, with mapped hand
 
 Production-entry tests cover bootstrap replay, omitted config fields preserving identity and recovery state, nullable SDK approval fields with tool fallback, real TaskRuntime snapshots/pieces during task reads, task/global sequence separation, malformed schedule proposals, and rejected frames causing no effects or payload-bearing diagnostics. All supported wire tags have examples. Compile-only negative tests reject misspelled actions, missing words/stream marks, missing text chunks and mixed foreground/task identities. Full suites and platform smoke remain required.
 
+## ACP operation and task-session owners
+
+`acp-operations.ts` owns native prompt identities, captured contexts, stream completion and cancellation deadlines. Foreground and background prompts share this mechanism without sharing writable operation records. Results check the operation identity after each await; an old operation cannot finish or delete the next one on the same native session. Disposal revokes pending stream bindings and prevents new work.
+
+`acp-task-sessions.ts` owns native task attachments, their known configuration values and unattended markers. It acquires, resumes, configures, prompts, cancels and closes task sessions through narrow transport, permission, question, steering and read-only capabilities. It captures foreground directory/configuration before asynchronous acquisition, including SDK boolean options. Failed configuration or unattended marking releases the unreported session; late acquisition after disposal cannot reattach it. Each native attachment also has a private request identity: closing revokes an in-flight resume, old config/mark callbacks cannot remove a replacement, and reattachment waits for the prior close and wait cleanup. The bridge retains process ownership, MCP preparation, foreground selection and resource-close barriers. It no longer writes the task attachment, unattended or running maps. TaskRuntime still owns admission, application runs, status, transactions, persistence and reports.
+
+Owner contracts cover cancellation with a non-returning RPC, delayed results and finally blocks after session reuse, disposal during stream binding and native acquisition, configuration snapshots, boolean requests, and cleanup after configuration/read-only failures. Existing public-bridge, stream, resume, resource-barrier and TaskRuntime tests remain the wiring and behavior gates.
+
 ## Subsequent batches and delivery criteria
 
 | Order | Scope | Done when |
