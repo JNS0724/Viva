@@ -1,4 +1,7 @@
 import { createSchedules, type Schedules } from './schedules.ts'
+import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
+import { createUnattendedRuns, type TaskEvent } from './unattended-runs.ts'
+import { openFeedStore, type FeedItem } from './feed-store.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
@@ -74,6 +77,8 @@ const LATE_MEMORY_WINDOW_MS = 30_000
 /** How long quitting waits for dsh to finish before the app goes anyway. */
 const QUIT_WAIT_MS = 5_000
 const CRASH_WINDOW_MS = 10 * 60_000
+/** How much of a 动态 item a notification shows. */
+const NOTICE_BODY_CHARS = 200
 
 type HistoryDb = ReturnType<typeof openHistoryDb>
 type Bridge = ReturnType<typeof createAcpBridge>
@@ -154,6 +159,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
   let followups: Followups | null = null
   let schedules: Schedules | null = null
+  /** Schedules run when due, their answers into 动态 (schedule-runs.ts). */
+  let scheduleRuns: ScheduleRuns | null = null
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
   let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
   /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.ts. */
@@ -197,6 +204,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     receive: (event) => taskRuntime?.dsh.receive(event),
     onError: (err) => console.error('[tasks] could not record what a task reported; it goes on all the same:', err instanceof Error ? err.message : String(err)),
   })
+
+  /** Prompts run where nobody watches, read-only (a schedule's): their sessions' events are theirs, not 后台's. */
+  const unattended = createUnattendedRuns({ agent: () => bridge })
 
   /** One input to the backend (event-core.ts): recorded, then routed. */
   const signal = (input: Signal) => {
@@ -387,6 +397,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         }
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams. Each
         // reaches the window from the task runtime, in order with the task's snapshots (task-runtime.ts), not from here.
+        const { taskId } = event
+        if (typeof taskId === 'string' && unattended.owns(taskId)) return unattended.receive({ ...event, taskId } satisfies TaskEvent)
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
         emitToRenderer(event)
@@ -485,6 +497,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
   function recoverFromCrash({ message }: { message: string }) {
     taskRuntime?.dsh.gone()
+    unattended.gone()
     console.error('[dsh] exited unexpectedly:', message)
     bridge = null
     turn = { active: false, startedAt: 0 }
@@ -506,6 +519,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
   async function stopBridge() {
     taskRuntime?.dsh.gone()
+    unattended.gone()
     clearTimeout(restartTimer)
     const running = bridge
     bridge = null
@@ -542,8 +556,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
       conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
       emitToRenderer({ type: 'ready', info })
-      // Results of tasks that ended while dsh was away come back once it is here again.
+      // Results of tasks that ended while dsh was away come back once it is here again; schedules due meanwhile run.
       wakeEffects()
+      scheduleRuns?.wake()
       return info
     } catch (err: any) {
       console.error('[main] failed to start agent bridge:', err)
@@ -829,6 +844,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return lastInfo
   }
 
+  /** A new item in 动态: a notification (opened, it shows 动态), and the window shows it. */
+  function feedDelivered(item: FeedItem) {
+    showNotice({ kind: 'ready', followupIds: [], title: item.title, body: item.body.slice(0, NOTICE_BODY_CHARS), interrupts: false, system: true })
+    emitToRenderer({ type: 'feed_changed' })
+  }
+
   /** A follow-up's notice as a system notification; opened, it is counted for the week of self-use. */
   function showNotice(notice: Notice) {
     host.notify(notice, (afterMs) => followups?.store.logEvent('notice_opened', { kind: notice.kind, afterMs }))
@@ -872,7 +893,17 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     mcpStore = createMcpConfigStore({ file: path.join(userData, 'mcp-servers.json'), crypto: host.secrets, onError: (err) => console.error('[mcp]', err.message) })
     personal = createPersonal({ memoryDb, historyDb, mcpStore })
     registerPersonalIpc(config)
-    schedules = createSchedules({ db: appDb.db, emit: emitToRenderer })
+    const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
+    schedules = createSchedules({ db: appDb.db, emit: emitToRenderer, changed: () => { scheduleRuns?.arm(); schedulesChanged() } })
+    scheduleRuns = createScheduleRuns({
+      db: appDb.db,
+      store: schedules.store,
+      feed: openFeedStore({ db: appDb.db }),
+      run: unattended.run,
+      delivered: feedDelivered,
+      changed: schedulesChanged,
+      onError: (err) => console.error('[schedules]', err instanceof Error ? err.message : String(err)),
+    })
     ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
     ipcMain.handle('schedules:accept', (_event, proposalId) => requireSchedules().accept(String(proposalId)))
     ipcMain.handle('schedules:decline', (_event, proposalId) => { requireSchedules().decline(String(proposalId)) })
@@ -1044,12 +1075,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one; preparation looks again. */
   function woke() {
+    scheduleRuns?.wake()
     followups?.notifier.wake()
     followups?.scheduler.refresh()
   }
 
   function close() {
     clearInterval(lateMemoryTimer)
+    scheduleRuns?.close()
     followups?.close()
     historyDb?.close()
     appDb?.close()

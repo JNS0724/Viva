@@ -12,6 +12,7 @@ import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk } from './steer-channel.ts'
 import { createForkDesk } from './fork-channel.ts'
+import { createReadOnlyDesk } from './read-only-channel.ts'
 import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
@@ -144,6 +145,9 @@ export function createAcpBridge({
   const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
+  // Sessions nobody watches (a schedule's run): read-only tools, nothing asked of the user (viva-permission).
+  const readOnlyDesk = createReadOnlyDesk({ send: toPlugins })
+  const unattended = new Set<string>()
   // Follow-ups proposed in a conversation, and background preparation's tool-less model calls (viva-followups).
   const followupDesk = createFollowupDesk({ send: toPlugins, emit: event => {
     if (event.type === 'followup_propose' && event.sessionId !== sessionId && !tasks.has(String(event.sessionId))) return
@@ -181,6 +185,8 @@ export function createAcpBridge({
     },
     async requestPermission(params: RequestPermissionRequest) {
       if (params.sessionId !== sessionId && !tasks.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
+      // Nobody is there to answer: turned down.
+      if (unattended.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
       emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
@@ -200,6 +206,7 @@ export function createAcpBridge({
       config?.receive(message)
       steering.receive(message)
       forking.receive(message)
+      readOnlyDesk.receive(message)
       followupDesk.receive(message)
       tasksDesk.receive(message)
       historyDesk.receive(message)
@@ -215,6 +222,7 @@ export function createAcpBridge({
       streams.close()
       followupDesk.close()
       pluginsDesk.close()
+      readOnlyDesk.closeAll()
       if (disposed) return
       const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
       if (onExit) onExit({ code, signal, message })
@@ -579,6 +587,19 @@ export function createAcpBridge({
     }
   }
 
+  /**
+   * A schedule's run (schedule-runs.ts): a fresh session, like a task the agent starts, marked unattended before
+   * anything is asked of it, so it may only look things up and asks the user nothing. Not marked, it is closed.
+   */
+  async function startReadOnlyTask(): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
+    const started = await startTask({ afresh: true })
+    if (!started.ok || !started.taskId) return started
+    unattended.add(started.taskId)
+    if (await readOnlyDesk.mark(started.taskId)) return started
+    await closeTask(started.taskId)
+    return { ok: false, reason: 'unavailable' }
+  }
+
   /** A turn in a task's session: what it says arrives as task_update, its end as task_end (as for a spun-off turn). */
   async function promptTask(taskId: string, text: string) {
     // A session this dsh does not hold (taken up in a dsh since gone): said as the task's end, never left hanging.
@@ -632,6 +653,7 @@ export function createAcpBridge({
     await cancelTask(taskId)
     questions.declineTask(taskId)
     tasks.delete(taskId)
+    unattended.delete(taskId)
     try {
       await live().closeSession({ sessionId: taskId })
     } catch (err) {
@@ -698,6 +720,7 @@ export function createAcpBridge({
     steering.closeAll()
     followupDesk.close()
     pluginsDesk.close()
+    readOnlyDesk.closeAll()
     if (!child || !isRunning(child)) return Promise.resolve()
     const target = child
     const exited = new Promise((resolve) => target.once('exit', resolve))
@@ -730,5 +753,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
 }
