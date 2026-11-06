@@ -267,7 +267,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     lateMemoryTimer = setInterval(() => {
       // Memory claiming has a global watermark. Never let an old turn's poll claim a new
       // topic's writes, or writes made while the next foreground turn is still running.
-      if (conversation !== segment || turn.active) { clearInterval(lateMemoryTimer); return }
+      if (conversation.id !== segment.id || conversation.sessionId !== segment.sessionId || turn.active) {
+        clearInterval(lateMemoryTimer); return
+      }
       reportMemoryChanges(segment)
       if (Date.now() >= until) clearInterval(lateMemoryTimer)
     }, LATE_MEMORY_POLL_MS)
