@@ -171,7 +171,7 @@ test('a provider is enough to start without a DeepSeek key', () => {
 
 test('models state: load, open the form, save in flight, fail, saved closes the form', () => {
   const view = { providers: [{ id: 'custom-a', name: 'A', models: [{ id: 'm1' }] }], protocols: { 'openai-completions': 'OpenAI 兼容' } }
-  const steps = [
+  const steps: Action[] = [
     { type: 'models_loaded', view },
     { type: 'models_draft_open' },
     { type: 'models_busy' },

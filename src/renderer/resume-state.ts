@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 /**
  * 继续这个话题, when it needs the user to decide (view/resume-dialog.ts, resume-actions.ts):
  * - 'confirm-dir': it goes on in another directory than the one in use: said before switching;
@@ -11,7 +12,7 @@ export type ResumeAsk = { stage: ResumeStage, segmentId: string, cwd: string | n
 
 export const initialResume = null as ResumeAsk | null
 
-export const RESUME_ACTIONS: Record<string, Reducer> = {
+export const RESUME_ACTIONS= {
   resume_ask: (state, { stage, segmentId, cwd = null }) => ({ ...state, resume: { stage, segmentId, cwd } }),
   resume_dismiss: (state) => (state.resume === null ? state : { ...state, resume: null }),
-}
+} satisfies ActionHandlers

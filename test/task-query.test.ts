@@ -104,7 +104,7 @@ test('text updates remain queryable without duplicate UI refreshes; status snaps
   registry.interrupt(); assert.deepEqual(snapshots, ['running', 'interrupted'])
   const started = reduce(initialState, { type: 'task_started', task: { id: 'a', title: 'task' }, text: 'do', at: 1 })
   const snapshot = registry.query({ op: 'get', taskId: 'a' }, { taskId: 'a' }).task!
-  const interrupted = reduce(started, { type: 'task_snapshot', snapshot })
+  const interrupted = reduce(started, { type: 'task_snapshot', snapshot: { ...snapshot, resultPreview: snapshot.resultPreview ?? '', taskSeq: 0 } })
   assert.equal(interrupted.tasks.list[0]!.status, 'interrupted')
   assert.equal(interrupted.tasks.list[0]!.now, null)
 })

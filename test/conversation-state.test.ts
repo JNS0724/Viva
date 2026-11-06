@@ -1,3 +1,4 @@
+import type { ConversationAction } from '../src/renderer/conversation-types.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialConversation, reduceConversation } from '../src/renderer/conversation-state.ts'
@@ -10,11 +11,11 @@ import { threadState } from '../src/renderer/view/tasks-page.ts'
  * it; the thread is drawn from a view that names what it needs (view/thread.ts ThreadView).
  */
 
-const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk' as const, content: { type: 'text' as const, text } })
 const CONVERSATION_FIELDS = Object.keys(initialConversation).sort()
 
 /** A turn of a conversation: asked, answered in part, a tool, an approval asked and given, a question, its end. */
-const turn = [
+const turn: ConversationAction[] = [
   { type: 'user_prompt', text: '查一下', at: 1 },
   { type: 'acp_update', update: chunk('好的，'), at: 2 },
   { type: 'acp_update', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '读文件', status: 'in_progress' }, at: 3 },
@@ -28,6 +29,7 @@ const turn = [
 
 test('pure: an action not the conversation\'s gives the same view back; one of its own a new view, the one given as it was', () => {
   const view = initialConversation as ConversationView
+  // @ts-expect-error Non-conversation actions are excluded statically; runtime remains a no-op.
   assert.equal(reduceConversation(view, { type: 'settings_open' }), view)
   const asked = reduceConversation(view, turn[0])
   assert.notEqual(asked, view)
@@ -40,12 +42,13 @@ test('a task\'s view goes through a whole turn as a conversation: nothing of the
   const made = reduce(initialState, { type: 'task_snapshot', snapshot: { taskId: 's1', runId: 'run-1', title: '查一下', status: 'running',
     currentAction: null, waitingFor: null, startedAt: at, updatedAt: at, endedAt: null, resultPreview: '', revision: 1, taskSeq: 0,
     opening: { words: '查一下', task: { id: 's1', segmentId: 'c-task', title: '查一下', words: '查一下' }, hostSession: null } } })
-  const actions = turn.slice(1).map((action, i) => {
+  const actions = turn.slice(1).map((action, i): Action => {
     if (action.type === 'acp_update') return { ...action, type: 'task_update', taskId: 's1', runId: 'run-1', seq: i + 1 }
     if (action.type === 'turn_end') return { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 9, runId: 'run-1', seq: i + 1 }
     if (action.type === 'question_request') return { ...action, type: 'task_question', taskId: 's1', runId: 'run-1', seq: i + 1 }
     if (action.type === 'question_closed') return { ...action, type: 'task_question_closed', taskId: 's1', runId: 'run-1', seq: i + 1 }
-    return { ...action, taskId: 's1', runId: 'run-1', seq: i + 1 }
+    if (action.type === 'permission_request') return { ...action, type: 'task_permission_request', taskId: 's1', runId: 'run-1', seq: i + 1 }
+    return action
   })
   const ended = actions.reduce(reduce, made)
   // Asked again: its new run begins with its next question (the window's way of asking would close the island too).
@@ -80,7 +83,7 @@ test('how a task stands is its snapshots\' alone: its end, or a wait, in its str
   const made = reduce(initialState, { type: 'task_snapshot', snapshot: { taskId: 's1', runId: 'run-1', title: '查一下', status: 'running',
     currentAction: null, waitingFor: null, startedAt: 1, updatedAt: 1, endedAt: null, resultPreview: '', revision: 1, taskSeq: 0,
     opening: { words: '查一下', task: { id: 's1', segmentId: 'c-task', title: '查一下', words: '查一下' }, hostSession: null } } })
-  const asked = reduce(made, { type: 'permission_request', taskId: 's1', requestId: 'p1', toolCall: { title: '写文件' }, options: [], at: 2, runId: 'run-1', seq: 1 })
+  const asked = reduce(made, { type: 'task_permission_request', taskId: 's1', requestId: 'p1', toolCall: { title: '写文件' }, options: [], at: 2, runId: 'run-1', seq: 1 })
   assert.deepEqual([asked.tasks.list[0].status, asked.tasks.list[0].view.phase, asked.tasks.list[0].permission?.requestId], ['running', 'waiting', 'p1'],
     'what it waits for is shown at once; that it waits, its snapshot says')
   const ended = reduce(asked, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: 3, runId: 'run-1', seq: 2 })
@@ -98,9 +101,9 @@ test('a window opened on a dsh at work shows what the conversation waits for, to
   const again = reduce(opened, { type: 'waits_restored', permissions: [p1], questions: [], at: 6 })
   assert.equal(again.timeline.length, 1, 'shown once')
   const refused = reduce(opened, { type: 'permission_resolved', requestId: 'p1', optionId: 'no', at: 7 })
-  assert.deepEqual([refused.permission, refused.timeline.at(-1)?.allowed], [null, false], 'refused as any approval is')
+  assert.deepEqual([refused.permission, refused.timeline.findLast(entry => entry.kind === 'decision')?.allowed], [null, false], 'refused as any approval is')
   const allowed = reduce(opened, { type: 'permission_resolved', requestId: 'p1', optionId: 'ok', at: 7 })
-  assert.equal(allowed.timeline.at(-1)?.allowed, true)
+  assert.equal(allowed.timeline.findLast(entry => entry.kind === 'decision')?.allowed, true)
   const asking = reduce(initialState, { type: 'waits_restored', permissions: [], questions: [q1], at: 5 })
   assert.deepEqual([asking.question?.questionId, asking.phase], ['q1', 'asking'])
   const answered = reduce(asking, { type: 'question_answered', questionId: 'q1', answers: [{ id: 'c', selected: ['上海'] }], at: 8 })

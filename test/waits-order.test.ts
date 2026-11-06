@@ -1,3 +1,5 @@
+import { decodeAgentEvent } from '../src/renderer/agent-event-decoder.ts'
+import { createEventActions } from '../src/renderer/agent-event-actions.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
@@ -19,16 +21,15 @@ const s2 = { ...s1, requestId: 'c2-x', server: 'sentry' }
 const waits = (fields: Record<string, unknown>): Event => ({ type: 'waits', permissions: [], questions: [], secrets: [], ...fields })
 
 /** The pushes as app.ts takes them, in the order they come. */
-const ACTIONS: Record<string, (event: Event) => Event> = {
-  permission: (event) => ({ ...event, type: 'permission_request', at: 2 }),
-  question: (event) => ({ ...event, type: 'question_request', at: 2 }),
-  question_closed: (event) => ({ ...event, type: 'question_closed' }),
-  secret_request: (event) => ({ ...event, type: 'secret_request', at: 2 }),
-  secret_closed: (event) => ({ ...event, type: 'secret_closed' }),
-  turn_end: (event) => ({ ...event, type: 'turn_end', at: 3 }),
-  waits: (event) => ({ ...event, type: 'waits_restored', at: 1 }),
-}
-const pushes = (events: Event[], from = initialState as ReturnType<typeof reduce>) => events.reduce((state, event) => reduce(state, ACTIONS[event.type](event)), from)
+const map = createEventActions()
+const pushes = (events: Event[], from: State = initialState): State => events.reduce((state, value) => {
+  const event = decodeAgentEvent({ ...value, context: { conversationId: 'c', sessionId: 's' } })
+  assert.ok(event)
+  const action = map(event, event.type === 'waits' ? 1 : event.type === 'turn_end' ? 3 : 2)
+  assert.ok(action)
+  return reduce(state, action)
+}, from)
+
 
 test('a turn ends and a new approval, question or key is asked, then what waits is said: the new one is there, once', () => {
   const approval = pushes([{ type: 'turn_end', stopReason: 'end_turn' }, { type: 'permission', ...p2 }, waits({ permissions: [p2] })])

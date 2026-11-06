@@ -110,7 +110,8 @@ export interface TaskRuntimeDeps {
 }
 
 /** A snapshot as the window gets it: the last piece of the task's stream it includes, and what a run begins with. */
-export type WindowSnapshot = TaskSnapshot & { taskSeq: number, opening?: TaskOpening }
+export type { WindowSnapshot } from '../shared/ipc-results.ts'
+import type { WindowSnapshot } from '../shared/ipc-results.ts'
 /**
  * What goes to the window of a task, in order: a piece of its run's stream (what dsh said: task_update, task_end, a
  * wait beginning or ending), numbered, or its snapshot.

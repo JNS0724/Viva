@@ -1,7 +1,7 @@
 // What the preload scripts put on the page (src/preload/preload.cjs, desk-preload.cjs). A call that only forwards
 // to a channel takes that channel's arguments from the IPC contract (src/shared/ipc-contract.ts), the same table the
 // main process checks them against; test/window-api.test.js keeps these names and the preload scripts in step.
-// What comes back is not typed yet.
+// Conversation/task results use IpcResults; the remaining channels migrate with their features.
 
 type Args<C extends import('../shared/ipc-contract.ts').Channel> = import('../shared/ipc-contract.ts').ChannelArgs<C>
 type IpcResults = import('../shared/ipc-results.ts').IpcResults
@@ -24,54 +24,14 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends boolean ? boolean
   : T extends readonly (infer U)[] ? ReadonlyArray<Widened<U>>
   : T extends (...args: any[]) => any ? T
+  : T extends BackgroundTask ? BackgroundTask
   : T extends object ? ([keyof T] extends [never] ? Readonly<Record<string, Untyped>> : { -readonly [K in keyof T]: Widened<T[K]> })
   : T
 /** What the main process tells the window of the agent (session-info.ts, acp-bridge.ts): the fields the window reads. */
-interface AgentInfo {
-  mode: string
-  model: string
-  cwd: string
-  conversationId?: string
-  reason?: string
-  /** Why the agent cannot start ('no-key', 'no-dsh'), in setup mode. */
-  problem?: string
-  remembersHistory?: boolean
-  [field: string]: any
-}
-/** A tool call as the state keeps it from the agent's updates. */
-interface ToolCall {
-  title: string
-  kind?: string
-  status?: string
-  rawInput?: any
-  locations?: ReadonlyArray<{ path: string }>
-  [field: string]: any
-}
-/** How a turn ended, shown under its answer. */
-interface Receipt { ms: number, stopReason?: string, tools?: number, [field: string]: any }
-/** A message of the conversation on screen: who said it, what, and how far it is typed out. */
-interface ThreadMessage {
-  id: string
-  role: string
-  text: string
-  /** Still arriving from the agent. */
-  open?: boolean
-  /** How much of the text is typed out so far. */
-  shown?: number
-  receipt?: Receipt | null
-  restored?: boolean
-  images?: ReadonlyArray<{ id: string }>
-  /** Where it was said from ('island'), whether into a running turn, whether it got through. */
-  via?: string
-  steered?: boolean
-  failed?: boolean
-  /** The agent's question it answers. */
-  asked?: string
-  taskId?: string
-  /** Background tasks whose cards go under this message: started while it was the last one (tasks-state.ts withCardAfter). */
-  cardsAfter?: readonly string[]
-  [field: string]: any
-}
+type AgentInfo = import('../shared/agent-info.ts').AgentInfo
+type ToolCall = import('./conversation-types.ts').ConversationTool
+type Receipt = import('./conversation-types.ts').TurnReceipt
+type ThreadMessage = import('./conversation-types.ts').ConversationMessage
 /**
  * A background task's result the model read, as a conversation draws it (report-state.ts): which report, when it
  * came (ms), the note as given, and how many of the conversation's messages come before it.
@@ -143,14 +103,14 @@ type IslandAct = (action: { kind: string, [field: string]: unknown }) => void
 type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
 /** The window's state: what state.ts's initialState can become. */
-type State = Widened<typeof import('./state.ts').initialState>
+type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info'> & ConversationView & { info: AgentInfo }
 /**
  * One conversation as it is reduced (conversation-state.ts): the one on screen (part of State) or a background
  * task's (BackgroundTask.view), and no more.
  */
-type ConversationView = Widened<typeof import('./conversation-state.ts').initialConversation>
+type ConversationView = import('./conversation-types.ts').ConversationState
 /** What changes the state: its type, and the fields its reducer reads (each reducer destructures its own). */
-type Action = { type?: string, [field: string]: any }
+type Action = import('./action-types.ts').AppAction
 /** The state after an action: a new object, never the one given changed in place. */
 type Reducer = (state: State, action: Action) => State
 /** A button on a toast: what it says, what it does (app.ts TOAST_ACTIONS), and what that needs. */
@@ -281,7 +241,7 @@ interface AgentApi extends LanguageApi {
   islandView: (...args: Args<'island:view'>) => void
   onFocusComposer: (callback: () => void) => Unlisten
   onIslandAction: (callback: (action: any) => void) => Unlisten
-  onEvent: (callback: (event: any) => void) => Unlisten
+  onEvent: (callback: (event: unknown) => void) => Unlisten
 }
 
 /** The desktop island's bridge (desk-preload.cjs): dropped files are known to it only by their paths. */

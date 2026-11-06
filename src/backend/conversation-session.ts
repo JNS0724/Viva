@@ -1,3 +1,4 @@
+import type { AgentInfo } from '../shared/agent-info.ts'
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import { ResumeError } from './resume-failure.ts'
@@ -5,18 +6,7 @@ import { sessionTiming } from './session-timing.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 
 /** The selected session's view; transport-specific fields travel through without being interpreted here. */
-export interface ConversationInfo {
-  mode: string
-  model: string
-  cwd: string
-  sessionId?: string | null
-  resumed?: boolean
-  remembersHistory?: boolean
-  conversationId?: string
-  modelValue?: string
-  models?: ReadonlyArray<{ value: string }>
-  [field: string]: unknown
-}
+export interface ConversationInfo extends AgentInfo { resumed?: boolean }
 export interface StartedConversation extends ConversationInfo { sessionId: string | null }
 interface ConversationAgent {
   newSession(): Promise<StartedConversation>

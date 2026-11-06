@@ -20,7 +20,7 @@ const IS_OPEN: Record<HubPage, (state: State) => boolean> = {
   tasks: (state) => state.tasks.page.open,
   feed: (state) => state.feed.open,
 }
-const CLOSE_ACTION: Record<HubPage, string> = { search: 'history_close', profile: 'memory_close', settings: 'settings_close', tasks: 'tasks_page_close', feed: 'feed_close' }
+const CLOSE_ACTION: Record<HubPage, 'history_close' | 'memory_close' | 'settings_close' | 'tasks_page_close' | 'feed_close'> = { search: 'history_close', profile: 'memory_close', settings: 'settings_close', tasks: 'tasks_page_close', feed: 'feed_close' }
 
 /** The page that is open, or null. */
 export const hubPage = (state: State): HubPage | null => HUB_PAGES.find((page) => IS_OPEN[page](state)) ?? null

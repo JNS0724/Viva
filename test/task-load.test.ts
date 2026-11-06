@@ -1,3 +1,6 @@
+import { decodeAgentEvent } from '../src/renderer/agent-event-decoder.ts'
+import { createEventActions } from '../src/renderer/agent-event-actions.ts'
+import type { AgentEvent } from '../src/renderer/agent-event-types.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
@@ -11,7 +14,6 @@ import { taskMessages } from '../src/renderer/tasks-state.ts'
  * had left out by its number. More than can wait came: read again, until a read comes back, and taken for all.
  */
 
-type Event = Record<string, any>
 const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 const summary = { id: 's1', segmentId: 'c-task', title: '整理发布说明', words: '整理发布说明' }
 const running = (seq: number, runId = 'run-1', said = ['整理发布说明', '先看提交…']) =>
@@ -31,22 +33,20 @@ function deferred<T>() {
 /** A window over the real reducer, its reads of the tasks answered when the test likes; events as app.ts takes them. */
 function windowWith(reads: Array<Promise<unknown>>, waited: number[] = []) {
   let state = initialState as ReturnType<typeof reduce>
-  const dispatch = (action: Event) => { state = reduce(state, action) }
+  const dispatch = (action: Action) => { state = reduce(state, action) }
   let asked = 0
-  const toAction: Record<string, (event: Event) => Event> = {
-    task_snapshot: (event) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
-    task_update: (event) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at: 5, runId: event.runId, seq: event.taskSeq }),
-    task_end: (event) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, at: 9, runId: event.runId, seq: event.taskSeq }),
-    task_steered: (event) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at: 6, runId: event.runId, seq: event.taskSeq }),
+  const map = createEventActions()
+  const deliver = (event: AgentEvent) => {
+    const action = map(event, event.type === 'task_end' ? 9 : event.type === 'task_steered' ? 6 : 5)
+    if (action) dispatch(action)
   }
-  const deliver = (event: Event) => dispatch(toAction[String(event.type)](event))
   const actions = createTaskActions({
     api: { finishedTasks: () => reads[asked++] } as never,
     getState: () => state, dispatch, showToast: () => {}, errorMessage: (err: unknown) => String(err), deliver,
     wait: async (ms: number) => { waited.push(ms) },
   })
   // As app.ts takes an event: held while the tasks are read, else reduced.
-  const arrive = (event: Event) => { if (!actions.hold(event)) deliver(event) }
+  const arrive = (value: unknown) => { const event = decodeAgentEvent(value); assert.ok(event); if (!actions.hold(event)) deliver(event) }
   return { actions, arrive, dispatch, state: () => state, asked: () => asked }
 }
 
@@ -129,7 +129,7 @@ test('a read is the baseline for the tasks it has; a snapshot no newer than what
   win.arrive({ type: 'task_end', taskId: 's1', runId: 'run-1', taskSeq: 2, stopReason: 'end_turn' })
   win.arrive(snapshot({ status: 'done', endedAt: 9, taskSeq: 2, revision: 6 }))
   assert.deepEqual([win.state().tasks.list[0].status, win.state().tasks.list[0].seq], ['done', 2])
-  win.dispatch(snapshot({ status: 'running', taskSeq: 1, revision: 5 }))
+  win.arrive(snapshot({ status: 'running', taskSeq: 1, revision: 5 }))
   assert.equal(win.state().tasks.list[0].status, 'done', 'an older snapshot does not put it back at work')
   win.dispatch({ type: 'tasks_restored', list: [done(5)] })
   assert.equal(win.state().tasks.list[0].seq, 5, 'a read puts the tasks it has to what it says')

@@ -1,3 +1,4 @@
+import type { ConversationState, ConversationUpdate, ConversationHandlers, ConversationAction } from './conversation-types.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { isSilentReply } from '../shared/task-report.ts'
 import { approvalTitle, optionName } from './approval.ts'
@@ -11,30 +12,15 @@ import { closeLast, closeStreams } from './streams.ts'
  * (tasks-state.ts `view`). Pure and immutable: every handler returns the view it was given spread with what changed,
  * so a view with more to it (the window's state) keeps the rest; none reads or writes anything else.
  */
-export const initialConversation = Object.freeze({
-  /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
-  phase: 'idle' as 'idle' | 'working' | 'waiting' | 'asking' | 'error',
-  messages: [] as ThreadMessage[],
-  thoughts: [] as Untyped[],
-  tools: {} as Record<string, ToolCall>,
-  timeline: [] as Untyped[],
-  permission: null as Untyped,
-  /** A question the agent is waiting on (question-state.ts). */
-  question: null as Untyped,
-  /** Keys a server set up from the conversation waits for (secret-state.ts): which server, which names. */
-  secret: null as Untyped,
-  turn: null as Untyped,
-  lastReceipt: null as Untyped,
-  error: null as Untyped,
-  usage: null as Untyped,
+export const initialConversation: Readonly<ConversationState> = Object.freeze({
+  phase: 'idle', messages: [], thoughts: [], tools: {}, timeline: [], permission: null, question: null,
+  secret: null, turn: null, lastReceipt: null, error: null, usage: null,
 })
 
-type ConversationHandler = (view: ConversationView, action: Action) => ConversationView
-
-const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput']
+const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput'] as const
 
 /** An update from the agent (ACP session/update), as the window gets it: its kind, and what each kind carries. */
-type AcpUpdate = { sessionUpdate?: string, [field: string]: any }
+type AcpUpdate = ConversationUpdate
 
 function contentText(content: { type: string, text?: string } | null | undefined) {
   if (!content) return ''
@@ -51,7 +37,7 @@ function appendStream<T extends { open?: boolean, text: string }>(list: readonly
 
 const bumpTurn = (turn: ConversationView['turn'], key: 'tools' | 'thoughts') => (turn ? { ...turn, [key]: turn[key] + 1 } : turn)
 
-function onMessageChunk(view: ConversationView, update: AcpUpdate): ConversationView {
+function onMessageChunk(view: ConversationView, update: Extract<AcpUpdate, { sessionUpdate: 'agent_message_chunk' }>): ConversationView {
   const chunk = contentText(update.content)
   if (!chunk) return view
   const { list } = appendStream(view.messages, chunk, (i): ThreadMessage => ({
@@ -60,7 +46,7 @@ function onMessageChunk(view: ConversationView, update: AcpUpdate): Conversation
   return { ...view, thoughts: closeLast(view.thoughts), messages: list }
 }
 
-function onThoughtChunk(view: ConversationView, update: AcpUpdate, at: number): ConversationView {
+function onThoughtChunk(view: ConversationView, update: Extract<AcpUpdate, { sessionUpdate: 'agent_thought_chunk' }>, at: number): ConversationView {
   const chunk = contentText(update.content)
   if (!chunk) return view
   const { list, created } = appendStream(view.thoughts, chunk, (i: number) => ({ id: `t${i}`, text: chunk, open: true, at }))
@@ -73,7 +59,7 @@ function onThoughtChunk(view: ConversationView, update: AcpUpdate, at: number): 
   }
 }
 
-function mergeTool(existing: ToolCall | undefined, update: AcpUpdate, at: number): ToolCall {
+function mergeTool(existing: ToolCall | undefined, update: Extract<AcpUpdate, { sessionUpdate: 'tool_call' | 'tool_call_update' }>, at: number): ToolCall {
   const base = existing ?? { id: update.toolCallId, title: t("state.tool.call"), kind: 'other', status: 'pending', locations: [], at }
   const changes = Object.fromEntries(
     TOOL_FIELDS.filter((key) => update[key] !== undefined && update[key] !== null).map((key) => [key, update[key]]),
@@ -81,7 +67,7 @@ function mergeTool(existing: ToolCall | undefined, update: AcpUpdate, at: number
   return { ...base, ...changes }
 }
 
-function onToolUpdate(view: ConversationView, update: AcpUpdate, at: number): ConversationView {
+function onToolUpdate(view: ConversationView, update: Extract<AcpUpdate, { sessionUpdate: 'tool_call' | 'tool_call_update' }>, at: number): ConversationView {
   if (!update.toolCallId) return view
   const closed = closeStreams(view)
   const existing = closed.tools[update.toolCallId]
@@ -93,13 +79,20 @@ function onToolUpdate(view: ConversationView, update: AcpUpdate, at: number): Co
   }
 }
 
-const UPDATE_HANDLERS: Readonly<Record<string, (view: ConversationView, update: AcpUpdate, at: number) => ConversationView>> = {
-  viva_stream: assistantStream,
-  agent_message_chunk: onMessageChunk,
-  agent_thought_chunk: onThoughtChunk,
-  tool_call: onToolUpdate,
-  tool_call_update: onToolUpdate,
-  usage_update: (view, update) => ({ ...view, usage: { used: update.used, size: update.size } }),
+function updateConversation(view: ConversationView, update: AcpUpdate, at: number): ConversationView {
+  switch (update.sessionUpdate) {
+    case 'viva_stream': return assistantStream(view, update, at)
+    case 'agent_message_chunk': return onMessageChunk(view, update)
+    case 'agent_thought_chunk': return onThoughtChunk(view, update, at)
+    case 'tool_call': case 'tool_call_update': return onToolUpdate(view, update, at)
+    case 'usage_update': return { ...view, usage: { used: update.used, size: update.size } }
+    // These protocol updates do not contribute to this conversation view.
+    case 'user_message_chunk': case 'plan': case 'plan_update': case 'plan_removed':
+    case 'available_commands_update': case 'current_mode_update': case 'config_option_update':
+    case 'session_info_update': case 'notice': case 'compaction_update': case 'compaction_summary_chunk':
+    case 'subagent_update': case 'session_message': case 'session_message_chunk': return view
+    default: { const exhaustive: never = update; return exhaustive }
+  }
 }
 
 function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
@@ -110,7 +103,7 @@ function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): Th
 }
 
 /** The conversation's own actions: what is said, asked and done in it, and how its turns go. */
-export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>> = {
+export const CONVERSATION_ACTIONS = {
   user_prompt: (view, { text, at, via = null, images = [] }) => {
     const closed = closeStreams(view)
     const message = {
@@ -147,8 +140,7 @@ export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>>
   }),
 
   acp_update: (view, { update, at }) => {
-    const handler = UPDATE_HANDLERS[update?.sessionUpdate]
-    return handler ? handler(view, update, at) : view
+    return updateConversation(view, update, at)
   },
 
   /** dsh names only the tool call; what it does comes from that call, announced just before (approval.js). */
@@ -215,13 +207,19 @@ export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>>
   }),
 
   ...QUESTION_ACTIONS,
-}
+} satisfies ConversationHandlers
 
 /**
  * The conversation `view` after `action`; the same view for an action not its own. A view with more to it (the
  * window's state) comes back with the rest as it was, since each handler spreads the view it is given.
  */
-export function reduceConversation<V extends ConversationView>(view: V, action: Action): V {
-  const handler = CONVERSATION_ACTIONS[action?.type ?? '']
+export function reduceConversation<V extends ConversationView>(view: V, action: ConversationAction): V {
+  // The key and payload are correlated by ConversationAction; lookup cannot express that correlation.
+  const handlers: ConversationHandlers = CONVERSATION_ACTIONS
+  const handler = handlers[action.type] as ((view: ConversationView, action: ConversationAction) => ConversationView) | undefined
   return handler ? handler(view, action) as V : view
+}
+
+export function isConversationAction(action: Action): action is ConversationAction {
+  return Object.hasOwn(CONVERSATION_ACTIONS, action.type)
 }

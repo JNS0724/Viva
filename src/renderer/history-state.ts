@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 /**
  * Search panel and toast slices of the state. Pure and immutable like the rest of `state.js`,
  * which merges these handlers into its reducer.
@@ -11,12 +12,12 @@ export const initialHistory = Object.freeze({
 
 const withHistory = (state: State, changes: Partial<State['history']>): State => ({ ...state, history: { ...state.history, ...changes } })
 
-export const HISTORY_ACTIONS: Record<string, Reducer> = {
+export const HISTORY_ACTIONS: ActionHandlers = {
   history_open: (state) => withHistory({ ...state, island: false, picker: false }, { open: true }),
   history_close: (state) => withHistory(state, { open: false }),
   history_toggle: (state) => (state.history.open
-    ? HISTORY_ACTIONS.history_close(state, {})
-    : HISTORY_ACTIONS.history_open(state, {})),
+    ? HISTORY_ACTIONS.history_close!(state, {})
+    : HISTORY_ACTIONS.history_open!(state, {})),
 
   history_query: (state, { query }) => withHistory(state, {
     query,
@@ -29,4 +30,4 @@ export const HISTORY_ACTIONS: Record<string, Reducer> = {
 
   toast_show: (state, { toast }) => ({ ...state, toast }),
   toast_hide: (state, { key }) => (state.toast?.key === key ? { ...state, toast: null } : state),
-}
+} satisfies ActionHandlers

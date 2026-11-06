@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 /**
  * The one timeline (single-conversation design): the segments before the one on screen, oldest first, as the
  * history keeps them (main/history-db.js segmentsBefore). The window scrolls up into them; when the conversation
@@ -41,7 +42,7 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
   return { ...state.earlier, segments: [...state.earlier.segments.filter((segment: Segment) => segment.id !== kept.id), kept] }
 }
 
-export const EARLIER_ACTIONS: Record<string, Reducer> = {
+export const EARLIER_ACTIONS= {
   /** A first save may finish after its topic moved above the new draft; give that archived segment its real id. */
   archived_conversation_saved: (state, { sessionId, id }) => {
     if (!sessionId) return state
@@ -60,4 +61,4 @@ export const EARLIER_ACTIONS: Record<string, Reducer> = {
     return withEarlier(state, { segments: [...fresh, ...state.earlier.segments], hasMore: Boolean(hasMore), loading: false })
   },
   earlier_failed: (state) => withEarlier(state, { loading: false }),
-}
+} satisfies ActionHandlers

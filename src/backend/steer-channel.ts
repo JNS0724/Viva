@@ -10,7 +10,8 @@ const STEER_TIMEOUT_MS = 5_000
 /** No answer from the plugin: it is not loaded, or dsh is gone. */
 export const NO_PLUGIN = 'unavailable'
 
-export type SteerResult = { ok: boolean, reason?: string }
+import type { SteerResult } from '../shared/agent-info.ts'
+export type { SteerResult } from '../shared/agent-info.ts'
 
 /** What marks the user's words as said mid-turn, for the model only (the window shows them as typed). */
 export const INTERJECTION_MARK = '【插话】'

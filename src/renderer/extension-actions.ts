@@ -16,7 +16,7 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
   const fail = (err: unknown) => dispatch({ type: 'extensions_failed', message: errorMessage(err) })
 
   /** Runs `request` unless another change is in flight; `noticeFor` turns the answer into a status line. */
-  async function change(request: () => Promise<{ info?: unknown, [field: string]: any }>, noticeFor: (view: { info?: unknown }) => string | null,
+  async function change(request: () => Promise<Partial<State['extensions']> & { info?: AgentInfo | null, cancelled?: boolean }>, noticeFor: (view: { info?: unknown }) => string | null,
     { importNote = false } = {}) {
     if (getState().extensions.busy) return
     dispatch({ type: 'extensions_busy' })
@@ -58,7 +58,7 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
       if (guardMcp()) change(() => api.importDsh(from), () => null, { importNote: true })
     },
 
-    editServer: (server: object) => dispatch({ type: 'extensions_edit', server }),
+    editServer: (server: NonNullable<import('./action-types.ts').ActionPayloads['extensions_edit']['server']>) => dispatch({ type: 'extensions_edit', server }),
     cancelEdit: () => dispatch({ type: 'extensions_edit', server: null }),
     setEditType: (kind: 'stdio' | 'http') => dispatch({ type: 'extensions_edit_type', kind }),
     addEditKey: () => dispatch({ type: 'extensions_edit_key_add' }),

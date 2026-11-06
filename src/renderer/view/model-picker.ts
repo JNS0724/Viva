@@ -22,7 +22,7 @@ function modelOption(model: Choice, info: AgentInfo, handlers: Handlers) {
 }
 
 function effortRow(info: AgentInfo, handlers: Handlers) {
-  return h('div', { class: 'effort-row', role: 'group', 'aria-label': t("model-picker.reasoning.effort") }, info.efforts.map((effort: Choice) => h('button', {
+  return h('div', { class: 'effort-row', role: 'group', 'aria-label': t("model-picker.reasoning.effort") }, (info.efforts ?? []).map((effort: Choice) => h('button', {
     type: 'button',
     class: 'effort',
     'aria-pressed': String(effort.value === info.effort),
@@ -34,7 +34,7 @@ function effortRow(info: AgentInfo, handlers: Handlers) {
 function menu(info: AgentInfo, handlers: Handlers) {
   return h('div', { class: 'model-menu', role: 'dialog', 'aria-label': t("model-picker.choose.model") },
     label(t("models.model")),
-    info.models.map((model: Choice) => modelOption(model, info, handlers)),
+    (info.models ?? []).map((model: Choice) => modelOption(model, info, handlers)),
     info.efforts?.length ? [label(t("model-picker.reasoning.effort")), effortRow(info, handlers)] : null,
     h('p', { class: 'model-hint', text: t("model-picker.takes.effect.from.the.next.turn") }))
 }

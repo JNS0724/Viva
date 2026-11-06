@@ -1,4 +1,5 @@
-import { CONVERSATION_ACTIONS } from './conversation-state.ts'
+import type { ActionHandlers } from './action-types.ts'
+import { reduceConversation } from './conversation-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
 
 /**
@@ -14,16 +15,16 @@ type Wait = { requestId?: unknown, questionId?: unknown, [field: string]: unknow
 /** Whether the conversation's trace has the user's answer to a request (a decision, an answer, keys filled in or not). */
 const answered = (state: State, kind: string, ref: unknown) => state.timeline.some((entry) => entry.kind === kind && entry.ref === ref)
 
-export const WAITS_ACTIONS: Readonly<Record<string, Reducer>> = {
+export const WAITS_ACTIONS= {
   waits_restored: (state, { permissions = [], questions = [], secrets = [], at }) => {
-    const approvals = (permissions as Wait[])
+    const approvals = (permissions)
       .filter((wait) => state.permission?.requestId !== wait.requestId && !answered(state, 'decision', wait.requestId))
-      .reduce<State>((current, wait) => CONVERSATION_ACTIONS.permission_request(current, { ...wait, type: 'permission_request', at }) as State, state)
-    const asked = (questions as Wait[])
+      .reduce<State>((current, wait) => reduceConversation(current, { ...wait, type: 'permission_request', at }), state)
+    const asked = (questions)
       .filter((wait) => approvals.question?.questionId !== wait.questionId && !answered(approvals, 'answer', wait.questionId))
-      .reduce<State>((current, wait) => CONVERSATION_ACTIONS.question_request(current, { ...wait, type: 'question_request', at }) as State, approvals)
-    return (secrets as Wait[])
+      .reduce<State>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at }), approvals)
+    return (secrets)
       .filter((wait) => asked.secret?.requestId !== wait.requestId && !answered(asked, 'secret_answer', wait.requestId))
       .reduce<State>((current, wait) => SECRET_ACTIONS.secret_request(current, { ...wait, type: 'secret_request', at }), asked)
   },
-}
+} satisfies ActionHandlers

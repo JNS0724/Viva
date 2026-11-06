@@ -2,13 +2,8 @@ import { t } from '../shared/i18n/translate.ts'
 import path from 'node:path'
 import type { ActiveTool } from '../shared/ipc-results.ts'
 
-export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'
-export interface TaskSnapshot {
-  /** The task, and its run: from the turn that started it, or the message that set it going again, to that turn's end. */
-  taskId: string, runId: string, title: string, status: TaskStatus, currentAction: string | null,
-  waitingFor: 'permission' | 'answer' | null, startedAt: number, updatedAt: number,
-  endedAt: number | null, resultPreview: string, revision: number,
-}
+import type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
+export type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 interface Task extends TaskSnapshot { cwd: string, request: string }
 export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string }
 export type TaskScope = { cwd: string } | { taskId: string }

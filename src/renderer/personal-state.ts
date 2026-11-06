@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 /**
  * The "关于你" page (profile, memories, intro) and the 扩展 section of settings (MCP servers, skills).
  * Pure and immutable like the rest of `state.js`, which merges these handlers into its reducer.
@@ -66,7 +67,7 @@ const withExtensions = (state: State, changes: Partial<State['extensions']>): St
 /** @param {{ profile: object }} memory */
 export const isProfileEmpty = (memory: { profile: object }) => Object.keys(memory.profile).length === 0
 
-export const PERSONAL_ACTIONS: Record<string, Reducer> = {
+export const PERSONAL_ACTIONS= {
   /** A reload keeps the hits of a search that is still typed. */
   memory_loaded: (state, { data }) => withMemory(state, {
     loaded: true,
@@ -139,4 +140,4 @@ export const PERSONAL_ACTIONS: Record<string, Reducer> = {
     const editing = state.extensions.editing
     return editing ? withExtensions(state, { editing: { ...editing, keys: editing.keys.filter((key: KeyRow) => key.id !== id) } }) : state
   },
-}
+} satisfies ActionHandlers

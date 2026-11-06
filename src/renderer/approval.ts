@@ -1,3 +1,4 @@
+import { objectOf } from '../shared/unknown-value.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 /**
@@ -11,21 +12,21 @@ const EDIT_TOOLS = new Set(['edit', 'str_replace_editor'])
 const COMMAND_LIMIT = 60
 
 /** A tool call's arguments, as the agent announced them. */
-type ToolInput = Record<string, any> | null | undefined
+type ToolInput = Record<string, unknown> | null | undefined
 
 /** The app's own configuration tools (viva-config plugin), said plainly. */
 const CONFIG_TITLES: Readonly<Record<string, (input: ToolInput) => string>> = {
-  viva_mcp_add: (input) => t("approval.connect.mcp.server", { value1: input?.name ?? '' }),
-  viva_mcp_remove: (input) => t("approval.remove.mcp.server", { value1: input?.name ?? '' }),
-  viva_skill_create: (input) => t("approval.create.skill", { value1: input?.name ?? '' }),
-  viva_skill_install: (input) => t("approval.install.skill", { value1: input?.path ?? '' }),
-  viva_skill_remove: (input) => t("approval.delete.skill", { value1: input?.id ?? '' }),
+  viva_mcp_add: (input) => t("approval.connect.mcp.server", { value1: String(input?.name ?? '') }),
+  viva_mcp_remove: (input) => t("approval.remove.mcp.server", { value1: String(input?.name ?? '') }),
+  viva_skill_create: (input) => t("approval.create.skill", { value1: String(input?.name ?? '') }),
+  viva_skill_install: (input) => t("approval.install.skill", { value1: String(input?.path ?? '') }),
+  viva_skill_remove: (input) => t("approval.delete.skill", { value1: String(input?.id ?? '') }),
 }
 
 /** What each kind of answer is called on the card, whatever dsh names it. */
 let OPTION_NAMES: Readonly<Record<string, string>> = { allow_once: t("approval.allow"), allow_always: t("approval.always.allow"), reject_once: t("approval.deny"), reject_always: t("approval.always.deny") }
 
-const fileName = (input: ToolInput) => String(input?.path ?? input?.file_path ?? '').split(/[\\/]/).filter(Boolean).pop() ?? ''
+const fileName = (input: ToolInput) => String(input?.path ?? String(input?.file_path ?? '')).split(/[\\/]/).filter(Boolean).pop() ?? ''
 
 function oneLine(text: string) {
   const line = text.replace(/\s+/g, ' ').trim()
@@ -36,9 +37,9 @@ function oneLine(text: string) {
  * A short title for the card: the command to run, the file to write or change, else the tool's name.
  * @param tool the announced tool call
  */
-export function approvalTitle(tool: { title: string, rawInput?: ToolInput } | null | undefined): string | null {
+export function approvalTitle(tool: { title: string, rawInput?: unknown } | null | undefined): string | null {
   if (!tool) return null
-  const input = tool.rawInput
+  const input = objectOf(tool.rawInput)
   if (CONFIG_TITLES[tool.title]) return CONFIG_TITLES[tool.title](input)
   if (COMMAND_TOOLS.has(tool.title) && typeof input?.command === 'string') return t("approval.run.command", { value1: oneLine(input.command) })
   const file = fileName(input)

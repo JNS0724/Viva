@@ -16,7 +16,7 @@ import { taskPreview, unseenEnded } from '../src/renderer/tasks-state.ts'
 const user = (text: string) => ({ role: 'user', text, receipt: null })
 const answer = (text: string) => ({ role: 'assistant', text, receipt: null })
 const restored = (id: string, conversationId: string, at: number, order: number) => ({
-  task: { id, title: id, host: { conversationId, at, order } }, status: 'done', endedAt: 10,
+  task: { id, segmentId: `segment-${id}`, words: `request-${id}`, title: id, host: { conversationId, at, order } }, status: 'done', endedAt: 10,
   messages: [user(`request-${id}`), answer(`result-${id}`)],
 })
 
@@ -87,7 +87,7 @@ test('restored rows stay in their own topic, survive being seen, and do not resu
   assert.deepEqual(unseenEnded(state).map((task) => task.id), ['other'], 'seen state survives result reconstruction')
   const elsewhere = reduce(state, { type: 'new_session', at: 20 })
   assert.deepEqual(cardedTasks(elsewhere), [])
-  const reopened = reduce(elsewhere, { type: 'conversation_opened', conversation: { id: 'own', messages: [user('front')] }, info: {} })
+  const reopened = reduce(elsewhere, { type: 'conversation_opened', conversation: { id: 'own', messages: [user('front')] }, info: initialState.info })
   assert.deepEqual(cardedTasks(reopened).map((task) => task.id), ['a'])
   const closed = reduce(reopened, { type: 'task_closed', taskId: 'a' })
   assert.deepEqual(cardedTasks(closed), [])

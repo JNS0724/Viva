@@ -1,3 +1,4 @@
+import { decodeUpdate } from '../src/renderer/agent-event-decoder.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -19,14 +20,14 @@ import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
 type Message = { role: string, text: string, receipt?: null }
 type Started = { ok: boolean, task: { id: string, segmentId: string } }
-type Kept = { task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string } }, status: string, endedAt: number, messages: Message[] }
-type Restored = { ok: boolean, task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string } }, messages: Message[] }
+type Kept = { task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string, at: number, order: number } }, status: string, endedAt: number, messages: Message[] }
+type Restored = { ok: boolean, task: { id: string, segmentId: string, title: string, words: string, host: { conversationId: string, at: number, order: number } }, messages: Message[] }
 type Call = [string, ...unknown[]]
 type Handler = (event: unknown, ...args: unknown[]) => unknown
 
 const user = (text: string): Message => ({ role: 'user', text, receipt: null })
 const answer = (text: string): Message => ({ role: 'assistant', text, receipt: null })
-const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk' as const, content: { type: 'text' as const, text } })
 
 /**
  * The IPC over a history db and a task store. relaunch() registers it afresh on the same db and store, as the
@@ -447,14 +448,15 @@ test('words into a task\'s turn are in a read of it exactly when its mark counts
 test('a task read at work gives the tool calls it has at work, for its card; one done is not among them', async () => {
   const { call, emit } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
-  emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: '读提交记录', status: 'in_progress' } })
-  emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call', toolCallId: 't2', title: '列出文件', status: 'in_progress' } })
+  emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call' as const, toolCallId: 't1', title: '读提交记录', status: 'in_progress' } })
+  emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call' as const, toolCallId: 't2', title: '列出文件', status: 'in_progress' } })
   emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call_update', toolCallId: 't2', status: 'completed' } })
   const [listed] = await call<Array<Kept & { tools?: unknown }>>('task:finished')
   assert.deepEqual(listed.tools, [{ toolCallId: 't1', title: '读提交记录' }])
 })
 
 /** What `task:finished` lists of the tasks kept, for a window that opens. */
+const place = (state: State, taskId: string) => { const task = state.tasks.list.find(task => task.id === taskId)!; return { runId: task.runId as string, seq: (task.seq ?? 0) + 1 } }
 const setupKept = (call: <T>(channel: string, ...args: unknown[]) => Promise<T>) => call<Kept[]>('task:finished')
 
 test('a window reloaded while a task works gets it back at work, with what it said so far, saved or not', async () => {
@@ -466,7 +468,7 @@ test('a window reloaded while a task works gets it back at work, with what it sa
   assert.deepEqual(listed.messages.map((m) => m.text), ['整理发布说明', '先看提交…'], 'what it said, before the save along the way')
   const state = reduce(initialState, { type: 'tasks_restored', list: [listed] })
   assert.deepEqual([state.tasks.list[0].status, liveTasks(state).length], ['running', 1], 'at work in the window again')
-  const said = reduce(state, { type: 'task_update', taskId: task.id, update: chunk('三组改动。'), at: 5 })
+  const said = reduce(state, { type: 'task_update', ...place(state, task.id), taskId: task.id, update: chunk('三组改动。'), at: 5 })
   assert.equal(said.tasks.list[0].view.messages.at(-1)?.text, '先看提交…三组改动。', 'what it says next follows on')
 })
 
@@ -514,38 +516,38 @@ test('a window reloaded while a task waits on the user shows what it waits for, 
 test('a window reloaded while a task streams its answer carries the same message on, not a second one', async () => {
   const { call, tasks } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
-  const stream = (kind: string, extra: object) => tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra } })
-  stream('delta', { index: 0, blockType: 'text', text: '前半段' })
+  const stream = (kind: string, extra: object) => tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'viva_stream' as const, key: 'k1', kind, ...extra } })
+  stream('delta', { index: 0, blockType: 'text' as const, text: '前半段' })
   const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
-  const next = reduce(state, { type: 'task_update', taskId: task.id, at: 9, update: { sessionUpdate: 'viva_stream', key: 'k1', kind: 'delta', index: 0, blockType: 'text', text: '后半段' } })
-  const settled = reduce(next, { type: 'task_update', taskId: task.id, at: 10, update: { sessionUpdate: 'viva_stream', key: 'k1', kind: 'settle', blocks: [{ type: 'text', text: '前半段后半段' }] } })
+  const next = reduce(state, { type: 'task_update', ...place(state, task.id), taskId: task.id, at: 9, update: { sessionUpdate: 'viva_stream' as const, key: 'k1', kind: 'delta', index: 0, blockType: 'text' as const, text: '后半段' } })
+  const settled = reduce(next, { type: 'task_update', ...place(next, task.id), taskId: task.id, at: 10, update: { sessionUpdate: 'viva_stream' as const, key: 'k1', kind: 'settle', blocks: [{ type: 'text', text: '前半段后半段' }] } })
   assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段'])
 })
 
 test('a stream with words said into it, then a reload, still settles into one message', async () => {
   const { call, tasks } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
-  const update = (kind: string, extra: object) => ({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra })
-  tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: update('delta', { index: 0, blockType: 'text', text: '前半段' }) })
+  const update = (kind: string, extra: object) => { const parsed = decodeUpdate({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra }); assert.ok(parsed); return parsed }
+  tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: update('delta', { index: 0, blockType: 'text' as const, text: '前半段' }) })
   await tasks.agent.message(task.id, '用户补充')
   const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
-  const more = reduce(state, { type: 'task_update', taskId: task.id, at: 9, update: update('delta', { index: 0, blockType: 'text', text: '后半段' }) })
-  const settled = reduce(more, { type: 'task_update', taskId: task.id, at: 10, update: update('settle', { blocks: [{ type: 'text', text: '前半段后半段' }] }) })
+  const more = reduce(state, { type: 'task_update', ...place(state, task.id), taskId: task.id, at: 9, update: update('delta', { index: 0, blockType: 'text' as const, text: '后半段' }) })
+  const settled = reduce(more, { type: 'task_update', ...place(more, task.id), taskId: task.id, at: 10, update: update('settle', { blocks: [{ type: 'text', text: '前半段后半段' }] }) })
   assert.deepEqual(settled.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '前半段后半段', '用户补充'])
 })
 
 test('an answer streamed and settled, then a reload, then the turn falling back to plain text: one answer, not two', async () => {
   const { call, tasks } = setup()
   const { task } = await call<Started>('task:start', { text: '整理发布说明' })
-  const update = (kind: string, extra: object) => ({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra })
+  const update = (kind: string, extra: object) => { const parsed = decodeUpdate({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra }); assert.ok(parsed); return parsed }
   const says = (raw: object) => tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: raw })
-  says(update('delta', { index: 0, blockType: 'text', text: '回答' }))
+  says(update('delta', { index: 0, blockType: 'text' as const, text: '回答' }))
   says(update('settle', { blocks: [{ type: 'text', text: '回答' }] }))
   const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
   // The stream channel's last flush did not come back (assistant-stream.ts complete): its keys withdrawn, then the ACP text.
-  const fallback = [update('settle', { blocks: [] }), { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回答' } }]
+  const fallback = [update('settle', { blocks: [] }), chunk('回答')]
   fallback.forEach(says)
-  const shown = fallback.reduce((current, raw, i) => reduce(current, { type: 'task_update', taskId: task.id, at: 10 + i, update: raw }), state)
+  const shown = fallback.reduce((current, raw, i) => reduce(current, { type: 'task_update', ...place(current, task.id), taskId: task.id, at: 10 + i, update: raw }), state)
   assert.deepEqual(shown.tasks.list[0].view.messages.map((m: { text: string }) => m.text), ['整理发布说明', '回答'], 'the window')
   tasks.dsh.flush()
   const [kept] = await call<Kept[]>('task:finished')

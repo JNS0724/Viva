@@ -1,5 +1,6 @@
+import { handleAction, type ActionHandlers, type PayloadFor } from './action-types.ts'
 import { t } from '../shared/i18n/translate.ts'
-import { CONVERSATION_ACTIONS, initialConversation, reduceConversation } from './conversation-state.ts'
+import { CONVERSATION_ACTIONS, initialConversation, reduceConversation, isConversationAction } from './conversation-state.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
 import { recordsFrom, REPORT_ACTIONS } from './report-state.ts'
 import { FILES_ACTIONS, initialFiles } from './files-state.ts'
@@ -117,7 +118,7 @@ const isRevealingMessage = (m: ThreadMessage): m is ThreadMessage & { shown: num
 /** Whether some assistant text is still being typed out. */
 export const isRevealing = (state: State): boolean => state.messages.some(isRevealingMessage)
 
-const ACTION_HANDLERS: Record<string, Reducer> = {
+const ACTION_HANDLERS: ActionHandlers = {
   ready: (state, { info }) => ({
     ...state,
     info,
@@ -126,9 +127,9 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   }),
 
   /** The conversation's own (conversation-state.ts): its words, its turns, what it asks and is asked. */
-  ...Object.fromEntries(Object.keys(CONVERSATION_ACTIONS).map((type) => [type, (state: State, action: Action) => reduceConversation(state, action)])),
 
-  user_prompt: (state, action) => ({ ...reduceConversation(state, action), island: false }),
+
+  user_prompt: (state, action) => ({ ...reduceConversation(state, { ...action, type: 'user_prompt' }), island: false }),
 
   /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
   steer_resent: (state, { at }) => ({
@@ -139,7 +140,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     turn: { startedAt: at, tools: 0, thoughts: 0 },
   }),
 
-  error: (state, action) => ({ ...reduceConversation(state, action), switching: state.newTopicPending && state.switching }),
+  error: (state, action) => ({ ...reduceConversation(state, { ...action, type: 'error' }), switching: state.newTopicPending && state.switching }),
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
   history_loaded: (state, { conversationId = null, messages, records = [], savedAt, folds = [], parentId = null, createdAt = null }) => {
@@ -162,7 +163,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   session_switch_failed: (state) => ({ ...state, switching: false }),
 
   new_session_pending: (state, { at }) => ({
-    ...(state.newTopicPending ? state : ACTION_HANDLERS.new_session(state, { at })),
+    ...(state.newTopicPending ? state : ACTION_HANDLERS.new_session!(state, { at })),
     switching: true, newTopicPending: true, phase: 'idle', error: null,
   }),
   new_session_ready: (state, { info }) => ({ ...state, info, conversationId: typeof info.conversationId === 'string' ? info.conversationId : state.conversationId, switching: false, newTopicPending: false, phase: 'idle', error: null }),
@@ -173,7 +174,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
    * goes where its time puts it in the trace, ahead of the steps it informed.
    */
   memory_context: (state, { injected }) => {
-    const entries = (injected ?? []).map((injection: { at: number, [field: string]: any }, i: number) => ({ kind: 'memory', ref: `memory-${injection.at}-${i}`, at: injection.at, injection }))
+    const entries = injected.map((injection, i) => ({ kind: 'memory' as const, ref: `memory-${injection.at}-${i}`, at: injection.at, injection }))
     if (entries.length === 0) return state
     const timeline = [...state.timeline, ...entries].sort((a, b) => a.at - b.at)
     return { ...state, timeline }
@@ -203,29 +204,29 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
 
   /** The conversation goes on in another working directory, with everything said so far (a fork): the same topic. */
   workdir_switched: (state, { info }) => ({
-    ...ACTION_HANDLERS.new_session(state, { info }),
+    ...ACTION_HANDLERS.new_session!(state, { info }),
     topic: { ...initialTopic, parentId: state.conversationId, startedAt: state.topic.startedAt },
   }),
 
   /** 回到这个话题 (or 撤销 a new one): the agent goes on from that segment; what is said next follows below. */
   /** `carried`: how many turns of its saved records the topic goes on from, its own session gone (null: it is the session). */
   topic_resumed: (state, { info, parentId, at = null, carried = null }) => ({
-    ...ACTION_HANDLERS.new_session(state, { info }),
+    ...ACTION_HANDLERS.new_session!(state, { info }),
     topic: { ...initialTopic, parentId, startedAt: at, carried },
     resume: null,
   }),
   topic_menu: (state, { open }) => (state.topic.menu === open ? state : { ...state, topic: { ...state.topic, menu: open } }),
 
   /** Picked from the history panel: start over with that conversation's messages and close the panel. */
-  conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded(
-    { ...ACTION_HANDLERS.new_session(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false } },
+  conversation_opened: (state, { conversation, info }) => ACTION_HANDLERS.history_loaded!(
+    { ...ACTION_HANDLERS.new_session!(state, { info }), earlier: initialEarlier, history: { ...state.history, open: false } },
     { conversationId: conversation.id, messages: conversation.messages, records: conversation.records, savedAt: conversation.updatedAt, parentId: conversation.parentId ?? null, createdAt: conversation.createdAt ?? null },
   ),
 
   /** Restored trace goes first: it happened before anything the live session has added since. */
   trace_restored: (state, { conversationId, trace, available }) => {
     if (conversationId !== state.conversationId) return state
-    if (!available) return { ...state, restoredTrace: 'unavailable' }
+    if (!available || !trace) return { ...state, restoredTrace: 'unavailable' }
     return {
       ...state,
       restoredTrace: 'loaded',
@@ -272,7 +273,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...RESUME_ACTIONS,
   ...EARLIER_ACTIONS,
   ...REPORT_ACTIONS,
-  ...rewindActions((state, action) => ACTION_HANDLERS.new_session(state, action)),
+  ...rewindActions((state, action) => ACTION_HANDLERS.new_session!(state, action)),
   ...taskActions(),
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
@@ -283,13 +284,14 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...WAITS_ACTIONS,
   ...PROPOSAL_ACTIONS,
   ...FEED_ACTIONS,
-}
+} satisfies ActionHandlers
 
 export function reduce(state: State, action: Action): State {
   const routed = routeToTask(state, action)
   if (routed) return routed
-  const handler = ACTION_HANDLERS[action?.type ?? '']
-  return oneHubPage(state, handler ? handler(state, action) : state, reduce)
+  const next = Object.hasOwn(ACTION_HANDLERS, action.type) ? handleAction(state, action, ACTION_HANDLERS)
+    : isConversationAction(action) ? reduceConversation(state, action) : state
+  return oneHubPage(state, next, reduce)
 }
 
 export const isBusy = (state: { phase: string }): boolean => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'

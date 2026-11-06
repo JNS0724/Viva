@@ -1,52 +1,37 @@
-import type { ContextEvent } from '../shared/conversation-context.ts'
+import type { AgentEvent } from './agent-event-types.ts'
+export type { AgentEvent as EventEnvelope } from './agent-event-types.ts'
 
-/** Routing metadata and opaque payload; validation is independent of the conversation context queue. */
-export interface EventEnvelope extends ContextEvent { type?: string, [field: string]: unknown }
-
+/** Exhaustive conversion of validated pushes. Receive time survives selection buffering. */
 export function createEventActions({ now = Date.now }: { now?: () => number } = {}) {
-  /**
-   * A piece of a task's stream, where it is in it (task-runtime.ts): its run and number (`taskSeq`; the push's own
-   * `seq` is the event core's), for the window to take it once.
-   */
-  const streamPlace = (event: EventEnvelope) => (typeof event.taskSeq === 'number' && typeof event.runId === 'string' ? { runId: event.runId, seq: event.taskSeq } : {})
-
-  const EVENT_ACTIONS: Readonly<Record<string, (event: EventEnvelope, at: number) => Action>> = {
-    ready: (event, at) => ({ type: 'ready', info: event.info }),
-    config: (event, at) => ({ type: 'config_applied', info: event.info }),
-    update: (event, at) => ({ type: 'acp_update', update: event.update, at }),
-    /** A turn the app started (a background task's result coming back): no words of the user's. */
-    turn_started: (event, at) => ({ type: 'agent_turn_started', by: event.by ?? null, at }),
-    permission: (event, at) => ({
-      type: 'permission_request', requestId: event.requestId, taskId: event.taskId, toolCall: event.toolCall, options: event.options, at, ...streamPlace(event),
-    }),
-    /** What a background task says, asks and how it ends (tasks-state.ts), each with its place in the task's stream. */
-    task_update: (event, at) => ({ type: 'task_update', taskId: event.taskId, update: event.update, at, ...streamPlace(event) }),
-    task_snapshot: (event, at) => ({ type: 'task_snapshot', snapshot: event.snapshot }),
-    task_permission_closed: (event, at) => ({ type: 'task_permission_closed', taskId: event.taskId, requestId: event.requestId, at, ...streamPlace(event) }),
-    /** A background task's result the model read (report-records.ts): its record in the conversation, where it came. */
-    report_delivered: (event, at) => ({ type: 'report_delivered', conversationId: event.conversationId, sessionId: event.sessionId, reportId: event.reportId, text: event.text, at: event.at }),
-    task_end: (event, at) => ({ type: 'task_end', taskId: event.taskId, stopReason: event.stopReason, message: event.message ?? null, at, ...streamPlace(event) }),
-    task_question: (event, at) => ({ type: 'task_question', taskId: event.taskId, questionId: event.questionId, questions: event.questions, at, ...streamPlace(event) }),
-    task_question_closed: (event, at) => ({ type: 'task_question_closed', taskId: event.taskId, questionId: event.questionId, at, ...streamPlace(event) }),
-    /**
-     * What the agent said into a task's turn (viva-tasks), a piece of its stream like what the task says. A task it
-     * starts, asks again or takes up comes by the snapshot that begins the run (task_snapshot), before what the run says.
-     */
-    task_steered: (event, at) => ({ type: 'task_steer', taskId: event.taskId, text: event.text, at, ...streamPlace(event) }),
-    question: (event, at) => ({ type: 'question_request', questionId: event.questionId, questions: event.questions, at }),
-    question_closed: (event, at) => ({ type: 'question_closed', questionId: event.questionId, at }),
-    /** What the conversation on screen waits on the user for, asked for on opening (waits-state.ts). */
-    waits: (event, at) => ({ type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at }),
-    secret_request: (event, at) => ({ type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at }),
-    secret_closed: (event, at) => ({ type: 'secret_closed', requestId: event.requestId }),
-    turn_end: (event, at) => ({ type: 'turn_end', stopReason: event.stopReason, at }),
-    memory_context: (event, at) => ({ type: 'memory_context', injected: event.injected }),
-    error: (event, at) => ({ type: 'error', message: event.message }),
-    /** The conversation goes on in another working directory (work-dir-ipc.js): a new part of the timeline. */
-    workdir: (event, at) => ({ type: 'workdir_switched', info: event.info }),
-    /** The model proposed a follow-up: a card under the conversation, for the user to decide on. */
-    /** A schedule the model proposed (schedules.ts): its card under the conversation. */
-    schedule_propose: (event, at) => ({ type: 'schedule_proposed', proposal: event.proposal }),
+  return (event: AgentEvent, at = now()): Action | null => {
+    switch (event.type) {
+      case 'ready': return { type: 'ready', info: event.info }
+      case 'workdir': return { type: 'workdir_switched', info: event.info }
+      case 'config': return { type: 'config_applied', info: event.info }
+      case 'update': return { type: 'acp_update', update: event.update, at }
+      case 'turn_started': return { type: 'agent_turn_started', by: event.by ?? null, at }
+      case 'permission': return event.taskId !== undefined
+        ? { type: 'task_permission_request', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, requestId: event.requestId, toolCall: event.toolCall, options: event.options, at }
+        : { type: 'permission_request', requestId: event.requestId, toolCall: event.toolCall, options: event.options, at }
+      case 'task_update': return { type: 'task_update', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, update: event.update, at }
+      case 'task_snapshot': return { type: 'task_snapshot', snapshot: event.snapshot }
+      case 'task_permission_closed': return { type: 'task_permission_closed', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, requestId: event.requestId, at }
+      case 'report_delivered': return { type: 'report_delivered', conversationId: event.conversationId, sessionId: event.sessionId, reportId: event.reportId, text: event.text, at: event.at }
+      case 'task_end': return { type: 'task_end', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, stopReason: event.stopReason, message: event.message ?? null, at }
+      case 'task_question': return { type: 'task_question', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, questionId: event.questionId, questions: event.questions, at }
+      case 'task_question_closed': return { type: 'task_question_closed', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, questionId: event.questionId, at }
+      case 'task_steered': return { type: 'task_steer', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, text: event.text, at }
+      case 'question': return { type: 'question_request', questionId: event.questionId, questions: event.questions, at }
+      case 'question_closed': return { type: 'question_closed', questionId: event.questionId, at }
+      case 'waits': return { type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at }
+      case 'secret_request': return { type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at }
+      case 'secret_closed': return { type: 'secret_closed', requestId: event.requestId }
+      case 'turn_end': return { type: 'turn_end', stopReason: event.stopReason, at }
+      case 'memory_context': return { type: 'memory_context', injected: event.injected }
+      case 'error': return { type: 'error', message: event.message }
+      case 'schedule_propose': return { type: 'schedule_proposed', proposal: event.proposal }
+      case 'memory_changed': case 'files_changed': case 'feed_changed': case 'schedules_changed': return null
+      default: { const exhaustive: never = event; return exhaustive }
+    }
   }
-  return (event: EventEnvelope, receivedAt = now()): Action | null => typeof event.type === 'string' ? EVENT_ACTIONS[event.type]?.(event, receivedAt) ?? null : null
 }

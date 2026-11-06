@@ -5,7 +5,7 @@ export function createProposalActions({ api, getState, dispatch, errorMessage }:
   const cardOf = (id: string): ProposalCard | undefined => getState().proposals.find((card: ProposalCard) => card.id === id)
 
   /** One answer per card at a time; the card says how it went. */
-  async function settle(id: string, status: 'accepted' | 'declined', request: () => Promise<unknown>) {
+  async function settle(id: string, status: 'accepted' | 'declined', request: () => Promise<ProposalCard['accepted'] | void>) {
     const card = cardOf(id)
     if (!card || card.busy || card.status !== 'open') return
     dispatch({ type: 'proposal_busy', id })

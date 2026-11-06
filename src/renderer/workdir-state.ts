@@ -1,3 +1,4 @@
+import type { ActionHandlers } from './action-types.ts'
 /**
  * The working directory as the window shows it (single-conversation design): the folder in use and the ones
  * used lately, as the main process reports them (main/work-dir-ipc.js), the chip's menu, the folder waiting
@@ -18,7 +19,7 @@ export const initialWorkDir = Object.freeze({
 
 const withWorkDir = (state: State, changes: Partial<State['workDir']>): State => ({ ...state, workDir: { ...state.workDir, ...changes } })
 
-export const WORKDIR_ACTIONS: Record<string, Reducer> = {
+export const WORKDIR_ACTIONS= {
   workdir_loaded: (state, { view }) => withWorkDir(state, {
     current: view.current, defaultDir: view.defaultDir, isDefault: Boolean(view.isDefault), recent: view.recent ?? [], switching: false, error: null,
   }),
@@ -26,4 +27,4 @@ export const WORKDIR_ACTIONS: Record<string, Reducer> = {
   workdir_confirm: (state, { dir }) => withWorkDir(state, { confirm: dir ?? null, menu: false }),
   workdir_switching: (state) => withWorkDir(state, { switching: true, menu: false, confirm: null, error: null }),
   workdir_failed: (state, { message }) => withWorkDir(state, { switching: false, error: message }),
-}
+} satisfies ActionHandlers

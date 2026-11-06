@@ -6,10 +6,10 @@ import { setLocale } from '../src/shared/i18n/locale.ts'
 
 /** What a task says, put together by the backend the way the window puts together a conversation. */
 
-const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
-const thought = (text: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } })
-const tool = (id: string) => ({ sessionUpdate: 'tool_call', toolCallId: id, title: '运行 git log', status: 'in_progress' })
-const stream = (key: string, kind: string, extra: Record<string, unknown>) => ({ sessionUpdate: 'viva_stream', key, kind, ...extra })
+const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk' as const, content: { type: 'text' as const, text } })
+const thought = (text: string) => ({ sessionUpdate: 'agent_thought_chunk' as const, content: { type: 'text' as const, text } })
+const tool = (id: string) => ({ sessionUpdate: 'tool_call' as const, toolCallId: id, title: '运行 git log', status: 'in_progress' })
+const stream = (key: string, kind: string, extra: Record<string, unknown>) => ({ sessionUpdate: 'viva_stream' as const, key, kind, ...extra })
 const run = (updates: unknown[], start: Transcript = []) => updates.reduce<Transcript>((transcript, update) => updated(transcript, update), start)
 const texts = (transcript: Transcript) => saved(transcript).map((m) => `${m.role}:${m.text}`)
 
@@ -21,9 +21,9 @@ test('text adds to what the agent is writing; a thought or a tool call starts th
 
 test('a stream builds its message by blocks; settled, its blocks replace them, and an empty one goes', () => {
   const live = run([
-    stream('k1', 'delta', { index: 0, blockType: 'text', text: '先' }),
-    stream('k1', 'delta', { index: 0, blockType: 'text', text: '看' }),
-    stream('k1', 'block', { index: 1, blockType: 'text', text: '提交' }),
+    stream('k1', 'delta', { index: 0, blockType: 'text' as const, text: '先' }),
+    stream('k1', 'delta', { index: 0, blockType: 'text' as const, text: '看' }),
+    stream('k1', 'block', { index: 1, blockType: 'text' as const, text: '提交' }),
     stream('k1', 'delta', { index: 0, blockType: 'reasoning', text: '不算' }),
   ])
   assert.deepEqual(texts(live), ['assistant:先看提交'])

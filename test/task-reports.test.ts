@@ -14,7 +14,7 @@ import { isSilentReply, reportRecordOf, shownNote, SILENT_REPLY } from '../src/s
  * is done only once read (its reading confirmed by viva-steer).
  */
 
-const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk' as const, content: { type: 'text' as const, text } })
 
 const payload = (taskId: string, title: string, host: string, output: string, runId = 'run-1'): ReportPayload =>
   ({ taskId, runId, title, status: 'done', host, output })
@@ -222,10 +222,10 @@ test('a note read back for its record: the tasks it tells of, whether it came in
 })
 
 const stream = (key: string, kind: 'delta' | 'settle', text: string) => (kind === 'delta'
-  ? { sessionUpdate: 'viva_stream', key, kind, index: 0, blockType: 'text', text }
-  : { sessionUpdate: 'viva_stream', key, kind, blocks: text ? [{ type: 'text', text }] : [] })
+  ? { sessionUpdate: 'viva_stream' as const, key, kind, index: 0, blockType: 'text' as const, text }
+  : { sessionUpdate: 'viva_stream' as const, key, kind, blocks: text ? [{ type: 'text', text }] : [] })
 const inTurnText = shownNote(noteFor([{ taskId: 'task-0001', title: '整理发布说明', status: 'done', host: 'c1', output: '写好了' }], { inTurn: true }))
-const delivered = (conversationId: string, at = 12, sessionId = 's1') => ({ type: 'report_delivered', conversationId, sessionId, reportId: 'task-0001:run-1', text: inTurnText, at })
+const delivered = (conversationId: string, at = 12, sessionId = 's1') => ({ type: 'report_delivered' as const, conversationId, sessionId, reportId: 'task-0001:run-1', text: inTurnText, at })
 
 /** The conversation as the window draws it: each message, and each record after the messages before it. */
 type WindowState = ReturnType<typeof reduce>
@@ -314,10 +314,10 @@ test('going back, a path opened, back onto a path: the window takes the records 
   const at = 1_730_800_000_000
   const loaded = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '做周报' }], savedAt: 1,
     records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }] })
-  const rewound = reduce(loaded, { type: 'rewound', info: {}, folds: [],
+  const rewound = reduce(loaded, { type: 'rewound', info: initialState.info, folds: [],
     conversation: { id: 'c2', messages: [{ role: 'user', text: '做周报' }], records: [{ reportId: 'task-0001:run-1', at, text: inTurnText, after: 1 }] } })
   assert.deepEqual(layout(rewound), ['user', 'record'], 'the shared part\'s record kept on screen')
-  const opened = reduce(rewound, { type: 'fold_opened', id: 'c1', messages: [{ role: 'assistant', text: '改了' }], records: [{ reportId: 'task-0002:run-1', at, text: inTurnText, after: 1 }] })
+  const opened = reduce(rewound, { type: 'fold_opened', id: 'c1', messages: [{ seq: 0, role: 'assistant', text: '改了' }], records: [{ reportId: 'task-0002:run-1', at, text: inTurnText, after: 1 }] })
   assert.deepEqual(opened.rewind.openRecords.c1.map((record: ReportRecord) => record.reportId), ['task-0002:run-1'])
   assert.deepEqual(reduce(opened, { type: 'fold_closed', id: 'c1' }).rewind.openRecords, {})
 })

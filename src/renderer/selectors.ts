@@ -1,3 +1,4 @@
+import { objectOf } from '../shared/unknown-value.ts'
 import { calendarDays, formatDate } from '../shared/i18n/format.ts'
 import { onLocaleChange, localeRevision, getLocale } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -187,7 +188,7 @@ function compactJson(value: unknown) {
   }
 }
 
-const urlOf = (tool: ToolCall) => tool.rawInput?.url ?? tool.rawInput?.query ?? ''
+const urlOf = (tool: ToolCall) => { const input = objectOf(tool.rawInput); return input?.url ?? input?.query ?? '' }
 const firstPath = (tool: ToolCall) => tool.locations?.[0]?.path ?? ''
 
 export function toolDetail(tool: ToolCall): string {
@@ -284,7 +285,7 @@ type TimelineEntry = State['timeline'][number]
 
 /** What of a conversation its trace is drawn from: the order of what happened, the tools and the thoughts. */
 type TraceSource = Pick<ConversationView, 'timeline' | 'tools' | 'thoughts'>
-const TRACE_BUILDERS: Readonly<Record<string, (state: TraceSource, entry: TimelineEntry) => TraceRow | null | undefined>> = {
+const TRACE_BUILDERS: { [K in TimelineEntry['kind']]: (state: TraceSource, entry: Extract<TimelineEntry, { kind: K }> extends never ? TimelineEntry & { kind: K } : Extract<TimelineEntry, { kind: K }>) => TraceRow | null | undefined } = {
   memory: (_state, entry) => memoryTrace(entry.injection),
   thought: (state, entry) => {
     const thought = state.thoughts.find((t) => t.id === entry.ref)
@@ -315,7 +316,8 @@ const TRACE_BUILDERS: Readonly<Record<string, (state: TraceSource, entry: Timeli
 /** Rows for the drawer's 过程 tab, oldest first. */
 export function traceItems(state: TraceSource): Array<TraceRow & { key: string, time: string }> {
   return state.timeline.flatMap((entry, index) => {
-    const item = TRACE_BUILDERS[entry.kind]?.(state, entry)
+    const build = TRACE_BUILDERS[entry.kind] as (state: TraceSource, entry: TimelineEntry) => TraceRow | null | undefined
+    const item = build(state, entry)
     return item ? [{ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item }] : []
   })
 }
@@ -334,10 +336,11 @@ export function fileItems(state: State) {
 }
 
 /** What the confirmation card shows of the tool's arguments: a command as itself, anything else pretty-printed. */
-export function permissionDetail(permission: { rawInput?: Record<string, unknown> | null } | null | undefined): string {
+export function permissionDetail(permission: { rawInput?: unknown } | null | undefined): string {
   if (!permission?.rawInput) return ''
-  const { command } = permission.rawInput
-  if (typeof command === 'string' && Object.keys(permission.rawInput).length === 1) return command
+  const input = objectOf(permission.rawInput)
+  const command = input?.command
+  if (typeof command === 'string' && Object.keys(input ?? {}).length === 1) return command
   try {
     return JSON.stringify(permission.rawInput, null, 2)
   } catch {

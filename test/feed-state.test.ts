@@ -8,7 +8,7 @@ import { hubPage } from '../src/renderer/hub-state.ts'
 
 const item = (id: string, seenAt: number | null = null) => ({ id, source: 'schedule', key: `${id}@t`, title: id, body: `${id} 的内容`, origin: { label: '定时任务' }, createdAt: 0, seenAt })
 const schedule = (id: string, nextAt: string, status = 'active') => ({ id, title: id, prompt: `${id} 的提示词`, kind: 'daily', nextAt, status })
-const loaded = (items: unknown[], schedules: unknown[] = []) => reduce(initialState, { type: 'feed_loaded', items, schedules })
+const loaded = (items: ReturnType<typeof item>[], schedules: ReturnType<typeof schedule>[] = []) => reduce(initialState, { type: 'feed_loaded', items, schedules })
 
 test('new items as listed (latest first), schedules soonest first with the paused last, seen items only the last few', () => {
   const seen = Array.from({ length: 25 }, (_, i) => item(`s${i}`, i + 1))

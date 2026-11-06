@@ -19,8 +19,8 @@ import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
 import { createPluginActions } from './plugin-actions.ts'
 import { createNewTopicAction } from './new-topic-actions.ts'
-import { createConversationIngress } from './conversation-ingress.ts'
-import { createEventActions } from './agent-event-actions.ts'
+import { createAgentEvents } from './agent-events.ts'
+import type { AgentEvent } from './agent-event-types.ts'
 import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
 import { answersFrom } from './question-state.ts'
@@ -74,9 +74,10 @@ function storeFlag(key: string, value: boolean) {
 /** The ended tasks seen (tasks-state.ts seen), a JSON list of ids: the latest so many, enough for any launch. */
 const SEEN_KEY = 'viva:tasks-seen'
 const SEEN_KEPT = 200
-function storedSeen(): unknown {
+function storedSeen(): string[] {
   try {
-    return JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]')
+    const ids: unknown = JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]')
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
   } catch {
     return []
   }
@@ -90,10 +91,10 @@ function storeSeen(ids: readonly string[]) {
 }
 
 let state: State = [
-  { type: 'tasks_list_folded', folded: storedFlag(TASK_LIST_KEY) },
-  { type: 'tasks_seen_restored', ids: storedSeen() },
+  { type: 'tasks_list_folded' as const, folded: storedFlag(TASK_LIST_KEY) },
+  { type: 'tasks_seen_restored' as const, ids: storedSeen() },
 ].reduce((before: State, action) => reduce(before, action), initialState)
-let conversationIngress: ReturnType<typeof createConversationIngress<AgentEvent>> | undefined
+let agentEvents: ReturnType<typeof createAgentEvents> | undefined
 let beforeSelection = () => {}
 const SELECTION_STARTS = new Set(['new_session_pending', 'session_switching', 'rewind_busy', 'workdir_switching'])
 
@@ -117,7 +118,7 @@ function dispatch(action: Action) {
   if (next === state) return
   if (next.tasks.seen !== state.tasks.seen) storeSeen(next.tasks.seen)
   state = next
-  if (['acp_update', 'task_update'].includes(action.type ?? '') && LIVE_TEXT_UPDATES.has(action.update?.sessionUpdate)) {
+  if ((action.type === 'acp_update' || action.type === 'task_update') && LIVE_TEXT_UPDATES.has(action.update.sessionUpdate)) {
     // State stays current for user actions, while a burst of model chunks paints once per frame.
     pendingRender ??= scheduleFrame(() => { pendingRender = null; render(dom, state, handlers) })
   } else {
@@ -130,7 +131,7 @@ function dispatch(action: Action) {
   publishIsland()
   afterRender?.()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
-  conversationIngress?.stateChanged()
+  agentEvents?.stateChanged()
 }
 
 let publishedIsland = ''
@@ -203,7 +204,7 @@ function saveHistory() {
     .then((summary) => {
       // A save from the topic just left must not attach its id to the new blank topic.
       if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
-      else dispatch({ type: 'archived_conversation_saved', sessionId, id: summary.id })
+      else if (sessionId) dispatch({ type: 'archived_conversation_saved', sessionId, id: summary.id })
       historyActions.refreshIfOpen()
     })
     .catch((err) => console.error('[history] could not save the conversation:', errorMessage(err)))
@@ -578,7 +579,7 @@ const handlers = {
     dispatch({ type: 'tasks_page_open', taskId })
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
-  selectFeed: (kind: string, id: string) => dispatch({ type: 'feed_select', kind, id }),
+  selectFeed: (kind: 'item' | 'schedule', id: string) => dispatch({ type: 'feed_select', kind, id }),
   openFeed: () => {
     dispatch({ type: 'feed_open' })
     feedActions.loadFeed()
@@ -668,7 +669,7 @@ function saveNotice(info: AgentInfo | null | undefined) {
 
 /** Saving or clearing the key restarts the agent in the main process, so the conversation starts over. */
 async function applySettingsChange(
-  request: () => Promise<{ settings: unknown, info?: AgentInfo | null }>,
+  request: () => Promise<{ settings: Partial<State['settings']>, info?: AgentInfo | null }>,
   noticeFor: (info: AgentInfo | null | undefined) => string,
 ) {
   if (state.settings.busy || state.switching) return
@@ -682,10 +683,6 @@ async function applySettingsChange(
     dispatch({ type: 'settings_failed', message: errorMessage(err) })
   }
 }
-
-/** What the main process says of the agent (main.ts agent:event): its type, and what goes with it. */
-type AgentEvent = { type?: string, [field: string]: any }
-
 
 function wireComposer() {
   dom.composer.addEventListener('submit', (event) => {
@@ -837,42 +834,23 @@ function labelShortcuts() {
 
 /** An MCP server that would not start is left out; say so once per connection instead of failing. */
 function reportMcpProblems(info: AgentInfo | undefined) {
-  const dropped: Array<{ name: string }> = info?.mcp?.dropped ?? []
+  const dropped: ReadonlyArray<{ name: string }> = info?.mcp?.dropped ?? []
   if (dropped.length === 0) return
   const names = dropped.map((item) => (item.name === 'memory' ? t("app.memory.tools") : `「${item.name}」`)).join('、')
   historyActions.showToast(t("app.could.not.connect.and.were.skipped.for", { names: names }), { action: { label: t("app.view"), kind: 'open-settings' }, ms: 8000 })
 }
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
-const eventAction = createEventActions()
-function applyEvent(event: AgentEvent, receivedAt?: number) {
-  const action = eventAction(event, receivedAt)
-  if (action) dispatch(action)
-  if (event?.type === 'ready') reportMcpProblems(event.info)
-  if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
-  if (event?.type === 'turn_end') {
-    filesActions.filesAfterTurn()
-    sendAfterTurn(event.stopReason)
-  }
-  if (event?.type === 'task_end') filesActions.filesAfterTurn()
-  if (event?.type === 'error') conversationActions.clearAfterTurn()
-  // A batch ended: drafts are ready, or the list changed.
-  // A schedule ran (a new item), or the schedules changed (kept, paused, ended, changed by asking).
-  if (event?.type === 'feed_changed' || event?.type === 'schedules_changed') feedActions.loadFeed()
-}
-
-conversationIngress = createConversationIngress<AgentEvent>({
-  initialized: false,
-  current: () => ({
-    pending: state.newTopicPending || state.switching || state.workDir.switching || state.rewind.busy || state.settings.busy,
-    context: {
-      conversationId: state.conversationId ?? state.info.conversationId ?? null,
-      sessionId: state.info.sessionId ?? null,
-    },
-  }),
-  deliver: applyEvent,
+agentEvents = createAgentEvents({
+  getState: () => state, dispatch, holdTask: taskActions.hold,
+  afterTurn: sendAfterTurn, clearAfterTurn: conversationActions.clearAfterTurn,
+  ready: reportMcpProblems, refreshWorkDir: workDirActions.refresh,
+  refreshFiles: filesActions.filesAfterTurn,
+  memoryChanged: memoryActions.onMemoryChanged, filesChanged: filesActions.onFilesChanged,
+  refreshFeed: feedActions.loadFeed,
+  rejected: issue => console.warn('[agent:event]', issue.reason, issue.tag),
 })
-function handleEvent(event: AgentEvent) { conversationIngress!.receive(event) }
+function handleEvent(event: AgentEvent) { agentEvents!.replay(event) }
 
 async function boot() {
   if (api) await initializeLanguage(api, () => render(dom, state, handlers))
@@ -884,13 +862,7 @@ async function boot() {
   }
   api.onIslandAction?.((action) => handlers.islandAction(action))
   api.onFocusComposer?.(() => dom.input.focus())
-  api.onEvent((event) => {
-    if (event?.type === 'memory_changed') return memoryActions.onMemoryChanged(event)
-    if (event?.type === 'files_changed') return filesActions.onFilesChanged(event)
-    // While the tasks are read, what comes of any task waits for the read (task-actions.ts).
-    if (taskActions.hold(event)) return undefined
-    return handleEvent(event)
-  })
+  api.onEvent(value => agentEvents!.receive(value))
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), feedActions.loadFeed()])
   // The tasks the last launch kept: ended ones, and those it quit on.
   await taskActions.loadKept()
@@ -913,7 +885,7 @@ async function boot() {
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
   if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })
-  conversationIngress!.initialize()
+  agentEvents!.initialize()
   // Opened on a dsh at work (a reload): what the conversation waits on the user for, which the backend says on the
   // live channel, in its place among the pushes (waits-state.ts, system-design §12.1).
   await api.waits().catch((err: unknown) => console.error('[app] could not ask what the conversation waits for:', err))
