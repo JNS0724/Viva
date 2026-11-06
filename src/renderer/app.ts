@@ -867,7 +867,8 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   /** The conversation goes on in another working directory (work-dir-ipc.js): a new part of the timeline. */
   workdir: (event) => ({ type: 'workdir_switched', info: event.info }),
   /** The model proposed a follow-up: a card under the conversation, for the user to decide on. */
-  followup_propose: (event) => ({ type: 'followup_proposed', proposalId: event.proposalId, proposal: event.proposal }),
+  /** A schedule the model proposed (schedules.ts): its card under the conversation. */
+  schedule_propose: (event) => ({ type: 'schedule_proposed', proposal: event.proposal }),
   /** How background preparation goes (prepare-scheduler.ts). */
   prepare_state: (event) => ({ type: 'prepare_state', prepare: event.state }),
 }

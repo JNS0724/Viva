@@ -42,62 +42,43 @@ export function whenText(ts: number, now = Date.now()): string {
 
 const parsed = (iso: string | null) => (iso ? Date.parse(iso) : NaN)
 
-/** The card's lines: when it is prepared (read-only, nothing sent), when the user is reminded, which files. */
-function proposalLines(proposal: Untyped, now: number) {
-  const prepareBy = parsed(proposal.prepareBy)
-  const remindAt = parsed(proposal.remindAt)
-  const line = (when: string, what: string) => h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: when }), h('span', { text: what }))
-  return [
-    Number.isFinite(prepareBy) ? line(t("followups.before", { value1: whenText(prepareBy, now) }), t("followups.prepare.a.draft.in.the.background.read")) : null,
-    Number.isFinite(remindAt) ? line(whenText(remindAt, now), t("followups.remind.you.to.review")) : null,
-    proposal.files?.length ? line(t("followups.will.read"), proposal.files.join('、')) : null,
-  ]
+/** How often a schedule runs, in words: once, every day, every week on its days, or its cron expression. */
+export function scheduleWhen(rule: Untyped, firstAt: string, now: number): string {
+  const first = whenText(Date.parse(firstAt), now)
+  if (rule?.kind === 'daily') return t('schedule.daily', { time: String(rule.daily?.time ?? '').slice(0, 5) })
+  if (rule?.kind === 'weekly') {
+    const days = (rule.weekly?.weekdays ?? []).map((day: number) => WEEKDAYS[day % 7]).join('、')
+    return t('schedule.weekly', { days, time: String(rule.weekly?.time ?? '').slice(0, 5) })
+  }
+  if (rule?.kind === 'cron') return t('schedule.cron', { expression: String(rule.cron?.expression ?? ''), first })
+  return first
 }
 
-/** After 跟进, for the first follow-up that needs preparing: when preparation may run, one tap. */
-function windowsChooser(card: ProposalCard, handlers: Handlers) {
-  if (card.chosen) return h('p', { class: 'fu-note', text: t("followups.background.preparation.change.anytime.in.settings", { value1: PRESET_NAMES[card.chosen] }) })
-  return h('div', { class: 'fu-choose', role: 'group', 'aria-label': t("followups.background.preparation.schedule") },
-    h('span', { class: 'fu-note', text: t("followups.when.should.preparation.run.related.work.is") }),
-    h('div', { class: 'fu-presets' }, ['three', 'two', 'one'].map((preset) => h('button', {
-      class: `${preset === 'three' ? BUTTON.primary : BUTTON.secondary} fu-preset`, type: 'button', disabled: card.busy,
-      onClick: () => handlers.chooseWindows(card.id, preset),
-    }, h('b', { text: PRESET_NAMES[preset] }), h('span', { class: 'mono', text: PRESET_TIMES[preset] })))),
-    h('span', { class: 'fu-note', text: t("followups.you.can.also.customize.weekday.and.weekend") }))
-}
-
-function decidedCard(card: ProposalCard, handlers: Handlers, now: number) {
+/** Decided: kept, with when it runs first; or not. */
+function decidedCard(card: ProposalCard, now: number) {
   const { proposal } = card
   if (card.status !== 'accepted') {
-    return h('section', { class: 'confirm fu-card fu-done', 'aria-label': t("followups.do.not.follow.up") },
-      h('p', { class: 'fu-note', text: card.status === 'never' ? t("followups.okay.you.will.not.be.asked.about", { title: proposal.title }) : t("followups.okay.no.follow.up.you.will.not") }))
+    return h('section', { class: 'confirm fu-card fu-done', 'aria-label': t('schedule.card.declined') },
+      h('p', { class: 'fu-note', text: t('schedule.card.declined') }))
   }
-  const accepted = card.accepted ?? {}
-  const when = [
-    accepted.prepareBy ? t("followups.prepare.in.the.background.before", { value1: whenText(accepted.prepareBy, now) }) : null,
-    accepted.remindAt ? t("followups.remind.you.at", { value1: whenText(accepted.remindAt, now) }) : null,
-  ].filter(Boolean).join('，')
-  return h('section', { class: 'confirm fu-card fu-done', 'aria-label': t("followups.added.to.follow.ups") },
-    h('div', { class: 'fu-title' }, h('b', { text: t("followups.added.to.follow.ups.2", { title: proposal.title }) })),
-    h('p', { class: 'fu-note', text: t("followups.view.or.remove.in.background", { when: when }) }),
-    card.chooseWindows ? windowsChooser(card, handlers) : null,
-    card.error ? h('p', { class: 'form-error', role: 'alert', text: card.error }) : null)
+  return h('section', { class: 'confirm fu-card fu-done', 'aria-label': t('schedule.card.accepted', { title: proposal.title }) },
+    h('div', { class: 'fu-title' }, h('b', { text: t('schedule.card.accepted', { title: proposal.title }) })),
+    h('p', { class: 'fu-note', text: t('schedule.card.next', { when: scheduleWhen(proposal.rule, card.accepted?.nextAt ?? proposal.firstAt, now) }) }))
 }
 
-/** 要我跟进吗？ under the conversation; decided, it says what was set or that it will not ask again. */
+/** 要我定时做吗？ under the conversation: when it runs and what it will do; kept only on 定时. */
 export function proposalCard(card: ProposalCard, handlers: Handlers, now = Date.now()) {
-  if (card.status !== 'open') return decidedCard(card, handlers, now)
+  if (card.status !== 'open') return decidedCard(card, now)
   const { proposal } = card
-  return h('section', { class: 'confirm fu-card', 'aria-label': t("followups.would.you.like.me.to.follow.up") },
-    h('div', { class: 'confirm-head' }, h('span', { text: t("followups.would.you.like.me.to.follow.up") }), h('span', { class: 'pulse-dot' })),
+  const line = (when: string, what: string) => h('div', { class: 'fu-line' }, h('span', { class: 'fu-when mono', text: when }), h('span', { text: what }))
+  return h('section', { class: 'confirm fu-card', 'aria-label': t('schedule.card.ask') },
+    h('div', { class: 'confirm-head' }, h('span', { text: t('schedule.card.ask') }), h('span', { class: 'pulse-dot' })),
     h('div', { class: 'confirm-title', text: proposal.title }),
-    h('p', { class: 'fu-ask', text: proposal.ask }),
-    h('div', { class: 'fu-lines' }, proposalLines(proposal, now)),
+    h('div', { class: 'fu-lines' }, line(scheduleWhen(proposal.rule, proposal.firstAt, now), proposal.prompt)),
     h('div', { class: 'confirm-actions' },
-      h('button', { class: BUTTON.primary, type: 'button', text: t("followups.follow.up"), disabled: card.busy, onClick: () => handlers.acceptProposal(card.id) }),
-      h('button', { class: BUTTON.secondary, type: 'button', text: t("followups.no.thanks"), disabled: card.busy, onClick: () => handlers.declineProposal(card.id) }),
-      h('button', { class: BUTTON.text, type: 'button', text: t("followups.do.not.ask.about.this.kind.again"), disabled: card.busy, onClick: () => handlers.neverProposal(card.id) }),
-      h('span', { class: 'confirm-hint', text: t("followups.only.takes.effect.after.you.click.follow") })),
+      h('button', { class: BUTTON.primary, type: 'button', text: t('schedule.card.accept'), disabled: card.busy, onClick: () => handlers.acceptProposal(card.id) }),
+      h('button', { class: BUTTON.secondary, type: 'button', text: t('schedule.card.decline'), disabled: card.busy, onClick: () => handlers.declineProposal(card.id) }),
+      h('span', { class: 'confirm-hint', text: t('schedule.card.hint') })),
     card.error ? h('p', { class: 'form-error', role: 'alert', text: card.error }) : null)
 }
 

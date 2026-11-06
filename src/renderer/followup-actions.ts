@@ -26,13 +26,14 @@ export function createFollowupActions({ api, getState, dispatch, errorMessage, f
     }
   }
 
-  async function settle(id: string, status: 'declined' | 'never') {
+  /** 不用 on a schedule's card: the proposal let go. */
+  async function decline(id: string) {
     const card = cardOf(id)
     if (!card || card.busy) return
     dispatch({ type: 'proposal_busy', id })
     try {
-      await api.declineFollowup({ title: card.proposal.title, never: status === 'never' })
-      dispatch({ type: 'proposal_settled', id, status })
+      await api.declineSchedule(id)
+      dispatch({ type: 'proposal_settled', id, status: 'declined' })
     } catch (err) {
       dispatch({ type: 'proposal_failed', id, message: errorMessage(err) })
     }
@@ -46,31 +47,18 @@ export function createFollowupActions({ api, getState, dispatch, errorMessage, f
         fail(err)
       }
     },
-    /** 跟进: made in the main process, its times checked there; the card says what was set. */
+    /** 定时 on a schedule's card: kept in the main process (schedules.ts accept); the card says when it runs. */
     async acceptProposal(id: string) {
       const card = cardOf(id)
       if (!card || card.busy) return
       dispatch({ type: 'proposal_busy', id })
       try {
-        const result = await api.acceptFollowup({ ...card.proposal, conversationId: getState().conversationId })
-        dispatch({ type: 'followups_saved', view: result })
-        dispatch({ type: 'proposal_settled', id, status: 'accepted', accepted: result.accepted, chooseWindows: result.chooseWindows })
+        dispatch({ type: 'proposal_settled', id, status: 'accepted', accepted: await api.acceptSchedule(id) })
       } catch (err) {
         dispatch({ type: 'proposal_failed', id, message: errorMessage(err) })
       }
     },
-    declineProposal: (id: string) => settle(id, 'declined'),
-    neverProposal: (id: string) => settle(id, 'never'),
-    /** The first follow-up that needs preparing asks when preparation may run: a preset, from the card. */
-    async chooseWindows(id: string, preset: string) {
-      dispatch({ type: 'proposal_busy', id })
-      try {
-        dispatch({ type: 'followups_saved', view: await api.setPrepareSchedule({ preset }) })
-        dispatch({ type: 'proposal_windows', id, chosen: preset })
-      } catch (err) {
-        dispatch({ type: 'proposal_failed', id, message: errorMessage(err) })
-      }
-    },
+    declineProposal: (id: string) => decline(id),
     dismissFollowup: (id: string) => change(() => api.dismissFollowup(id), t("followup-actions.this.follow.up.has.been.removed")),
     async continueFollowup(id: string) {
       const view = await change(() => api.continueFollowup(id))

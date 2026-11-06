@@ -14,7 +14,7 @@
  * - 「删掉 X」 → removes X with the shell;
  * - asked by dsh's Auto review about a step → allows it, unless it removes something;
  * - after a tool result → says what the tool did;
- * - 「…到时候帮我…」 → proposes a follow-up with viva_followup_propose (FOLLOWUP below);
+ * - 「…到时候帮我…」 → proposes a schedule with schedule_create (FOLLOWUP below);
  * - a background preparation (the system prompt says 后台准备) → a draft that quotes the first line it was given,
  *   and whether it was offered any tools (it must not be);
  * - anything else → 「收到：…」, prefixed with what background it was given;
@@ -36,12 +36,10 @@ const TASK_REPORT = /^【后台任务结束】[\s\S]*?任务：「([^」]+)」/
 const HAND_OFF = /^后台做：([\s\S]+)$/
 /** 「告诉后台的「T」：Z」: words for the background task titled T. */
 const TELL = /^告诉后台的「([^」]+)」：([\s\S]+)$/
-/** What the fake proposes to follow up on when asked 「…到时候帮我…」: two days from now, so never in the past. */
-export const FOLLOWUP = Object.freeze({ title: '周报', ask: '按上周的模板起草周报' })
+/** What the fake proposes to schedule when asked 「…到时候帮我…」: once, two days from now, so never in the past. */
+export const FOLLOWUP = Object.freeze({ title: '周报', prompt: '按上周的模板起草周报' })
 const DAY_MS = 24 * 60 * 60 * 1000
-export const followupProposal = (now = Date.now()) => ({
-  ...FOLLOWUP, remind_at: new Date(now + 2 * DAY_MS).toISOString(), prepare_by: new Date(now + 2 * DAY_MS - 60 * 60 * 1000).toISOString(),
-})
+export const followupProposal = (now = Date.now()) => ({ ...FOLLOWUP, kind: 'at', at: new Date(now + 2 * DAY_MS).toISOString() })
 /** What the app's background preparation says in its system prompt (followup-prepare.ts PREPARE_MARK). */
 const PREPARER = '后台准备'
 /** What the fake asks to set up: a local server whose key the user types in the window. */
@@ -227,7 +225,7 @@ export function decide(request) {
   if (TELL.test(question)) return { tool: { name: 'list_background_tasks', input: {} } }
   if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
-  if (FOLLOW.test(question)) return { tool: { name: 'viva_followup_propose', input: followupProposal() } }
+  if (FOLLOW.test(question)) return { tool: { name: 'schedule_create', input: followupProposal() } }
   const recall = RECALL.exec(question)
   if (recall) return { tool: { name: 'memory_recall', input: { query: recall[1].trim() } } }
   const removal = DELETE.exec(question)

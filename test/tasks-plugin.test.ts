@@ -99,6 +99,47 @@ test('real DSH: the model starts a task through start_background_task, and the a
   assert.ok(JSON.stringify(llm.requests).includes('"taskId\\":\\"t1\\"'), 'the app\'s answer reached the model')
 })
 
+test('real DSH: the model proposes a schedule with flat time arguments, and the app gets dsh-schedule\'s rule', { timeout: 60_000 }, async t => {
+  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-schedule-tool-'))
+  let bridge: ReturnType<typeof createAcpBridge> | undefined
+  let closeLlm: (() => Promise<void>) | undefined
+  t.after(async () => {
+    await bridge?.dispose()
+    await closeLlm?.()
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+  const weekly = { title: '周报', prompt: '按上周的模板起草周报', kind: 'weekly', time: '16:00:00', time_zone: 'Asia/Shanghai', weekdays: [5] }
+  const llm = await startFakeLlm({ decideFirst: (raw: object) => {
+    const request = raw as { tools?: { name: string }[], messages?: unknown[] }
+    if (!request.tools?.some(tool => tool.name === 'schedule_create')) return null
+    const messages = JSON.stringify(request.messages)
+    if (!messages.includes('定时任务测试')) return null
+    if (!messages.includes('"tool_result"')) return { tool: { name: 'schedule_create', input: weekly } }
+    return { text: '已经提出定时' }
+  } })
+  closeLlm = llm.close
+  const dshHome = path.join(dir, 'dsh-home')
+  const { plugins, problems } = resolvePlugins({ codeRoot: root, userData: path.join(dir, 'userData'), dshVersion: installedDshVersion(root) })
+  assert.deepEqual(problems, [])
+  const profile = 'viva-schedule-tool-test'
+  ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
+  const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
+  const acted: unknown[] = []
+  bridge = createAcpBridge({ dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
+    env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
+    emit: () => {},
+    taskRead: () => ({ tasks: [] }),
+    taskAct: async request => { acted.push(request); return { proposed: true, firstAt: '2026-11-13T08:00:00.000Z' } },
+  })
+  await bridge.start()
+  await bridge.prompt('定时任务测试')
+  assert.deepEqual(acted, [{ op: 'schedule_create', title: '周报', prompt: '按上周的模板起草周报', rule: { kind: 'weekly', weekly: { time: '16:00:00', time_zone: 'Asia/Shanghai', weekdays: [5] } } }])
+  const tools = (llm.requests.at(0) as { tools?: { name: string }[] }).tools?.map(tool => tool.name) ?? []
+  for (const name of ['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete']) assert.ok(tools.includes(name), `${name} offered`)
+  assert.ok(!tools.includes('viva_followup_propose'), 'the old proposal tool is gone')
+})
+
 test('real DSH: sub-agents work within the turn, in the foreground, with read-only tools only, and cannot delegate', { timeout: 90_000 }, async t => {
   const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-subagent-'))

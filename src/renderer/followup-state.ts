@@ -21,8 +21,8 @@ export const initialFollowups = Object.freeze({
 
 /** A card for a proposal: open, or how the user decided, with what the main process said back. */
 export type ProposalCard = {
-  id: string, proposal: Untyped, status: 'open' | 'accepted' | 'declined' | 'never',
-  accepted?: Untyped, chooseWindows?: boolean, chosen?: string | null, error?: string | null, busy?: boolean,
+  id: string, proposal: Untyped, status: 'open' | 'accepted' | 'declined',
+  accepted?: Untyped, error?: string | null, busy?: boolean,
 }
 
 const withFollowups = (state: State, changes: Partial<State['followups']>): State => ({ ...state, followups: { ...state.followups, ...changes } })
@@ -36,11 +36,11 @@ export const FOLLOWUP_ACTIONS: Record<string, Reducer> = {
   followups_failed: (state, { message }) => withFollowups(state, { busy: false, error: message }),
   followups_saved: (state, { view, notice = null }) => withFollowups(state, { ...view, loaded: true, busy: false, error: null, notice }),
   prepare_state: (state, { prepare }) => withFollowups(state, { state: prepare }),
-  followup_proposed: (state, { proposalId, proposal }) => (state.proposals.some((card: ProposalCard) => card.id === proposalId)
+  /** A schedule the model proposed (schedules.ts), as a card under the conversation. */
+  schedule_proposed: (state, { proposal }) => (!proposal?.proposalId || state.proposals.some((card: ProposalCard) => card.id === proposal.proposalId)
     ? state
-    : { ...state, proposals: [...state.proposals, { id: proposalId, proposal, status: 'open' }] }),
+    : { ...state, proposals: [...state.proposals, { id: proposal.proposalId, proposal, status: 'open' }] }),
   proposal_busy: (state, { id }) => withCard(state, id, { busy: true, error: null }),
-  proposal_settled: (state, { id, status, accepted = null, chooseWindows = false }) => withCard(state, id, { status, accepted, chooseWindows, busy: false, error: null }),
+  proposal_settled: (state, { id, status, accepted = null }) => withCard(state, id, { status, accepted, busy: false, error: null }),
   proposal_failed: (state, { id, message }) => withCard(state, id, { busy: false, error: message }),
-  proposal_windows: (state, { id, chosen }) => withCard(state, id, { chosen, busy: false }),
 }
