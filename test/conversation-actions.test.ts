@@ -98,6 +98,7 @@ test('an error clears queued turn-end words instead of resending them into a lat
   h.change({ phase: 'working' }); h.actions.ask('queued'); await settle()
   h.actions.clearAfterTurn(); h.change({ phase: 'idle' }); h.actions.sendAfterTurn()
   assert.deepEqual(h.prompts, [])
+  assert.equal(h.state().messages.at(-1)?.failed, true)
 })
 
 test('a cancelled turn does not resend queued words to a retiring instance or a later turn', async () => {
@@ -107,6 +108,7 @@ test('a cancelled turn does not resend queued words to a retiring instance or a 
   await settle()
   assert.deepEqual(h.prompts, [])
   assert.equal(h.state().messages.at(-1)?.text, 'queued', 'retain the words on screen')
+  assert.equal(h.state().messages.at(-1)?.failed, true, 'known-undelivered words must not appear delivered')
 })
 
 test('a late idle steer receipt cannot resend after cancellation or an error', async () => {
