@@ -100,6 +100,30 @@ test('an error clears queued turn-end words instead of resending them into a lat
   assert.deepEqual(h.prompts, [])
 })
 
+test('a cancelled turn does not resend queued words to a retiring instance or a later turn', async () => {
+  const h = harness({ steer: async () => ({ ok: false, reason: 'idle' }) })
+  h.change({ phase: 'working' }); h.actions.ask('queued'); await settle()
+  h.change({ phase: 'idle' }); h.actions.sendAfterTurn('cancelled'); h.actions.sendAfterTurn()
+  await settle()
+  assert.deepEqual(h.prompts, [])
+  assert.equal(h.state().messages.at(-1)?.text, 'queued', 'retain the words on screen')
+})
+
+test('a late idle steer receipt cannot resend after cancellation or an error', async () => {
+  for (const reason of ['cancelled', 'error']) {
+    const receipt = deferred<{ ok: boolean, reason?: string }>()
+    const h = harness({ steer: () => receipt.promise })
+    h.change({ phase: 'working' }); h.actions.ask('pending')
+    h.change({ phase: 'idle' })
+    if (reason === 'cancelled') h.actions.sendAfterTurn('cancelled')
+    else h.actions.clearAfterTurn()
+    receipt.resolve({ ok: false, reason: 'idle' })
+    await settle(); h.actions.sendAfterTurn()
+    assert.deepEqual(h.prompts, [])
+    assert.equal(h.state().messages.at(-1)?.failed, true)
+  }
+})
+
 test('question and credential replies use their request ids and never save credential values in state', async () => {
   const replies: string[] = []
   const h = harness({

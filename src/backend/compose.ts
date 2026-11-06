@@ -218,7 +218,15 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       wakeEffects()
       scheduleRuns?.wake()
     },
-    onGone: () => { taskRuntime?.dsh.gone(); unattended.gone() },
+    onGone: () => {
+      taskRuntime?.dsh.gone(); unattended.gone()
+      // Retired generations cannot deliver a final error/turn_end. Settle the foreground here too,
+      // including deliberate model/key restarts, before publishing the replacement's readiness.
+      if (turn.active) {
+        emitToRenderer({ type: 'turn_end', stopReason: 'cancelled' })
+        reportTurnMemories()
+      }
+    },
     onCrash: ({ message }, delay) => {
       turn = { active: false, startedAt: 0 }
       console.error('[dsh] exited unexpectedly:', message)
@@ -234,9 +242,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   })
 
   /** Tells the window what the agent remembered or replaced, and what background the plugin sent. */
-  function reportMemoryChanges() {
+  function reportMemoryChanges(segment = conversation) {
     try {
-      const report = personal.collect({ conversationId: conversation.id, sessionId: conversation.sessionId })
+      const report = personal.collect({ conversationId: segment.id, sessionId: segment.sessionId })
       if (report?.memories.length || report?.invalidated.length) {
         // What the agent wrote, through the plugin in dsh: recorded here once the app has read it.
         applyChange('memory.learned', { memories: report.memories.length, invalidated: report.invalidated.length }, () => undefined)
@@ -252,11 +260,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function reportTurnMemories() {
     if (!turn.active) return
     turn = { ...turn, active: false }
-    reportMemoryChanges()
+    const segment = conversation
+    reportMemoryChanges(segment)
     clearInterval(lateMemoryTimer)
     const until = Date.now() + LATE_MEMORY_WINDOW_MS
     lateMemoryTimer = setInterval(() => {
-      reportMemoryChanges()
+      reportMemoryChanges(segment)
       if (Date.now() >= until) clearInterval(lateMemoryTimer)
     }, LATE_MEMORY_POLL_MS)
   }
@@ -503,8 +512,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
 
   /** A new key (or none) means a different agent, so the conversation starts over. */
   async function restartWithNewConversation() {
-    conversation = historyDb.create({ cwd: workDirNow() })
     await stopBridge()
+    conversation = historyDb.create({ cwd: workDirNow() })
     return startBridge()
   }
 

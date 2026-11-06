@@ -212,10 +212,11 @@ Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, 
 
 - Concurrent starts share one connection. Stop immediately revokes that generation's events and startup result; stopping between creation and connection also prevents connection.
 - Changing keys or models waits for real disposal before creating a replacement. Failed startup also cleans up its instance; failed disposal explicitly prevents replacement.
+- Retirement explicitly ends an active foreground turn and clears its busy/waiting state, including deliberate settings restarts. Key changes settle the old topic before creating a new one; completion does not depend on the retired instance's filtered events.
 - Unexpected exits use the backoff above and resume the conversation; an old generation's exit cannot trigger another restart. Quitting revokes scheduled restarts and forbids further starts.
 - Shutdown waits at most five seconds. A timeout only ends the wait: real disposal remains a barrier to any later start.
 
-`test/dsh-lifecycle.test.ts` independently verifies these contracts with fake instances and a controllable clock. Smoke still exercises real dsh crashes, background reports and restart recovery.
+`test/dsh-lifecycle.test.ts` independently verifies these contracts with fake instances and a controllable clock. Smoke exercises real dsh crashes, background reports and restart recovery; `test/smoke/lifecycle.spec.ts` specifically verifies model/key restarts during a foreground question, followed by new topics and a background result report.
 
 **Quit.** In `before-quit` the shell asks the backend to close. The backend stops dsh (closing its input, then ending the whole process tree after 1.5 seconds, with `taskkill /T` on Windows), closes the databases, and exits. A backend still running after 10 seconds is killed. If the shell disconnects, the backend shuts itself down.
 

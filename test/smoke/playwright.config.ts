@@ -14,7 +14,7 @@ export default defineConfig({
   reporter: [['list'], ['html', { outputFolder: path.join(root, 'smoke', 'report'), open: 'never' }], ['junit', { outputFile: path.join(root, 'smoke', 'junit.xml') }]],
   projects: [
     { name: 'smoke', testMatch: 'critical.spec.ts' },
-    { name: 'integration', testMatch: 'app.spec.ts' },
+    { name: 'integration', testMatch: ['app.spec.ts', 'lifecycle.spec.ts'] },
     { name: 'package', testMatch: 'artifact.spec.ts' },
     { name: 'performance', testMatch: 'perf.spec.ts' },
   ],

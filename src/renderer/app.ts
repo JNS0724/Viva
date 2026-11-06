@@ -886,7 +886,7 @@ function handleEvent(event: AgentEvent) {
   if (event?.type === 'ready' || event?.type === 'workdir') workDirActions.refresh()
   if (event?.type === 'turn_end') {
     filesActions.filesAfterTurn()
-    sendAfterTurn()
+    sendAfterTurn(event.stopReason)
   }
   if (event?.type === 'task_end') filesActions.filesAfterTurn()
   if (event?.type === 'error') conversationActions.clearAfterTurn()

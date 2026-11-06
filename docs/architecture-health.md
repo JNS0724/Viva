@@ -35,7 +35,7 @@ New behavior tests cover interjections becoming the next question as a turn ends
 
 Contract tests cover shared concurrent starts, stopping in-flight startup, stale events/exits, replacement waiting for real disposal, 1/3/10-second crash backoff and giving up, revoking queued restarts, quitting, startup cleanup, failed disposal blocking replacement, and shutdown timeout retaining the disposal barrier. Readiness callbacks execute after checking the current generation; a cancelled connection cannot publish stale readiness.
 
-This batch includes verified race fixes: revoking in-flight startup results, cleaning up failed initialization, coalescing concurrent starts and keeping the resource barrier after shutdown stops waiting. It changes neither IPC/database formats nor TaskRuntime's authority. Extracting history/workspace switching business logic remains a later task.
+This batch includes verified race fixes: revoking in-flight startup results, cleaning up failed initialization, coalescing concurrent starts and keeping the resource barrier after shutdown stops waiting. Instance retirement also settles an active foreground turn explicitly: filtered old events cannot leave the replacement busy. Cancellation clears queued interjection resends and revokes pending idle receipts. The real-dsh lifecycle smoke test changes models and clears a key while a question waits, then verifies new topics and background result reports. Key changes settle the old topic before creating the new one; late memory collection retains the ended turn's topic/session. It changes neither IPC/database formats nor TaskRuntime's authority. Extracting history/workspace switching business logic remains a later task.
 
 ## Subsequent batches and delivery criteria
 

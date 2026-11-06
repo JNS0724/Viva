@@ -50,6 +50,12 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
 
   /** Words said as a turn was ending: sent as the next question once it has ended. */
   let afterTurn: string[] = []
+  let sendEpoch = 0
+
+  function clearAfterTurn() {
+    sendEpoch++
+    afterTurn = []
+  }
 
   /**
    * Said while the agent works: into the running turn, which reads it at its next step (the viva-steer plugin).
@@ -60,9 +66,11 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     dispatch({ type: 'user_steer', text, via })
     // The words just said, the last message now (user_steer above).
     const id = getState().messages.at(-1)?.id
+    const epoch = sendEpoch
     api.steer(text)
       .then((result) => {
         if (result.ok) return
+        if (epoch !== sendEpoch) throw new Error(steerLost())
         if (result.reason !== 'idle') throw new Error(steerLost())
         if (isBusy(getState())) afterTurn = [...afterTurn, text]
         else resend(text)
@@ -79,7 +87,10 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   }
 
-  function sendAfterTurn() {
+  function sendAfterTurn(stopReason?: string) {
+    // A cancelled turn may be retiring its dsh instance. Neither queued words nor a late idle
+    // receipt may start another prompt against that instance or its replacement.
+    if (stopReason === 'cancelled') return clearAfterTurn()
     if (!afterTurn.length) return
     const text = afterTurn.join('\n\n')
     afterTurn = []
@@ -111,5 +122,5 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     }
   }
 
-  return { ask, answer, provideSecrets, sendAfterTurn, clearAfterTurn: () => { afterTurn = [] } }
+  return { ask, answer, provideSecrets, sendAfterTurn, clearAfterTurn }
 }
