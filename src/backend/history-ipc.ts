@@ -106,7 +106,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(found.conversation.sessionId, found.conversation.cwd)
       select({ ...found.conversation, sessionId: started.sessionId, cwd: started.cwd ?? found.conversation.cwd })
-      return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed } }
+      return { conversation: viewOf(found), info: { ...started, remembersHistory: started.resumed, conversationId: found.conversation.id } }
     })
   })
 
@@ -136,8 +136,9 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       return await selectSession(async ({ switchAgent, select }) => {
         const started = await switchAgent(sessionId, cwd, { exactly: true })
         const { mode, model } = agentInfo()
-        select(db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id }))
-        return { ok: true as const, info: { ...started, remembersHistory: true }, parentId: found.conversation.id }
+        const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id })
+        select(next)
+        return { ok: true as const, info: { ...started, remembersHistory: true, conversationId: next.id }, parentId: found.conversation.id }
       })
     } catch (err) {
       if (!(err instanceof ResumeError)) throw err
@@ -163,7 +164,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id })
       select(next)
       if (carried.turns) carryNext(next.id, carried.text)
-      return { info: { ...started, remembersHistory: false }, parentId: found.conversation.id, turns: carried.turns }
+      return { info: { ...started, remembersHistory: false, conversationId: next.id }, parentId: found.conversation.id, turns: carried.turns }
     })
   })
 

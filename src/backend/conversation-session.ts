@@ -2,6 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import { ResumeError } from './resume-failure.ts'
 import { sessionTiming } from './session-timing.ts'
+import type { ConversationContext } from '../shared/conversation-context.ts'
 
 /** The selected session's view; transport-specific fields travel through without being interpreted here. */
 export interface ConversationInfo {
@@ -11,6 +12,7 @@ export interface ConversationInfo {
   sessionId?: string | null
   resumed?: boolean
   remembersHistory?: boolean
+  conversationId?: string
   modelValue?: string
   models?: ReadonlyArray<{ value: string }>
   [field: string]: unknown
@@ -18,6 +20,7 @@ export interface ConversationInfo {
 export interface StartedConversation extends ConversationInfo { sessionId: string | null }
 interface ConversationAgent {
   newSession(): Promise<StartedConversation>
+  reloadSession(): Promise<StartedConversation>
   setConfig(id: string, value: string): Promise<StartedConversation>
   switchSession(id: string | null, cwd?: string, options?: { exactly?: boolean }): Promise<StartedConversation>
   fork(request: { cwd?: string, words?: string, occurrence?: number }): Promise<
@@ -67,11 +70,12 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
   }
   /** Stores may replace the object while saving; the identity is still its id/sessionId. */
   function select(next: Conversation) { selected = next; changed() }
-  function commitSelection(next: Conversation) { selected = next; uncommitted = false; changed() }
+  function commitSelection(next: Conversation) { selected = next; setInfo({ ...info(), conversationId: next.id }); uncommitted = false; changed() }
   function reset() {
     if (agent()) throw new Error('stop the runtime before resetting the selected conversation')
     selectionToken = {}
     selected = history().create({ cwd: cwd() }); uncommitted = false
+    setInfo({ ...info(), sessionId: null, conversationId: selected.id })
   }
   function startingIn(fallback: string) {
     const saved = current()
@@ -84,7 +88,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
     directory = dir
     selected = { ...current(), sessionId: started.sessionId, cwd: dir }
     uncommitted = false
-    return { ...started, remembersHistory }
+    return { ...started, remembersHistory, conversationId: selected.id }
   }
 
   function newTopic(): Promise<ConversationInfo> {
@@ -105,8 +109,8 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
         return { ...opened, ...await runtime.setConfig('model', picked) }
       })
       requireCurrent(runtime, token)
-      const next = { ...started, remembersHistory: true }
-      selected = history().create({ sessionId: next.sessionId, cwd: cwd() })
+      selected = history().create({ sessionId: started.sessionId, cwd: cwd() })
+      const next = { ...started, remembersHistory: true, conversationId: selected.id }
       setInfo(next)
       uncommitted = false
       return next
@@ -155,7 +159,9 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
         directory = dir
         selected = history().create({ cwd: dir, parentId: stored ? previous.id : null })
         uncommitted = false
-        return { ...info(), cwd: dir }
+        const view = { ...info(), cwd: dir, conversationId: selected.id }
+        setInfo(view)
+        return view
       }
       const previousUncommitted = uncommitted
       uncommitted = true
@@ -170,10 +176,11 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
       }
       directory = dir
       const next = { ...forked.info, remembersHistory: true }
-      setInfo(next)
       selected = history().create({ sessionId: next.sessionId, mode: next.mode, model: next.model, cwd: dir, parentId: stored ? previous.id : null })
+      const view = { ...next, conversationId: selected.id }
+      setInfo(view)
       uncommitted = false
-      return next
+      return view
     })
   }
 
@@ -190,8 +197,21 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
     return forked
   }
 
+  async function reloadAgent() {
+    const runtime = agent(), token = selectionToken
+    if (!runtime) throw unavailable()
+    uncommitted = true
+    const started = await runtime.reloadSession()
+    requireCurrent(runtime, token)
+    selected = { ...current(), sessionId: started.sessionId }
+    const view = { ...started, conversationId: selected.id, remembersHistory: Boolean(started.resumed || !history().get(selected.id)) }
+    setInfo(view)
+    uncommitted = false
+    return view
+  }
+
   /** Hold admission through the caller's history/rewind writes and select(), including same-session segments. */
-  function withSelection<T>(work: (ops: { switchAgent: typeof switchAgent, forkAgent: typeof forkBack, select: typeof commitSelection }) => Promise<T>): Promise<T> {
+  function withSelection<T>(work: (ops: { switchAgent: typeof switchAgent, forkAgent: typeof forkBack, reloadAgent: typeof reloadAgent, select: typeof commitSelection }) => Promise<T>): Promise<T> {
     requireIdle()
     return transition(async () => {
       const runtime = agent(), token = selectionToken
@@ -201,6 +221,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
         const result = await work({
           switchAgent: (...args) => { check(); return switchAgent(...args) },
           forkAgent: request => { check(); return forkBack(request) },
+          reloadAgent: () => { check(); return reloadAgent() },
           select: next => { check(); commitSelection(next) },
         })
         check()
@@ -212,6 +233,7 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
   return {
     open, current, select, reset, cwd, startingIn, ready, newTopic, switchDirectory, withSelection,
     isChanging: () => changing || uncommitted,
+    context: (): ConversationContext => ({ conversationId: current().id, sessionId: current().sessionId }),
     carryNext: (conversationId: string, text: string) => { carry = { conversationId, text } },
     takeCarried: () => {
       const text = carry?.conversationId === current().id ? carry.text : null

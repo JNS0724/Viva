@@ -45,6 +45,8 @@ History and rewind commands use a mandatory selection callback. The admission ga
 
 Focused contracts use real in-memory history/effects stores and the real history/rewind IPC handlers. They cover concurrent new topics, failures and retries, exact resume and recovery info, directory forks with saved/unsaved predecessors, stale runtime results, carried records, deferred reports and selection commits. These tests do not replace the full application smoke or both platforms' CI.
 
+Conversation pushes now carry the history segment and runtime session captured when their prompt or plugin request began. The renderer buffers foreground pushes during bootstrap and while a selection RPC commits, then replays only the selected context in receive order and with the original receive timestamps. Task streams remain live. This closes the interval in which an immediately delivered background report could arrive before the page received its new-topic response. Questions and credential closures retain their original context; late prompt failures and interjection receipts cannot affect a newly selected topic. Rewind waits for queued reports before deciding whether its automatic follow-up is a new prompt or an interjection. The production event mapper also handles task permission closure without inventing a user decision. Offline directory changes publish the committed segment too. MCP reattachment reconciles a cold replacement session through the same owner and publishes configuration before releasing queued reports; sends are refused during directory, rewind and settings transitions. Full event decoding and exhaustive action unions remain the next batch.
+
 ## Subsequent batches and delivery criteria
 
 | Order | Scope | Done when |

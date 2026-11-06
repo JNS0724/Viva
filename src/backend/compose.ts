@@ -1,5 +1,6 @@
 import { createDshLifecycle, type DshLifetime } from './dsh-lifecycle.ts'
 import { createConversationSession } from './conversation-session.ts'
+import { sameContext } from '../shared/conversation-context.ts'
 import { createConfigActions } from './config-actions.ts'
 import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
@@ -218,7 +219,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       // Retired generations cannot deliver a final error/turn_end. Settle the foreground here too,
       // including deliberate model/key restarts, before publishing the replacement's readiness.
       if (turn.active) {
-        emitToRenderer({ type: 'turn_end', stopReason: 'cancelled' })
+        emitToRenderer({ type: 'turn_end', stopReason: 'cancelled', context: sessions.context() })
         reportTurnMemories()
       }
     },
@@ -245,7 +246,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         applyChange('memory.learned', { memories: report.memories.length, invalidated: report.invalidated.length }, () => undefined)
         emitToRenderer({ type: 'memory_changed', memories: report.memories, invalidated: report.invalidated })
       }
-      if (report?.injected.length) emitToRenderer({ type: 'memory_context', injected: report.injected })
+      if (report?.injected.length) emitToRenderer({ type: 'memory_context', injected: report.injected, context: { conversationId: segment.id, sessionId: segment.sessionId } })
     } catch (err: any) {
       console.error('[memory] could not read what was saved or sent:', err.message)
     }
@@ -321,7 +322,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function reloadMcpAfterTurn() {
     mcpReloadDue = false
     applyMcpChange()
-      .then((info) => info && emitToRenderer({ type: 'config', info }))
       .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
       // A task's result held back while the session was reattached comes back now.
       .finally(wakeEffects)
@@ -342,6 +342,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
       taskRead: (request, sessionId) => requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
       taskAct: (request, sessionId) => actOnTask(request, sessionId),
+      conversationContext: sessionId => {
+        const context = sessions.context()
+        return context.sessionId === sessionId ? context : { conversationId: null, sessionId }
+      },
       emit: (event) => {
         if (!lifetime.isCurrent()) return
         // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
@@ -433,11 +437,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     report: (note) => {
       const agent = dsh.current
       if (!agent) return false
+      const context = sessions.context()
       turn = { active: true, startedAt: Date.now() }
-      emitToRenderer({ type: 'turn_started', by: 'task' })
+      emitToRenderer({ type: 'turn_started', by: 'task', context })
       agent.prompt(note).catch((err: Error) => {
+        if (dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
-        emitToRenderer({ type: 'error', message: err.message })
+        emitToRenderer({ type: 'error', message: err.message, context })
       })
       return true
     },
@@ -464,7 +470,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   const stopBridge = dsh.stop
 
   /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
-  const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '' })
+  const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem, cwd: config.cwd, model: '', models: [], efforts: [], reason: '', conversationId: sessions.current().id })
   const setupMessages = (): Readonly<Record<string, string>> => ({ 'no-key': t("main.main.enter.a.deepseek.api.key.or.add"), 'no-dsh': t("main.main.deepseek.harness.not.found.run.npm.install") })
   let SETUP_MESSAGES = setupMessages()
 
@@ -549,7 +555,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
     // on the live channel, so it comes in its place among the pushes (renderer waits-state.ts), not in the answer.
     ipcMain.handle('agent:waits', () => {
-      emitToRenderer({ type: 'waits', ...(dsh.current?.sessionWaits() ?? { permissions: [], questions: [], secrets: [] }) })
+      if (sessions.isChanging()) return true
+      const context = sessions.context()
+      emitToRenderer({ type: 'waits', ...(dsh.current?.sessionWaits() ?? { permissions: [], questions: [], secrets: [] }), context })
       return true
     })
     ipcMain.handle('agent:prompt', (_event, text, images = []) => {
@@ -662,9 +670,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * (a fork of the session into that directory), as a new segment of the timeline after the current one.
    */
   async function switchWorkDir(dir: string) {
-    const connected = Boolean(dsh.current)
     const info = await sessions.switchDirectory(dir)
-    if (connected) emitToRenderer({ type: 'workdir', cwd: dir, info })
+    emitToRenderer({ type: 'workdir', cwd: dir, info })
     return info
   }
 
@@ -677,9 +684,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** Reattaches the session with the current MCP servers; not while a turn runs (it would be cancelled). */
   async function applyMcpChange() {
     if (!dsh.current || turn.active) return null
-    const info = await dsh.current.reloadSession()
-    lastInfo = { ...lastInfo, ...info, remembersHistory: info.resumed || lastInfo.remembersHistory }
-    return lastInfo
+    return sessions.withSelection(async selection => {
+      const info = await selection.reloadAgent()
+      // Publish the new runtime identity before the transition releases waiting reports.
+      emitToRenderer({ type: 'config', info })
+      return info
+    })
   }
 
   /** 动态 changed: the window shows it, the tray counts what is new. */
@@ -739,7 +749,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     personal = createPersonal({ memoryDb, historyDb, mcpStore })
     registerPersonalIpc(config)
     const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
-    schedules = createSchedules({ db: appDb.db, apply: applyChange, emit: emitToRenderer, changed: () => { scheduleRuns?.arm(); schedulesChanged() } })
+    schedules = createSchedules({ db: appDb.db, apply: applyChange, emit: event => emitToRenderer({ ...event, context: sessions.context() }), changed: () => { scheduleRuns?.arm(); schedulesChanged() } })
     // A schedule's run adds its item inside its own change (schedule.ran); the window's writes are events of their own.
     const items = openFeedStore({ db: appDb.db })
     feed = journaled(items, 'feed', FEED_WRITES, applyChange)

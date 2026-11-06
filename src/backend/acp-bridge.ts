@@ -1,4 +1,5 @@
 import type { SessionWaits } from '../shared/ipc-results.ts'
+import type { ConversationContext } from '../shared/conversation-context.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -89,7 +90,7 @@ export function createAcpBridge({
   dshBin, nodeBin = 'node', profile, overlay = null as string | null, cwd, env = process.env, emit, spawnFn = spawn, mcpServers = NO_MCP,
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming,
+  taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** The app's layer over the profile (dsh-profile.ts vivaLayerFile); none for the stock fallback profile. */
@@ -106,6 +107,7 @@ export function createAcpBridge({
   historyRead?: HistoryRead | null,
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
+  conversationContext?: (sessionId: string) => ConversationContext | null,
 }) {
   const broker = createPermissionBroker()
   let mcp: { active: string[], dropped: Array<{ name: string, reason: string }> } = { active: [], dropped: [] }
@@ -132,13 +134,16 @@ export function createAcpBridge({
    */
   const tasks = new Map<string, TaskSession>()
   /** Sessions with a turn running (a prompt not yet answered). */
-  type Running = { released: boolean, stream?: Awaited<ReturnType<typeof streams.begin>> }
+  type Running = { released: boolean, stream?: Awaited<ReturnType<typeof streams.begin>>, context?: ConversationContext | null }
   const running = new Map<string | null, Running>()
   const taskOf = (id: string) => (tasks.has(id) ? id : null)
   const isTask = (id: string | null) => id !== null && tasks.has(id)
-  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf })
+  const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
+  const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
+  const requestContext = conversationContext ? (id: string) => running.get(id)?.context ?? null : undefined
+  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext })
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
-  const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions }) : null
+  const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions, conversationContext: requestContext }) : null
   // What the user says while a turn runs goes to that turn (the viva-steer plugin), not to a new prompt.
   // Background tasks' results go the same way, at most once; the plugin says when one is read or lost.
   const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
@@ -154,7 +159,7 @@ export function createAcpBridge({
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => {
     if (!running.has(id) || running.get(id)?.released) return
     if (tasks.has(id)) emit({ type: 'task_update', taskId: id, update })
-    else if (id === sessionId) emit({ type: 'update', sessionId: id, update })
+    else if (id === sessionId) emit({ type: 'update', sessionId: id, update, ...scoped(running.get(id)?.context) })
   } })
 
   /** The model options of the session in use, kept so a task taken back to the main conversation keeps its own. */
@@ -171,19 +176,22 @@ export function createAcpBridge({
       if (tasks.has(params.sessionId)) return emit({ type: 'task_update', taskId: params.sessionId, update: params.update })
       if (params.sessionId !== sessionId) return
       if (params.update?.sessionUpdate === 'config_option_update') {
-        emit({ type: 'config', info: infoFrom(params.update.configOptions) })
+        emit({ type: 'config', info: infoFrom(params.update.configOptions), ...scoped(contextFor(params.sessionId)) })
         return
       }
       // The session goes with it: the window tells the turn it undid a move for from the one it left (task-actions.js).
-      emit({ type: 'update', sessionId: params.sessionId, update: params.update })
+      const context = running.get(params.sessionId)?.context
+      if (conversationContext && !context) return
+      emit({ type: 'update', sessionId: params.sessionId, update: params.update, ...scoped(context) })
     },
     async requestPermission(params: RequestPermissionRequest) {
       if (params.sessionId !== sessionId && !tasks.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       // Nobody is there to answer: turned down.
       if (unattended.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
+      if (conversationContext && !tasks.has(params.sessionId) && !running.get(params.sessionId)?.context) return { outcome: { outcome: 'cancelled' as const } }
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
-      emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
+      emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : scoped(running.get(params.sessionId)?.context ?? contextFor(params.sessionId))) })
       return promise.finally(() => {
         const currentTask = taskOf(params.sessionId)
         if (currentTask) emit({ type: 'task_permission_closed', taskId: currentTask, requestId })
@@ -385,11 +393,11 @@ export function createAcpBridge({
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
     if (isSwitching()) throw new Error(switchingMessage())
     if (images.length && !seesImages) {
-      emit({ type: 'error', message: noImagesMessage() })
+      emit({ type: 'error', message: noImagesMessage(), ...scoped(contextFor(sessionId)) })
       return
     }
     const asked = sessionId
-    const operation: Running = { released: false }
+    const operation: Running = { released: false, context: contextFor(asked) }
     running.set(asked, operation)
     // Let go when stopped (cancelTask): it has ended on screen, and the task may be running a new turn by now.
     try {
@@ -403,7 +411,7 @@ export function createAcpBridge({
       await streams.complete(operation.stream)
       if (operation.released) return
       if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
-      else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason })
+      else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason, ...scoped(operation.context) })
     } catch (err) {
       if (operation.released) return
       if (operation.stream) await streams.complete(operation.stream)
@@ -412,7 +420,7 @@ export function createAcpBridge({
       // Viva quitting ends a task's turn too: it is not over, and the next launch offers it (task-store.js).
       if (isTask(asked)) {
         if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message })
-      } else if (asked === sessionId) emit({ type: 'error', message })
+      } else if (asked === sessionId) emit({ type: 'error', message, ...scoped(operation.context) })
     } finally {
       if (running.get(asked) === operation) running.delete(asked)
     }

@@ -188,6 +188,8 @@ export const CONVERSATION_ACTIONS: Readonly<Record<string, ConversationHandler>>
     }
   },
 
+  permission_closed: (view, { requestId }) => view.permission?.requestId !== requestId ? view : ({ ...view, permission: null, phase: view.phase === 'waiting' ? 'working' : view.phase }),
+
   turn_end: (view, { stopReason, at }) => {
     const closed = closeStreams(view)
     const turn = closed.turn ?? { startedAt: at, tools: 0, thoughts: 0 }

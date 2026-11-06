@@ -25,6 +25,7 @@ function harness(t: TestContext, overrides: Partial<Runtime> = {}, saved = false
   const calls: string[] = []
   const runtime: Runtime = {
     newSession: async () => { calls.push('new'); return started() },
+    reloadSession: async () => { calls.push('reload'); return started('reloaded') },
     setConfig: async (_id, value) => { calls.push(`config:${value}`); return { ...started(), model: value, modelValue: value } },
     switchSession: async (id, cwd) => { calls.push(`switch:${id}`); return { ...started(id ?? 'fresh', cwd), resumed: Boolean(id) } },
     fork: async request => { calls.push('fork'); return { ok: true, info: started('forked', request.cwd) } },
@@ -165,12 +166,44 @@ test('a directory fork becomes a child only when its predecessor was saved', asy
 
 test('offline directory changes preserve the saved parent without fabricating a live session', async t => {
   const h = harness(t, {}, true), previous = h.sessions.current(); h.live(null)
-  await h.sessions.switchDirectory('/other')
+  const info = await h.sessions.switchDirectory('/other')
   assert.equal(h.sessions.current().parentId, previous.id)
   assert.equal(h.sessions.current().sessionId, null)
+  assert.equal(info.conversationId, h.sessions.current().id)
   assert.equal(h.sessions.cwd(), '/other')
   await h.sessions.newTopic()
   assert.equal(h.sessions.current().parentId, null)
+})
+
+test('MCP reload reconciles a replacement session before publishing config and releasing reports', async t => {
+  const gate = deferred<StartedConversation>(), h = harness(t, { reloadSession: () => gate.promise }, true)
+  const id = h.sessions.current().id, order: string[] = []
+  h.onChanged(() => { order.push(`released:${h.sessions.context().sessionId}`) })
+  const pending = h.sessions.withSelection(async ops => {
+    const info = await ops.reloadAgent()
+    assert.equal(h.sessions.isChanging(), true)
+    assert.equal(info.conversationId, id)
+    assert.equal(info.remembersHistory, false, 'cold replacement did not resume the saved timeline')
+    order.push(`config:${info.sessionId}`)
+    return info
+  })
+  assert.equal(h.sessions.isChanging(), true)
+  gate.resolve(started('cold-replacement')); await pending
+  assert.deepEqual(h.sessions.context(), { conversationId: id, sessionId: 'cold-replacement' })
+  assert.equal(h.view().sessionId, 'cold-replacement')
+  assert.deepEqual(order, ['config:cold-replacement', 'released:cold-replacement'])
+  assert.equal(h.sessions.isChanging(), false)
+})
+
+test('MCP reload failure stays gated and a retired runtime cannot commit its replacement session', async t => {
+  const gate = deferred<StartedConversation>(), h = harness(t, { reloadSession: () => gate.promise })
+  const previous = h.sessions.context(), pending = h.sessions.withSelection(ops => ops.reloadAgent())
+  h.live(null); gate.resolve(started('retired-result'))
+  await assert.rejects(pending)
+  assert.deepEqual(h.sessions.context(), previous)
+  assert.equal(h.sessions.isChanging(), true)
+  h.reconcile(started('reconciled'), '/work')
+  assert.equal(h.sessions.isChanging(), false)
 })
 
 test('different transitions cannot overlap with a pending new topic', async t => {

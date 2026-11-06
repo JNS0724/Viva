@@ -64,7 +64,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       db.fold(previous.id, { into: next.id, at: keep })
       db.moveRecords({ from: previous.id, to: next.id, upTo: keep })
       select(next)
-      return { ok: true, info: forked.info, conversation: { id: next.id, messages: kept, ...withRecords(next.id) }, folds: db.foldsOf(next.id) }
+      return { ok: true, info: { ...forked.info, conversationId: next.id }, conversation: { id: next.id, messages: kept, ...withRecords(next.id) }, folds: db.foldsOf(next.id) }
     })
   }
 
@@ -112,7 +112,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       select({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
       return {
         ok: true,
-        info: { ...started, remembersHistory: started.resumed },
+        info: { ...started, remembersHistory: started.resumed, conversationId: conversation.id },
         conversation: { id, messages, ...withRecords(conversation.id) },
         folds: db.foldsOf(id),
       }

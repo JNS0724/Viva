@@ -1,4 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
+import type { ConversationContext } from '../shared/conversation-context.ts'
 /**
  * MCP servers and skills set up from the conversation, on the app's side of the config contract (version 1,
  * see plugins/config/lib/channel.js). The plugin asks only after the user approved the change on the card;
@@ -151,11 +152,12 @@ export interface ConfigActions {
 /**
  * send: to the plugin; emit: to the window; sessionId: the conversation on screen.
  */
-export function createConfigDesk({ send, emit, sessionId, actions }: {
+export function createConfigDesk({ send, emit, sessionId, actions, conversationContext }: {
   send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, actions: ConfigActions,
+  conversationContext?: (sessionId: string) => ConversationContext | null,
 }) {
   /** Servers to add or change, waiting for the user's keys, by request id. */
-  const pending = new Map<string, { op: 'mcp_add', spec: ServerSpec } | { op: 'mcp_update', spec: ServerUpdate }>()
+  const pending = new Map<string, ({ op: 'mcp_add', spec: ServerSpec } | { op: 'mcp_update', spec: ServerUpdate }) & { context: ConversationContext | null }>()
   /** What happens with the keys once typed, and what the model is told when they are not. */
   const KEYED = {
     mcp_add: { prepare: (spec: any) => actions.prepareServer(spec), apply: (spec: any, secrets: Record<string, string>) => actions.addServer(spec, secrets), undone: t("main.config-channel.not.connected") },
@@ -193,13 +195,16 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
   /** A message from the plugin. */
   function receive(message: any): void | Promise<void> {
     if (message?.type === 'config_closed') {
-      if (pending.delete(message.id)) emit({ type: 'secret_closed', requestId: message.id })
+      const entry = pending.get(message.id)
+      if (entry && pending.delete(message.id)) emit({ type: 'secret_closed', requestId: message.id, ...(entry.context ? { context: entry.context } : {}) })
       return
     }
     const request = parseConfigRequest(message)
     if (!request) return
     if ('problem' in request) return reply(request.id, false, request.problem)
     if (request.sessionId !== sessionId()) return reply(request.id, false, t("main.config-channel.the.user.has.left.this.conversation.configuration"))
+    const context = conversationContext?.(request.sessionId) ?? null
+    if (conversationContext && !context) return reply(request.id, false, t("main.config-channel.the.user.has.left.this.conversation.configuration"))
     const { id, op, args } = request
     if ((op !== 'mcp_add' && op !== 'mcp_update') || args.secrets.length === 0) return perform(id, op, args)
     try {
@@ -207,8 +212,8 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
     } catch (err: any) {
       return reply(id, false, err?.message ?? String(err))
     }
-    pending.set(id, { op, spec: args })
-    emit({ type: 'secret_request', requestId: id, server: args.name, names: args.secrets })
+    pending.set(id, { op, spec: args, context })
+    emit({ type: 'secret_request', requestId: id, server: args.name, names: args.secrets, ...(context ? { context } : {}) })
   }
 
   /**
@@ -234,10 +239,10 @@ export function createConfigDesk({ send, emit, sessionId, actions }: {
 
   /** The conversation is left (or dsh is going away): no key is asked for any more. */
   function closeAll(): void {
-    for (const [requestId, { op, spec }] of [...pending]) {
+    for (const [requestId, { op, spec, context }] of [...pending]) {
       pending.delete(requestId)
       reply(requestId, false, t("main.config-channel.the.user.left.this.conversation", { name: spec.name, undone: KEYED[op].undone }))
-      emit({ type: 'secret_closed', requestId })
+      emit({ type: 'secret_closed', requestId, ...(context ? { context } : {}) })
     }
   }
 

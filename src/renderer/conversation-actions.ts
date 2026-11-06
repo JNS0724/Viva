@@ -3,6 +3,7 @@ import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
 import type { QuestionAnswer } from '../shared/question-answer.ts'
 import { isBusy } from './state.ts'
 import { setupView } from './selectors.ts'
+import { sameContext, type ConversationContext } from '../shared/conversation-context.ts'
 
 /** Conversation effects; the page supplies state and UI callbacks, never a document or the app entry. */
 type ConversationDeps = Pick<ActionDeps, 'getState' | 'dispatch' | 'errorMessage' | 'showToast'> & {
@@ -14,6 +15,14 @@ type ConversationDeps = Pick<ActionDeps, 'getState' | 'dispatch' | 'errorMessage
 
 export function createConversationActions({ api, getState, dispatch, errorMessage, showToast, beforePrompt, keepPicture, now = Date.now }: ConversationDeps) {
   const steerLost = () => t("app.your.message.did.not.reach.the.assistant")
+  const context = (): ConversationContext => ({ conversationId: getState().conversationId ?? getState().info.conversationId ?? null, sessionId: getState().info.sessionId ?? null })
+  const belongsHere = (origin: ConversationContext) => sameContext(origin, context())
+  const selectionPending = () => getState().newTopicPending || getState().switching || getState().workDir.switching || getState().rewind.busy || getState().settings.busy
+  const canReply = (origin: ConversationContext, epoch: number) => belongsHere(origin) && epoch === sendEpoch
+    && !selectionPending()
+  const promptFailed = (origin: ConversationContext, epoch: number) => (error: unknown) => {
+    if (canReply(origin, epoch)) dispatch({ type: 'error', message: errorMessage(error) })
+  }
   /**
    * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
    * `via: 'island'` when it was asked on the desktop island; `images`: pictures pasted with it, which go only
@@ -25,12 +34,13 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       showToast(MESSAGE_TOO_LONG)
       return false
     }
-    if ((!text && !images.length) || setupView(getState().info) || getState().switching || getState().newTopicPending) return false
+    if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
     if (images.length) return askWithImages(text, images, via)
     if (isBusy(getState())) return steer(text, via)
+    const origin = context(), epoch = ++sendEpoch
     beforePrompt()
     dispatch({ type: 'user_prompt', text, at: now(), via })
-    api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+    api.prompt(text).catch(promptFailed(origin, epoch))
     return true
   }
 
@@ -41,20 +51,21 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       return false
     }
     beforePrompt()
+    const origin = context(), epoch = ++sendEpoch
     // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
     for (const { id } of images) keepPicture(id)
     dispatch({ type: 'user_prompt', text, at: now(), via, images })
-    api.prompt(text, images).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+    api.prompt(text, images).catch(promptFailed(origin, epoch))
     return true
   }
 
   /** Words said as a turn was ending: sent as the next question once it has ended. */
-  let afterTurn: Array<{ text: string, id: string | undefined }> = []
+  let afterTurn: Array<{ text: string, id: string | undefined, origin: ConversationContext, epoch: number }> = []
   let sendEpoch = 0
 
   function clearAfterTurn() {
     sendEpoch++
-    for (const { id } of afterTurn) dispatch({ type: 'steer_failed', id })
+    for (const { id, origin } of afterTurn) if (belongsHere(origin)) dispatch({ type: 'steer_failed', id })
     afterTurn = []
   }
 
@@ -67,25 +78,27 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     dispatch({ type: 'user_steer', text, via })
     // The words just said, the last message now (user_steer above).
     const id = getState().messages.at(-1)?.id
-    const epoch = sendEpoch
+    const epoch = sendEpoch, origin = context()
     api.steer(text)
       .then((result) => {
         if (result.ok) return
-        if (epoch !== sendEpoch) throw new Error(steerLost())
+        if (!canReply(origin, epoch)) throw new Error(steerLost())
         if (result.reason !== 'idle') throw new Error(steerLost())
-        if (isBusy(getState())) afterTurn = [...afterTurn, { text, id }]
+        if (isBusy(getState())) afterTurn = [...afterTurn, { text, id, origin, epoch }]
         else resend(text)
       })
       .catch((err) => {
+        if (!belongsHere(origin)) return
         dispatch({ type: 'steer_failed', id })
-        showToast(errorMessage(err) || steerLost())
+        if (canReply(origin, sendEpoch)) showToast(errorMessage(err) || steerLost())
       })
     return true
   }
 
   function resend(text: string) {
+    const origin = context(), epoch = ++sendEpoch
     dispatch({ type: 'steer_resent', at: now() })
-    api.prompt(text).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+    api.prompt(text).catch(promptFailed(origin, epoch))
   }
 
   function sendAfterTurn(stopReason?: string) {
@@ -93,9 +106,9 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     // receipt may start another prompt against that instance or its replacement.
     if (stopReason === 'cancelled') return clearAfterTurn()
     if (!afterTurn.length) return
-    const text = afterTurn.map(item => item.text).join('\n\n')
+    const text = afterTurn.filter(item => canReply(item.origin, item.epoch)).map(item => item.text).join('\n\n')
     afterTurn = []
-    resend(text)
+    if (text) resend(text)
   }
 
   /** What the user answers to each question: the options picked, and words of their own. */
@@ -105,21 +118,24 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
   function answer(answers: Answers) {
     const question = getState().question
     if (!question) return
+    const origin = context(), epoch = sendEpoch
     dispatch({ type: 'question_answered', questionId: question.questionId, answers, at: now() })
     api.answerQuestion(question.questionId, answers)
-      .then((accepted) => accepted || showToast(t("app.this.question.has.ended.your.answer.was")))
-      .catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+      .then((accepted) => accepted || (canReply(origin, epoch) && showToast(t("app.this.question.has.ended.your.answer.was"))))
+      .catch(promptFailed(origin, epoch))
   }
 
   async function provideSecrets(values: Record<string, string> | null) {
     const secret = getState().secret
     if (!secret) return
+    const origin = context(), epoch = sendEpoch
     try {
       const accepted = await api.provideSecrets(secret.requestId, values)
+      if (!canReply(origin, epoch)) return
       if (!accepted) showToast(t("app.this.connection.request.has.ended"))
       dispatch({ type: 'secret_resolved', requestId: secret.requestId, provided: values !== null, at: now() })
     } catch (err) {
-      showToast(errorMessage(err))
+      if (canReply(origin, epoch)) showToast(errorMessage(err))
     }
   }
 
