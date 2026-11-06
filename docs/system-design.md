@@ -351,7 +351,7 @@ Two faults, kept apart:
 ### 12.2 Triggers
 
 - A table `triggers` in `app.db`: a condition and an action. Creating, firing and cancelling one each record an event.
-- Conditions: a time arrives (one timer set for the next one due), a file changed and then stayed still for 10 minutes (reusing `file-watch.ts`), a task ended. A task ended means TaskRuntime's kept `task.ended`: the effect it causes is queued in that transaction, as the report is; never the raw `agent.task_ended` signal.
+- Conditions: a time arrives (one timer set for the next one due), a task ended. A file trigger (a file changed, then still) is not built: the owner found no need for it (2026-11-06), and the follow-ups' watched file goes with it. A task ended means TaskRuntime's kept `task.ended`: the effect it causes is queued in that transaction, as the report is; never the raw `agent.task_ended` signal.
 - The model proposes one with a tool; a card says when, what, and which files it reads, and only the user's yes creates it. The card's design is shown before it is built. What the yes allowed is kept with the trigger and checked again before it fires.
 - A task a trigger starts is read-only, and that scope reaches what runs it: the task's session and the tool policy check, not only its prompt. It goes through the same TaskRuntime; there is no second executor. The old preparation (`prepareText`, a call with no tools) is not replaced by a general background task with tools.
 - Firing is idempotent by the trigger's id and the time it was due. The occurrence and the task it starts are linked in the `task.started` transaction, so the same occurrence never creates a second task, also when Viva quit after the task was kept and before it was asked; such a task is interrupted and goes on only when asked to. The effect is done once `task.started` is kept; it does not wait for the turn.
@@ -360,7 +360,7 @@ Two faults, kept apart:
 Where the user sees them (agreed with the owner, 2026-11-06). 后台 and 动态 are two things kept apart, with no handoff between them:
 
 - **后台** is what the user asked for and expects: background tasks (后台做, and those the agent starts). Its page is a page of its own, out of the hub (搜索 · 关于你 · 设置 keep three). Its way in is the island's tail: a quiet 后台 with no task, a turning ring and a count while some work, the island edged in orange and N 个等你 while one waits, ✓ N for ended ones not seen. Clicking the tail opens a short list under the island (those waiting first, allowed right there) whose foot opens the page; ⌘J opens it too. The page lists 等你 · 在做 · 做完了 on the left and the one picked on the right (its approval card, or its whole conversation). The island counts only these; follow-ups no longer show on it.
-- **动态** is what the app brings on its own: drafts prepared, a watched file's result, reminders due, and the triggers arranged. Its way in is a 动态 button in the title bar, with a blue count of new items (orange stays for waiting on the user). Its page opens with one line in her voice and her picture, then 新的 · 接下来 (the triggers, each with its time or condition at the left; pause, resume and delete) · 看过的. An item opened on the right says where it came from; its actions are 在对话里继续 (into the conversation on screen, with the draft and its origin) and 不用了. Nothing in 动态 becomes a background task, and a trigger's read-only task is not shown in 后台, not counted on the island, and not reported into the conversation.
+- **动态** is what the app brings on its own: drafts prepared, reminders due, and the triggers arranged. Its way in is a 动态 button in the title bar, with a blue count of new items (orange stays for waiting on the user). Its page opens with one line in her voice and her picture, then 新的 · 接下来 (the triggers, each with its time or condition at the left; pause, resume and delete) · 看过的. An item opened on the right says where it came from; its actions are 在对话里继续 (into the conversation on screen, with the draft and its origin) and 不用了. Nothing in 动态 becomes a background task, and a trigger's read-only task is not shown in 后台, not counted on the island, and not reported into the conversation.
 - Delivered in two pull requests: F1a the two pages and their ways in (follow-ups moving from the 后台 page to 动态), F1b reminders as time triggers.
 
 Moved one capability at a time, each closing the old way in the same pull request:
@@ -369,7 +369,7 @@ Moved one capability at a time, each closing the old way in the same pull reques
 | --- | --- | --- |
 | Reminders (`followup-notifier.ts`) | A time trigger that notifies | The notifier's reminders |
 | Background preparation (`prepare-scheduler.ts`, `prepare-schedule.ts`) | A time trigger whose action is a read-only task through TaskRuntime | The scheduler |
-| — | A file trigger (`file-watch.ts`) | — |
+| A follow-up's watched file (`watchFile`, the follow-ups' use of `file-watch.ts`) | Nothing | Removed, before F1a |
 | Results | Shown in 动态, continued in the conversation only when the user asks; not reported as a background task's result | — |
 
 ### 12.3 Order of work
