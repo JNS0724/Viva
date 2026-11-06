@@ -158,6 +158,13 @@ const steerAnother: LiveScenario = {
     // Said a moment in, as the owner did: before the review has got anywhere.
     await wait(1_500)
     await submit(win, REVIEW_STEER)
+    // It went in as an interjection into the running turn, not as a question after it.
+    const steered = await until(win, `(() => {
+      const last = [...document.querySelectorAll('#thread .msg-user')].at(-1)
+      const note = last?.nextElementSibling?.textContent ?? ''
+      return last?.textContent.includes(${JSON.stringify(REVIEW_STEER)}) && note ? { note } : null
+    })()`, 'the brief asked for while the review works', 15_000)
+    expect(steered.note.includes('工作中插话') && !steered.note.includes('没有送到'), 'the words should reach the running turn as an interjection', steered)
     await settle(win)
     const said: string = await run(win, `[...document.querySelectorAll('#thread .msg-agent')].map((el) => el.textContent).join('\\n')`)
     expect(/简报/.test(said), 'the brief asked for mid-turn should be given', clip(said, 300))
