@@ -1,3 +1,7 @@
+import { createSchedules, type Schedules } from './schedules.ts'
+import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
+import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
+import { FEED_WRITES, openFeedStore, type FeedItem, type FeedStore } from './feed-store.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
@@ -30,7 +34,7 @@ import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts
 import { createReportRecords } from './report-records.ts'
 import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
-import type { TaskAction } from './tasks-channel.ts'
+import type { ScheduleAction, TaskAction } from './tasks-channel.ts'
 import { createTaskStore } from './task-store.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
@@ -43,19 +47,15 @@ import { createPreferences } from './preferences.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { sessionTiming } from './session-timing.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
-import { openFollowups, type Followups } from './followups-main.ts'
-import type { Notice } from './notice-plan.ts'
-import type { ProposalView } from './followup-channel.ts'
 import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from './skills.ts'
 import { ResumeError } from './resume-failure.ts'
 import { historyRecall } from './history-recall.ts'
-import { openFollowupStore } from './followup-store.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
 import { createTaskSignals, taskEventOf } from './task-signals.ts'
 import { type Apply, journaled } from './journal.ts'
 import { commandIpc } from './commands.ts'
-import type { HostCapabilities, HostEvent } from './host.ts'
+import type { HostCapabilities, HostEvent, Notice } from './host.ts'
 
 /**
  * The backend: everything of the app that is not the desktop (docs/system-design.md §2): the stores and
@@ -73,6 +73,12 @@ const LATE_MEMORY_WINDOW_MS = 30_000
 /** How long quitting waits for dsh to finish before the app goes anyway. */
 const QUIT_WAIT_MS = 5_000
 const CRASH_WINDOW_MS = 10 * 60_000
+/** How much of a 动态 item a notification shows. */
+const NOTICE_BODY_CHARS = 200
+/** The effects queue's kind for a new 动态 item's notification. */
+const FEED_NOTICE = 'feed-notice'
+/** How many 动态 items the window is given, the latest first. */
+const FEED_LISTED = 100
 
 type HistoryDb = ReturnType<typeof openHistoryDb>
 type Bridge = ReturnType<typeof createAcpBridge>
@@ -150,8 +156,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let taskStore: ReturnType<typeof createTaskStore> | null = null
   /** The background tasks, their one writer (task-runtime.ts); set once the history is open. */
   let taskRuntime: TaskRuntime | null = null
-  /** Follow-ups: reminders at the user's times, what is ready told in the user's gaps (followups-main.ts). */
-  let followups: Followups | null = null
+  /** 动态's items (feed-store.ts): what schedules brought; set once the personal stores are open. */
+  let feed: FeedStore | null = null
+  let schedules: Schedules | null = null
+  /** Schedules run when due, their answers into 动态 (schedule-runs.ts). */
+  let scheduleRuns: ScheduleRuns | null = null
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
   let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
   /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.ts. */
@@ -195,6 +204,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     receive: (event) => taskRuntime?.dsh.receive(event),
     onError: (err) => console.error('[tasks] could not record what a task reported; it goes on all the same:', err instanceof Error ? err.message : String(err)),
   })
+
+  /** Prompts run where nobody watches, read-only (a schedule's): their sessions' events are theirs, not 后台's. */
+  const unattended = createUnattendedRuns({ agent: () => bridge })
 
   /** One input to the backend (event-core.ts): recorded, then routed. */
   const signal = (input: Signal) => {
@@ -367,7 +379,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       taskAct: (request, sessionId) => actOnTask(request, sessionId),
       emit: (event) => {
         if (generation !== bridgeGeneration) return
-        if (event.type === 'followup_propose') return signal({ kind: 'agent.followup_proposed', event: event as { type: string, proposal: unknown } })
         // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
         // session it was delivered to; said of another session, it is not this report's. Read but its record not kept
         // (the database busy): a pass now, which puts it off to try again.
@@ -385,6 +396,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         }
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams. Each
         // reaches the window from the task runtime, in order with the task's snapshots (task-runtime.ts), not from here.
+        const { taskId } = event
+        if (typeof taskId === 'string' && unattended.owns(taskId)) return unattended.receive({ ...event, taskId } satisfies TaskEvent)
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
         emitToRenderer(event)
@@ -404,11 +417,26 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    */
   async function actOnTask(request: TaskAction, sessionId: string) {
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
+    if (request.op.startsWith('schedule_')) {
+      if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+      return schedules.act(request as ScheduleAction, conversation.id, workDirNow() ?? '')
+    }
     const tasks = requireTasks().agent
+    if (request.op !== 'start' && request.op !== 'stop' && request.op !== 'message') throw new Error(t('main.task-registry.unknown.task.query.operation'))
     if (request.op === 'start') return tasks.start(request.brief)
     tasks.query({ op: 'get', taskId: request.taskId }, { cwd: workDirNow() ?? '' })
     if (request.op === 'stop') return tasks.stop(request.taskId)
     return tasks.message(request.taskId, request.text)
+  }
+
+  function requireSchedules(): Schedules {
+    if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+    return schedules
+  }
+
+  function requireFeed(): FeedStore {
+    if (!feed) throw new Error('动态 is not open yet')
+    return feed
   }
 
   function requireTasks(): TaskRuntime {
@@ -473,6 +501,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** dsh died on its own: start it again on the conversation on screen, waiting longer each time, until it keeps dying. */
   function recoverFromCrash({ message }: { message: string }) {
     taskRuntime?.dsh.gone()
+    unattended.gone()
     console.error('[dsh] exited unexpectedly:', message)
     bridge = null
     turn = { active: false, startedAt: 0 }
@@ -494,6 +523,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** Stops the running dsh and waits until it has exited, so a new one never shares its session files. */
   async function stopBridge() {
     taskRuntime?.dsh.gone()
+    unattended.gone()
     clearTimeout(restartTimer)
     const running = bridge
     bridge = null
@@ -530,8 +560,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const info = { ...started, remembersHistory: started.resumed || !historyDb.get(conversation.id) }
       conversation = { ...conversation, sessionId: info.sessionId, cwd: workDir }
       emitToRenderer({ type: 'ready', info })
-      // Results of tasks that ended while dsh was away come back once it is here again.
+      // Results of tasks that ended while dsh was away come back once it is here again; schedules due meanwhile run.
       wakeEffects()
+      scheduleRuns?.wake()
       return info
     } catch (err: any) {
       console.error('[main] failed to start agent bridge:', err)
@@ -685,8 +716,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       console.error('[memory] could not update the habits:', err.message)
     }
     turn = { active: true, startedAt: Date.now() }
-    // The user's turn comes first: background preparation stops after the item at hand.
-    followups?.scheduler.yieldToUser()
     // A topic gone on from its saved records (history-ipc.ts continue-from-records): they go with the first question,
     // as background only; the window shows (and the history keeps) the question as it was typed.
     const carried = carry && carry.conversationId === conversation.id ? carry.text : null
@@ -698,9 +727,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function routeSignals(events: EventCore) {
     events.route({
       'chat.said': ({ text, images }) => sayInChat(text, images as ReturnType<typeof imagesForPrompt>),
-      // A turn of the user's just ended: a gap, where what is ready may be told; memories saved in it are reported.
+      // A turn of the user's just ended: memories saved in it are reported.
       'agent.turn_ended': () => {
-        followups?.gap()
         reportTurnMemories()
         if (mcpReloadDue) reloadMcpAfterTurn()
         // A task that ended while this turn ran comes back now that the conversation is free.
@@ -711,16 +739,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       // Recorded only: dsh's word went to the task runtime already (task-signals.ts), which keeps it.
       'agent.task_ended': () => undefined,
       'agent.task_waits': () => undefined,
-      // The same proposal turned down lately is not shown again.
-      'agent.followup_proposed': ({ event }) => {
-        const proposal = followups?.admitProposal(event.proposal as ProposalView)
-        if (proposal) emitToRenderer({ ...event, proposal })
-      },
-      'clock.reminder_due': () => followups?.notifier.fire(),
-      'clock.prepare_window': () => followups?.scheduler.fire(),
       'system.woke': () => woke(),
-      'system.user_returned': () => followups?.notifier.gap(),
-      'window.foreground': () => followups?.gap(),
+      // Recorded only (and not even that: event-core.ts UNRECORDED).
+      'window.foreground': () => undefined,
       // What the user did in a page: the channel's own listener (commands.ts), its answer the page's.
       'user.command': (input) => commands.route(input),
     })
@@ -817,9 +838,22 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return lastInfo
   }
 
-  /** A follow-up's notice as a system notification; opened, it is counted for the week of self-use. */
-  function showNotice(notice: Notice) {
-    host.notify(notice, (afterMs) => followups?.store.logEvent('notice_opened', { kind: notice.kind, afterMs }))
+  /** 动态 changed: the window shows it, the tray counts what is new. */
+  function feedChanged() {
+    host.window.setPending(feed?.list().filter((item) => item.seenAt === null).length ?? 0)
+    emitToRenderer({ type: 'feed_changed' })
+  }
+
+  /** A new item in 动态: its notification queued in the change that made it, so a quit before it goes loses nothing. */
+  function queueFeedNotice(item: FeedItem) {
+    if (!effects) throw new Error('the effects queue is not open yet')
+    effects.queue(FEED_NOTICE, item.id, { title: item.title, body: item.body.slice(0, NOTICE_BODY_CHARS) })
+  }
+
+  /** A schedule's prompt run in its own folder; one whose folder is gone fails, saying so. */
+  function runSchedule(prompt: string, cwd: string): Promise<RunResult> {
+    if (!isFolder(cwd)) return Promise.resolve({ ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) })
+    return unattended.run(prompt, cwd)
   }
 
   function registerPersonalIpc(config: Config) {
@@ -860,39 +894,39 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     mcpStore = createMcpConfigStore({ file: path.join(userData, 'mcp-servers.json'), crypto: host.secrets, onError: (err) => console.error('[mcp]', err.message) })
     personal = createPersonal({ memoryDb, historyDb, mcpStore })
     registerPersonalIpc(config)
-    followups = openFollowups({
-      ipcMain,
+    const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
+    schedules = createSchedules({ db: appDb.db, apply: applyChange, emit: emitToRenderer, changed: () => { scheduleRuns?.arm(); schedulesChanged() } })
+    // A schedule's run adds its item inside its own change (schedule.ran); the window's writes are events of their own.
+    const items = openFeedStore({ db: appDb.db })
+    feed = journaled(items, 'feed', FEED_WRITES, applyChange)
+    scheduleRuns = createScheduleRuns({
       db: appDb.db,
       apply: applyChange,
-      signal: (kind) => { signal({ kind }) },
-      notify: showNotice,
-      windowInFront: host.window.inFront,
-      onPending: (count) => {
-        host.window.setPending(count)
-        // Something changed in the main process (a draft, a reminder): the window shows it as it is now.
-        emitToRenderer({ type: 'followups_changed' })
+      store: schedules.store,
+      feed: items,
+      run: runSchedule,
+      keep: queueFeedNotice,
+      // Kept: its notice goes (a notification, clicked, opens 动态), and the window shows it.
+      delivered: () => {
+        wakeEffects()
+        feedChanged()
       },
-      idleSeconds: host.power.idleSeconds,
-      loadSchedule: () => preferences.get().prepareSchedule,
-      storeSchedule: (schedule) => preferences.set('prepareSchedule', schedule),
-      userBusy: () => (turn.active ? t("main.main.you.are.in.a.conversation") : bridge?.workingTasks() ? t("main.main.your.background.tasks.are.running") : null),
-      prepareText: (call, signal) => {
-        // The model the conversation is on, else the one new conversations start on.
-        const route = parseModelValue(String(lastInfo.modelValue ?? '')) ?? profileModels(config).defaultModel
-        if (!route) return Promise.resolve({ ok: false as const, problem: t("main.main.no.model.available.yet"), called: false as const })
-        return bridge ? bridge.prepareText({ ...route, ...call }, signal) : Promise.resolve({ ok: false as const, problem: t("main.acp-bridge.the.assistant.is.not.ready.yet"), called: false as const })
-      },
-      takenUp: (conversationId, since) => (taskStore?.list() ?? []).some((task) => (task.startedAt ?? 0) >= since
-        && (task.segmentId === conversationId || historyDb.get(task.segmentId)?.conversation.parentId === conversationId)),
-      materials: {
-        conversation: (id) => historyDb.get(id)?.messages.map((m) => ({ role: m.role, text: m.text })) ?? null,
-        profile: () => memoryDb.latestSynthesis()?.text ?? null,
-      },
-      workDir: () => workDirNow() ?? config.cwd,
-      conversationExists: (id) => Boolean(historyDb.get(id)),
-      onState: (state) => emitToRenderer({ type: 'prepare_state', state }),
-      onError: (err) => console.error('[followups]', err instanceof Error ? err.message : String(err)),
+      changed: schedulesChanged,
+      onError: (err) => console.error('[schedules]', err instanceof Error ? err.message : String(err)),
     })
+    ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
+    ipcMain.handle('schedules:accept', (_event, proposalId) => requireSchedules().accept(String(proposalId)))
+    ipcMain.handle('schedules:decline', (_event, proposalId) => { requireSchedules().decline(String(proposalId)) })
+    // 动态's 接下来: pause, resume and delete by hand too (the conversation does the rest).
+    ipcMain.handle('schedules:pause', (_event, id, paused) => requireSchedules().update(String(id), { paused: Boolean(paused) }))
+    ipcMain.handle('schedules:delete', (_event, id) => requireSchedules().remove(String(id)))
+    ipcMain.handle('feed:list', () => items.list(FEED_LISTED))
+    ipcMain.handle('feed:seen', (_event, id) => {
+      requireFeed().markSeen(String(id))
+      feedChanged()
+      return items.list(FEED_LISTED)
+    })
+    feedChanged()
   }
 
   /** The agent's side of background tasks. */
@@ -902,10 +936,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     steerTask: (taskId: string, text: string) => requireBridge().steerTask(taskId, text),
     resumeTask: (request: Parameters<Bridge['resumeTask']>[0]) => (bridge ? bridge.resumeTask(request) : { ok: false, reason: 'unavailable' }),
     startTask: (request: Parameters<Bridge['startTask']>[0]) => (bridge ? bridge.startTask(request) : { ok: false, reason: 'unavailable' }),
-    promptTask: (taskId: string, text: string) => {
-      followups?.scheduler.yieldToUser()
-      return bridge?.promptTask(taskId, text)
-    },
+    promptTask: (taskId: string, text: string) => bridge?.promptTask(taskId, text),
   }
 
   /** Back to before the turn where the user said these words; the agent goes on there, remembering what came before. */
@@ -952,6 +983,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     taskStore = createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) })
     effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => console.error('[effects]', err instanceof Error ? err.message : String(err)) })
     effects.runs(REPORT, taskReports)
+    // A new item's notification (schedule-runs.ts): handed to the desktop, done.
+    effects.runs(FEED_NOTICE, async (queued) => {
+      for (const { payload } of queued) host.notify(payload as Notice)
+      return new Map(queued.map((effect) => [effect.key, 'done' as const]))
+    })
     taskRuntime = createTaskRuntime({
       db: historyDb,
       store: taskStore,
@@ -961,11 +997,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       waitsOf: (taskId) => bridge?.taskWaits(taskId) ?? { permissions: [], questions: [] },
       apply: applyChange,
       publish: emitToRenderer,
-      // Once a task's end is kept: its result back to the conversation, and a gap.
-      onEnd: () => {
-        wakeEffects()
-        followups?.gap()
-      },
+      // Once a task's end is kept: its result back to the conversation.
+      onEnd: () => wakeEffects(),
       effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
@@ -975,8 +1008,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function open() {
     appDb = openAppDb({ file: path.join(userData, 'app.db') })
     core = createEventCore({ app: appDb, publish: host.window.send })
-    // The follow-ups' tables, before anything reads them.
-    openFollowupStore({ db: appDb.db })
     settingsStore = createSettingsStore({
       file: path.join(userData, 'settings.json'), crypto: host.secrets,
       onError: (err) => console.error('[settings] could not read saved settings:', err.message),
@@ -1026,15 +1057,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     routeSignals(core)
   }
 
-  /** The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one; preparation looks again. */
+  /** The computer back from sleep, or unlocked: schedules due meanwhile run. */
   function woke() {
-    followups?.notifier.wake()
-    followups?.scheduler.refresh()
+    scheduleRuns?.wake()
   }
 
   function close() {
     clearInterval(lateMemoryTimer)
-    followups?.close()
+    scheduleRuns?.close()
     historyDb?.close()
     appDb?.close()
     memoryDb?.close()
@@ -1056,7 +1086,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     settingsView,
     preferences: () => preferences,
     images: () => imageStore,
-    followups: () => followups,
+    /** An item in 动态, as if a schedule brought it (server.ts seedFeed, automation only). */
+    seedFeed: ({ title, body }: { title: string, body: string }) => {
+      const added = requireFeed().add({ source: 'automation', key: crypto.randomUUID(), title, body, origin: { label: t('main.schedule-runs.origin') } })
+      if (added.made) feedChanged()
+    },
     agentPid: () => bridge?.pid() ?? null,
     hasBridge: () => Boolean(bridge),
     isQuitting: () => quitting,

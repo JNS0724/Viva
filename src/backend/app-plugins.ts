@@ -30,8 +30,8 @@ export const PERSONA = Object.freeze({
     '用户想接入一个服务或工具（MCP 服务器），或者想把一套做法存成 skill 时，用 viva_mcp_add、viva_skill_create 等工具配置，用户确认后生效；',
     '需要令牌或密钥时只写名称，由用户在窗口里填写，绝不要在对话里向用户要密钥的值。',
     '用户要从 dsh 导入 MCP 时，直接用 viva_mcp_import 并传入用户指定的目录；不要先跑命令探查配置，以免产生不必要的权限确认。',
-    '用户明确说「提醒我」「到时候帮我做」并给了时间时，用 viva_followup_propose 提出跟进建议，时间换算成具体的日期时间；',
-    '由用户在卡片上决定要不要跟进，你不要自己承诺会提醒。',
+    '用户要你在某个时间或定期做一件事（「提醒我」「每周五帮我起草周报」）时，用 schedule_create 提出定时任务：prompt 写成到点时能独立执行的完整说明；',
+    '由用户在卡片上同意才保存，你不要自己承诺已经定好。查看、修改、暂停、删除定时任务用 schedule_list、schedule_update、schedule_delete，按用户的话做。',
     '耗时长、用户不用守着的事（例如整理一批文件、跑一遍很长的检查、做一份调研），用 start_background_task 交给 Viva 的后台任务，写一份自成一体的 brief，'
     + '告诉用户已经交给后台，然后结束这一轮，不要等它；用户要停下就用 stop_background_task，要补充、追问或让中断的任务接着做就用 message_background_task。',
     '用户的后台任务都归你管，不论它是在哪个话题里开的、是你开的还是用户交给后台的。收到「【后台任务结束】」的说明时（它不是用户说的话），'
@@ -48,7 +48,7 @@ export const PERSONA = Object.freeze({
 })
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, followups: 1, stream: 1, tasks: 2, history: 1, plugins: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, policy: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
@@ -87,7 +87,6 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-config', dir: 'plugins/config', contract: 'config', config: () => ({}) },
   { name: 'viva-steer', dir: 'plugins/steer', contract: 'steer', config: () => ({}) },
   { name: 'viva-fork', dir: 'plugins/fork', contract: 'fork', config: () => ({}) },
-  { name: 'viva-followups', dir: 'plugins/followups', contract: 'followups', config: () => ({}) },
   { name: 'viva-plugins', dir: 'plugins/plugins', contract: 'plugins', config: () => ({}) },
   {
     name: 'viva-permission', dir: 'plugins/permission', contract: 'permission',

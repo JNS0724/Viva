@@ -24,9 +24,8 @@ function backendIn(t: TestContext) {
   const commands = commandIpc(raw, (input) => core.signal(input))
   const idle = () => undefined
   const routes: Routes = {
-    'chat.said': idle, 'agent.turn_ended': idle, 'agent.task_ended': idle, 'agent.task_waits': idle, 'agent.followup_proposed': idle,
-    'clock.reminder_due': idle, 'clock.prepare_window': idle, 'system.woke': idle, 'system.user_returned': idle,
-    'window.foreground': idle, 'user.command': (input) => commands.route(input),
+    'chat.said': idle, 'agent.turn_ended': idle, 'agent.task_ended': idle, 'agent.task_waits': idle,
+    'system.woke': idle, 'window.foreground': idle, 'user.command': (input) => commands.route(input),
   }
   core.route(routes)
   const call = (channel: Channel, ...args: unknown[]) => registered.get(channel)!({ sender: 'page' }, ...args)
@@ -69,6 +68,6 @@ test('a query is marked where its channel is defined; the rest are commands', ()
   const channels = Object.keys(IPC_ARGS) as Channel[]
   for (const channel of QUERY_CHANNELS) assert.ok(channels.includes(channel), channel)
   assert.ok(QUERY_CHANNELS.has('history:read') && QUERY_CHANNELS.has('memory:get'), 'a schema over several lines is marked too')
-  assert.ok(isCommand('followups:accept') && isCommand('memory:delete') && !isCommand('memory:get') && !isCommand('agent:prompt'))
+  assert.ok(isCommand('schedules:accept') && isCommand('memory:delete') && !isCommand('memory:get') && !isCommand('agent:prompt'))
   assert.ok(IPC_ARGS['history:read'].safeParse(['c-1']).success, 'the mark leaves the check as it was')
 })

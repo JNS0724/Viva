@@ -25,7 +25,7 @@ export const DSH_TIMEOUT_MS = 60_000
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {{ memoryFile?: string, mcpServers?: object[], allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object }} [options]
+ * @param {{ memoryFile?: string, mcpServers?: object[], prewarmSessions?: boolean, allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object, imagesDir?: string, permission?: string }} [options]
  *   memoryFile: where the memory plugin's store goes; mcpServers: declared on every session;
  *   allow: answer every approval request with "allow once" (otherwise they stay pending);
  *   imagesDir: Viva's pictures folder (dsh-profile.js), given the temporary directory; permission: the level picked (viva-permission);

@@ -18,7 +18,7 @@ import { recordsAt } from '../report-state.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
-import { proposalCard } from './followups.ts'
+import { proposalCard } from './proposal-card.ts'
 import { userError } from '../user-error.ts'
 
 const AVATAR_PX = 48
@@ -439,7 +439,7 @@ function restLine(state: ThreadView, start: number, handlers: Handlers) {
  * (view/tasks-page.ts), with no more than this.
  */
 export type ThreadView = ConversationView & Pick<State, 'records' | 'conversationId' | 'restored' | 'restoredTrace' | 'rewind' | 'folds'
-  | 'proposals' | 'tasks' | 'taskCards' | 'info' | 'followups'>
+  | 'proposals' | 'tasks' | 'taskCards' | 'info'>
 
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container: HTMLElement, state: ThreadView, handlers: Handlers, now: number) {
@@ -513,7 +513,7 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
       item.status === 'failed' ? h('div', {},
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("thread.retry"), onClick: () => handlers.retrySubmission(item.id) }),
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("extensions.remove"), onClick: () => handlers.dismissSubmission(item.id) })) : null))),
-    // The follow-ups the model proposed in this conversation, each to be decided on (view/followups.ts).
+    // The schedules the model proposed in this conversation, each to be decided on (view/proposal-card.ts).
     ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
     state.question ? part('question', [state.question], () => questionCard(state.question, handlers)) : '',

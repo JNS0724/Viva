@@ -13,7 +13,7 @@ import { initialRewind, rewindActions } from './rewind-state.ts'
 import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
 import { WAITS_ACTIONS } from './waits-state.ts'
-import { FOLLOWUP_ACTIONS, initialFollowups } from './followup-state.ts'
+import { PROPOSAL_ACTIONS } from './proposal-state.ts'
 import { FEED_ACTIONS, initialFeed } from './feed-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
@@ -63,10 +63,9 @@ export const initialState = Object.freeze({
   files: initialFiles,
   memory: initialMemory,
   extensions: initialExtensions,
-  /** Follow-ups and background preparation (followup-state.ts). */
-  followups: initialFollowups,
+  /** 动态: its items and the schedules (feed-state.ts). */
   feed: initialFeed,
-  /** Cards for the follow-ups the model proposed in this conversation (followup-state.ts ProposalCard). */
+  /** Cards for the schedules the model proposed in this conversation (proposal-state.ts ProposalCard). */
   proposals: [] as Untyped[],
   models: initialModels,
   /** The 插件 section of settings (plugins-state.ts). */
@@ -196,7 +195,8 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
     tasks: state.tasks,
     memory: state.memory,
     extensions: state.extensions,
-    followups: state.followups,
+    // 动态 is the app's, not the conversation's.
+    feed: state.feed,
     toast: state.toast,
   }),
 
@@ -280,7 +280,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...FILES_ACTIONS,
   ...SECRET_ACTIONS,
   ...WAITS_ACTIONS,
-  ...FOLLOWUP_ACTIONS,
+  ...PROPOSAL_ACTIONS,
   ...FEED_ACTIONS,
 }
 

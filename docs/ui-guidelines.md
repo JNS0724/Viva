@@ -192,19 +192,19 @@ Viva appears as a blue-haired maid, drawn from the V4.1 prop states of dsh-perso
 | `done` | Holding up a check card | No | Blue | A turn finished, something is ready |
 | `error` | Checking with a wrench | No | Red | An answer failed |
 | `offline` | Looking at an unplugged connector | No | Gray | No model connected yet, connecting |
-| `sleeping` | Hugging a pillow | No, breathes gently | Quiet | Background preparation runs while you're idle |
+| `sleeping` | Hugging a pillow | No, breathes gently | Quiet | Not used at present |
 
 Ring colors match the interface's state colors: orange waits on you, red is an error, blue is working or done.
 
 Drawn by `src/renderer/view/maid.ts`:
 
-- **Framing:** `whole` shows the whole half-body picture, used at 200 px on the home page, 96 px on cards, 72 px on the desktop island and 64 px on follow-up details. `face` zooms in 1.6× on her face, used at 48 px in the conversation.
+- **Framing:** `whole` shows the whole half-body picture, used at 200 px on the home page, 96 px on cards, 72 px on the desktop island and 64 px on 动态's details. `face` zooms in 1.6× on her face, used at 48 px in the conversation.
 - **Animations** appear only where she is large and in front of you: the home greeting, approval and question cards, the open desktop island, and the conversation's current turn. Everywhere else shows a still. With reduced motion turned on in the system, every place shows a still.
 - **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
 - **On the desktop island** she's a still while it's folded and moves once it opens. `!`, `?` and `✓` badges say what her props can't at small sizes.
 - **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
 - All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc.
-- After changing assets, check the home page, conversation, approval cards, follow-up details and desktop island, and switch through several states in a row.
+- After changing assets, check the home page, conversation, approval cards, 动态's details and desktop island, and switch through several states in a row.
 
 ## Accessibility and keyboard
 

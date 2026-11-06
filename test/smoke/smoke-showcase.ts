@@ -18,8 +18,6 @@ const TYPE_MS = 55
 const PAUSE_MS = 1200
 /** A toast stays a few seconds. */
 const TOAST_TIMEOUT_MS = 15_000
-const PREPARE_TIMEOUT_MS = 30_000
-const HOUR_MS = 3_600_000
 const PROMPTS = Object.freeze({
   report: '把这周的进展整理成一页，用表格列出各模块',
   followup: '周五下班前要交周报，到时候帮我按上周的格式起草',
@@ -81,18 +79,12 @@ async function seedWorkspace(cwd: string) {
   await fs.writeFile(path.join(cwd, 'drafts', '正式稿.md'), '# 正式稿\n')
 }
 
-/** What was there before the demo: a draft prepared overnight and a mail that needs the user, for 今天. */
-async function seedFollowups(hooks: SmokeHooks) {
+/** What was there before the demo: something a schedule brought into 动态 overnight, for 今天. */
+async function seedFeed(hooks: SmokeHooks) {
   await hooks.seedShowcase()
 }
 
-async function openSettings(win: SmokeWindow) {
-  await run(win, `document.getElementById('hub').dataset.open === 'true' || document.getElementById('open-profile').click()`)
-  await run(win, `${q('.hub-nav[data-page="settings"]')}.click()`)
-  await until(win, q('#settings-root .settings'), 'the settings page')
-}
-
-/** The follow-up's whole way, recorded: asked, proposed, followed up, prepared in the background, taken up. */
+/** A schedule's whole way, recorded: asked, proposed, kept; then 动态, where what a schedule brought is taken up. */
 async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   const frames = path.join(outDir, 'frames')
   await fs.rm(frames, { recursive: true, force: true })
@@ -104,28 +96,22 @@ async function demo(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
   await wait(UI_WAIT_MS)
   await send(win)
   await finishTurn(win)
-  await until(win, q('#thread .fu-card[aria-label="要我跟进吗？"]'), 'the proposal card')
+  await until(win, q('#thread .fu-card[aria-label="要我定时做吗？"]'), 'the proposal card')
   await run(win, `${q('#thread .fu-card')}.scrollIntoView({ block: 'center', behavior: 'smooth' })`)
   await wait(PAUSE_MS * 2)
-  await capture(win, outDir, 'followup-card')
-  await run(win, clickText('#thread .fu-card', '跟进'))
-  await until(win, q('#thread .fu-card .fu-choose'), 'the windows to choose')
-  await wait(PAUSE_MS)
-  await run(win, `${q('#thread .fu-card .fu-preset')}.click()`)
+  await capture(win, outDir, 'schedule-card')
+  await run(win, clickText('#thread .fu-card', '定时'))
+  await until(win, q('#thread .fu-card.fu-done'), 'kept')
   await wait(PAUSE_MS * 1.5)
   await run(win, `${q('#open-feed')}.click()`)
-  await until(win, `[...document.querySelectorAll('#feed-page .fu-row .tp-name')].some((el) => el.textContent === '周报')`, 'the follow-up on the 动态 page')
-  await run(win, `[...document.querySelectorAll('#feed-page .fu-row')].find((el) => el.textContent.includes('周报')).click()`)
+  await until(win, `[...document.querySelectorAll('#feed-page .fu-row[data-status="active"] .tp-name')].some((el) => el.textContent === '周报')`, 'the schedule in 动态, coming up')
   await wait(PAUSE_MS)
-  await run(win, clickText('#feed-page .fu-main', '现在就准备'))
-  await until(win, q('#feed-page .fu-state[data-on="true"]'), 'preparation at work')
-  await wait(PAUSE_MS)
-  await capture(win, outDir, 'preparing')
-  await until(win, q('#feed-page .fu-draft'), 'the draft, ready', PREPARE_TIMEOUT_MS)
+  await run(win, `[...document.querySelectorAll('#feed-page .fu-row[data-status="new"]')][0].click()`)
+  await until(win, q('#feed-page .fu-draft'), 'what a schedule brought')
   await wait(PAUSE_MS * 1.5)
-  await capture(win, outDir, 'background')
+  await capture(win, outDir, 'feed-item')
   await run(win, clickText('#feed-page .fu-main', '在对话里继续'))
-  await until(win, `document.getElementById('composer-input').value.startsWith('接着做')`, '接着做 puts the draft in the input')
+  await until(win, `document.getElementById('composer-input').value.startsWith('来自动态')`, '在对话里继续 puts it in the input')
   await wait(PAUSE_MS * 2)
   await rec.stop()
   await run(win, setInput(''))
@@ -168,14 +154,6 @@ async function chatScenes(win: SmokeWindow, outDir: string, desk: SmokeDesk) {
   await finishTurn(win)
 }
 
-async function settingsScenes(win: SmokeWindow, outDir: string, hooks: SmokeHooks) {
-  await openSettings(win)
-  await run(win, `${q('#settings-root section[aria-label="后台准备"]')}.scrollIntoView({ block: 'start' })`)
-  await wait(UI_WAIT_MS)
-  await capture(win, outDir, 'prepare-settings')
-  await closeHub(win)
-}
-
 async function filesScene(win: SmokeWindow, outDir: string) {
   await run(win, `document.getElementById('drawer').dataset.open === 'true' || document.getElementById('toggle-drawer').click()`)
   await run(win, `[...document.querySelectorAll('.drawer .tab')].find((el) => el.textContent === '文件').click()`)
@@ -193,14 +171,13 @@ export async function runShowcase(win: SmokeAppWindow, outDir: string, hooks: Sm
   await seedWorkspace(hooks.cwd)
   await wait(UI_WAIT_MS)
   await run(win, clickText('#home', '以后再说'))
-  await seedFollowups(hooks)
+  await seedFeed(hooks)
   await until(win, q('#home .home-today'), 'the 今天 card on the home page')
   await wait(PAUSE_MS)
   await capture(win, outDir, 'home')
   await demo(win, outDir, hooks)
   await closeHub(win)
   await chatScenes(win, outDir, hooks.desk?.())
-  await settingsScenes(win, outDir, hooks)
   await filesScene(win, outDir)
   await deskInput(outDir, hooks.desk?.())
   await composeDesk(outDir, hooks)

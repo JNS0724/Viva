@@ -86,7 +86,6 @@ export function threadState(state: State, task: BackgroundTask): ThreadView {
     tasks: { ...state.tasks, list: [] },
     taskCards: [],
     info: state.info,
-    followups: state.followups,
   }
 }
 

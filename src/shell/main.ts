@@ -16,7 +16,7 @@ import { leaveFullScreen } from './full-screen.ts'
 import { IMAGE_SCHEME_PRIVILEGES, registerImageProtocol } from './image-protocol.ts'
 import { type Channel, checkedIpc } from '../shared/ipc-contract.ts'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.ts'
-import type { Notice } from '../backend/notice-plan.ts'
+import type { Notice } from '../backend/host.ts'
 import type { Preferences } from '../backend/preferences.ts'
 import { createTray } from './tray.ts'
 import { installAutomationDriver } from './automation-driver.ts'
@@ -65,7 +65,7 @@ let deskAllowed = true
 /** The tray icon, made the first time the window is closed to it (tray.ts). */
 let tray: ReturnType<typeof createTray> | null = null
 /** Ready follow-ups, for the tray, which may be made after the count changed. */
-let pendingFollowups = 0
+let pendingFeed = 0
 /** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
 let shortcutHeld: ReturnType<typeof registerAskShortcut> | null = null
 /** The desktop island's preferences, kept here as the island reads them at once; written through to the backend. */
@@ -115,13 +115,13 @@ function mirrorInFront() {
   mirror({ inFront: now })
 }
 
-/** 动态, from a follow-up's notification or the tray: the window in front, on that page. */
+/** 动态, from a notification or the tray: the window in front, on that page. */
 function openFeedPage() {
   showWindow()
   if (win && !win.isDestroyed()) win.webContents.send('island:action', { kind: 'feed' })
 }
 
-/** A follow-up's notice as a system notification; clicked, it opens 动态. */
+/** Something new in 动态 as a system notification; clicked, it opens 动态. */
 function showNotice(notice: Notice, opened: (afterMs: number) => void) {
   // Native Windows notifications may register/update a Start-menu shortcut for
   // our app ID. Automated smoke runs must not point that shortcut at a QA binary.
@@ -134,7 +134,6 @@ function showNotice(notice: Notice, opened: (afterMs: number) => void) {
   const done = () => shownNotices.delete(shown)
   shown.on('click', () => {
     done()
-    // How long it took the user to open it: the week of self-use asks whether notices come at the right time.
     opened(Date.now() - shownAt)
     openFeedPage()
   })
@@ -152,7 +151,7 @@ const folderOf = async (options: Electron.OpenDialogOptions) => {
 /** The language changed in the backend: the shell's own words (the tray, dialogs) and every window follow. */
 function followLanguage(state: LanguageState) {
   setLocale(state.locale)
-  tray?.setPending(pendingFollowups)
+  tray?.setPending(pendingFeed)
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send('language:changed', state)
 }
 
@@ -163,10 +162,10 @@ const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
   },
   'window.broadcastLanguage': (state: LanguageState) => followLanguage(state),
   'window.setPending': (count: number) => {
-    pendingFollowups = count
+    pendingFeed = count
     tray?.setPending(count)
   },
-  'window.refreshNative': () => tray?.setPending(pendingFollowups),
+  'window.refreshNative': () => tray?.setPending(pendingFeed),
   'dialogs.chooseFolder': ({ title, createDirectory = false, defaultPath, showHidden = false }: FolderOptions) => folderOf({
     title, ...(defaultPath ? { defaultPath } : {}),
     properties: ['openDirectory', ...(createDirectory ? ['createDirectory' as const] : []), ...(showHidden ? ['showHiddenFiles' as const] : [])],
@@ -320,7 +319,7 @@ function showTray() {
     onOpen: showWindow,
     onQuit: () => app.quit(),
     onPending: openFeedPage,
-    pending: pendingFollowups,
+    pending: pendingFeed,
   })
 }
 
@@ -449,7 +448,7 @@ app.whenReady().then(async () => {
     agentPid: async () => (await backendConnection()).control<number | null>('agent-pid'),
     backendPid: () => keeper.running()?.pid ?? null,
     desk: () => desk,
-    seedPrepared: async (item) => (await backendConnection()).control<void>('automation.seed-prepared', item),
+    seedFeed: async (item) => (await backendConnection()).control<void>('automation.seed-feed', item),
   })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
   const woke = () => tellBackend('signal', { kind: 'system.woke' })

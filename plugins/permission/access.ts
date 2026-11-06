@@ -27,3 +27,19 @@ export async function accessDecision({ preset, name, args, cwd, canonicalize }: 
     return { kind: 'deny', reason: '无法核实文件所在位置，已停止文件访问。' }
   }
 }
+
+/**
+ * The tools a session nobody watches may use (a schedule's run, system-design §12.2): looking things up only, as
+ * dsh's sub-agents may (src/backend/dsh-profile.ts SUBAGENT_TOOLS, kept in step).
+ */
+export const READ_ONLY_TOOLS: readonly string[] = Object.freeze(['read', 'glob', 'grep', 'read_image', 'web_search', 'web_fetch', 'memory_recall', 'search_conversations', 'read_conversation', 'todo_write'])
+
+/**
+ * For a session nobody watches: only the read-only tools, and files in the workspace only. There is no one to ask,
+ * so what would be asked is refused, whatever level the user picked.
+ */
+export async function unattendedDecision(request: { name: string, args: unknown, cwd?: string, canonicalize: (file: string, cwd: string) => Promise<string> }): Promise<PreToolDecision | null> {
+  if (!READ_ONLY_TOOLS.includes(request.name)) return { kind: 'deny', reason: `定时任务只能查看，不能用 ${request.name}。` }
+  const decision = await accessDecision({ ...request, preset: 'read-only' })
+  return decision?.kind === 'ask' ? { kind: 'deny', reason: `定时任务无人确认：${decision.reason}` } : decision
+}

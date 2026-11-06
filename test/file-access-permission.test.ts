@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { accessDecision } from '../plugins/permission/access.ts'
+import { accessDecision, unattendedDecision } from '../plugins/permission/access.ts'
 
 test('workspace read consent uses real paths, rejects prefix siblings and traversal, and asks before commands', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'viva-read-consent-'))
@@ -36,4 +36,18 @@ test('workspace read consent uses real paths, rejects prefix siblings and traver
     return
   }
   assert.equal((await decide('read', { file_path: 'link/outside.txt' }))?.kind, 'ask')
+})
+
+test('unattended (a schedule\'s run): only the read-only tools, in the workspace; what would be asked is refused', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'viva-unattended-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  await fs.writeFile(path.join(dir, 'notes.txt'), 'inside')
+  const canonicalize = async (file: string, base: string) => fs.realpath(path.resolve(base, file))
+  const decide = (name: string, args: unknown) => unattendedDecision({ name, args, cwd: dir, canonicalize })
+  assert.equal(await decide('read', { file_path: 'notes.txt' }), null)
+  assert.equal(await decide('web_search', { query: '天气' }), null)
+  for (const name of ['bash', 'pwsh', 'write', 'edit', 'start_background_task', 'schedule_create', 'ask_user_question', 'subagent']) {
+    assert.equal((await decide(name, {}))?.kind, 'deny', name)
+  }
+  assert.equal((await decide('read', { file_path: os.homedir() }))?.kind, 'deny', 'outside the workspace: nobody to ask')
 })

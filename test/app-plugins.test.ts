@@ -39,7 +39,6 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-config', {}],
     ['viva-steer', {}],
     ['viva-fork', {}],
-    ['viva-followups', {}],
     ['viva-plugins', {}],
     ['viva-permission', { preset: 'workspace-write' }],
   ])

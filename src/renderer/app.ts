@@ -10,7 +10,8 @@ import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
-import { createFollowupActions } from './followup-actions.ts'
+import { createProposalActions } from './proposal-actions.ts'
+import { createFeedActions } from './feed-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
 import { mountHistorySearchFrame } from './history-search-frame.ts'
@@ -224,8 +225,8 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   task: ({ taskId }) => handlers.openTasks(taskId),
   /** The count at the island's tail: the 后台 page. */
   tasks: () => handlers.openTasks(),
-  /** A follow-up's notification, or the tray's count: the 动态 page (system-design §12.2). */
-  feed: () => dispatch({ type: 'feed_open' }),
+  /** A notification of something new, or the tray's count: the 动态 page (system-design §12.2). */
+  feed: () => handlers.openFeed(),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
@@ -533,16 +534,15 @@ const resumeActions = createResumeActions({
 })
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
-const followupActions = createFollowupActions({
-  api, getState: () => state, dispatch, errorMessage,
-  // 接着做: the draft in the input, the conversation in front; the user reads it and sends it.
-  fillComposer: (text) => {
-    dispatch({ type: 'hub_close' })
-    dom.input.value = text
-    dom.input.dispatchEvent(new Event('input'))
-    dom.input.focus()
-  },
-})
+/** Words into the input, the conversation in front; the user reads them and sends them. */
+function fillComposer(text: string) {
+  dispatch({ type: 'hub_close' })
+  dom.input.value = text
+  dom.input.dispatchEvent(new Event('input'))
+  dom.input.focus()
+}
+const proposalActions = createProposalActions({ api, getState: () => state, dispatch, errorMessage })
+const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
@@ -599,7 +599,7 @@ const handlers = {
   },
   ...memoryActions,
   ...extensionActions,
-  ...followupActions,
+  ...proposalActions,
   ...modelActions,
   ...pluginActions,
   ...filesActions,
@@ -706,7 +706,6 @@ const handlers = {
   async openSettings() {
     dispatch({ type: 'settings_open' })
     extensionActions.loadExtensions()
-    followupActions.loadFollowups()
     modelActions.loadModels()
     pluginActions.loadPlugins()
     try {
@@ -724,12 +723,18 @@ const handlers = {
   /** The 后台 page, on `taskId` or the one it was on (view/tasks-page.js). */
   openTasks: (taskId: string | null = null) => {
     dispatch({ type: 'tasks_page_open', taskId })
-    followupActions.loadFollowups()
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
-  selectFeed: (id: string) => dispatch({ type: 'feed_select', id }),
-  openFeed: () => dispatch({ type: 'feed_open' }),
-  toggleFeed: () => (state.feed.open ? handlers.closeHub() : dispatch({ type: 'feed_open' })),
+  selectFeed: (kind: string, id: string) => dispatch({ type: 'feed_select', kind, id }),
+  openFeed: () => {
+    dispatch({ type: 'feed_open' })
+    feedActions.loadFeed()
+  },
+  toggleFeed: () => (state.feed.open ? handlers.closeHub() : handlers.openFeed()),
+  continueFeedItem: (id: string) => feedActions.continueItem(id),
+  dismissFeedItem: (id: string) => feedActions.dismissItem(id),
+  pauseSchedule: (id: string, paused: boolean) => feedActions.pauseSchedule(id, paused),
+  deleteSchedule: (id: string) => feedActions.deleteSchedule(id),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
   inputProblem: (message: string) => historyActions.showToast(message),
@@ -867,9 +872,8 @@ const EVENT_ACTIONS: Readonly<Record<string, (event: AgentEvent) => Action>> = {
   /** The conversation goes on in another working directory (work-dir-ipc.js): a new part of the timeline. */
   workdir: (event) => ({ type: 'workdir_switched', info: event.info }),
   /** The model proposed a follow-up: a card under the conversation, for the user to decide on. */
-  followup_propose: (event) => ({ type: 'followup_proposed', proposalId: event.proposalId, proposal: event.proposal }),
-  /** How background preparation goes (prepare-scheduler.ts). */
-  prepare_state: (event) => ({ type: 'prepare_state', prepare: event.state }),
+  /** A schedule the model proposed (schedules.ts): its card under the conversation. */
+  schedule_propose: (event) => ({ type: 'schedule_proposed', proposal: event.proposal }),
 }
 
 function wireComposer() {
@@ -1042,7 +1046,8 @@ function handleEvent(event: AgentEvent) {
   if (event?.type === 'task_end') filesActions.filesAfterTurn()
   if (event?.type === 'error') afterTurn = []
   // A batch ended: drafts are ready, or the list changed.
-  if ((event?.type === 'prepare_state' && !event.state?.running) || event?.type === 'followups_changed') followupActions.loadFollowups()
+  // A schedule ran (a new item), or the schedules changed (kept, paused, ended, changed by asking).
+  if (event?.type === 'feed_changed' || event?.type === 'schedules_changed') feedActions.loadFeed()
 }
 
 async function boot() {
@@ -1062,7 +1067,7 @@ async function boot() {
     if (taskActions.hold(event)) return undefined
     return handleEvent(event)
   })
-  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), followupActions.loadFollowups()])
+  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), feedActions.loadFeed()])
   // The tasks the last launch kept: ended ones, and those it quit on.
   await taskActions.loadKept()
   await timelineActions.loadEarlier()

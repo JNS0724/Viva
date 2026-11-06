@@ -5,26 +5,26 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "4771358a3a5f5e89db89b12e13c81440b878743419d36c1564554516df4dac8e",
-      "zhHash": "ae6323da6ec6de9f8f15c2a5915cd153747074ea65a62cad7a0819827dfe93c7"
+      "enHash": "77a9d969eb1d130355eafe35266bfa207293ba2afe7b801cda5daa0fb5660a60",
+      "zhHash": "f2c2c47b73a3011deacfc11d3894a0b73fc272d21157695880e619de5e2eff44"
     },
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "35fca40cb1f1724b1ad8ab8e3d90ce2d36010b1d577cd76321bc992d72b1f3f1",
-      "zhHash": "4615e3c2e92c1414cb06b0e4c738da217b7f4857a1416fd14b883afcd401ef5d"
+      "enHash": "af31cae983f7927b6fb85b495473ef1161db9ade26caf9e36bd6ae5fb9d18e6c",
+      "zhHash": "32581e858a61c0997ab077023ee32e18d77a191661a7dd86ef888df18f039915"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "275f5a8ecf2475cedda3fd93f6fcd94a270ea2551b0ff0ef6689c57363f00e5a",
-      "zhHash": "0f120ae626c3313f1d0b12cdc98a9a4b614ea8e952bc983fcec2fb10a0ed32d3"
+      "enHash": "b074d7f0801dc5c565227ba1b50fb0e74252ec4df8e41900ad4726d386b82e0a",
+      "zhHash": "0c24eb18373b0f117b1d4f25594c83946eb2173c65682f9cc0a4bdb610ea6a50"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "da29bcd587c2d02597c1be40a02e944b1559ed8b971bcb738fab59a795def1fb",
-      "zhHash": "e3f0aa806b1d50d46f6258fd9e93325f6d8aa4e4a9decbae40bf943e721b1eaa"
+      "enHash": "b80b422d96266091e2a9333cdce9ab6264a6025e2780202b0331a96e2064925f",
+      "zhHash": "874f2dc6f9882f61762400ff299dd8b19ade8f1f7ae88a44724401d1accfbfd8"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -65,14 +65,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "578bf8525c1f7424b8f0b056b90c1020b45a0000d010f2eaffca0e48f7cca4a2",
-      "zhHash": "7e9fe4416c62683329d9185b6ef721cfdfbf7af9e9d686dcf23de8a518b30c85"
+      "enHash": "8e12a2f6d2bdb4b2e7cb4b877e93d55fe3be282a4afe97e1904566ee1ecf34be",
+      "zhHash": "3dbf3b20e3872951e042d53e0cc3cbc94b793d9e48f170fceaf1543642e59552"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "c2efc00c623deeb9cd9027df5e1ea168453caff1c316dd2dcd387dc8a17a0f5e",
-      "zhHash": "787582fc80889500a5b7f94e0f67dfdfa34de74f24aec785750adb090b4913f0"
+      "enHash": "3df102cf64e0e1684096563b3dc81ba3ddbdc426a19ecbf74e4fe3679fad6855",
+      "zhHash": "af9090aaa4030cfa12ccd916da11086806e6ceb054003c6dca58a7cfaf2e7704"
     }
   ],
   "bilingual": [

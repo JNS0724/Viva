@@ -48,12 +48,12 @@ test('new topic is visible and focused before runtime readiness; double clicks a
 })
 
 test('late foreground events are excluded while background task events remain usable', () => {
-  for (const type of ['update', 'turn_end', 'config', 'question', 'question_closed', 'memory_context', 'followup_propose']) {
+  for (const type of ['update', 'turn_end', 'config', 'question', 'question_closed', 'memory_context', 'schedule_propose']) {
     assert.equal(isPreviousTopicEvent({ type }), true, type)
   }
   assert.equal(isPreviousTopicEvent({ type: 'permission' }), true)
   assert.equal(isPreviousTopicEvent({ type: 'permission', taskId: 'background' }), false)
-  for (const type of ['task_update', 'task_end', 'task_question', 'error', 'prepare_state']) assert.equal(isPreviousTopicEvent({ type }), false, type)
+  for (const type of ['task_update', 'task_end', 'task_question', 'error']) assert.equal(isPreviousTopicEvent({ type }), false, type)
 })
 
 test('an empty topic still displays preparation failure instead of hiding it behind the welcome screen', () => {

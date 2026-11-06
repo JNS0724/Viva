@@ -77,10 +77,10 @@ function renderPermissionIfChanged(area: HTMLElement | null, state: State, handl
 
 function renderSettingsIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
   const connected = state.info.mode === 'live'
-  const inputs = [localeRevision(), state.settings, state.models, state.extensions, state.plugins, state.followups, connected]
+  const inputs = [localeRevision(), state.settings, state.models, state.extensions, state.plugins, connected]
   if (inputs.every((value, i) => value === renderedSettings[i])) return
   renderedSettings = inputs
-  renderSettings(container, state.settings, state.models, state.extensions, state.plugins, state.followups, handlers, { connected })
+  renderSettings(container, state.settings, state.models, state.extensions, state.plugins, handlers, { connected })
 }
 
 function renderProfileIfChanged(container: HTMLElement, memory: State['memory'], handlers: Handlers) {
@@ -125,9 +125,9 @@ function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
 let renderedTasksPage: unknown[] = []
 let renderedFeedPage: unknown[] = []
 
-/** 动态 depends on the follow-ups and on itself; its count in the title bar on the follow-ups alone. */
+/** 动态 and its count in the title bar depend on it alone. */
 function renderFeedIfChanged(dom: Dom, state: State, handlers: Handlers, now: number) {
-  const inputs = [localeRevision(), state.followups, state.feed]
+  const inputs = [localeRevision(), state.feed]
   if (inputs.every((value, i) => value === renderedFeedPage[i])) return
   renderedFeedPage = inputs
   const count = feedCount(state)
@@ -136,9 +136,9 @@ function renderFeedIfChanged(dom: Dom, state: State, handlers: Handlers, now: nu
   if (state.feed.open) renderFeedPage(dom.feedPage, state, handlers, now)
 }
 
-/** The 后台 page depends on the tasks, the follow-ups and on itself; a task at work changes it as it goes. */
+/** The 后台 page depends on the tasks and on itself; a task at work changes it as it goes. */
 function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
-  const inputs = [localeRevision(), state.tasks.list, state.tasks.page, state.followups, state.tasks.listFolded]
+  const inputs = [localeRevision(), state.tasks.list, state.tasks.page, state.tasks.listFolded]
   if (inputs.every((value, i) => value === renderedTasksPage[i])) return
   renderedTasksPage = inputs
   renderTasksPage(container, state, handlers, now)

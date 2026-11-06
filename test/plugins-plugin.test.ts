@@ -32,7 +32,7 @@ test('a plugin installed through the app loads in dsh, switches off while dsh ru
   assert.ok(installed.ok, installed.problem)
   assert.equal(installed.value.application, 'applied', JSON.stringify(installed.value).slice(0, 600))
   assert.ok((await toolsNow(agent, llm)).includes(TOOL), 'its tool is offered')
-  assert.ok((await toolsNow(agent, llm)).includes('viva_followup_propose'), 'the app\'s own plugins still load')
+  assert.ok((await toolsNow(agent, llm)).includes('schedule_create'), 'the app\'s own plugins still load')
 
   const listed = await agent.plugins('list')
   const [plugin, ...others] = pluginsView(listed.value, profileDir)

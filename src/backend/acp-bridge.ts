@@ -12,7 +12,7 @@ import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk } from './steer-channel.ts'
 import { createForkDesk } from './fork-channel.ts'
-import { createFollowupDesk, type PrepareCall, type Prepared } from './followup-channel.ts'
+import { createReadOnlyDesk } from './read-only-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
 import { createPluginsDesk, type PluginsOp, type PluginsResult } from './plugins-channel.ts'
@@ -144,11 +144,9 @@ export function createAcpBridge({
   const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
-  // Follow-ups proposed in a conversation, and background preparation's tool-less model calls (viva-followups).
-  const followupDesk = createFollowupDesk({ send: toPlugins, emit: event => {
-    if (event.type === 'followup_propose' && event.sessionId !== sessionId && !tasks.has(String(event.sessionId))) return
-    emit(event)
-  } })
+  // Sessions nobody watches (a schedule's run): read-only tools, nothing asked of the user (viva-permission).
+  const readOnlyDesk = createReadOnlyDesk({ send: toPlugins })
+  const unattended = new Set<string>()
   // The plugins page, through dsh's plugin manager (viva-plugins).
   const pluginsDesk = createPluginsDesk({ send: toPlugins })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || tasks.has(id) })
@@ -181,6 +179,8 @@ export function createAcpBridge({
     },
     async requestPermission(params: RequestPermissionRequest) {
       if (params.sessionId !== sessionId && !tasks.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
+      // Nobody is there to answer: turned down.
+      if (unattended.has(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
       emit({ type: 'permission', requestId, sessionId: params.sessionId, toolCall: params.toolCall, options: params.options, ...(taskId ? { taskId } : {}) })
@@ -200,7 +200,7 @@ export function createAcpBridge({
       config?.receive(message)
       steering.receive(message)
       forking.receive(message)
-      followupDesk.receive(message)
+      readOnlyDesk.receive(message)
       tasksDesk.receive(message)
       historyDesk.receive(message)
       pluginsDesk.receive(message)
@@ -213,8 +213,8 @@ export function createAcpBridge({
     proc.on('exit', (code, signal) => {
       fresh.dispose()
       streams.close()
-      followupDesk.close()
       pluginsDesk.close()
+      readOnlyDesk.closeAll()
       if (disposed) return
       const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
       if (onExit) onExit({ code, signal, message })
@@ -553,9 +553,10 @@ export function createAcpBridge({
    * as it is, or from before the turn running in it (named by its `words`), so it knows what was said; with
    * nothing said yet, in a fresh session. promptTask then asks it.
    */
-  async function startTask({ words, afresh = false }: { words?: string, afresh?: boolean } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
+  async function startTask({ words, afresh = false, cwd: taskCwd }: { words?: string, afresh?: boolean, cwd?: string } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
     if (!sessionId) return { ok: false, reason: 'missing' }
-    const originCwd = sessionCwd
+    // A fresh task may be given its own working folder (a schedule's, kept from where it was made).
+    const originCwd = afresh && taskCwd ? taskCwd : sessionCwd
     const originConfig = configNow
     // A task the agent starts begins afresh from its brief; 后台做 goes on from the conversation as it is.
     const forked = afresh ? { ok: false as const } : await forking.fork(words ? { words, occurrence: 0 } : {})
@@ -577,6 +578,19 @@ export function createAcpBridge({
       console.error('[acp-bridge] could not start a task:', describeError(err))
       return { ok: false, reason: 'missing' }
     }
+  }
+
+  /**
+   * A schedule's run (schedule-runs.ts): a fresh session in the schedule's folder, like a task the agent starts, marked unattended before
+   * anything is asked of it, so it may only look things up and asks the user nothing. Not marked, it is closed.
+   */
+  async function startReadOnlyTask({ cwd: taskCwd }: { cwd: string }): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
+    const started = await startTask({ afresh: true, cwd: taskCwd })
+    if (!started.ok || !started.taskId) return started
+    unattended.add(started.taskId)
+    if (await readOnlyDesk.mark(started.taskId)) return started
+    await closeTask(started.taskId)
+    return { ok: false, reason: 'unavailable' }
   }
 
   /** A turn in a task's session: what it says arrives as task_update, its end as task_end (as for a spun-off turn). */
@@ -632,6 +646,7 @@ export function createAcpBridge({
     await cancelTask(taskId)
     questions.declineTask(taskId)
     tasks.delete(taskId)
+    unattended.delete(taskId)
     try {
       await live().closeSession({ sessionId: taskId })
     } catch (err) {
@@ -696,8 +711,8 @@ export function createAcpBridge({
     streams.close()
     broker.cancelAll()
     steering.closeAll()
-    followupDesk.close()
     pluginsDesk.close()
+    readOnlyDesk.closeAll()
     if (!child || !isRunning(child)) return Promise.resolve()
     const target = child
     const exited = new Promise((resolve) => target.once('exit', resolve))
@@ -713,16 +728,10 @@ export function createAcpBridge({
     return [...running.keys()].filter(id => isTask(id) && !running.get(id)?.released && !waiting.has(id as string)).length
   }
 
-  /** Background preparation: one model call with no tools, from the followups plugin; nothing while dsh is down. */
   /** One call to dsh's plugin manager for the plugins page; refused while dsh is not running. */
   function plugins(op: PluginsOp, args: Record<string, unknown> = {}): Promise<PluginsResult> {
     if (!child?.connected) return Promise.resolve({ ok: false, problem: 'disconnected' })
     return pluginsDesk.call(op, args)
-  }
-
-  function prepareText(call: PrepareCall, signal?: AbortSignal): Promise<Prepared> {
-    if (!child?.connected) return Promise.resolve({ ok: false, problem: t("main.acp-bridge.the.assistant.is.not.ready.yet"), called: false })
-    return followupDesk.prepare(call, signal)
   }
 
   /** dsh's process id while it runs (the smoke run uses it to check recovery from a crash). */
@@ -730,5 +739,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, prepareText, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid }
 }

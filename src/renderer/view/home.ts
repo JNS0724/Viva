@@ -1,4 +1,5 @@
 import { t } from '../../shared/i18n/translate.ts'
+import { feedCount, feedGroups } from '../feed-state.ts'
 import { isProfileEmpty } from '../personal-state.ts'
 import { catMood, greeting, setupView, statusView } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
@@ -11,15 +12,15 @@ const GREETING_MS = 1400
 let greetingEnds: number | null = null
 const heroMaids: MaidSlots = new Map()
 
-const hasReady = (state: State) => state.followups.followups.some((f: Untyped) => f.status === 'ready')
+const hasNew = (state: State) => feedCount(state) > 0
 
-/** She waves once, then rests: holding up the ✓ card while something is ready, offline until a model is connected. */
+/** She waves once, then rests: holding up the ✓ card while 动态 has something new, offline until a model is connected. */
 function heroMood(state: State, tone: string, now: number): { mood: MaidMood, moving: boolean } {
   const mood = maidMood(catMood(state), tone)
   if (mood !== 'idle') return { mood, moving: true }
   greetingEnds ??= now + GREETING_MS
   if (now < greetingEnds) return { mood: 'greeting', moving: true }
-  return { mood: hasReady(state) ? 'done' : 'idle', moving: false }
+  return { mood: hasNew(state) ? 'done' : 'idle', moving: false }
 }
 
 /** The maid, whole, on her cream with a saucer's rim around it: the one bold thing on the page. */
@@ -28,10 +29,9 @@ function heroMaid(state: State, tone: string, now: number) {
   return h('div', { class: 'maid-hero' }, maidFor(heroMaids, 'hero', mood, { size: HERO_PX, moving }))
 }
 
-/** What the greeting says under it: the setup, the background at work, or the usual question. */
+/** What the greeting says under it: the setup, or the usual question. */
 function subtitle(state: State) {
   if (state.info.mode === 'setup') return t("home.connect.a.model.to.get.started")
-  if (state.followups.state?.running) return t("home.i.ll.review.your.to.dos.in")
   return t("home.what.can.i.help.you.with.today")
 }
 
@@ -44,22 +44,21 @@ function hero(state: State, now: number) {
 }
 
 const endOfDay = (ts: number) => new Date(ts).setHours(23, 59, 59, 999)
-const OPEN = new Set(['scheduled', 'preparing', 'ready'])
 
 /**
- * 今天: what waits for the user (drafts ready) and what will be reminded of before the day
- * ends; only on a day with something, and the way to the 后台 page.
+ * 今天: what 动态 has that is new, and the schedules that run before the day ends; only on a day with something,
+ * and the way to 动态.
  */
 export function todayCard(state: State, handlers: Handlers, now: number) {
-  const followups: readonly Untyped[] = state.followups.followups
-  const ready = followups.filter((f) => f.status === 'ready').length
-  const later = followups.filter((f) => OPEN.has(f.status) && f.status !== 'ready' && f.remindAt && f.remindAt > now && f.remindAt <= endOfDay(now)).length
+  const { fresh, next } = feedGroups(state)
+  const ready = fresh.length
+  const later = next.filter((schedule) => schedule.status === 'active' && Date.parse(schedule.nextAt) <= endOfDay(now)).length
   if (!ready && !later) return null
   const parts = [ready ? t("home.ready", { ready: ready }) : null, later ? t("home.reminders.today", { later: later }) : null].filter(Boolean)
   return h('section', { class: 'home-card home-today', 'aria-label': t("selectors.today") },
     h('div', { class: 'home-card-copy' },
       h('h2', { class: 'setup-title', text: t("selectors.today") }),
-      h('p', { class: 'setup-body', text: t("home.nothing.has.been.acted.on.waiting.for", { value1: parts.join(' · ') }) })),
+      h('p', { class: 'setup-body', text: parts.join(' · ') })),
     h('button', { class: 'btn btn-accent btn-small', type: 'button', text: t("home.take.a.look"), onClick: () => handlers.openFeed() }))
 }
 

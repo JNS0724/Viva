@@ -22,11 +22,11 @@ const modelOptions = (currentValue) => [{
 const MODEL_OPTIONS = modelOptions('v4-flash')
 
 test('a new topic without MCP does not wait for old cleanup; late updates and permissions stay detached', { timeout: 5000 }, async t => {
-  let releaseClose, serverConnection, runtime, created = 0, cancelled = 0
+  let releaseClose, serverConnection, created = 0, cancelled = 0
   const events = [], timings = []
   const closeGate = new Promise(resolve => { releaseClose = resolve })
   const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: e => events.push(e), onTiming: s => timings.push(s),
-    spawnFn: () => runtime = fakeDsh(conn => {
+    spawnFn: () => fakeDsh(conn => {
       serverConnection = conn
       return { ...scriptedAgent([])(conn),
         async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
@@ -43,11 +43,7 @@ test('a new topic without MCP does not wait for old cleanup; late updates and pe
   await serverConnection.sessionUpdate({ sessionId: old.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } } })
   const decision = await serverConnection.requestPermission({ sessionId: old.sessionId, toolCall: { toolCallId: 'old', title: 'old' }, options: [] })
   assert.equal(decision.outcome.outcome, 'cancelled')
-  const proposal = { title: 'later', ask: 'prepare a draft', remindAt: 'tomorrow' }
-  runtime.emit('message', { type: 'followup_propose', id: 'stale', sessionId: old.sessionId, proposal })
-  assert.equal(events.length, 0)
-  runtime.emit('message', { type: 'followup_propose', id: 'current', sessionId: next.sessionId, proposal })
-  assert.equal(events[0]?.proposalId, 'current')
+  assert.equal(events.length, 0, 'what the old session says reaches nothing')
   assert.ok(timings.some(s => s.stage === 'session.switch' && s.ok))
   assert.equal(timings.some(s => s.stage === 'session.close'), false, 'switch finished before cleanup')
 })

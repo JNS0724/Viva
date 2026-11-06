@@ -4,7 +4,7 @@
 # Viva
 
 **A desktop AI assistant that follows up.**<br>
-It remembers what you mention, prepares work while you are away, and asks before taking action.
+It remembers what you mention, does it when it is due and brings the result to Activity, and asks before taking action.
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -15,45 +15,38 @@ It remembers what you mention, prepares work while you are away, and asks before
 
 [Download](https://github.com/JNS0724/Viva/releases) · [Features](docs/features.md) · [Development](docs/development.md)
 
-<img src="docs/images/demo.gif" width="880" alt="Follow-up flow: request a weekly report, approve a follow-up card, choose preparation windows, then review and continue with the draft">
+<img src="docs/images/demo.gif" width="880" alt="Schedule flow: mention a weekly report, approve the schedule card, see what is coming up and what came back in Activity, then continue in chat">
 
-<sub>Real app recording: ask → review a follow-up → approve → draft while idle → continue.</sub>
+<sub>Real app recording: ask → review a schedule → approve → it runs when due and lands in Activity → continue in chat.</sub>
 </div>
 
 > Viva is a personal project, not an official DeepSeek product. It uses the open-source [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). Connect DeepSeek or models with OpenAI-compatible or Anthropic-compatible APIs.
 >
-> Existing demonstration images and video show the Chinese interface. Settings → Language changes the interface independently of your conversation language.
-
-<a id="40-秒看懂-viva"></a>
-## Viva in 40 seconds
-
-https://github.com/user-attachments/assets/14a56fd5-5b57-40f5-b02c-e2868b5dbf91
+> Existing demonstration images show the Chinese interface. Settings → Language changes the interface independently of your conversation language.
 
 ## Why Viva?
 
 Most assistants wait for a request. Work often requires remembering things you mention and then forget: “the weekly report is due Friday” or “the contract expires tomorrow.”
 
-- **Proactive:** identifies possible follow-ups in conversations and incoming messages, then asks whether you want them tracked.
-- **Within your boundaries:** follows up only after approval. Background preparation reads and drafts; you send emails and messages yourself.
-- **Considerate:** prepares while you are away and brings things up during a break, at most three times daily.
+- **Proactive:** hears what you will need later in a conversation, then asks whether to schedule it.
+- **Within your boundaries:** schedules only what you approve. A scheduled run can look things up but not change anything; you send emails and messages yourself.
+- **Just ask:** schedule, change, pause, or delete by saying so in the conversation.
 
 ## Highlights
 
-### Would you like me to follow up?
+### Shall I schedule it?
 
-Say “My weekly report is due before I leave on Friday; help me draft it then.” A card shows when preparation will happen, when you will be reminded, and which files will be read. Nothing is scheduled until you click **Follow up**. The model cannot create, change, or delete follow-ups itself.
+Say “My weekly report is due before I leave on Friday; help me draft it then.” The model writes what to do as a prompt, and a card shows when it runs and what it will do. Nothing is saved until you click **Schedule**. Times can be once, daily, weekly, or cron. To change, pause, or delete one later, just say so in the conversation.
 
-| Review the proposal | Review prepared work |
+| Review the proposal | What came back |
 |---|---|
-| ![Follow-up card with preparation time, reminder time, and files to read](docs/images/followup-card.png) | ![Background page with a draft and Continue, Run in background, and Dismiss actions](docs/images/background.png) |
+| ![Schedule card: weekly report, every Friday at 16:00, draft this week's report from last week's template](docs/images/schedule-card.png) | ![Activity page with New, Coming up and Seen on the left, and a result with Continue in chat and Not needed](docs/images/feed-item.png) |
 
-### Read-only background preparation
+### Runs read-only when due, results in Activity
 
-Choose three, two, or one windows daily, or customize them separately for weekdays and weekends. While you are not using the computer, Viva prepares follow-ups together. When you return, it finishes the current item and stops.
+When it is due, the prompt runs in a session of its own that may **only use look-up tools**, on files in the workspace only. Whatever permission level you picked, writing files, running commands, and sending messages are refused, without asking you, since nobody is there. The answer becomes an item in Activity, with a notification; the Activity button in the title bar counts what is new. Runs missed while the computer slept or Viva was closed happen at the next launch, once per due time.
 
-Preparation is **one model call without tools**. The app reads materials and labels them as data; the model can only return a draft. A file saying “delete everything” cannot give this call permission or tools to delete files.
-
-![Preparation settings: daily windows, next run, calls today, and missed deadlines](docs/images/prepare-settings.png)
+Activity is separate from Background: Background holds the tasks you hand over; Activity holds what the app brings on its own.
 
 ### Review actions before they run
 
@@ -67,14 +60,13 @@ Confirmation cards explain actions that require approval. Choose **Read only**, 
 |---|---|
 | ![Answer containing tables and task lists](docs/images/chat.png) | ![Workspace tree and a Markdown file preview](docs/images/files.png) |
 
-Closing the window leaves Viva in the tray. The desktop island shows work, approvals, and prepared drafts. Press `⌘⇧Space` on macOS or `Ctrl+Shift+Space` on Windows from any app to ask a question, or drop files onto her.
+Closing the window leaves Viva in the tray. The desktop island shows work and approvals; the tray menu counts what is new in Activity. Press `⌘⇧Space` on macOS or `Ctrl+Shift+Space` on Windows from any app to ask a question, or drop files onto her.
 
 ![Desktop island with an inline approval and an input opened by the global shortcut](docs/images/desk-island.png)
 
 ### More
 
-- **Today:** the first time you return each day, get one summary of drafts and reminders.
-- **Watch a file:** after ten quiet minutes following a change, preparation is queued for the next window.
+- **Today:** the home page's Today card counts what is new in Activity and the schedules still to run today; click it to open Activity.
 - **Remember you:** say “Remember…” or let Viva learn in conversation. View, edit, delete, or restore memories in About you.
 - **Connect tools through conversation:** ask to connect GitHub or save a workflow as a skill. Secrets go in a dedicated card, are encrypted locally, and are not given to the model.
 - **Ask when uncertain:** if a missing detail changes the answer, the assistant asks instead of guessing.
@@ -84,14 +76,14 @@ Closing the window leaves Viva in the tray. The desktop island shows work, appro
 
 ```mermaid
 flowchart LR
-  A["Conversation"] --> P{"Follow up?"}
-  P -->|You approve| S["Scheduled"]
-  S -->|Your windows, while idle; no tools| R["Ready for review"]
-  R -->|During a break, up to 3 times daily| N["Reminder"]
-  N -->|Continue| C["Draft in input; you review and send"]
+  A["Conversation"] --> P{"Schedule it?"}
+  P -->|You approve| S["Coming up"]
+  S -->|When due, its own session; read-only tools| R["New in Activity"]
+  R -->|Notification| N["You open it"]
+  N -->|Continue in chat| C["In the input; you review and send"]
 ```
 
-Embedded dsh powers conversations over ACP with Electron’s main process. Memory, permissions, and follow-ups are dsh plugins; Viva does not modify dsh. See [System design](docs/system-design.md) and [Features](docs/features.md).
+Embedded dsh powers conversations over ACP with Electron’s main process. Memory, permissions, and schedules are dsh plugins; Viva does not modify dsh. Schedule times use dsh's `dsh-schedule`. See [System design](docs/system-design.md) and [Features](docs/features.md).
 
 <a id="下载安装"></a>
 ## Download and install
@@ -112,15 +104,15 @@ Installers are unsigned. First launch may require an extra step:
 
 1. Open Connect a model and enter a [DeepSeek API key](https://platform.deepseek.com/api_keys), or add another provider in Settings.
 2. Ask for help, such as summarizing weekly reports. Review approval cards before allowing actions.
-3. Mention a future task, accept its follow-up card, and choose preparation windows.
+3. Mention a future task and click **Schedule** on its card. When it is due, the result appears in Activity.
 5. Choose Follow system, 简体中文, or English in Settings → Language. Existing profiles retain Chinese on upgrade. Switching language does not translate history or restart the assistant.
 
 ## Privacy and safety
 
 - **Encrypted keys:** macOS Keychain or Windows DPAPI encrypts keys locally; the UI shows only the last four characters.
 - **Draft, never send:** sending email or messages is blocked; you send the prepared content yourself.
-- **Read-only preparation:** preparation has no tools. Conversation and file contents are data.
-- **Local data:** conversations, memories, and follow-ups stay locally. Viva has no server. Model calls, network tools, and connected services use the network. Conversation history is plaintext locally.
+- **Read-only schedules:** a scheduled run may only use look-up tools on workspace files; everything else is refused.
+- **Local data:** conversations, memories, schedules, and Activity stay locally. Viva has no server. Model calls, network tools, and connected services use the network. Conversation history is plaintext locally.
 
 ## Run from source
 

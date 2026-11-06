@@ -16,7 +16,6 @@ const FILE_VERSION = 1
  * permission: what the assistant may do without asking (plugins/permission; checked where it is set);
  * dshImportDir: the dsh folder MCP servers were last imported from when it was not the default one;
  * openAtLogin: Viva starts with the computer, in the tray (off by default; main.ts setOpenAtLogin);
- * prepareSchedule: background preparation's windows (prepare-schedule.ts checks what is read).
  */
 export interface Preferences {
   language: Language
@@ -28,7 +27,6 @@ export interface Preferences {
   permission: string
   dshImportDir: string
   openAtLogin: boolean
-  prepareSchedule: any
 }
 
 const DEFAULTS: Readonly<Preferences> = Object.freeze({
@@ -41,7 +39,6 @@ const DEFAULTS: Readonly<Preferences> = Object.freeze({
   permission: 'workspace-write',
   dshImportDir: '',
   openAtLogin: false,
-  prepareSchedule: Object.freeze({}),
 })
 
 export function createPreferences({ file, onError = () => {} }: { file: string, onError?: (err: Error) => void }) {

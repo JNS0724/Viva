@@ -69,7 +69,7 @@ async function start(message: StartMessage) {
       stop: () => backend.stop(),
       'agent-pid': () => backend.agentPid(),
       since: (seq) => backend.since(Number(seq)),
-      'automation.seed-prepared': (item) => seedPrepared(message.automation, backend, item),
+      'automation.seed-feed': (item) => seedFeed(message.automation, backend, item),
       close: () => { closing ??= shutdown() },
     },
   })
@@ -89,16 +89,12 @@ async function start(message: StartMessage) {
   reply({ type: 'ready', port, channels: [...channels].map(([channel, { kind }]) => ({ channel, kind })), locale: getLocale() })
 }
 
-/** A prepared follow-up for an automation client (smoke tests' showcase); refused outside automation. */
-function seedPrepared(automation: boolean, backend: ReturnType<typeof createBackend>, raw: unknown) {
+/** An item in 动态 for an automation client (smoke tests' showcase); refused outside automation. */
+function seedFeed(automation: boolean, backend: ReturnType<typeof createBackend>, raw: unknown) {
   if (!automation) throw new Error('only for automation')
-  const item = raw as { title: string, ask: string, prepareBy: number, draft: string }
-  const followups = backend.followups()
-  if (!followups) throw new Error('Followups service is unavailable')
-  const added = followups.store.add({ title: item.title, ask: item.ask, origin: { kind: 'manual' }, prepareBy: item.prepareBy })
-  followups.store.moveStatus(added.id, 'scheduled', 'preparing')
-  followups.store.finishPreparing(added.id, item.draft, [])
-  followups.notifier.refresh()
+  const { title, body } = (raw ?? {}) as { title?: unknown, body?: unknown }
+  if (typeof title !== 'string' || typeof body !== 'string') throw new Error('an item needs a title and a body')
+  backend.seedFeed({ title, body })
 }
 
 process.once('message', (raw) => {

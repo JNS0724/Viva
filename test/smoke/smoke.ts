@@ -10,7 +10,7 @@ import { checkPermission } from './smoke-permission.ts'
 import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { checkMemory } from './smoke-memory.ts'
 import { checkResume } from './smoke-tasks.ts'
-import { checkFollowups } from './smoke-followups.ts'
+import { checkSchedules } from './smoke-schedules.ts'
 import { runLive } from './live.ts'
 import { checkTimeline } from './smoke-timeline.ts'
 import { checkPerf } from './smoke-perf.ts'
@@ -526,7 +526,7 @@ export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePha
       problems.push(...await checkStreamMarkdown(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
-    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkFollowups(win, outDir, hooks))
+    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkSchedules(win, outDir))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else if (smokePhase === 'live' || smokePhase === 'live-resume') problems.push(...await runLive(win, outDir, smokePhase, hooks))
     else if (smokePhase === 'timeline') problems.push(...await checkTimeline(win, outDir))
