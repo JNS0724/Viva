@@ -942,6 +942,7 @@ export const zhCN = {
   "main.schedules.proposed": "已用卡片提出，用户在卡片上同意后才会保存。用一句话告诉用户，然后结束这一轮。",
   "main.schedules.proposal.gone": "这个提议已经失效（Viva 重启过），请在对话里重新提一次。",
   "main.schedules.not.found": "没有这个定时任务，或者它已经结束了。",
+  "main.schedule-runs.folder.gone": "这个定时要读的文件夹 {cwd} 已经不在了。",
   "main.schedule-runs.origin": "定时任务",
   "main.schedule-runs.failed": "这次定时任务试了几次都没做成：{value1}",
   "main.unattended-runs.timed.out": "运行太久，已经停下。",

@@ -1,6 +1,6 @@
 import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
-import { createUnattendedRuns, type TaskEvent } from './unattended-runs.ts'
+import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
 import { FEED_WRITES, openFeedStore, type FeedItem, type FeedStore } from './feed-store.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -55,7 +55,7 @@ import { createEventCore, type EventCore, type Signal } from './event-core.ts'
 import { createTaskSignals, taskEventOf } from './task-signals.ts'
 import { type Apply, journaled } from './journal.ts'
 import { commandIpc } from './commands.ts'
-import type { HostCapabilities, HostEvent } from './host.ts'
+import type { HostCapabilities, HostEvent, Notice } from './host.ts'
 
 /**
  * The backend: everything of the app that is not the desktop (docs/system-design.md §2): the stores and
@@ -75,6 +75,8 @@ const QUIT_WAIT_MS = 5_000
 const CRASH_WINDOW_MS = 10 * 60_000
 /** How much of a 动态 item a notification shows. */
 const NOTICE_BODY_CHARS = 200
+/** The effects queue's kind for a new 动态 item's notification. */
+const FEED_NOTICE = 'feed-notice'
 /** How many 动态 items the window is given, the latest first. */
 const FEED_LISTED = 100
 
@@ -417,7 +419,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
     if (request.op.startsWith('schedule_')) {
       if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-      return schedules.act(request as ScheduleAction, conversation.id)
+      return schedules.act(request as ScheduleAction, conversation.id, workDirNow() ?? '')
     }
     const tasks = requireTasks().agent
     if (request.op !== 'start' && request.op !== 'stop' && request.op !== 'message') throw new Error(t('main.task-registry.unknown.task.query.operation'))
@@ -842,10 +844,16 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     emitToRenderer({ type: 'feed_changed' })
   }
 
-  /** A new item in 动态: a notification (clicked, the window opens on 动态), and the window shows it. */
-  function feedDelivered(item: FeedItem) {
-    host.notify({ title: item.title, body: item.body.slice(0, NOTICE_BODY_CHARS) })
-    feedChanged()
+  /** A new item in 动态: its notification queued in the change that made it, so a quit before it goes loses nothing. */
+  function queueFeedNotice(item: FeedItem) {
+    if (!effects) throw new Error('the effects queue is not open yet')
+    effects.queue(FEED_NOTICE, item.id, { title: item.title, body: item.body.slice(0, NOTICE_BODY_CHARS) })
+  }
+
+  /** A schedule's prompt run in its own folder; one whose folder is gone fails, saying so. */
+  function runSchedule(prompt: string, cwd: string): Promise<RunResult> {
+    if (!isFolder(cwd)) return Promise.resolve({ ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) })
+    return unattended.run(prompt, cwd)
   }
 
   function registerPersonalIpc(config: Config) {
@@ -896,8 +904,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       apply: applyChange,
       store: schedules.store,
       feed: items,
-      run: unattended.run,
-      delivered: feedDelivered,
+      run: runSchedule,
+      keep: queueFeedNotice,
+      // Kept: its notice goes (a notification, clicked, opens 动态), and the window shows it.
+      delivered: () => {
+        wakeEffects()
+        feedChanged()
+      },
       changed: schedulesChanged,
       onError: (err) => console.error('[schedules]', err instanceof Error ? err.message : String(err)),
     })
@@ -970,6 +983,11 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     taskStore = createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) })
     effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => console.error('[effects]', err instanceof Error ? err.message : String(err)) })
     effects.runs(REPORT, taskReports)
+    // A new item's notification (schedule-runs.ts): handed to the desktop, done.
+    effects.runs(FEED_NOTICE, async (queued) => {
+      for (const { payload } of queued) host.notify(payload as Notice)
+      return new Map(queued.map((effect) => [effect.key, 'done' as const]))
+    })
     taskRuntime = createTaskRuntime({
       db: historyDb,
       store: taskStore,

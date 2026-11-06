@@ -25,6 +25,8 @@ export interface Schedule {
   status: ScheduleStatus
   /** The conversation it was made in, for where its results came from. */
   conversationId: string | null
+  /** The working folder it was made in: its runs read there, whatever folder the window is on by then. */
+  cwd: string
   createdAt: number
 }
 
@@ -37,6 +39,7 @@ const SCHEMA = `
     record TEXT NOT NULL,
     status TEXT NOT NULL,
     conversation_id TEXT,
+    cwd TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
 `
@@ -47,6 +50,7 @@ const scheduleOf = (row: Row): Schedule => ({
   record: JSON.parse(String(row.record)) as ScheduleRecord,
   status: String(row.status) as ScheduleStatus,
   conversationId: row.conversation_id === null ? null : String(row.conversation_id),
+  cwd: String(row.cwd),
   createdAt: Number(row.created_at),
 })
 
@@ -68,11 +72,11 @@ export function openScheduleStore({ db, now = Date.now, newId = () => `s${crypto
   const write = (schedule: Schedule) => db.prepare('UPDATE schedules SET record = ?, status = ? WHERE id = ?')
     .run(JSON.stringify(schedule.record), schedule.status, schedule.id)
 
-  function create(input: { title: string, prompt: string, rule: ScheduleRule, conversationId?: string | null }): Schedule {
+  function create(input: { title: string, prompt: string, rule: ScheduleRule, cwd: string, conversationId?: string | null }): Schedule {
     const id = newId()
     const record = recordOf(id, input.title, input.prompt, input.rule, now())
-    db.prepare('INSERT INTO schedules (id, record, status, conversation_id, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, JSON.stringify(record), 'active', input.conversationId ?? null, now())
+    db.prepare('INSERT INTO schedules (id, record, status, conversation_id, cwd, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, JSON.stringify(record), 'active', input.conversationId ?? null, input.cwd, now())
     return get(id) as Schedule
   }
 

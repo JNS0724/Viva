@@ -553,9 +553,10 @@ export function createAcpBridge({
    * as it is, or from before the turn running in it (named by its `words`), so it knows what was said; with
    * nothing said yet, in a fresh session. promptTask then asks it.
    */
-  async function startTask({ words, afresh = false }: { words?: string, afresh?: boolean } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
+  async function startTask({ words, afresh = false, cwd: taskCwd }: { words?: string, afresh?: boolean, cwd?: string } = {}): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
     if (!sessionId) return { ok: false, reason: 'missing' }
-    const originCwd = sessionCwd
+    // A fresh task may be given its own working folder (a schedule's, kept from where it was made).
+    const originCwd = afresh && taskCwd ? taskCwd : sessionCwd
     const originConfig = configNow
     // A task the agent starts begins afresh from its brief; 后台做 goes on from the conversation as it is.
     const forked = afresh ? { ok: false as const } : await forking.fork(words ? { words, occurrence: 0 } : {})
@@ -580,11 +581,11 @@ export function createAcpBridge({
   }
 
   /**
-   * A schedule's run (schedule-runs.ts): a fresh session, like a task the agent starts, marked unattended before
+   * A schedule's run (schedule-runs.ts): a fresh session in the schedule's folder, like a task the agent starts, marked unattended before
    * anything is asked of it, so it may only look things up and asks the user nothing. Not marked, it is closed.
    */
-  async function startReadOnlyTask(): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
-    const started = await startTask({ afresh: true })
+  async function startReadOnlyTask({ cwd: taskCwd }: { cwd: string }): Promise<{ ok: boolean, reason?: string, taskId?: string }> {
+    const started = await startTask({ afresh: true, cwd: taskCwd })
     if (!started.ok || !started.taskId) return started
     unattended.add(started.taskId)
     if (await readOnlyDesk.mark(started.taskId)) return started

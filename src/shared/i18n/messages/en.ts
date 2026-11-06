@@ -941,6 +941,7 @@ export const en = {
   "main.schedules.proposed": "Proposed on a card; it is kept only once the user says yes there. Tell the user in one sentence and end the turn.",
   "main.schedules.proposal.gone": "This proposal is no longer waiting (Viva restarted). Ask again in the conversation.",
   "main.schedules.not.found": "No such schedule, or it has ended.",
+  "main.schedule-runs.folder.gone": "The folder this schedule reads, {cwd}, is no longer there.",
   "main.schedule-runs.origin": "Schedule",
   "main.schedule-runs.failed": "This scheduled run did not finish after several tries: {value1}",
   "main.unattended-runs.timed.out": "The run took too long and was stopped.",

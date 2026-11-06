@@ -23,7 +23,7 @@ test('the app database starts with its tables, and the schedules and 动态 open
   const { app } = appDbIn(t)
   const store = openScheduleStore({ db: app.db })
   const feed = openFeedStore({ db: app.db })
-  createScheduleRuns({ db: app.db, store, feed, run: async () => ({ ok: true, text: '' }), delivered: () => {} }).close()
+  createScheduleRuns({ db: app.db, store, feed, run: async () => ({ ok: true, text: '' }), keep: () => {}, delivered: () => {} }).close()
   const tables = (app.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name)
   for (const name of ['app_events', 'meta', 'schedules', 'schedule_runs', 'feed_items']) assert.ok(tables.includes(name), name)
   app.setMeta('k', 'v')

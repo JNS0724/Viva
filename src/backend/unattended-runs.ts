@@ -14,7 +14,7 @@ export type RunResult =
   | { ok: false, problem: string, unavailable?: boolean }
 
 export interface UnattendedAgent {
-  startReadOnlyTask: () => Promise<{ ok: boolean, reason?: string, taskId?: string }>
+  startReadOnlyTask: (where: { cwd: string }) => Promise<{ ok: boolean, reason?: string, taskId?: string }>
   promptTask: (taskId: string, text: string) => unknown
   closeTask: (taskId: string) => unknown
 }
@@ -55,10 +55,11 @@ export function createUnattendedRuns({ agent, timeoutMs = RUN_TIMEOUT_MS, later 
     if (event.type === 'task_end') running.finish(resultOf(running.transcript, event))
   }
 
-  async function run(prompt: string): Promise<RunResult> {
+  /** `prompt` run in `cwd`, which the caller has checked is there. */
+  async function run(prompt: string, cwd: string): Promise<RunResult> {
     const now = agent()
     if (!now) return UNAVAILABLE
-    const started = await now.startReadOnlyTask()
+    const started = await now.startReadOnlyTask({ cwd })
     if (!started.ok || !started.taskId) return UNAVAILABLE
     const taskId = started.taskId
     const result = await new Promise<RunResult>((resolve) => {

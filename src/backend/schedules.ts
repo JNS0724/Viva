@@ -8,7 +8,7 @@ import type { ScheduleAction } from './tasks-channel.ts'
  * Schedules as the model and the user handle them (system-design §12.2), natural language first: the model proposes,
  * lists, changes, pauses and deletes them with its tools (plugins/tasks, schedule_*); one proposed is kept only once
  * the user says yes on its card in the window (`schedule_propose`, then `accept`). What runs them when they are due
- * is the timer's (schedule-timer.ts).
+ * is schedule-runs.ts's.
  */
 export interface ScheduleProposal { proposalId: string, title: string, prompt: string, rule: ScheduleRule, firstAt: string }
 /** A schedule as the model and the window see it. */
@@ -36,13 +36,13 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   const opened = openScheduleStore({ db, now })
   const store = apply ? journaled(opened, 'schedule', SCHEDULE_WRITES, apply) : opened
   /** Proposals waiting on the user's yes, by id: kept in memory, gone with the app (the card then says so). */
-  let proposals = new Map<string, ScheduleProposal & { conversationId: string | null }>()
+  let proposals = new Map<string, ScheduleProposal & { conversationId: string | null, cwd: string }>()
 
-  function propose(action: Extract<ScheduleAction, { op: 'schedule_create' }>, conversationId: string | null) {
+  function propose(action: Extract<ScheduleAction, { op: 'schedule_create' }>, conversationId: string | null, cwd: string) {
     const rule = action.rule as unknown as ScheduleRule
     const record = store.preview({ title: action.title, prompt: action.prompt, rule })
     const proposal: ScheduleProposal = { proposalId: newId(), title: action.title, prompt: action.prompt, rule, firstAt: record.scheduledAt }
-    proposals = new Map([...proposals, [proposal.proposalId, { ...proposal, conversationId }]])
+    proposals = new Map([...proposals, [proposal.proposalId, { ...proposal, conversationId, cwd }]])
     emit({ type: 'schedule_propose', proposal })
     return { proposed: true, firstAt: record.scheduledAt, note: t('main.schedules.proposed') }
   }
@@ -51,8 +51,9 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   function accept(proposalId: string): ScheduleView {
     const proposal = proposals.get(proposalId)
     if (!proposal) throw new Error(t('main.schedules.proposal.gone'))
+    // Let go only once kept: a save that fails leaves the card to be answered again.
+    const schedule = store.create({ title: proposal.title, prompt: proposal.prompt, rule: proposal.rule, cwd: proposal.cwd, conversationId: proposal.conversationId })
     proposals = new Map([...proposals].filter(([id]) => id !== proposalId))
-    const schedule = store.create({ title: proposal.title, prompt: proposal.prompt, rule: proposal.rule, conversationId: proposal.conversationId })
     changed()
     return viewOf(schedule)
   }
@@ -78,9 +79,9 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
     return { deleted }
   }
 
-  /** What the model asked (tasks-channel.ts ScheduleAction), from the conversation on screen. */
-  function act(action: ScheduleAction, conversationId: string | null): unknown {
-    if (action.op === 'schedule_create') return propose(action, conversationId)
+  /** What the model asked (tasks-channel.ts ScheduleAction), from the conversation on screen, in its working folder. */
+  function act(action: ScheduleAction, conversationId: string | null, cwd: string): unknown {
+    if (action.op === 'schedule_create') return propose(action, conversationId, cwd)
     if (action.op === 'schedule_list') return list()
     if (action.op === 'schedule_delete') return remove(action.id)
     const { op: _op, id, rule, ...rest } = action
