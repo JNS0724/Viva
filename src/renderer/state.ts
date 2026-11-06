@@ -14,6 +14,7 @@ import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
 import { WAITS_ACTIONS } from './waits-state.ts'
 import { FOLLOWUP_ACTIONS, initialFollowups } from './followup-state.ts'
+import { FEED_ACTIONS, initialFeed } from './feed-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
@@ -64,6 +65,7 @@ export const initialState = Object.freeze({
   extensions: initialExtensions,
   /** Follow-ups and background preparation (followup-state.ts). */
   followups: initialFollowups,
+  feed: initialFeed,
   /** Cards for the follow-ups the model proposed in this conversation (followup-state.ts ProposalCard). */
   proposals: [] as Untyped[],
   models: initialModels,
@@ -279,6 +281,7 @@ const ACTION_HANDLERS: Record<string, Reducer> = {
   ...SECRET_ACTIONS,
   ...WAITS_ACTIONS,
   ...FOLLOWUP_ACTIONS,
+  ...FEED_ACTIONS,
 }
 
 export function reduce(state: State, action: Action): State {
