@@ -52,15 +52,13 @@ const SCHEMA = `
     remind_at INTEGER,
     prepare_by INTEGER,
     files TEXT,
-    watch_path TEXT,
     status TEXT NOT NULL,
     draft TEXT,
     draft_at INTEGER,
     read_files TEXT,
     reminded_at INTEGER,
     late_from INTEGER,
-    cue TEXT,
-    watch_mtime INTEGER
+    cue TEXT
   );
   CREATE INDEX IF NOT EXISTS followups_status ON followups (status);
   CREATE TABLE IF NOT EXISTS notices (
@@ -138,37 +136,12 @@ function checkNew(input: NewFollowup) {
  * The follow-ups' tables, in their own file (`file`), or in a database the caller holds (`db`, the backend's app
  * database, src/backend/app-db.ts), which closing the store leaves open.
  */
-/**
- * Follow-ups no longer watch a file (system-design §12.2), once, as the store opens: one that only watched one has
- * nothing left to wait for and is dismissed; one with a time keeps the file among what it reads when prepared. The
- * path is then cleared, so this happens once; the watch_path and watch_mtime columns stay, unread, for older files.
- */
-function forgetWatchedFiles(db: DatabaseSync): void {
-  const rows = db.prepare('SELECT id, files, watch_path, remind_at, prepare_by, status FROM followups WHERE watch_path IS NOT NULL').all() as Row[]
-  if (!rows.length) return
-  const keep = db.prepare('UPDATE followups SET files = ?, watch_path = NULL WHERE id = ?')
-  const dismiss = db.prepare(`UPDATE followups SET status = 'dismissed', watch_path = NULL WHERE id = ?`)
-  db.exec('BEGIN')
-  try {
-    for (const row of rows) {
-      const timed = row.remind_at !== null || row.prepare_by !== null
-      if (!timed && row.status === 'scheduled') dismiss.run(String(row.id))
-      else keep.run(JSON.stringify([...new Set([...parseJson<string[]>(row.files, []), String(row.watch_path)])]), String(row.id))
-    }
-    db.exec('COMMIT')
-  } catch (err) {
-    db.exec('ROLLBACK')
-    throw err
-  }
-}
-
 export function openFollowupStore({ file, db: given, now = Date.now }: { file?: string, db?: DatabaseSync, now?: () => number }) {
   if (!given && !file) throw new Error('openFollowupStore needs a file or a database')
   if (!given) fs.mkdirSync(path.dirname(file!), { recursive: true })
   const db = given ?? new DatabaseSync(file!)
   if (!given) db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;')
   db.exec(SCHEMA)
-  forgetWatchedFiles(db)
 
   const get = (id: string): Followup | null => {
     const row = db.prepare('SELECT * FROM followups WHERE id = ?').get(id) as Row | undefined
@@ -178,10 +151,10 @@ export function openFollowupStore({ file, db: given, now = Date.now }: { file?: 
   function add(input: NewFollowup): Followup {
     const { title, ask } = checkNew(input)
     const id = randomUUID()
-    db.prepare(`INSERT INTO followups (id, title, ask, origin, created_at, remind_at, prepare_by, files, watch_path, status, cue)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`)
+    db.prepare(`INSERT INTO followups (id, title, ask, origin, created_at, remind_at, prepare_by, files, status, cue)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`)
       .run(id, title, ask, JSON.stringify(input.origin), now(), input.remindAt ?? null, input.prepareBy ?? null,
-        JSON.stringify(input.files ?? []), null, input.cue ?? null)
+        JSON.stringify(input.files ?? []), input.cue ?? null)
     return get(id) as Followup
   }
 

@@ -30,7 +30,7 @@ const followup = (extra = {}) => ({
 })
 const plan = (followups, extra = {}) => planNotices({ now: NOON, followups, interruptionsToday: 0, atGap: false, windowInFront: false, toldReady: new Set(), ...extra })
 
-test('a follow-up needs words and a time or a file; it is kept with where it came from', (t) => {
+test('a follow-up needs words and a time; it is kept with where it came from', (t) => {
   const { store } = setup(t)
   assert.throws(() => store.add({ title: '周报', ask: '起草', origin: chat }), /提醒时间、准备时间或要看的文件/)
   assert.throws(() => store.add({ title: ' ', ask: '起草', origin: chat, remindAt: NOON }), /标题/)
