@@ -224,6 +224,8 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   task: ({ taskId }) => handlers.openTasks(taskId),
   /** The count at the island's tail: the 后台 page. */
   tasks: () => handlers.openTasks(),
+  /** A follow-up's notification, or the tray's count: the 动态 page (system-design §12.2). */
+  feed: () => dispatch({ type: 'feed_open' }),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
@@ -793,7 +795,7 @@ const handlers = {
 /** Each page of the hub opens with what it needs loaded (the settings, the memories) or its field focused. */
 const HUB_OPENERS: Readonly<Record<string, () => unknown>> = {
   search: () => handlers.openSearch(),
-  // Background tasks and follow-ups: a page of its own in the same place (view/tasks-page.js).
+  // Background tasks: a page of its own in the same place (view/tasks-page.ts).
   tasks: () => handlers.openTasks(),
   profile: () => handlers.openProfile(),
   settings: () => handlers.openSettings(),

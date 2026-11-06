@@ -9,7 +9,7 @@ import { capture, finishTurn, report, run, submit, UI_WAIT_MS, until, wait, type
  * follow-up of it.
  */
 const CARD = '#thread .fu-card'
-const PAGE = '#tasks-page'
+const PAGE = '#feed-page'
 const PREPARE_TIMEOUT_MS = 90_000
 const q = (selector: string) => `document.querySelector(${JSON.stringify(selector)})`
 const clickText = (scope: string, text: string) =>
@@ -32,8 +32,8 @@ export async function checkFollowups(win: SmokeWindow, outDir: string, hooks: Sm
   await run(win, `${q(`${CARD} .fu-preset`)}.click()`)
   await until(win, anyText(`${CARD} .fu-note`, '每天三次'), 'the windows chosen')
 
-  await hooks.openTasksPage()
-  await until(win, q(`${PAGE} .fu-row[data-status="scheduled"]`), 'the follow-up on the 后台 page, scheduled')
+  await run(win, `${q('#open-feed')}.click()`)
+  await until(win, q(`${PAGE} .fu-row[data-status="scheduled"]`), 'the follow-up on the 动态 page, coming up')
   await run(win, `${q(`${PAGE} .fu-row[data-status="scheduled"]`)}.click()`)
   await until(win, q(`${PAGE} .fu-main`), 'its detail')
   await run(win, clickText(`${PAGE} .fu-main`, '现在就准备'))
@@ -43,8 +43,8 @@ export async function checkFollowups(win: SmokeWindow, outDir: string, hooks: Sm
   if (!draft.includes('草稿（工具 0 个）')) failures.push(`the draft should be written with no tools offered: ${draft.slice(0, 120)}`)
   await capture(win, outDir, 'followup-ready')
 
-  await run(win, clickText(`${PAGE} .fu-main`, '接着做'))
-  await until(win, `document.getElementById('composer-input').value.startsWith('接着做「周报」')`, '接着做 puts the draft in the input')
+  await run(win, clickText(`${PAGE} .fu-main`, '在对话里继续'))
+  await until(win, `document.getElementById('composer-input').value.startsWith('接着做「周报」')`, '在对话里继续 puts the draft in the input')
   await capture(win, outDir, 'followup-continue')
   await run(win, `(() => { const input = document.getElementById('composer-input'); input.value = ''; input.dispatchEvent(new Event('input')) })()`)
   return failures

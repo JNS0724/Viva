@@ -115,13 +115,13 @@ function mirrorInFront() {
   mirror({ inFront: now })
 }
 
-/** The 后台 page, from a notification or the tray: the window in front, on that page. */
-function openTasksPage() {
+/** 动态, from a follow-up's notification or the tray: the window in front, on that page. */
+function openFeedPage() {
   showWindow()
-  if (win && !win.isDestroyed()) win.webContents.send('island:action', { kind: 'tasks' })
+  if (win && !win.isDestroyed()) win.webContents.send('island:action', { kind: 'feed' })
 }
 
-/** A follow-up's notice as a system notification; clicked, it opens the 后台 page. */
+/** A follow-up's notice as a system notification; clicked, it opens 动态. */
 function showNotice(notice: Notice, opened: (afterMs: number) => void) {
   // Native Windows notifications may register/update a Start-menu shortcut for
   // our app ID. Automated smoke runs must not point that shortcut at a QA binary.
@@ -136,7 +136,7 @@ function showNotice(notice: Notice, opened: (afterMs: number) => void) {
     done()
     // How long it took the user to open it: the week of self-use asks whether notices come at the right time.
     opened(Date.now() - shownAt)
-    openTasksPage()
+    openFeedPage()
   })
   shown.on('close', done)
   // Some systems never say a notification closed: let it go after a while.
@@ -319,7 +319,7 @@ function showTray() {
     platform: process.platform,
     onOpen: showWindow,
     onQuit: () => app.quit(),
-    onPending: openTasksPage,
+    onPending: openFeedPage,
     pending: pendingFollowups,
   })
 }

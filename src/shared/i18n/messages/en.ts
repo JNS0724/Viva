@@ -1064,7 +1064,7 @@ export const en = {
   "handoff.task.connecting": "The assistant is connecting. Retry when connected; your request has been kept.",
   "handoff.prepare.waiting": "Waiting: {reason}. Preparation will continue when this clears.",
   "handoff.prepare.reason": "Waiting because: {reason}",
-  "handoff.prepare.continue.scope": "Continue puts the draft in the input for you to review and send. Background preparation runs no tools; tools in the continued conversation follow your current permissions.",
+  "handoff.prepare.continue.scope": "Continue in chat puts the draft in the input for you to review and send. Background preparation runs no tools; tools in the continued conversation follow your current permissions.",
   "handoff.approval.reason": "Description supplied by the tool: {reason}",
   "handoff.approval.command.scope": "A command can read or write files, access the network, or start programs. Review the complete command before deciding.",
   "handoff.approval.parameters": "Complete operation arguments",

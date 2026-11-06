@@ -9,7 +9,7 @@ import { run, until, UI_WAIT_MS, wait, type SmokeWindow } from './smoke-kit.ts'
  * reads come to nothing; a file to watch can be proposed too.
  */
 const LAST_CARD = `[...document.querySelectorAll('#thread .fu-card[aria-label="要我跟进吗？"]')].at(-1)`
-const PAGE = '#tasks-page'
+const PAGE = '#feed-page'
 const CARD_WAIT_MS = 30_000
 /** Preparing is one model call without tools, but a real model can take a while on a long draft. */
 const PREPARE_MS = 240_000
@@ -31,11 +31,11 @@ async function accept(win: SmokeWindow) {
   await wait(UI_WAIT_MS)
 }
 
-/** Opens the 后台 page and returns the names of its follow-ups, as shown. */
+/** Opens the 动态 page and returns the names of its follow-ups, as shown. */
 async function followupRows(ctx: LiveContext): Promise<string[]> {
   // A diagnostic read must not reopen the page and reset the item the scenario just selected.
-  if (!await run(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`)) await ctx.hooks.openTasksPage()
-  await until(ctx.win, `document.getElementById('tasks-page').dataset.open === 'true'`, 'the 后台 page')
+  if (await run(ctx.win, `document.getElementById('feed-page').hidden`)) await run(ctx.win, `document.getElementById('open-feed').click()`)
+  await until(ctx.win, `!document.getElementById('feed-page').hidden`, 'the 动态 page')
   await wait(UI_WAIT_MS)
   return run(ctx.win, `[...document.querySelectorAll('${PAGE} .fu-row')].map((row) => row.textContent)`)
 }
@@ -113,7 +113,7 @@ const followupPrepare: LiveScenario = {
     expect(draft !== null && draft.length > 40 && hasHan(draft), 'preparing should write a draft', draft && clip(draft))
     await ctx.shot('followup-draft')
     if (draft) {
-      await run(win, `[...document.querySelectorAll('${PAGE} .fu-main button')].find((b) => b.textContent === '接着做').click()`)
+      await run(win, `[...document.querySelectorAll('${PAGE} .fu-main button')].find((b) => b.textContent === '在对话里继续').click()`)
       const input = await until(win, `document.getElementById('composer-input').value || null`, '接着做 putting the draft in the input', 10_000).catch(() => '')
       expect(input.startsWith('接着做'), '接着做 should put the draft in the input', clip(input))
       await run(win, `(() => { const input = document.getElementById('composer-input'); input.value = ''; input.dispatchEvent(new Event('input')) })()`)

@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "36d3cc42ee9196867228a6235877fbf6b403a46aa117374f639e2b17333bde4b",
-      "zhHash": "4663fdc64eb52571e8189c074d69c04c6605200efa6b8c1c7b53cfb510de66cf"
+      "enHash": "275f5a8ecf2475cedda3fd93f6fcd94a270ea2551b0ff0ef6689c57363f00e5a",
+      "zhHash": "0f120ae626c3313f1d0b12cdc98a9a4b614ea8e952bc983fcec2fb10a0ed32d3"
     },
     {
       "en": "docs/live-check.md",
@@ -65,8 +65,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "714e3d9ed76b5f86ca9fd2d84f51b86c8546aa649a0e0a06411ef0f861c5e4e4",
-      "zhHash": "aac3c81cb2b32f6a92f67b77518aa15ea34a8e349f942d58c0708c853d1e357a"
+      "enHash": "578bf8525c1f7424b8f0b056b90c1020b45a0000d010f2eaffca0e48f7cca4a2",
+      "zhHash": "7e9fe4416c62683329d9185b6ef721cfdfbf7af9e9d686dcf23de8a518b30c85"
     },
     {
       "en": "docs/system-design.md",

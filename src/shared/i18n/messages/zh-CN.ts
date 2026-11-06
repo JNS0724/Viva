@@ -1065,7 +1065,7 @@ export const zhCN = {
   "handoff.task.connecting": "助手正在连接，请连接完成后重试；这次的内容已保留",
   "handoff.prepare.waiting": "正在等待：{reason}。条件满足后会继续准备。",
   "handoff.prepare.reason": "等待原因：{reason}",
-  "handoff.prepare.continue.scope": "「接着做」把草稿放进输入框，你看过再发。后台准备阶段没有执行工具；继续对话后，工具按当前权限运行。",
+  "handoff.prepare.continue.scope": "「在对话里继续」把草稿放进输入框，你看过再发。后台准备阶段没有执行工具；继续对话后，工具按当前权限运行。",
   "handoff.approval.reason": "工具提供的说明：{reason}",
   "handoff.approval.command.scope": "命令可以读写文件、访问网络或启动程序。请核对完整命令后决定。",
   "handoff.approval.parameters": "完整操作参数",

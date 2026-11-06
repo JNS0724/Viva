@@ -111,7 +111,7 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 | --- | --- |
 | 1–10 | Inside a region: column grips 6, turn rail 9, dropdowns 10 |
 | 29–30 | Menus over content and their scrims, the drawer on narrow windows |
-| 32 | Hub pages (Search · About you · Settings · Background) |
+| 32 | Hub pages (search · about you · settings · 后台 · 动态; 动态 without the sidebar) |
 | 35 | Title bar (the island unfolds over the conversation) |
 | 50 | Modal dialogs, `.overlay` |
 | 60 | Toasts, the working-directory sheet's scrim |
