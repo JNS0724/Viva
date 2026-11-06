@@ -222,7 +222,7 @@ test('materials: the ask, the conversation\'s end, the profile and named files, 
   fs.writeFileSync(binary, Buffer.from([0x89, 0x50, 0, 0, 1]))
   const followup = {
     id: 'f', title: '周报', ask: '按模板起草', origin: { kind: 'chat', conversationId: 'c1' }, createdAt: 0, remindAt: at(MONDAY, 17), prepareBy: at(MONDAY, 16),
-    files: [notes, binary, path.join(dir, 'gone.md')], watchPath: null, status: 'scheduled', draft: null, draftAt: null, readFiles: [], remindedAt: null, lateFrom: null, cue: null,
+    files: [notes, binary, path.join(dir, 'gone.md')], status: 'scheduled', draft: null, draftAt: null, readFiles: [], remindedAt: null, lateFrom: null, cue: null,
   }
   const { input, readFiles } = materialsFor(followup, {
     conversation: () => [{ role: 'user', text: '周五交周报' }, { role: 'assistant', text: '好' }],

@@ -2,14 +2,13 @@ import { type Apply, journaled } from './journal.ts'
 import { t } from '../shared/i18n/translate.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import type { PrepareCall, Prepared as PreparedText, ProposalView } from './followup-channel.ts'
-import { createFileWatch } from './file-watch.ts'
 import { createFollowupNotifier, createGapWatch } from './followup-notifier.ts'
 import { openFollowupStore, type Followup, type FollowupStore } from './followup-store.ts'
 import { registerFollowupsIpc } from './followups-ipc.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import type { Notice } from './notice-plan.ts'
 import { materialsFor, PREPARE_MAX_TOKENS, PREPARE_SYSTEM, type MaterialSources } from './prepare-materials.ts'
-import { LEAD_MS, nextWindow, scheduleOf, type PrepareSchedule } from './prepare-schedule.ts'
+import { scheduleOf, type PrepareSchedule } from './prepare-schedule.ts'
 import { createPrepareScheduler, type Prepared, type PrepareState } from './prepare-scheduler.ts'
 
 /**
@@ -52,7 +51,7 @@ export interface FollowupsDeps {
 }
 
 /** The store's writes, each a change the event core records (apply); reads go straight through. */
-const WRITES: ReadonlyArray<keyof FollowupStore & string> = Object.freeze(['add', 'setStatus', 'saveDraft', 'finishPreparing', 'moveStatus', 'markReminded', 'reschedule', 'setWatchMtime', 'rearm', 'remove', 'logNotice', 'logEvent'])
+const WRITES: ReadonlyArray<keyof FollowupStore & string> = Object.freeze(['add', 'setStatus', 'saveDraft', 'finishPreparing', 'moveStatus', 'markReminded', 'reschedule', 'remove', 'logNotice', 'logEvent'])
 export function openFollowups(deps: FollowupsDeps) {
   const store = journaled(openFollowupStore({ db: deps.db }), 'followup', WRITES, deps.apply)
   const notifier = createFollowupNotifier({
@@ -82,18 +81,6 @@ export function openFollowups(deps: FollowupsDeps) {
     ...(deps.signal ? { onTimer: () => deps.signal!('clock.prepare_window') } : {}),
   })
   const watch = createGapWatch({ idleSeconds: deps.idleSeconds, onGap: deps.signal ? () => deps.signal!('system.user_returned') : notifier.gap, onError: deps.onError })
-  // A file the user named changed and settled: prepared again in the next window.
-  const files = createFileWatch({
-    store,
-    onError: deps.onError,
-    onChanged: (followup) => {
-      const at = Date.now()
-      store.rearm(followup.id, (nextWindow(at, schedule()) ?? at) + LEAD_MS, at)
-      store.logEvent('file_changed', { id: followup.id })
-      scheduler.refresh()
-      notifier.refresh()
-    },
-  })
   registerFollowupsIpc(deps.ipcMain, {
     store,
     scheduler,
@@ -129,7 +116,6 @@ export function openFollowups(deps: FollowupsDeps) {
       scheduler.refresh()
     },
     close() {
-      files.stop()
       watch.stop()
       scheduler.stop()
       notifier.stop()

@@ -50,7 +50,7 @@ test('recall tool labels partial matches and never recovers invalidated memories
 
 test('preparation receives the accepted stage before untrusted conversation material', () => {
   const followup: Followup = { id: 'f1', title: '周报', ask: '起草周报', origin: { kind: 'chat', conversationId: 'c1' }, createdAt: 1,
-    remindAt: null, prepareBy: null, files: [], watchPath: null, watchMtime: null, status: 'scheduled', draft: null,
+    remindAt: null, prepareBy: null, files: [], status: 'scheduled', draft: null,
     draftAt: null, readFiles: [], remindedAt: null, lateFrom: null, cue: null }
   const { input } = materialsFor(followup, { conversation: () => [{ role: 'assistant', text: '是否接受这项跟进？' }], profile: () => null, now: () => 1 })
   assert.match(input, /用户已经接受[\s\S]*直接给出可用草稿/)
