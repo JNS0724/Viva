@@ -23,7 +23,7 @@ Preserve the existing shell/backend boundary, IPC argument contracts, TaskRuntim
 - `src/renderer/conversation-actions.ts`: ordinary/image questions, interjections, turn-end resend, question answers and credential responses. Depends only on a narrow API, state access, dispatch and UI callbacks; no `document` or `app.ts` dependency.
 - `src/renderer/page-elements.ts`: binds page elements once and exports `Dom`. Views no longer depend backwards on the application entry.
 - `src/backend/config-actions.ts`: MCP/skill operations requested through approved model cards. Depends on configuration storage, skill roots, trash capability and a change callback, not backend startup or the ACP process. Preparing a card writes nothing; only successful changes mark MCP for reload.
-- `test/module-boundaries.test.ts`: walks real TypeScript syntax trees, including type imports, re-exports and literal dynamic imports; rejects feature imports of composition roots and source dependency cycles. Existing backend/Electron boundary checks remain.
+- `test/module-boundaries.test.ts`: walks TypeScript/JavaScript source in `src` and `plugins` using real syntax trees, including type imports, re-exports and literal dynamic imports; rejects feature imports of composition roots and source dependency cycles. Existing backend/Electron boundary checks remain.
 
 Entry sizes become 1,041 lines in `compose.ts` and 943 in `app.ts`. File count grows, and factory assembly still imports features; neither metric alone is the objective. The useful change is that sending races and configuration operations can be tested independently without importing the executable application entry.
 

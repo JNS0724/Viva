@@ -23,7 +23,7 @@
 - `src/renderer/conversation-actions.ts`：普通问题、图片、插话、轮次结束后的重送、反问和凭据响应。只依赖窄 API、状态访问、dispatch 和 UI 回调；不依赖 `document` 或 `app.ts`。
 - `src/renderer/page-elements.ts`：一次绑定页面元素并导出 `Dom` 类型。view 不再反向依赖应用入口。
 - `src/backend/config-actions.ts`：模型通过已批准的卡片执行 MCP/技能操作。依赖配置存储、技能根目录、回收站能力和变更回调；不依赖后端启动或 ACP 进程。准备卡片不写存储，成功写入后才标记 MCP 需要重载。
-- `test/module-boundaries.test.ts`：扫描真实 TypeScript 语法树（含类型导入、重导出和字面量动态导入），禁止功能模块导入应用组装入口，并拒绝源码依赖环。现有后端/Electron 边界检查继续保留。
+- `test/module-boundaries.test.ts`：遍历 `src` 和 `plugins` 的 TypeScript/JavaScript 源码，扫描真实语法树（含类型导入、重导出和字面量动态导入），禁止功能模块导入应用组装入口，并拒绝源码依赖环。现有后端/Electron 边界检查继续保留。
 
 入口的行数变为 `compose.ts` 1,041、`app.ts` 943。总文件数会增加，工厂装配也仍需导入各功能；这些不是优化目标。实质是发送竞态和配置操作可以在独立测试中验证，修改它们不再需要导入启动整个应用的入口。
 

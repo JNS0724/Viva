@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import ts from 'typescript'
 
@@ -22,18 +23,30 @@ function imports(file: string): string[] {
   return specs.filter(s => s.startsWith('.')).map(s => path.resolve(path.dirname(file), s))
 }
 
-const files = fs.readdirSync(source, { recursive: true }).filter((f): f is string => typeof f === 'string' && /\.(ts|js)$/.test(f) && !f.endsWith('.d.ts')).map(f => path.join(source, f))
-const graph = new Map(files.map(file => [file, imports(file)]))
+function sourceFiles(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const file = path.join(dir, entry.name)
+    if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : sourceFiles(file)
+    return entry.isFile() && /\.(ts|js)$/.test(file) && !file.endsWith('.d.ts') ? [file] : []
+  })
+}
 
-test('feature modules never import the application composition roots, even for types', () => {
+const graphOf = (dirs: string[]) => new Map(dirs.flatMap(sourceFiles).map(file => [file, imports(file)]))
+const graph = graphOf([source, path.join(root, 'plugins')])
+
+function entryImports(graph: Map<string, string[]>, source: string): string[] {
   const entry = path.join(source, 'renderer', 'app.ts')
   const compose = path.join(source, 'backend', 'compose.ts')
   const server = path.join(source, 'backend', 'server.ts')
-  const offenders = [...graph].flatMap(([file, deps]) => deps.filter(dep => dep === entry || (dep === compose && file !== server)).map(dep => `${nameOf(file)} -> ${nameOf(dep)}`))
+  return [...graph].flatMap(([file, deps]) => deps.filter(dep => dep === entry || (dep === compose && file !== server)).map(dep => `${nameOf(file)} -> ${nameOf(dep)}`))
+}
+
+test('features and bundled plugins never import the application composition roots, even for types', () => {
+  const offenders = entryImports(graph, source)
   assert.deepEqual(offenders, [], 'pass a capability or move the shared contract out of the entry module')
 })
 
-test('source modules form an acyclic dependency graph, including type imports and re-exports', () => {
+function cyclesIn(graph: Map<string, string[]>): string[] {
   const visited = new Set<string>(), active = new Set<string>(), stack: string[] = []
   const cycles: string[] = []
   function visit(file: string) {
@@ -43,6 +56,23 @@ test('source modules form an acyclic dependency graph, including type imports an
     for (const dep of graph.get(file) ?? []) if (graph.has(dep)) visit(dep)
     stack.pop(); active.delete(file)
   }
-  for (const file of files) visit(file)
+  for (const file of graph.keys()) visit(file)
+  return cycles
+}
+
+test('application and bundled plugin modules form an acyclic graph, including type imports and re-exports', () => {
+  const cycles = cyclesIn(graph)
   assert.deepEqual(cycles, [], 'give shared contracts a dependency-neutral module instead of adding a back-reference')
+})
+
+test('the guard follows a plugin back into the app instead of stopping at the src boundary', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-module-boundaries-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const src = path.join(dir, 'src'), plugins = path.join(dir, 'plugins')
+  fs.mkdirSync(path.join(src, 'backend'), { recursive: true }); fs.mkdirSync(plugins)
+  fs.writeFileSync(path.join(src, 'backend', 'compose.ts'), "import { value } from '../../plugins/x.ts'\nexport type Config = object\nvoid value\n")
+  fs.writeFileSync(path.join(plugins, 'x.ts'), "import type { Config } from '../src/backend/compose.ts'\nexport const value: Config = {}\n")
+  const complete = graphOf([src, plugins])
+  assert.equal(cyclesIn(complete).length, 1, 'the app -> plugin -> app cycle must be found')
+  assert.equal(entryImports(complete, src).length, 1, 'a plugin may not import the composition root, even for a type')
 })
