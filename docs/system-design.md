@@ -189,7 +189,7 @@ A known gap: plugins the user installs run inside dsh's process with the user's 
 
 ## 8. Lifecycle and fault tolerance
 
-Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, then 10 seconds; three exits within two minutes give up. Both use the same backoff function, in `src/shared/restart-delay.ts`.
+Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, then 10 seconds; the first three exits within two minutes retry, and the fourth gives up. Both use the same backoff function, in `src/shared/restart-delay.ts`.
 
 **Start.**
 
@@ -208,7 +208,14 @@ Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, 
 
 **Event stream drops.** If the backend is still running but SSE dropped, the shell reconnects after 1 second with `since` set to the last number it saw, and the backend first replays the events stored after it. The backend keeps its latest 10,000 host calls, numbered, whether a shell listens or not, and the shell reconnects with `after` set to the last one it ran: every call after it comes, in order, those made while none listened and those written to the stream as it ended, and the shell runs each once. A first connection replays no stored events, and gets the host calls made before it.
 
-**dsh exits unexpectedly.** The backend restarts dsh with the same backoff and resumes the current conversation; on giving up, it says why in the conversation. When the key or the models change, the old dsh exits fully before the new one starts, so two never write the same session.
+**The dsh lifecycle.** `src/backend/dsh-lifecycle.ts` alone owns the current instance, generation, restart timer, crash history and quitting flag. `compose.ts` supplies instance creation/connection and callbacks for conversation readiness, task disconnection and error display; the existing modules retain configuration, history and task state.
+
+- Concurrent starts share one connection. Stop immediately revokes that generation's events and startup result; stopping between creation and connection also prevents connection.
+- Changing keys or models waits for real disposal before creating a replacement. Failed startup also cleans up its instance; failed disposal explicitly prevents replacement.
+- Unexpected exits use the backoff above and resume the conversation; an old generation's exit cannot trigger another restart. Quitting revokes scheduled restarts and forbids further starts.
+- Shutdown waits at most five seconds. A timeout only ends the wait: real disposal remains a barrier to any later start.
+
+`test/dsh-lifecycle.test.ts` independently verifies these contracts with fake instances and a controllable clock. Smoke still exercises real dsh crashes, background reports and restart recovery.
 
 **Quit.** In `before-quit` the shell asks the backend to close. The backend stops dsh (closing its input, then ending the whole process tree after 1.5 seconds, with `taskkill /T` on Windows), closes the databases, and exits. A backend still running after 10 seconds is killed. If the shell disconnects, the backend shuts itself down.
 

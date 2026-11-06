@@ -29,11 +29,19 @@ Entry sizes become 1,041 lines in `compose.ts` and 943 in `app.ts`. File count g
 
 New behavior tests cover interjections becoming the next question as a turn ends, batching without duplicate resend, retained failed messages, clearing deferred sends after errors, image restrictions, question/credential request ids, credentials staying out of page state, configuration preparation without writes, encryption, no reload after failed changes, imports and skill trashing.
 
+## Second batch: the dsh lifecycle
+
+`src/backend/dsh-lifecycle.ts` now owns the runtime instance, generation, restart timer, crash history and quitting flag. Narrow capabilities supply creation and connection; existing modules retain configuration, history, task state and event routing. Startup, shutdown and crash recovery no longer share writable runtime variables in the composition root.
+
+Contract tests cover shared concurrent starts, stopping in-flight startup, stale events/exits, replacement waiting for real disposal, 1/3/10-second crash backoff and giving up, revoking queued restarts, quitting, startup cleanup, failed disposal blocking replacement, and shutdown timeout retaining the disposal barrier. Readiness callbacks execute after checking the current generation; a cancelled connection cannot publish stale readiness.
+
+This batch includes verified race fixes: revoking in-flight startup results, cleaning up failed initialization, coalescing concurrent starts and keeping the resource barrier after shutdown stops waiting. It changes neither IPC/database formats nor TaskRuntime's authority. Extracting history/workspace switching business logic remains a later task.
+
 ## Subsequent batches and delivery criteria
 
 | Order | Scope | Done when |
 | --- | --- | --- |
-| 2 | Backend session lifecycle: startup, crash backoff, shutdown, generation isolation; then history/workspace switching | One module owns runtime state and timers, uses narrow configuration/history capabilities, and independently tests stale generations, no restart after shutdown and recovery from failed switching; compose only wires it |
+| 2 | dsh lifecycle (this batch); history/workspace switching follows separately | Lifecycle state/timers now have a single module, verified by contract tests and full smoke; later switching extraction must test failure recovery |
 | 3 | Renderer event ingress and conversation action types | Incoming events and actions are exhaustive unions; unknown events are handled explicitly at the boundary; foreground event changes do not require changing the task reducer; tests retain exclusion of old foreground pushes during new-topic preparation |
 | 4 | ACP foreground and background session responsibilities | First identify shared transport, permission and cancellation capabilities, then extract session control; preserve process ownership, run admission and TaskRuntime's single writer rather than duplicating state machines |
 | 5 | Test feedback and dependency cleanup | Feature-specific short feedback paths; full suites and both platforms' smoke remain final gates; remove interfaces with no callers while retaining contract and failure tests |
