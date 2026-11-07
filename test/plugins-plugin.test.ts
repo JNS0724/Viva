@@ -37,7 +37,7 @@ test('a plugin installed through the app loads in dsh, switches off while dsh ru
   const listed = await agent.plugins('list')
   const [plugin, ...others] = pluginsView(listed.value, profileDir)
   assert.equal(others.length, 0)
-  assert.deepEqual([plugin.name, plugin.enabled, plugin.webUi, plugin.rows.map((row) => row.phase)], ['demo-dsh-plugin', true, true, ['active']])
+  assert.deepEqual([plugin.name, plugin.enabled, plugin.fit.kind, plugin.rows.map((row) => row.phase)], ['demo-dsh-plugin', true, 'web-part', ['active']])
 
   const off = await agent.plugins('setBundle', { name: 'demo-dsh-plugin', enabled: false })
   assert.equal(off.value.application, 'applied')

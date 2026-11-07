@@ -63,7 +63,8 @@
 
 添加 MCP 服务器、保存 skill，直接在对话里说就行，比如「帮我接入 GitHub」「把刚才写周报的做法存成 skill」。已经有的在「能力」页看：它和回顾、关于你、设置并列，分技能、MCP、插件三栏，左边列表、右边是选中的那一个；有用不了的，「能力」旁边带个数字。服务器可以「编辑」（原地改，不用删了重加），也可以删除；Viva 自己的 skill 可以删除，工作区里的标「只读」。
 
-- **skill 的检查**：按 dsh 加载 skill 的规则逐项看：有 YAML frontmatter、有 name 和 description、name 是 kebab-case、`disable-model-invocation` / `user-invocable` 写的是布尔值（`src/backend/skill-spec.ts`）。dsh 遇到不合规的 skill 只在日志里警告、直接跳过，模型也不知道；这里把原因写出来。同名的 skill 按 dsh 的优先级（工作区 `.dsh/skills` > 工作区 `.agents/skills` > Viva 的）只用一个，被盖住的写明是谁盖住的。
+- **skill 的检查**：按 dsh 加载 skill 的规则逐项看：有 YAML frontmatter、有 name 和 description、name 是 kebab-case、`disable-model-invocation` / `user-invocable` 写的是布尔值（`src/backend/skill-spec.ts`）。dsh 遇到不合规的 skill 只在日志里警告、直接跳过，模型也不知道；这里把原因写出来。同名的 skill 按 dsh 的优先级（工作区 `.dsh/skills` > 工作区 `.agents/skills` > Viva 的）只用一个，被盖住的写明是谁盖住的。工作区按 dsh 的算法取：从工作目录往上最近的含 `.git` 的文件夹。
+- **导入 skill**：「能力 · 技能」点「导入」，先选从哪儿来：这台电脑上找到的 Claude Code（`~/.claude/skills`）、Codex（`~/.codex/skills`）、`~/.agents/skills`、你自己的 dsh，或「选择文件夹…」（一整个目录或一个 skill 的文件夹都行）。然后逐个检查：符合规则的直接勾上；name 不是 kebab-case、或 Viva 里已有同名的，导入时在复制件里改名（同名的默认不勾）；dsh 加载不了的（没有 frontmatter、缺字段、调用开关写错、名字转不成 kebab-case）不能勾，写明原因。导入只复制进 Viva 的技能文件夹，原来的不动（`src/backend/skill-import.ts`）。
 
 - **先确认**：模型用 `viva-config` 插件（`plugins/config`）的工具配置：`viva_mcp_add` / `viva_mcp_update` / `viva_mcp_remove` / `viva_mcp_list` / `viva_mcp_import`，`viva_skill_create` / `viva_skill_install` / `viva_skill_remove` / `viva_skill_list`。会改动配置的那几个，先弹出审批卡片（「接入 MCP 服务器「github」」，下面是要运行的命令和参数），你允许后才执行；从 dsh 导入例外，见下。
 - **密钥不进对话**：服务要令牌时，模型只写名字（比如 `GITHUB_TOKEN`），窗口里弹出一张输入卡片让你填写。填的值直接交给主进程，用系统钥匙串加密存进 `mcp-servers.json`，不经过 dsh，也不会出现在聊天记录或「过程」里；「过程」只记下「请你填写密钥」和「你填写了密钥」。
@@ -76,6 +77,7 @@
 - **读哪里**：每个 profile 的 `profiles/<名字>/cordis.yml`、`cordis.patch.yml`，再加上 dsh 文件夹里的 `cordis.patch.yml`（按 dsh 的顺序叠加，能读到 `insert`、按 id 覆盖和 `disabled`），找出 `@deepseek-ai/dsh-mcp-client` 那几条（`src/backend/dsh-mcp-import.ts`）。
 - **密钥**：直接写在配置里的照搬；写成 `!!js process.env.X`（或 `` `Bearer ${process.env.X}` `` 这类模板）的，按 dsh 的顺序找：你终端的环境（从登录 shell 读一次，因为从程序坞打开的应用拿不到）、应用自己的环境、dsh 文件夹里的 `.env`。其他 `!!js` 写法一律不执行。找不到的不打断导入：服务器照样加上，在列表里标「缺少密钥：X」，点「编辑」补上就行。
 - **重名**：名字已经有的跳过（不区分大小写），结果里说明。
+- **从其他客户端导入**：「能力 · MCP」里点「从其他客户端导入」，列出这台电脑上 Claude Desktop、Claude Code（`~/.claude.json`）、Cursor（`~/.cursor/mcp.json`）里配好的服务器，逐个按 Viva 保存时的规则检查：`${VAR}` 写法的密钥从登录 shell 取值，取不到就按名字记成「缺少密钥」；SSE 连接方式、找不到的命令，以及在命令、参数或地址里引用变量的（那里的值不会加密）不能导入并写明原因；命令按登录 shell 找到的完整路径保存；名字里有 Viva 不支持的字符的会改名；Viva 已有同名的改名为 `名字-2` 且默认不勾。导入只写进 Viva 的配置（密钥加密），原来的配置文件只读（`src/backend/mcp-import.ts`）。Codex 的配置是 TOML，还不支持。
 - **原地编辑**：点「编辑」在原位置展开表单，命令、参数、地址都已填好；已保存的密钥只显示名字，留空就保持不变，填了才替换，也可以新增或删除。保存后会话自动重新接一次。对话里用 `viva_mcp_update`（先审批，新密钥同样在窗口里填）。
 
 ## 插件
@@ -84,7 +86,8 @@
 
 - **安装**：填 npm 包名、git 地址或本机文件夹，先点「查看」：显示它是什么包、什么版本，提醒「插件在助手里以你的权限运行，能读到你的模型 key 和记忆」，你点「安装」才装。安装由 dsh 自己的插件管理器完成，用 Viva 自带的 pnpm（不用另装 Node 或 pnpm），并按 dsh 的版本检查兼容性；依赖要运行构建脚本时，先列出来，你点「允许并安装」才运行。
 - **启停、删除**：开关和删除即时生效，新的对话里就用上或不再用，不用重启；重启 Viva 后开关照旧。Viva 自己的插件、人设和安全相关的设置不受这些开关和插件影响。
-- **看得见**：每个插件显示版本、说明、是否打开；有一部分是给 dsh 网页端的界面时说明一句（Viva 不显示它，其他部分照常工作）；有的部分没运行起来、会改 dsh 自带的设置，也会列出来。
+- **看得见**：每个插件显示版本、说明、是否打开；有的部分没运行起来、会改 dsh 自带的设置，也会列出来。
+- **在 Viva 里怎么样**：Viva 运行 dsh 的 ACP 组合（`dsh-base` 加 `dsh-acp-app`），不带 dsh 网页端的浏览器服务。所以读已装插件的 `package.json`（`src/backend/plugin-fit.ts`），只说确定知道的：依赖 `@deepseek-ai/dsh-host-webserver` 或 `dsh-web-app` 的标「Viva 里用不了」，打开着就算一个要处理的问题；带 `dsh.client`（给 dsh 网页端的界面）的，那部分界面不显示；其他的写「没发现已知的不兼容」，不打包票，因为插件自己的 patch 仍可能要 Viva 没有的服务。实际跑没跑起来看它的状态（有没运行起来的部分会列出来）。`dsh-web`（搜索、抓取）和 `dsh-api-gateway` 在 `dsh-base` 里，Viva 也有。插件作者可以在 `package.json` 里写 `"viva": { "supports": true }` 说明支持，显示为「作者说明支持 Viva」。
 - **在对话里**：模型可以提出装插件，经授权卡片由你批准。
 
 ## 定时任务

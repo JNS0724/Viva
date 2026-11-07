@@ -10,9 +10,9 @@ import { failureDiagnostics, recordMemoryEvents } from './diagnostics.ts'
 import { seedTimeline } from './smoke-timeline.ts'
 import { seedPerf } from './smoke-perf.ts'
 import { runSmoke } from './smoke.ts'
-import type { SmokeModel } from './smoke-kit.ts'
+import { smokeStep, type SmokeModel } from './smoke-kit.ts'
 
-export type SmokePhase = 'setup' | 'language' | 'walkthrough' | 'relaunch' | 'memory' | 'resume' | 'timeline' | 'perf' | 'showcase' | 'live' | 'live-resume'
+export type SmokePhase = 'setup' | 'language' | 'walkthrough' | 'relaunch' | 'memory' | 'schedules' | 'resume-prepare' | 'resume' | 'timeline' | 'perf' | 'showcase' | 'live' | 'live-resume'
 export interface ScenarioOptions { phase: SmokePhase, bridge: 'real' | 'fake', apiKey?: string }
 
 /** A restart belongs to the same logical scenario; separate tests never depend on a previous test's files. */
@@ -25,6 +25,7 @@ export class Scenario {
   private launches = 0
   private tracing = false
   private traces: string[] = []
+  private prepared = false
 
   constructor(info: TestInfo, options: ScenarioOptions) {
     this.info = info; this.options = options
@@ -37,20 +38,28 @@ export class Scenario {
       this.model = await startFakeLlm({ decideFirst: this.options.phase === 'showcase' ? showcaseDecide : undefined })
       const initial = await this.start('bootstrap')
       await configureFakeProvider(initial, this.model, this.info.outputPath('model-picker.png'))
-      await this.closeCurrent()
+      // These seeds must be written while the app is closed. Installed checks keep their cold launch too.
+      if (['timeline', 'perf'].includes(this.options.phase) || this.info.project.name === 'package') await this.closeCurrent()
+      else this.prepared = true
     }
     if (this.options.phase === 'timeline') seedTimeline(this.profile.userData)
     if (this.options.phase === 'perf') seedPerf(this.profile.userData)
   }
 
   async start(label: string): Promise<SmokeApplication> {
+    if (this.prepared && this.current) {
+      this.prepared = false
+      fs.writeFileSync(this.info.outputPath(`${this.launches}-${label}-reuse.json`), JSON.stringify({ at: new Date().toISOString(), launch: this.launches, label }))
+      return this.current
+    }
     await this.closeCurrent()
     const output = this.info.outputPath(`${++this.launches}-${label}`)
-    this.current = await launchSmokeApplication({
+    this.current = await smokeStep({ step: (name, action) => base.step(name, action) }, `launch ${label}`, () => launchSmokeApplication({
       profile: this.profile, outputDirectory: output, model: this.model, bridge: this.options.bridge,
       apiKey: this.options.apiKey, fullAccessibility: this.options.phase === 'perf',
       waitForAgent: label !== 'bootstrap' && Boolean(this.model || this.options.apiKey),
-    })
+    }))
+    this.current.hooks.step = (name, action) => base.step(name, action)
     if (!this.options.apiKey && this.options.phase !== 'perf') {
       // Playwright's DOM snapshot script cannot run in the app's deliberately scriptless search iframe.
       // Keep operation/network/screenshot traces in integration; public UI smoke also keeps DOM snapshots.
@@ -63,12 +72,16 @@ export class Scenario {
 
   async run(phase: SmokePhase): Promise<void> {
     const session = await this.start(phase)
-    const problems = await runSmoke(session.window, { smokeOut: this.info.outputPath(phase), smokePhase: phase }, session.hooks)
+    const problems = await smokeStep(session.hooks, phase, () => runSmoke(session.window, {
+      smokeOut: this.info.outputPath(phase), smokePhase: phase,
+      includeSchedules: this.info.project.name === 'package' && phase === 'memory',
+    }, session.hooks))
     await this.info.attach(`${phase}-assertions`, { body: JSON.stringify(problems, null, 2), contentType: 'application/json' })
     expect(problems, `${phase} legacy integration assertions`).toEqual([])
   }
 
   async closeCurrent(): Promise<void> {
+    this.prepared = false
     if (!this.current) return
     const session = this.current
     this.current = null
@@ -78,7 +91,7 @@ export class Scenario {
         try { await session.application.context().tracing.stop({ path: trace }); this.traces.push(trace) }
         finally { this.tracing = false }
       }
-    } finally { await session.close() }
+    } finally { await smokeStep({}, 'application close', () => session.close()) }
   }
 
   async dispose(failed: boolean): Promise<void> {
@@ -106,7 +119,7 @@ export const test = base.extend<{ scenario: Factory }>({
       await use(async options => {
         const scenario = new Scenario(info, options)
         scenarios.push(scenario)
-        await scenario.prepare()
+        await smokeStep({ step: (name, action) => base.step(name, action) }, `prepare ${options.phase}`, () => scenario.prepare())
         return scenario
       })
     } finally {

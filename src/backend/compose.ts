@@ -24,6 +24,10 @@ import { ensureDshProfile, vivaLayerFile } from './dsh-profile.ts'
 import { pnpmLauncher } from './pnpm-launcher.ts'
 import { dshEnv } from './dsh-runtime.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
+import { registerSkillImportIpc } from './skill-import-ipc.ts'
+import { skillSources } from './skill-import.ts'
+import { registerMcpImportIpc } from './mcp-import-ipc.ts'
+import { loginShellTools, mcpSources } from './mcp-import.ts'
 import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb } from './history-db.ts'
@@ -724,9 +728,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       call: (op, args) => (dsh.current ? dsh.current.plugins(op, args) : Promise.resolve({ ok: false as const, problem: 'disconnected' })),
       profileDir: () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE),
     })
+    const roots = () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd })
     registerExtensionsIpc(ipcMain, {
       store: mcpStore,
-      roots: () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd }),
+      roots,
       mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
       applyMcp: applyMcpChange,
       trash: (file) => host.shell.trash(file),
@@ -735,6 +740,17 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       chooseDshDir,
       importDsh,
       rememberDshDir: (dir) => preferences.set('dshImportDir', dir),
+    })
+    registerSkillImportIpc(ipcMain, {
+      roots,
+      sources: () => skillSources({ home: os.homedir(), dshHome: userDshHome() }),
+      chooseDir: () => host.dialogs.chooseFolder({ title: t('main.skill-import.choose'), defaultPath: os.homedir(), showHidden: true }),
+    })
+    registerMcpImportIpc(ipcMain, {
+      store: mcpStore,
+      sources: () => mcpSources({ home: os.homedir(), platform: process.platform, appData: process.env.APPDATA ?? '' }),
+      shell: loginShellTools,
+      applyMcp: applyMcpChange,
     })
   }
 

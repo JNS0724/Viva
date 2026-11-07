@@ -14,7 +14,7 @@ function profile(t: TestContext) {
     fs.writeFileSync(path.join(dir, 'node_modules', ...name.split('/'), 'package.json'), JSON.stringify({ name, ...manifest }))
   }
   pkg('@someone/search', { dsh: { bundle: { patch: 'p.yml' }, client: { platform: 'web' } } })
-  pkg('compact', { dsh: { bundle: { patch: 'p.yml' } } })
+  pkg('compact', { dsh: { bundle: { patch: 'p.yml' } }, peerDependencies: { '@deepseek-ai/dsh-host-webserver': '0.2.0' } })
   return dir
 }
 
@@ -31,16 +31,16 @@ const LIST = {
   plugins: [{ entryId: 'e1', enabled: true, fiberPhase: 'active' }, { entryId: 'e2', enabled: true, fiberPhase: 'pending' }],
 }
 
-test('the section lists the plugins the user installed, each row as it runs, and which bring a Web interface', (t) => {
+test('the section lists the plugins the user installed, each row as it runs, and whether each works in Viva', (t) => {
   const dir = profile(t)
   const [search, compact, ...rest] = pluginsView(LIST, dir)
   assert.equal(rest.length, 0, 'dsh\'s own bundles are not listed')
   assert.deepEqual(search, {
-    name: '@someone/search', version: '1.2.0', description: 'Search', enabled: true, removable: true, error: null, webUi: true,
+    name: '@someone/search', version: '1.2.0', description: 'Search', enabled: true, removable: true, error: null, fit: { kind: 'web-part' },
     rows: [{ id: 'search', entryId: 'e1', enabled: true, phase: 'active' }, { id: 'search-ui', entryId: 'e2', enabled: true, phase: 'pending' }],
     overrides: ['web-search'],
   })
-  assert.equal(compact.webUi, false)
+  assert.deepEqual(compact.fit, { kind: 'needs-web', needs: ['@deepseek-ai/dsh-host-webserver'] })
   assert.deepEqual(compact.error, { code: 'incompatible-version', detail: 'needs 0.3' })
   assert.deepEqual(compact.rows, [{ id: 'c', entryId: null, enabled: false, phase: null }])
   assert.deepEqual(pluginsView(null, dir), [], 'nothing usable, nothing listed')

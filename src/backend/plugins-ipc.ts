@@ -2,12 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
+import { vivaFit, type VivaFit } from './plugin-fit.ts'
 
 /**
  * IPC for the 插件 section of settings: the dsh plugins the user installed (bundles in the profile), installed by
  * npm name, git address or folder after the user saw what the spec is, switched, removed. All of it goes to dsh's
  * own plugin manager through viva-plugins (plugins-channel.ts); the app reads only the installed packages'
- * manifests, to say which ones bring a Web interface Viva does not show.
+ * manifests, to say whether each works in Viva (plugin-fit.ts).
  */
 const MAX_LIST = 200
 const MAX_TEXT_CHARS = 2000
@@ -21,8 +22,8 @@ export interface PluginView {
   name: string, version: string | null, description: string | null, enabled: boolean, removable: boolean,
   /** dsh's code for what is wrong with it, with its words; null when nothing is. */
   error: { code: string, detail: string | null } | null,
-  /** It brings a part for dsh's Web client (`dsh.client`), which Viva does not run. */
-  webUi: boolean
+  /** Whether it works in Viva, from its package.json. */
+  fit: VivaFit
   rows: PluginRowView[]
   /** dsh's own rows it changes. */
   overrides: string[]
@@ -40,13 +41,12 @@ const errorOf = (value: unknown) => {
   return code ? { code, detail: str(error.diagnostic) } : null
 }
 
-/** Whether the installed package brings a part for dsh's Web client. */
-export function hasWebUi(profileDir: string, name: string): boolean {
+/** Whether the installed package works in Viva; unknown when its package.json cannot be read. */
+export function fitOf(profileDir: string, name: string): VivaFit {
   try {
-    const manifest = JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8'))
-    return Boolean(manifest?.dsh?.client)
+    return vivaFit(JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')))
   } catch {
-    return false
+    return { kind: 'unknown' }
   }
 }
 
@@ -66,7 +66,7 @@ export function pluginsView(value: unknown, profileDir: string): PluginView[] {
       enabled: bundle.enabled === true,
       removable: bundle.removable === true,
       error: errorOf(bundle.error),
-      webUi: hasWebUi(profileDir, name),
+      fit: fitOf(profileDir, name),
       rows: list(bundle.rows).map(record).map((row) => {
         const entryId = str(row.entryId)
         const live = entryId ? running.get(entryId) : undefined

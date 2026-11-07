@@ -127,6 +127,12 @@ export const IPC_ARGS = Object.freeze({
   'ext:import-dsh': z.tuple([z.enum(['default', 'last', 'choose'])]),
   'ext:remove-skill': z.tuple([id]),
   'ext:reveal-skill': z.tuple([id]),
+  'ext:skill-sources': read(none),
+  'ext:scan-skills': z.tuple([id]),
+  'ext:import-skills': z.tuple([id, z.array(id).max(MAX_LIST)]),
+  'ext:mcp-sources': read(none),
+  'ext:scan-mcp': z.tuple([id]),
+  'ext:import-mcp': z.tuple([id, z.array(id).max(MAX_LIST)]),
 
   'plugins:get': read(none),
   'plugins:inspect': read(z.tuple([path])),

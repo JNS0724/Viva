@@ -48,6 +48,8 @@ export interface ExtensionStatus {
 /** One row a plugin adds, and how it runs now. */
 export interface PluginRow { id: string, entryId: string | null, enabled: boolean, phase: string | null }
 
+export type PluginFit = { kind: 'declared' } | { kind: 'no-conflict' } | { kind: 'web-part' } | { kind: 'needs-web', needs: readonly string[] } | { kind: 'unknown' }
+
 /** An installed dsh plugin. */
 export interface PluginView {
   name: string
@@ -56,8 +58,30 @@ export interface PluginView {
   enabled: boolean
   removable: boolean
   error: { code: string, detail: string | null } | null
-  /** It brings a part for dsh's Web client, which Viva does not run. */
-  webUi: boolean
+  /** What its package.json says of it in Viva (plugin-fit.ts): its author says it supports Viva, nothing known against it, its part for dsh's Web client not shown, it needs dsh's browser host, or nothing can be told. Whether it runs is its standing. */
+  fit: PluginFit
   rows: readonly PluginRow[]
   overrides: readonly string[]
 }
+
+/** What 导入 brings in: skills (skill-import-ipc.ts) or MCP servers (mcp-import-ipc.ts). */
+export type ImportKind = 'skills' | 'mcp'
+
+/** Where things can be brought in from, as the window sees it: where, not the path. */
+export interface ImportSourceView { id: string, label: string, count: number, where: string }
+
+/**
+ * One found there, and whether and under what name it goes in: `why` is one word, the kind's own (ready, name,
+ * taken, missing, sse, command, no-kebab, the skill issue…), `detail` what goes with it (keys to fill in, a command).
+ */
+export interface ImportCandidateView {
+  entry: string
+  name: string
+  status: 'ready' | 'fixable' | 'blocked'
+  picked: boolean
+  why: string
+  detail: string | null
+}
+
+/** A place scanned: its id for the import, what it is called, what it holds. */
+export interface ImportScanView { scanId: string, label: string, candidates: readonly ImportCandidateView[] }

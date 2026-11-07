@@ -1,13 +1,13 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { pluginStanding, shownPlugin, type PluginStanding } from '../capabilities-state.ts'
 import { problemText } from '../plugins-state.ts'
-import type { PluginView } from '../capability-types.ts'
+import type { PluginFit, PluginView } from '../capability-types.ts'
 import { h } from './dom.ts'
 import { installCard, installForm } from './plugins.ts'
 
 /**
  * 能力 · 插件 (view/capabilities.ts): the dsh plugins the user installed and the one picked: what it is, whether it runs
- * here, switched on or off, removed; and adding one (ADD_PLUGIN), by the spec, what it names, then 安装.
+ * here (plugin-fit.ts), switched on or off, removed; and adding one (ADD_PLUGIN), by the spec, what it names, then 安装.
  */
 export const ADD_PLUGIN = '+add'
 
@@ -15,7 +15,17 @@ function standingText(standing: PluginStanding) {
   if (standing.kind === 'error') return { tone: 'off', text: problemText(standing.code, standing.detail) }
   if (standing.kind === 'stalled') return { tone: 'off', text: t('plugins.not.running', { rows: standing.rows.join('、') }) }
   if (standing.kind === 'off') return { tone: 'idle', text: t('plugins.off') }
+  if (standing.kind === 'unsupported') return { tone: 'off', text: t('plugins.unsupported') }
   return { tone: 'ok', text: t('plugins.on') }
+}
+
+/** What is known of it in Viva, in words; null when nothing can be told. */
+function fitText(fit: PluginFit): string | null {
+  if (fit.kind === 'declared') return t('plugins.fit.declared')
+  if (fit.kind === 'no-conflict') return t('plugins.fit.no.conflict')
+  if (fit.kind === 'web-part') return t('plugins.fit.web.part')
+  if (fit.kind === 'needs-web') return t('plugins.fit.needs.web', { needs: fit.needs.join('、') })
+  return null
 }
 
 const pluginsOf = (state: State) => state.plugins.plugins as readonly PluginView[]
@@ -41,12 +51,13 @@ export function pluginsSide(state: State, handlers: Handlers): Node[] {
 
 function pluginFacts(plugin: PluginView, state: State, handlers: Handlers) {
   const busy = Boolean(state.plugins.busy)
+  const fit = fitText(plugin.fit)
   return [
     plugin.description ? h('p', { class: 'cap-text', text: plugin.description }) : null,
     h('dl', { class: 'cap-facts' },
       plugin.version ? [h('dt', { text: t('capabilities.version') }), h('dd', { text: plugin.version })] : null,
+      fit ? [h('dt', { text: t('capabilities.in.viva') }), h('dd', { text: fit })] : null,
       plugin.overrides.length ? [h('dt', { text: t('capabilities.changes') }), h('dd', { text: t('plugins.overrides', { rows: plugin.overrides.join('、') }) })] : null),
-    plugin.webUi ? h('p', { class: 'help', text: t('plugins.web.ui') }) : null,
     h('div', { class: 'settings-actions' },
       h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: busy, text: plugin.enabled ? t('plugins.disable') : t('plugins.enable'), onClick: () => handlers.setPluginEnabled(plugin.name, !plugin.enabled) }),
       plugin.removable ? h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: busy, text: t('plugins.remove'), onClick: () => handlers.removePlugin(plugin.name) }) : null),

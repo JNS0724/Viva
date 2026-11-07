@@ -7,9 +7,9 @@ import { checkDeskAsk } from './smoke-desk.ts'
 import { checkPictures } from './smoke-images.ts'
 import { checkTopics } from './smoke-topics.ts'
 import { checkPermission } from './smoke-permission.ts'
-import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, click, finishTurn, newTopic, report, run, settle, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { checkMemory } from './smoke-memory.ts'
-import { checkResume } from './smoke-tasks.ts'
+import { checkResume, prepareResume } from './smoke-tasks.ts'
 import { checkSchedules } from './smoke-schedules.ts'
 import { runLive } from './live.ts'
 import { checkTimeline } from './smoke-timeline.ts'
@@ -281,13 +281,15 @@ async function walkthrough(win: SmokeAppWindow, outDir: string, hooks: SmokeHook
 async function checkPickers(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   await run(win, `document.querySelector('#model-btn .model-btn-name').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `Boolean(document.querySelector('#model-menu .model-menu'))`, 'the model menu opening')
+  await settle(win)
   const model = await run(win, `Boolean(document.querySelector('#model-menu .model-menu'))`)
   if (!model) failures.push("a click on the model's name should open its menu")
   else await capture(win, outDir, 'picker-model')
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   await run(win, `document.querySelector('#composer-context .workdir-name').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `Boolean(document.querySelector('#workdir-menu .workdir-menu'))`, 'the working directory menu opening')
+  await settle(win)
   const folder = await run(win, `Boolean(document.querySelector('#workdir-menu .workdir-menu'))`)
   if (!folder) failures.push("a click on the folder's name should open its menu")
   else await capture(win, outDir, 'picker-folder')
@@ -503,7 +505,7 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
  * `memory`) and screenshots each step into `smokeOut`.
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
-export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePhase }: { smokeOut: string, smokePhase: string | null }, hooks: SmokeHooks): Promise<string[]> {
+export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePhase, includeSchedules = false }: { smokeOut: string, smokePhase: string | null, includeSchedules?: boolean }, hooks: SmokeHooks): Promise<string[]> {
   const problems: string[] = []
   win.webContents.on('console-message', (event: { level: string, message: string }) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)
@@ -526,7 +528,12 @@ export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePha
       problems.push(...await checkStreamMarkdown(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
-    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkSchedules(win, outDir))
+    else if (smokePhase === 'memory') {
+      problems.push(...await checkMemory(win, outDir, hooks))
+      if (includeSchedules && !problems.length) problems.push(...await checkSchedules(win, outDir))
+    }
+    else if (smokePhase === 'schedules') problems.push(...await checkSchedules(win, outDir))
+    else if (smokePhase === 'resume-prepare') problems.push(...await prepareResume(win, outDir))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else if (smokePhase === 'live' || smokePhase === 'live-resume') problems.push(...await runLive(win, outDir, smokePhase, hooks))
     else if (smokePhase === 'timeline') problems.push(...await checkTimeline(win, outDir))

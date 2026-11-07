@@ -19,6 +19,7 @@ import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
 import { createPluginActions } from './plugin-actions.ts'
 import { createCapabilityActions } from './capability-actions.ts'
+import { createImportFlowActions } from './import-flow-actions.ts'
 import { createNewTopicAction } from './new-topic-actions.ts'
 import { createAgentEvents } from './agent-events.ts'
 import type { AgentEvent } from './agent-event-types.ts'
@@ -400,6 +401,7 @@ const proposalActions = createProposalActions({ api, getState: () => state, disp
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
+const importFlowActions = createImportFlowActions({ api, getState: () => state, dispatch, errorMessage })
 const capabilityActions = createCapabilityActions({
   dispatch,
   load: () => {
@@ -465,6 +467,7 @@ const handlers = {
   ...modelActions,
   ...pluginActions,
   ...capabilityActions,
+  ...importFlowActions,
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,

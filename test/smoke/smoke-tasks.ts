@@ -300,6 +300,29 @@ async function leaveRunning(win: SmokeWindow) {
   await until(win, `(${cardOf(LEFT_ASK)})?.dataset.status === 'waiting'`, 'the task left going')
 }
 
+/** Build only the three real task sessions that the restart acceptance reads. */
+export async function prepareResume(win: SmokeWindow, outDir: string): Promise<string[]> {
+  const start = async (text: string) => {
+    const result = await run(win, `window.agent.startTask({ text: ${JSON.stringify(text)} })`)
+    if (!result.ok) throw new Error(`Could not prepare restart task: ${JSON.stringify(result)}`)
+  }
+  await start(ASKS_LATER)
+  await until(win, `(${cardOf(ASKS_LATER)})?.dataset.status === 'waiting'`, 'the question task approval before restart')
+  await answerOnPage(win, ASKS_LATER, '拒绝')
+  await answerOnPage(win, ASKS_LATER, '上海')
+  await until(win, doneCard(ASKS_LATER), 'the completed question task for restart')
+  await openFromLine(win, ASKS_LATER)
+  await run(win, escape)
+  await start(ON_ITS_OWN)
+  await until(win, doneCard(ON_ITS_OWN), 'the completed ordinary task for restart')
+  await openFromLine(win, ON_ITS_OWN)
+  await run(win, escape)
+  await start(LEFT_ASK)
+  await until(win, `(${cardOf(LEFT_ASK)})?.dataset.status === 'waiting'`, 'the approval task prepared for restart')
+  await capture(win, outDir, 'resume-prepared')
+  return []
+}
+
 /** @param {(ok: boolean, message: string, seen?: unknown) => void} expect */
 export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await checkTaskCardRetention(win, expect)
@@ -312,7 +335,7 @@ export async function taskSteps(win: SmokeWindow, outDir: string, expect: Expect
 }
 
 /**
- * The `resume` phase, on the profile `memory` left: the task Viva quit on is back, interrupted, its line in the
+ * The `resume` phase, on its real prepared profile (or package memory profile): the task Viva quit on is back, interrupted, its line in the
  * conversation; told to go on, the agent takes it up again and it reports back once done.
  * @returns {Promise<string[]>} failed expectations
  */
