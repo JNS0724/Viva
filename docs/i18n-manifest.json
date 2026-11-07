@@ -85,5 +85,11 @@
     "AGENTS.md",
     "build/icons/README.txt"
   ],
-  "sourceReports": []
+  "sourceReports": [
+    {
+      "path": "docs/qa-windows-ui-issues-20261108.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "ba6691b0828cdba750e9cd08d47ee0d790284906bdb344b06bfd9ef9874b3bc3"
+    }
+  ]
 }
