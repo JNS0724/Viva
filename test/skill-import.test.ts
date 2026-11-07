@@ -126,9 +126,15 @@ test('a skill reached through a link is copied as files: renaming the copy never
 test('a link inside a skill pointing back up its own folder is left out, so the copy ends', (t) => {
   const { dir, write } = setup(t)
   write('src/loop', 'name: loop\ndescription: x')
-  if (!linkOrSkip(t, path.join(dir, 'src', 'loop'), path.join(dir, 'src', 'loop', 'again'), 'dir')) return
-  const target = path.join(dir, 'viva')
-  const result = importCandidates(scanSkills(path.join(dir, 'src'), new Set()), ['loop'], target)
-  assert.deepEqual(result, { imported: ['loop'], failed: [] })
-  assert.deepEqual(fs.readdirSync(path.join(target, 'loop')), ['SKILL.md'])
+  const loop = path.join(dir, 'src', 'loop', 'again')
+  if (!linkOrSkip(t, path.join(dir, 'src', 'loop'), loop, 'dir')) return
+  try {
+    const target = path.join(dir, 'viva')
+    const result = importCandidates(scanSkills(path.join(dir, 'src'), new Set()), ['loop'], target)
+    assert.deepEqual(result, { imported: ['loop'], failed: [] })
+    assert.deepEqual(fs.readdirSync(path.join(target, 'loop')), ['SKILL.md'])
+  } finally {
+    // The loop taken away first: removing the folder through it fails on Windows.
+    fs.unlinkSync(loop)
+  }
 })
