@@ -115,10 +115,12 @@ function renamed(source: string, name: string): string {
 
 /**
  * `source` copied to `target` as files and folders of its own, every link followed (cpSync's dereference follows
- * only the top one). A folder met again through a link is left out, so a loop of links cannot go on.
+ * only the top one). A folder met again through a link is left out, so a loop of links cannot go on; so is the folder
+ * the copy is written in (`output`), so a link to it cannot have the copy copy itself.
  */
-function copyFollowingLinks(source: string, target: string, seen: ReadonlySet<string> = new Set()): void {
+function copyFollowingLinks(source: string, target: string, output: string, seen: ReadonlySet<string> = new Set()): void {
   const real = fs.realpathSync(source)
+  if (real === output || real.startsWith(output + path.sep)) return
   if (!fs.statSync(real).isDirectory()) {
     fs.copyFileSync(real, target, fs.constants.COPYFILE_EXCL)
     return
@@ -126,7 +128,7 @@ function copyFollowingLinks(source: string, target: string, seen: ReadonlySet<st
   if (seen.has(real)) return
   fs.mkdirSync(target)
   const inside = new Set([...seen, real])
-  for (const entry of fs.readdirSync(real)) copyFollowingLinks(path.join(real, entry), path.join(target, entry), inside)
+  for (const entry of fs.readdirSync(real)) copyFollowingLinks(path.join(real, entry), path.join(target, entry), output, inside)
 }
 
 /** Whether a link is left anywhere in the copy; copyFollowingLinks leaves none, and this makes sure. */
@@ -136,29 +138,38 @@ function holdsLink(target: string): boolean {
   return fs.readdirSync(target).some((entry) => holdsLink(path.join(target, entry)))
 }
 
+/** A staged copy put right and checked: null when it may go in, else why not. */
+function readied(staged: string, isFolder: boolean, candidate: Candidate): string | null {
+  if (holdsLink(staged)) return t('main.skill-import.link.left', { name: candidate.name })
+  const file = isFolder ? path.join(staged, SKILL_FILE) : staged
+  const text = fs.readFileSync(file, 'utf8')
+  if (checkSkill(text).name !== candidate.name) fs.writeFileSync(file, renamed(text, candidate.name))
+  return checkSkill(fs.readFileSync(file, 'utf8')).issues.length ? t('main.skill-import.not.loadable', { name: candidate.name }) : null
+}
+
 /**
  * One candidate into `targetDir` under its name, as files of its own: a skill reached through a link (the folder, or
  * its SKILL.md) is copied as what the link points at, so renaming the copy never writes through to the original. The
- * copy is checked again and taken back if dsh could not load it.
+ * copy is made beside `targetDir`, where dsh does not look, put right and checked there, and only then moved in whole;
+ * whatever comes of it, nothing of it is left beside.
  */
 function copyOne(candidate: Candidate, targetDir: string): string | null {
   const isFolder = fs.statSync(candidate.source).isDirectory()
   const target = path.join(targetDir, isFolder ? candidate.name : `${candidate.name}.md`)
   if (fs.existsSync(target)) return t('main.skill-import.exists', { name: candidate.name })
   fs.mkdirSync(targetDir, { recursive: true })
-  copyFollowingLinks(candidate.source, target)
-  if (holdsLink(target)) {
-    fs.rmSync(target, { recursive: true, force: true })
-    return t('main.skill-import.link.left', { name: candidate.name })
+  const staging = fs.mkdtempSync(path.join(path.dirname(targetDir), '.viva-skill-import-'))
+  try {
+    const staged = path.join(staging, path.basename(target))
+    copyFollowingLinks(candidate.source, staged, fs.realpathSync(staging))
+    const problem = readied(staged, isFolder, candidate)
+    if (problem) return problem
+    if (fs.existsSync(target)) return t('main.skill-import.exists', { name: candidate.name })
+    fs.renameSync(staged, target)
+    return null
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true })
   }
-  const file = isFolder ? path.join(target, SKILL_FILE) : target
-  const text = fs.readFileSync(file, 'utf8')
-  if (checkSkill(text).name !== candidate.name) fs.writeFileSync(file, renamed(text, candidate.name))
-  if (checkSkill(fs.readFileSync(file, 'utf8')).issues.length) {
-    fs.rmSync(target, { recursive: true, force: true })
-    return t('main.skill-import.not.loadable', { name: candidate.name })
-  }
-  return null
 }
 
 /** The candidates picked (by entry) copied into `targetDir`; one dsh could not load is never copied. */

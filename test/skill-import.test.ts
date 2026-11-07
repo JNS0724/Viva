@@ -138,3 +138,36 @@ test('a link inside a skill pointing back up its own folder is left out, so the 
     fs.unlinkSync(loop)
   }
 })
+
+/** What is left beside Viva's skills folder of an import: nothing but the folder itself. */
+const leftovers = (dir: string) => fs.readdirSync(dir).filter((entry) => entry.startsWith('.viva-skill-import'))
+
+test('a link inside a skill to where the copy is written cannot make it copy its own output', (t) => {
+  const { dir, write } = setup(t)
+  write('src/greedy', 'name: greedy\ndescription: x')
+  const target = path.join(dir, 'viva', 'skills')
+  fs.mkdirSync(target, { recursive: true })
+  // Up to the folder that holds Viva's skills folder, and so whatever is written beside it.
+  const out = path.join(dir, 'src', 'greedy', 'out')
+  if (!linkOrSkip(t, path.join(dir, 'viva'), out, 'dir')) return
+  try {
+    const result = importCandidates(scanSkills(path.join(dir, 'src'), new Set()), ['greedy'], target)
+    assert.deepEqual(result, { imported: ['greedy'], failed: [] })
+    assert.deepEqual(leftovers(path.join(dir, 'viva')), [], 'nothing of the copy is left beside it')
+    assert.equal(fs.existsSync(path.join(target, 'greedy', 'out', 'skills', 'greedy')), false, 'its own copy is not inside it')
+  } finally {
+    fs.unlinkSync(out)
+  }
+})
+
+test('a copy that fails half way leaves nothing dsh could load, and nothing beside', (t) => {
+  const { dir, write } = setup(t)
+  write('src/half', 'name: half\ndescription: x')
+  const dangling = path.join(dir, 'src', 'half', 'z-gone')
+  if (!linkOrSkip(t, path.join(dir, 'nowhere'), dangling, 'file')) return
+  const target = path.join(dir, 'viva', 'skills')
+  const result = importCandidates(scanSkills(path.join(dir, 'src'), new Set()), ['half'], target)
+  assert.deepEqual([result.imported, result.failed.map((failure) => failure.entry)], [[], ['half']])
+  assert.equal(fs.existsSync(path.join(target, 'half')), false, 'no half copy where dsh looks')
+  assert.deepEqual(leftovers(path.join(dir, 'viva')), [])
+})
