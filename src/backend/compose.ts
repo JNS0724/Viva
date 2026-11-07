@@ -21,7 +21,7 @@ import { DSH_PROFILE, resolveConfig } from './config.ts'
 import { createAcpBridge, switchingMessage } from './acp-bridge.ts'
 import { importDshServers, userDshHome } from './dsh-mcp-import.ts'
 import { ensureDshProfile, vivaLayerFile } from './dsh-profile.ts'
-import { pnpmLauncher } from './pnpm-launcher.ts'
+import { pnpmLauncher, refusingLauncher } from './pnpm-launcher.ts'
 import { dshEnv } from './dsh-runtime.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
 import { registerSkillImportIpc } from './skill-import-ipc.ts'
@@ -294,6 +294,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     let scopes: string[] = []
     const registry = pluginSource.registry()
     const launch = () => launchMessage({ pnpmCommand, registry, registryToken: pluginSource.token(), scopes })
+    // With a company registry plugins cannot be kept to, dsh gets a pnpm that installs nothing (pnpm-launcher.ts).
+    const refuse = () => { pnpmCommand = refusingLauncher({ dir: path.join(userData, 'bin'), message: t('main.plugin-source.unpinned') }) }
     try {
       const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow() })
       pluginProblems = problems
@@ -302,24 +304,28 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const dir = ensureDshProfile({
         dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
       })
-      scopes = registry ? scopesOf(dir, pnpmCommand) : []
+      const found = registry ? scopesOf(dir, pnpmCommand) : []
+      if (found) scopes = found
+      else refuse()
       return { profile: DSH_PROFILE, overlay: vivaLayerFile(dshHomeOf(config)), launch: launch() }
     } catch (err: any) {
       console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
+      // dsh's stock profile knows no company registry: its plugin manager would install from the public ones.
+      if (registry) refuse()
       return { profile: FALLBACK_PROFILE, overlay: null, launch: launch() }
     }
   }
 
   /**
    * The scopes the plugin manager's pnpm finds where it installs, each to be sent to the company registry too
-   * (plugin-registry.ts). Ones it cannot read are said, not taken for none.
+   * (plugin-registry.ts); null when pnpm cannot say, which is not none.
    */
-  function scopesOf(dir: string, pnpmCommand: string | null): string[] {
+  function scopesOf(dir: string, pnpmCommand: string | null): string[] | null {
     try {
       return pnpmScopes({ command: pnpmCommand ?? 'pnpm', cwd: dir, env: process.env })
     } catch (err: any) {
-      console.error('[plugins] could not read the scoped registries pnpm knows; one set in an .npmrc may still install from elsewhere:', err.message)
-      return []
+      console.error('[plugins] could not read the scoped registries pnpm knows, so no plugin is installed until it can:', err.message)
+      return null
     }
   }
 

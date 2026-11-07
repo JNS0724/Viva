@@ -19,6 +19,17 @@ function setup(t: TestContext) {
   return { dir, file: path.join(dir, 'plugin-source.json') }
 }
 
+test('the token kept goes to its own registry only: a new host needs it typed again; a new path on the same host keeps it', (t) => {
+  const { file } = setup(t)
+  const store = createPluginSourceStore({ file, crypto })
+  store.save({ registry: 'https://npm.example.com/', token: 'npm_secret_value' })
+  assert.throws(() => store.save({ registry: 'https://elsewhere.example/' }), Error, 'left blank, it would be sent to another host')
+  assert.deepEqual([store.registry(), store.token()], ['https://npm.example.com/', 'npm_secret_value'], 'nothing changed')
+  assert.deepEqual(store.save({ registry: 'https://npm.example.com/v2/' }), { registry: 'https://npm.example.com/v2/', hasToken: true })
+  assert.deepEqual(store.save({ registry: 'https://elsewhere.example/', token: 'npm_other' }), { registry: 'https://elsewhere.example/', hasToken: true })
+  assert.deepEqual(store.save({ registry: 'https://third.example/', token: '' }), { registry: 'https://third.example/', hasToken: false }, 'cleared, it may go anywhere')
+})
+
 test('a registry is an https address, or http on this computer; kept with one slash at the end', () => {
   assert.equal(normalizeRegistry(' https://npm.example.com/repo '), 'https://npm.example.com/repo/')
   assert.equal(normalizeRegistry('http://localhost:4873'), 'http://localhost:4873/')

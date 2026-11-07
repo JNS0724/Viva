@@ -81,7 +81,12 @@ export function createPluginSourceStore({ file, crypto, onError = () => {} }: { 
         return { registry: null, hasToken: false }
       }
       const address = normalizeRegistry(registry)
-      const next = token === undefined ? read().token : validToken(String(token))
+      const kept = read()
+      // Left blank, the token kept stays only with its own host: it is never sent on to another (as models-ipc.ts keyMayGo).
+      if (token === undefined && kept.token && kept.registry && new URL(kept.registry).origin !== new URL(address).origin) {
+        throw new Error(t('main.plugin-source.token.for.new.host'))
+      }
+      const next = token === undefined ? kept.token : validToken(String(token))
       if (next && !crypto.isEncryptionAvailable()) throw new Error(t('main.model-providers.system.keychain.unavailable.the.key.cannot.be'))
       write(address, next)
       return { registry: address, hasToken: Boolean(next) }

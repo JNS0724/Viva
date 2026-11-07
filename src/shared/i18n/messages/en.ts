@@ -913,6 +913,8 @@ export const en = {
   "main.plugin-source.credentials": "Leave the user name and password out of the address; enter the token on its own",
   "main.plugin-source.token": "A token cannot contain spaces or line breaks",
   "main.plugin-source.busy": "Wait for this turn to finish before changing the plugin source",
+  "main.plugin-source.token.for.new.host": "The plugin source moved to another host: type the token again, the one kept is not sent there",
+  "main.plugin-source.unpinned": "Could not read pnpm's scope settings, so plugins cannot be kept to the company source and none are installed now. Restart Viva and try again",
   "main.skill-import.choose": "Choose a folder of skills, or one skill's folder",
   "main.skill-import.own.dsh": "Your own dsh",
   "main.skill-import.exists": "Viva's skills folder already has “{name}”; it was not overwritten",

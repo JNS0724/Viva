@@ -38,6 +38,25 @@ export function launcherText({ runtime, entry, platform }: { runtime: DshRuntime
   return `#!/bin/sh\n${env}exec ${quoteSh(runtime.nodeBin)} ${quoteSh(entry)} "$@"\n`
 }
 
+/** What cmd.exe's echo would read as its own (redirects, pipes, variables, escapes), and line ends: dropped. */
+const CMD_SPECIAL = /[\^&|<>%"\r\n]/g
+
+/**
+ * A pnpm that runs nothing: it says `message` and fails, every call. Handed to dsh's plugin manager in pnpm's place
+ * when plugins cannot be kept to the company registry (plugin-registry.ts), so neither the page nor the agent's own
+ * tool installs from elsewhere. Written beside the real launcher, which it leaves as it is.
+ */
+export function refusingLauncher({ dir, message, platform = process.platform }: { dir: string, message: string, platform?: string }): string {
+  const file = path.join(dir, platform === 'win32' ? 'pnpm-refused.cmd' : 'pnpm-refused')
+  const text = platform === 'win32'
+    ? ['@echo off', `echo ${message.replace(CMD_SPECIAL, '')} 1>&2`, 'exit /b 1', ''].join('\r\n')
+    : `#!/bin/sh\nprintf '%s\\n' ${quoteSh(message)} >&2\nexit 1\n`
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(file, text)
+  if (platform !== 'win32') fs.chmodSync(file, LAUNCHER_MODE)
+  return file
+}
+
 /** Writes the launcher into `dir` when it changed; returns its path, or null without a shipped pnpm. */
 export function pnpmLauncher({ dir, appRoot, runtime, platform = process.platform }: {
   dir: string, appRoot: string, runtime: DshRuntime, platform?: string,

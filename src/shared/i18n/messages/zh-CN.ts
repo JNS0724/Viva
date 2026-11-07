@@ -914,6 +914,8 @@ export const zhCN = {
   "main.plugin-source.credentials": "地址里不要带用户名和密码，令牌单独填",
   "main.plugin-source.token": "令牌里不能有空格或换行",
   "main.plugin-source.busy": "等这一轮结束再改插件源",
+  "main.plugin-source.token.for.new.host": "换了插件源的地址，令牌要重新填：原来的令牌不会发给新地址",
+  "main.plugin-source.unpinned": "读不到 pnpm 的 scope 设置，没法保证只从公司插件源安装，所以现在不装插件。请重启 Viva 再试",
   "main.skill-import.choose": "选择装着技能的文件夹，或一个技能的文件夹",
   "main.skill-import.own.dsh": "你自己的 dsh",
   "main.skill-import.exists": "Viva 的技能文件夹里已经有「{name}」了，没有覆盖",
