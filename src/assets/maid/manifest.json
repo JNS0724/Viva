@@ -1,0 +1,453 @@
+{
+  "version": 7,
+  "revision": "7-viva-palette",
+  "background": "#FAF7F2",
+  "generationMode": "built-in image_gen",
+  "exportTools": [
+    "CoreGraphics",
+    "cwebp",
+    "webpmux"
+  ],
+  "alpha": false,
+  "lossless": true,
+  "avatarCrop": "circle",
+  "propSafeRadius400px": 170,
+  "headTop400px": 20,
+  "bodyBottom400px": 400,
+  "identity": "identity/character-lock.json",
+  "paletteEvidence": "references/ui-palette.json",
+  "states": [
+    {
+      "id": "greeting",
+      "label": "问候",
+      "static": "webp/greeting.webp",
+      "animation": "webp/greeting-motion.webp",
+      "poster": "posters/greeting.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        400,
+        400
+      ],
+      "loopCount": 1,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 1320,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/greeting.png"
+    },
+    {
+      "id": "idle",
+      "label": "待命",
+      "static": "webp/idle.webp",
+      "animation": "webp/idle-motion.webp",
+      "poster": "posters/idle.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 2580,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/idle.png"
+    },
+    {
+      "id": "thinking",
+      "label": "思考",
+      "static": "webp/thinking.webp",
+      "animation": "webp/thinking-motion.webp",
+      "poster": "posters/thinking.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 2440,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/thinking.png"
+    },
+    {
+      "id": "typing",
+      "label": "回答中",
+      "static": "webp/typing.webp",
+      "animation": "webp/typing-motion.webp",
+      "poster": "posters/typing.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 1460,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/typing.png"
+    },
+    {
+      "id": "ask",
+      "label": "提问 / 在听",
+      "static": "webp/ask.webp",
+      "animation": "webp/ask-motion.webp",
+      "poster": "posters/ask.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 2160,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/ask.png"
+    },
+    {
+      "id": "confirm",
+      "label": "需要你确认",
+      "static": "webp/confirm.webp",
+      "animation": "webp/confirm-motion.webp",
+      "poster": "posters/confirm.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 2300,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/confirm.png"
+    },
+    {
+      "id": "done",
+      "label": "已完成",
+      "static": "webp/done.webp",
+      "animation": "webp/done-motion.webp",
+      "poster": "posters/done.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 1740,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/done.png"
+    },
+    {
+      "id": "error",
+      "label": "出错",
+      "static": "webp/error.webp",
+      "animation": "webp/error-motion.webp",
+      "poster": "posters/error.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 2300,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/error.png"
+    },
+    {
+      "id": "offline",
+      "label": "连不上",
+      "static": "webp/offline.webp",
+      "animation": "webp/offline-motion.webp",
+      "poster": "posters/offline.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 3280,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/offline.png"
+    },
+    {
+      "id": "sleeping",
+      "label": "休眠",
+      "static": "webp/sleeping.webp",
+      "animation": "webp/sleeping-motion.webp",
+      "poster": "posters/sleeping.png",
+      "staticSize": [
+        400,
+        400
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "loopCount": 0,
+      "frames": 15,
+      "uniqueFrames": 8,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "durationMs": 3560,
+      "firstFrameMatchesStatic": true,
+      "background": "#FAF7F2",
+      "alpha": false,
+      "lossless": true,
+      "sheet": "sheets/sleeping.png"
+    }
+  ],
+  "sha256": {
+    "webp/ask-motion.webp": "ba4e47d5352b9c5e353a998a2f2504bfbefb25ba9334a7269f026a7a298ee08a",
+    "webp/ask.webp": "b781b8defc91384228b775cfae502ab83d01b930a03a2de1f1e29e769dbacbd5",
+    "webp/confirm-motion.webp": "3500b86330ed4699a1e3d60bba5f7d1a526a507486db46d4757f2ac822d83e9f",
+    "webp/confirm.webp": "dff4978b76ac8633e8a940d2e546276215f21c3de8caf7a894f50a77d08c83c9",
+    "webp/done-motion.webp": "e79ba132745130acc4def903810fd59a13ee6f80f1500488b925186771100f14",
+    "webp/done.webp": "47e4cfb8be1a99629ea20bbd1078134f6dd54b94daf7c244f6bdfb781acccaa2",
+    "webp/error-motion.webp": "2735e6a8b0e27df3c31d20461acc90fe4d5313391dc94de3f887daa8fb2824aa",
+    "webp/error.webp": "010a70d1f2c1f301cad01b61fb881e933203daa44e6447c672a946abe0b7d25c",
+    "webp/greeting-motion.webp": "2588b0231d1d8bbb3b0000c166389d092aaaf59cb6fc861cc148bda95fa88b9c",
+    "webp/greeting.webp": "1cb24dfd825165c1e4a3f575602dbee0d8e8be6ad97e99b08d5c8fbb5c1a9d43",
+    "webp/idle-motion.webp": "f52ee826de8f8b494faf42f3313f1a73bd2bd02b82eea0dbeda561424522c77a",
+    "webp/idle.webp": "fc050dea85c4bf8c6e1153eec402f453acf67dc9a878542bd86d780485f13586",
+    "webp/offline-motion.webp": "ba9f9d237a1c4f36d54cd199242e7de4975bac9051ff83e33039fd9e23f12af0",
+    "webp/offline.webp": "e892e51e11d110fa6c14ba0bf33385d94d8d308067700d70bc22544403986169",
+    "webp/sleeping-motion.webp": "ec8b1b70e31f9204e673bbbbcda010b282be2fd841b82262d9d89da9f2aa0da4",
+    "webp/sleeping.webp": "5b4ace4269bfa653c45a89be3d1bb41f5d6ad13e92d934a574ffa1b900e71a37",
+    "webp/thinking-motion.webp": "a4e2f88389c45501423d5ccfed51d19bcb22bb297d94288a38092290cfd8f8b1",
+    "webp/thinking.webp": "ea0a0ba7e4435faf6d1b3fd6a0e3d863cde1d624cd6cad8463d264f441745bec",
+    "webp/typing-motion.webp": "944b034317feedc002b919650a34bf4e7008509a7e5a10d81cded455df9602bb",
+    "webp/typing.webp": "855c15b3dd1c834205db1c4731448e78a9b07d4a7fce8a5ae0364c39545e807d"
+  }
+}
