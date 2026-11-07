@@ -13,8 +13,18 @@ import { listSkills, type skillRoots } from './skills.ts'
  */
 type Roots = ReturnType<typeof skillRoots>
 
-/** A candidate as the window sees it: no path. */
-const candidateView = ({ source: _source, ...rest }: Candidate) => rest
+/** Why a candidate goes in as it does, in one word for the window: ready, renamed (name, taken), or the issue that stops it. */
+function whyOf(candidate: Candidate): string {
+  if (candidate.fix === 'name-format') return 'name'
+  if (candidate.fix === 'taken') return 'taken'
+  if (candidate.status === 'ready') return 'ready'
+  return candidate.issues[0] === 'name-format' ? 'no-kebab' : candidate.issues[0] ?? 'frontmatter'
+}
+
+/** A candidate as the window sees it: its names, whether and why it goes in; no path. */
+const candidateView = (candidate: Candidate) => ({
+  entry: candidate.entry, name: candidate.name, status: candidate.status, picked: candidate.picked, why: whyOf(candidate), detail: null,
+})
 
 export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   roots: () => Roots,
@@ -27,6 +37,8 @@ export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, dep
   const handle = handlerOf(ipcMain)
   /** The folder last scanned, by its scan id, and what the window was shown of it. */
   let scanned: { id: string, dir: string, label: string, candidates: readonly Candidate[] } | null = null
+  /** Scans begun, so one that ends after a later one (its folder dialog left open) does not take its place. */
+  let begun = 0
   const scanView = () => ({ scanId: scanned!.id, label: scanned!.label, candidates: scanned!.candidates.map(candidateView) })
 
   const userRoot = () => {
@@ -40,8 +52,10 @@ export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, dep
   handle('ext:skill-sources', () => sources().map(({ dir, ...source }) => ({ ...source, where: shortPath(dir) })))
 
   handle('ext:scan-skills', async (from) => {
+    const turn = ++begun
     const found = sources().find((source) => source.id === from)
     const dir = from === 'choose' ? await chooseDir() : found?.dir
+    if (turn !== begun) return { cancelled: true }
     if (!dir) {
       if (from !== 'choose') throw new Error(t('main.skill-import.no.source'))
       return { cancelled: true }

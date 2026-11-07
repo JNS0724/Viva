@@ -1,5 +1,5 @@
 import type { ActionHandlers } from './action-types.ts'
-import { initialSkillImport } from './skill-import-state.ts'
+import { closedImport } from './import-flow-state.ts'
 import type { CapabilityTab, ExtensionStatus, PluginView, ServerView, SkillView } from './capability-types.ts'
 export type { CapabilityTab } from './capability-types.ts'
 
@@ -30,9 +30,9 @@ export const CAPABILITY_ACTIONS = {
     { open: true, tab: tab ?? state.capabilities.tab, selected: id ?? null, query: '' },
   ),
   capabilities_close: (state) => withCapabilities(state, { open: false }),
-  /** Another tab, or a skill picked, leaves an import begun. */
-  capabilities_tab: (state, { tab }) => withCapabilities({ ...state, skillImport: initialSkillImport }, { tab, selected: null, query: '' }),
-  capabilities_select: (state, { id }) => withCapabilities({ ...state, skillImport: initialSkillImport }, { selected: id }),
+  /** Another tab, or one picked, leaves an import begun. */
+  capabilities_tab: (state, { tab }) => withCapabilities({ ...state, importFlow: closedImport(state) }, { tab, selected: null, query: '' }),
+  capabilities_select: (state, { id }) => withCapabilities({ ...state, importFlow: closedImport(state) }, { selected: id }),
   capabilities_query: (state, { query }) => withCapabilities(state, { query }),
 } satisfies ActionHandlers
 

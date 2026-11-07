@@ -77,6 +77,7 @@
 - **读哪里**：每个 profile 的 `profiles/<名字>/cordis.yml`、`cordis.patch.yml`，再加上 dsh 文件夹里的 `cordis.patch.yml`（按 dsh 的顺序叠加，能读到 `insert`、按 id 覆盖和 `disabled`），找出 `@deepseek-ai/dsh-mcp-client` 那几条（`src/backend/dsh-mcp-import.ts`）。
 - **密钥**：直接写在配置里的照搬；写成 `!!js process.env.X`（或 `` `Bearer ${process.env.X}` `` 这类模板）的，按 dsh 的顺序找：你终端的环境（从登录 shell 读一次，因为从程序坞打开的应用拿不到）、应用自己的环境、dsh 文件夹里的 `.env`。其他 `!!js` 写法一律不执行。找不到的不打断导入：服务器照样加上，在列表里标「缺少密钥：X」，点「编辑」补上就行。
 - **重名**：名字已经有的跳过（不区分大小写），结果里说明。
+- **从其他客户端导入**：「能力 · MCP」里点「从其他客户端导入」，列出这台电脑上 Claude Desktop、Claude Code（`~/.claude.json`）、Cursor（`~/.cursor/mcp.json`）里配好的服务器，逐个按 Viva 保存时的规则检查：`${VAR}` 写法的密钥从登录 shell 取值，取不到就按名字记成「缺少密钥」；SSE 连接方式、找不到的命令，以及在命令、参数或地址里引用变量的（那里的值不会加密）不能导入并写明原因；命令按登录 shell 找到的完整路径保存；名字里有 Viva 不支持的字符的会改名；Viva 已有同名的改名为 `名字-2` 且默认不勾。导入只写进 Viva 的配置（密钥加密），原来的配置文件只读（`src/backend/mcp-import.ts`）。Codex 的配置是 TOML，还不支持。
 - **原地编辑**：点「编辑」在原位置展开表单，命令、参数、地址都已填好；已保存的密钥只显示名字，留空就保持不变，填了才替换，也可以新增或删除。保存后会话自动重新接一次。对话里用 `viva_mcp_update`（先审批，新密钥同样在窗口里填）。
 
 ## 插件
