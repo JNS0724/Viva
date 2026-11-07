@@ -26,6 +26,12 @@ const scanOf = (state: State): ImportScanView | null => state.importFlow.scan as
 /** The import open on `kind`'s tab, or none. */
 export const importing = (state: State, kind: ImportKind): boolean => state.importFlow.open && state.importFlow.kind === kind
 
+/**
+ * No import open, its generation kept: every way an import ends (closed, another tab, one picked) goes through
+ * here, so the next one opened counts on and an answer from this one is never taken for the next one's.
+ */
+export const closedImport = (state: State): State['importFlow'] => ({ ...initialImportFlow, flow: state.importFlow.flow })
+
 /** An answer to the import open now, not to one closed or replaced since. */
 const current = (state: State, flow: number) => state.importFlow.open && state.importFlow.flow === flow
 
@@ -47,7 +53,7 @@ export const IMPORT_FLOW_ACTIONS = {
   },
   /** message null: nothing to say (the folder dialog cancelled). */
   import_failed: (state, { flow, message }) => (current(state, flow) ? withImport(state, { busy: false, error: message }) : state),
-  import_close: (state) => withImport(state, { ...initialImportFlow, flow: state.importFlow.flow }),
+  import_close: (state) => ({ ...state, importFlow: closedImport(state) }),
 } satisfies ActionHandlers
 
 /** How many of those found go in as they are, put right, or not at all; and how many are ticked. */

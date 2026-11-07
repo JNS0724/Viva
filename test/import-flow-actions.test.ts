@@ -10,13 +10,14 @@ const scan = { scanId: 'scan-1', label: 'Claude Code', candidates: [{ entry: 'no
 
 function setup(api: Record<string, (...args: any[]) => Promise<unknown>>, start: State = initialState) {
   let state: State = start
+  const dispatch = (action: Action) => { state = reduce(state, action) }
   const actions = createImportFlowActions({
     api: api as never,
     getState: () => state,
-    dispatch: (action: Action) => { state = reduce(state, action) },
+    dispatch,
     errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   })
-  return { actions, state: () => state }
+  return { actions, state: () => state, dispatch }
 }
 
 test('skills: opened on the folders found; one scanned; those ticked imported, the list and what was done shown, the new one picked', async () => {
@@ -128,4 +129,20 @@ test('an import answering after its flow was closed still lists what came in, bu
   answer({ imported: ['meeting-notes'], failed: [], notice: '已导入', skills: [{ id: 'user:meeting-notes', name: 'meeting-notes', root: 'user', rootLabel: 'Viva' }] })
   await importing
   assert.deepEqual([state().importFlow.open, state().capabilities.selected, (state().extensions.skills as Array<{ name: string }>).map((skill) => skill.name)], [true, null, ['meeting-notes']])
+})
+
+test('through the page: a skills scan still out, the tab switched to MCP and its import opened; the scan answering is let go', async () => {
+  let answer: (value: unknown) => void = () => {}
+  const { actions, state, dispatch } = setup({
+    skillSources: async () => sources,
+    scanSkills: () => new Promise((resolve) => { answer = resolve }),
+    mcpSources: async () => [{ id: 'cursor', label: 'Cursor', count: 1, where: '~/.cursor/mcp.json' }],
+  }, reduce(initialState, { type: 'capabilities_open', tab: 'skills' }))
+  await actions.openImport('skills')
+  const scanning = actions.scanImportSource('claude-code')
+  dispatch({ type: 'capabilities_tab', tab: 'mcp' })
+  await actions.openImport('mcp')
+  answer(scan)
+  await scanning
+  assert.deepEqual([state().capabilities.tab, state().importFlow.kind, state().importFlow.scan, state().importFlow.busy], ['mcp', 'mcp', null, false])
 })

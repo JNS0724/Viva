@@ -68,3 +68,15 @@ test('an answer from an import closed or replaced since is let go: it never show
   assert.equal(reduce(closed, { type: 'import_scanned', flow: mcp.flow, scan }).importFlow.open, false, 'closed, it stays closed')
   assert.ok(opened('skills', closed).flow > mcp.flow, 'generations keep counting after a close')
 })
+
+test('the tab changed, or one picked, then another import opened: a late answer from the first is still let go', () => {
+  for (const leave of [{ type: 'capabilities_tab', tab: 'mcp' }, { type: 'capabilities_select', id: 'user:weekly' }] as const) {
+    const skills = opened('skills')
+    const left = reduce(skills.state, leave)
+    assert.equal(left.importFlow.flow, skills.flow, `${leave.type} keeps the generation`)
+    const mcp = opened('mcp', left)
+    assert.ok(mcp.flow > skills.flow, `${leave.type}: the next import counts on`)
+    const late = reduce(mcp.state, { type: 'import_scanned', flow: skills.flow, scan })
+    assert.deepEqual([late.importFlow.kind, late.importFlow.scan], ['mcp', null], `${leave.type}: the skills' scan does not land in the MCP import`)
+  }
+})
