@@ -228,6 +228,9 @@ interface AgentApi extends LanguageApi {
   skillSources: Invoke<'ext:skill-sources'>
   scanSkills: Invoke<'ext:scan-skills'>
   importSkills: Invoke<'ext:import-skills'>
+  mcpSources: Invoke<'ext:mcp-sources'>
+  scanMcp: Invoke<'ext:scan-mcp'>
+  importMcp: Invoke<'ext:import-mcp'>
   getPlugins: Invoke<'plugins:get'>
   inspectPlugin: Invoke<'plugins:inspect'>
   installPlugin: Invoke<'plugins:install'>

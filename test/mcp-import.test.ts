@@ -1,0 +1,63 @@
+import { test, type TestContext } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { mcpSources, readClientServers, scanMcp } from '../src/backend/mcp-import.ts'
+
+/** MCP servers brought in from other clients' settings (mcp-import.ts): found, read, checked by Viva's own rules. */
+
+function setup(t: TestContext) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-import-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const write = (file: string, value: unknown) => {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true })
+    fs.writeFileSync(path.join(dir, file), typeof value === 'string' ? value : JSON.stringify(value))
+  }
+  return { dir, write }
+}
+
+const lookup = (env: Record<string, string>) => (name: string) => env[name]
+const commands = new Set(['npx', 'node', 'uvx'])
+const findCommand = (command: string) => (commands.has(command) ? `/usr/bin/${command}` : null)
+
+test('the clients found on this computer with servers in them, where each keeps them', (t) => {
+  const { dir, write } = setup(t)
+  write('home/.cursor/mcp.json', { mcpServers: { linear: { url: 'https://mcp.linear.app/mcp' } } })
+  write('home/.claude.json', { mcpServers: { a: { command: 'npx' }, b: { command: 'node' } }, projects: {} })
+  write('home/Library/Application Support/Claude/claude_desktop_config.json', { mcpServers: {} })
+  const sources = mcpSources({ home: path.join(dir, 'home'), platform: 'darwin', appData: '' })
+  assert.deepEqual(sources.map((source) => [source.id, source.count]), [['claude-code', 2], ['cursor', 1]], 'one with none is not offered')
+  const windows = mcpSources({ home: path.join(dir, 'home'), platform: 'win32', appData: path.join(dir, 'roaming') })
+  assert.ok(!windows.some((source) => source.id === 'claude-desktop'), 'on Windows Claude Desktop keeps them under AppData')
+})
+
+test('a file that is not JSON, or has no servers, gives none rather than failing', (t) => {
+  const { dir, write } = setup(t)
+  write('bad.json', '{ not json')
+  write('none.json', { other: 1 })
+  assert.deepEqual([readClientServers(path.join(dir, 'bad.json')), readClientServers(path.join(dir, 'none.json')), readClientServers(path.join(dir, 'missing.json'))], [[], [], []])
+})
+
+test('each server read and checked: as it is, its keys from the login shell, renamed, or refused with why', () => {
+  const entries = [
+    { entry: 'github', value: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], env: { GITHUB_TOKEN: 'ghp_example' } } },
+    { entry: 'postgres', value: { command: 'uvx', args: ['mcp-postgres'], env: { PG_URL: '${PG_URL}', PG_ROLE: '${env:PG_ROLE}' } } },
+    { entry: 'linear', value: { type: 'http', url: 'https://mcp.linear.app/mcp', headers: { Authorization: 'Bearer ${LINEAR_KEY}' } } },
+    { entry: 'old search', value: { type: 'sse', url: 'https://search.example/sse' } },
+    { entry: 'figma', value: { command: 'figma-mcp' } },
+    { entry: 'demo', value: { command: 'node', args: ['demo.js'] } },
+    { entry: 'Odd Name!', value: { command: 'node' } },
+  ]
+  const found = scanMcp(entries, { taken: ['demo'], lookup: lookup({ PG_URL: 'postgres://db' }), findCommand })
+  const row = (entry: string) => found.find((candidate) => candidate.entry === entry)!
+  assert.deepEqual([row('github').status, row('github').why, row('github').config?.env], ['ready', 'ready', { GITHUB_TOKEN: 'ghp_example' }])
+  assert.deepEqual([row('postgres').status, row('postgres').why, row('postgres').config?.env, row('postgres').config?.missing], ['ready', 'missing', { PG_URL: 'postgres://db' }, ['PG_ROLE']],
+    'a key the shell has is taken; one it has not is kept by name, to fill in later')
+  assert.deepEqual([row('linear').config?.type, row('linear').config?.missing], ['http', ['Authorization']])
+  assert.deepEqual([row('old search').status, row('old search').why], ['blocked', 'sse'])
+  assert.deepEqual([row('figma').status, row('figma').why], ['blocked', 'command'])
+  assert.deepEqual([row('demo').status, row('demo').why, row('demo').name, row('demo').picked], ['fixable', 'taken', 'demo-2', false])
+  assert.deepEqual([row('Odd Name!').status, row('Odd Name!').why, row('Odd Name!').name, row('Odd Name!').picked], ['fixable', 'name', 'Odd-Name', true])
+  assert.equal(JSON.stringify(found.map((candidate) => candidate.config?.name)).includes('Odd Name!'), false)
+})

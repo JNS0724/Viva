@@ -26,6 +26,8 @@ import { dshEnv } from './dsh-runtime.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
 import { registerSkillImportIpc } from './skill-import-ipc.ts'
 import { skillSources } from './skill-import.ts'
+import { registerMcpImportIpc } from './mcp-import-ipc.ts'
+import { loginShellTools, mcpSources } from './mcp-import.ts'
 import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb } from './history-db.ts'
@@ -743,6 +745,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       roots,
       sources: () => skillSources({ home: os.homedir(), dshHome: userDshHome() }),
       chooseDir: () => host.dialogs.chooseFolder({ title: t('main.skill-import.choose'), defaultPath: os.homedir(), showHidden: true }),
+    })
+    registerMcpImportIpc(ipcMain, {
+      store: mcpStore,
+      sources: () => mcpSources({ home: os.homedir(), platform: process.platform, appData: process.env.APPDATA ?? '' }),
+      shell: loginShellTools,
+      applyMcp: applyMcpChange,
     })
   }
 

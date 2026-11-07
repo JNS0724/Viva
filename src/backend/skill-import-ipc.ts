@@ -13,8 +13,18 @@ import { listSkills, type skillRoots } from './skills.ts'
  */
 type Roots = ReturnType<typeof skillRoots>
 
-/** A candidate as the window sees it: no path. */
-const candidateView = ({ source: _source, ...rest }: Candidate) => rest
+/** Why a candidate goes in as it does, in one word for the window: ready, renamed (name, taken), or the issue that stops it. */
+function whyOf(candidate: Candidate): string {
+  if (candidate.fix === 'name-format') return 'name'
+  if (candidate.fix === 'taken') return 'taken'
+  if (candidate.status === 'ready') return 'ready'
+  return candidate.issues[0] === 'name-format' ? 'no-kebab' : candidate.issues[0] ?? 'frontmatter'
+}
+
+/** A candidate as the window sees it: its names, whether and why it goes in; no path. */
+const candidateView = (candidate: Candidate) => ({
+  entry: candidate.entry, name: candidate.name, status: candidate.status, picked: candidate.picked, why: whyOf(candidate), detail: null,
+})
 
 export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   roots: () => Roots,

@@ -62,19 +62,24 @@ export interface PluginView {
   overrides: readonly string[]
 }
 
-/** A folder skills can be brought in from (skill-import.ts SkillSource), as the window sees it: where, not the path. */
-export interface SkillSourceView { id: string, label: string, count: number, where: string }
+/** What 导入 brings in: skills (skill-import-ipc.ts) or MCP servers (mcp-import-ipc.ts). */
+export type ImportKind = 'skills' | 'mcp'
 
-/** A skill found in a folder being imported from, and whether and under what name it goes in. */
-export interface SkillCandidateView {
+/** Where things can be brought in from, as the window sees it: where, not the path. */
+export interface ImportSourceView { id: string, label: string, count: number, where: string }
+
+/**
+ * One found there, and whether and under what name it goes in: `why` is one word, the kind's own (ready, name,
+ * taken, missing, sse, command, no-kebab, the skill issue…), `detail` what goes with it (keys to fill in, a command).
+ */
+export interface ImportCandidateView {
   entry: string
   name: string
-  description: string
   status: 'ready' | 'fixable' | 'blocked'
-  issues: readonly SkillIssueCode[]
-  fix: 'name-format' | 'taken' | null
   picked: boolean
+  why: string
+  detail: string | null
 }
 
-/** A folder scanned for skills: its id for the import, what it is called, what it holds. */
-export interface SkillScanView { scanId: string, label: string, candidates: readonly SkillCandidateView[] }
+/** A place scanned: its id for the import, what it is called, what it holds. */
+export interface ImportScanView { scanId: string, label: string, candidates: readonly ImportCandidateView[] }

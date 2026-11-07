@@ -61,7 +61,7 @@ test('what Viva already has is taken: scanned again, the same one is offered ren
   const first = await call('ext:scan-skills', 'claude-code')
   await call('ext:import-skills', first.scanId, ['weekly'])
   const again = await call('ext:scan-skills', 'claude-code')
-  assert.deepEqual(again.candidates.map((candidate: { name: string, fix: string, picked: boolean }) => [candidate.name, candidate.fix, candidate.picked]), [['weekly-2', 'taken', false]])
+  assert.deepEqual(again.candidates.map((candidate: { name: string, why: string, picked: boolean }) => [candidate.name, candidate.why, candidate.picked]), [['weekly-2', 'taken', false]])
 })
 
 test('a folder picked in the dialog, or the dialog cancelled', async (t) => {
@@ -83,7 +83,7 @@ test('what a skill ticked would go in as changed since it was shown: nothing cop
   fs.writeFileSync(path.join(roots[0].dir, 'weekly', 'SKILL.md'), '---\nname: weekly\ndescription: 早就有的\n---\n')
   const answer = await call('ext:import-skills', shown.scanId, ['weekly'])
   assert.equal(answer.changed, true)
-  assert.deepEqual(answer.scan.candidates.map((candidate: { name: string, fix: string }) => [candidate.name, candidate.fix]), [['weekly-2', 'taken']])
+  assert.deepEqual(answer.scan.candidates.map((candidate: { name: string, why: string }) => [candidate.name, candidate.why]), [['weekly-2', 'taken']])
   assert.equal(fs.existsSync(path.join(roots[0].dir, 'weekly-2')), false, 'not copied under a name the user did not see')
   const confirmed = await call('ext:import-skills', answer.scan.scanId, ['weekly'])
   assert.deepEqual(confirmed.imported, ['weekly-2'], 'ticked again on the new scan, it goes in as shown')

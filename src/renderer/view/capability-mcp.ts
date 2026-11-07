@@ -3,6 +3,8 @@ import { serverStanding, shownServer, type ServerStanding } from '../capabilitie
 import type { ExtensionStatus, ServerView } from '../capability-types.ts'
 import { h } from './dom.ts'
 import { importButton, serverForm, typeLabel } from './extensions.ts'
+import { importing } from '../import-flow-state.ts'
+import { importMain } from './import-flow.ts'
 
 /**
  * 能力 · MCP (view/capabilities.ts): the user's servers, how the agent took each this time, and the one picked: what it
@@ -23,7 +25,9 @@ export function serversSide(state: State, handlers: Handlers): Node[] {
   const servers = state.extensions.servers as readonly ServerView[]
   const shown = shownServer(state)
   return [
-    h('div', { class: 'cap-tools' }, importButton(state.extensions, handlers)),
+    h('div', { class: 'cap-tools' },
+      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t('capabilities.import.mcp.open'), onClick: () => handlers.openImport('mcp') }),
+      importButton(state.extensions, handlers)),
     state.extensions.importNote ? h('p', { class: 'ext-import-note', role: 'status', text: state.extensions.importNote }) : null,
     ...servers.map((server) => {
       const standing = standingText(serverStanding(server, statusOf(state)))
@@ -53,6 +57,7 @@ function serverFacts(server: ServerView, state: State, handlers: Handlers) {
 }
 
 export function serverMain(state: State, handlers: Handlers): HTMLElement {
+  if (importing(state, 'mcp')) return importMain('mcp', state, handlers)
   const server = shownServer(state)
   if (!server) return h('div', { class: 'tp-main tp-empty' }, h('p', { class: 'empty', text: t('extensions.no.connections.yet') }))
   const standing = standingText(serverStanding(server, statusOf(state)))

@@ -3,7 +3,7 @@ import type { KeptTask } from '../shared/ipc-results.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard } from './proposal-types.ts'
-import type { CapabilityTab, SkillScanView, SkillSourceView } from './capability-types.ts'
+import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from './capability-types.ts'
 
 type Info = AgentInfo
 type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images'>
@@ -126,13 +126,13 @@ export interface ActionPayloads extends ConversationPayloads {
   capabilities_tab: { tab: CapabilityTab }
   capabilities_select: { id: string | null }
   capabilities_query: { query: string }
-  skill_import_open: { sources: readonly SkillSourceView[] }
-  skill_import_busy: {}
-  skill_import_scanned: { scan: SkillScanView }
-  skill_import_back: {}
-  skill_import_pick: { entry: string, on: boolean }
-  skill_import_failed: { message: string | null }
-  skill_import_close: {}
+  import_open: { kind: ImportKind, sources: readonly ImportSourceView[] }
+  import_busy: {}
+  import_scanned: { scan: ImportScanView }
+  import_back: {}
+  import_pick: { entry: string, on: boolean }
+  import_failed: { message: string | null }
+  import_close: {}
   schedule_proposed: { proposal: ProposalCard['proposal'] }
   proposal_busy: { id: string }
   proposal_settled: { id: string, status: ProposalCard['status'], accepted?: ProposalCard['accepted'] }

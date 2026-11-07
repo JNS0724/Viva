@@ -17,7 +17,7 @@ import { WAITS_ACTIONS } from './waits-state.ts'
 import { PROPOSAL_ACTIONS } from './proposal-state.ts'
 import { FEED_ACTIONS, initialFeed } from './feed-state.ts'
 import { CAPABILITY_ACTIONS, initialCapabilities } from './capabilities-state.ts'
-import { initialSkillImport, SKILL_IMPORT_ACTIONS } from './skill-import-state.ts'
+import { initialImportFlow, IMPORT_FLOW_ACTIONS } from './import-flow-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
@@ -75,8 +75,8 @@ export const initialState = Object.freeze({
   plugins: initialPlugins,
   /** 能力: which of skills, MCP and plugins is shown, and the one picked (capabilities-state.ts). */
   capabilities: initialCapabilities,
-  /** 能力 · 技能 · 导入: where from, what was found, what is ticked (skill-import-state.ts). */
-  skillImport: initialSkillImport,
+  /** 能力 · 导入, skills or MCP servers: where from, what was found, what is ticked (import-flow-state.ts). */
+  importFlow: initialImportFlow,
   toast: null as Untyped,
   /** A new or reopened conversation is on its way; sending now would land in the one being replaced. */
   switching: false,
@@ -285,7 +285,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...PROPOSAL_ACTIONS,
   ...FEED_ACTIONS,
   ...CAPABILITY_ACTIONS,
-  ...SKILL_IMPORT_ACTIONS,
+  ...IMPORT_FLOW_ACTIONS,
 } satisfies ActionHandlers
 
 export function reduce(state: State, action: Action): State {

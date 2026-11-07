@@ -925,7 +925,7 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .cap-candidate + .cap-candidate { border-top: 1px solid var(--line); }
 .cap-candidate[data-status="blocked"] .cap-candidate-name { color: var(--ink-3); }
 .cap-candidate-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cap-tools { padding: 0 12px 4px; }
+.cap-tools { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 4px; }
 .cap-row .ext-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* How the one picked stands, by its name: one line, cut short, so the name keeps its room (the whole in its title). */
 .cap-standing { flex: 0 1 auto; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
