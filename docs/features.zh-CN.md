@@ -63,7 +63,8 @@
 
 添加 MCP 服务器、保存 skill，直接在对话里说就行，比如「帮我接入 GitHub」「把刚才写周报的做法存成 skill」。已经有的在「能力」页看：它和回顾、关于你、设置并列，分技能、MCP、插件三栏，左边列表、右边是选中的那一个；有用不了的，「能力」旁边带个数字。服务器可以「编辑」（原地改，不用删了重加），也可以删除；Viva 自己的 skill 可以删除，工作区里的标「只读」。
 
-- **skill 的检查**：按 dsh 加载 skill 的规则逐项看：有 YAML frontmatter、有 name 和 description、name 是 kebab-case、`disable-model-invocation` / `user-invocable` 写的是布尔值（`src/backend/skill-spec.ts`）。dsh 遇到不合规的 skill 只在日志里警告、直接跳过，模型也不知道；这里把原因写出来。同名的 skill 按 dsh 的优先级（工作区 `.dsh/skills` > 工作区 `.agents/skills` > Viva 的）只用一个，被盖住的写明是谁盖住的。
+- **skill 的检查**：按 dsh 加载 skill 的规则逐项看：有 YAML frontmatter、有 name 和 description、name 是 kebab-case、`disable-model-invocation` / `user-invocable` 写的是布尔值（`src/backend/skill-spec.ts`）。dsh 遇到不合规的 skill 只在日志里警告、直接跳过，模型也不知道；这里把原因写出来。同名的 skill 按 dsh 的优先级（工作区 `.dsh/skills` > 工作区 `.agents/skills` > Viva 的）只用一个，被盖住的写明是谁盖住的。工作区按 dsh 的算法取：从工作目录往上最近的含 `.git` 的文件夹。
+- **导入 skill**：「能力 · 技能」点「导入」，先选从哪儿来：这台电脑上找到的 Claude Code（`~/.claude/skills`）、Codex（`~/.codex/skills`）、`~/.agents/skills`、你自己的 dsh，或「选择文件夹…」（一整个目录或一个 skill 的文件夹都行）。然后逐个检查：符合规则的直接勾上；name 不是 kebab-case、或 Viva 里已有同名的，导入时在复制件里改名（同名的默认不勾）；dsh 加载不了的（没有 frontmatter、缺字段、调用开关写错、名字转不成 kebab-case）不能勾，写明原因。导入只复制进 Viva 的技能文件夹，原来的不动（`src/backend/skill-import.ts`）。
 
 - **先确认**：模型用 `viva-config` 插件（`plugins/config`）的工具配置：`viva_mcp_add` / `viva_mcp_update` / `viva_mcp_remove` / `viva_mcp_list` / `viva_mcp_import`，`viva_skill_create` / `viva_skill_install` / `viva_skill_remove` / `viva_skill_list`。会改动配置的那几个，先弹出审批卡片（「接入 MCP 服务器「github」」，下面是要运行的命令和参数），你允许后才执行；从 dsh 导入例外，见下。
 - **密钥不进对话**：服务要令牌时，模型只写名字（比如 `GITHUB_TOKEN`），窗口里弹出一张输入卡片让你填写。填的值直接交给主进程，用系统钥匙串加密存进 `mcp-servers.json`，不经过 dsh，也不会出现在聊天记录或「过程」里；「过程」只记下「请你填写密钥」和「你填写了密钥」。

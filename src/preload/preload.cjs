@@ -126,6 +126,9 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   importDsh: (from) => ipcRenderer.invoke('ext:import-dsh', from),
   removeSkill: (id) => ipcRenderer.invoke('ext:remove-skill', id),
   revealSkill: (id) => ipcRenderer.invoke('ext:reveal-skill', id),
+  skillSources: () => ipcRenderer.invoke('ext:skill-sources'),
+  scanSkills: (from) => ipcRenderer.invoke('ext:scan-skills', from),
+  importSkills: (scanId, picks) => ipcRenderer.invoke('ext:import-skills', scanId, picks),
   getPlugins: () => ipcRenderer.invoke('plugins:get'),
   /** What a spec (npm name, git address, folder) names, before anything is installed. */
   inspectPlugin: (spec) => ipcRenderer.invoke('plugins:inspect', spec),
