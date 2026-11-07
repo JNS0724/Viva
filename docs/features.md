@@ -79,7 +79,8 @@ Capabilities → Plugins manages the dsh plugins users install themselves, which
 
 - **Install:** enter an npm package name, a git address or a local folder and choose Look up first. Viva shows the package and its version and warns that a plugin runs inside the assistant with your permissions and can read your model keys and memories; nothing is installed until you choose Install. dsh's own plugin manager installs it with the pnpm Viva ships (no Node or pnpm of your own needed) and checks compatibility with dsh's version. If dependencies want to run build scripts, they are listed first and run only after Allow and install.
 - **Switch and remove:** switches and removal take effect at once, in new conversations, without a restart, and switches survive a relaunch. Viva's own plugins, persona and safety settings are unaffected by these switches and plugins.
-- **Visibility:** each plugin shows its version, description and whether it is on; a note says when part of it is an interface for dsh's Web client (Viva does not show that part; the rest works), and parts that did not start or stock dsh settings it changes are listed.
+- **Visibility:** each plugin shows its version, description and whether it is on; parts that did not start and stock dsh settings it changes are listed.
+- **Whether it works in Viva:** Viva runs dsh over ACP, without dsh's Web host, so each installed plugin's `package.json` is read (`src/backend/plugin-fit.ts`). One that depends on `@deepseek-ai/dsh-host-webserver`, `dsh-web`, `dsh-web-app` or `dsh-api-*` is marked "Doesn't work in Viva" and, while switched on, counts as a problem. One with `dsh.client` (an interface for dsh's Web client) works, without that interface. Others work. A plugin's author can declare support outright with `"viva": { "supports": true }` in `package.json`.
 - **In conversation:** the model can propose installing a plugin, approved by you on an approval card.
 
 <a id="定时任务"></a>

@@ -13,7 +13,7 @@ const skill = (id: string, extra: Partial<SkillView> = {}): SkillView => ({
 })
 const server = (name: string, extra: Partial<ServerView> = {}): ServerView => ({ name, type: 'stdio', command: 'npx', args: [], envNames: [], headerNames: [], ...extra })
 const plugin = (name: string, extra: Partial<PluginView> = {}): PluginView => ({
-  name, version: '1.0.0', description: null, enabled: true, removable: true, error: null, webUi: false, rows: [], overrides: [], ...extra,
+  name, version: '1.0.0', description: null, enabled: true, removable: true, error: null, fit: { kind: 'fits' }, rows: [], overrides: [], ...extra,
 })
 
 function loaded({ skills = [] as SkillView[], servers = [] as ServerView[], plugins = [] as PluginView[], active = [] as string[], dropped = [] as Array<{ name: string, reason: string }> } = {}) {
@@ -58,23 +58,26 @@ test('how a server stands: a key missing, connected, dropped with why, or not ye
   assert.deepEqual(serverStanding(server('new'), status), { kind: 'idle' })
 })
 
-test('how a plugin stands: broken, switched on but rows not running, off, or on', () => {
+test('how a plugin stands: broken, off, on but needing dsh\'s Web host, rows not running, or on', () => {
   assert.deepEqual(pluginStanding(plugin('p', { error: { code: 'incompatible-version', detail: 'needs 0.1' } })), { kind: 'error', code: 'incompatible-version', detail: 'needs 0.1' })
   const rows = [{ id: 'a', entryId: 'e1', enabled: true, phase: 'pending' }, { id: 'b', entryId: 'e2', enabled: true, phase: 'active' }, { id: 'c', entryId: null, enabled: false, phase: null }]
   assert.deepEqual(pluginStanding(plugin('p', { rows })), { kind: 'stalled', rows: ['a'] })
   assert.deepEqual(pluginStanding(plugin('p', { rows, enabled: false })), { kind: 'off' })
   assert.deepEqual(pluginStanding(plugin('p')), { kind: 'on' })
+  const web = { kind: 'needs-web' as const, needs: ['@deepseek-ai/dsh-host-webserver'] }
+  assert.deepEqual(pluginStanding(plugin('p', { fit: web, rows })), { kind: 'unsupported', needs: web.needs })
+  assert.deepEqual(pluginStanding(plugin('p', { fit: web, enabled: false })), { kind: 'off' }, 'switched off, it is not in the way')
 })
 
 test('counts for the tabs, and how many need looking at for the way in', () => {
   const state = loaded({
     skills: [skill('user:a'), skill('user:b', { issues: ['fields'], problem: 'x' })],
     servers: [server('on'), server('down'), server('key', { missingNames: ['T'] })],
-    plugins: [plugin('ok'), plugin('bad', { error: { code: 'not-bundle', detail: null } }), plugin('off', { enabled: false })],
+    plugins: [plugin('ok'), plugin('bad', { error: { code: 'not-bundle', detail: null } }), plugin('off', { enabled: false }), plugin('web', { fit: { kind: 'needs-web', needs: ['@deepseek-ai/dsh-web'] } })],
     active: ['on'], dropped: [{ name: 'down', reason: 'x' }],
   })
-  assert.deepEqual(capabilityCounts(state), { skills: 2, mcp: 3, plugins: 3 })
-  assert.equal(capabilityProblems(state), 4, 'a broken skill, a dropped server, one missing a key, a broken plugin; one switched off is fine')
+  assert.deepEqual(capabilityCounts(state), { skills: 2, mcp: 3, plugins: 4 })
+  assert.equal(capabilityProblems(state), 5, 'a broken skill, a dropped server, one missing a key, a broken plugin, one Viva cannot run; one switched off is fine')
   assert.equal(capabilityProblems(initialState), 0, 'nothing loaded, nothing wrong')
 })
 

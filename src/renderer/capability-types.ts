@@ -48,6 +48,8 @@ export interface ExtensionStatus {
 /** One row a plugin adds, and how it runs now. */
 export interface PluginRow { id: string, entryId: string | null, enabled: boolean, phase: string | null }
 
+export type PluginFit = { kind: 'declared' } | { kind: 'fits' } | { kind: 'web-part' } | { kind: 'needs-web', needs: readonly string[] } | { kind: 'unknown' }
+
 /** An installed dsh plugin. */
 export interface PluginView {
   name: string
@@ -56,8 +58,8 @@ export interface PluginView {
   enabled: boolean
   removable: boolean
   error: { code: string, detail: string | null } | null
-  /** It brings a part for dsh's Web client, which Viva does not run. */
-  webUi: boolean
+  /** Whether it works in Viva (plugin-fit.ts): its author says so, it does, it does but its part for dsh's Web client is not shown, it needs dsh's Web host, or cannot be told. */
+  fit: PluginFit
   rows: readonly PluginRow[]
   overrides: readonly string[]
 }
