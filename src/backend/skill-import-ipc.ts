@@ -37,6 +37,8 @@ export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, dep
   const handle = handlerOf(ipcMain)
   /** The folder last scanned, by its scan id, and what the window was shown of it. */
   let scanned: { id: string, dir: string, label: string, candidates: readonly Candidate[] } | null = null
+  /** Scans begun, so one that ends after a later one (its folder dialog left open) does not take its place. */
+  let begun = 0
   const scanView = () => ({ scanId: scanned!.id, label: scanned!.label, candidates: scanned!.candidates.map(candidateView) })
 
   const userRoot = () => {
@@ -50,8 +52,10 @@ export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, dep
   handle('ext:skill-sources', () => sources().map(({ dir, ...source }) => ({ ...source, where: shortPath(dir) })))
 
   handle('ext:scan-skills', async (from) => {
+    const turn = ++begun
     const found = sources().find((source) => source.id === from)
     const dir = from === 'choose' ? await chooseDir() : found?.dir
+    if (turn !== begun) return { cancelled: true }
     if (!dir) {
       if (from !== 'choose') throw new Error(t('main.skill-import.no.source'))
       return { cancelled: true }

@@ -31,6 +31,7 @@ const WHY: Readonly<Record<ImportKind, Readonly<Record<string, Why>>>> = {
     taken: (candidate) => t('capabilities.import.mcp.why.taken', { name: candidate.name }),
     sse: () => t('capabilities.import.mcp.why.sse'),
     command: (candidate) => t('capabilities.import.mcp.why.command', { detail: candidate.detail ?? '' }),
+    'inline-ref': () => t('capabilities.import.mcp.why.inline-ref'),
     invalid: (candidate) => t('capabilities.import.mcp.why.invalid', { detail: candidate.detail ?? '' }),
   },
 }

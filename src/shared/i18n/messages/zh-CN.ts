@@ -1008,6 +1008,7 @@ export const zhCN = {
   "capabilities.import.mcp.why.taken": "Viva 里已有同名的，导入时改名为 {name}",
   "capabilities.import.mcp.why.sse": "SSE 连接方式，Viva 只支持本地命令和 Streamable HTTP",
   "capabilities.import.mcp.why.command": "找不到命令 {detail}",
+  "capabilities.import.mcp.why.inline-ref": "命令、参数或地址里引用了变量，Viva 只支持在环境变量和请求头里引用，请改好后再导入",
   "capabilities.import.mcp.why.invalid": "{detail}",
   "capabilities.title": "能力",
   "capabilities.skills": "技能",

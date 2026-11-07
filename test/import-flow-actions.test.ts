@@ -96,3 +96,36 @@ test('nothing ticked, nothing asked; changed since shown: shown again with why, 
   assert.deepEqual([now.open, now.scan?.scanId, now.picks, Boolean(now.error)], [true, 'scan-2', [], true])
   assert.equal(changed.state().extensions.notice, null)
 })
+
+test('a skills scan answering after an MCP import was opened is let go; the MCP import is left as it was', async () => {
+  let answer: (value: unknown) => void = () => {}
+  const { actions, state } = setup({
+    skillSources: async () => sources,
+    scanSkills: () => new Promise((resolve) => { answer = resolve }),
+    mcpSources: async () => [{ id: 'cursor', label: 'Cursor', count: 1, where: '~/.cursor/mcp.json' }],
+  })
+  await actions.openImport('skills')
+  const scanning = actions.scanImportSource('claude-code')
+  await actions.openImport('mcp')
+  answer(scan)
+  await scanning
+  const now = state().importFlow
+  assert.deepEqual([now.kind, now.scan, now.busy, now.sources.map((source) => source.id)], ['mcp', null, false, ['cursor']])
+})
+
+test('an import answering after its flow was closed still lists what came in, but picks nothing and closes nothing', async () => {
+  let answer: (value: unknown) => void = () => {}
+  const { actions, state } = setup({
+    skillSources: async () => sources,
+    scanSkills: async () => scan,
+    importSkills: () => new Promise((resolve) => { answer = resolve }),
+  })
+  await actions.openImport('skills')
+  await actions.scanImportSource('claude-code')
+  const importing = actions.importPicked()
+  actions.closeImport()
+  await actions.openImport('skills')
+  answer({ imported: ['meeting-notes'], failed: [], notice: '已导入', skills: [{ id: 'user:meeting-notes', name: 'meeting-notes', root: 'user', rootLabel: 'Viva' }] })
+  await importing
+  assert.deepEqual([state().importFlow.open, state().capabilities.selected, (state().extensions.skills as Array<{ name: string }>).map((skill) => skill.name)], [true, null, ['meeting-notes']])
+})

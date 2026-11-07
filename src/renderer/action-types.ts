@@ -126,12 +126,13 @@ export interface ActionPayloads extends ConversationPayloads {
   capabilities_tab: { tab: CapabilityTab }
   capabilities_select: { id: string | null }
   capabilities_query: { query: string }
-  import_open: { kind: ImportKind, sources: readonly ImportSourceView[] }
-  import_busy: {}
-  import_scanned: { scan: ImportScanView }
+  import_opening: { kind: ImportKind }
+  import_sources: { flow: number, sources: readonly ImportSourceView[] }
+  import_busy: { flow: number }
+  import_scanned: { flow: number, scan: ImportScanView }
   import_back: {}
   import_pick: { entry: string, on: boolean }
-  import_failed: { message: string | null }
+  import_failed: { flow: number, message: string | null }
   import_close: {}
   schedule_proposed: { proposal: ProposalCard['proposal'] }
   proposal_busy: { id: string }

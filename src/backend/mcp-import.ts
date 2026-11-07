@@ -14,6 +14,8 @@ import { EXTRA_COMMAND_DIRS, resolveCommand, validateServer, type ServerConfig }
  */
 const NAME_LENGTH = 32
 const REF = /\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}/g
+/** Any `${…}` at all: one outside keys is refused, resolved or not. */
+const REF_TEST = /\$\{[^}]*\}/
 
 /** A client found with servers in its settings. */
 export interface McpSource { id: string, label: string, file: string, count: number }
@@ -46,7 +48,7 @@ export function mcpSources(where: { home: string, platform: string, appData: str
 }
 
 /** ready: saved as it is (`missing` its keys still to fill in); fixable: saved under `name`; blocked: not at all. */
-export type McpWhy = 'ready' | 'missing' | 'name' | 'taken' | 'sse' | 'command' | 'invalid'
+export type McpWhy = 'ready' | 'missing' | 'name' | 'taken' | 'sse' | 'command' | 'inline-ref' | 'invalid'
 
 export interface McpCandidate {
   /** Its name in the client's settings. */
@@ -85,7 +87,7 @@ function pairsOf(raw: unknown, lookup: EnvLookup): { values: Record<string, stri
 
 const usableName = (entry: string) => entry.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, NAME_LENGTH)
 
-type Read = { config: ServerConfig } | { refused: 'sse' | 'command' | 'invalid', detail: string | null }
+type Read = { config: ServerConfig } | { refused: 'sse' | 'command' | 'inline-ref' | 'invalid', detail: string | null }
 
 /** A client's entry as Viva would save it, or why it cannot be. */
 function readEntry(name: string, value: unknown, lookup: EnvLookup, findCommand: (command: string) => string | null): Read {
@@ -96,14 +98,20 @@ function readEntry(name: string, value: unknown, lookup: EnvLookup, findCommand:
   const http = kind === 'http' || kind === 'streamable-http' || kind === 'streamablehttp' || (!entry.command && Boolean(url))
   try {
     if (http) {
+      // Only keys (headers) are kept encrypted and kept from the window; a variable in the address would be neither.
+      if (REF_TEST.test(url)) return { refused: 'inline-ref', detail: null }
       const { values, missing } = pairsOf(entry.headers, lookup)
-      return { config: validateServer({ name, type: 'http', command: '', args: [], url: filled(url, lookup) ?? url, env: {}, headers: values, missing }, []) }
+      return { config: validateServer({ name, type: 'http', command: '', args: [], url, env: {}, headers: values, missing }, []) }
     }
-    const command = filled(String(entry.command ?? ''), lookup) ?? ''
-    if (command && !findCommand(command)) return { refused: 'command', detail: command }
-    const args = Array.isArray(entry.args) ? entry.args.map((arg) => filled(String(arg), lookup) ?? String(arg)) : []
+    const command = String(entry.command ?? '')
+    const args = Array.isArray(entry.args) ? entry.args.map(String) : []
+    // Likewise for the command and its arguments: only keys (env) hold a variable's value safely.
+    if ([command, ...args].some((part) => REF_TEST.test(part))) return { refused: 'inline-ref', detail: null }
+    // The command as the login shell finds it, saved whole: the app's own PATH is shorter.
+    const found = command ? findCommand(command) : null
+    if (!found) return { refused: 'command', detail: command }
     const { values, missing } = pairsOf(entry.env, lookup)
-    return { config: validateServer({ name, type: 'stdio', command, args, url: '', env: values, headers: {}, missing }, []) }
+    return { config: validateServer({ name, type: 'stdio', command: found, args, url: '', env: values, headers: {}, missing }, []) }
   } catch (err) {
     return { refused: 'invalid', detail: err instanceof Error ? err.message : String(err) }
   }

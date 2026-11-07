@@ -17,62 +17,68 @@ export function createImportFlowActions({ api, getState, dispatch, errorMessage 
     skills: { sources: () => api.skillSources(), scan: (from) => api.scanSkills(from), run: (scanId, picks) => api.importSkills(scanId, picks) },
     mcp: { sources: () => api.mcpSources(), scan: (from) => api.scanMcp(from), run: (scanId, picks) => api.importMcp(scanId, picks) },
   }
-  const finished: Record<ImportKind, (done: unknown) => void> = {
-    skills: (answer) => {
+  /** `pick`: the import it was asked in is still open, so the first brought in is picked. */
+  const finished: Record<ImportKind, (done: unknown, pick: boolean) => void> = {
+    skills: (answer, pick) => {
       const done = answer as SkillsDone
       dispatch({ type: 'extensions_saved', view: { skills: [...done.skills] }, notice: done.notice })
       const first = done.skills.find((skill) => skill.managed !== false && skill.name === done.imported[0])
-      if (first) dispatch({ type: 'capabilities_select', id: first.id })
+      if (pick && first) dispatch({ type: 'capabilities_select', id: first.id })
     },
-    mcp: (answer) => {
+    mcp: (answer, pick) => {
       const done = answer as McpDone
       dispatch({ type: 'extensions_saved', view: { servers: [...done.servers] }, notice: done.notice })
       if (done.info) dispatch({ type: 'config_applied', info: done.info })
-      if (done.imported[0]) dispatch({ type: 'capabilities_select', id: done.imported[0] })
+      if (pick && done.imported[0]) dispatch({ type: 'capabilities_select', id: done.imported[0] })
     },
   }
-  const fail = (err: unknown) => dispatch({ type: 'import_failed', message: errorMessage(err) })
+  // Every answer goes back with the import it was asked in (`flow`); one from an import since closed or replaced is let go.
+  const fail = (flow: number, err: unknown) => dispatch({ type: 'import_failed', flow, message: errorMessage(err) })
 
   return {
     async openImport(kind: ImportKind) {
+      dispatch({ type: 'import_opening', kind })
+      const { flow } = getState().importFlow
       try {
-        dispatch({ type: 'import_open', kind, sources: await calls[kind].sources() as readonly ImportSourceView[] })
+        dispatch({ type: 'import_sources', flow, sources: await calls[kind].sources() as readonly ImportSourceView[] })
       } catch (err) {
-        dispatch({ type: 'extensions_failed', message: errorMessage(err) })
+        fail(flow, err)
       }
     },
     /** from: a place's id, or 'choose' for the folder dialog. */
     async scanImportSource(from: string) {
-      const kind = getState().importFlow.kind as ImportKind | null
+      const { kind, flow } = getState().importFlow
       if (!kind) return
-      dispatch({ type: 'import_busy' })
+      dispatch({ type: 'import_busy', flow })
       try {
-        const scan = await calls[kind].scan(from) as ImportScanView | { cancelled: true }
-        if ('cancelled' in scan) return dispatch({ type: 'import_failed', message: null })
-        dispatch({ type: 'import_scanned', scan })
+        const scan = await calls[kind as ImportKind].scan(from) as ImportScanView | { cancelled: true }
+        if ('cancelled' in scan) return dispatch({ type: 'import_failed', flow, message: null })
+        dispatch({ type: 'import_scanned', flow, scan })
       } catch (err) {
-        fail(err)
+        fail(flow, err)
       }
     },
     pickImport: (entry: string, on: boolean) => dispatch({ type: 'import_pick', entry, on }),
     backToImportSources: () => dispatch({ type: 'import_back' }),
     closeImport: () => dispatch({ type: 'import_close' }),
     async importPicked() {
-      const { kind, scan, picks, busy } = getState().importFlow
+      const { kind, scan, picks, busy, flow } = getState().importFlow
       if (!kind || !scan || !picks.length || busy) return
       // Changing servers attaches the session again, which would cut a running turn short.
-      if (kind === 'mcp' && isBusy(getState())) return dispatch({ type: 'import_failed', message: t('extension-actions.stop.the.current.task.before.changing.mcp') })
-      dispatch({ type: 'import_busy' })
+      if (kind === 'mcp' && isBusy(getState())) return dispatch({ type: 'import_failed', flow, message: t('extension-actions.stop.the.current.task.before.changing.mcp') })
+      dispatch({ type: 'import_busy', flow })
       try {
         const done = await calls[kind as ImportKind].run((scan as ImportScanView).scanId, [...picks]) as Changed | object
         if ('changed' in done) {
-          dispatch({ type: 'import_scanned', scan: done.scan })
-          return dispatch({ type: 'import_failed', message: t('capabilities.import.changed') })
+          dispatch({ type: 'import_scanned', flow, scan: done.scan })
+          return dispatch({ type: 'import_failed', flow, message: t('capabilities.import.changed') })
         }
-        dispatch({ type: 'import_close' })
-        finished[kind as ImportKind](done)
+        // What was brought in is so whatever is open now; only the import it was asked in is closed and its first picked.
+        const still = getState().importFlow.open && getState().importFlow.flow === flow
+        if (still) dispatch({ type: 'import_close' })
+        finished[kind as ImportKind](done, still)
       } catch (err) {
-        fail(err)
+        fail(flow, err)
       }
     },
   }

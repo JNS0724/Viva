@@ -8,6 +8,8 @@ import type { ImportKind, ImportScanView, ImportSourceView } from './capability-
  */
 export const initialImportFlow = Object.freeze({
   open: false,
+  /** Counts imports opened: an answer carries the one it was asked in, and one from before is let go. */
+  flow: 0,
   kind: null as ImportKind | null,
   sources: Object.freeze([]) as readonly ImportSourceView[],
   /** What the place picked holds; null while where from is being chosen. */
@@ -24,12 +26,17 @@ const scanOf = (state: State): ImportScanView | null => state.importFlow.scan as
 /** The import open on `kind`'s tab, or none. */
 export const importing = (state: State, kind: ImportKind): boolean => state.importFlow.open && state.importFlow.kind === kind
 
+/** An answer to the import open now, not to one closed or replaced since. */
+const current = (state: State, flow: number) => state.importFlow.open && state.importFlow.flow === flow
+
 export const IMPORT_FLOW_ACTIONS = {
-  import_open: (state, { kind, sources }) => withImport(state, { ...initialImportFlow, open: true, kind, sources }),
-  import_busy: (state) => withImport(state, { busy: true, error: null }),
-  import_scanned: (state, { scan }) => withImport(state, {
+  /** A new import, where from still being read. */
+  import_opening: (state, { kind }) => withImport(state, { ...initialImportFlow, open: true, kind, busy: true, flow: state.importFlow.flow + 1 }),
+  import_sources: (state, { flow, sources }) => (current(state, flow) ? withImport(state, { busy: false, sources }) : state),
+  import_busy: (state, { flow }) => (current(state, flow) ? withImport(state, { busy: true, error: null }) : state),
+  import_scanned: (state, { flow, scan }) => (current(state, flow) ? withImport(state, {
     busy: false, error: null, scan, picks: scan.candidates.filter((candidate) => candidate.picked).map((candidate) => candidate.entry),
-  }),
+  }) : state),
   import_back: (state) => withImport(state, { scan: null, picks: [], error: null }),
   /** One that cannot go in is never ticked. */
   import_pick: (state, { entry, on }) => {
@@ -39,8 +46,8 @@ export const IMPORT_FLOW_ACTIONS = {
     return withImport(state, { picks: on ? [...others, entry] : others })
   },
   /** message null: nothing to say (the folder dialog cancelled). */
-  import_failed: (state, { message }) => withImport(state, { busy: false, error: message }),
-  import_close: (state) => withImport(state, { ...initialImportFlow }),
+  import_failed: (state, { flow, message }) => (current(state, flow) ? withImport(state, { busy: false, error: message }) : state),
+  import_close: (state) => withImport(state, { ...initialImportFlow, flow: state.importFlow.flow }),
 } satisfies ActionHandlers
 
 /** How many of those found go in as they are, put right, or not at all; and how many are ticked. */

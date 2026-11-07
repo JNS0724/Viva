@@ -1007,6 +1007,7 @@ export const en = {
   "capabilities.import.mcp.why.taken": "Viva has one by that name; it goes in as {name}",
   "capabilities.import.mcp.why.sse": "SSE connection; Viva supports local commands and Streamable HTTP",
   "capabilities.import.mcp.why.command": "Command {detail} was not found",
+  "capabilities.import.mcp.why.inline-ref": "A variable is used in the command, its arguments or the address; Viva only takes them in environment variables and headers, so change it first",
   "capabilities.import.mcp.why.invalid": "{detail}",
   "capabilities.title": "Capabilities",
   "capabilities.skills": "Skills",

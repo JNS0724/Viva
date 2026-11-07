@@ -10,7 +10,7 @@ import type { ServerConfig } from '../src/backend/mcp-config.ts'
 
 const SECRET = 'ghp_example_secret'
 
-function setup(t: TestContext) {
+function setup(t: TestContext, { shell = async () => ({ lookup: () => undefined, findCommand: (command: string) => (command === 'npx' || command === 'node' ? `/usr/bin/${command}` : null) }) } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-import-ipc-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
   const file = path.join(dir, 'mcp.json')
@@ -22,7 +22,7 @@ function setup(t: TestContext) {
   registerMcpImportIpc({ handle: (channel: string, fn: (...args: unknown[]) => unknown) => handlers.set(channel, fn) } as never, {
     store: { list: () => saved, addMany: (configs) => { saved = [...saved, ...configs] } },
     sources: () => [{ id: 'cursor', label: 'Cursor', file, count: 1 }],
-    shell: async () => ({ lookup: () => undefined, findCommand: (command) => (command === 'npx' ? '/usr/bin/npx' : null) }),
+    shell,
     applyMcp: async () => { applied++; return { mode: 'live' } },
     newId: () => `scan-${++ids}`,
   })
@@ -61,4 +61,38 @@ test('a name taken since it was shown: nothing saved, the new scan back to look 
   assert.equal(answer.changed, true)
   assert.deepEqual(answer.scan.candidates.map((candidate: { name: string, why: string }) => [candidate.name, candidate.why]), [['github-2', 'taken']])
   assert.equal(saved().length, 1, 'nothing saved under a name not shown')
+})
+
+test('changed in any part since shown (here http turned into a command of the same name): nothing saved, shown again', async (t) => {
+  const { write, call, saved } = setup(t)
+  write({ tools: { type: 'http', url: 'https://tools.example/mcp' } })
+  const shown = await call('ext:scan-mcp', 'cursor')
+  write({ tools: { command: 'node', args: ['other.js'] } })
+  const answer = await call('ext:import-mcp', shown.scanId, ['tools'])
+  assert.deepEqual([answer.changed, answer.scan.candidates[0].type, saved().length], [true, 'stdio', 0], 'a new command is never started without being seen')
+  write({ tools: { command: 'node', args: ['other.js'], env: { TOKEN: 'b' } } })
+  const again = await call('ext:import-mcp', answer.scan.scanId, ['tools'])
+  assert.equal(again.changed, true, 'a key changed counts too')
+})
+
+test('a scan ending after a later one does not take its place; an import holds the scan it was asked about', async (t) => {
+  const gates: Array<() => void> = []
+  const slow = () => new Promise<void>((resolve) => { gates.push(resolve) })
+  const tools = { lookup: () => undefined, findCommand: (command: string) => `/usr/bin/${command}` }
+  const { write, call, saved } = setup(t, { shell: async () => { await slow(); return tools } })
+  write({ a: { command: 'node' } })
+  const first = call('ext:scan-mcp', 'cursor')
+  const second = call('ext:scan-mcp', 'cursor')
+  gates.shift()!()
+  await new Promise((resolve) => setImmediate(resolve))
+  gates.shift()!()
+  const [one, two] = await Promise.all([first, second])
+  await assert.rejects(call('ext:import-mcp', one.scanId, ['a']), 'the earlier scan is not the one shown last')
+  const importing = call('ext:import-mcp', two.scanId, ['a'])
+  const meanwhile = call('ext:scan-mcp', 'cursor')
+  gates.shift()!()
+  await assert.rejects(importing, 'a scan begun meanwhile ends the import, nothing saved')
+  gates.shift()!()
+  await meanwhile
+  assert.equal(saved().length, 0)
 })

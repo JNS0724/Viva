@@ -51,7 +51,7 @@ test('each server read and checked: as it is, its keys from the login shell, ren
   ]
   const found = scanMcp(entries, { taken: ['demo'], lookup: lookup({ PG_URL: 'postgres://db' }), findCommand })
   const row = (entry: string) => found.find((candidate) => candidate.entry === entry)!
-  assert.deepEqual([row('github').status, row('github').why, row('github').config?.env], ['ready', 'ready', { GITHUB_TOKEN: 'ghp_example' }])
+  assert.deepEqual([row('github').status, row('github').why, row('github').config?.env, row('github').config?.command], ['ready', 'ready', { GITHUB_TOKEN: 'ghp_example' }, '/usr/bin/npx'])
   assert.deepEqual([row('postgres').status, row('postgres').why, row('postgres').config?.env, row('postgres').config?.missing], ['ready', 'missing', { PG_URL: 'postgres://db' }, ['PG_ROLE']],
     'a key the shell has is taken; one it has not is kept by name, to fill in later')
   assert.deepEqual([row('linear').config?.type, row('linear').config?.missing], ['http', ['Authorization']])
@@ -60,4 +60,23 @@ test('each server read and checked: as it is, its keys from the login shell, ren
   assert.deepEqual([row('demo').status, row('demo').why, row('demo').name, row('demo').picked], ['fixable', 'taken', 'demo-2', false])
   assert.deepEqual([row('Odd Name!').status, row('Odd Name!').why, row('Odd Name!').name, row('Odd Name!').picked], ['fixable', 'name', 'Odd-Name', true])
   assert.equal(JSON.stringify(found.map((candidate) => candidate.config?.name)).includes('Odd Name!'), false)
+})
+
+test('a variable outside the keys (in the address, the command or its arguments) is refused, found or not: only keys are kept encrypted', () => {
+  const entries = [
+    { entry: 'url', value: { type: 'http', url: 'https://api.example/mcp?token=${TOKEN}' } },
+    { entry: 'arg', value: { command: 'npx', args: ['--token', '${TOKEN}'] } },
+    { entry: 'cmd', value: { command: '${HOME}/bin/tool' } },
+    { entry: 'gone', value: { command: 'npx', args: ['--token', '${NOT_SET}'] } },
+  ]
+  const found = scanMcp(entries, { taken: [], lookup: lookup({ TOKEN: 'secret', HOME: '/home/me' }), findCommand })
+  assert.deepEqual(found.map((candidate) => [candidate.entry, candidate.status, candidate.why, candidate.config]),
+    [['url', 'blocked', 'inline-ref', null], ['arg', 'blocked', 'inline-ref', null], ['cmd', 'blocked', 'inline-ref', null], ['gone', 'blocked', 'inline-ref', null]])
+  assert.equal(JSON.stringify(found).includes('secret'), false)
+})
+
+test('the command is saved as the login shell finds it, so one in a folder only the shell knows still starts', () => {
+  const shellOnly = (command: string) => (command === 'my-mcp' ? '/Users/me/.local/share/mise/shims/my-mcp' : null)
+  const [found] = scanMcp([{ entry: 'mine', value: { command: 'my-mcp', args: ['serve'] } }], { taken: [], lookup: lookup({}), findCommand: shellOnly })
+  assert.deepEqual([found.status, found.config?.command, found.config?.args], ['ready', '/Users/me/.local/share/mise/shims/my-mcp', ['serve']])
 })

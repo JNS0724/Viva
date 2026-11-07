@@ -13,6 +13,11 @@ import { serverView, type ServerConfig } from './mcp-config.ts'
  */
 const candidateView = ({ config, ...rest }: McpCandidate) => ({ ...rest, type: config?.type ?? null })
 
+/** The same server in every part that is saved, keys and their values included (compared here, never sent). */
+const sameServer = (a: ServerConfig, b: ServerConfig) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b))
+const sorted = (record: Record<string, string>) => Object.fromEntries(Object.entries(record).sort(([x], [y]) => x.localeCompare(y)))
+const canonical = (server: ServerConfig) => ({ ...server, env: sorted(server.env), headers: sorted(server.headers), missing: [...server.missing].sort() })
+
 export function registerMcpImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   store: { list: () => ServerConfig[], addMany: (configs: readonly ServerConfig[]) => void },
   sources: () => McpSource[],
@@ -24,8 +29,12 @@ export function registerMcpImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
 }) {
   const { store, sources, shell, applyMcp, newId = () => String(Date.now()) } = deps
   const handle = handlerOf(ipcMain)
-  let scanned: { id: string, sourceId: string, label: string, candidates: readonly McpCandidate[] } | null = null
-  const scanView = () => ({ scanId: scanned!.id, label: scanned!.label, candidates: scanned!.candidates.map(candidateView) })
+  type Scan = { id: string, sourceId: string, label: string, candidates: readonly McpCandidate[] }
+  /** The last scan the window was shown; an import names it by id. */
+  let scanned: Scan | null = null
+  /** Scans begun, so one that ends after a later one does not take its place. */
+  let begun = 0
+  const scanView = (scan: Scan) => ({ scanId: scan.id, label: scan.label, candidates: scan.candidates.map(candidateView) })
 
   async function scan(sourceId: string) {
     const source = sources().find((one) => one.id === sourceId)
@@ -37,24 +46,30 @@ export function registerMcpImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
   handle('ext:mcp-sources', () => sources().map(({ file, ...source }) => ({ ...source, where: shortPath(file) })))
 
   handle('ext:scan-mcp', async (sourceId) => {
+    const turn = ++begun
     const { source, candidates } = await scan(sourceId)
-    scanned = { id: newId(), sourceId, label: source.label, candidates }
-    return scanView()
+    const done = { id: newId(), sourceId, label: source.label, candidates }
+    if (turn === begun) scanned = done
+    return scanView(done)
   })
 
-  /** Whether every one ticked would be saved as it was shown. */
-  const asShown = (fresh: readonly McpCandidate[], picks: readonly string[]) => picks.every((entry) => {
-    const shown = scanned!.candidates.find((candidate) => candidate.entry === entry)
+  /** Whether every one ticked would be saved exactly as it was shown: its name, why, and the whole server, keys too. */
+  const asShown = (shown: Scan, fresh: readonly McpCandidate[], picks: readonly string[]) => picks.every((entry) => {
+    const before = shown.candidates.find((candidate) => candidate.entry === entry)
     const now = fresh.find((candidate) => candidate.entry === entry)
-    return shown && now?.config && now.name === shown.name && now.why === shown.why
+    return before?.config && now?.config && now.name === before.name && now.why === before.why && sameServer(now.config, before.config)
   })
 
   handle('ext:import-mcp', async (scanId, picks) => {
-    if (!scanned || scanned.id !== scanId) throw new Error(t('main.skill-import.scan.again'))
-    const { candidates } = await scan(scanned.sourceId)
-    if (!asShown(candidates, picks)) {
-      scanned = { ...scanned, id: newId(), candidates }
-      return { changed: true, scan: scanView() }
+    // The scan asked about, held for the whole import: another scan meanwhile does not change what this one acts on.
+    const shown = scanned
+    const turn = begun
+    if (!shown || shown.id !== scanId) throw new Error(t('main.skill-import.scan.again'))
+    const { candidates } = await scan(shown.sourceId)
+    if (scanned !== shown || begun !== turn) throw new Error(t('main.skill-import.scan.again'))
+    if (!asShown(shown, candidates, picks)) {
+      scanned = { ...shown, id: newId(), candidates }
+      return { changed: true, scan: scanView(scanned) }
     }
     const chosen = candidates.filter((candidate) => picks.includes(candidate.entry) && candidate.config).map((candidate) => candidate.config!)
     if (chosen.length) store.addMany(chosen)
