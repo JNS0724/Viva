@@ -55,6 +55,7 @@ const THREAD_METRICS = `(() => {
     questionTop: Math.round(question.getBoundingClientRect().top - scroll.getBoundingClientRect().top),
     jumpVisible: !document.getElementById('jump-latest').hidden,
     fromBottom: Math.round(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight),
+    typing: Boolean([...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.querySelector('.caret')),
   }
 })()`
 
@@ -91,12 +92,14 @@ async function longTaskAtCurrentSize(win: SmokeWindow, outDir: string) {
   await capture(win, outDir, 'long-drawer')
 
   await until(win, STREAMING_ANSWER_READY, 'an answer taller than the viewport while its text is still appearing')
+  await settle(win)
   const during = await run(win, THREAD_METRICS)
   report(`thread during long answer: ${JSON.stringify(during)}`)
   if (during.questionTop < QUESTION_TOP_RANGE[0] || during.questionTop > QUESTION_TOP_RANGE[1]) {
     failures.push(`question should stay near the top, was at ${during.questionTop}px`)
   }
   if (!during.jumpVisible) failures.push('jump-to-latest button should be visible')
+  if (!during.typing) failures.push('the long-answer observation must run while the answer is still appearing')
   await capture(win, outDir, 'long-answer')
 
   await click(win, 'jump-latest')
