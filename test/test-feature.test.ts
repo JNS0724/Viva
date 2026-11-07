@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { discoverTests, selectTests } from '../scripts/test-feature.ts'
+import { auditTests, discoverTests, featureNames, levelNames, runFeatures, selectAllTests, selectTests } from '../scripts/test-feature.ts'
+import { testLevels } from '../scripts/test-levels.ts'
 
 test('discovery finds nested JS and TS tests without running type fixtures or following links', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'viva test discovery '))
@@ -43,4 +44,36 @@ test('focused sets include the production event, lifecycle and proposal contract
     const selected = selectTests(files, [feature]).map(file => path.basename(file))
     for (const name of names) assert.ok(selected.includes(name), `${feature} includes ${name}`)
   }
+})
+
+test('every discovered JS/TS test has feature ownership and exactly one explicit cost level', () => {
+  const files = discoverTests(path.resolve(import.meta.dirname, '..'))
+  auditTests(files)
+  assert.deepEqual(selectTests(files, featureNames), files)
+  const classified = levelNames.flatMap(level => testLevels[level])
+  assert.equal(new Set(classified).size, classified.length, 'each stem has one level')
+  assert.deepEqual([...classified].sort(), files.map(file => path.basename(file).replace(/\.test\.(?:js|ts)$/, '')).sort())
+  assert.throws(() => auditTests([...files, 'test/new-unknown.test.ts']), /missing feature/)
+  assert.throws(() => auditTests([...files, 'test/model-new.test.js']), /expected one level/)
+})
+
+test('level filtering preserves shared contracts and legacy all-level selection without green no-ops', () => {
+  const files = ['test/backend-wire.test.ts', 'test/backend-wire-timing.test.ts', 'test/module-boundaries.test.ts', 'test/window-api.test.js']
+  assert.deepEqual(selectTests(files, ['architecture']), [...files].sort())
+  assert.deepEqual(selectTests(files, ['architecture'], ['fast']), [...files.slice(2)].sort())
+  assert.deepEqual(selectTests(files, ['architecture'], ['integration']), [files[0], ...files.slice(2)].sort())
+  assert.deepEqual(selectTests(files, ['architecture'], ['timing']), [...files.slice(1)].sort())
+  assert.deepEqual(selectAllTests(files, ['fast']), [...files.slice(2)].sort())
+  assert.deepEqual(selectTests(files, ['architecture'], ['fast', 'integration', 'timing']), [...files].sort())
+  assert.throws(() => selectTests(files, ['architecture'], ['typo']), /Unknown level/)
+  assert.throws(() => selectTests(files, ['architecture'], []), /at least one level/)
+  assert.throws(() => selectTests(['test/model-actions.test.ts', files[2]], ['models'], ['timing']), /No tests/)
+  assert.throws(() => selectAllTests([files[2]], ['timing']), /No tests/)
+  assert.throws(() => selectTests(files, ['models', 'architecture'], ['fast']), /No tests/)
+})
+
+test('CLI rejects ambiguous all/features, unknown options and invalid levels', () => {
+  assert.equal(runFeatures(['--all', 'architecture', '--list']), 2)
+  assert.equal(runFeatures(['--all', '--level=typo', '--list']), 2)
+  assert.equal(runFeatures(['--unknown-option']), 2)
 })
