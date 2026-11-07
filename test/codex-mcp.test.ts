@@ -35,6 +35,26 @@ test('one switched off in Codex says so; one using what Viva cannot do says whic
     'Codex keeps `${…}` in a value as it is; Viva would fill it in, so it is not taken for either')
 })
 
+test('only settings Viva carries over or can safely leave out are taken: tool lists, another environment and anything unknown are refused by name', () => {
+  const servers = codexServers({ mcp_servers: {
+    timed: { command: 'node', required: true, startup_timeout_sec: 20, startup_timeout_ms: 500, tool_timeout_sec: 60, supports_parallel_tool_calls: true },
+    here: { url: 'https://x.example/mcp', environment_id: 'local' },
+    allowed: { command: 'node', enabled_tools: ['read'] },
+    denied: { command: 'node', disabled_tools: ['delete'] },
+    elsewhere: { url: 'http://127.0.0.1:8000/mcp', environment_id: 'devbox' },
+    elsewhereCommand: { command: 'node', environment_id: 'devbox' },
+    approval: { command: 'node', default_tools_approval_mode: 'never' },
+    oauth: { url: 'https://x.example/mcp', scopes: ['read'] },
+  } })
+  const row = (entry: string) => servers.find((server) => server.entry === entry)!
+  assert.deepEqual(['timed', 'here'].map((entry) => row(entry).unsupported), [null, null], 'timeouts and being required change nothing Viva keeps; the local environment is this computer')
+  assert.deepEqual(['allowed', 'denied'].map((entry) => row(entry).unsupported), ['enabled_tools', 'disabled_tools'],
+    'Viva has no per-server tool list: taken without it, tools turned off in Codex would be offered')
+  assert.deepEqual(['elsewhere', 'elsewhereCommand'].map((entry) => row(entry).unsupported), ['environment_id', 'environment_id'],
+    'a server in another environment would be reached, or its command run, on this computer instead')
+  assert.deepEqual(['approval', 'oauth'].map((entry) => row(entry).unsupported), ['default_tools_approval_mode', 'scopes'])
+})
+
 test('a config with no servers, or not a table, has none', () => {
   assert.deepEqual([codexServers({}), codexServers({ mcp_servers: [] }), codexServers(null), codexServers({ mcp_servers: { odd: 'x' } }).map((server) => server.value)], [[], [], [], [{}]])
 })

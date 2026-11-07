@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { mcpSources, readClientServers, scanMcp } from '../src/backend/mcp-import.ts'
+import { clientPlaces, mcpSources, readClientServers, scanMcp } from '../src/backend/mcp-import.ts'
 
 /** MCP servers brought in from other clients' settings (mcp-import.ts): found, read, checked by Viva's own rules. */
 
@@ -100,4 +100,14 @@ test('Codex: found where CODEX_HOME says, its TOML read; one switched off there 
   assert.deepEqual([row('docs').why, row('docs').config?.missing], ['missing', ['Authorization']], 'its token is a key, to be filled in')
   write('codex/config.toml', '[mcp_servers.x\ncommand = 1')
   assert.deepEqual(readClientServers(codex.file), [], 'TOML that cannot be read gives none')
+})
+
+test('where clients are looked for comes from the login shell too: CODEX_HOME set only in the shell is found from the Dock', async () => {
+  const fromDock = { HOME: '/Users/me' }
+  const places = await clientPlaces({ home: '/Users/me', platform: 'darwin', processEnv: fromDock, shellEnv: async () => ({ CODEX_HOME: '/Users/me/work/codex' }) })
+  assert.equal(places.codexHome, '/Users/me/work/codex')
+  const unset = await clientPlaces({ home: '/Users/me', platform: 'darwin', processEnv: fromDock, shellEnv: async () => ({}) })
+  assert.equal(unset.codexHome, undefined, 'unset, the default ~/.codex is used')
+  const windows = await clientPlaces({ home: 'C:\\Users\\me', platform: 'win32', processEnv: { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }, shellEnv: async () => ({}) })
+  assert.equal(windows.appData, 'C:\\Users\\me\\AppData\\Roaming')
 })

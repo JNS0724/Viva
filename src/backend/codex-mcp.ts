@@ -3,8 +3,9 @@
  * mcp-import.ts to read and check like any: a variable Codex lets through from the environment (`env_vars`,
  * `env_http_headers`, `bearer_token_env_var`) becomes a key written `${VAR}`, filled in from the login shell. Codex
  * keeps every other value as written; one with `${…}` in it, Viva would fill in instead, so it is not taken. A setting
- * Viva cannot do (a folder to start in, a variable from a remote environment, a command that prints the headers) is
- * named, and the server not taken; one switched off in Codex is said to be.
+ * Viva cannot do (a folder to start in, another environment, a variable from one, a command that prints the headers,
+ * a list of the tools allowed, any setting not known here) is named, and the server not taken; one switched off in
+ * Codex is said to be.
  */
 export interface ClientEntry {
   /** Its name in the client's settings. */
@@ -36,8 +37,22 @@ function passedThrough(value: unknown): string[] | null {
   return names.includes(null) ? null : names.filter((name): name is string => Boolean(name))
 }
 
+/** The settings `written` carries over. */
+const CARRIED = ['command', 'args', 'env', 'env_vars', 'url', 'http_headers', 'env_http_headers', 'bearer_token_env_var']
+/** Those left out with nothing lost: being on (`off` says), how long Codex waits, whether it must start. */
+const LEFT_OUT = ['enabled', 'required', 'startup_timeout_sec', 'startup_timeout_ms', 'tool_timeout_sec', 'supports_parallel_tool_calls']
+const KNOWN = new Set([...CARRIED, ...LEFT_OUT])
+/** The environment that is this computer; a server in any other would be reached, or run, here instead. */
+const LOCAL_ENVIRONMENT = 'local'
+
+/**
+ * The first setting Viva cannot do; null when none. Only those known to be carried over or safe to leave out are
+ * taken, so a setting Codex adds later (or one like `enabled_tools`, whose loss would offer tools turned off there)
+ * stops the server rather than being dropped.
+ */
 function unsupported(server: Record<string, unknown>, literals: Record<string, Record<string, string>>): string | null {
-  for (const setting of ['cwd', 'http_headers_helper']) if (server[setting] !== undefined) return setting
+  const other = Object.keys(server).find((setting) => !KNOWN.has(setting) && !(setting === 'environment_id' && server[setting] === LOCAL_ENVIRONMENT))
+  if (other) return other
   if (passedThrough(server.env_vars) === null) return 'env_vars'
   const withRef = Object.entries(literals).find(([, values]) => Object.values(values).some((text) => REF_TEST.test(text)))
   return withRef ? withRef[0] : null

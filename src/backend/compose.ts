@@ -27,7 +27,7 @@ import { registerExtensionsIpc } from './extensions-ipc.ts'
 import { registerSkillImportIpc } from './skill-import-ipc.ts'
 import { skillSources } from './skill-import.ts'
 import { registerMcpImportIpc } from './mcp-import-ipc.ts'
-import { loginShellTools, mcpSources } from './mcp-import.ts'
+import { clientPlaces, loginShellTools, mcpSources } from './mcp-import.ts'
 import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb } from './history-db.ts'
@@ -748,7 +748,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     })
     registerMcpImportIpc(ipcMain, {
       store: mcpStore,
-      sources: () => mcpSources({ home: os.homedir(), platform: process.platform, appData: process.env.APPDATA ?? '', codexHome: process.env.CODEX_HOME || undefined }),
+      sources: async () => mcpSources(await clientPlaces()),
       shell: loginShellTools,
       applyMcp: applyMcpChange,
     })

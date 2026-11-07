@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { t } from '../shared/i18n/translate.ts'
@@ -25,6 +26,26 @@ export interface McpSource { id: string, label: string, file: string, count: num
 
 /** Where the clients are looked for: the home folder, the platform, Windows' AppData, and Codex's own (CODEX_HOME). */
 export interface ClientPlaces { home: string, platform: string, appData: string, codexHome?: string }
+
+type Env = Record<string, string | undefined>
+
+/** The environment a client started from the login shell has: the app's own, the shell's over it. */
+async function shellEnvironment({ processEnv = process.env, shellEnv = () => loginShellEnv() }: {
+  processEnv?: Env, shellEnv?: () => Promise<Env>,
+} = {}): Promise<Env> {
+  return { ...processEnv, ...await shellEnv() }
+}
+
+/**
+ * Where to look on this computer. CODEX_HOME is read as the login shell has it: one exported in a shell's startup file
+ * is missing from an app opened from the Dock or Finder.
+ */
+export async function clientPlaces({ home = os.homedir(), platform = process.platform, ...envs }: {
+  home?: string, platform?: string, processEnv?: Env, shellEnv?: () => Promise<Env>,
+} = {}): Promise<ClientPlaces> {
+  const env = await shellEnvironment(envs)
+  return { home, platform, appData: env.APPDATA ?? '', codexHome: env.CODEX_HOME || undefined }
+}
 
 /** Where each client keeps its servers, by platform. */
 function clientFiles({ home, platform, appData, codexHome = path.join(home, '.codex') }: ClientPlaces) {
@@ -164,7 +185,7 @@ export function scanMcp(entries: ReadonlyArray<Pick<ClientEntry, 'entry' | 'valu
  * fill in `${VAR}`, and its PATH, to find a server's command.
  */
 export async function loginShellTools(): Promise<{ lookup: EnvLookup, findCommand: (command: string) => string | null }> {
-  const env: Record<string, string | undefined> = { ...process.env, ...await loginShellEnv() }
+  const env = await shellEnvironment()
   return {
     lookup: (name) => env[name] || undefined,
     findCommand: (command) => resolveCommand(command, { env, extraDirs: EXTRA_COMMAND_DIRS }),
