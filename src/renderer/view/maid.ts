@@ -7,6 +7,8 @@
  * Views are rebuilt often (every second for the clock, every frame while an answer streams), so a picture is
  * kept per slot and reused while its look stays the same: a rebuilt node would restart its animation.
  */
+import { h } from './dom.ts'
+
 export const MAID_MOODS = Object.freeze(['greeting', 'idle', 'thinking', 'typing', 'ask', 'listening', 'confirm', 'done', 'error', 'offline', 'sleeping'] as const)
 export type MaidMood = typeof MAID_MOODS[number]
 /** The moods that have an animation of their own. */
@@ -92,12 +94,9 @@ function draw(mood: MaidMood, { size, framing = 'whole', moving = false, badge =
   Object.assign(image.style, { width: `${frame.size}px`, height: `${frame.size}px`, left: `${frame.offset}px`, top: `${frame.offset}px` })
   const art = box('maid-art')
   if (moving) {
-    const picture = document.createElement('picture')
-    const still = document.createElement('source')
-    still.media = '(prefers-reduced-motion: reduce)'
-    still.srcset = urlOf(pictureOf(mood, false, framing))
-    picture.append(still, image)
-    art.append(picture)
+    art.append(h('picture', {}, h('source', {
+      media: '(prefers-reduced-motion: reduce)', srcset: urlOf(pictureOf(mood, false, framing)),
+    }), image))
   } else art.append(image)
   maid.append(art)
   const sign = badge ? badgeOf(mood) : null
