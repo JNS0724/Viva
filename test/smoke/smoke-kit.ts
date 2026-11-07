@@ -33,7 +33,9 @@ export interface SmokeDesk {
 export type Expect = (ok: unknown, message: string, seen?: unknown) => void
 /** What main.ts lends a smoke run: the desktop island, the fake model, the agent to crash, and so on. */
 export interface SmokeModel { url: string, requests: object[], close: () => Promise<void> }
+export type SmokeStep = <T>(name: string, action: () => Promise<T>) => Promise<T>
 export interface SmokeHooks {
+  step?: SmokeStep
   desk: () => SmokeDesk
   model: () => SmokeModel | null
   agentPid: () => Promise<number | null>
@@ -50,6 +52,23 @@ export interface SmokeHooks {
 }
 
 export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Business readiness is checked by the caller. Finish finite transitions and paint the resulting layout. */
+export async function settle(win: SmokeWindow): Promise<void> {
+  await run(win, `(async () => {
+    await document.fonts.ready
+    await Promise.all(document.getAnimations()
+      .filter(animation => animation.playState === 'running' && Number.isFinite(animation.effect?.getComputedTiming().endTime))
+      .map(animation => animation.finished.catch(() => {})))
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  })()`)
+}
+
+/** Use the same named stages in Playwright reports and machine-readable stdout timing. */
+export async function smokeStep<T>(hooks: Pick<SmokeHooks, 'step'>, name: string, action: () => Promise<T>): Promise<T> {
+  const started = performance.now()
+  try { return await (hooks.step ? hooks.step(name, action) : action()) }
+  finally { report(`timing ${JSON.stringify({ step: name, ms: Math.round(performance.now() - started) })}`) }
+}
 /** What the page code returns; the code is the smoke run's own, so what comes back is what it was written to return. */
 export const run = (win: SmokeWindow, code: string): Promise<any> => win.webContents.executeJavaScript(code)
 export const click = (win: SmokeWindow, id: string) => run(win, `document.getElementById(${JSON.stringify(id)}).click()`)

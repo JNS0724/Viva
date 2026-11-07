@@ -29,6 +29,7 @@
     "smoke:relaunch": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @relaunch",
     "smoke:memory": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @memory",
     "smoke:resume": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @resume",
+    "smoke:schedules": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @schedules",
     "smoke:timeline": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @timeline",
     "smoke:perf": "playwright test -c test/smoke/playwright.config.ts --project=performance",
     "smoke:package": "playwright test -c test/smoke/playwright.config.ts --project=package",

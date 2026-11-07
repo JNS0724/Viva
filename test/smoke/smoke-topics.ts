@@ -1,4 +1,4 @@
-import { capture, finishTurn, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeWindow } from './smoke-kit.ts'
+import { capture, finishTurn, report, run, submit, settle, until, type Expect, type SmokeWindow } from './smoke-kit.ts'
 // newTopic: ⌘N, the first time; ＋ 新话题 above the input, the second.
 
 /**
@@ -46,7 +46,7 @@ export async function checkTopics(win: SmokeWindow, outDir: string) {
   })()`)
   expect(ready.draft === immediate.draft, 'runtime readiness must preserve the draft', ready)
   report('new-topic responsiveness: ' + JSON.stringify({ immediate, ready }))
-  await wait(UI_WAIT_MS)
+  await settle(win)
   await capture(win, outDir, 'topic-new')
   expect(fresh.start?.includes('新话题'), 'the new topic should say where it starts', fresh)
   expect(fresh.note?.includes('重新开始'), 'it should say the assistant starts afresh', fresh)
@@ -66,18 +66,18 @@ export async function checkTopics(win: SmokeWindow, outDir: string) {
   expect(moved.oldHead?.includes('助手不记得这段'), 'the topic left behind should say the assistant no longer has it', moved)
   expect(!moved.undo, 'once something is said the new topic can no longer be undone', moved)
   await run(win, `document.querySelector('#earlier .topic-old').scrollIntoView({ block: 'start' })`)
-  await wait(UI_WAIT_MS)
+  await settle(win)
   await capture(win, outDir, 'topic-old')
 
   await run(win, `[...document.querySelectorAll('#earlier .topic-old .topic-back')].at(-1).click()`)
   const back = await timelineWhen(win, `seen.start?.includes('回到') && !seen.switching`, 'back to the earlier topic')
   await run(win, `document.getElementById('scroll').scrollTop = 1e9`)
-  await wait(UI_WAIT_MS)
+  await settle(win)
   await capture(win, outDir, 'topic-back')
 
   await run(win, `document.querySelector('#ctx-area .ctx-chip').click()`)
   const menu = await until(win, `document.querySelector('#ctx-area .ctx-menu')?.textContent`, 'the label\'s menu')
-  await wait(UI_WAIT_MS)
+  await settle(win)
   await capture(win, outDir, 'topic-menu')
   expect(menu.includes('记得') && !menu.includes('压缩成要点'), 'the label should say what is remembered, and offer nothing not built', menu)
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)

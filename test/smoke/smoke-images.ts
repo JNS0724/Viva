@@ -1,5 +1,5 @@
 import type { SmokeDesk } from './smoke-kit.ts'
-import { capture, finishTurn, report, run, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
+import { capture, finishTurn, report, run, settle, until, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * Pictures in the walkthrough smoke run (smoke.js): a picture copied with words that came only as formatted
@@ -58,7 +58,7 @@ export async function checkPictures(win: SmokeWindow, outDir: string, desk: Smok
   await run(win, pasteInto('#composer-input', true))
   const draft = await until(win, DRAFT, 'the pasted picture shown in the input')
   if (!draft.words.includes(HTML_WORDS)) failures.push(`words copied only as HTML should be pasted too: ${JSON.stringify(draft)}`)
-  await wait(UI_WAIT_MS)
+  await settle(win)
   await capture(win, outDir, 'images-draft')
   await run(win, `document.getElementById('composer').requestSubmit()`)
   const sent = await until(win, SENT, 'the picture sent and seen by the agent')
@@ -81,7 +81,7 @@ export async function checkPictures(win: SmokeWindow, outDir: string, desk: Smok
   await run(win, `[...document.querySelectorAll('[aria-label="贴过的图片"] button')].find((b) => b.textContent === '清空').click()`)
   const warning = await until(win, `document.querySelector('.images-confirm')?.textContent`, 'emptying asking first')
   await run(win, `document.querySelector('[aria-label="贴过的图片"]').scrollIntoView({ block: 'center' })`)
-  await wait(UI_WAIT_MS)
+  await settle(win)
   await capture(win, outDir, 'images-settings')
   if (!section.includes('1 张') || !warning.includes('图已清理')) failures.push(`settings should count the pictures and warn before emptying: ${JSON.stringify({ section, warning })}`)
   // Emptied after the yes: the folder is empty, and the pictures on screen say so at once.
@@ -92,7 +92,7 @@ export async function checkPictures(win: SmokeWindow, outDir: string, desk: Smok
   if (emptied.bytes !== 0 || emptied.count !== 0) failures.push(`emptying should leave nothing: ${JSON.stringify(emptied)}`)
   const shown = await run(win, `({ pictures: document.querySelectorAll('#thread img.msg-pic').length, gone: document.querySelectorAll('#thread .msg-pic.pic-gone').length })`)
   if (shown.pictures !== 0 || shown.gone < 1) failures.push(`pictures on screen should show as gone once emptied: ${JSON.stringify(shown)}`)
-  await wait(UI_WAIT_MS)
+  await settle(win)
   await capture(win, outDir, 'images-gone')
   report(`pictures: ${JSON.stringify({ draft, sent, usage, emptied })}`)
   return failures
@@ -106,7 +106,7 @@ async function islandPicture(win: SmokeWindow, outDir: string, desk: SmokeDesk) 
     await until(page, `document.querySelector('.isl')?.dataset.form === 'input'`, 'the island input opening')
     await run(page, pasteInto('.isl-field', false))
     await until(page, ISLAND_CHIP, 'the picture pasted on the island shown as a chip')
-    await wait(UI_WAIT_MS)
+    await settle(page)
     await capture(page, outDir, 'images-island')
     await run(page, `(() => {
       const field = document.querySelector('.isl-field')

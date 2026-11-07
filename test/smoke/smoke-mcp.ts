@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, run, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, run, settle, until, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * Smoke steps on 能力 · MCP, after the conversation set up the demo server: editing it in place (a key added, the
@@ -34,21 +34,23 @@ export async function openCapabilityTab(win: SmokeWindow, tab: 'skills' | 'mcp' 
   await run(win, `document.querySelector('.hub-nav[data-page="capabilities"]').click()`)
   await until(win, `Boolean(document.querySelector('#capabilities-root .cap-tabs'))`, 'the 能力 page')
   await run(win, `document.querySelector('#capabilities-root .cap-tabs [data-tab="${tab}"]').click()`)
-  await until(win, `!document.querySelector('#capabilities-root .cap-side')?.textContent.includes('加载中') || null`, 'its list')
-  await wait(UI_WAIT_MS)
+  await until(win, `(() => { const side = document.querySelector('#capabilities-root .cap-side'); return side && !side.textContent.includes('加载中') })()`, 'its list')
+  await settle(win)
 }
 
 /** The server's row picked, then what is shown of it on the right. */
 async function shownServer(win: SmokeWindow, name: string): Promise<string> {
   await run(win, `document.querySelector('#capabilities-root .cap-row[data-name="${name}"]').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `Boolean(document.querySelector('#capabilities-root .tp-main .ext-item[data-name="${name}"]'))`, 'the selected server details')
+  await settle(win)
   return run(win, `document.querySelector('#capabilities-root .tp-main')?.textContent ?? ''`)
 }
 
 async function editSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await shownServer(win, 'demo')
   await run(win, `document.querySelector('.ext-item[data-name="demo"] .ext-actions button').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `Boolean(document.querySelector('.ext-edit [name="mcp-command"]'))`, 'the server edit form')
+  await settle(win)
   const form = await run(win, `(() => {
     const form = document.querySelector('.ext-edit')
     return form && {
@@ -60,7 +62,8 @@ async function editSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks
   expect(form?.command === 'node' && form.keys.join() === 'DEMO_TOKEN' && form.placeholder.startsWith('保持不变'),
     'the edit form should be filled in, the saved key shown by name only', form)
   await run(win, `document.querySelector('.ext-add-key').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `document.querySelectorAll('.ext-edit .secret-row').length === 2`, 'the extra key row')
+  await settle(win)
   await run(win, `(() => {
     const row = [...document.querySelectorAll('.ext-edit .secret-row')].at(-1)
     row.querySelector('input[name^="mcp-key-name-"]').value = 'EXTRA_FLAG'
@@ -83,11 +86,12 @@ async function importSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
   try {
     // 能力 reads where dsh's home is when it opens: open it again to see the fixture's.
     await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
-    await wait(UI_WAIT_MS)
+    await settle(win)
     await openCapabilityTab(win, 'mcp')
     await until(win, `document.querySelector('.import-btn') && !document.querySelector('.import-btn').disabled || null`, 'the 能力 page again')
     await run(win, `document.querySelector('.import-btn').click()`)
-    await wait(UI_WAIT_MS)
+    await until(win, `Boolean(document.querySelector('.import-menu .workdir-item'))`, 'the import location menu')
+    await settle(win)
     const menu = await run(win, `[...document.querySelectorAll('.import-menu .workdir-item')].map((el) => el.textContent)`)
     expect(menu[0]?.startsWith('默认位置') && menu[0].endsWith('dsh-import') && menu.at(-1) === '选择其他 .dsh 文件夹…', 'the menu should offer the default folder and another', menu)
     await capture(win, outDir, 'mcp-import-menu')

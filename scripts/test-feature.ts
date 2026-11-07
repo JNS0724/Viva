@@ -13,7 +13,7 @@ const FEATURES = {
   conversation: /^(?:conversation-|new-topic-|topic-|history(?:[.-])|resume-|rewind-|work-?dir(?:[.-])|workdir-|waits-|handoff-|text-submit-|assistant-stream|report-records|state\.|secret-state\.|agent-events\.|topics\.)/,
   runtime: /^(?:acp-|dsh-|fresh-sessions|stream-runtime|stop-in-time|prewarm-runtime|mcp-bridge|images-bridge|steer-channel|config-channel|questions(?:[.-])|(?:permission|questions|fork|stream|steer)-plugin|tasks-bridge|backend-wire|backend-keeper|question-desk|mcp-import|fake-dsh|(?:config|policy|trace)-plugin)/,
   tasks: /^(?:tasks?(?:[.-])|schedule(?:s|[.-])|unattended-|report-records|steer-reports|waits-|handoff-|feed-|event-core|effects|side-effects|agent-events|proposal-state|source-report-registration)/,
-  architecture: /^(?:module-boundaries|backend-boundary|backend-wire(?:-timing)?|main-modules|ipc-contract|window-api|smoke-isolation|smoke-layout|ci-check|test-feature)\.test\.(?:js|ts)$/,
+  architecture: /^(?:module-boundaries|backend-boundary|backend-wire(?:-timing)?|main-modules|ipc-contract|window-api|smoke-isolation|smoke-fixtures|smoke-layout|ci-check|test-feature)\.test\.(?:js|ts)$/,
   models: /^(?:models?[.-])/,
   skills: /^(?:skills?[.-])/,
   capabilities: /^(?:capabilit|extensions[.-]|plugins?[.-]|app-plugins[.-]|import-flow[.-]|config-actions[.-]|commands[.-])/,
@@ -23,7 +23,7 @@ const FEATURES = {
   storage: /^(?:app-db|envelope|journal|preferences|settings|history-db|feed-store|task-store)\.test\.(?:js|ts)$/,
   i18n: /^i18n[.-]/,
   shell: /^(?:desk-(?:island|place)|tray|window-options)\.test\.(?:js|ts)$/,
-  tooling: /^(?:asar-integrity|pnpm-launcher|live(?:-approval)?|maid|smoke-(?:kit|timeline-time|layout)|ci-check|test-feature)\.test\.(?:js|ts)$/,
+  tooling: /^(?:asar-integrity|pnpm-launcher|live(?:-approval)?|maid|smoke-(?:kit|timeline-time|layout|fixtures)|ci-check|test-feature)\.test\.(?:js|ts)$/,
 } as const
 export type Feature = keyof typeof FEATURES
 export const featureNames = Object.keys(FEATURES) as Feature[]

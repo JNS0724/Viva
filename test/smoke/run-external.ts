@@ -31,7 +31,7 @@ export async function runExternalScenario(options: { phases: SmokePhase[], outpu
     for (const phase of options.phases) {
       session = await start(phase)
       await recordMemoryEvents(session)
-      const failures = await runSmoke(session.window, { smokeOut: output, smokePhase: phase }, session.hooks)
+      const failures = await runSmoke(session.window, { smokeOut: output, smokePhase: phase, includeSchedules: phase === 'memory' }, session.hooks)
       problems.push(...failures)
       if (failures.length) await failureDiagnostics(session, profile, path.join(output, 'harness', phase, 'diagnostics'))
       await session.close(); session = null

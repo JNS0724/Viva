@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, finishTurn, newTopic, run, smokeStep, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { mcpSteps, openCapabilityTab } from './smoke-mcp.ts'
 import { skillImportSteps } from './smoke-skills.ts'
 import { taskSteps } from './smoke-tasks.ts'
@@ -434,14 +434,14 @@ async function dropSteps(win: SmokeWindow, outDir: string, expect: Expect) {
 /** @returns failed expectations */
 export async function checkMemory(win: SmokeWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
   const failures: string[] = []
-  const expect: Expect = (ok, message, seen) => { if (!ok) failures.push(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
+  const expect: Expect = (ok, message, seen) => { if (!ok) throw new Error(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
   try {
-    await steps(win, outDir, expect, hooks)
-    await crashSteps(win, outDir, expect, hooks)
-    await backendCrashSteps(win, outDir, expect, hooks)
-    await workDirSteps(win, outDir, expect, hooks)
-    await rewindSteps(win, outDir, expect, hooks)
-    await taskSteps(win, outDir, expect, hooks)
+    await smokeStep(hooks, 'memory, capabilities and models', () => steps(win, outDir, expect, hooks))
+    await smokeStep(hooks, 'dsh crash recovery', () => crashSteps(win, outDir, expect, hooks))
+    await smokeStep(hooks, 'backend crash recovery', () => backendCrashSteps(win, outDir, expect, hooks))
+    await smokeStep(hooks, 'working directory', () => workDirSteps(win, outDir, expect, hooks))
+    await smokeStep(hooks, 'rewind', () => rewindSteps(win, outDir, expect, hooks))
+    await smokeStep(hooks, 'background task interactions', () => taskSteps(win, outDir, expect, hooks))
   } catch (err) {
     failures.push(`memory: ${err instanceof Error ? err.message : String(err)}`)
   }
