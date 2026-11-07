@@ -748,7 +748,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     })
     registerMcpImportIpc(ipcMain, {
       store: mcpStore,
-      sources: () => mcpSources({ home: os.homedir(), platform: process.platform, appData: process.env.APPDATA ?? '' }),
+      sources: () => mcpSources({ home: os.homedir(), platform: process.platform, appData: process.env.APPDATA ?? '', codexHome: process.env.CODEX_HOME || undefined }),
       shell: loginShellTools,
       applyMcp: applyMcpChange,
     })

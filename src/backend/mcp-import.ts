@@ -1,16 +1,19 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import { t } from '../shared/i18n/translate.ts'
 import { loginShellEnv, type EnvLookup } from './dsh-mcp-import.ts'
 import { EXTRA_COMMAND_DIRS, resolveCommand, validateServer, type ServerConfig } from './mcp-config.ts'
+import { codexServers, type ClientEntry } from './codex-mcp.ts'
 
 /**
- * MCP servers brought in from another client's settings (Claude Desktop, Claude Code, Cursor: `mcpServers` in JSON),
+ * MCP servers brought in from another client's settings (Claude Desktop, Claude Code, Cursor: `mcpServers` in JSON;
+ * Codex: `[mcp_servers.<name>]` in TOML, codex-mcp.ts),
  * each read into a server as Viva keeps it and checked by Viva's own rules (mcp-config.ts validateServer) before any
  * is saved. A key written as `${VAR}` (or `${env:VAR}`) takes its value from the login shell, as the client would;
  * one the shell has not is kept by name, to be filled in. A legacy SSE server, or one whose command cannot be found,
- * is refused with why; a name Viva cannot use is put right, and one Viva has is offered renamed, not ticked. The
- * client's file is only read.
+ * is refused with why; a name Viva cannot use is put right, and one Viva has is offered renamed, not ticked; one
+ * switched off in its client is not ticked either. The client's file is only read.
  */
 const NAME_LENGTH = 32
 const REF = /\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}/g
@@ -20,35 +23,44 @@ const REF_TEST = /\$\{[^}]*\}/
 /** A client found with servers in its settings. */
 export interface McpSource { id: string, label: string, file: string, count: number }
 
+/** Where the clients are looked for: the home folder, the platform, Windows' AppData, and Codex's own (CODEX_HOME). */
+export interface ClientPlaces { home: string, platform: string, appData: string, codexHome?: string }
+
 /** Where each client keeps its servers, by platform. */
-function clientFiles({ home, platform, appData }: { home: string, platform: string, appData: string }) {
+function clientFiles({ home, platform, appData, codexHome = path.join(home, '.codex') }: ClientPlaces) {
   const desktop = platform === 'darwin' ? path.join(home, 'Library', 'Application Support', 'Claude')
     : platform === 'win32' ? path.join(appData, 'Claude') : path.join(home, '.config', 'Claude')
   return [
     { id: 'claude-desktop', label: 'Claude Desktop', file: path.join(desktop, 'claude_desktop_config.json') },
     { id: 'claude-code', label: 'Claude Code', file: path.join(home, '.claude.json') },
     { id: 'cursor', label: 'Cursor', file: path.join(home, '.cursor', 'mcp.json') },
+    { id: 'codex', label: 'Codex', file: path.join(codexHome, 'config.toml') },
   ]
 }
 
-/** The servers a client's settings file names (`mcpServers`); none when it is missing, not JSON, or has none. */
-export function readClientServers(file: string): Array<{ entry: string, value: unknown }> {
+/**
+ * The servers a client's settings file names (`mcpServers` in JSON, `mcp_servers` in Codex's TOML); none when it is
+ * missing, cannot be read, or has none.
+ */
+export function readClientServers(file: string): ClientEntry[] {
   try {
-    const servers: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))?.mcpServers
+    const text = fs.readFileSync(file, 'utf8')
+    if (path.extname(file) === '.toml') return codexServers(parseToml(text))
+    const servers: unknown = JSON.parse(text)?.mcpServers
     if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return []
-    return Object.entries(servers as Record<string, unknown>).map(([entry, value]) => ({ entry, value }))
+    return Object.entries(servers as Record<string, unknown>).map(([entry, value]) => ({ entry, value, off: false, unsupported: null }))
   } catch {
     return []
   }
 }
 
 /** The clients on this computer with any servers in their settings. */
-export function mcpSources(where: { home: string, platform: string, appData: string }): McpSource[] {
+export function mcpSources(where: ClientPlaces): McpSource[] {
   return clientFiles(where).map((client) => ({ ...client, count: readClientServers(client.file).length })).filter((client) => client.count > 0)
 }
 
 /** ready: saved as it is (`missing` its keys still to fill in); fixable: saved under `name`; blocked: not at all. */
-export type McpWhy = 'ready' | 'missing' | 'name' | 'taken' | 'sse' | 'command' | 'inline-ref' | 'invalid'
+export type McpWhy = 'ready' | 'missing' | 'off' | 'name' | 'taken' | 'sse' | 'command' | 'inline-ref' | 'unsupported' | 'invalid'
 
 export interface McpCandidate {
   /** Its name in the client's settings. */
@@ -57,7 +69,7 @@ export interface McpCandidate {
   name: string
   status: 'ready' | 'fixable' | 'blocked'
   why: McpWhy
-  /** The keys still to fill in, or why it was refused. */
+  /** The keys still to fill in, the setting Viva cannot do, or why it was refused. */
   detail: string | null
   /** As Viva would save it; null when refused. Holds secrets: never sent to the window. */
   config: ServerConfig | null
@@ -127,7 +139,7 @@ function freeName(name: string, taken: ReadonlySet<string>): string {
  * Each entry read and checked; `taken` is the names Viva has. Those whose name needs no change settle first, so of
  * two with one name the one renamed is the other.
  */
-export function scanMcp(entries: ReadonlyArray<{ entry: string, value: unknown }>, { taken, lookup, findCommand }: {
+export function scanMcp(entries: ReadonlyArray<Pick<ClientEntry, 'entry' | 'value'> & Partial<ClientEntry>>, { taken, lookup, findCommand }: {
   taken: readonly string[], lookup: EnvLookup, findCommand: (command: string) => string | null,
 }): McpCandidate[] {
   const order = [...entries.filter((item) => usableName(item.entry) === item.entry), ...entries.filter((item) => usableName(item.entry) !== item.entry)]
@@ -136,12 +148,13 @@ export function scanMcp(entries: ReadonlyArray<{ entry: string, value: unknown }
     const base = usableName(item.entry)
     if (!base) return { entry: item.entry, name: item.entry, status: 'blocked', why: 'invalid', detail: t('main.mcp-import.no.name'), config: null, picked: false }
     const name = freeName(base, claimed)
+    if (item.unsupported) return { entry: item.entry, name, status: 'blocked', why: 'unsupported', detail: item.unsupported, config: null, picked: false }
     const read = readEntry(name, item.value, lookup, findCommand)
     if ('refused' in read) return { entry: item.entry, name, status: 'blocked', why: read.refused, detail: read.detail, config: null, picked: false }
     claimed = new Set([...claimed, name.toLowerCase()])
-    const why: McpWhy = name !== base ? 'taken' : base !== item.entry ? 'name' : read.config.missing.length ? 'missing' : 'ready'
+    const why: McpWhy = name !== base ? 'taken' : base !== item.entry ? 'name' : item.off ? 'off' : read.config.missing.length ? 'missing' : 'ready'
     const detail = read.config.missing.length ? read.config.missing.join('、') : null
-    return { entry: item.entry, name, status: why === 'taken' || why === 'name' ? 'fixable' : 'ready', why, detail, config: read.config, picked: why !== 'taken' }
+    return { entry: item.entry, name, status: why === 'taken' || why === 'name' ? 'fixable' : 'ready', why, detail, config: read.config, picked: why !== 'taken' && !item.off }
   })
   return entries.map((item) => scanned.find((candidate) => candidate.entry === item.entry)!)
 }

@@ -80,3 +80,24 @@ test('the command is saved as the login shell finds it, so one in a folder only 
   const [found] = scanMcp([{ entry: 'mine', value: { command: 'my-mcp', args: ['serve'] } }], { taken: [], lookup: lookup({}), findCommand: shellOnly })
   assert.deepEqual([found.status, found.config?.command, found.config?.args], ['ready', '/Users/me/.local/share/mise/shims/my-mcp', ['serve']])
 })
+
+test('Codex: found where CODEX_HOME says, its TOML read; one switched off there is not ticked, one using what Viva cannot do is refused naming it', (t) => {
+  const { dir, write } = setup(t)
+  write('codex/config.toml', [
+    'model = "gpt-5"',
+    '[mcp_servers.github]', 'command = "npx"', 'args = ["-y", "@modelcontextprotocol/server-github"]', 'env_vars = ["GITHUB_TOKEN"]',
+    '[mcp_servers.paused]', 'command = "node"', 'enabled = false',
+    '[mcp_servers.tools]', 'command = "node"', 'cwd = "/somewhere"',
+    '[mcp_servers.docs]', 'url = "https://docs.example/mcp"', 'bearer_token_env_var = "DOCS_TOKEN"',
+  ].join('\r\n')) // Windows line ends
+  const [codex] = mcpSources({ home: path.join(dir, 'home'), platform: 'darwin', appData: '', codexHome: path.join(dir, 'codex') })
+  assert.deepEqual([codex.id, codex.count], ['codex', 4])
+  const found = scanMcp(readClientServers(codex.file), { taken: [], lookup: lookup({ GITHUB_TOKEN: 'ghp_example' }), findCommand })
+  const row = (entry: string) => found.find((candidate) => candidate.entry === entry)!
+  assert.deepEqual([row('github').why, row('github').config?.env, row('github').picked], ['ready', { GITHUB_TOKEN: 'ghp_example' }, true])
+  assert.deepEqual([row('paused').status, row('paused').why, row('paused').picked], ['ready', 'off', false])
+  assert.deepEqual([row('tools').status, row('tools').why, row('tools').detail], ['blocked', 'unsupported', 'cwd'])
+  assert.deepEqual([row('docs').why, row('docs').config?.missing], ['missing', ['Authorization']], 'its token is a key, to be filled in')
+  write('codex/config.toml', '[mcp_servers.x\ncommand = 1')
+  assert.deepEqual(readClientServers(codex.file), [], 'TOML that cannot be read gives none')
+})
