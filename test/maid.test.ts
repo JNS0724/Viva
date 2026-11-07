@@ -61,7 +61,13 @@ test('half-body and centred portraits both use the complete canvas without a sec
   assert.deepEqual(framingOf(48, 'face'), { size: 48, offset: 0 })
 })
 
-type Manifest = { states: Array<{ id: string, static: string, animation: string, frames: number, loopCount: number, animationSize: number[] }>, sha256: Record<string, string> }
+type Manifest = {
+  source: { revision: string },
+  encoding: { lossless: boolean, quality: number },
+  states: Array<{ id: string, static: string, animation: string, frames: number, loopCount: number, staticSize: number[], animationSize: number[], durationsMs: number[] }>,
+  sourceSha256: Record<string, string>,
+  sha256: Record<string, string>,
+}
 
 /** Read actual WebP animation chunks; a renamed still or single-frame export cannot pass this check. */
 function chunksOf(bytes: Buffer) {
@@ -78,26 +84,64 @@ function chunksOf(bytes: Buffer) {
   return chunks
 }
 
-test('both asset sets preserve source bytes, real frame counts, dimensions and greeting-only single playback', () => {
+function dimensionsOf(chunks: ReturnType<typeof chunksOf>): number[] {
+  const extended = chunks.find(chunk => chunk.kind === 'VP8X')
+  if (extended) return [extended.data.readUIntLE(4, 3) + 1, extended.data.readUIntLE(7, 3) + 1]
+  const lossless = chunks.find(chunk => chunk.kind === 'VP8L')
+  if (lossless) {
+    const bits = lossless.data.readUInt32LE(1)
+    return [(bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1]
+  }
+  const lossy = chunks.find(chunk => chunk.kind === 'VP8 ')
+  assert.ok(lossy, 'a still has an actual WebP image payload')
+  return [lossy.data.readUInt16LE(6) & 0x3fff, lossy.data.readUInt16LE(8) & 0x3fff]
+}
+
+test('runtime assets match their hashes, real dimensions, frame timings and greeting-only single playback', () => {
   for (const directory of [ASSETS, path.join(ASSETS, 'avatars')]) {
     const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8')) as Manifest
+    assert.match(manifest.source.revision, /^[a-f0-9]{40}$/)
+    assert.equal(manifest.encoding.lossless, false)
+    assert.equal(manifest.encoding.quality, 90)
     assert.equal(manifest.states.length, 10)
     for (const state of manifest.states) {
       for (const file of [state.static, state.animation]) {
-        const bytes = fs.readFileSync(path.join(directory, path.basename(file)))
+        assert.equal(path.basename(file), file, 'manifest paths resolve directly within the asset set')
+        assert.match(manifest.sourceSha256[file], /^[a-f0-9]{64}$/)
+        const bytes = fs.readFileSync(path.join(directory, file))
         assert.equal(createHash('sha256').update(bytes).digest('hex'), manifest.sha256[file], file)
         const chunks = chunksOf(bytes)
         if (file === state.static) {
           assert.equal(chunks.some(chunk => chunk.kind === 'ANIM'), false, `${state.id} reduced-motion still`)
+          assert.deepEqual(dimensionsOf(chunks), state.staticSize)
           continue
         }
         const anim = chunks.find(chunk => chunk.kind === 'ANIM')!
         const header = chunks.find(chunk => chunk.kind === 'VP8X')!
         assert.ok(anim && header, `${state.id} animation metadata`)
         assert.equal(chunks.filter(chunk => chunk.kind === 'ANMF').length, state.frames)
-        assert.deepEqual([header.data.readUIntLE(4, 3) + 1, header.data.readUIntLE(7, 3) + 1], state.animationSize)
+        assert.deepEqual(dimensionsOf(chunks), state.animationSize)
+        assert.deepEqual(chunks.filter(chunk => chunk.kind === 'ANMF').map(chunk => chunk.data.readUIntLE(12, 3)), state.durationsMs)
         assert.equal(anim.data.readUInt16LE(4), state.id === 'greeting' ? 1 : 0, state.id)
+        assert.equal(anim.data.readUInt16LE(4), state.loopCount)
       }
     }
   }
+})
+
+test('the runtime character directory contains only referenced assets within its byte budgets', () => {
+  let total = 0
+  for (const directory of [ASSETS, path.join(ASSETS, 'avatars')]) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8')) as Manifest
+    const referenced = manifest.states.flatMap(state => [state.static, state.animation])
+    const actual = fs.readdirSync(directory, { withFileTypes: true }).filter(entry => entry.isFile()).map(entry => entry.name)
+    assert.deepEqual(actual.sort(), ['manifest.json', ...referenced].sort(), 'source sheets and unused exports stay outside runtime assets')
+    for (const file of actual) {
+      const bytes = fs.statSync(path.join(directory, file)).size
+      total += bytes
+      const limit = file.endsWith('-motion.webp') ? (directory.endsWith('avatars') ? 128 : 512) * 1024 : 32 * 1024
+      assert.ok(bytes <= limit, `${file} is ${bytes} bytes, exceeding ${limit}`)
+    }
+  }
+  assert.ok(total <= 4 * 1024 * 1024, `character runtime assets exceed 4 MiB at ${total} bytes`)
 })

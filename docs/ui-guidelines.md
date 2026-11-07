@@ -178,7 +178,9 @@ Motion:
 
 Viva appears as a maid with slate-blue hair and a navy uniform. Half-body art uses the V7 Viva palette release; conversation portraits use the centred V2.2 release. Expressions, movement and props convey state without overlaid bubbles.
 
-**Assets** live in `src/assets/maid/`: ten half-body states each have a still and an animation. Stills are 400×400; the greeting animation is 400×400 and the others are 256×256. `avatars/` holds ten dedicated conversation portraits, with both stills and animations at 256×256. Both sets are lossless, opaque WebP on `#FAF7F2`, matching `--maid-paper`. Each set's `manifest.json` preserves source dimensions, frame counts, durations, loop counts and hashes. Greeting plays once; all other states loop. `listening` reuses `ask`.
+**Assets** live in `src/assets/maid/`. Ten half-body states each have a still and an animation. Stills are 400×400, the greeting animation is 400×400, and the others are 256×256. `avatars/` holds ten dedicated conversation portraits, with stills and animations at 256×256. Runtime images use quality-90 opaque WebP on `#FAF7F2`, matching `--maid-paper`. Each manifest records the delivery commit, source and runtime hashes, canvas sizes, frame durations and loops. Greeting plays once, all other states loop, and `listening` reuses `ask`.
+
+The two sets together have a 4 MiB runtime budget, with a 512 KiB animation limit, a 128 KiB portrait-animation limit and a 32 KiB still limit, enforced by `test/maid.test.ts`. Production contains the runtime images and their manifests. Reproduce them with `python scripts/optimize-maid-assets.py --output ../maid-runtime`, using the development-only Pillow 12.0.0 tool with libwebp 1.6.0. The source objects come from delivery commit `463fac186619fcf1bbdb8746035fc2fb21c168e5`, available through `git fetch origin 463fac186619fcf1bbdb8746035fc2fb21c168e5`. The export keeps canvas sizes, frame order, timing and loops. Its quality setting uses lossy compression.
 
 | State | Pose and prop | Animation | Ring | When |
 | --- | --- | --- | --- | --- |
