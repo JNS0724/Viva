@@ -58,11 +58,21 @@ function unsupported(server: Record<string, unknown>, literals: Record<string, R
   return withRef ? withRef[0] : null
 }
 
+/**
+ * Headers from each place, a later one over an earlier: by name in any case, as HTTP reads them (and Viva checks
+ * them), so `authorization` written and a bearer token make one Authorization, not a name given twice.
+ */
+const headersOf = (...layers: ReadonlyArray<Record<string, string>>): Record<string, string> =>
+  layers.flatMap((layer) => Object.entries(layer)).reduce<Record<string, string>>((headers, [name, value]) => ({
+    ...Object.fromEntries(Object.entries(headers).filter(([kept]) => kept.toLowerCase() !== name.toLowerCase())),
+    [name]: value,
+  }), {})
+
 function written(server: Record<string, unknown>): unknown {
   if (typeof server.url === 'string' && server.command === undefined) {
     const fromEnv = Object.fromEntries(Object.entries(texts(server.env_http_headers)).map(([header, name]) => [header, ref(name)]))
-    const bearer = typeof server.bearer_token_env_var === 'string' ? { Authorization: `Bearer ${ref(server.bearer_token_env_var)}` } : {}
-    return { type: 'http', url: server.url, headers: { ...texts(server.http_headers), ...fromEnv, ...bearer } }
+    const bearer: Record<string, string> = typeof server.bearer_token_env_var === 'string' ? { Authorization: `Bearer ${ref(server.bearer_token_env_var)}` } : {}
+    return { type: 'http', url: server.url, headers: headersOf(texts(server.http_headers), fromEnv, bearer) }
   }
   if (server.command === undefined) return {}
   const fromEnv = Object.fromEntries((passedThrough(server.env_vars) ?? []).map((name) => [name, ref(name)]))

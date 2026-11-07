@@ -21,6 +21,14 @@ test('an HTTP server: its headers, those read from the environment, and its bear
   assert.deepEqual(linear.value, { type: 'http', url: 'https://mcp.linear.app/mcp', headers: { 'X-Team': 'core', 'X-Org': '${LINEAR_ORG}', Authorization: 'Bearer ${LINEAR_TOKEN}' } })
 })
 
+test('a header given twice in different case is one header: the one from the environment over the written, the bearer token over both', () => {
+  const [docs] = codexServers({ mcp_servers: { docs: {
+    url: 'https://docs.example/mcp', http_headers: { authorization: 'Bearer old', 'x-org': 'core', 'X-Team': 'a' }, env_http_headers: { 'X-Org': 'DOCS_ORG' }, bearer_token_env_var: 'DOCS_TOKEN',
+  } } })
+  assert.deepEqual(docs.value, { type: 'http', url: 'https://docs.example/mcp', headers: { 'X-Team': 'a', 'X-Org': '${DOCS_ORG}', Authorization: 'Bearer ${DOCS_TOKEN}' } },
+    'kept twice, Viva would refuse the server for a name given twice')
+})
+
 test('one switched off in Codex says so; one using what Viva cannot do says which setting', () => {
   const servers = codexServers({ mcp_servers: {
     paused: { command: 'node', enabled: false },
