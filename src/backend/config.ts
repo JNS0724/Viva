@@ -1,12 +1,20 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { APP_ROOT } from '../shared/node/app-roots.ts'
+import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
 import { type DshRuntime, dshHomeFor, dshRuntime } from './dsh-runtime.ts'
 
 
 /** dsh's own entry point; running it directly avoids the `.bin/dsh(.cmd)` shim, which Windows won't spawn without a shell. */
-const DEFAULT_DSH_ENTRY = path.join(APP_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs'])
+const DSH_PACKAGE_ENTRY = path.join(APP_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+/**
+ * The app's entry for it (dsh-entry.ts), which takes the launch over IPC and then runs dsh's own: the TypeScript
+ * source where there is one (the repository, as the tests run it), else what the build wrote (out/).
+ */
+function appEntry(exists: (file: string) => boolean): string {
+  const source = path.join(CODE_ROOT, 'src', 'backend', 'dsh-entry.ts')
+  return exists(source) ? source : path.join(CODE_ROOT, 'src', 'backend', 'dsh-entry.js')
+}
+const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.ts'])
 
 /** The app's own dsh profile: the ACP template plus the memory plugin; see dsh-profile.js. */
 export const DSH_PROFILE = 'viva'
@@ -25,9 +33,9 @@ export function dshLaunch(dshBin: string, nodeBin: string, profile = DSH_PROFILE
 const resolveIfPath = (value: string) => (/[\\/]/.test(value) ? path.resolve(value) : value)
 
 /** 'no-key': no model to talk to, neither a DeepSeek key nor a provider the user added. */
-function problemFor(hasModel: boolean, dshBin: string, exists: (file: string) => boolean): 'no-key' | 'no-dsh' | null {
+function problemFor(hasModel: boolean, dshBin: string, exists: (file: string) => boolean, own: boolean): 'no-key' | 'no-dsh' | null {
   if (!hasModel) return 'no-key'
-  if (!exists(dshBin)) return 'no-dsh'
+  if (!exists(dshBin) || (own && !exists(DSH_PACKAGE_ENTRY))) return 'no-dsh'
   return null
 }
 
@@ -58,7 +66,7 @@ export function resolveConfig(
   app: { userData?: string, execPath?: string, packaged?: boolean } = {},
 ): LaunchConfig {
   // A relative path is taken from where the app was launched, not from the agent's workspace.
-  const dshBin = env.DSH_BIN ? resolveIfPath(env.DSH_BIN) : DEFAULT_DSH_ENTRY
+  const dshBin = env.DSH_BIN ? resolveIfPath(env.DSH_BIN) : appEntry(exists)
   const apiKey = savedKey || env.DEEPSEEK_API_KEY || ''
   const runtime = dshRuntime({ env, execPath: app.execPath ?? process.execPath })
   return {
@@ -68,7 +76,7 @@ export function resolveConfig(
     cwd: path.resolve(env.AGENT_CWD || (app.packaged && app.userData ? path.join(app.userData, 'workspace') : path.join(APP_ROOT, 'workspace'))),
     apiKey,
     keySource: savedKey ? 'saved' : env.DEEPSEEK_API_KEY ? 'env' : null,
-    problem: problemFor(Boolean(apiKey) || hasProviders, dshBin, exists),
+    problem: problemFor(Boolean(apiKey) || hasProviders, dshBin, exists, !env.DSH_BIN),
     dshHome: app.userData ? dshHomeFor(app.userData) : null,
   }
 }

@@ -2,6 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { npmrcWith, type PluginSourceView } from './plugin-source.ts'
 
 /**
  * The app's own dsh profile, in layers dsh applies one over the other:
@@ -70,11 +71,14 @@ export const SAFETY_ROWS = `- id: sandbox-policy
 /**
  * Plugins the user adds come and go while dsh runs (HMR, which the ACP bundle switches off), through dsh's plugin
  * manager, which runs the given pnpm; its agent tool lets the model ask for the same, each call approved by the user.
+ * A company's own registry (plugin-source.ts) is asked alone, with no public one to fall back to, so a name of
+ * theirs is never taken from a public registry instead.
  */
-function pluginManagerLines(pnpmCommand: string | null) {
+function pluginManagerLines(pnpmCommand: string | null, registry: string | null) {
+  const manager = { ...(pnpmCommand ? { pnpmCommand } : {}), ...(registry ? { registry, fallbackRegistries: [] } : {}) }
   return [
     '- id: hmr', "  name: '@deepseek-ai/dsh-hmr'", '  disabled: false', '  config:', '    root: []',
-    ...(pnpmCommand ? jsonEntry('plugin-manager', { pnpmCommand }) : []),
+    ...(Object.keys(manager).length ? jsonEntry('plugin-manager', manager) : []),
     '- id: tool-plugin-manager', '  disabled: false',
   ]
 }
@@ -139,8 +143,9 @@ function modelLines({ providers, deepseek, defaultModel }: ProfileModels) {
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
  * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
-export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null }: {
+export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null, registry = null }: {
   plugins: readonly ProfilePlugin[], persona?: Persona | null, models?: ProfileModels | null, imagesDir?: string | null, pnpmCommand?: string | null,
+  registry?: string | null,
 }) {
   const lines = [VIVA_LAYER_MARK]
   if (persona) {
@@ -157,7 +162,7 @@ export function patchFor({ plugins, persona, models, imagesDir = null, pnpmComma
     for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${yamlString(pathToFileURL(pluginEntry(plugin.dir)).href)}`, ...configLines(plugin.config, '      '))
     for (const entry of plugins.flatMap((plugin) => plugin.stock ?? [])) lines.push(`    - id: ${entry.id}`, `      name: ${yamlString(entry.name)}`)
   }
-  lines.push(...pluginManagerLines(pnpmCommand), ...subagentLines())
+  lines.push(...pluginManagerLines(pnpmCommand, registry), ...subagentLines())
   return `${lines.join('\n')}\n${SAFETY_ROWS}`
 }
 
@@ -210,9 +215,11 @@ function ensureUserLayer(file: string) {
 }
 
 /** @returns the profile directory */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand }: {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand, source = { registry: null, hasToken: false } }: {
   dshHome: string, profile: string, plugins: readonly ProfilePlugin[],
   persona?: Persona, models?: ProfileModels, imagesDir?: string, pnpmCommand?: string | null,
+  /** The company's plugin source (plugin-source.ts), and whether it has a token for .npmrc to name. */
+  source?: PluginSourceView,
 }): string {
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
   if (bad) throw new Error(t("main.dsh-profile.plugin.names.must.start.with", { APP_PLUGIN_PREFIX: APP_PLUGIN_PREFIX, name: bad.name }))
@@ -223,6 +230,10 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
   ensureUserLayer(path.join(dir, 'cordis.patch.yml'))
-  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand }))
+  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry: source.registry }))
+  const npmrc = path.join(dir, '.npmrc')
+  const current = fs.existsSync(npmrc) ? fs.readFileSync(npmrc, 'utf8') : ''
+  const next = npmrcWith(current, source.hasToken ? source.registry : null)
+  if (next !== current) fs.writeFileSync(npmrc, next)
   return dir
 }

@@ -90,8 +90,11 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
+  launch = null as object | null,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
+  /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
+  launch?: object | null,
   /** The app's layer over the profile (dsh-profile.ts vivaLayerFile); none for the stock fallback profile. */
   overlay?: string | null, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
   spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
@@ -202,6 +205,8 @@ export function createAcpBridge({
     const { command, args } = dshLaunch(dshBin, nodeBin, profile, overlay)
     const proc = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
     child = proc
+    // A channel already closed (dsh failed to start) says so through 'exit'.
+    if (launch) proc.send?.(launch, (err) => { if (err) console.error('[dsh] launch not sent:', err.message) })
     proc.on('message', (message) => {
       if (disposed) return
       questions.receive(message)

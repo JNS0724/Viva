@@ -38,10 +38,22 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
     }
   }
 
+  async function saveSource(registry: string | null, token: string | undefined) {
+    if (plugins().busy) return
+    dispatch({ type: 'plugins_busy' })
+    try {
+      const { source, view } = await api.setPluginSource(registry, token)
+      dispatch({ type: 'plugins_changed', view: { ...view, source }, notice: source.registry ? t('plugins.source.saved') : t('plugins.source.removed') })
+    } catch (err) {
+      fail(errorMessage(err))
+    }
+  }
+
   return {
     async loadPlugins() {
       try {
-        dispatch({ type: 'plugins_loaded', view: await api.getPlugins() })
+        const [view, source] = await Promise.all([api.getPlugins(), api.getPluginSource()])
+        dispatch({ type: 'plugins_loaded', view: { ...view, source } })
       } catch (err) {
         fail(errorMessage(err))
       }
@@ -69,5 +81,8 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
     dismissPluginInstall: () => dispatch({ type: 'plugins_dismiss' }),
     removePlugin: (name: string) => change(() => api.removePlugin(name), () => t('plugins.removed', { name })),
     setPluginEnabled: (name: string, enabled: boolean) => change(() => api.setPluginEnabled(name, enabled)),
+    /** The company's registry, and a token typed (blank keeps the one kept); dsh starts again with them. */
+    savePluginSource: (registry: string, token: string) => saveSource(registry.trim(), token.trim() || undefined),
+    removePluginSource: () => saveSource(null, ''),
   }
 }

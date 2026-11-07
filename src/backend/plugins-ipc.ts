@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { t } from '../shared/i18n/translate.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
+import type { PluginSourceView } from './plugin-source.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
 import { vivaFit, type VivaFit } from './plugin-fit.ts'
 
@@ -8,7 +10,8 @@ import { vivaFit, type VivaFit } from './plugin-fit.ts'
  * IPC for the 插件 section of settings: the dsh plugins the user installed (bundles in the profile), installed by
  * npm name, git address or folder after the user saw what the spec is, switched, removed. All of it goes to dsh's
  * own plugin manager through viva-plugins (plugins-channel.ts); the app reads only the installed packages'
- * manifests, to say whether each works in Viva (plugin-fit.ts).
+ * manifests, to say whether each works in Viva (plugin-fit.ts). The company's own source (plugin-source.ts) is set
+ * here too: the window is told its address and whether it has a token, never the token; dsh starts again with it.
  */
 const MAX_LIST = 200
 const MAX_TEXT_CHARS = 2000
@@ -101,7 +104,14 @@ async function ask(call: Call, op: PluginsOp, args?: Record<string, unknown>): P
   return result.value
 }
 
-export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: { call: Call, profileDir: () => string }) {
+export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
+  call: Call, profileDir: () => string,
+  source: { view: () => PluginSourceView, save: (input: { registry: unknown, token?: unknown }) => PluginSourceView },
+  /** A turn running, which a restart would cut short. */
+  busy: () => boolean,
+  /** dsh again, on the conversation on screen, with the source as saved. */
+  restart: () => Promise<unknown>,
+}) {
   const handle = handlerOf(ipcMain)
   async function view(): Promise<PluginsView> {
     const result = await deps.call('list')
@@ -115,4 +125,11 @@ export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('plugins:install', (spec, approvedBuilds) => changed('install', { spec, ...(approvedBuilds?.length ? { approvedBuilds } : {}) }))
   handle('plugins:remove', (name) => changed('remove', { name }))
   handle('plugins:set-enabled', (name, enabled) => changed('setBundle', { name, enabled }))
+  handle('plugins:source', () => deps.source.view())
+  handle('plugins:set-source', async (registry, token) => {
+    if (deps.busy()) throw new Error(t('main.plugin-source.busy'))
+    const source = deps.source.save({ registry, ...(token === undefined ? {} : { token }) })
+    await deps.restart()
+    return { source, view: await view() }
+  })
 }

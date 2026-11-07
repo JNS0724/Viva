@@ -139,6 +139,8 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   installPlugin: (spec, approvedBuilds) => ipcRenderer.invoke('plugins:install', spec, approvedBuilds),
   removePlugin: (name) => ipcRenderer.invoke('plugins:remove', name),
   setPluginEnabled: (name, enabled) => ipcRenderer.invoke('plugins:set-enabled', name, enabled),
+  getPluginSource: () => ipcRenderer.invoke('plugins:source'),
+  setPluginSource: (registry, token) => ipcRenderer.invoke('plugins:set-source', registry, token),
   listSchedules: () => ipcRenderer.invoke('schedules:list'),
   acceptSchedule: (proposalId) => ipcRenderer.invoke('schedules:accept', proposalId),
   declineSchedule: (proposalId) => ipcRenderer.invoke('schedules:decline', proposalId),

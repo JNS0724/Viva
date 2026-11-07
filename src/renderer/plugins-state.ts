@@ -3,13 +3,16 @@ import { t } from '../shared/i18n/translate.ts'
 /**
  * The 插件 section of settings (plugins-ipc.ts): the dsh plugins the user installed, and an install in two steps:
  * what the spec names (`inspection`), then 安装; a first attempt may ask to allow dependency build scripts
- * (`pendingBuilds`), and 允许并安装 tries again with them.
+ * (`pendingBuilds`), and 允许并安装 tries again with them. The company's own plugin source (plugin-source.ts) is its
+ * address and whether it has a token; the token never comes to the window.
  */
 export const initialPlugins = Object.freeze({
   loaded: false,
   /** dsh is running: its plugin manager answers. */
   connected: true,
   plugins: [] as Untyped[],
+  /** The company's registry plugins install from; null until read. */
+  source: null as { registry: string | null, hasToken: boolean } | null,
   /** What the install field says. */
   spec: '',
   /** What the spec names, shown before anything is installed; null when nothing was looked up. */

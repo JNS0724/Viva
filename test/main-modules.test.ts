@@ -31,7 +31,8 @@ test('the code is found beside the project from the sources, and in out/ once bu
 
 test('config defaults live under the app root; legacy smoke environment does not select test code', () => {
   const config = resolveConfig({ SMOKE_PHASE: 'walkthrough' }, never)
-  assert.equal(config.dshBin, path.join(APP_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
+  assert.equal(config.dshBin, path.join(CODE_ROOT, 'src', 'backend', 'dsh-entry.js'), 'the app\'s entry, which runs dsh\'s own (dsh-entry.ts); the build\'s where there is no source')
+  assert.equal(resolveConfig({}, always).dshBin, path.join(CODE_ROOT, 'src', 'backend', 'dsh-entry.ts'))
   assert.equal(config.nodeBin, process.execPath, 'dsh runs on the app itself')
   assert.equal(config.runtime.electron, true)
   assert.equal(config.cwd, path.join(APP_ROOT, 'workspace'))

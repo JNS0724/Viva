@@ -139,6 +139,9 @@ export const IPC_ARGS = Object.freeze({
   'plugins:install': z.tuple([path, z.array(id).max(50).optional()]),
   'plugins:remove': z.tuple([id]),
   'plugins:set-enabled': z.tuple([id, z.boolean()]),
+  'plugins:source': read(none),
+  /** A registry (null for none) and its token: left out keeps the one kept, '' clears it. */
+  'plugins:set-source': z.tuple([z.string().max(2048).nullable(), z.string().max(4096).optional()]),
 
   'schedules:list': read(none),
   'schedules:accept': z.tuple([id]),

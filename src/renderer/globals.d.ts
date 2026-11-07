@@ -236,6 +236,8 @@ interface AgentApi extends LanguageApi {
   installPlugin: Invoke<'plugins:install'>
   removePlugin: Invoke<'plugins:remove'>
   setPluginEnabled: Invoke<'plugins:set-enabled'>
+  getPluginSource: Invoke<'plugins:source'>
+  setPluginSource: Invoke<'plugins:set-source'>
   listSchedules: Invoke<'schedules:list'>
   acceptSchedule: Invoke<'schedules:accept'>
   declineSchedule: Invoke<'schedules:decline'>
