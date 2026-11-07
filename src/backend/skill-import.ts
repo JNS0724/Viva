@@ -113,13 +113,44 @@ function renamed(source: string, name: string): string {
   return `---\n${String(doc).trimEnd()}\n---\n${split.body}`
 }
 
-/** One candidate into `targetDir` under its name; the copy is checked again and taken back if dsh could not load it. */
+/**
+ * `source` copied to `target` as files and folders of its own, every link followed (cpSync's dereference follows
+ * only the top one). A folder met again through a link is left out, so a loop of links cannot go on.
+ */
+function copyFollowingLinks(source: string, target: string, seen: ReadonlySet<string> = new Set()): void {
+  const real = fs.realpathSync(source)
+  if (!fs.statSync(real).isDirectory()) {
+    fs.copyFileSync(real, target, fs.constants.COPYFILE_EXCL)
+    return
+  }
+  if (seen.has(real)) return
+  fs.mkdirSync(target)
+  const inside = new Set([...seen, real])
+  for (const entry of fs.readdirSync(real)) copyFollowingLinks(path.join(real, entry), path.join(target, entry), inside)
+}
+
+/** Whether a link is left anywhere in the copy; copyFollowingLinks leaves none, and this makes sure. */
+function holdsLink(target: string): boolean {
+  if (fs.lstatSync(target).isSymbolicLink()) return true
+  if (!fs.statSync(target).isDirectory()) return false
+  return fs.readdirSync(target).some((entry) => holdsLink(path.join(target, entry)))
+}
+
+/**
+ * One candidate into `targetDir` under its name, as files of its own: a skill reached through a link (the folder, or
+ * its SKILL.md) is copied as what the link points at, so renaming the copy never writes through to the original. The
+ * copy is checked again and taken back if dsh could not load it.
+ */
 function copyOne(candidate: Candidate, targetDir: string): string | null {
   const isFolder = fs.statSync(candidate.source).isDirectory()
   const target = path.join(targetDir, isFolder ? candidate.name : `${candidate.name}.md`)
   if (fs.existsSync(target)) return t('main.skill-import.exists', { name: candidate.name })
   fs.mkdirSync(targetDir, { recursive: true })
-  fs.cpSync(candidate.source, target, { recursive: true, errorOnExist: true, force: false })
+  copyFollowingLinks(candidate.source, target)
+  if (holdsLink(target)) {
+    fs.rmSync(target, { recursive: true, force: true })
+    return t('main.skill-import.link.left', { name: candidate.name })
+  }
   const file = isFolder ? path.join(target, SKILL_FILE) : target
   const text = fs.readFileSync(file, 'utf8')
   if (checkSkill(text).name !== candidate.name) fs.writeFileSync(file, renamed(text, candidate.name))

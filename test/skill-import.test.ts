@@ -88,3 +88,47 @@ test('a folder already taken by the time of the copy is reported, not written ov
   const result = importCandidates(found, ['weekly'], target)
   assert.deepEqual([result.imported, result.failed.map((failure) => failure.entry)], [[], ['weekly']])
 })
+
+/** A link made, or the test skipped where the system will not make one (Windows without the right). */
+function linkOrSkip(t: TestContext, target: string, at: string, type: 'dir' | 'file'): boolean {
+  try {
+    fs.symlinkSync(target, at, type === 'dir' ? 'junction' : 'file')
+    return true
+  } catch {
+    t.skip('this system will not make the link')
+    return false
+  }
+}
+
+test('a skill reached through a link is copied as files: renaming the copy never writes through to the original', (t) => {
+  const { dir, write } = setup(t)
+  write('real/notes', 'name: Meeting Notes\ndescription: 会议记录')
+  write('real/flat', 'name: Weekly Notes\ndescription: 周报')
+  const original = (file: string) => fs.readFileSync(path.join(dir, file))
+  const before = { folder: original('real/notes/SKILL.md'), file: original('real/flat/SKILL.md') }
+  fs.mkdirSync(path.join(dir, 'src', 'linked-file'), { recursive: true })
+  if (!linkOrSkip(t, path.join(dir, 'real', 'notes'), path.join(dir, 'src', 'notes'), 'dir')) return
+  if (!linkOrSkip(t, path.join(dir, 'real', 'flat', 'SKILL.md'), path.join(dir, 'src', 'linked-file', 'SKILL.md'), 'file')) return
+
+  const target = path.join(dir, 'viva')
+  const found = scanSkills(path.join(dir, 'src'), new Set())
+  assert.deepEqual(found.map((candidate) => [candidate.entry, candidate.name]).toSorted(), [['linked-file', 'weekly-notes'], ['notes', 'meeting-notes']])
+  const result = importCandidates(found, ['notes', 'linked-file'], target)
+  assert.deepEqual(result.imported.toSorted(), ['meeting-notes', 'weekly-notes'])
+  assert.deepEqual([original('real/notes/SKILL.md'), original('real/flat/SKILL.md')], [before.folder, before.file], 'the originals are byte for byte as they were')
+  for (const copied of ['meeting-notes', 'weekly-notes']) {
+    assert.equal(fs.lstatSync(path.join(target, copied)).isSymbolicLink(), false, `${copied} is a folder of its own`)
+    assert.equal(fs.lstatSync(path.join(target, copied, 'SKILL.md')).isSymbolicLink(), false, `${copied}/SKILL.md is a file of its own`)
+    assert.equal(checkSkill(fs.readFileSync(path.join(target, copied, 'SKILL.md'), 'utf8')).name, copied)
+  }
+})
+
+test('a link inside a skill pointing back up its own folder is left out, so the copy ends', (t) => {
+  const { dir, write } = setup(t)
+  write('src/loop', 'name: loop\ndescription: x')
+  if (!linkOrSkip(t, path.join(dir, 'src', 'loop'), path.join(dir, 'src', 'loop', 'again'), 'dir')) return
+  const target = path.join(dir, 'viva')
+  const result = importCandidates(scanSkills(path.join(dir, 'src'), new Set()), ['loop'], target)
+  assert.deepEqual(result, { imported: ['loop'], failed: [] })
+  assert.deepEqual(fs.readdirSync(path.join(target, 'loop')), ['SKILL.md'])
+})

@@ -60,3 +60,14 @@ test('nothing ticked, nothing asked', async () => {
   await actions.importPickedSkills()
   assert.equal(imports, 0)
 })
+
+test('changed since it was shown: the folder as it is now is shown again, with why, and nothing is taken as done', async () => {
+  const fresh = { scanId: 'scan-2', label: 'Claude Code', candidates: [{ ...scan.candidates[0], name: 'meeting-notes-2', fix: 'taken' as const, picked: false }] }
+  const { actions, state } = setup({ skillSources: async () => sources, scanSkills: async () => scan, importSkills: async () => ({ changed: true, scan: fresh }) })
+  await actions.openSkillImport()
+  await actions.scanSkillSource('claude-code')
+  await actions.importPickedSkills()
+  const now = state().skillImport
+  assert.deepEqual([now.open, now.scan?.scanId, now.picks, Boolean(now.error)], [true, 'scan-2', [], true])
+  assert.equal(state().extensions.notice, null)
+})

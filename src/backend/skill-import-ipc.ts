@@ -7,7 +7,9 @@ import { listSkills, type skillRoots } from './skills.ts'
 /**
  * IPC for bringing skills in (能力 · 技能 · 导入, skill-import.ts): the folders found to bring them from, a scan of one
  * (or of a folder the user picks), and the import of those ticked. The window names a folder by the id it was given
- * and a scan by its id, never by a path; the import scans that folder again, so it acts on what is there now.
+ * and a scan by its id, never by a path. The import scans that folder again, so it acts on what is there now; if a
+ * skill ticked would go in under another name than the one shown, or not at all, nothing is copied and the new scan
+ * goes back to be looked at again.
  */
 type Roots = ReturnType<typeof skillRoots>
 
@@ -23,8 +25,9 @@ export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, dep
 }) {
   const { roots, sources, chooseDir, newId = () => String(Date.now()) } = deps
   const handle = handlerOf(ipcMain)
-  /** The folder last scanned, by its scan id. */
-  let scanned: { id: string, dir: string, label: string } | null = null
+  /** The folder last scanned, by its scan id, and what the window was shown of it. */
+  let scanned: { id: string, dir: string, label: string, candidates: readonly Candidate[] } | null = null
+  const scanView = () => ({ scanId: scanned!.id, label: scanned!.label, candidates: scanned!.candidates.map(candidateView) })
 
   const userRoot = () => {
     const root = roots().find((one) => one.managed)
@@ -43,13 +46,25 @@ export function registerSkillImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, dep
       if (from !== 'choose') throw new Error(t('main.skill-import.no.source'))
       return { cancelled: true }
     }
-    scanned = { id: newId(), dir, label: found?.label ?? shortPath(dir) }
-    return { scanId: scanned.id, label: scanned.label, candidates: scanSkills(dir, taken()).map(candidateView) }
+    scanned = { id: newId(), dir, label: found?.label ?? shortPath(dir), candidates: scanSkills(dir, taken()) }
+    return scanView()
+  })
+
+  /** Whether every one ticked would go in as it was shown: the same name, still able to. */
+  const asShown = (fresh: readonly Candidate[], picks: readonly string[]) => picks.every((entry) => {
+    const shown = scanned!.candidates.find((candidate) => candidate.entry === entry)
+    const now = fresh.find((candidate) => candidate.entry === entry)
+    return shown && now && now.status !== 'blocked' && now.name === shown.name && now.status === shown.status
   })
 
   handle('ext:import-skills', (scanId, picks) => {
     if (!scanned || scanned.id !== scanId) throw new Error(t('main.skill-import.scan.again'))
-    const result = importCandidates(scanSkills(scanned.dir, taken()), picks, userRoot().dir)
+    const fresh = scanSkills(scanned.dir, taken())
+    if (!asShown(fresh, picks)) {
+      scanned = { ...scanned, id: newId(), candidates: fresh }
+      return { changed: true, scan: scanView() }
+    }
+    const result = importCandidates(fresh, picks, userRoot().dir)
     const notice = [
       result.imported.length ? t('main.skill-import.imported', { count: result.imported.length, names: result.imported.join('、') }) : '',
       ...result.failed.map((failure) => failure.reason),

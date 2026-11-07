@@ -72,3 +72,19 @@ test('a folder picked in the dialog, or the dialog cancelled', async (t) => {
   assert.deepEqual(scan.candidates.map((candidate: { entry: string }) => candidate.entry), ['one'])
   assert.deepEqual(await cancelled.call('ext:scan-skills', 'choose'), { cancelled: true })
 })
+
+test('what a skill ticked would go in as changed since it was shown: nothing copied, the new scan back to look at', async (t) => {
+  const { roots, write, call } = setup(t)
+  write('claude/weekly', 'name: weekly\ndescription: 周报')
+  const shown = await call('ext:scan-skills', 'claude-code')
+  assert.equal(shown.candidates[0].name, 'weekly')
+  // Meanwhile Viva got one by that name (another import, the conversation).
+  fs.mkdirSync(path.join(roots[0].dir, 'weekly'), { recursive: true })
+  fs.writeFileSync(path.join(roots[0].dir, 'weekly', 'SKILL.md'), '---\nname: weekly\ndescription: 早就有的\n---\n')
+  const answer = await call('ext:import-skills', shown.scanId, ['weekly'])
+  assert.equal(answer.changed, true)
+  assert.deepEqual(answer.scan.candidates.map((candidate: { name: string, fix: string }) => [candidate.name, candidate.fix]), [['weekly-2', 'taken']])
+  assert.equal(fs.existsSync(path.join(roots[0].dir, 'weekly-2')), false, 'not copied under a name the user did not see')
+  const confirmed = await call('ext:import-skills', answer.scan.scanId, ['weekly'])
+  assert.deepEqual(confirmed.imported, ['weekly-2'], 'ticked again on the new scan, it goes in as shown')
+})
