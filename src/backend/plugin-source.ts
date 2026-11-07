@@ -1,19 +1,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { t } from '../shared/i18n/translate.ts'
-import { REGISTRY_TOKEN_ENV } from './dsh-launch.ts'
 import type { Encryption } from './settings-store.ts'
-
-export { REGISTRY_TOKEN_ENV }
 
 /**
  * The company's own plugin source: an npm registry dsh's plugin manager installs from (dsh-profile.ts), and the token
- * it asks for, kept encrypted like the model keys. The token is never written out: the profile's .npmrc names it by a
- * variable only, and dsh hands pnpm that variable's value (dsh-launch.ts), so neither the files nor the agent's own
+ * it asks for, kept encrypted like the model keys. The token is never written out: dsh hands it to pnpm alone, as a
+ * setting in pnpm's environment (dsh-launch.ts, plugin-registry.ts), so neither the files nor the agent's own
  * commands have it.
  */
 const FILE_VERSION = 1
-const MARK = '# viva: plugin source'
 const MAX_TOKEN_CHARS = 4096
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 
@@ -29,19 +25,6 @@ export function normalizeRegistry(input: unknown): string {
   if (url.protocol !== 'https:' && !local) throw new Error(t('main.plugin-source.address'))
   if (url.username || url.password) throw new Error(t('main.plugin-source.credentials'))
   return `${url.origin}${url.pathname.replace(/\/*$/, '/')}`
-}
-
-/** The registry as npm names it for its token: `//host[:port]/path/`. */
-export const authKey = (registry: string): string => registry.replace(/^https?:/, '')
-
-/** The profile's .npmrc with the app's line for `registry` (or none), the user's own lines left as they are. */
-export function npmrcWith(current: string, registry: string | null): string {
-  const lines = current.split(/\r?\n/)
-  const own = lines.filter((line, index) => line !== MARK && lines[index - 1] !== MARK)
-  const kept = own.join('\n').replace(/\n+$/, '')
-  const added = registry ? [MARK, `${authKey(registry)}:_authToken=\${${REGISTRY_TOKEN_ENV}}`].join('\n') : ''
-  const text = [kept, added].filter(Boolean).join('\n')
-  return text ? `${text}\n` : ''
 }
 
 function validToken(input: string): string {

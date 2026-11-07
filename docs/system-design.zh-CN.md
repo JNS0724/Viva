@@ -128,7 +128,7 @@ flowchart TB
 
 Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进程，用应用自己的 Electron 运行，home 在应用数据目录的 `dsh/` 下；用户自己的 `~/.dsh` 平时不读不写，只有用户主动导入时才读。
 
-**启动入口。** dsh 由应用自己的入口 `src/backend/dsh-entry.ts` 启动，它调用 dsh 导出给安装方的 `runCli`（`@deepseek-ai/dsh/lib/bin.js`）。启动前，后端经 IPC 通道发一条 `viva_launch`（`src/backend/dsh-launch.ts`），内容是插件管理器用的 pnpm 和只给这个 pnpm 的环境变量（dsh 的 `packageManager`）。公司插件源的令牌就走这条路，不放进 dsh 的环境变量：同一用户的其他程序能读到 dsh 的环境，代理执行的命令也会继承它。入口 10 秒内没收到这条消息，就按 dsh 自己的方式启动。设置了 `DSH_BIN` 时直接运行它，不经这个入口。
+**启动入口。** dsh 由应用自己的入口 `src/backend/dsh-entry.ts` 启动，它调用 dsh 导出给安装方的 `runCli`（`@deepseek-ai/dsh/lib/bin.js`）。启动前，后端经 IPC 通道发一条 `viva_launch`（`src/backend/dsh-launch.ts`），内容是插件管理器用的 pnpm、它带的参数（把 pnpm 知道的每个 scope 都指到公司源）和只给这个 pnpm 的环境变量（dsh 的 `packageManager`）。公司插件源的令牌就走这条路，不放进 dsh 的环境变量：同一用户的其他程序能读到 dsh 的环境，代理执行的命令也会继承它。入口 10 秒内没收到这条消息，就按 dsh 自己的方式启动。设置了 `DSH_BIN` 时直接运行它，不经这个入口。
 
 **自带插件。** 12 个 `viva-*` 插件随应用发布（清单在 `src/backend/app-plugins.ts`）。每个插件声明一个带版本的约定，应用启动时检查版本对不对：
 

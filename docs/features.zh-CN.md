@@ -89,7 +89,7 @@
 - **看得见**：每个插件显示版本、说明、是否打开；有的部分没运行起来、会改 dsh 自带的设置，也会列出来。
 - **在 Viva 里怎么样**：Viva 运行 dsh 的 ACP 组合（`dsh-base` 加 `dsh-acp-app`），不带 dsh 网页端的浏览器服务。所以读已装插件的 `package.json`（`src/backend/plugin-fit.ts`），只说确定知道的：依赖 `@deepseek-ai/dsh-host-webserver` 或 `dsh-web-app` 的标「Viva 里用不了」，打开着就算一个要处理的问题；带 `dsh.client`（给 dsh 网页端的界面）的，那部分界面不显示；其他的写「没发现已知的不兼容」，不打包票，因为插件自己的 patch 仍可能要 Viva 没有的服务。实际跑没跑起来看它的状态（有没运行起来的部分会列出来）。`dsh-web`（搜索、抓取）和 `dsh-api-gateway` 在 `dsh-base` 里，Viva 也有。插件作者可以在 `package.json` 里写 `"viva": { "supports": true }` 说明支持，显示为「作者说明支持 Viva」。
 - **在对话里**：模型可以提出装插件，经授权卡片由你批准。
-- **公司插件源**：「能力 · 插件 · 插件源」填公司 npm 源的地址和令牌。设置后插件只从这个源安装，不再退到公共源（`fallbackRegistries` 为空），免得内部包名被公共源上的同名包冒充。令牌和模型 key 一样加密保存（`src/backend/plugin-source.ts`），页面只知道有没有令牌。profile 的 `.npmrc` 里只写变量名 `${VIVA_REGISTRY_TOKEN}`；启动 dsh 时令牌经 IPC 交给它，dsh 只给 pnpm（见系统设计的「启动入口」），代理执行的命令拿不到。保存或移除后 dsh 重新启动，对话接着进行；一轮进行中不能改。
+- **公司插件源**：「能力 · 插件 · 插件源」填公司 npm 源的地址和令牌。设置后插件只从这个源安装，不再退到公共源（`fallbackRegistries` 为空），免得内部包名被公共源上的同名包冒充；任何 `.npmrc` 里给某个 scope 单独配的源（`@scope:registry`，包括 pnpm 自带的 `@jsr`）也改指这个源：启动 dsh 时用同一个 pnpm 在 profile 目录读出这些 scope，在命令行上用 `--config.@scope:registry=` 覆盖，因为只有命令行能压过 `.npmrc`（`src/backend/plugin-registry.ts`）。令牌和模型 key 一样加密保存（`src/backend/plugin-source.ts`），页面只知道有没有令牌。令牌不写进任何文件：pnpm 11 不展开项目 `.npmrc` 里的 `${…}`，所以启动 dsh 时令牌经 IPC 交给它，dsh 只在 pnpm 的环境里设成 `npm_config_//<源>/:_authToken`（见系统设计的「启动入口」），代理执行的命令拿不到。保存或移除后 dsh 重新启动，对话接着进行；一轮进行中不能改。
 
 ## 定时任务
 

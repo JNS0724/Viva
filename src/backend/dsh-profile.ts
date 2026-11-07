@@ -2,7 +2,6 @@ import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { npmrcWith, type PluginSourceView } from './plugin-source.ts'
 
 /**
  * The app's own dsh profile, in layers dsh applies one over the other:
@@ -215,11 +214,11 @@ function ensureUserLayer(file: string) {
 }
 
 /** @returns the profile directory */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand, source = { registry: null, hasToken: false } }: {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand, registry = null }: {
   dshHome: string, profile: string, plugins: readonly ProfilePlugin[],
   persona?: Persona, models?: ProfileModels, imagesDir?: string, pnpmCommand?: string | null,
-  /** The company's plugin source (plugin-source.ts), and whether it has a token for .npmrc to name. */
-  source?: PluginSourceView,
+  /** The company's plugin source (plugin-source.ts); its token goes to pnpm at launch, never into a file here. */
+  registry?: string | null,
 }): string {
   const bad = plugins.find((plugin) => !isOurs(plugin.name))
   if (bad) throw new Error(t("main.dsh-profile.plugin.names.must.start.with", { APP_PLUGIN_PREFIX: APP_PLUGIN_PREFIX, name: bad.name }))
@@ -230,10 +229,6 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
   ensureUserLayer(path.join(dir, 'cordis.patch.yml'))
-  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry: source.registry }))
-  const npmrc = path.join(dir, '.npmrc')
-  const current = fs.existsSync(npmrc) ? fs.readFileSync(npmrc, 'utf8') : ''
-  const next = npmrcWith(current, source.hasToken ? source.registry : null)
-  if (next !== current) fs.writeFileSync(npmrc, next)
+  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry }))
   return dir
 }

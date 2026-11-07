@@ -6,7 +6,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
-import { launchMessage, REGISTRY_TOKEN_ENV } from '../src/backend/dsh-launch.ts'
+import { launchMessage } from '../src/backend/dsh-launch.ts'
+import { authVariable } from '../src/backend/plugin-registry.ts'
 import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { launcherText } from '../src/backend/pnpm-launcher.ts'
@@ -21,8 +22,9 @@ const REGISTRY = 'https://npm.example.com/'
 
 /** A pnpm that writes down how it was called and the token it was given, then answers as a registry that has nothing. */
 const FAKE_PNPM = `const fs = require('node:fs')
-fs.appendFileSync(process.env.FAKE_PNPM_LOG, JSON.stringify({ args: process.argv.slice(2), token: process.env.${REGISTRY_TOKEN_ENV} ?? null }) + '\\n')
-if (process.argv[2] === 'config') { console.log(${JSON.stringify(REGISTRY)}); process.exit(0) }
+const args = process.argv.slice(2)
+fs.appendFileSync(process.env.FAKE_PNPM_LOG, JSON.stringify({ args, token: process.env[${JSON.stringify(authVariable(REGISTRY))}] ?? null }) + '\\n')
+if (args.find((arg) => !arg.startsWith('--config.')) === 'config') { console.log(${JSON.stringify(REGISTRY)}); process.exit(0) }
 console.error('404 Not Found'); process.exit(1)
 `
 
@@ -45,12 +47,12 @@ test('real dsh started by the app\'s entry hands the registry token to pnpm, and
   const dshHome = path.join(dir, 'dsh-home')
   const { plugins, problems } = resolvePlugins({ codeRoot: root, userData: path.join(dir, 'userData'), dshVersion: installedDshVersion(root) })
   assert.deepEqual(problems, [])
-  const profileDir = ensureDshProfile({ dshHome, profile: 'viva-source-test', plugins, persona: PERSONA, pnpmCommand: pnpm, source: { registry: REGISTRY, hasToken: true } })
+  const profileDir = ensureDshProfile({ dshHome, profile: 'viva-source-test', plugins, persona: PERSONA, pnpmCommand: pnpm, registry: REGISTRY })
 
   bridge = createAcpBridge({
     dshBin: path.join(root, 'src', 'backend', 'dsh-entry.ts'), nodeBin: runtime.nodeBin, cwd: dir, profile: 'viva-source-test', overlay: vivaLayerFile(dshHome),
     env: dshEnv({ base: { ...process.env, FAKE_PNPM_LOG: log }, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
-    launch: launchMessage({ pnpmCommand: pnpm, registryToken: TOKEN }),
+    launch: launchMessage({ pnpmCommand: pnpm, registry: REGISTRY, registryToken: TOKEN, scopes: ['@company'] }),
     emit: () => {},
   })
   await bridge.start()
@@ -58,12 +60,13 @@ test('real dsh started by the app\'s entry hands the registry token to pnpm, and
   assert.ok(inspected.ok, inspected.ok ? '' : inspected.problem)
 
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { args: string[], token: string | null })
-  assert.ok(calls.some((call) => call.args[0] === 'view'), JSON.stringify(calls))
+  assert.ok(calls.some((call) => call.args.includes('view')), JSON.stringify(calls))
   assert.ok(calls.every((call) => call.token === TOKEN), 'every pnpm call has the token')
-  assert.ok(calls.filter((call) => call.args[0] === 'view').every((call) => call.args.includes(`--registry=${REGISTRY}`)), 'asked of the company registry')
+  const views = calls.filter((call) => call.args.includes('view'))
+  assert.ok(views.length && views.every((call) => call.args.includes(`--registry=${REGISTRY}`)), 'asked of the company registry')
+  assert.ok(calls.every((call) => call.args[0] === `--config.@company:registry=${REGISTRY}`), 'every call sends the scope to it, first, as dsh was handed')
 
-  const npmrc = fs.readFileSync(path.join(profileDir, '.npmrc'), 'utf8')
-  assert.ok(npmrc.includes(`//npm.example.com/:_authToken=\${${REGISTRY_TOKEN_ENV}}`))
-  for (const file of [path.join(profileDir, '.npmrc'), vivaLayerFile(dshHome)]) assert.ok(!fs.readFileSync(file, 'utf8').includes(TOKEN), file)
+  assert.ok(!fs.existsSync(path.join(profileDir, '.npmrc')), 'the token is in no .npmrc, not even by a variable pnpm 11 would not expand')
+  assert.ok(!fs.readFileSync(vivaLayerFile(dshHome), 'utf8').includes(TOKEN))
   assert.match(fs.readFileSync(vivaLayerFile(dshHome), 'utf8'), /"registry":"https:\/\/npm\.example\.com\/","fallbackRegistries":\[\]/)
 })

@@ -55,6 +55,7 @@ import { CONFIG_IDS } from './session-info.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
 import { createPluginSourceStore } from './plugin-source.ts'
 import { launchMessage } from './dsh-launch.ts'
+import { pnpmScopes } from './plugin-registry.ts'
 import { skillRoots } from './skills.ts'
 import { historyRecall } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
@@ -290,20 +291,35 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function prepareProfile(config: Config): { profile: string, overlay: string | null, launch: object } {
     // dsh takes the pnpm and the registry token over IPC (dsh-launch.ts), never in its environment.
     let pnpmCommand: string | null = null
-    const launch = () => launchMessage({ pnpmCommand, registryToken: pluginSource.token() })
+    let scopes: string[] = []
+    const registry = pluginSource.registry()
+    const launch = () => launchMessage({ pnpmCommand, registry, registryToken: pluginSource.token(), scopes })
     try {
       const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow() })
       pluginProblems = problems
       problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
-      ensureDshProfile({
-        dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand,
-        source: pluginSource.view(),
+      const dir = ensureDshProfile({
+        dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
       })
+      scopes = registry ? scopesOf(dir, pnpmCommand) : []
       return { profile: DSH_PROFILE, overlay: vivaLayerFile(dshHomeOf(config)), launch: launch() }
     } catch (err: any) {
       console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
       return { profile: FALLBACK_PROFILE, overlay: null, launch: launch() }
+    }
+  }
+
+  /**
+   * The scopes the plugin manager's pnpm finds where it installs, each to be sent to the company registry too
+   * (plugin-registry.ts). Ones it cannot read are said, not taken for none.
+   */
+  function scopesOf(dir: string, pnpmCommand: string | null): string[] {
+    try {
+      return pnpmScopes({ command: pnpmCommand ?? 'pnpm', cwd: dir, env: process.env })
+    } catch (err: any) {
+      console.error('[plugins] could not read the scoped registries pnpm knows; one set in an .npmrc may still install from elsewhere:', err.message)
+      return []
     }
   }
 

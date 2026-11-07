@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "098177e154d0bab43ec58dc8757d51a71be7c6e95d05383cef4c8c29e6540059",
-      "zhHash": "afc6e76a8c19775733f95341849e51ff8754569b528557e771499c8c5c2183fb"
+      "enHash": "f0b123b16d6154888686df4494ca5cfe0d68a7f807d6df9a1d4e3e237e30bb42",
+      "zhHash": "d7729b51105ecfbfe89ce2913730ee960cef2ca10b0ca9aa58e529cd4997cc78"
     },
     {
       "en": "docs/live-check.md",
@@ -71,8 +71,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "4fbf705c829bdc97eafd4a05756d9e593478e9956d25d49caf89d55879ff0273",
-      "zhHash": "c50a2497ce1d2ad9e81443c076aa2fd5a22ef6644814016675b325fd3b65ae8c"
+      "enHash": "33c166ea6645840cda3d4580d8c150336110fc593a3f92f9c08e15f72196d9cb",
+      "zhHash": "596bfc25a2ecd744ec20a31aec33589fc848b17272b3862cee99a0d6e09d630e"
     },
     {
       "en": "docs/architecture-health.md",
