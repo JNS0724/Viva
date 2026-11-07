@@ -42,6 +42,11 @@ const CARRIED = ['command', 'args', 'env', 'env_vars', 'url', 'http_headers', 'e
 /** Those left out with nothing lost: being on (`off` says), how long Codex waits, whether it must start. */
 const LEFT_OUT = ['enabled', 'required', 'startup_timeout_sec', 'startup_timeout_ms', 'tool_timeout_sec', 'supports_parallel_tool_calls']
 const KNOWN = new Set([...CARRIED, ...LEFT_OUT])
+/**
+ * A variable as a shell holds one, and as mcp-import.ts fills in `${VAR}`: one named otherwise (`MCP-TOKEN`) would be
+ * kept as that text, the key never filled in.
+ */
+const isVarName = (name: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
 /** The environment that is this computer; a server in any other would be reached, or run, here instead. */
 const LOCAL_ENVIRONMENT = 'local'
 
@@ -53,7 +58,10 @@ const LOCAL_ENVIRONMENT = 'local'
 function unsupported(server: Record<string, unknown>, literals: Record<string, Record<string, string>>): string | null {
   const other = Object.keys(server).find((setting) => !KNOWN.has(setting) && !(setting === 'environment_id' && server[setting] === LOCAL_ENVIRONMENT))
   if (other) return other
-  if (passedThrough(server.env_vars) === null) return 'env_vars'
+  const passed = passedThrough(server.env_vars)
+  if (passed === null || !passed.every(isVarName)) return 'env_vars'
+  if (!Object.values(texts(server.env_http_headers)).every(isVarName)) return 'env_http_headers'
+  if (server.bearer_token_env_var !== undefined && !isVarName(String(server.bearer_token_env_var))) return 'bearer_token_env_var'
   const withRef = Object.entries(literals).find(([, values]) => Object.values(values).some((text) => REF_TEST.test(text)))
   return withRef ? withRef[0] : null
 }

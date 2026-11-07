@@ -63,6 +63,18 @@ test('only settings Viva carries over or can safely leave out are taken: tool li
   assert.deepEqual(['approval', 'oauth'].map((entry) => row(entry).unsupported), ['default_tools_approval_mode', 'scopes'])
 })
 
+test('a variable named so no shell could hold it (a dash, a dot) is refused by the setting naming it, not kept as `${…}` text', () => {
+  const servers = codexServers({ mcp_servers: {
+    bearer: { url: 'https://x.example/mcp', bearer_token_env_var: 'MCP-TOKEN' },
+    header: { url: 'https://x.example/mcp', env_http_headers: { 'X-Key': 'api.key' } },
+    passed: { command: 'node', env_vars: ['GOOD', { name: 'BAD-NAME' }] },
+    fine: { url: 'https://x.example/mcp', bearer_token_env_var: '_TOKEN_2', env_http_headers: { 'X-Key': 'API_KEY' } },
+  } })
+  const row = (entry: string) => servers.find((server) => server.entry === entry)!
+  assert.deepEqual(['bearer', 'header', 'passed', 'fine'].map((entry) => row(entry).unsupported), ['bearer_token_env_var', 'env_http_headers', 'env_vars', null],
+    'filled in only by a shell-style name, it would be saved as the text `Bearer ${MCP-TOKEN}`, not the token')
+})
+
 test('a config with no servers, or not a table, has none', () => {
   assert.deepEqual([codexServers({}), codexServers({ mcp_servers: [] }), codexServers(null), codexServers({ mcp_servers: { odd: 'x' } }).map((server) => server.value)], [[], [], [], [{}]])
 })
