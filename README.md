@@ -83,7 +83,7 @@ flowchart LR
   N -->|Continue in chat| C["In the input; you review and send"]
 ```
 
-Embedded dsh powers conversations over ACP with Electron’s main process. Memory, permissions, and schedules are dsh plugins; Viva does not modify dsh. Schedule times use dsh's `dsh-schedule`. See [System design](docs/system-design.md) and [Features](docs/features.md).
+Embedded dsh powers conversations over ACP. It runs as a child of Viva's backend process, which keeps the history, background tasks and schedules; the Electron main process only handles the desktop. Memory, permissions and the tools the model uses for tasks and schedules are dsh plugins; Viva does not modify dsh. Schedule times use dsh's `dsh-schedule`. See [System design](docs/system-design.md) and [Features](docs/features.md).
 
 <a id="下载安装"></a>
 ## Download and install

@@ -2,7 +2,7 @@
 
 English | [简体中文](system-design.zh-CN.md)
 
-> This describes the architecture as merged into main (PR #67, `bae89e6`). The split's plan and phase-by-phase notes are in the git history (`docs/backend-split-design.md`, removed after this document replaced it). Date: 2026-11-04.
+> This describes the architecture on main as of PR #101 (`fe65612`, 2026-11-06). The split's plan and phase-by-phase notes are in the git history (`docs/backend-split-design.md`, removed after this document replaced it); the module-by-module cleanup that followed is recorded in the [architecture cleanup](architecture-health.md).
 
 ## 1. Overview
 
@@ -31,8 +31,9 @@ flowchart TB
   end
   subgraph backend["Backend process · src/backend (Electron as Node, no electron import)"]
     b1["<b>Event core</b><br/>signal → route → apply<br/>change and event in one transaction"]
-    b2["<b>Features and stores</b><br/>history, tasks, schedules, 动态 → app.db<br/>settings, models, memory, plugins"]
-    b3["<b>acp-bridge</b><br/>starts and watches dsh<br/>sessions, streaming, approvals"]
+    b2["<b>Conversation and tasks</b><br/>conversation-session: the topic on screen<br/>TaskRuntime: the one writer of tasks<br/>history, settings, models, memory"]
+    b3["<b>Schedules and 动态</b><br/>schedule-runs, read-only unattended runs<br/>动态's items, the effects queue"]
+    b4["<b>dsh and ACP</b><br/>dsh-lifecycle starts and restarts dsh<br/>acp-bridge, acp-operations, acp-task-sessions"]
   end
   subgraph dsh["dsh process (child of the backend)"]
     d1["<b>Viva's own plugins</b><br/>12 viva-* plugins, by contract<br/>memory and trace keep their own files"]
@@ -47,7 +48,7 @@ flowchart TB
 
 - **Pages** (`src/renderer`): the main window and the desk island, sandboxed, with no Node. They only display and interact; their state is pushed by the backend.
 - **Shell** (`src/shell`, the Electron main process): the app lifecycle, window, tray, desk island, shortcut, notifications, dialogs and the system keychain. It checks the pages' calls and forwards them to the backend, and does what the backend asks of the desktop.
-- **Backend** (`src/backend`, a child process running Electron as Node): everything except the desktop. That is the event core, all features and stores (history, tasks, schedules and 动态, memory, settings, models, plugin management), and the acp-bridge that starts and watches dsh. It does not import `electron` at run time; it reaches the desktop only through `HostCapabilities` (`src/backend/host.ts`).
+- **Backend** (`src/backend`, a child process running Electron as Node): everything except the desktop. That is the event core, all features and stores (history, tasks, schedules and 动态, memory, settings, models, plugin management), and the modules that run dsh: `dsh-lifecycle.ts` starts and restarts it, `acp-bridge.ts` holds its process, MCP and the session on screen, `acp-operations.ts` the prompts under way and `acp-task-sessions.ts` the tasks' sessions. `compose.ts` only creates, wires and closes these. It does not import `electron` at run time; it reaches the desktop only through `HostCapabilities` (`src/backend/host.ts`).
 - **dsh** (a child of the backend): the agent that runs the conversation, loading Viva's 12 own plugins and the plugins the user installed.
 
 The point of this split is that nothing in the backend is tied to the desktop. Moving it to the cloud later means replacing only the transport and authentication between the two ends (§10).
@@ -93,7 +94,7 @@ Every input to the backend is a signal, and every state change goes through `app
 | `system.woke` | The computer woke or was unlocked | Schedules due meanwhile run (`schedule-runs.ts`) |
 | `window.foreground` | The window came to the front | Nothing for now (too frequent to record) |
 
-**Commands and queries.** Each channel in the IPC contract is marked where it is defined if it is a query (`read(...)`, 35 today). A query goes straight to its handler. Every other channel is a command, recorded first as a `user.command` signal and then handed to its handler. A command that fails stays recorded: the user did do it.
+**Commands and queries.** Each channel in the IPC contract is marked where it is defined if it is a query (`read(...)`). A query goes straight to its handler. Every other channel is a command, recorded first as a `user.command` signal and then handed to its handler. A command that fails stays recorded: the user did do it.
 
 **`apply` and the event table.** `apply(kind, data, write)` runs the write and inserts a row into `app_events` in one transaction; a write that throws leaves neither. Nested writes use savepoints, so an inner failure undoes only itself. Every push to the window carries a number: a stored event its own, a transient push (streamed text) the latest. The event table keeps the latest 100,000 events, and numbers are never reused.
 
@@ -137,7 +138,7 @@ Viva does not modify dsh; it customizes it only through plugins and configuratio
 | `history` | Lets the model search earlier conversations |
 | `stream` | Hands the answer's streamed content to the app |
 | `questions` | Cards where the model asks the user a question |
-| `steer` | Lets the user interject while a turn runs |
+| `steer` | Lets the user interject while a turn runs: the words go in marked 「【插话】」 (`steer-channel.ts`), and the persona has the model answer each one, then go on with the work in hand. Background results go into a running turn the same way (§11.5) |
 | `fork` | Goes back to an earlier point and starts again from there |
 | `config` | Lets the model add MCP servers and create or install skills in the conversation, with the user's approval |
 | `permission` | The permission level the user picked (full, automatic, workspace edits, read-only), applied to every session dsh opens; a session the app marks unattended (a schedule's run) may only look things up |
@@ -208,17 +209,17 @@ Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, 
 
 **Event stream drops.** If the backend is still running but SSE dropped, the shell reconnects after 1 second with `since` set to the last number it saw, and the backend first replays the events stored after it. The backend keeps its latest 10,000 host calls, numbered, whether a shell listens or not, and the shell reconnects with `after` set to the last one it ran: every call after it comes, in order, those made while none listened and those written to the stream as it ended, and the shell runs each once. A first connection replays no stored events, and gets the host calls made before it.
 
-**The dsh lifecycle.** `src/backend/dsh-lifecycle.ts` alone owns the current instance, generation, restart timer, crash history and quitting flag. `compose.ts` supplies instance creation/connection and callbacks for conversation readiness, task disconnection and error display; the existing modules retain configuration, history and task state.
+**The dsh lifecycle.** `src/backend/dsh-lifecycle.ts` alone holds the running dsh, its generation, the restart timer, the crash history and whether Viva is quitting. `compose.ts` gives it ways to create and connect an instance, and callbacks for when the conversation is ready, tasks lose their sessions, or an error must be shown; configuration, history and tasks stay with their own modules.
 
-- Concurrent starts share one connection. Stop immediately revokes that generation's events and startup result; stopping between creation and connection also prevents connection.
-- Changing keys or models waits for real disposal before creating a replacement. Failed startup also cleans up its instance; failed disposal explicitly prevents replacement.
-- Retirement explicitly ends an active foreground turn and clears its busy/waiting state, including deliberate settings restarts. Key changes settle the old topic before creating a new one; completion does not depend on the retired instance's filtered events.
-- Unexpected exits use the backoff above and resume the conversation; an old generation's exit cannot trigger another restart. Quitting revokes scheduled restarts and forbids further starts.
-- Shutdown waits at most five seconds. A timeout only ends the wait: real disposal remains a barrier to any later start.
+- Starts asked for together share one connection. Stopping revokes that generation's events and start result at once; a stop between creating and connecting means it never connects.
+- Changing the key or the models waits until the old instance is really gone before making a new one. A start that fails cleans up its instance; a disposal that fails blocks the replacement.
+- An instance going away ends the foreground turn it was running and clears busy and waiting, a restart the user caused in Settings included. A key change settles the old topic before making a new one, without relying on events from the instance going away, which are already filtered out.
+- An unexpected exit restarts with the backoff above and takes the conversation up again; the exit of an old generation never causes another restart. Quitting cancels a restart waiting to happen and refuses further starts.
+- Shutting down waits at most 5 seconds. Running out of time only ends the wait: a later start still waits for the real disposal.
 
-`test/dsh-lifecycle.test.ts` independently verifies these contracts with fake instances and a controllable clock. Smoke exercises real dsh crashes, background reports and restart recovery; `test/smoke/lifecycle.spec.ts` specifically verifies model/key restarts during a foreground question, followed by new topics and a background result report.
+`test/dsh-lifecycle.test.ts` checks these with fake instances and a clock it controls. The smoke tests crash real dsh, report background results and recover from restarts; `test/smoke/lifecycle.spec.ts` changes the model and clears the key while a question waits, then checks that new topics work and a background result is reported.
 
-**Conversation selection.** `src/backend/conversation-session.ts` owns the selected segment, its directory, carried records and session-transition admission. History/rewind use a selection callback that holds admission through their database writes and segment commit, even when the session id stays the same. A partially prepared new topic stays gated after an error until retry or reconciliation; saving metadata cannot reopen admission. Transition exits wake deferred task reports. Real history/effects stores and IPC handlers exercise these contracts in `test/conversation-session.test.ts`.
+**Conversation selection.** `src/backend/conversation-session.ts` holds the history segment on screen, its working folder, records carried into the next question, and the gate for switching sessions. History and rewind switch through it: the gate stays closed through their database writes and until the segment is chosen, even when the session id stays the same. A new topic that failed halfway keeps the gate closed until it is retried or reconciled; saving metadata cannot open it. Every switch, however it ends, wakes the reports waiting on it. Pushes about the conversation carry the segment and session they began in, and the window holds them while a switch commits, then lets through only those of the topic chosen (`src/renderer/agent-events.ts`). `test/conversation-session.test.ts` checks this with the real history and effects stores and the real history and rewind handlers.
 
 **Quit.** In `before-quit` the shell asks the backend to close. The backend stops dsh (closing its input, then ending the whole process tree after 1.5 seconds, with `taskkill /T` on Windows), closes the databases, and exits. A backend still running after 10 seconds is killed. If the shell disconnects, the backend shuts itself down.
 
@@ -232,7 +233,7 @@ Folders match processes. Dependencies may point from the shell to the backend, n
 | `src/backend` | The backend's entry `server.ts`, composition `compose.ts`, event core, stores and channels, acp-bridge and the rest | No `electron` import at run time; nothing from `src/shell` |
 | `src/shared` | Code both processes and the pages use: the IPC contract, i18n, image ids, the restart backoff | No Node, so pages can run it |
 | `src/shared/node` | Code both processes share that needs Node; today only the app's root folders | Left out of the pages' tsconfig |
-| `src/renderer`, `src/preload` | Pages and preload scripts | State in `*-state.ts` (pure), IPC in `*-actions.ts`, DOM built with `h()`, never `innerHTML` |
+| `src/renderer`, `src/preload` | Pages and preload scripts | What the backend pushes enters through one place: `agent-event-decoder.ts` turns it into a closed `AgentEvent` union and refuses frames it does not know. Actions are a closed union too. State in `*-state.ts` (pure), IPC in `*-actions.ts`, DOM built with `h()`, never `innerHTML` |
 | `plugins/*` | Viva's 12 own dsh plugins | Talk to the app by their contracts |
 
 The tests that keep these boundaries:
@@ -245,7 +246,7 @@ The tests that keep these boundaries:
 - `test/backend-wire.test.ts`, `test/backend-keeper.test.ts`: call order, the token, answers waiting for pushes, backend restart and giving up.
 - The memory smoke group kills the backend process, then checks that a new backend is up, the conversation is still there, and the next question is answered. The packaged app runs this group too.
 
-`npm test` discovers the full test collection; CI runs unit tests and full smoke on macOS and Windows. See the [architecture cleanup](architecture-health.md) for the 2026-11-06 responsibility audit, first module extractions and subsequent delivery criteria.
+`npm test` discovers the full test collection; CI runs unit tests and full smoke on macOS and Windows. For quick feedback while changing one part, `npm run test:feature -- <group>` runs that part's tests (`conversation`, `runtime`, `tasks`, `architecture`; `--list` shows the files); the full suite stays the gate. The [architecture cleanup](architecture-health.md) records the 2026-11-06 responsibility audit and the modules taken out of `compose.ts` and `app.ts` since.
 
 ## 10. Known limits and direction
 
@@ -345,9 +346,9 @@ Sub-agents suit sub-work that would flood the context but whose result this turn
 
 The design follows DeepSeek's event-driven agent, [`dsh-superagent-prototype`](https://github.com/deepseek-ai/dsh-superagent-prototype), read in source: one engine writes its records, side effects go through a durable queue, and an input counts as delivered only once the session wrote it into its history. Its threads, subscriptions and correlations, an outbox with channels, source plugins, versioned policies, and a task split into a ticket and its assignments serve a team bot that watches many channels; Viva is one person's desktop assistant, and none of them is needed.
 
-## 12. Plan: what is left
+## 12. Plan and progress
 
-What §11 does not do yet. Each step is its own pull request, saying what it removes, which module alone owns what it changes, and when any path kept for compatibility goes; the documents change with the code. The reliability boundaries above (transactions, generations, `read` after flush, the session a report is bound to, the records' own table) stay; shared code is drawn out only where it removes a second copy of the same job.
+What was planned after §11. Recovery (§12.1) and the schedule source with 动态 (§12.2) are done; mail and web sources, and moving 后台 out of the hub, are not. Each step is its own pull request, saying what it removes, which module alone owns what it changes, and when any path kept for compatibility goes; the documents change with the code. The reliability boundaries above (transactions, generations, `read` after flush, the session a report is bound to, the records' own table) stay; shared code is drawn out only where it removes a second copy of the same job.
 
 ### 12.1 Recovery
 
@@ -373,19 +374,12 @@ Where the user sees them (agreed with the owner, 2026-11-06). 后台 and 动态 
 
 - **后台** is what the user asked for and expects: background tasks (后台做, and those the agent starts). Its page is a page of its own, out of the hub (搜索 · 关于你 · 设置 keep three). Its way in is the island's tail: a quiet 后台 with no task, a turning ring and a count while some work, the island edged in orange and N 个等你 while one waits, ✓ N for ended ones not seen. Clicking the tail opens a short list under the island (those waiting first, allowed right there) whose foot opens the page; ⌘J opens it too. The page lists 等你 · 在做 · 做完了 on the left and the one picked on the right (its approval card, or its whole conversation). The island counts only these; follow-ups no longer show on it.
 - **动态** is what the app brings on its own: what schedules brought, and what is scheduled. Its way in is a 动态 button in the title bar, with a blue count of new items (orange stays for waiting on the user). Its page opens with one line in her voice and her picture, then 新的 · 接下来 (what is scheduled, its time at the left; pause, resume and delete) · 看过的. An item opened on the right says where it came from; its actions are 在对话里继续 (into the conversation on screen, with the item and its origin) and 不用了. Nothing in 动态 becomes a background task, and a schedule's read-only run is not shown in 后台, not counted on the island, and not reported into the conversation.
-- Delivered as: F1a-1 the 动态 page and its way in (done, #93); the schedule source in one pull request (below). Moving 后台 out of the hub (F1a-2) is not done for now: 后台 is unrelated to 动态 and works where it is (the owner, 2026-11-06).
+- Delivered as: F1a-1 the 动态 page and its way in (done, #93); the schedule source (done, #94). Moving 后台 out of the hub (F1a-2) is not done for now: 后台 is unrelated to 动态 and works where it is (the owner, 2026-11-06).
 - **One kind of scheduled thing (the owner, 2026-11-06): a time and a prompt.** The model writes the prompt from the conversation and proposes it on a card (when, and what it will do); the user's yes keeps it. Times are once, daily, weekly or cron, as `dsh-schedule`'s records. When it is due, the prompt runs in a fresh session of its own, in the working folder the schedule was made in, that the app marks unattended: Viva's permission plugin then lets it use only the read-only tools, in the workspace, whatever level the user picked, and refuses what it would otherwise ask, since nobody is there to answer (`unattendedDecision`). The session is not one of 后台's tasks: its events go to the run alone (`unattended-runs.ts`), and it is closed once its turn ends. What is due is taken from the schedules and kept as a run in one transaction, so a run not finished runs again at the next launch; a failed run is tried again later, three times in all, then becomes an item saying so; a run whose schedule was paused or deleted before it started is let go; an answer whose item could not be kept is kept on a later try, after a growing wait, without asking the model again (`schedule-runs.ts`). Its final answer becomes a 动态 item, keyed by the occurrence so never two, its notification queued in the same change (the effects queue). A reminder is the same: its prompt asks for a reminder. Once per occurrence, missed ones run at launch, pause, resume and delete in 接下来. Gone with this: the follow-ups' two times (reminder, preparation), preparation windows and their presets, yielding while the user is busy, the daily call cap, the 今天 summary and gap notices, and `followup-notifier.ts`, `prepare-scheduler.ts`, `prepare-schedule.ts`, `notice-plan.ts` and the preparation settings; follow-ups kept from before are dropped (no compatibility at this stage).
 - **Natural language first (the owner, 2026-11-06).** Schedules are made, changed, paused and deleted by talking: the model has tools shaped as `dsh-schedule`'s (`schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete`), and creating one still needs the user's yes on its card. The page shows; its buttons are only shortcuts for what can be said.
-- Steps in that pull request: (1) `feed_items` and its store (done); (2) schedules: their table, the card, the timer (done); (3) a run due runs unattended, read-only, and its answer becomes an item and a notification (done); (4) 动态 lists items and schedules (done); (5) the old follow-up machinery goes (done).
+- The schedule source landed in #94, in five steps: `feed_items` and its store; schedules' table, card and timer; a due run running unattended and read-only, its answer an item and a notification; 动态 listing items and schedules; the old follow-up machinery removed.
 
-Moved one capability at a time, each closing the old way in the same pull request:
-
-| Now | With sources | Closed |
-| --- | --- | --- |
-| Reminders (`followup-notifier.ts`) | The schedule source: an item in 动态, and its notification | The notifier's reminders |
-| Background preparation (`prepare-scheduler.ts`, `prepare-schedule.ts`) | The schedule source; its run read-only (an unattended session), shown in 动态 | The scheduler |
-| A follow-up's watched file (`watchFile`, the follow-ups' use of `file-watch.ts`) | Nothing | Removed, before F1a |
-| Results | Shown in 动态, continued in the conversation only when the user asks; not reported as a background task's result | — |
+It replaced the follow-ups' reminders (`followup-notifier.ts`) and background preparation (`prepare-scheduler.ts`, `prepare-schedule.ts`); the follow-ups' watched file had gone before it (#92). Results show in 动态 and reach a conversation only when the user continues them there; they are not reported as a background task's result.
 
 ### 12.3 Order of work
 

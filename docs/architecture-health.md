@@ -2,6 +2,8 @@
 
 English | [简体中文](architecture-health.zh-CN.md)
 
+This is a record of the cleanup batches (PR #96–#101): the sizes and test counts in it are as measured then. The architecture as it stands is in [System design](system-design.md).
+
 Review baseline: 2026-11-06, main `26e4db4` (PR #95). This reviews source and change history, not application runtime performance. The first batch preserves product behavior and process boundaries.
 
 ## Evidence and priorities

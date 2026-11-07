@@ -97,7 +97,7 @@ flowchart LR
   N -->|「在对话里继续」| C["进输入框<br>你看过再发"]
 ```
 
-- 对话由内嵌的 dsh 驱动，通过 ACP 协议和 Electron 主进程通信；记忆、权限、定时都是 dsh 插件，不改 dsh 本身；定时的时间计算用 dsh 的 `dsh-schedule`。
+- 对话由内嵌的 dsh 驱动，走 ACP 协议。dsh 是 Viva 后端进程的子进程，历史、后台任务和定时都由后端管；Electron 主进程只管桌面。记忆、权限，以及模型用来开任务、定时的工具是 dsh 插件，不改 dsh 本身；定时的时间计算用 dsh 的 `dsh-schedule`。
 - 细节见 [系统架构设计](docs/system-design.zh-CN.md) 和 [功能说明](docs/features.zh-CN.md)。
 
 ## 下载安装
