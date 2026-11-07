@@ -53,6 +53,10 @@ test('every discovered JS/TS test has feature ownership and exactly one explicit
   const classified = levelNames.flatMap(level => testLevels[level])
   assert.equal(new Set(classified).size, classified.length, 'each stem has one level')
   assert.deepEqual([...classified].sort(), files.map(file => path.basename(file).replace(/\.test\.(?:js|ts)$/, '')).sort())
+  for (const file of ['tasks-plugin.test.ts', 'model-discovery.test.ts', 'plugins-plugin.test.ts']) {
+    assert.ok(!selectAllTests(files, ['fast']).some(selected => path.basename(selected) === file), `${file} uses real processes or sockets`)
+    assert.ok(selectAllTests(files, ['integration']).some(selected => path.basename(selected) === file))
+  }
   assert.throws(() => auditTests([...files, 'test/new-unknown.test.ts']), /missing feature/)
   assert.throws(() => auditTests([...files, 'test/model-new.test.js']), /expected one level/)
 })

@@ -145,7 +145,6 @@ export const testLevels = {
     'task-steps-render',
     'task-store',
     'task-transcript',
-    'tasks-plugin',
     'tasks-state',
     'test-feature',
     'text-submit-boundary',
@@ -191,6 +190,7 @@ export const testLevels = {
     'steer-reports-dsh',
     'stream-runtime',
     'tasks-bridge',
+    'tasks-plugin',
     'trace-plugin',
   ],
   timing: [
