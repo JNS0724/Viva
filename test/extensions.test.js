@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { registerExtensionsIpc } from '../src/backend/extensions-ipc.ts'
 import { createMcpConfigStore, editServer, parseServerInput, resolveCommand, serverView, toAcpServers, validateServer } from '../src/backend/mcp-config.ts'
-import { createSkill, importSkill, listSkills, parseFrontmatter, removeSkill, skillRoots } from '../src/backend/skills.ts'
+import { createSkill, importSkill, listSkills, removeSkill, skillRoots } from '../src/backend/skills.ts'
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'extensions-test-'))
@@ -147,12 +147,6 @@ test('the store updates in place, imports at once, and keeps missing names', (t)
   assert.equal(store.list().length, 3, 'an import past the limit adds none')
 })
 
-test('frontmatter: plain, quoted and folded values', () => {
-  assert.deepEqual(parseFrontmatter('---\nname: weekly\ndescription: "写周报"\n---\nbody'), { name: 'weekly', description: '写周报' })
-  assert.deepEqual(parseFrontmatter('---\nname: x\ndescription: >\n  第一行\n  第二行\nmetadata: {}\n---'), { name: 'x', description: '第一行 第二行' })
-  assert.equal(parseFrontmatter('# no frontmatter'), null)
-})
-
 test('skills are listed from every root, with the reason dsh would skip a broken one', (t) => {
   const dir = tempDir(t)
   const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
@@ -208,13 +202,14 @@ function extensionsIpc(t, { chosen = null, defaultDir = '/home/me/.dsh', lastDir
   store.add(parseServerInput(STDIO_INPUT, []))
   const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
   const handlers = new Map()
-  const seen = { applied: 0, imported: [], remembered: [] }
+  const seen = { applied: 0, imported: [], remembered: [], revealed: [] }
   registerExtensionsIpc({ handle: (channel, fn) => handlers.set(channel, fn) }, {
     store,
     roots: () => roots,
     mcpStatus: () => ({ active: ['github'], memory: true, dropped: [] }),
     applyMcp: async () => ({ mode: 'live', applied: ++seen.applied }),
     trash: async () => {},
+    reveal: (file) => seen.revealed.push(file),
     dshDirs: () => ({ defaultDir, lastDir }),
     chooseDshDir: async () => chosen,
     importDsh: async (from) => {
@@ -233,8 +228,17 @@ test('extensions IPC lists and removes, never returns secrets, and has no way to
   assert.deepEqual([shown.servers.map((s) => s.name), shown.skillDir], [['github'], roots[0].dir])
   assert.equal(JSON.stringify(shown).includes('ghp_example'), false)
   assert.equal((await call('ext:remove-mcp', 'github')).info.applied, 1)
-  assert.deepEqual([...handlers.keys()].sort(), ['ext:get', 'ext:import-dsh', 'ext:remove-mcp', 'ext:remove-skill', 'ext:update-mcp'],
+  assert.deepEqual([...handlers.keys()].sort(), ['ext:get', 'ext:import-dsh', 'ext:remove-mcp', 'ext:remove-skill', 'ext:reveal-skill', 'ext:update-mcp'],
     'adding by hand happens in the conversation')
+})
+
+test('a skill is shown in the file manager by its id; an id not listed opens nothing', async (t) => {
+  const { roots, seen, call } = extensionsIpc(t)
+  writeSkill(roots[0].dir, 'weekly', 'name: weekly\ndescription: 周报')
+  await call('ext:reveal-skill', 'user:weekly')
+  assert.deepEqual(seen.revealed, [path.join(roots[0].dir, 'weekly')])
+  await assert.rejects(call('ext:reveal-skill', 'user:missing'))
+  assert.equal(seen.revealed.length, 1)
 })
 
 test('editing over IPC keeps the key typed before, applies once, and never sends a key back', async (t) => {

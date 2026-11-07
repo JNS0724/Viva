@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
-import { mcpSteps } from './smoke-mcp.ts'
+import { mcpSteps, openCapabilityTab } from './smoke-mcp.ts'
 import { taskSteps } from './smoke-tasks.ts'
 
 /**
@@ -147,18 +147,15 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   await wait(UI_WAIT_MS)
   const shown = await run(win, `document.querySelector('.hub-nav[aria-current="page"]')?.dataset.page ?? ''`)
   expect(shown === 'profile', 'the icon should open the page last shown', shown)
-  await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
-  await wait(UI_WAIT_MS * 2)
+  await openCapabilityTab(win, 'mcp')
   const ext = await run(win, `({
     memoryProblem: document.querySelector('.ext-memory')?.textContent ?? '',
-    hint: document.querySelector('.ext-hint')?.textContent ?? '',
-    // In the MCP and skills section only: the 插件 section below it has its own install form.
-    form: Boolean(document.querySelector('.ext-hint')?.closest('section')?.querySelector('.ext-form, #add-mcp, #import-skill')),
-    servers: [...document.querySelectorAll('.ext-item .ext-name')].map((el) => el.textContent),
+    hint: document.querySelector('#capabilities-root .cap-hint')?.textContent ?? '',
+    form: Boolean(document.querySelector('#capabilities-root .cap-side .ext-form, #add-mcp, #import-skill')),
+    servers: [...document.querySelectorAll('#capabilities-root .cap-row .tp-name')].map((el) => el.textContent),
   })`)
-  expect(!ext.memoryProblem && ext.hint.includes('帮我接入 GitHub') && !ext.form, 'settings should say MCP and skills are set up in the conversation, with no form', ext)
+  expect(!ext.memoryProblem && ext.hint.includes('帮我接入 GitHub') && !ext.form, '能力 should say MCP is set up in the conversation, with no form', ext)
   expect(ext.servers.includes('demo'), 'the server set up in the conversation should be listed', ext)
-  await run(win, `document.querySelector('.ext').scrollIntoView()`)
   await capture(win, outDir, 'memory-settings')
   await mcpSteps(win, outDir, expect, hooks)
   await modelSteps(win, outDir, expect, hooks)
@@ -170,6 +167,9 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
  */
 async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
+  // The MCP steps leave 能力 open; models are 设置's.
+  await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
+  await until(win, `document.getElementById('add-model') || null`, 'the 设置 page')
   await run(win, `document.getElementById('add-model').click()`)
   await wait(UI_WAIT_MS)
   await run(win, `(() => {

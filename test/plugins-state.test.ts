@@ -1,7 +1,8 @@
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createPluginActions, problemText } from '../src/renderer/plugin-actions.ts'
+import { createPluginActions } from '../src/renderer/plugin-actions.ts'
+import { problemText } from '../src/renderer/plugins-state.ts'
 import { initialPlugins, PLUGIN_ACTIONS } from '../src/renderer/plugins-state.ts'
 import { setLocale } from '../src/shared/i18n/locale.ts'
 

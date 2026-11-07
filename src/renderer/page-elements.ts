@@ -41,6 +41,8 @@ export function createPageElements(page: Document, platform: string) {
     resumeDialog: byId('resume-root'),
     toggleDrawer: byId('toggle-drawer'),
     settings: byId('settings-root'),
+    capabilities: byId('capabilities-root'),
+    capabilitiesCount: byId('capabilities-count'),
     modelArea: byId('model-area'),
     modelBtn: buttonById('model-btn'),
     modelMenu: byId('model-menu'),

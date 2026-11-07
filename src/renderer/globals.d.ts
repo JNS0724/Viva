@@ -224,6 +224,7 @@ interface AgentApi extends LanguageApi {
   updateMcpServer: Invoke<'ext:update-mcp'>
   importDsh: Invoke<'ext:import-dsh'>
   removeSkill: Invoke<'ext:remove-skill'>
+  revealSkill: Invoke<'ext:reveal-skill'>
   getPlugins: Invoke<'plugins:get'>
   inspectPlugin: Invoke<'plugins:inspect'>
   installPlugin: Invoke<'plugins:install'>

@@ -52,7 +52,7 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | memory-supersede | New supervisor supersedes the old fact | |
 | memory-secret | Bank-card password is not stored | |
 | mcp-add-use | Approval, separate encrypted secret entry, usable MCP tool, draft without sending | |
-| skill-create | Approved skill appears in settings | |
+| skill-create | Approved skill appears in Capabilities | |
 | mcp-import | Existing dsh MCP imports without approval | |
 | schedule-propose | The schedule card says the right task and time; once kept, it is in Activity's Coming up | ✓ |
 | schedule-by-talk | Asked in the conversation, a daily schedule's time changes, then it is deleted | |

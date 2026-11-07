@@ -17,14 +17,14 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "b687d7ab298c81568c0d555e9458bef38921ac885d2de3a1f356db8e2e6a16e1",
-      "zhHash": "2d27db5bd1be3dbb6a81e4b4394f8292f3b2050be2a9ea17bfa7f8290203c078"
+      "enHash": "93b0a5770ba3430c76649a7ca3532c336bf5a112cdb2918883490a22f09cbf03",
+      "zhHash": "50d4be0a89606cf5ba40a213d9bc2cf74ff515f4de482deedc64fd7fdea9bfb4"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "6c510c4dfce3e02fe5a66e8767e7829bae8d936b28daafd299bc5868bb0a027d",
-      "zhHash": "9334fb183fce58ea0c170dafe0bd2c6cec7d617b345d1ebe59d569d55f420d48"
+      "enHash": "e546d416009631789e0c2c79c46a47662a6beab3ec780d10f300686ee6f9b8f5",
+      "zhHash": "954f24cd0b6a4d111282fca07b876ba4671f0ddcafdccccc918c124cbfd3a1eb"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -65,14 +65,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "8e12a2f6d2bdb4b2e7cb4b877e93d55fe3be282a4afe97e1904566ee1ecf34be",
-      "zhHash": "3dbf3b20e3872951e042d53e0cc3cbc94b793d9e48f170fceaf1543642e59552"
+      "enHash": "8d7da62c133dd53a34610481c847f2981fe4f92c3fbaf1d851499c70eea2ae54",
+      "zhHash": "405401233ad80c9f591099898d4e6d8fd0f850e7a4aadc1cff4eb3bb9c55cbd5"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "f83ea4d7f05963003af359d24194bcc68042e7954b8422ed016d72be2c079630",
-      "zhHash": "a51a7b361cad66da00a16d1c11530cf581f8392141000a7b6390b13b65e2650a"
+      "enHash": "7db82272d5e460494a2c6fdafbea2f90d2cfab90d77a0792c3740aef39788b18",
+      "zhHash": "9e9485cb36bc546db3f97fbe28db21acd7fa4bfc6e1efae8c6d7929e03730ce1"
     },
     {
       "en": "docs/architecture-health.md",

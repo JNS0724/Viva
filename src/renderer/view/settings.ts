@@ -3,8 +3,6 @@ import { t } from '../../shared/i18n/translate.ts'
 import { languageControl } from '../language.ts'
 import { formatSize } from '../selectors.ts'
 import { h, keepingInput, label } from './dom.ts'
-import { extensionsSection } from './extensions.ts'
-import { pluginsSection } from './plugins.ts'
 import { modelsSection } from './models.ts'
 
 /**
@@ -143,11 +141,10 @@ function imagesSection(settings: Settings, handlers: Handlers) {
 }
 
 /**
- * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, then MCP servers and skills, then dsh plugins.
- * Re-rendered only when its slices change, and typed text survives a re-render.
+ * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, pictures and privacy. Skills, MCP
+ * and plugins are 能力's (view/capabilities.ts). Re-rendered only when its slices change, and typed text survives a re-render.
  */
-export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], extensions: State['extensions'], plugins: State['plugins'],
-  handlers: Handlers, { connected }: { connected: boolean }) {
+export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], handlers: Handlers) {
   if (!settings.open) {
     container.replaceChildren()
     return
@@ -171,9 +168,7 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       imagesSection(settings, handlers),
       h('section', { class: 'ext', 'aria-label': t("handoff.privacy.title") },
         h('span', { class: 'profile-heading', text: t("handoff.privacy.title") }),
-        h('p', { class: 'help', text: t("handoff.privacy.scope") })),
-      extensionsSection(extensions, handlers, { connected }),
-      pluginsSection(plugins, handlers))))
+        h('p', { class: 'help', text: t("handoff.privacy.scope") })))))
   if (isFirstShow && !input.disabled) input.focus()
 }
 

@@ -3,6 +3,7 @@ import type { KeptTask } from '../shared/ipc-results.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard } from './proposal-types.ts'
+import type { CapabilityTab } from './capability-types.ts'
 
 type Info = AgentInfo
 type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images'>
@@ -120,6 +121,11 @@ export interface ActionPayloads extends ConversationPayloads {
   plugins_inspected: { inspection: State['plugins']['inspection'] }
   plugins_changed: { view: Partial<State['plugins']>, notice?: string | null, pendingBuilds?: State['plugins']['pendingBuilds'] }
   plugins_dismiss: {}
+  capabilities_open: { tab?: CapabilityTab, id?: string | null }
+  capabilities_close: {}
+  capabilities_tab: { tab: CapabilityTab }
+  capabilities_select: { id: string | null }
+  capabilities_query: { query: string }
   schedule_proposed: { proposal: ProposalCard['proposal'] }
   proposal_busy: { id: string }
   proposal_settled: { id: string, status: ProposalCard['status'], accepted?: ProposalCard['accepted'] }

@@ -143,17 +143,17 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | `config` | 模型在对话里接入 MCP 服务器、新建或安装 skill，经用户批准 |
 | `permission` | 用户选的权限档位（完全、自动、工作区修改、仅可查看），用到 dsh 打开的每个会话；应用标为无人值守的会话（定时的运行）只能查看 |
 | `policy` | 工具运行前在 dsh 内检查应用的规则，被拒的调用作为工具错误交回模型 |
-| `plugins` | dsh 插件管理器的入口，供设置里的“插件”页使用 |
+| `plugins` | dsh 插件管理器的入口，供「能力 · 插件」使用 |
 
 插件和应用之间走 dsh 启动时打开的 IPC 通道，每个约定各有自己的消息格式（如 `plugins/tasks/lib/channel.ts`）。
 
 **两层配置。** 应用每次启动都重写 `$DSH_HOME/viva.patch.yml`，用 `--patch` 叠在最上面。里面是人设、自带插件（按入口文件的 file URL 加载，不进 profile 的依赖列表）、插件配置，以及原样重述的 dsh-base 安全行。profile 自己的 `cordis.patch.yml` 留给用户和 dsh 的插件管理器，应用只在它不存在时写一个空的 `[]`。所以组合包和用户层都改不掉应用的安全行。
 
-**用户插件。** 消息源已经删掉；外部消息和其它能力都来自用户安装的 dsh 插件。设置里的“插件”页用应用自带的 pnpm 11 安装、启用和移除插件，模型也可以在对话里提出安装，由用户在授权卡片上批准。`hmr` 是打开的，插件在 dsh 运行中就能启停。
+**用户插件。** 消息源已经删掉；外部消息和其它能力都来自用户安装的 dsh 插件。「能力 · 插件」（hub 里和设置并列的一页）用应用自带的 pnpm 11 安装、启用和移除插件，模型也可以在对话里提出安装，由用户在授权卡片上批准。`hmr` 是打开的，插件在 dsh 运行中就能启停。
 
 **什么做成插件。** 只有要用到 agent 内部的能力才做成 Viva 自己的插件：每一步之前注入内容、跟会话绑定的状态、不需要授权的原生工具、复用模型、执行前拦截。其余放在 ACP 层或 app 里。dsh 还是 0.2.x 的候选版，插件用的是它自己的接口，插件越多，将来换 ACP agent 的代价越大。这条标准只管 app 自己的插件；用户装的插件是有意和 dsh 生态绑定。
 
-**约定检查。** `APP_PLUGINS` 列出每个插件的名字、目录、约定和配置；插件在 `package.json` 里声明约定，如 `"viva": { "contract": { "memory": 1 } }`。启动前 `resolvePlugins` 检查插件存在、`package.json` 可读、名字一致、约定版本和 dsh 版本完全匹配；不通过的插件不写进 profile，原因显示在设置里。插件的数据库记录 `meta.contract_version`，更新版本写的数据直接拒绝，不会误读。
+**约定检查。** `APP_PLUGINS` 列出每个插件的名字、目录、约定和配置；插件在 `package.json` 里声明约定，如 `"viva": { "contract": { "memory": 1 } }`。启动前 `resolvePlugins` 检查插件存在、`package.json` 可读、名字一致、约定版本和 dsh 版本完全匹配；不通过的插件不写进 profile，原因显示在「能力」页。插件的数据库记录 `meta.contract_version`，更新版本写的数据直接拒绝，不会误读。
 
 **各插件用到的 dsh 接口。** `memory`：agent/pre-step、sessionProjections、tools.register、agent/turn-stopping、llm.stream；`trace`：agent/turn-stopping、session.eventAt；`policy`：tools/pre-execute（在授权之前，拒绝时附原因）；`stream`：agent/assistant-stream、session/event、agent/disposed；`plugins`：ctx.pluginManager。插件出错只降级：注入失败就不带记忆，记录过程失败就没有“过程”，对话照常。
 

@@ -1,6 +1,7 @@
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
+import { checkSkill, type SkillIssue } from './skill-spec.ts'
 
 /**
  * Skills dsh discovers on disk (dsh-skill-filesystem): `<root>/<name>/SKILL.md` or `<root>/<name>.md`,
@@ -9,53 +10,43 @@ import path from 'node:path'
  * what it imported there.
  */
 const SKILL_FILE = 'SKILL.md'
-const MAX_FRONTMATTER_CHARS = 8000
 const MAX_DESCRIPTION_CHARS = 300
 const SKIPPED_DIRS = new Set(['.system'])
 
 /**
- * The folders dsh scans that hold skills, in its priority order. The home ones are the app's own dsh home
- * (dsh-runtime.js), not the user's ~/.dsh or ~/.agents; the project root is the workspace (dsh uses the
- * nearest folder with `.git`; the default workspace has none).
+ * The project root dsh takes for a working folder (dsh-skill-filesystem findProjectRoot): the nearest folder, the
+ * working folder or one above it, holding `.git`; with none, the working folder itself.
+ */
+export function projectRoot(cwd: string, exists: (file: string) => boolean = fs.existsSync): string {
+  const start = path.resolve(cwd)
+  for (let dir = start; ; dir = path.dirname(dir)) {
+    if (exists(path.join(dir, '.git'))) return dir
+    if (path.dirname(dir) === dir) return start
+  }
+}
+
+/**
+ * The folders dsh scans that hold skills, the app's own first. The home ones are the app's own dsh home
+ * (dsh-runtime.js), not the user's ~/.dsh or ~/.agents; the project ones are under the working folder's project
+ * root (projectRoot). `rank` is dsh's: of two skills with one name, the lower rank's is the one loaded.
  */
 export function skillRoots({ dshHome, cwd }: { dshHome: string, cwd: string }) {
+  const project = projectRoot(cwd)
   return [
-    { id: 'user', dir: path.join(dshHome, 'skills'), label: t("main.skills.local.viva.skills.folder"), managed: true },
-    { id: 'workspace', dir: path.join(cwd, '.dsh', 'skills'), label: t("main.skills.workspace.dsh.skills"), managed: false },
-    { id: 'workspace-agents', dir: path.join(cwd, '.agents', 'skills'), label: t("main.skills.workspace.agents.skills"), managed: false },
+    { id: 'user', dir: path.join(dshHome, 'skills'), label: t("main.skills.local.viva.skills.folder"), managed: true, rank: 400 },
+    { id: 'workspace', dir: path.join(project, '.dsh', 'skills'), label: t("main.skills.workspace.dsh.skills"), managed: false, rank: 100 },
+    { id: 'workspace-agents', dir: path.join(project, '.agents', 'skills'), label: t("main.skills.workspace.agents.skills"), managed: false, rank: 200 },
   ]
 }
 
 type SkillRoot = ReturnType<typeof skillRoots>[number]
 
-const unquote = (value: string) => value.replace(/^(['"])(.*)\1$/, '$2')
-
-/** A `>` or `|` block: the indented lines after `index`. */
-function blockValue(rows: readonly string[], index: number, style: string) {
-  const block: string[] = []
-  for (const next of rows.slice(index + 1)) {
-    if (next.trim() && !/^\s/.test(next)) break
-    block.push(next.trim())
-  }
-  return block.join(style.startsWith('|') ? '\n' : ' ').trim()
-}
-
-/**
- * Reads `name` and `description` from the frontmatter. Handles plain, quoted and folded (`>`/`|`)
- * values, which is all skills use; anything fancier is left to dsh's own YAML parser.
- * @returns null when there is no frontmatter
- */
-export function parseFrontmatter(text: string): { name: string, description: string } | null {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text.slice(0, MAX_FRONTMATTER_CHARS))
-  if (!match) return null
-  const rows = match[1].split(/\r?\n/)
-  const fields = Object.fromEntries(rows.flatMap((row, index) => {
-    const field = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(row)
-    if (!field) return []
-    const value = field[2].trim()
-    return [[field[1], /^[>|][+-]?$/.test(value) ? blockValue(rows, index, value) : unquote(value)]]
-  }))
-  return { name: String(fields.name ?? ''), description: String(fields.description ?? '') }
+/** Why dsh would skip it, as the user reads it; the first reason only. */
+const ISSUE_TEXT: Record<SkillIssue, () => string> = {
+  frontmatter: () => t("main.skills.missing.frontmatter"),
+  fields: () => t("main.skills.missing.name.or.description"),
+  'name-format': () => t("main.skills.name.not.kebab"),
+  invocation: () => t("main.skills.invocation.not.boolean"),
 }
 
 function readSkill(root: SkillRoot, entry: fs.Dirent) {
@@ -68,22 +59,45 @@ function readSkill(root: SkillRoot, entry: fs.Dirent) {
   } catch {
     return null
   }
-  const meta = parseFrontmatter(text)
-  const problem = !meta ? t("main.skills.missing.frontmatter") : !meta.name || !meta.description ? t("main.skills.missing.name.or.description") : ''
+  const checked = checkSkill(text)
   return {
     id: `${root.id}:${entry.name}`,
-    name: meta?.name || entry.name.replace(/\.md$/i, ''),
-    description: (meta?.description ?? '').slice(0, MAX_DESCRIPTION_CHARS),
+    name: checked.name || entry.name.replace(/\.md$/i, ''),
+    description: checked.description.slice(0, MAX_DESCRIPTION_CHARS),
     root: root.id,
     rootLabel: root.label,
     managed: root.managed,
     path: entryPath,
-    problem,
+    issues: checked.issues,
+    problem: checked.issues.length ? ISSUE_TEXT[checked.issues[0]]() : '',
+    /** The root whose skill of the same name dsh loads instead; null when this one is loaded (or none is). */
+    shadowedBy: null as string | null,
   }
 }
 
-/** Every skill in the roots; a skill dsh would reject is listed with the reason. */
+type Skill = NonNullable<ReturnType<typeof readSkill>>
+
+/** Of skills dsh loads with one name, the lower rank's wins; the others say whose is loaded instead. */
+function withShadows(skills: readonly Skill[], roots: readonly SkillRoot[]): Skill[] {
+  const rankOf = new Map(roots.map((root) => [root.id, root.rank]))
+  const labelOf = new Map(roots.map((root) => [root.id, root.label]))
+  const winners = new Map<string, Skill>()
+  for (const skill of skills.filter((one) => !one.issues.length)) {
+    const held = winners.get(skill.name)
+    if (!held || (rankOf.get(skill.root) ?? 0) < (rankOf.get(held.root) ?? 0)) winners.set(skill.name, skill)
+  }
+  return skills.map((skill) => {
+    const winner = winners.get(skill.name)
+    return !skill.issues.length && winner && winner !== skill ? { ...skill, shadowedBy: labelOf.get(winner.root) ?? winner.root } : skill
+  })
+}
+
+/** Every skill in the roots; a skill dsh would reject is listed with the reason, one another hides with whose. */
 export function listSkills(roots: readonly SkillRoot[]) {
+  return withShadows(readRoots(roots), roots)
+}
+
+function readRoots(roots: readonly SkillRoot[]): Skill[] {
   return roots.flatMap((root) => {
     let entries
     try {
@@ -108,14 +122,15 @@ export function importSkill(source: string, targetDir: string): string {
   if (!isFolder && !source.toLowerCase().endsWith('.md')) throw new Error(t("main.skills.choose.a.folder.containing.skill.md.or"))
   const skillFile = isFolder ? path.join(source, SKILL_FILE) : source
   if (!fs.existsSync(skillFile)) throw new Error(t("main.skills.this.folder.has.no.skill.md"))
-  const meta = parseFrontmatter(fs.readFileSync(skillFile, 'utf8'))
-  if (!meta?.name || !meta.description) throw new Error(t("main.skills.skill.md.must.start.with.name.and"))
+  const checked = checkSkill(fs.readFileSync(skillFile, 'utf8'))
+  if (checked.issues.length) throw new Error(checked.issues[0] === 'frontmatter' || checked.issues[0] === 'fields'
+    ? t("main.skills.skill.md.must.start.with.name.and") : ISSUE_TEXT[checked.issues[0]]())
   const target = path.join(targetDir, path.basename(source))
   if (path.resolve(target) === path.resolve(source)) throw new Error(t("main.skills.this.skill.is.already.in.the.skills"))
   if (fs.existsSync(target)) throw new Error(t("main.skills.the.skills.folder.already.contains", { value1: path.basename(source) }))
   fs.mkdirSync(targetDir, { recursive: true })
   fs.cpSync(source, target, { recursive: true, errorOnExist: true, force: false })
-  return meta.name
+  return checked.name
 }
 
 /** One line without double quotes, safe inside a quoted frontmatter value. */

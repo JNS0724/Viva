@@ -3,9 +3,9 @@ import path from 'node:path'
 import { capture, run, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 
 /**
- * Smoke steps in settings' 扩展 section, after the conversation set up the demo server: editing it in place
- * (a key added, the saved one kept without being typed again) and importing a dsh home's servers with their
- * keys (one new, one skipped as its name is in use, one key left missing).
+ * Smoke steps on 能力 · MCP, after the conversation set up the demo server: editing it in place (a key added, the
+ * saved one kept without being typed again) and importing a dsh home's servers with their keys (one new, one
+ * skipped as its name is in use, one key left missing).
  */
 const IMPORT_KEY = 'smoke-import-key-9c1'
 /** No such command: the imported server is left out of the session rather than started (mcp-config.ts toAcpServers). */
@@ -28,9 +28,25 @@ const PATCH = [
   '',
 ].join('\n')
 
-const itemText = (name: string) => `document.querySelector('.ext-item[data-name="${name}"]')?.textContent ?? ''`
+/** 能力 on the hub (opened from its sidebar), on `tab`, once its list has loaded. */
+export async function openCapabilityTab(win: SmokeWindow, tab: 'skills' | 'mcp' | 'plugins') {
+  await run(win, `document.getElementById('hub').dataset.open === 'true' || document.getElementById('open-profile').click()`)
+  await run(win, `document.querySelector('.hub-nav[data-page="capabilities"]').click()`)
+  await until(win, `Boolean(document.querySelector('#capabilities-root .cap-tabs'))`, 'the 能力 page')
+  await run(win, `document.querySelector('#capabilities-root .cap-tabs [data-tab="${tab}"]').click()`)
+  await until(win, `!document.querySelector('#capabilities-root .cap-side')?.textContent.includes('加载中') || null`, 'its list')
+  await wait(UI_WAIT_MS)
+}
+
+/** The server's row picked, then what is shown of it on the right. */
+async function shownServer(win: SmokeWindow, name: string): Promise<string> {
+  await run(win, `document.querySelector('#capabilities-root .cap-row[data-name="${name}"]').click()`)
+  await wait(UI_WAIT_MS)
+  return run(win, `document.querySelector('#capabilities-root .tp-main')?.textContent ?? ''`)
+}
 
 async function editSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+  await shownServer(win, 'demo')
   await run(win, `document.querySelector('.ext-item[data-name="demo"] .ext-actions button').click()`)
   await wait(UI_WAIT_MS)
   const form = await run(win, `(() => {
@@ -65,12 +81,11 @@ async function importSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
   fs.writeFileSync(path.join(dshHome, 'profiles', 'web', 'cordis.patch.yml'), PATCH)
   fs.writeFileSync(path.join(dshHome, '.env'), `SMOKE_IMPORT_TOKEN=${IMPORT_KEY}\n`)
   try {
-    // Settings read where dsh's home is when they open: open them again to see the fixture's.
+    // 能力 reads where dsh's home is when it opens: open it again to see the fixture's.
     await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
     await wait(UI_WAIT_MS)
-    await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
-    await until(win, `document.querySelector('.import-btn') && !document.querySelector('.import-btn').disabled || null`, 'the settings page again')
-    await run(win, `document.querySelector('.ext-group').scrollIntoView({ block: 'start' })`)
+    await openCapabilityTab(win, 'mcp')
+    await until(win, `document.querySelector('.import-btn') && !document.querySelector('.import-btn').disabled || null`, 'the 能力 page again')
     await run(win, `document.querySelector('.import-btn').click()`)
     await wait(UI_WAIT_MS)
     const menu = await run(win, `[...document.querySelectorAll('.import-menu .workdir-item')].map((el) => el.textContent)`)
@@ -80,9 +95,8 @@ async function importSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
     const note = await until(win, `document.querySelector('.ext-import-note')?.textContent || null`, 'the import note')
     expect(note.includes('导入 1 个：imported') && note.includes('跳过 1 个重名的（demo）') && note.includes('imported 还缺 NEED_TOKEN'),
       'the note should say what came over, what was skipped and what is missing', note)
-    const item = await run(win, itemText('imported'))
+    const item = await shownServer(win, 'imported')
     expect(item.includes('缺少密钥：NEED_TOKEN') && item.includes('已加密保存：SMOKE_IMPORT_TOKEN'), 'the imported server should carry its key and name the missing one', item)
-    await run(win, `document.querySelector('.ext-group').scrollIntoView({ block: 'start' })`)
     await capture(win, outDir, 'mcp-imported')
     const stored = fs.readFileSync(path.join(hooks.userData, 'mcp-servers.json'), 'utf8')
     expect(stored.includes('imported') && !stored.includes(IMPORT_KEY), 'the imported key should be stored encrypted', stored.length)
@@ -93,7 +107,7 @@ async function importSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
   }
 }
 
-/** Run on the settings page, with the demo server listed. */
+/** Run on 能力 · MCP, with the demo server listed. */
 export async function mcpSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   await editSteps(win, outDir, expect, hooks)
   await importSteps(win, outDir, expect, hooks)

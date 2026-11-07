@@ -53,13 +53,15 @@ export function registerExtensionsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps
   mcpStatus: () => { active: string[], dropped: Array<{ name: string, reason: string }> },
   applyMcp: () => Promise<object | null>,
   trash: (file: string) => Promise<void>,
+  /** Shows a file in the system's file manager. */
+  reveal: (file: string) => void,
   dshDirs: () => DshDirs,
   /** The system's folder dialog; null when the user cancels. */
   chooseDshDir: () => Promise<string | null>,
   importDsh: (dir: string) => Promise<ImportResult>,
   rememberDshDir: (dir: string) => void,
 }) {
-  const { store, roots, mcpStatus, applyMcp, trash, dshDirs, chooseDshDir, importDsh, rememberDshDir } = deps
+  const { store, roots, mcpStatus, applyMcp, trash, reveal, dshDirs, chooseDshDir, importDsh, rememberDshDir } = deps
   const handle = handlerOf(ipcMain)
   const userRoot = () => roots().find((root) => root.managed)
 
@@ -105,5 +107,12 @@ export function registerExtensionsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps
   handle('ext:remove-skill', async (id) => {
     const removed = await removeSkill(assertName(id), roots(), trash)
     return { ...view(), removed }
+  })
+
+  /** By id: the page never names a path to open. */
+  handle('ext:reveal-skill', (id) => {
+    const skill = listSkills(roots()).find((one) => one.id === assertName(id))
+    if (!skill) throw new Error(t("main.skills.skill.not.found.it.may.have.been"))
+    reveal(skill.path)
   })
 }

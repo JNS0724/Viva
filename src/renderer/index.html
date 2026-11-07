@@ -52,6 +52,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>
             <span data-i18n="profile-panel.about.you">关于你</span>
           </button>
+          <button class="hub-nav" type="button" data-page="capabilities">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"></path><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"></path></svg>
+            <span data-i18n="capabilities.title">能力</span><span class="badge hub-count" id="capabilities-count" hidden></span>
+          </button>
           <button class="hub-nav" type="button" data-page="settings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg>
             <span data-i18n="settings.settings">设置</span>
@@ -69,6 +73,8 @@
           </section>
           <div class="hub-page" id="profile-root" data-page="profile" hidden></div>
           <div class="hub-page" id="settings-root" data-page="settings" hidden></div>
+          <!-- 能力: skills, MCP and plugins, each listed beside the one picked (view/capabilities.ts). -->
+          <section class="hub-page hub-tasks tasks-page" id="capabilities-root" data-page="capabilities" aria-label="能力" data-i18n-aria-label="capabilities.title" hidden></section>
           <!-- 后台: every background task on a list and the one picked beside it (view/tasks-page.ts). -->
           <section class="hub-page hub-tasks tasks-page feed-page" id="feed-page" data-page="feed" aria-label="动态" data-i18n-aria-label="feed.title" hidden></section>
           <section class="hub-page hub-tasks tasks-page" id="tasks-page" data-page="tasks" data-open="false" aria-label="后台任务" data-i18n-aria-label="tasks-page.background.tasks" hidden></section>
