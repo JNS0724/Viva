@@ -20,10 +20,9 @@ function whyText(candidate: SkillCandidateView): string {
 
 const TONE: Readonly<Record<SkillCandidateView['status'], string>> = { ready: 'ok', fixable: 'off', blocked: 'off' }
 
-function head(title: string, handlers: Handlers, status: string | null = null) {
+function head(title: string, handlers: Handlers) {
   return h('header', { class: 'tp-head' },
     h('h2', { class: 'tp-title', text: title }),
-    status ? h('span', { class: 'tp-status', text: status }) : null,
     h('button', { class: 'btn btn-text btn-small', type: 'button', text: t('extensions.cancel'), onClick: () => handlers.closeSkillImport() }))
 }
 
@@ -60,8 +59,9 @@ function reviewStep(scan: SkillScanView, state: State, handlers: Handlers) {
   const busy = Boolean(state.skillImport.busy)
   const picks = state.skillImport.picks as readonly string[]
   return h('div', { class: 'tp-main' },
-    head(scan.label, handlers, t('capabilities.import.summary', { ready: counts.ready, fixable: counts.fixable, blocked: counts.blocked })),
+    head(scan.label, handlers),
     h('div', { class: 'tp-scroll' },
+      h('p', { class: 'help', text: t('capabilities.import.summary', { ready: counts.ready, fixable: counts.fixable, blocked: counts.blocked }) }),
       scan.candidates.length
         ? h('div', { class: 'cap-candidates' }, scan.candidates.map((candidate) => candidateRow(candidate, picks.includes(candidate.entry), busy, handlers)))
         : h('p', { class: 'help', text: t('capabilities.import.empty') }),

@@ -908,7 +908,7 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .cap-side { width: 320px; gap: 4px; }
 .cap-tabs { margin: 4px 12px 8px; }
 .cap-tab-count { margin-left: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
-.cap-search-row { display: flex; gap: 8px; margin: 0 12px 4px; }
+.cap-search-row { display: flex; align-items: center; gap: 8px; margin: 0 12px 4px; }
 .cap-search-row .cap-search { flex: 1; min-width: 0; margin: 0; }
 /* 导入's where from (view/skill-import.ts): a folder found, where it is, how many it holds. */
 .cap-source {
