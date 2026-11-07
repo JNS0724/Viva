@@ -53,11 +53,6 @@ function pluginFacts(plugin: PluginView, state: State, handlers: Handlers) {
   ]
 }
 
-const feedback = (plugins: State['plugins']) => [
-  plugins.error ? h('p', { class: 'form-error', role: 'alert', text: plugins.error }) : null,
-  plugins.notice ? h('p', { class: 'form-notice', role: 'status', text: plugins.notice }) : null,
-]
-
 export function pluginMain(state: State, handlers: Handlers): HTMLElement {
   if (!state.plugins.connected) return h('div', { class: 'tp-main tp-empty' }, h('p', { class: 'empty', text: t('plugins.not.connected') }))
   const plugin = state.capabilities.selected === ADD_PLUGIN ? null : shownPlugin(state)
@@ -67,13 +62,12 @@ export function pluginMain(state: State, handlers: Handlers): HTMLElement {
       h('div', { class: 'tp-scroll' },
         h('p', { class: 'help', text: t('plugins.help') }),
         installForm(state.plugins, handlers),
-        installCard(state.plugins, handlers),
-        ...feedback(state.plugins)))
+        installCard(state.plugins, handlers)))
   }
   const standing = standingText(pluginStanding(plugin))
   return h('div', { class: 'tp-main' },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: plugin.name }),
       h('span', { class: 'ext-status cap-standing', 'data-tone': standing.tone, title: standing.text, text: standing.text })),
-    h('div', { class: 'tp-scroll' }, ...pluginFacts(plugin, state, handlers), ...feedback(state.plugins)))
+    h('div', { class: 'tp-scroll' }, ...pluginFacts(plugin, state, handlers)))
 }

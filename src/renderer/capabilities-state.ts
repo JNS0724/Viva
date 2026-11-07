@@ -93,6 +93,15 @@ export const shownServer = (state: State): ServerView | null =>
 export const shownPlugin = (state: State): PluginView | null =>
   shown(pluginsOf(state), (plugin) => plugin.name, pluginWrong, state.capabilities.selected)
 
+/**
+ * What the last change on the open tab came to (a failure and why, or what was done), said whatever is listed or
+ * picked: a first import that fails leaves nothing to pick, and removing the last one leaves nothing either.
+ */
+export function capabilityFeedback(state: State): { error: string | null, notice: string | null } {
+  const slice = openTab(state) === 'plugins' ? state.plugins : state.extensions
+  return { error: slice.error ?? null, notice: slice.notice ?? null }
+}
+
 /** How many each tab lists. */
 export const capabilityCounts = (state: State): Record<CapabilityTab, number> =>
   ({ skills: skillsOf(state).length, mcp: serversOf(state).length, plugins: pluginsOf(state).length })

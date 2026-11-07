@@ -1,6 +1,6 @@
 import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
-import { CAPABILITY_TABS, capabilityCounts, openTab, type CapabilityTab } from '../capabilities-state.ts'
+import { CAPABILITY_TABS, capabilityCounts, capabilityFeedback, openTab, type CapabilityTab } from '../capabilities-state.ts'
 import type { ExtensionStatus } from '../capability-types.ts'
 import { h, keepingInput } from './dom.ts'
 import { serverMain, serversSide } from './capability-mcp.ts'
@@ -36,6 +36,15 @@ function memoryLine(status: ExtensionStatus, connected: boolean) {
     problem ? t('extensions.the.memory.plugin.version.is.incompatible.automatic', { problem }) : t('extensions.the.memory.plugin.was.not.loaded.automatic'))
 }
 
+/** What the last change came to, under the tabs: there whatever is listed or picked. */
+function feedback(state: State) {
+  const { error, notice } = capabilityFeedback(state)
+  return [
+    error ? h('p', { class: 'form-error cap-feedback', role: 'alert', text: error }) : null,
+    notice ? h('p', { class: 'form-notice cap-feedback', role: 'status', text: notice }) : null,
+  ]
+}
+
 export function renderCapabilitiesPage(container: HTMLElement, state: State, handlers: Handlers, { connected }: { connected: boolean }) {
   if (!state.capabilities.open) {
     container.replaceChildren()
@@ -47,6 +56,7 @@ export function renderCapabilitiesPage(container: HTMLElement, state: State, han
     h('div', { class: 'tp-side-head' }, h('h1', { class: 'feed-title', text: t('capabilities.title') })),
     tabs(state, handlers),
     memoryLine(state.extensions.status as ExtensionStatus, connected && state.extensions.loaded),
+    ...feedback(state),
     ...(loaded ? SIDES[tab](state, handlers) : [h('p', { class: 'help cap-empty', text: t('extensions.loading') })]))
   const main = loaded ? MAINS[tab](state, handlers) : h('div', { class: 'tp-main tp-empty' })
   keepingInput(container, () => container.replaceChildren(side, main))

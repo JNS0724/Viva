@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { hubPage } from '../src/renderer/hub-state.ts'
-import { capabilityCounts, capabilityProblems, pluginStanding, serverStanding, shownPlugin, shownServer, shownSkill, skillGroups } from '../src/renderer/capabilities-state.ts'
+import { capabilityCounts, capabilityFeedback, capabilityProblems, pluginStanding, serverStanding, shownPlugin, shownServer, shownSkill, skillGroups } from '../src/renderer/capabilities-state.ts'
 import type { PluginView, ServerView, SkillView } from '../src/renderer/capability-types.ts'
 
 /** 能力 (capabilities-state.ts): skills, MCP and plugins, a page of the hub; what is listed, what is shown, what is wrong. */
@@ -76,4 +76,19 @@ test('counts for the tabs, and how many need looking at for the way in', () => {
   assert.deepEqual(capabilityCounts(state), { skills: 2, mcp: 3, plugins: 3 })
   assert.equal(capabilityProblems(state), 4, 'a broken skill, a dropped server, one missing a key, a broken plugin; one switched off is fine')
   assert.equal(capabilityProblems(initialState), 0, 'nothing loaded, nothing wrong')
+})
+
+test('what a change came to is said whatever is listed: a failed first import, the last one removed', () => {
+  const mcp = reduce(loaded(), { type: 'capabilities_open', tab: 'mcp' })
+  const failed = reduce(reduce(mcp, { type: 'extensions_busy' }), { type: 'extensions_failed', message: '读不到 dsh 的配置' })
+  assert.equal(shownServer(failed), null, 'nothing to pick')
+  assert.deepEqual(capabilityFeedback(failed), { error: '读不到 dsh 的配置', notice: null })
+
+  const one = reduce(loaded({ servers: [server('demo')] }), { type: 'capabilities_open', tab: 'mcp' })
+  const removed = reduce(one, { type: 'extensions_saved', view: { servers: [] }, notice: '已删除' })
+  assert.deepEqual([shownServer(removed), capabilityFeedback(removed)], [null, { error: null, notice: '已删除' }])
+
+  const plugins = reduce(reduce(loaded(), { type: 'capabilities_open', tab: 'plugins' }), { type: 'plugins_failed', message: '找不到这个包' })
+  assert.deepEqual(capabilityFeedback(plugins), { error: '找不到这个包', notice: null }, 'the plugins tab says the plugins\' own')
+  assert.deepEqual(capabilityFeedback(reduce(plugins, { type: 'capabilities_tab', tab: 'skills' })), { error: null, notice: null })
 })

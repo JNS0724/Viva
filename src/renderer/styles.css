@@ -913,6 +913,8 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .cap-row .ext-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* How the one picked stands, by its name: one line, cut short, so the name keeps its room (the whole in its title). */
 .cap-standing { flex: 0 1 auto; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* What the last change came to, under the tabs (view/capabilities.ts feedback). */
+.cap-feedback { margin: 0 12px 4px; overflow-wrap: anywhere; }
 /* What the import did, under 从 dsh 导入: paths break anywhere rather than widen the list. */
 .cap-side .ext-import-note { margin: 0 12px 4px; overflow-wrap: anywhere; }
 /* A server's facts and its 编辑 / 删除, one under the other (view/capability-mcp.ts). */

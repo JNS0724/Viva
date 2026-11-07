@@ -14,16 +14,28 @@ const MAX_DESCRIPTION_CHARS = 300
 const SKIPPED_DIRS = new Set(['.system'])
 
 /**
+ * The project root dsh takes for a working folder (dsh-skill-filesystem findProjectRoot): the nearest folder, the
+ * working folder or one above it, holding `.git`; with none, the working folder itself.
+ */
+export function projectRoot(cwd: string, exists: (file: string) => boolean = fs.existsSync): string {
+  const start = path.resolve(cwd)
+  for (let dir = start; ; dir = path.dirname(dir)) {
+    if (exists(path.join(dir, '.git'))) return dir
+    if (path.dirname(dir) === dir) return start
+  }
+}
+
+/**
  * The folders dsh scans that hold skills, the app's own first. The home ones are the app's own dsh home
- * (dsh-runtime.js), not the user's ~/.dsh or ~/.agents; the project root is the workspace (dsh uses the
- * nearest folder with `.git`; the default workspace has none). `rank` is dsh's: of two skills with one name,
- * the lower rank's is the one loaded (dsh-skill-filesystem).
+ * (dsh-runtime.js), not the user's ~/.dsh or ~/.agents; the project ones are under the working folder's project
+ * root (projectRoot). `rank` is dsh's: of two skills with one name, the lower rank's is the one loaded.
  */
 export function skillRoots({ dshHome, cwd }: { dshHome: string, cwd: string }) {
+  const project = projectRoot(cwd)
   return [
     { id: 'user', dir: path.join(dshHome, 'skills'), label: t("main.skills.local.viva.skills.folder"), managed: true, rank: 400 },
-    { id: 'workspace', dir: path.join(cwd, '.dsh', 'skills'), label: t("main.skills.workspace.dsh.skills"), managed: false, rank: 100 },
-    { id: 'workspace-agents', dir: path.join(cwd, '.agents', 'skills'), label: t("main.skills.workspace.agents.skills"), managed: false, rank: 200 },
+    { id: 'workspace', dir: path.join(project, '.dsh', 'skills'), label: t("main.skills.workspace.dsh.skills"), managed: false, rank: 100 },
+    { id: 'workspace-agents', dir: path.join(project, '.agents', 'skills'), label: t("main.skills.workspace.agents.skills"), managed: false, rank: 200 },
   ]
 }
 

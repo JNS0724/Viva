@@ -62,7 +62,5 @@ export function serverMain(state: State, handlers: Handlers): HTMLElement {
       h('h2', { class: 'tp-title', text: server.name }),
       h('span', { class: 'ext-status cap-standing', 'data-tone': standing.tone, title: standing.text, text: standing.text })),
     h('div', { class: 'tp-scroll' },
-      editing ? serverForm(server, editing, state.extensions, handlers) : serverFacts(server, state, handlers),
-      state.extensions.error ? h('p', { class: 'form-error', role: 'alert', text: state.extensions.error }) : null,
-      state.extensions.notice ? h('p', { class: 'form-notice', role: 'status', text: state.extensions.notice }) : null))
+      editing ? serverForm(server, editing, state.extensions, handlers) : serverFacts(server, state, handlers)))
 }

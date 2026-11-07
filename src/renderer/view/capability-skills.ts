@@ -70,7 +70,5 @@ export function skillMain(state: State, handlers: Handlers): HTMLElement {
         skill.managed ? h('button', {
           class: 'btn btn-outline btn-small', type: 'button', disabled: busy, text: t('extensions.remove'),
           'aria-label': t('extensions.remove.skill', { name: skill.name }), onClick: () => handlers.removeSkill(skill),
-        }) : null),
-      state.extensions.error ? h('p', { class: 'form-error', role: 'alert', text: state.extensions.error }) : null,
-      state.extensions.notice ? h('p', { class: 'form-notice', role: 'status', text: state.extensions.notice }) : null))
+        }) : null)))
 }
