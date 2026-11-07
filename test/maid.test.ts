@@ -134,7 +134,10 @@ test('the runtime character directory contains only referenced assets within its
   for (const directory of [ASSETS, path.join(ASSETS, 'avatars')]) {
     const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8')) as Manifest
     const referenced = manifest.states.flatMap(state => [state.static, state.animation])
-    const actual = fs.readdirSync(directory, { withFileTypes: true }).filter(entry => entry.isFile()).map(entry => entry.name)
+    const entries = fs.readdirSync(directory, { withFileTypes: true })
+    assert.ok(entries.every(entry => entry.isFile() || (directory === ASSETS && entry.name === 'avatars' && entry.isDirectory())),
+      'only the referenced portrait directory is allowed alongside runtime files')
+    const actual = entries.filter(entry => entry.isFile()).map(entry => entry.name)
     assert.deepEqual(actual.sort(), ['manifest.json', ...referenced].sort(), 'source sheets and unused exports stay outside runtime assets')
     for (const file of actual) {
       const bytes = fs.statSync(path.join(directory, file)).size
