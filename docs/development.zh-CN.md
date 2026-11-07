@@ -133,7 +133,7 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 PR CI 在每个 OS 上独立运行 headless、core 和两路 integration。headless 执行类型检查、完整 `npm test` 与文档检查，core 构建并运行两条公共 UI 测试。integration 分别在两个独立桌面 runner 上构建，`VIVA_SMOKE_LANE=memory` 选择 memory、schedules 和 lifecycle，`VIVA_SMOKE_LANE=interaction` 选择 setup、walkthrough/relaunch、timeline、language 和独立 resume。两路都使用 `npx playwright test -c test/smoke/playwright.config.ts --project=integration`，省略 lane 则运行全部八条 integration 测试。完整源码冒烟有十条测试，各重启链共用自身资料目录。安装产物验收继续在同一资料目录执行 memory、schedules 和 resume。
 
-memory 的各个前置以命名 Playwright step 展示，stdout 输出 JSON 阶段计时。首个前置断言失败即终止依赖链并保留诊断。普通 UI 在业务就绪条件后等待字体、有限运行动画完成和两帧绘制。流式滚动检查等待新步骤真正溢出、长回答仍在流式生成，保留原有位置预算。
+memory 的各个前置以命名 Playwright step 展示，stdout 输出 JSON 阶段计时。首个前置断言失败即终止依赖链并保留诊断。普通 UI 在业务就绪条件后等待字体、有限运行动画完成和两帧绘制。长任务滚动场景采用既有定时观测与位置预算。
 
 CI 报告目录和 artifact 名称包含 OS、lane、run ID 与 attempt，Playwright 元数据记录提交、平台、Node 版本和 lane。最终 `check (macos-latest)`、`check (windows-latest)` 保留现有名称，要求 headless/core/integration 的全部矩阵任务成功。失败、取消、跳过或缺失必需结果都会让两个聚合门禁失败。runner 可用性和依赖安装计入墙钟时间，新增 job 会重复准备工作。
 

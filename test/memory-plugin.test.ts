@@ -8,19 +8,44 @@ import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fi
 
 /** The memory plugin inside the real dsh, with the app's whole profile and a fake model. */
 
-function openDb(defer, file) {
+function openDb(defer: (close: () => void) => void, file: string) {
   const db = openMemoryDb({ file })
   defer(() => db.close())
   return db
 }
 
 /** The plugin's block in the model's latest request, or '' when it sent none. */
-function contextOf(request) {
+interface ModelRequest {
+  system?: unknown
+  messages: { content: string | { type: string, text?: string }[] }[]
+}
+
+function contextOf(request: ModelRequest) {
   const last = request.messages[request.messages.length - 1]
   const parts = Array.isArray(last.content) ? last.content : []
-  return parts.find((part) => part.type === 'text' && part.text.startsWith('<about-user>'))?.text ?? ''
+  return parts.find((part) => part.type === 'text' && part.text?.startsWith('<about-user>'))?.text ?? ''
 }
-const lastContext = (llm) => contextOf(llm.requests[llm.requests.length - 1])
+
+function lastContext(llm: { requests: object[] }) {
+  // Background extraction and synthesis share the endpoint with the foreground conversation.
+  // The fake endpoint records parsed Messages API requests with this shape.
+  const requests = llm.requests as ModelRequest[]
+  const request = requests.findLast(request => JSON.stringify(request.system ?? '').includes('你是用户的个人工作助手'))
+  assert.ok(request, 'the foreground model request must exist')
+  return contextOf(request)
+}
+
+test('memory context sampling selects the latest foreground request across background work', () => {
+  const foreground = (text?: string): ModelRequest => ({
+    system: [{ type: 'text', text: '你是用户的个人工作助手' }],
+    messages: [{ content: text ? [{ type: 'text', text }] : '周报还要注意什么' }],
+  })
+  const extraction: ModelRequest = { system: '你是记忆整理员', messages: [{ content: 'extract' }] }
+  const synthesis: ModelRequest = { system: '你是画像整理员', messages: [{ content: 'synthesize' }] }
+  assert.equal(lastContext({ requests: [foreground('<about-user>first'), extraction, foreground('<about-user>second'), synthesis] }), '<about-user>second')
+  assert.equal(lastContext({ requests: [foreground('<about-user>first'), extraction, foreground(), synthesis] }), '')
+  assert.throws(() => lastContext({ requests: [extraction, synthesis] }), /foreground model request must exist/)
+})
 
 test('the fixed layer goes out once per session, names push their memories once', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { file, llm, bridge, defer } = await setup(t)
@@ -32,6 +57,7 @@ test('the fixed layer goes out once per session, names push their memories once'
   db.saveSynthesis('【偏好】\n- 回答先给结论')
   const agent = bridge()
   const { sessionId } = await agent.start()
+  assert.ok(sessionId)
 
   await agent.prompt('今天天气怎么样')
   const first = lastContext(llm)
@@ -107,8 +133,13 @@ test('a preference the model did not save is picked up in the background after t
 
   assert.equal(events.some((e) => e.update?.sessionUpdate === 'tool_call'), false, 'the main model called no memory tool')
   const saved = await eventually(() => db.listMemories().items.find((m) => m.kind === 'preference'))
-  const extraction = llm.requests.find((request) => JSON.stringify(request.system ?? '').includes('记忆整理员'))
-  const input = JSON.parse(extraction.messages[0].content[0].text)
+  const extraction = (llm.requests as ModelRequest[]).find((request) => JSON.stringify(request.system ?? '').includes('记忆整理员'))
+  assert.ok(extraction)
+  const parts = extraction.messages[0].content
+  assert.ok(Array.isArray(parts))
+  const text = parts[0].text
+  assert.ok(text)
+  const input = JSON.parse(text) as { assistant: string }
   assert.match(input.assistant, /收到：「以后回答我，先给结论再展开」/, 'the extractor reads the answer the user got')
   assert.equal(saved?.text, '回答我先给结论再展开')
   assert.equal(saved?.source, 'agent')
@@ -157,7 +188,7 @@ test('the background pass never overrides what the user wrote: the whole change 
   await eventually(() => llm.requests.length >= 2, { timeoutMs: 15_000 })
   await new Promise((resolve) => setTimeout(resolve, 500))
 
-  assert.equal(db.getMemory(mine.id).invalidAt, null)
+  assert.equal(db.getMemory(mine.id)?.invalidAt, null)
   assert.deepEqual(db.listMemories().items.map((m) => m.text), ['张三是直属上级'], 'not even the new memory is kept')
 })
 
