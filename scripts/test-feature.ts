@@ -16,7 +16,7 @@ const FEATURES = {
   architecture: /^(?:module-boundaries|backend-boundary|backend-wire(?:-timing)?|main-modules|ipc-contract|window-api|smoke-isolation|smoke-layout|ci-check|test-feature)\.test\.(?:js|ts)$/,
   models: /^(?:models?[.-])/,
   skills: /^(?:skills?[.-])/,
-  capabilities: /^(?:capabilit|extensions[.-]|plugins[.-]|app-plugins[.-]|import-flow[.-]|config-actions[.-]|commands[.-])/,
+  capabilities: /^(?:capabilit|extensions[.-]|plugins?[.-]|app-plugins[.-]|import-flow[.-]|config-actions[.-]|commands[.-])/,
   files: /^(?:file(?:s[.-]|-access)|workspace-files[.-]|attachments[.-]|image-(?:ipc|store)[.-]|paste[.-]|csv[.-]|remove-tree[.-])/,
   memory: /^memory[.-]/,
   rendering: /^(?:column-resize|earlier-(?:row|state)|frame|full-screen|hub-state|island-(?:dom|view)|long-answer|markdown|prompt-card|reader-control|reconcile|renderer-css|review-(?:actions|state)|scroll-follow|selectors|stars|timeline-search|turn-rail|user-error)\.test\.(?:js|ts)$/,

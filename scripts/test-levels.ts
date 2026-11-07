@@ -90,6 +90,7 @@ export const testLevels = {
     'module-boundaries',
     'new-topic-actions',
     'paste',
+    'plugin-fit',
     'plugins-channel',
     'plugins-ipc',
     'plugins-state',
