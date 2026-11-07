@@ -18,6 +18,7 @@ import { mountHistorySearchFrame } from './history-search-frame.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
 import { createPluginActions } from './plugin-actions.ts'
+import { createCapabilityActions } from './capability-actions.ts'
 import { createNewTopicAction } from './new-topic-actions.ts'
 import { createAgentEvents } from './agent-events.ts'
 import type { AgentEvent } from './agent-event-types.ts'
@@ -399,6 +400,13 @@ const proposalActions = createProposalActions({ api, getState: () => state, disp
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
+const capabilityActions = createCapabilityActions({
+  dispatch,
+  load: () => {
+    extensionActions.loadExtensions()
+    pluginActions.loadPlugins()
+  },
+})
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
 
 /** Emptying or moving the pictures folder; null back means the user picked no folder. */
@@ -456,6 +464,7 @@ const handlers = {
   ...proposalActions,
   ...modelActions,
   ...pluginActions,
+  ...capabilityActions,
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
@@ -559,9 +568,7 @@ const handlers = {
   },
   async openSettings() {
     dispatch({ type: 'settings_open' })
-    extensionActions.loadExtensions()
     modelActions.loadModels()
-    pluginActions.loadPlugins()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })
     } catch (err) {
@@ -571,7 +578,10 @@ const handlers = {
   closeSettings: () => dispatch({ type: 'settings_close' }),
   /** The page under the title bar: on the page asked for, or on the one last shown (hub-state.js). */
   openHubPage: (page: string) => HUB_OPENERS[page]?.(),
-  openHub: () => handlers.openHubPage(state.hub.last),
+  openHub: () => {
+    handlers.openHubPage(state.hub.last)
+    capabilityActions.refreshCapabilities()
+  },
   /** ← 返回, Esc, or the 关于你 icon again: back to the conversation. */
   closeHub: () => dispatch({ type: 'hub_close' }),
   /** The 后台 page, on `taskId` or the one it was on (view/tasks-page.js). */
@@ -658,6 +668,7 @@ const HUB_OPENERS: Readonly<Record<string, () => unknown>> = {
   // Background tasks: a page of its own in the same place (view/tasks-page.ts).
   tasks: () => handlers.openTasks(),
   profile: () => handlers.openProfile(),
+  capabilities: () => capabilityActions.openCapabilities(),
   settings: () => handlers.openSettings(),
 }
 

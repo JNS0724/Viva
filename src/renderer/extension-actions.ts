@@ -49,6 +49,8 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
       if (guardMcp()) change(() => api.removeMcpServer(name), appliedNotice(t("extension-actions.deleted")))
     },
     removeSkill: (skill: { id: string, name: string }) => change(() => api.removeSkill(skill.id), () => t("extension-actions.moved.to.trash", { name: skill.name })),
+    /** Its folder in the system's file manager. */
+    revealSkill: (id: string) => api.revealSkill(id).catch(fail),
 
     toggleImportMenu: () => dispatch({ type: 'extensions_import_menu' }),
     closeImportMenu: () => dispatch({ type: 'extensions_import_menu', open: false }),

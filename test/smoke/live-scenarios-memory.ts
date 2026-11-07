@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ask, clip, closeHub, fileHolds, forgetMemories, fresh, MEMORY_SETTLE_MS, memoriesWith, openSettings, traceToolNames, type LiveContext, type LiveScenario } from './live-kit.ts'
+import { ask, clip, closeHub, fileHolds, forgetMemories, fresh, MEMORY_SETTLE_MS, memoriesWith, openCapabilities, traceToolNames, type LiveContext, type LiveScenario } from './live-kit.ts'
 import { until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
@@ -125,7 +125,7 @@ const mcpAddUse: LiveScenario = {
 
 const skillCreate: LiveScenario = {
   id: 'skill-create',
-  title: '对话里存 skill：先审批，存好后在设置里列出',
+  title: '对话里存 skill：先审批，存好后在能力里列出',
   feature: '在对话里配置 MCP 和 skill',
   async run(ctx) {
     const { win, expect, tag } = ctx
@@ -133,9 +133,9 @@ const skillCreate: LiveScenario = {
     await fresh(win)
     const out = await ask(win, `把这个做法存成一个 skill，名字叫 ${skill}：写周报时先列本周完成的事，再列风险，最后列下周计划，每部分不超过 5 条。`, { permission: 'allow' })
     expect(out.cards.length > 0, 'saving a skill should ask first', out.cards)
-    await openSettings(win)
-    const listed = await until(win, `document.getElementById('settings-root')?.textContent.includes(${JSON.stringify(skill)}) || null`, 'the skill in 扩展', 10_000).catch(() => false)
-    expect(Boolean(listed), 'the new skill should be listed in 设置 › 扩展', clip(out.answer))
+    await openCapabilities(win, 'skills')
+    const listed = await until(win, `document.getElementById('capabilities-root')?.textContent.includes(${JSON.stringify(skill)}) || null`, 'the skill in 能力', 10_000).catch(() => false)
+    expect(Boolean(listed), 'the new skill should be listed in 能力 › 技能', clip(out.answer))
     await ctx.shot('skill-listed')
     await closeHub(win)
   },
@@ -173,9 +173,9 @@ const mcpImport: LiveScenario = {
     const out = await ask(win, `把 dsh 里配置的 MCP 服务器搬过来，dsh 文件夹在 ${home}`, { permission: 'deny' })
     expect(out.cards.length === 0, 'bringing servers over from dsh should not ask', out.cards)
     expect(fileHolds(path.join(ctx.userData, 'mcp-servers.json'), name), 'the server should be brought over', clip(out.answer))
-    await openSettings(win)
-    const listed = await until(win, `document.getElementById('settings-root')?.textContent.includes(${JSON.stringify(name)}) || null`, 'the imported server in 扩展', 10_000).catch(() => false)
-    expect(Boolean(listed), 'the imported server should be listed in 设置 › 扩展')
+    await openCapabilities(win, 'mcp')
+    const listed = await until(win, `document.getElementById('capabilities-root')?.textContent.includes(${JSON.stringify(name)}) || null`, 'the imported server in 能力', 10_000).catch(() => false)
+    expect(Boolean(listed), 'the imported server should be listed in 能力 › MCP')
     await ctx.shot('mcp-imported')
     await closeHub(win)
   },

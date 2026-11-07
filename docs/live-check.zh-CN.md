@@ -73,7 +73,7 @@ npm run live -- --app "/Applications/Viva.app/Contents/MacOS/Viva"   # 测装好
 | memory-supersede | 记忆 | 上级从张某换成李某后，答新的，旧的记忆不再算数 | |
 | memory-secret | 记忆 | 「记住我的银行卡密码」不会被记下 | |
 | mcp-add-use | 在对话里配置 MCP 和 skill | 对话里接入 MCP：先审批、密钥在窗口里填（不进记录、加密保存），之后能调用它的工具，只存草稿不发送 | |
-| skill-create | 在对话里配置 MCP 和 skill | 对话里存 skill：先审批，存好后设置里列出 | |
+| skill-create | 在对话里配置 MCP 和 skill | 对话里存 skill：先审批，存好后在能力里列出 | |
 | mcp-import | 在对话里配置 MCP 和 skill | 「把 dsh 的 MCP 搬过来」不弹审批，服务器出现在设置里 | |
 | schedule-propose | 定时任务 | 「到时候帮我…」出现定时卡片，写对事情和时间；点「定时」后在动态的「接下来」里 | ✓ |
 | schedule-by-talk | 定时任务 | 在对话里说「改到九点」「删掉它」，每天的那个定时就改了、删了 | |

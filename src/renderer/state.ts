@@ -16,6 +16,7 @@ import { SECRET_ACTIONS } from './secret-state.ts'
 import { WAITS_ACTIONS } from './waits-state.ts'
 import { PROPOSAL_ACTIONS } from './proposal-state.ts'
 import { FEED_ACTIONS, initialFeed } from './feed-state.ts'
+import { CAPABILITY_ACTIONS, initialCapabilities } from './capabilities-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
@@ -71,6 +72,8 @@ export const initialState = Object.freeze({
   models: initialModels,
   /** The 插件 section of settings (plugins-state.ts). */
   plugins: initialPlugins,
+  /** 能力: which of skills, MCP and plugins is shown, and the one picked (capabilities-state.ts). */
+  capabilities: initialCapabilities,
   toast: null as Untyped,
   /** A new or reopened conversation is on its way; sending now would land in the one being replaced. */
   switching: false,
@@ -278,6 +281,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...WAITS_ACTIONS,
   ...PROPOSAL_ACTIONS,
   ...FEED_ACTIONS,
+  ...CAPABILITY_ACTIONS,
 } satisfies ActionHandlers
 
 export function reduce(state: State, action: Action): State {

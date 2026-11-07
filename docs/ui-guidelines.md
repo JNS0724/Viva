@@ -221,7 +221,7 @@ Drawn by `src/renderer/view/maid.ts`:
 - In plain language, say three things: **what happened, what became of the user's work, and what to do next.** For example: "This message is too long. The limit is 20,000 characters. Shorten it and try again; your draft has been kept."
 - Don't blame the user. Don't show error codes or stack traces. Avoid empty phrases like "Operation failed".
 - Action buttons are verbs and match what they do ("Start again here", "Edit and resend", "Run in background").
-- No trailing arrows on links and buttons ("View all", not "View all →"), and no leading glyphs like "↗". A path through the menus keeps its arrow ("Settings → Extensions").
+- No trailing arrows on links and buttons ("View all", not "View all →"), and no leading glyphs like "↗". A path through the menus keeps its arrow ("Capabilities → MCP").
 - Don't join a label and what it labels with a middle dot. Set the parts apart with a gap and a quieter color: "This topic: 2 messages", a group's name with its count beside it, what a turn took and then "View activity". Middle dots may still separate data in one line (times, places).
 - Brand names, tool and protocol ids, paths, user input and model output stay as they are and aren't translated.
 

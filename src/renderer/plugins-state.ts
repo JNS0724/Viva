@@ -1,4 +1,5 @@
 import type { ActionHandlers } from './action-types.ts'
+import { t } from '../shared/i18n/translate.ts'
 /**
  * The 插件 section of settings (plugins-ipc.ts): the dsh plugins the user installed, and an install in two steps:
  * what the spec names (`inspection`), then 安装; a first attempt may ask to allow dependency build scripts
@@ -35,3 +36,19 @@ export const PLUGIN_ACTIONS= {
   }),
   plugins_dismiss: (state) => withPlugins(state, { inspection: null, pendingBuilds: [], error: null }),
 } satisfies ActionHandlers
+
+/** dsh's codes for a refusal (dsh-plugin-manager), in the user's words. */
+const PROBLEMS: Readonly<Record<string, () => string>> = Object.freeze({
+  'invalid-spec': () => t('plugins.problem.invalid-spec'),
+  'already-installed': () => t('plugins.problem.already-installed'),
+  'not-found': () => t('plugins.problem.not-found'),
+  'not-a-package': () => t('plugins.problem.not-a-package'),
+  'not-a-bundle': () => t('plugins.problem.not-a-bundle'),
+  network: () => t('plugins.problem.network'),
+  'incompatible-version': () => t('plugins.problem.incompatible-version'),
+})
+
+/** dsh's code for a refusal, in the user's words; the manager's own words for anything else. */
+export function problemText(code: string, detail: string | null = null): string {
+  return PROBLEMS[code]?.() ?? t('plugins.problem.unknown', { detail: detail ?? code })
+}

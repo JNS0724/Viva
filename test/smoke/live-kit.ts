@@ -252,6 +252,15 @@ export function latinShare(text: string): number {
 
 export const hasHan = (text: string) => /[一-鿿]/.test(text)
 
+/** Opens 能力 on the hub on `tab` (the icon by the title bar, the sidebar, then the tab). */
+export async function openCapabilities(win: SmokeWindow, tab: 'skills' | 'mcp' | 'plugins') {
+  await run(win, `document.getElementById('hub').dataset.open === 'true' || document.getElementById('open-profile').click()`)
+  await run(win, `document.querySelector('.hub-nav[data-page="capabilities"]').click()`)
+  await until(win, `Boolean(document.querySelector('#capabilities-root .cap-tabs'))`, 'the 能力 page')
+  await run(win, `document.querySelector('#capabilities-root .cap-tabs [data-tab="${tab}"]').click()`)
+  await wait(UI_WAIT_MS)
+}
+
 /** Opens 设置 on the hub (the icon by the title bar, then the sidebar). */
 export async function openSettings(win: SmokeWindow) {
   await run(win, `document.getElementById('hub').dataset.open === 'true' || document.getElementById('open-profile').click()`)

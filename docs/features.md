@@ -55,7 +55,9 @@ Assistant file access differs from read-only preview: in Workspace changes and R
 <a id="在对话里配置-mcp-和-skill"></a>
 ## Configure MCP and skills in conversation
 
-Ask to connect a service or save a procedure as a skill. Settings → Extensions lists servers and skills; servers can be edited in place or deleted, and skills removed.
+Ask to connect a service or save a procedure as a skill. What is there is on the Capabilities page, beside Search, About you and Settings: Skills, MCP and Plugins as tabs, a list on the left and the one picked on the right, with a count by its name when something does not work. Servers can be edited in place or deleted; Viva's own skills can be removed, and the workspace's are marked read-only.
+
+- **Skill checks:** each skill is checked by the rules dsh loads skills by: YAML frontmatter, a name and a description, a kebab-case name, and `disable-model-invocation` / `user-invocable` written as booleans (`src/backend/skill-spec.ts`). dsh skips a skill that breaks them with only a warning in its log, so the model never learns of it; the page says why. Of skills with one name dsh loads one, by its priority (the workspace's `.dsh/skills`, then its `.agents/skills`, then Viva's), and the others say which one hides them.
 
 `viva-config` exposes `viva_mcp_add/update/remove/list/import` and `viva_skill_create/install/remove/list`. Mutations require approval showing the command and arguments. Importing existing dsh configuration is the documented exception below. When secrets are needed, the model supplies only variable names; a dedicated window form sends values directly to main for safeStorage encryption in `mcp-servers.json`. Secrets do not enter dsh, chat, or activity; activity records only the request and completion of secret entry.
 
@@ -63,14 +65,14 @@ The plugin uses `config@1` IPC; `config-channel.ts` validates each request and r
 
 ### Import and edit in place
 
-Import from dsh accepts `DSH_HOME` (default `~/.dsh`), the last folder, or another folder, through Settings or chat. It reads existing user configuration without approval/secret prompts and does not modify the source. `dsh-mcp-import.ts` combines each profile's `cordis.yml`, `cordis.patch.yml`, and root patch in dsh order, handling insert, id overrides, and disabled entries.
+Import from dsh accepts `DSH_HOME` (default `~/.dsh`), the last folder, or another folder, through Capabilities → MCP or chat. It reads existing user configuration without approval/secret prompts and does not modify the source. `dsh-mcp-import.ts` combines each profile's `cordis.yml`, `cordis.patch.yml`, and root patch in dsh order, handling insert, id overrides, and disabled entries.
 
 Literal secrets are copied. Restricted `!!js process.env.X` and environment-based bearer templates resolve from the login-shell environment, app environment, then dsh `.env`. Other JavaScript is never executed. Missing variables do not abort import: the server is marked for secret completion. Case-insensitive duplicate names are skipped and reported. Editing prepopulates nonsecret fields; stored secrets show names only, blanks retain values, and entries can be added/removed. Saving reconnects the session. Chat-based updates require approval and use the same secure form.
 
 <a id="插件"></a>
 ## Plugins
 
-Settings → Plugins manages the dsh plugins users install themselves, which add tools and abilities to the assistant: search, context compaction, vision and more.
+Capabilities → Plugins manages the dsh plugins users install themselves, which add tools and abilities to the assistant: search, context compaction, vision and more.
 
 - **Install:** enter an npm package name, a git address or a local folder and choose Look up first. Viva shows the package and its version and warns that a plugin runs inside the assistant with your permissions and can read your model keys and memories; nothing is installed until you choose Install. dsh's own plugin manager installs it with the pnpm Viva ships (no Node or pnpm of your own needed) and checks compatibility with dsh's version. If dependencies want to run build scripts, they are listed first and run only after Allow and install.
 - **Switch and remove:** switches and removal take effect at once, in new conversations, without a restart, and switches survive a relaunch. Viva's own plugins, persona and safety settings are unaffected by these switches and plugins.

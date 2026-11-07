@@ -22,6 +22,8 @@ import { renderProfilePanel } from './profile-panel.ts'
 import { renderRewindConfirm } from './rewind.ts'
 import { renderResumeDialog } from './resume-dialog.ts'
 import { renderSettings } from './settings.ts'
+import { renderCapabilitiesPage } from './capabilities.ts'
+import { capabilityProblems } from '../capabilities-state.ts'
 import { renderThread } from './thread.ts'
 import { renderTopicLabel } from './topic-label.ts'
 import { renderPermissionPicker } from './permission-picker.ts'
@@ -76,11 +78,22 @@ function renderPermissionIfChanged(area: HTMLElement | null, state: State, handl
 }
 
 function renderSettingsIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
-  const connected = state.info.mode === 'live'
-  const inputs = [localeRevision(), state.settings, state.models, state.extensions, state.plugins, connected]
+  const inputs = [localeRevision(), state.settings, state.models]
   if (inputs.every((value, i) => value === renderedSettings[i])) return
   renderedSettings = inputs
-  renderSettings(container, state.settings, state.models, state.extensions, state.plugins, handlers, { connected })
+  renderSettings(container, state.settings, state.models, handlers)
+}
+let renderedCapabilities: unknown[] = []
+/** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins and on itself. */
+function renderCapabilitiesIfChanged(dom: Dom, state: State, handlers: Handlers) {
+  const connected = state.info.mode === 'live'
+  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, connected]
+  if (inputs.every((value, i) => value === renderedCapabilities[i])) return
+  renderedCapabilities = inputs
+  const problems = capabilityProblems(state)
+  dom.capabilitiesCount.hidden = problems === 0
+  dom.capabilitiesCount.textContent = String(problems)
+  renderCapabilitiesPage(dom.capabilities, state, handlers, { connected })
 }
 
 function renderProfileIfChanged(container: HTMLElement, memory: State['memory'], handlers: Handlers) {
@@ -209,6 +222,7 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderHub(dom, state)
   renderTasksPageIfChanged(dom.tasksPage, state, handlers, now)
   renderFeedIfChanged(dom, state, handlers, now)
+  renderCapabilitiesIfChanged(dom, state, handlers)
   renderHistoryIfChanged(dom, state, handlers)
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)

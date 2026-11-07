@@ -730,6 +730,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
       applyMcp: applyMcpChange,
       trash: (file) => host.shell.trash(file),
+      reveal: (file) => host.shell.showItemInFolder(file),
       dshDirs: () => ({ defaultDir: userDshHome(), lastDir: preferences.get().dshImportDir }),
       chooseDshDir,
       importDsh,

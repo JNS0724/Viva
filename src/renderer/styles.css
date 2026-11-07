@@ -902,6 +902,28 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   .tp-head, .tp-scroll { padding-left: 16px; padding-right: 16px; }
 }
 
+/* ---------- 能力 page (view/capabilities.ts, capability-*.ts): skills, MCP and plugins as tabs, each listed beside the one picked ---------- */
+/* How many need looking at, by 能力 in the hub's sidebar (view/render.ts); orange, as anything waiting on the user. */
+.hub-count { margin-left: auto; background: var(--orange); color: var(--bg); border-color: var(--orange); }
+.cap-side { width: 320px; gap: 4px; }
+.cap-tabs { margin: 4px 12px 8px; }
+.cap-tab-count { margin-left: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+.cap-search { margin: 0 12px 4px; }
+.cap-tools { padding: 0 12px 4px; }
+.cap-row .ext-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap-add { margin-top: 8px; color: var(--accent); }
+.cap-empty, .cap-hint { padding: 4px 12px; }
+.cap-text { margin: 0; font-size: 14px; line-height: 1.7; color: var(--ink); white-space: pre-wrap; }
+.cap-facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0; font-size: 13px; }
+.cap-facts dt { color: var(--ink-3); }
+.cap-facts dd { margin: 0; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+/* dsh's checks on a skill: those it passes, then the one it fails, each a dot in its tone. */
+.cap-checks { margin: 0; padding: 12px 14px; list-style: none; display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 13px; }
+.cap-checks li { display: flex; align-items: baseline; gap: 8px; color: var(--ink-2); }
+.cap-checks li::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); transform: translateY(-1px); }
+.cap-checks li[data-tone="off"] { color: var(--orange); }
+.cap-checks li[data-tone="off"]::before { background: var(--orange); }
+
 /* ---------- 搜索 page ---------- */
 .history-search {
   display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 42px; flex: none;
