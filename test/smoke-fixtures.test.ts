@@ -31,10 +31,14 @@ test('a failed memory prerequisite stops its dependent stages and package schedu
   t.after(() => fs.rmSync(output, { recursive: true }))
   const stages: string[] = []
   const scripts: string[] = []
-  const webContents = {
+  const webContents: SmokeAppWindow['webContents'] = {
     on: () => {},
     executeJavaScript: async (code: string): Promise<unknown> => { scripts.push(code); return true },
-  } as SmokeAppWindow['webContents']
+    capturePage: async () => ({ toPNG: () => Buffer.alloc(0) }),
+    sendInputEvent: async () => {},
+    getZoomFactor: async () => 1,
+    setZoomFactor: async () => {},
+  }
   const win: SmokeAppWindow = {
     webContents, getSize: async () => [800, 600], setSize: async () => {}, center: async () => {},
   }

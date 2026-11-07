@@ -54,11 +54,11 @@ export class Scenario {
     }
     await this.closeCurrent()
     const output = this.info.outputPath(`${++this.launches}-${label}`)
-    this.current = await launchSmokeApplication({
+    this.current = await smokeStep({ step: (name, action) => base.step(name, action) }, `launch ${label}`, () => launchSmokeApplication({
       profile: this.profile, outputDirectory: output, model: this.model, bridge: this.options.bridge,
       apiKey: this.options.apiKey, fullAccessibility: this.options.phase === 'perf',
       waitForAgent: label !== 'bootstrap' && Boolean(this.model || this.options.apiKey),
-    })
+    }))
     this.current.hooks.step = (name, action) => base.step(name, action)
     if (!this.options.apiKey && this.options.phase !== 'perf') {
       // Playwright's DOM snapshot script cannot run in the app's deliberately scriptless search iframe.
@@ -91,7 +91,7 @@ export class Scenario {
         try { await session.application.context().tracing.stop({ path: trace }); this.traces.push(trace) }
         finally { this.tracing = false }
       }
-    } finally { await session.close() }
+    } finally { await smokeStep({}, 'application close', () => session.close()) }
   }
 
   async dispose(failed: boolean): Promise<void> {
@@ -119,7 +119,7 @@ export const test = base.extend<{ scenario: Factory }>({
       await use(async options => {
         const scenario = new Scenario(info, options)
         scenarios.push(scenario)
-        await scenario.prepare()
+        await smokeStep({ step: (name, action) => base.step(name, action) }, `prepare ${options.phase}`, () => scenario.prepare())
         return scenario
       })
     } finally {
