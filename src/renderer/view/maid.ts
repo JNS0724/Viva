@@ -1,25 +1,23 @@
 /**
  * Viva's maid (docs/ui-guidelines.md, Her character): one picture per mood in src/assets/maid, drawn on its own cream, so a
- * round crop of it never shows a square edge. `whole` shows the half-body as drawn (the home page, the cards,
- * the desktop island); `face` zooms in on her face for the conversation's 48px. A few moods also have a short
- * animation (`<mood>-motion.webp`), used only where she is large and in front of the user, and never when the
- * system asks for reduced motion.
+ * round crop of it never shows a square edge. `whole` uses the V7 half-body art (home, cards and desktop island);
+ * `face` uses the dedicated V2.2 centred portraits in avatars/ at their original framing. Every mood has an
+ * animation (`<mood>-motion.webp`); reduced motion selects the matching still.
  *
  * Views are rebuilt often (every second for the clock, every frame while an answer streams), so a picture is
  * kept per slot and reused while its look stays the same: a rebuilt node would restart its animation.
  */
+import { h } from './dom.ts'
+
 export const MAID_MOODS = Object.freeze(['greeting', 'idle', 'thinking', 'typing', 'ask', 'listening', 'confirm', 'done', 'error', 'offline', 'sleeping'] as const)
 export type MaidMood = typeof MAID_MOODS[number]
 /** The moods that have an animation of their own. */
-export const MOVING_MOODS: ReadonlySet<MaidMood> = new Set(['greeting', 'thinking', 'typing', 'ask', 'listening', 'confirm'])
+export const MOVING_MOODS: ReadonlySet<MaidMood> = new Set(MAID_MOODS)
 /**
  * Moods drawn with another mood's pictures. Files held over the desktop island: she listens, as when she asks,
  * but nothing waits on the user, so the ring is blue and there is no badge.
  */
 const PICTURES: Readonly<Partial<Record<MaidMood, MaidMood>>> = Object.freeze({ listening: 'ask' })
-/** `face` framing: how far in on her face, centred. */
-export const FACE_ZOOM = 1.6
-
 export type Framing = 'whole' | 'face'
 export type Ring = 'quiet' | 'blue' | 'orange' | 'red' | 'gray'
 
@@ -38,23 +36,19 @@ export function maidMood(mood: string, tone?: string): MaidMood {
   return tone === 'pending' && RINGS[known] !== 'red' ? 'offline' : known
 }
 
-/** The file in src/assets/maid: the animation only for a mood that has one. */
-export function pictureOf(mood: MaidMood, moving: boolean): string {
+/** The half-body or dedicated portrait, using the animation only when motion is enabled. */
+export function pictureOf(mood: MaidMood, moving: boolean, framing: Framing = 'whole'): string {
   const name = PICTURES[mood] ?? mood
-  return moving && MOVING_MOODS.has(mood) ? `${name}-motion.webp` : `${name}.webp`
+  return `${framing === 'face' ? 'avatars/' : ''}${name}${moving ? '-motion' : ''}.webp`
 }
 
 export const badgeOf = (mood: MaidMood): string | null => BADGES[mood] ?? null
 
 export const ringOf = (mood: MaidMood): Ring => RINGS[mood]
 
-const tenth = (value: number) => Math.round(value * 10) / 10
-
-/** The picture's square size and its offset inside a `size` circle. */
-export function framingOf(size: number, framing: Framing): { size: number, offset: number } {
-  if (framing === 'whole') return { size, offset: 0 }
-  const zoomed = tenth(size * FACE_ZOOM)
-  return { size: zoomed, offset: tenth((size - zoomed) / 2) }
+/** Both asset sets already contain their final framing; display the complete canvas. */
+export function framingOf(size: number, _framing: Framing): { size: number, offset: number } {
+  return { size, offset: 0 }
 }
 
 /** How she is drawn: her size, how she is framed, whether she may move, whether a badge says what she holds. */
@@ -62,17 +56,17 @@ export interface MaidOptions { size: number, framing?: Framing, moving?: boolean
 
 const urlOf = (file: string) => new URL(`../../assets/maid/${file}`, import.meta.url).href
 
-const prefersStill = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
-
 /**
  * Every still loaded once, the first time she is drawn: a picture drawn later for another mood shows at once
  * instead of an empty disc. The images are kept so they stay in the cache.
  */
 let warmed: HTMLImageElement[] | null = null
 function warm() {
-  warmed ??= MAID_MOODS.map((mood) => {
+  if (warmed) return
+  const files = new Set(MAID_MOODS.flatMap(mood => (['whole', 'face'] as const).map(framing => pictureOf(mood, false, framing))))
+  warmed = [...files].map((file) => {
     const image = new Image()
-    image.src = urlOf(pictureOf(mood, false))
+    image.src = urlOf(file)
     return image
   })
 }
@@ -84,7 +78,7 @@ function box(className: string, text = '') {
   return el
 }
 
-/** Drawn with the moving already decided (reduced motion respected), so the cache key says what is on screen. */
+/** Native picture sources follow reduced-motion changes without replacing or restarting the portrait node. */
 function draw(mood: MaidMood, { size, framing = 'whole', moving = false, badge = false }: Required<MaidOptions>): HTMLElement {
   warm()
   const maid = box('maid')
@@ -94,12 +88,16 @@ function draw(mood: MaidMood, { size, framing = 'whole', moving = false, badge =
   const frame = framingOf(size, framing)
   const image = document.createElement('img')
   image.className = 'maid-image'
-  image.src = urlOf(pictureOf(mood, moving))
+  image.src = urlOf(pictureOf(mood, moving, framing))
   image.alt = ''
   image.draggable = false
   Object.assign(image.style, { width: `${frame.size}px`, height: `${frame.size}px`, left: `${frame.offset}px`, top: `${frame.offset}px` })
   const art = box('maid-art')
-  art.append(image)
+  if (moving) {
+    art.append(h('picture', {}, h('source', {
+      media: '(prefers-reduced-motion: reduce)', srcset: urlOf(pictureOf(mood, false, framing)),
+    }), image))
+  } else art.append(image)
   maid.append(art)
   const sign = badge ? badgeOf(mood) : null
   if (sign) maid.append(box('maid-badge', sign))
@@ -112,7 +110,7 @@ export type MaidSlots = Map<string, { key: string, el: HTMLElement }>
 export function maidFor(cache: MaidSlots, slot: string, mood: MaidMood, options: MaidOptions): HTMLElement {
   const resolved: Required<MaidOptions> = {
     size: options.size, framing: options.framing ?? 'whole', badge: options.badge ?? false,
-    moving: Boolean(options.moving) && MOVING_MOODS.has(mood) && !prefersStill(),
+    moving: Boolean(options.moving) && MOVING_MOODS.has(mood),
   }
   const key = `${mood}|${resolved.size}|${resolved.framing}|${resolved.moving}|${resolved.badge}`
   const kept = cache.get(slot)

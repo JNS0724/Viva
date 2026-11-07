@@ -20,7 +20,7 @@ function heroMood(state: State, tone: string, now: number): { mood: MaidMood, mo
   if (mood !== 'idle') return { mood, moving: true }
   greetingEnds ??= now + GREETING_MS
   if (now < greetingEnds) return { mood: 'greeting', moving: true }
-  return { mood: hasNew(state) ? 'done' : 'idle', moving: false }
+  return { mood: hasNew(state) ? 'done' : 'idle', moving: true }
 }
 
 /** The maid, whole, on her cream with a saucer's rim around it: the one bold thing on the page. */

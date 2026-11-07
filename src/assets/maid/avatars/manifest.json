@@ -1,0 +1,336 @@
+{
+  "version": 1,
+  "source": {
+    "repository": "https://github.com/JNS0724/Viva",
+    "revision": "463fac186619fcf1bbdb8746035fc2fb21c168e5",
+    "path": "src/assets/maid/avatars",
+    "exportRevision": "2.2-centered",
+    "generationMode": "built-in image_gen"
+  },
+  "encoding": {
+    "pillow": "12.0.0",
+    "libwebp": "1.6.0",
+    "lossless": false,
+    "quality": 90,
+    "method": 4,
+    "minimize_size": true
+  },
+  "background": "#FAF7F2",
+  "alpha": false,
+  "states": [
+    {
+      "id": "greeting",
+      "static": "greeting.webp",
+      "animation": "greeting-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        110,
+        110,
+        110,
+        110,
+        110,
+        110,
+        110,
+        110,
+        260
+      ],
+      "durationMs": 1140,
+      "loopCount": 1
+    },
+    {
+      "id": "idle",
+      "static": "idle.webp",
+      "animation": "idle-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        1000
+      ],
+      "durationMs": 2600,
+      "loopCount": 0
+    },
+    {
+      "id": "thinking",
+      "static": "thinking.webp",
+      "animation": "thinking-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        180,
+        180,
+        180,
+        180,
+        180,
+        180,
+        180,
+        180,
+        700
+      ],
+      "durationMs": 2140,
+      "loopCount": 0
+    },
+    {
+      "id": "typing",
+      "static": "typing.webp",
+      "animation": "typing-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100
+      ],
+      "durationMs": 900,
+      "loopCount": 0
+    },
+    {
+      "id": "ask",
+      "static": "ask.webp",
+      "animation": "ask-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        160,
+        160,
+        160,
+        160,
+        160,
+        160,
+        160,
+        160,
+        700
+      ],
+      "durationMs": 1980,
+      "loopCount": 0
+    },
+    {
+      "id": "confirm",
+      "static": "confirm.webp",
+      "animation": "confirm-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        190,
+        190,
+        190,
+        190,
+        190,
+        190,
+        190,
+        190,
+        700
+      ],
+      "durationMs": 2220,
+      "loopCount": 0
+    },
+    {
+      "id": "done",
+      "static": "done.webp",
+      "animation": "done-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        150,
+        150,
+        150,
+        150,
+        150,
+        150,
+        150,
+        150,
+        700
+      ],
+      "durationMs": 1900,
+      "loopCount": 0
+    },
+    {
+      "id": "error",
+      "static": "error.webp",
+      "animation": "error-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        190,
+        190,
+        190,
+        190,
+        190,
+        190,
+        190,
+        190,
+        700
+      ],
+      "durationMs": 2220,
+      "loopCount": 0
+    },
+    {
+      "id": "offline",
+      "static": "offline.webp",
+      "animation": "offline-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        230,
+        230,
+        230,
+        230,
+        230,
+        230,
+        230,
+        230,
+        900
+      ],
+      "durationMs": 2740,
+      "loopCount": 0
+    },
+    {
+      "id": "sleeping",
+      "static": "sleeping.webp",
+      "animation": "sleeping-motion.webp",
+      "staticSize": [
+        256,
+        256
+      ],
+      "animationSize": [
+        256,
+        256
+      ],
+      "frames": 9,
+      "durationsMs": [
+        260,
+        260,
+        260,
+        260,
+        260,
+        260,
+        260,
+        260,
+        800
+      ],
+      "durationMs": 2880,
+      "loopCount": 0
+    }
+  ],
+  "sourceSha256": {
+    "greeting.webp": "f788ea59987d96ca38d8a34c7d56ee31e869b0ad7ff0bc8c01a63991ea94a0cb",
+    "greeting-motion.webp": "f88ba449f500d3173365feacaf5f2edc072ec04a8f27e8405e59fbea20971623",
+    "idle.webp": "39efa4a82afdb7254fa54f3e2cb511223c19383875d5c2fda0b1ebc8ed02ea16",
+    "idle-motion.webp": "eb4ea51cd14e685eab95a4059cb02f16e864aa232014795ab05f17f4895bdca1",
+    "thinking.webp": "5e5d0c7b766181a5853c3d006ccdc90db2af996aada9ebb2b72838c55b6fcfd1",
+    "thinking-motion.webp": "07319333b2d8872de3eec77752f13a5a72bc4cb54ca40915a9bfdb8c0abc6649",
+    "typing.webp": "f6cfc09aaf50fd9fb03e6bada7243cc01115e7c59aa1c453312eff4e14fe3832",
+    "typing-motion.webp": "8f91916fa93b4d3072ab66ab49a923a7c2bd9572291f6a79144e92911945fcb2",
+    "ask.webp": "d5374fd3527e9e75775a57926a49fd8396dd596802900ccaeaa6d53096cc0cdb",
+    "ask-motion.webp": "3c31e136599539e2e1c0acf635bb804e31e6210f23d442823173b3017f38696e",
+    "confirm.webp": "79b5828096c58304b7982a8fcd812bf6ec440bc1237fd1727dc9d46e21dcf617",
+    "confirm-motion.webp": "d962e1934584483141a4cfe55a5bb81188c5633d1d55aa003b273f5a262c6147",
+    "done.webp": "c0f97c1277b40c35a4c141826a5568d74c28e900c62f70fe238de9f728f25de4",
+    "done-motion.webp": "dc29d67683f507491c2dbd10fd974944c44db199074a6dd5de88152d4ea54cf5",
+    "error.webp": "8c73ede3af4d3febffd45462141baf54f3cc7a9bb3722fed1243404069617550",
+    "error-motion.webp": "990be51ff98f81880a311f006829ce3f88d955044bb7be462a08d08ef9030b62",
+    "offline.webp": "7cfe6e64c2537df357f09bbee8c50664ce889ccb572e49f29a22368cd21e6875",
+    "offline-motion.webp": "c073da51c75a4f7d16487d673946fc98fa3e1e08cbdaac2bb8538c84f5c67b88",
+    "sleeping.webp": "1f26be67b5c86606b00a2bfafc7e1585af5a2a3b2319bdf21ce80b32042cb0c9",
+    "sleeping-motion.webp": "54e068fff9171e3c3928e68e1b29cb9c2208682b28455e46713a7d82e6df47fe"
+  },
+  "sha256": {
+    "greeting.webp": "f3160624d85884a4a91e36e8d18ed92f06be704747ae42ee729c0f7baa2c327e",
+    "greeting-motion.webp": "af253bfb04ec202bcffd5b8da5e07fb82c57dde8db961b0cb3794914a63a1acd",
+    "idle.webp": "bf1bbcbd4d174aaa4721a7948459376111882370108709e2a41ee2040e0a6820",
+    "idle-motion.webp": "42cd1290a0d67d8d7e9def81921be1282a93e2d2375979b222546a0fb0c44592",
+    "thinking.webp": "03843da1f03bc7cb63bd5455ffd2ab790727b43460424434ebd9181eb4c9bf3c",
+    "thinking-motion.webp": "aa635f8997f9cd20672f1c44a8121a3932ac6880eb05dd0b85a1178148dce637",
+    "typing.webp": "f29b3429d2414af4bf822553aa7004d233c409df1572682fd5edcc95115ec6f7",
+    "typing-motion.webp": "58ee024bf04c6c07b625cf6de95032ffae969f3b92a563680bda3054f5d2475d",
+    "ask.webp": "22aab1ec212b2403452dc9e3eb3ccc1e2cc74534a026308ff30ea6fb23791cd5",
+    "ask-motion.webp": "f6b51c35ba535e4769262e271a14316b1c34830325f18066e3a35a7eab74b40c",
+    "confirm.webp": "dd74a4d48ecd96bc351a665127178f5fea8c768ecd37720d039d5151a1955613",
+    "confirm-motion.webp": "849193ea4a09452ba0b6c54075d2a8885db8eb4717716951ccf7f7fef0565a28",
+    "done.webp": "a7caf784f3e6ec2ee6885b595e38da36d369e0ce548b2b7c2d522fb89f41957c",
+    "done-motion.webp": "38485a45c6a2070f00b658573aeeaa960a44e6baceca550baf1a791e9e417bb7",
+    "error.webp": "3fac06c56879f897151c1a97014753a74c67c94b6e2669cd39547c30f75f3c6f",
+    "error-motion.webp": "f829aba62ee2efaa8cd72c1ab32ae681b903c880f4c153259926e5c0a3acfbd7",
+    "offline.webp": "d3539e265a3c56c27f95498e897f96bff8bd8bce2b0e3fe14d44205b3e354a9f",
+    "offline-motion.webp": "13daf36a69f20658f4b4a36a2ff41a131be512694b83ef55b937cf2ffde4e677",
+    "sleeping.webp": "b5267d535b11c76643c9798a688a884a55a0a43ab9a7424df6f0900799fac266",
+    "sleeping-motion.webp": "6e9b145d527713d2cb8e4e5f5693516e0001cad8ffb37dad6f9c13c146b3a4ce"
+  }
+}

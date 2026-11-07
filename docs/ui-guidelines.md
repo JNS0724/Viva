@@ -176,32 +176,34 @@ Motion:
 
 ## Her character
 
-Viva appears as a blue-haired maid, drawn from the V4.1 prop states of dsh-personal-agent. Her hair and navy dress are exactly the interface's accent and background. Her state is shown by what she holds or wears, never by overlaid bubbles or symbols.
+Viva appears as a maid with slate-blue hair and a navy uniform. Half-body art uses the V7 Viva palette release; conversation portraits use the centred V2.2 release. Expressions, movement and props convey state without overlaid bubbles.
 
-**Assets** live in `src/assets/maid/`: one 400×400 still per state, `<state>.webp`. Greeting, thinking, typing, asking (also used for listening) and confirm also have an animation, `<state>-motion.webp`; greeting is 400 px and plays once, the others are 256 px and loop. The pictures come on a cream background, `#FAF7F2`, with no alpha channel. Her disc uses the same cream (`--maid-paper`), so cropping to a circle shows no square edge; nothing else uses this cream. The original GIFs, frame sheets and prompts stay in the dsh-personal-agent repository.
+**Assets** live in `src/assets/maid/`. Ten half-body states each have a still and an animation. Stills are 400×400, the greeting animation is 400×400, and the others are 256×256. `avatars/` holds ten dedicated conversation portraits, with stills and animations at 256×256. Runtime images use quality-90 opaque WebP on `#FAF7F2`, matching `--maid-paper`. Each manifest records the delivery commit, source and runtime hashes, canvas sizes, frame durations and loops. Greeting plays once, all other states loop, and `listening` reuses `ask`.
+
+The two sets together have a 4 MiB runtime budget, with a 512 KiB animation limit, a 128 KiB portrait-animation limit and a 32 KiB still limit, enforced by `test/maid.test.ts`. Production contains the runtime images and their manifests. Reproduce them with `python scripts/optimize-maid-assets.py --output ../maid-runtime`, using the development-only Pillow 12.0.0 tool with libwebp 1.6.0. The source objects come from delivery commit `463fac186619fcf1bbdb8746035fc2fb21c168e5`, available through `git fetch origin 463fac186619fcf1bbdb8746035fc2fb21c168e5`. The export keeps canvas sizes, frame order, timing and loops. Its quality setting uses lossy compression.
 
 | State | Pose and prop | Animation | Ring | When |
 | --- | --- | --- | --- | --- |
 | `greeting` | Waving | Yes, plays once | Blue | The first time the home page shows after launch |
-| `idle` | Holding a teacup | No | Quiet | Nothing is going on |
-| `thinking` | Pencil to her chin, eyes up | Yes | Blue | A question arrived and writing hasn't started |
+| `idle` | Half-body teacup; portrait blinking at rest | Yes | Quiet | Nothing is going on |
+| `thinking` | Half-body pencil; portrait touching her cheek | Yes | Blue | A question arrived and writing hasn't started |
 | `typing` | Square glasses, typing | Yes | Blue | Streaming an answer, running tools |
-| `ask` | Hand on her headset, listening | Yes | Orange | The assistant is asking you |
+| `ask` | Half-body hand to earcup; portrait headset | Yes | Orange | The assistant is asking you |
 | `listening` | The asking pictures | Yes | Blue | Files are held over the desktop island; nothing waits on you, so blue and no badge |
-| `confirm` | Handing over a clipboard | Yes | Orange | Approval cards, the desktop island |
-| `done` | Holding up a check card | No | Blue | A turn finished, something is ready |
-| `error` | Checking with a wrench | No | Red | An answer failed |
-| `offline` | Looking at an unplugged connector | No | Gray | No model connected yet, connecting |
-| `sleeping` | Hugging a pillow | No, breathes gently | Quiet | Not used at present |
+| `confirm` | Half-body clipboard; portrait palm-up gesture | Yes | Orange | Approval cards, the desktop island |
+| `done` | Half-body check card; portrait thumbs-up | Yes | Blue | A turn finished, something is ready |
+| `error` | Half-body wrench; worried portrait | Yes | Red | An answer failed |
+| `offline` | Half-body unplugged connector; half-lidded portrait | Yes | Gray | No model connected yet, connecting |
+| `sleeping` | Half-body pillow; portrait breathing with closed eyes | Yes | Quiet | Not used at present |
 
 Ring colors match the interface's state colors: orange waits on you, red is an error, blue is working or done.
 
 Drawn by `src/renderer/view/maid.ts`:
 
-- **Framing:** `whole` shows the whole half-body picture, used at 200 px on the home page, 96 px on cards, 72 px on the desktop island and 64 px on 动态's details. `face` zooms in 1.6× on her face, used at 48 px in the conversation.
-- **Animations** appear only where she is large and in front of you: the home greeting, approval and question cards, the open desktop island, and the conversation's current turn. Everywhere else shows a still. With reduced motion turned on in the system, every place shows a still.
+- **Framing:** `whole` shows the whole half-body picture, used at 200 px on the home page, 96 px on cards, 72 px on the desktop island and 64 px on 动态's details. `face` uses the dedicated centred assets in `avatars/` at 48 px in the conversation. Both sets display their complete canvas without additional zoom or translation.
+- **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Feed lists and details remain still. Reduced motion selects the matching still.
 - **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
-- **On the desktop island** she's a still while it's folded and moves once it opens. `!`, `?` and `✓` badges say what her props can't at small sizes.
+- **On the desktop island** she moves both folded and open. Updates within the same mood retain the image node so the animation is not restarted. `!`, `?` and `✓` badges say what her props can't at small sizes.
 - **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
 - All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc.
 - After changing assets, check the home page, conversation, approval cards, 动态's details and desktop island, and switch through several states in a row.
