@@ -87,7 +87,7 @@
 - **安装**：填 npm 包名、git 地址或本机文件夹，先点「查看」：显示它是什么包、什么版本，提醒「插件在助手里以你的权限运行，能读到你的模型 key 和记忆」，你点「安装」才装。安装由 dsh 自己的插件管理器完成，用 Viva 自带的 pnpm（不用另装 Node 或 pnpm），并按 dsh 的版本检查兼容性；依赖要运行构建脚本时，先列出来，你点「允许并安装」才运行。
 - **启停、删除**：开关和删除即时生效，新的对话里就用上或不再用，不用重启；重启 Viva 后开关照旧。Viva 自己的插件、人设和安全相关的设置不受这些开关和插件影响。
 - **看得见**：每个插件显示版本、说明、是否打开；有的部分没运行起来、会改 dsh 自带的设置，也会列出来。
-- **能不能在 Viva 里用**：Viva 通过 ACP 运行 dsh，不带 dsh 的网页端服务，所以按已装插件的 `package.json` 判断（`src/backend/plugin-fit.ts`）：依赖 `@deepseek-ai/dsh-host-webserver`、`dsh-web`、`dsh-web-app` 或 `dsh-api-*` 的标「Viva 里用不了」，打开着就算一个要处理的问题；带 `dsh.client`（给 dsh 网页端的界面）的照常能用，只是那部分界面不显示；其他的能用。插件作者可以在 `package.json` 里写 `"viva": { "supports": true }` 直接说明支持。
+- **在 Viva 里怎么样**：Viva 运行 dsh 的 ACP 组合（`dsh-base` 加 `dsh-acp-app`），不带 dsh 网页端的浏览器服务。所以读已装插件的 `package.json`（`src/backend/plugin-fit.ts`），只说确定知道的：依赖 `@deepseek-ai/dsh-host-webserver` 或 `dsh-web-app` 的标「Viva 里用不了」，打开着就算一个要处理的问题；带 `dsh.client`（给 dsh 网页端的界面）的，那部分界面不显示；其他的写「没发现已知的不兼容」，不打包票，因为插件自己的 patch 仍可能要 Viva 没有的服务。实际跑没跑起来看它的状态（有没运行起来的部分会列出来）。`dsh-web`（搜索、抓取）和 `dsh-api-gateway` 在 `dsh-base` 里，Viva 也有。插件作者可以在 `package.json` 里写 `"viva": { "supports": true }` 说明支持，显示为「作者说明支持 Viva」。
 - **在对话里**：模型可以提出装插件，经授权卡片由你批准。
 
 ## 定时任务

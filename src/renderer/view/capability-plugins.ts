@@ -19,10 +19,10 @@ function standingText(standing: PluginStanding) {
   return { tone: 'ok', text: t('plugins.on') }
 }
 
-/** Whether it works in Viva, in words; null when that cannot be told. */
+/** What is known of it in Viva, in words; null when nothing can be told. */
 function fitText(fit: PluginFit): string | null {
   if (fit.kind === 'declared') return t('plugins.fit.declared')
-  if (fit.kind === 'fits') return t('plugins.fit.fits')
+  if (fit.kind === 'no-conflict') return t('plugins.fit.no.conflict')
   if (fit.kind === 'web-part') return t('plugins.fit.web.part')
   if (fit.kind === 'needs-web') return t('plugins.fit.needs.web', { needs: fit.needs.join('、') })
   return null

@@ -13,7 +13,7 @@ const skill = (id: string, extra: Partial<SkillView> = {}): SkillView => ({
 })
 const server = (name: string, extra: Partial<ServerView> = {}): ServerView => ({ name, type: 'stdio', command: 'npx', args: [], envNames: [], headerNames: [], ...extra })
 const plugin = (name: string, extra: Partial<PluginView> = {}): PluginView => ({
-  name, version: '1.0.0', description: null, enabled: true, removable: true, error: null, fit: { kind: 'fits' }, rows: [], overrides: [], ...extra,
+  name, version: '1.0.0', description: null, enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, rows: [], overrides: [], ...extra,
 })
 
 function loaded({ skills = [] as SkillView[], servers = [] as ServerView[], plugins = [] as PluginView[], active = [] as string[], dropped = [] as Array<{ name: string, reason: string }> } = {}) {
