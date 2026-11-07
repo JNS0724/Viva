@@ -11,7 +11,7 @@ const ROOT = path.resolve(import.meta.dirname, '..')
 const CONTRACTS = /^(?:ipc-contract|window-api|module-boundaries)\.test\.(?:js|ts)$/
 const FEATURES = {
   conversation: /^(?:conversation-|new-topic-|topic-|history(?:[.-])|resume-|rewind-|work-?dir(?:[.-])|workdir-|waits-|handoff-|text-submit-|assistant-stream|report-records|state\.|secret-state\.|agent-events\.|topics\.)/,
-  runtime: /^(?:acp-|dsh-|fresh-sessions|stream-runtime|stop-in-time|prewarm-runtime|mcp-bridge|images-bridge|steer-channel|config-channel|questions(?:[.-])|(?:permission|questions|fork|stream|steer)-plugin|tasks-bridge|backend-wire|backend-keeper|question-desk|mcp-import|fake-dsh|(?:config|policy|trace)-plugin)/,
+  runtime: /^(?:acp-|dsh-|fresh-sessions|stream-runtime|stop-in-time|prewarm-runtime|mcp-bridge|images-bridge|steer-channel|config-channel|questions(?:[.-])|(?:permission|questions|fork|stream|steer)-plugin|tasks-bridge|backend-wire|backend-keeper|question-desk|mcp-import|codex-mcp|fake-dsh|(?:config|policy|trace)-plugin)/,
   tasks: /^(?:tasks?(?:[.-])|schedule(?:s|[.-])|unattended-|report-records|steer-reports|waits-|handoff-|feed-|event-core|effects|side-effects|agent-events|proposal-state|source-report-registration)/,
   architecture: /^(?:module-boundaries|backend-boundary|backend-wire(?:-timing)?|main-modules|ipc-contract|window-api|smoke-isolation|smoke-fixtures|smoke-layout|ci-check|test-feature)\.test\.(?:js|ts)$/,
   models: /^(?:models?[.-])/,

@@ -16,6 +16,7 @@ export const testLevels = {
     'capabilities-state',
     'capability-actions',
     'ci-check',
+    'codex-mcp',
     'column-resize',
     'commands',
     'config-actions',

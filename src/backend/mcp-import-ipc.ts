@@ -20,7 +20,8 @@ const canonical = (server: ServerConfig) => ({ ...server, env: sorted(server.env
 
 export function registerMcpImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   store: { list: () => ServerConfig[], addMany: (configs: readonly ServerConfig[]) => void },
-  sources: () => McpSource[],
+  /** The clients found; async, as where to look comes from the login shell. */
+  sources: () => McpSource[] | Promise<McpSource[]>,
   /** How the login shell would fill in `${VAR}`, and whether it finds a command. */
   shell: () => Promise<{ lookup: EnvLookup, findCommand: (command: string) => string | null }>,
   /** Attaches the session's servers again; what the agent says of them after. */
@@ -37,13 +38,14 @@ export function registerMcpImportIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps:
   const scanView = (scan: Scan) => ({ scanId: scan.id, label: scan.label, candidates: scan.candidates.map(candidateView) })
 
   async function scan(sourceId: string) {
-    const source = sources().find((one) => one.id === sourceId)
+    // Both ask the login shell; asked together, neither waits on the other.
+    const [found, tools] = await Promise.all([sources(), shell()])
+    const source = found.find((one) => one.id === sourceId)
     if (!source) throw new Error(t('main.mcp-import.no.source'))
-    const tools = await shell()
     return { source, candidates: scanMcp(readClientServers(source.file), { taken: store.list().map((server) => server.name), ...tools }) }
   }
 
-  handle('ext:mcp-sources', () => sources().map(({ file, ...source }) => ({ ...source, where: shortPath(file) })))
+  handle('ext:mcp-sources', async () => (await sources()).map(({ file, ...source }) => ({ ...source, where: shortPath(file) })))
 
   handle('ext:scan-mcp', async (sourceId) => {
     const turn = ++begun
