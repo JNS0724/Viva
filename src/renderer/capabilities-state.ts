@@ -51,12 +51,17 @@ export function serverStanding(server: ServerView, status: ExtensionStatus): Ser
   return dropped ? { kind: 'dropped', reason: dropped.reason } : { kind: 'idle' }
 }
 
-/** How a plugin stands: dsh says what is wrong with it, rows switched on that do not run, switched off, or on. */
-export type PluginStanding = { kind: 'error', code: string, detail: string | null } | { kind: 'stalled', rows: readonly string[] } | { kind: 'off' } | { kind: 'on' }
+/**
+ * How a plugin stands: dsh says what is wrong with it, switched off, on but needing dsh's Web host (which Viva does
+ * not run), rows switched on that do not run, or on.
+ */
+export type PluginStanding = { kind: 'error', code: string, detail: string | null } | { kind: 'off' }
+  | { kind: 'unsupported', needs: readonly string[] } | { kind: 'stalled', rows: readonly string[] } | { kind: 'on' }
 
 export function pluginStanding(plugin: PluginView): PluginStanding {
   if (plugin.error) return { kind: 'error', code: plugin.error.code, detail: plugin.error.detail }
   if (!plugin.enabled) return { kind: 'off' }
+  if (plugin.fit.kind === 'needs-web') return { kind: 'unsupported', needs: plugin.fit.needs }
   // A row waiting for a service only dsh's Web client has, or that failed to load.
   const stalled = plugin.rows.filter((row) => row.entryId && row.phase !== 'active').map((row) => row.id)
   return stalled.length ? { kind: 'stalled', rows: stalled } : { kind: 'on' }
@@ -69,7 +74,7 @@ const serverWrong = (server: ServerView, status: ExtensionStatus) => {
 }
 const pluginWrong = (plugin: PluginView) => {
   const kind = pluginStanding(plugin).kind
-  return kind === 'error' || kind === 'stalled'
+  return kind === 'error' || kind === 'unsupported' || kind === 'stalled'
 }
 
 /** The skills searched for, grouped by where they are, in the order the main process lists them. */
@@ -108,7 +113,7 @@ export function capabilityFeedback(state: State): { error: string | null, notice
 export const capabilityCounts = (state: State): Record<CapabilityTab, number> =>
   ({ skills: skillsOf(state).length, mcp: serversOf(state).length, plugins: pluginsOf(state).length })
 
-/** How many need looking at: a skill dsh skips, a server not working, a plugin broken or not running. */
+/** How many need looking at: a skill dsh skips, a server not working, a plugin broken, one Viva cannot run, or not running. */
 export function capabilityProblems(state: State): number {
   const status = statusOf(state)
   return skillsOf(state).filter(skillWrong).length
