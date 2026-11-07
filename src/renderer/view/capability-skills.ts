@@ -2,6 +2,7 @@ import { t } from '../../shared/i18n/translate.ts'
 import { shownSkill, skillGroups } from '../capabilities-state.ts'
 import type { SkillIssueCode, SkillView } from '../capability-types.ts'
 import { h } from './dom.ts'
+import { skillImportMain } from './skill-import.ts'
 
 /**
  * 能力 · 技能 (view/capabilities.ts): the skills dsh finds, by where they are, and the one picked: what it says, where it
@@ -39,7 +40,8 @@ export function skillsSide(state: State, handlers: Handlers): Node[] {
     h('span', { class: 'ext-status', 'data-tone': standing(skill).tone, text: skill.problem || standing(skill).text }))),
   ])
   const empty = (state.extensions.skills as readonly SkillView[]).length ? t('capabilities.no.match') : t('extensions.none.yet')
-  return [search, ...(rows.length ? rows : [h('p', { class: 'help cap-empty', text: empty })])]
+  const importing = h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t('capabilities.import'), onClick: () => handlers.openSkillImport() })
+  return [h('div', { class: 'cap-search-row' }, search, importing), ...(rows.length ? rows : [h('p', { class: 'help cap-empty', text: empty })])]
 }
 
 /** dsh's checks the skill passed, then the one it fails, and whether another of its name is loaded instead. */
@@ -53,6 +55,7 @@ function checks(skill: SkillView) {
 }
 
 export function skillMain(state: State, handlers: Handlers): HTMLElement {
+  if (state.skillImport.open) return skillImportMain(state, handlers)
   const skill = shownSkill(state)
   if (!skill) return h('div', { class: 'tp-main tp-empty' }, h('p', { class: 'empty', text: t('extensions.none.yet') }))
   const busy = Boolean(state.extensions.busy)

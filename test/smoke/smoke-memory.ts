@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { capture, finishTurn, newTopic, run, submit, TURN_TIMEOUT_MS, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { mcpSteps, openCapabilityTab } from './smoke-mcp.ts'
+import { skillImportSteps } from './smoke-skills.ts'
 import { taskSteps } from './smoke-tasks.ts'
 
 /**
@@ -158,6 +159,7 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   expect(ext.servers.includes('demo'), 'the server set up in the conversation should be listed', ext)
   await capture(win, outDir, 'memory-settings')
   await mcpSteps(win, outDir, expect, hooks)
+  await skillImportSteps(win, outDir, expect, hooks)
   await modelSteps(win, outDir, expect, hooks)
 }
 

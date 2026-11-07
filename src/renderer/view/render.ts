@@ -87,7 +87,7 @@ let renderedCapabilities: unknown[] = []
 /** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins and on itself. */
 function renderCapabilitiesIfChanged(dom: Dom, state: State, handlers: Handlers) {
   const connected = state.info.mode === 'live'
-  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, connected]
+  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, state.skillImport, connected]
   if (inputs.every((value, i) => value === renderedCapabilities[i])) return
   renderedCapabilities = inputs
   const problems = capabilityProblems(state)

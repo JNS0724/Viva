@@ -908,7 +908,23 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .cap-side { width: 320px; gap: 4px; }
 .cap-tabs { margin: 4px 12px 8px; }
 .cap-tab-count { margin-left: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
-.cap-search { margin: 0 12px 4px; }
+.cap-search-row { display: flex; gap: 8px; margin: 0 12px 4px; }
+.cap-search-row .cap-search { flex: 1; min-width: 0; margin: 0; }
+/* 导入's where from (view/skill-import.ts): a folder found, where it is, how many it holds. */
+.cap-source {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel-2); color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+}
+.cap-source:hover:not(:disabled) { border-color: var(--accent); }
+.cap-source-name { font-size: 14px; font-weight: 700; }
+.cap-source-where { flex: 1; min-width: 0; font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-source .badge { margin-left: auto; }
+/* What was found there, each ticked or not, with why it goes in as it does. */
+.cap-candidates { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.cap-candidate { display: grid; grid-template-columns: auto minmax(120px, 30%) 1fr; align-items: center; gap: 12px; padding: 10px 14px; font-size: 13px; }
+.cap-candidate + .cap-candidate { border-top: 1px solid var(--line); }
+.cap-candidate[data-status="blocked"] .cap-candidate-name { color: var(--ink-3); }
+.cap-candidate-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cap-tools { padding: 0 12px 4px; }
 .cap-row .ext-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* How the one picked stands, by its name: one line, cut short, so the name keeps its room (the whole in its title). */

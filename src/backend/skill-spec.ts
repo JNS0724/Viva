@@ -24,14 +24,22 @@ const SWITCHES = ['disable-model-invocation', 'user-invocable'] as const
 const OLD_SWITCHES = ['disableModelInvocation', 'modelInvocable', 'userInvocable'] as const
 const BOOLEAN_WORDS = new Set(['true', 'yes', 'on', 'false', 'no', 'off', '1', '0'])
 
-/** The YAML between the opening and closing `---` lines, as fields; null when there is none or it is not fields. */
-function frontmatter(source: string): Record<string, unknown> | null {
-  const lines = source.split('\n').map((line) => line.replace(/\r$/, ''))
-  if (lines[0] !== '---') return null
-  const closing = lines.indexOf('---', 1)
+/** A skill file cut where dsh cuts it: the YAML between the opening and closing `---` lines, and the rest. */
+export function splitFrontmatter(source: string): { yaml: string, body: string } | null {
+  const lines = source.split('\n')
+  const bare = lines.map((line) => line.replace(/\r$/, ''))
+  if (bare[0] !== '---') return null
+  const closing = bare.indexOf('---', 1)
   if (closing < 0) return null
+  return { yaml: bare.slice(1, closing).join('\n'), body: lines.slice(closing + 1).join('\n') }
+}
+
+/** The frontmatter's fields; null when there is none or it is not fields. */
+function frontmatter(source: string): Record<string, unknown> | null {
+  const split = splitFrontmatter(source)
+  if (!split) return null
   try {
-    const data: unknown = YAML.parse(lines.slice(1, closing).join('\n'))
+    const data: unknown = YAML.parse(split.yaml)
     return typeof data === 'object' && data !== null && !Array.isArray(data) ? data as Record<string, unknown> : null
   } catch {
     return null

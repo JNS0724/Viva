@@ -61,3 +61,20 @@ export interface PluginView {
   rows: readonly PluginRow[]
   overrides: readonly string[]
 }
+
+/** A folder skills can be brought in from (skill-import.ts SkillSource), as the window sees it: where, not the path. */
+export interface SkillSourceView { id: string, label: string, count: number, where: string }
+
+/** A skill found in a folder being imported from, and whether and under what name it goes in. */
+export interface SkillCandidateView {
+  entry: string
+  name: string
+  description: string
+  status: 'ready' | 'fixable' | 'blocked'
+  issues: readonly SkillIssueCode[]
+  fix: 'name-format' | 'taken' | null
+  picked: boolean
+}
+
+/** A folder scanned for skills: its id for the import, what it is called, what it holds. */
+export interface SkillScanView { scanId: string, label: string, candidates: readonly SkillCandidateView[] }
