@@ -7,7 +7,7 @@ import { checkDeskAsk } from './smoke-desk.ts'
 import { checkPictures } from './smoke-images.ts'
 import { checkTopics } from './smoke-topics.ts'
 import { checkPermission } from './smoke-permission.ts'
-import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, click, finishTurn, newTopic, report, run, settle, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { checkMemory } from './smoke-memory.ts'
 import { checkResume, prepareResume } from './smoke-tasks.ts'
 import { checkSchedules } from './smoke-schedules.ts'
@@ -40,6 +40,13 @@ const MARKDOWN_PROMPT = '格式演示'
 
 /** Both prompts the walkthrough sends; the relaunch expects to find them again. */
 const WALKTHROUGH_QUESTIONS = 2
+
+/** Buffered text can still be appearing after the backend turn ends. Observe this answer's renderer caret. */
+export const STREAMING_ANSWER_READY = `(() => {
+  const answer = [...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)
+  const scroll = document.getElementById('scroll')
+  return Boolean(answer?.querySelector('.caret') && scroll && answer.getBoundingClientRect().height > scroll.clientHeight)
+})()`
 
 const THREAD_METRICS = `(() => {
   const scroll = document.getElementById('scroll')
@@ -83,10 +90,7 @@ async function longTaskAtCurrentSize(win: SmokeWindow, outDir: string) {
   else if (Math.abs(drawerTop - parked.top) > 1) failures.push(`drawer jumped from ${parked.top} to ${drawerTop}`)
   await capture(win, outDir, 'long-drawer')
 
-  await until(win, `(() => {
-    const answer = [...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''
-    return answer.length >= 1000 && Boolean(document.querySelector('.caret')) && document.getElementById('send-btn').dataset.busy === 'true'
-  })()`, 'a long answer rendered while it is still streaming')
+  await until(win, STREAMING_ANSWER_READY, 'an answer taller than the viewport while its text is still appearing')
   const during = await run(win, THREAD_METRICS)
   report(`thread during long answer: ${JSON.stringify(during)}`)
   if (during.questionTop < QUESTION_TOP_RANGE[0] || during.questionTop > QUESTION_TOP_RANGE[1]) {
@@ -281,13 +285,15 @@ async function walkthrough(win: SmokeAppWindow, outDir: string, hooks: SmokeHook
 async function checkPickers(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   await run(win, `document.querySelector('#model-btn .model-btn-name').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `Boolean(document.querySelector('#model-menu .model-menu'))`, 'the model menu opening')
+  await settle(win)
   const model = await run(win, `Boolean(document.querySelector('#model-menu .model-menu'))`)
   if (!model) failures.push("a click on the model's name should open its menu")
   else await capture(win, outDir, 'picker-model')
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   await run(win, `document.querySelector('#composer-context .workdir-name').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `Boolean(document.querySelector('#workdir-menu .workdir-menu'))`, 'the working directory menu opening')
+  await settle(win)
   const folder = await run(win, `Boolean(document.querySelector('#workdir-menu .workdir-menu'))`)
   if (!folder) failures.push("a click on the folder's name should open its menu")
   else await capture(win, outDir, 'picker-folder')
