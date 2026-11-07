@@ -95,7 +95,7 @@ Her character and asset rules are in [UI guidelines](ui-guidelines.md#her-charac
 
 ## Tests
 
-`npm test` runs source unit/integration tests under Electron's Node; `npm run typecheck` checks all production and test TypeScript. Use Node.js 24, matching CI.
+`npm test` runs source unit/integration tests under Electron's Node; `npm run typecheck` checks all production and test TypeScript. Use Node.js 24, matching CI. While changing one part, `npm run test:feature -- conversation` (or `runtime`, `tasks`, `architecture`; `--list` shows the files) runs just that part's tests; run the full suite before a PR.
 
 The external Playwright runner in `test/smoke/` owns launch, isolated profiles, fake services, readiness, assertions, diagnostics, and teardown. Production never imports a scenario or loads a test file from a supplied path. An explicit `--enable-smoke-test-driver` requires `--user-data-dir` and exposes a narrow main-process control surface for legacy integration checks. Public UI smoke uses normal controls. The runner passes a minimal OS environment, never inherited model keys or Node hooks; the fake provider is added through the ordinary Settings form.
 
@@ -105,7 +105,7 @@ The external Playwright runner in `test/smoke/` owns launch, isolated profiles, 
 | `npm run smoke:core` | Fresh setup; real embedded dsh with local fake model, answer and persisted restart |
 | `smoke:setup` | Setup navigation |
 | `smoke:walkthrough` / `smoke:relaunch` | One self-contained test: approval, desktop island, layouts, scrolling, files; restart, history, Markdown, topics, images, permissions and IME |
-| `smoke:memory` / `smoke:resume` | One self-contained test: real dsh, local fake model, memory injection/reasons, questions, MCP, provider switching, crash recovery, tasks and schedules (a schedule proposed, kept, run read-only when due, its result in Activity); restart acceptance |
+| `smoke:memory` / `smoke:resume` | One self-contained test: real dsh, local fake model, memory injection/reasons, questions, MCP, provider switching, crash recovery, tasks and schedules (a schedule proposed, kept, run read-only when due, its result in 动态); restart acceptance |
 | `smoke:timeline` | Seeded long history, search, review, stars and resume paths |
 | `smoke:language` | English/Chinese, input/focus/selection, IME and open reading state |
 | `smoke:package` | Installed artifact, real embedded dsh, local fake model, memory and restart; requires `VIVA_SMOKE_EXECUTABLE` |

@@ -105,7 +105,7 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 ## 测试
 
-`npm test` 用 Electron 自带的 Node 直接运行源码单元/集成测试；`npm run typecheck` 检查产品和测试 TypeScript。与 CI 一样使用 Node.js 24。
+`npm test` 用 Electron 自带的 Node 直接运行源码单元/集成测试；`npm run typecheck` 检查产品和测试 TypeScript。与 CI 一样使用 Node.js 24。只改一块时，`npm run test:feature -- conversation`（或 `runtime`、`tasks`、`architecture`，`--list` 列出文件）只跑这一块的测试；提 PR 前跑完整测试。
 
 `test/smoke/` 中的外部 Playwright runner 管理启动、独立资料目录、假服务、就绪条件、断言、诊断和退出。产品不导入场景，也不按外部路径加载测试文件。显式 `--enable-smoke-test-driver` 必须同时提供 `--user-data-dir`，只为原有集成场景暴露有限的主进程控制面；公共 UI 冒烟使用正常界面控件。子进程仅接收最小系统环境，不继承模型密钥或 Node 注入参数；本地假模型通过正式设置表单接入。
 
