@@ -9,7 +9,7 @@ import { checkTopics } from './smoke-topics.ts'
 import { checkPermission } from './smoke-permission.ts'
 import { capture, click, finishTurn, newTopic, report, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { checkMemory } from './smoke-memory.ts'
-import { checkResume } from './smoke-tasks.ts'
+import { checkResume, prepareResume } from './smoke-tasks.ts'
 import { checkSchedules } from './smoke-schedules.ts'
 import { runLive } from './live.ts'
 import { checkTimeline } from './smoke-timeline.ts'
@@ -23,9 +23,6 @@ import { checkMarkdownLists } from './smoke-markdown-lists.ts'
 import { checkStarLayouts } from './smoke-star-layout.ts'
 import { checkAnswerExpansion } from './smoke-answer-expansion.ts'
 
-const DRAWER_PARK_AFTER_MS = 2200
-const DRAWER_HOLD_MS = 1500
-const LONG_ANSWER_WAIT_MS = 5500
 const DRAWER_PARK_TOP = 120
 /** The latest question may sit a little below the top (gap + padding), but must stay on screen. */
 const QUESTION_TOP_RANGE = [0, 80]
@@ -73,20 +70,23 @@ async function longTaskAtCurrentSize(win: SmokeWindow, outDir: string) {
   const failures: string[] = []
   await click(win, 'toggle-drawer')
   await submit(win, LONG_PROMPT)
-  await wait(DRAWER_PARK_AFTER_MS)
+  await until(win, `(() => { const body = document.querySelector('.drawer-body'); return body && body.textContent.includes('day-') && body.scrollHeight - body.clientHeight > ${DRAWER_PARK_TOP} && document.getElementById('send-btn').dataset.busy === 'true' })()`, 'the new long task trace overflowing before it is parked')
   const parked = await run(win, `(() => {
     const body = document.querySelector('.drawer-body')
     body.scrollTop = ${DRAWER_PARK_TOP}
-    return { top: body.scrollTop, overflow: body.scrollHeight - body.clientHeight }
+    return { top: body.scrollTop, overflow: body.scrollHeight - body.clientHeight, rows: body.querySelectorAll('.trace-row').length }
   })()`)
-  await wait(DRAWER_HOLD_MS)
+  await until(win, `document.querySelectorAll('.drawer-body .trace-row').length >= ${parked.rows + 2} && document.getElementById('send-btn').dataset.busy === 'true'`, 'new trace steps while the task is still running')
   const drawerTop = await run(win, `document.querySelector('.drawer-body').scrollTop`)
   report(`drawer: parked at ${parked.top} (overflow ${parked.overflow}px), after new steps at ${drawerTop}`)
   if (parked.overflow <= DRAWER_PARK_TOP) failures.push('drawer did not overflow; scroll check is inconclusive')
   else if (Math.abs(drawerTop - parked.top) > 1) failures.push(`drawer jumped from ${parked.top} to ${drawerTop}`)
   await capture(win, outDir, 'long-drawer')
 
-  await wait(LONG_ANSWER_WAIT_MS)
+  await until(win, `(() => {
+    const answer = [...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''
+    return answer.length >= 1000 && Boolean(document.querySelector('.caret')) && document.getElementById('send-btn').dataset.busy === 'true'
+  })()`, 'a long answer rendered while it is still streaming')
   const during = await run(win, THREAD_METRICS)
   report(`thread during long answer: ${JSON.stringify(during)}`)
   if (during.questionTop < QUESTION_TOP_RANGE[0] || during.questionTop > QUESTION_TOP_RANGE[1]) {
@@ -503,7 +503,7 @@ async function historyPanelSteps(win: SmokeWindow, outDir: string, failures: str
  * `memory`) and screenshots each step into `smokeOut`.
  * Fails on any console warning/error or any broken scroll / history expectation.
  */
-export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePhase }: { smokeOut: string, smokePhase: string | null }, hooks: SmokeHooks): Promise<string[]> {
+export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePhase, includeSchedules = false }: { smokeOut: string, smokePhase: string | null, includeSchedules?: boolean }, hooks: SmokeHooks): Promise<string[]> {
   const problems: string[] = []
   win.webContents.on('console-message', (event: { level: string, message: string }) => {
     if (event.level === 'warning' || event.level === 'error') problems.push(`${event.level}: ${event.message}`)
@@ -526,7 +526,12 @@ export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePha
       problems.push(...await checkStreamMarkdown(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
-    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks), ...await checkSchedules(win, outDir))
+    else if (smokePhase === 'memory') {
+      problems.push(...await checkMemory(win, outDir, hooks))
+      if (includeSchedules && !problems.length) problems.push(...await checkSchedules(win, outDir))
+    }
+    else if (smokePhase === 'schedules') problems.push(...await checkSchedules(win, outDir))
+    else if (smokePhase === 'resume-prepare') problems.push(...await prepareResume(win, outDir))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
     else if (smokePhase === 'live' || smokePhase === 'live-resume') problems.push(...await runLive(win, outDir, smokePhase, hooks))
     else if (smokePhase === 'timeline') problems.push(...await checkTimeline(win, outDir))

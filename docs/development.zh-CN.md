@@ -119,17 +119,21 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 | `npm run smoke:core` | 无模型引导；真实内嵌 dsh 加本地假模型，回答及重启持久化 |
 | `smoke:setup` | 设置导航 |
 | `smoke:walkthrough` / `smoke:relaunch` | 同一个独立测试：权限、桌面岛、布局、滚动、文件；重启、历史、Markdown、话题、图片、权限和 IME |
-| `smoke:memory` / `smoke:resume` | 同一个独立测试：真实 dsh、本地假模型、记忆注入与原因、反问、MCP、模型切换、崩溃恢复、后台任务和定时（提出、保存、到点只读运行、结果进动态）；重启验收 |
+| `smoke:memory` | 真实 dsh、本地假模型、记忆注入与原因、反问、MCP/技能、模型切换、崩溃恢复、后台任务及其交互 |
+| `smoke:resume` | 通过产品 API 独立准备两条已完成任务和一条等待任务，退出并重启，恢复中断任务并追问旧任务 |
+| `smoke:schedules` | 独立提出、保存、暂停/恢复定时任务，真实等待一分钟到期，展示动态结果并继续对话 |
 | `smoke:timeline` | 长历史、搜索、回顾、收藏及恢复路径 |
 | `smoke:language` | 中英文、输入/焦点/选区、IME 和展开阅读状态 |
 | `smoke:package` | 安装产物的真实内嵌 dsh、本地假模型、记忆与重启；需指定 `VIVA_SMOKE_EXECUTABLE` |
 | `smoke:perf` | 独立性能项目，完整 AX、原有预算，不记录 trace |
 
-单跑源码阶段前先 `npm run build`。relaunch/resume 别名会运行完整逻辑场景，各测试不依赖其他测试文件。每个场景新建带所有权标记的临时资料目录；删除前检查规范路径和标记，成功后删除。失败的合成资料目录只留本机，位于 CI 上传路径之外。
+单跑源码阶段前先 `npm run build`。relaunch 和 resume 各自运行完整逻辑场景，各测试拥有自身资料目录并准备所需前置。首次业务启动复用刚配置好假模型的应用，后续显式启动会真实退出并重启。timeline 和 performance 保留关闭应用后写种子的时机，安装产物检查保留冷启动。每个场景新建带所有权标记的临时资料目录，删除前检查规范路径和标记，成功后删除。失败的合成资料目录只留本机，位于 CI 上传路径之外。
 
 自动重试为 0，每个 runner 的 worker 为 1。报告在 `smoke/report`（HTML）、`smoke/junit.xml`、`smoke/test-results`（启动回执/日志、断言及失败诊断）。`VIVA_SMOKE_RUN` 可在 `smoke/` 下增加唯一目录标识，允许字母、数字、下划线和连字符。失败时保留操作和截图 trace。公共 UI 冒烟还记录 DOM 快照，原有集成场景关闭向无脚本搜索 iframe 注入快照脚本。真模型和性能测试不录 trace，不上传原始资料目录或凭据。用 `npx playwright show-trace <trace.zip>` 查看保留的 trace。
 
-PR CI 在每个 OS 上独立运行 headless、core 和两路 integration。headless 执行类型检查、完整 `npm test` 与文档检查，core 构建并运行两条公共 UI 测试。integration 分别在两个独立桌面 runner 上构建，`VIVA_SMOKE_LANE=memory` 选择 memory/resume，`VIVA_SMOKE_LANE=interaction` 选择 setup、walkthrough/relaunch、timeline、language 和 lifecycle。两路都使用 `npx playwright test -c test/smoke/playwright.config.ts --project=integration`，省略 lane 则运行全部六条 integration 测试。完整源码冒烟仍有八条测试，重启链共用所属场景的资料目录，定时场景使用真实计时。
+PR CI 在每个 OS 上独立运行 headless、core 和两路 integration。headless 执行类型检查、完整 `npm test` 与文档检查，core 构建并运行两条公共 UI 测试。integration 分别在两个独立桌面 runner 上构建，`VIVA_SMOKE_LANE=memory` 选择 memory、schedules 和 lifecycle，`VIVA_SMOKE_LANE=interaction` 选择 setup、walkthrough/relaunch、timeline、language 和独立 resume。两路都使用 `npx playwright test -c test/smoke/playwright.config.ts --project=integration`，省略 lane 则运行全部八条 integration 测试。完整源码冒烟有十条测试，各重启链共用自身资料目录。安装产物验收继续在同一资料目录执行 memory、schedules 和 resume。
+
+memory 的各个前置以命名 Playwright step 展示，stdout 输出 JSON 阶段计时。首个前置断言失败即终止依赖链并保留诊断。普通 UI 在业务就绪条件后等待字体、有限运行动画完成和两帧绘制。流式滚动检查等待新步骤真正溢出、长回答仍在流式生成，保留原有位置预算。
 
 CI 报告目录和 artifact 名称包含 OS、lane、run ID 与 attempt，Playwright 元数据记录提交、平台、Node 版本和 lane。最终 `check (macos-latest)`、`check (windows-latest)` 保留现有名称，要求 headless/core/integration 的全部矩阵任务成功。失败、取消、跳过或缺失必需结果都会让两个聚合门禁失败。runner 可用性和依赖安装计入墙钟时间，新增 job 会重复准备工作。
 

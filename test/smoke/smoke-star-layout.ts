@@ -1,5 +1,5 @@
 import type { SmokeAppWindow } from './smoke-kit.ts'
-import { capture, report, run, wait, UI_WAIT_MS } from './smoke-kit.ts'
+import { capture, report, run, settle } from './smoke-kit.ts'
 
 /** Hover and persistent stars must remain reachable without making the timeline scroll sideways. */
 export async function checkStarLayouts(win: SmokeAppWindow, outDir: string): Promise<string[]> {
@@ -27,7 +27,7 @@ export async function checkStarLayouts(win: SmokeAppWindow, outDir: string): Pro
     for (const [width, height, factor] of [[1360, 860, 1], [880, 640, 1], [880, 640, 1.5]]) {
       await win.setSize(width, height)
       await win.webContents.setZoomFactor(factor)
-      await wait(UI_WAIT_MS)
+      await settle(win)
       const seen = await run(win, `(()=>{
         const pane=document.getElementById('scroll'),fixture=document.getElementById('smoke-star-layout').shadowRoot,bounds=pane.getBoundingClientRect()
         // At fractional zoom innerWidth can truncate a CSS pixel while scrollWidth rounds it. Compare
@@ -38,7 +38,7 @@ export async function checkStarLayouts(win: SmokeAppWindow, outDir: string): Pro
       report(`star layout ${width}x${height} zoom ${factor}: ${JSON.stringify(seen)}`)
       if (factor === 1.5) {
         await run(win, `document.getElementById('smoke-star-layout').shadowRoot.querySelector('.thread').scrollIntoView({block:'start'});true`)
-        await wait(UI_WAIT_MS)
+        await settle(win)
         await capture(win, outDir, 'stars-minimum-150')
       }
     }
@@ -46,7 +46,7 @@ export async function checkStarLayouts(win: SmokeAppWindow, outDir: string): Pro
     await run(win, `document.getElementById('smoke-star-layout')?.remove();true`)
     await win.webContents.setZoomFactor(zoom)
     await win.setSize(size[0], size[1])
-    await wait(UI_WAIT_MS)
+    await settle(win)
   }
   return failures
 }

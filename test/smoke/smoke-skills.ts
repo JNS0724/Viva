@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { capture, run, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
+import { capture, run, settle, until, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { openCapabilityTab } from './smoke-mcp.ts'
 
 /**
@@ -41,7 +41,7 @@ export async function skillImportSteps(win: SmokeWindow, outDir: string, expect:
       return names.includes('meeting-notes') && names.includes('weekly-report') ? names : null
     })()`, 'the skills brought in')
     expect(!listed.includes('broken') && !listed.includes('Meeting Notes'), 'only those ticked should go in, under the name put right', listed)
-    await wait(UI_WAIT_MS)
+    await settle(win)
     await capture(win, outDir, 'skills-imported')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
