@@ -17,4 +17,3 @@ test('a call whose turn never comes holds up the next ones only for a while', as
   assert.deepEqual(JSON.parse(late.body), { ok: true, value: 'info', mark: 0 })
   assert.ok(Date.now() - started >= 4_900, 'it waited for number 1 first')
 })
-
