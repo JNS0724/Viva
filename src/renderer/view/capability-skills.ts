@@ -59,7 +59,7 @@ export function skillMain(state: State, handlers: Handlers): HTMLElement {
   return h('div', { class: 'tp-main' },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: skill.name }),
-      h('span', { class: 'ext-status', 'data-tone': standing(skill).tone, text: standing(skill).text })),
+      h('span', { class: 'ext-status cap-standing', 'data-tone': standing(skill).tone, text: standing(skill).text })),
     h('div', { class: 'tp-scroll' },
       skill.description ? h('p', { class: 'cap-text', text: skill.description }) : null,
       h('dl', { class: 'cap-facts' },

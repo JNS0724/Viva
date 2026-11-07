@@ -42,7 +42,7 @@ function serverFacts(server: ServerView, state: State, handlers: Handlers) {
   const target = server.type === 'http' ? server.url : [server.command, ...server.args].join(' ')
   const secrets = [...server.envNames, ...server.headerNames]
   const busy = Boolean(state.extensions.busy)
-  return h('div', { class: 'ext-item', 'data-name': server.name },
+  return h('div', { class: 'ext-item cap-card', 'data-name': server.name },
     h('dl', { class: 'cap-facts' },
       h('dt', { text: t('extensions.connection.type') }), h('dd', { text: typeLabel(server.type) }),
       h('dt', { text: server.type === 'http' ? t('extensions.address') : t('extensions.launch.command') }), h('dd', { class: 'mono', text: target ?? '' }),
@@ -60,7 +60,7 @@ export function serverMain(state: State, handlers: Handlers): HTMLElement {
   return h('div', { class: 'tp-main' },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: server.name }),
-      h('span', { class: 'ext-status', 'data-tone': standing.tone, text: standing.text })),
+      h('span', { class: 'ext-status cap-standing', 'data-tone': standing.tone, title: standing.text, text: standing.text })),
     h('div', { class: 'tp-scroll' },
       editing ? serverForm(server, editing, state.extensions, handlers) : serverFacts(server, state, handlers),
       state.extensions.error ? h('p', { class: 'form-error', role: 'alert', text: state.extensions.error }) : null,

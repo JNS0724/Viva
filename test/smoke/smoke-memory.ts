@@ -167,6 +167,9 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
  */
 async function modelSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
   const asked = await run(win, `document.querySelectorAll('.msg-user').length`)
+  // The MCP steps leave 能力 open; models are 设置's.
+  await run(win, `document.querySelector('.hub-nav[data-page="settings"]').click()`)
+  await until(win, `document.getElementById('add-model') || null`, 'the 设置 page')
   await run(win, `document.getElementById('add-model').click()`)
   await wait(UI_WAIT_MS)
   await run(win, `(() => {

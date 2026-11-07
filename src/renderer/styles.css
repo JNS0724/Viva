@@ -904,13 +904,19 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 
 /* ---------- 能力 page (view/capabilities.ts, capability-*.ts): skills, MCP and plugins as tabs, each listed beside the one picked ---------- */
 /* How many need looking at, by 能力 in the hub's sidebar (view/render.ts); orange, as anything waiting on the user. */
-.hub-count { margin-left: auto; background: var(--orange); color: var(--bg); border-color: var(--orange); }
+.hub-nav .hub-count { margin-left: auto; background: var(--orange); color: var(--bg); font-weight: 700; }
 .cap-side { width: 320px; gap: 4px; }
 .cap-tabs { margin: 4px 12px 8px; }
 .cap-tab-count { margin-left: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
 .cap-search { margin: 0 12px 4px; }
 .cap-tools { padding: 0 12px 4px; }
 .cap-row .ext-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* How the one picked stands, by its name: one line, cut short, so the name keeps its room (the whole in its title). */
+.cap-standing { flex: 0 1 auto; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* What the import did, under 从 dsh 导入: paths break anywhere rather than widen the list. */
+.cap-side .ext-import-note { margin: 0 12px 4px; overflow-wrap: anywhere; }
+/* A server's facts and its 编辑 / 删除, one under the other (view/capability-mcp.ts). */
+.ext-item.cap-card { flex-direction: column; align-items: stretch; gap: 14px; }
 .cap-add { margin-top: 8px; color: var(--accent); }
 .cap-empty, .cap-hint { padding: 4px 12px; }
 .cap-text { margin: 0; font-size: 14px; line-height: 1.7; color: var(--ink); white-space: pre-wrap; }

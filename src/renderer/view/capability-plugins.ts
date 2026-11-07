@@ -74,6 +74,6 @@ export function pluginMain(state: State, handlers: Handlers): HTMLElement {
   return h('div', { class: 'tp-main' },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: plugin.name }),
-      h('span', { class: 'ext-status', 'data-tone': standing.tone, text: standing.text })),
+      h('span', { class: 'ext-status cap-standing', 'data-tone': standing.tone, title: standing.text, text: standing.text })),
     h('div', { class: 'tp-scroll' }, ...pluginFacts(plugin, state, handlers), ...feedback(state.plugins)))
 }
