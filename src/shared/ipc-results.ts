@@ -54,6 +54,7 @@ export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: 
 export interface IpcResults {
   'draft:get': import('./composer-draft.ts').DraftSnapshot
   'draft:append-image': void
+  'draft:keep-images': void
   'draft:append-files': void
   'agent:info': import('./agent-info.ts').AgentInfo
   'agent:prompt': void

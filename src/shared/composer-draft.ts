@@ -8,15 +8,27 @@ export const EMPTY_DRAFT: Readonly<DraftContent> = Object.freeze({ text: '', fil
 /** Stale hosts cannot replace a draft after focus/target handoff; send receipts clear only their snapshot. */
 export function createComposerDraftStore(changed: (snapshot: DraftSnapshot) => void = () => {}) {
   const drafts = new Map<string, DraftContent & { version: number }>()
+  const aliases = new Map<string, string>()
   let key = 'startup', epoch = 0, sequence = 0, owner: DraftSnapshot['owner'] = 'main'
+  function resolve(target: string): string {
+    while (aliases.has(target)) target = aliases.get(target)!
+    return target
+  }
   const content = () => drafts.get(key) ?? { ...EMPTY_DRAFT, version: 0 }
   const snapshot = (): DraftSnapshot => structuredClone({ ...content(), key, epoch, owner, sequence })
   function publish() { const next = snapshot(); changed(next); return next }
   return {
     snapshot,
-    select(next: string, inherit = false) {
+    select(next: string, inherit = false, migrate = false) {
+      next = resolve(next)
       if (next === key) return snapshot()
-      if (inherit && !drafts.has(next)) drafts.set(next, { ...structuredClone(content()), version: 0 })
+      if ((inherit || migrate) && !drafts.has(next)) {
+        drafts.set(next, { ...structuredClone(content()), version: migrate ? content().version : 0 })
+      }
+      if (migrate) {
+        aliases.set(key, next)
+        drafts.delete(key)
+      }
       key = next; epoch++; sequence = 0
       return publish()
     },
@@ -37,22 +49,33 @@ export function createComposerDraftStore(changed: (snapshot: DraftSnapshot) => v
       return { ok: true, draft: publish() }
     },
     appendImage(target: string, image: DraftImage) {
+      target = resolve(target)
       const prior = drafts.get(target) ?? { ...EMPTY_DRAFT, version: 0 }
-      if (prior.images.some(item => item.id === image.id) || prior.images.length >= 10) return
-      drafts.set(target, { ...prior, images: [...prior.images, structuredClone(image)], version: prior.version + 1 })
+      if (prior.images.some(item => item.id === image.id)) return true
+      if (prior.images.length >= 10) return false
+      drafts.set(target, { ...prior, images: [...prior.images, structuredClone(image)], error: null, version: prior.version + 1 })
       if (target === key) publish()
+      return true
     },
     appendFiles(target: string, files: DraftFile[]) {
+      target = resolve(target)
       const prior = drafts.get(target) ?? { ...EMPTY_DRAFT, version: 0 }
       const paths = new Set(prior.files.map(file => file.path))
-      drafts.set(target, { ...prior, files: [...prior.files, ...structuredClone(files).filter(file => !paths.has(file.path))].slice(0, 10), version: prior.version + 1 })
+      drafts.set(target, { ...prior, files: [...prior.files, ...structuredClone(files).filter(file => !paths.has(file.path))].slice(0, 10), error: null, version: prior.version + 1 })
+      if (target === key) publish()
+    },
+    setError(target: string, error: string) {
+      target = resolve(target)
+      const prior = drafts.get(target) ?? { ...EMPTY_DRAFT, version: 0 }
+      drafts.set(target, { ...prior, error, version: prior.version + 1 })
       if (target === key) publish()
     },
     clear(sent: Pick<DraftSnapshot, 'key' | 'version'>) {
-      const prior = drafts.get(sent.key)
+      const target = resolve(sent.key)
+      const prior = drafts.get(target)
       if (!prior || prior.version !== sent.version) return false
-      drafts.set(sent.key, { ...EMPTY_DRAFT, version: prior.version + 1 })
-      if (sent.key === key) publish()
+      drafts.set(target, { ...EMPTY_DRAFT, version: prior.version + 1 })
+      if (target === key) publish()
       return true
     },
   }

@@ -18,7 +18,6 @@ import type { DraftContent } from '../shared/composer-draft.ts'
 const TICK_MS = 1000
 /** Moved this far with the button down, a press on the island is a drag, not a click. */
 const DRAG_START_PX = 8
-const MAX_FILES = 10
 const IDLE_VIEW: IslandShown = Object.freeze({ form: 'idle', tone: 'idle', mood: 'idle', label: '', recent: [] })
 const api = window.desk
 let languageReady = false
@@ -54,22 +53,24 @@ const messageOf = (err: unknown) => String((err as Error | null)?.message ?? err
 
 /** Pictures pasted into the island's input: kept at once, shown as chips, sent with the words. */
 async function addImages(pasted: readonly File[]) {
-  const late = draftActions?.captureImage()
-  for (const file of pasted) {
-    if (images.length >= IMAGE_LIMITS.perMessage) {
-      error = t("desk.up.to.images.per.message", { perMessage: IMAGE_LIMITS.perMessage })
-      break
+  const origin = draftActions?.snapshot()?.key
+  if (!origin) return
+  try {
+    const read = await Promise.allSettled(pasted.slice(0, IMAGE_LIMITS.perMessage + 1).map(file => file.arrayBuffer()))
+    const bytes: Uint8Array<ArrayBuffer>[] = []
+    for (const result of read) {
+      if (result.status === 'fulfilled') bytes.push(new Uint8Array(result.value))
+      else if (draftActions?.snapshot()?.key === origin) {
+        error = messageOf(result.reason)
+        saveDraft(); show()
+      }
     }
-    try {
-      const kept = await api.keepImage(new Uint8Array(await file.arrayBuffer()))
-      if (late?.(kept)) continue
-      if (!images.some((image) => image.id === kept.id)) images = [...images, { id: kept.id, size: kept.size }]
-      error = null
-    } catch (err) {
-      error = messageOf(err)
-    }
+    if (bytes.length) await api.keepDraftImages(origin, bytes)
+  } catch (err) {
+    if (draftActions?.snapshot()?.key !== origin) return
+    error = messageOf(err)
+    saveDraft(); show()
   }
-  saveDraft(); show()
 }
 
 const input = createIslandInput({
@@ -299,18 +300,11 @@ island.el.addEventListener('drop', async (event) => {
   event.preventDefault()
   clearTimeout(dropTimer)
   dropping = 0
-  const late = draftActions?.captureFiles()
-  const result = await api.describeFiles([...event.dataTransfer.files])
-  if (late?.(result.files ?? [])) return
-  if (result.error) error = result.error
-  else {
-    const known = new Set(files.map((file) => file.path))
-    files = [...files, ...(result.files ?? []).filter((file) => !known.has(file.path))].slice(0, MAX_FILES)
-    error = null
-  }
-  saveDraft()
+  const origin = draftActions?.snapshot()?.key
+  if (!origin) return
+  const appended = api.appendDroppedFiles(origin, [...event.dataTransfer.files])
   api.act({ kind: 'input' })
-  show()
+  await appended
 })
 // Esc closes the input even while its field cannot be typed in (the agent is busy).
 document.addEventListener('keydown', (event) => {

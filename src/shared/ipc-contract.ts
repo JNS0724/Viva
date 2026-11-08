@@ -160,6 +160,7 @@ export const IPC_ARGS = Object.freeze({
     files: z.array(z.object({ path, name: id, size: count })).max(10),
     images: z.array(z.object({ id, size: count.optional() })).max(10), error: text.nullable() })]),
   'draft:append-image': z.tuple([id, z.object({ id, size: count.optional() })]),
+  'draft:keep-images': z.tuple([id, z.array(bytes).max(MAX_IMAGES)]),
   'draft:append-files': z.tuple([id, z.array(path).max(10)]),
   'island:keep-image': z.tuple([bytes]),
 })

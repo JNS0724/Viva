@@ -18,6 +18,7 @@ import { type Channel, checkedIpc } from '../shared/ipc-contract.ts'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.ts'
 import type { Notice } from '../backend/host.ts'
 import type { Preferences } from '../backend/preferences.ts'
+import type { KeptImage } from '../backend/image-store.ts'
 import { createTray } from './tray.ts'
 import { installAutomationDriver } from './automation-driver.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
@@ -445,7 +446,9 @@ app.whenReady().then(async () => {
   shellPreferences = await started.connection.control<Preferences>('preferences-get')
   registerImageProtocol(protocol, async (url) => (await backendConnection()).image(url))
   registerShellSettingsIpc()
-  ownDraft = registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } }).ownDraft
+  ownDraft = registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu,
+    keepImage: async bytes => (await backendConnection()).rpc('images:keep', [bytes]) as Promise<KeptImage>,
+    switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } }).ownDraft
   installAutomationDriver(automationMode, {
     agentPid: async () => (await backendConnection()).control<number | null>('agent-pid'),
     backendPid: () => keeper.running()?.pid ?? null,

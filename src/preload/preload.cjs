@@ -152,6 +152,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   getDraft: () => ipcRenderer.invoke('draft:get'),
   updateDraft: (draft) => ipcRenderer.send('draft:update', draft),
   appendDraftImage: (key, image) => ipcRenderer.invoke('draft:append-image', key, image),
+  keepDraftImages: (key, images) => ipcRenderer.invoke('draft:keep-images', key, images),
   appendDraftFiles: (key, paths) => ipcRenderer.invoke('draft:append-files', key, paths),
   onDraft: (callback) => {
     const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../shared/composer-draft.ts').DraftSnapshot} */ draft) => callback(draft)

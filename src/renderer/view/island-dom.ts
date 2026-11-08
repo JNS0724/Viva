@@ -3,8 +3,8 @@ import { localeRevision } from '../../shared/i18n/locale.ts'
 import { formatElapsed } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
-import { h, keepingInput } from './dom.ts'
-import { queueLayout } from './reconcile.ts'
+import { h } from './dom.ts'
+import { queueLayout, reconcileChildren } from './reconcile.ts'
 import type { createIslandInput } from './island-input.ts'
 import { backgroundSection, tailCell, taskTag } from './island-tasks.ts'
 
@@ -302,11 +302,14 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
       h('span', { text: view.waitingNotice.label }), button(t('desk.interaction.view'), ROLE.text, () => act({ kind: 'panel', panel: 'request' }))) : null
     const running = wide && view.steering ? h('div', { class: 'isl-running' }, h('span', { text: t('desk.interaction.running') }),
       button(t('desk.interaction.stop.current'), ROLE.secondary, () => act({ kind: 'cancel' }))) : null
-    keepingInput(surface, () => {
-      const content = (wide || view.form === 'drop') && input ? input.panel(view) : panelParts(view, 'desk', act, shortcut, now)
-      if (wide && input) input.sync(view)
-      surface.replaceChildren(header, ...[notice, running, wide && input ? input.entry : null].filter((node): node is NonNullable<typeof node> => Boolean(node)), ...content.filter((node): node is HTMLElement => node instanceof HTMLElement))
-    })
+    const content = (wide || view.form === 'drop') && input ? input.panel(view) : panelParts(view, 'desk', act, shortcut, now)
+    if (wide && input) input.sync(view)
+    // Detaching a focused textarea ends native IME composition, even if its value and caret are restored.
+    reconcileChildren(surface, [
+      header,
+      ...[notice, running, wide && input ? input.entry : null].filter((node): node is NonNullable<typeof node> => Boolean(node)),
+      ...content.filter((node): node is HTMLElement => node instanceof HTMLElement),
+    ])
   }
   return { el, update, setPointer(on: boolean) { el.dataset.hover = String(on) } }
 }

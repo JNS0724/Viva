@@ -7,7 +7,8 @@ import type { createDeskIsland } from './desk-island.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView, type IslandAction } from './island-ipc.ts'
 import { createComposerDraftStore } from '../shared/composer-draft.ts'
-import { checkImages } from '../shared/images.ts'
+import { checkImages, IMAGE_LIMITS } from '../shared/images.ts'
+import type { KeptImage } from '../backend/image-store.ts'
 import { randomUUID } from 'node:crypto'
 
 type DeskIsland = ReturnType<typeof createDeskIsland>
@@ -21,9 +22,10 @@ export const ASK_SHORTCUT = 'CommandOrControl+Shift+Space'
 let NOT_SENT = t("main.island-main.could.not.send.please.try.again")
 
 /** deps.Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu */
-export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff }: {
+export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage }: {
   desk: () => DeskIsland | null, window: () => BrowserWindow | null, showWindow: () => void,
   Menu: Pick<typeof ElectronMenu, 'buildFromTemplate'>, switchOff: () => void,
+  keepImage: (bytes: Uint8Array | ArrayBuffer) => Promise<KeptImage>,
 }) {
   const drafts = createComposerDraftStore(snapshot => {
     const main = window()
@@ -44,7 +46,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     if (event.sender !== window()?.webContents) return
     const view = checkIslandView(raw)
     if (view) {
-      if (typeof view.target?.key === 'string' && view.target.key.length <= 1000) drafts.select(view.target.key, view.target.inheritDraft === true)
+      if (typeof view.target?.key === 'string' && view.target.key.length <= 1000) drafts.select(view.target.key, view.target.inheritDraft === true, view.target.migrateDraft === true)
       desk()?.setView(view)
     }
   })
@@ -59,10 +61,23 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
   ipcMain.handle('draft:append-image', (event, key, image) => {
     if (source(event) && checkImages([image])) drafts.appendImage(key, image)
   })
+  ipcMain.handle('draft:keep-images', async (event, key, images) => {
+    if (!source(event)) return
+    const results = await Promise.allSettled(images.map(bytes => keepImage(bytes)))
+    let problem: string | null = null
+    // Keep the clipboard's order even when the saves finish in reverse, after either host is destroyed.
+    for (const result of results) {
+      if (result.status === 'rejected') problem ??= String((result.reason as Error | null)?.message ?? result.reason)
+      else if (!drafts.appendImage(key, result.value)) problem ??= t('desk.up.to.images.per.message', { perMessage: IMAGE_LIMITS.perMessage })
+    }
+    if (problem) drafts.setError(key, problem)
+  })
   ipcMain.handle('draft:append-files', (event, key, paths) => {
-    if (!source(event) || !checkDroppedPaths(paths)) return
-    const checked = describeDropped(paths)
-    if (!('error' in checked)) drafts.appendFiles(key, checked.files)
+    if (!source(event)) return
+    const checkedPaths = checkDroppedPaths(paths)
+    const checked = checkedPaths ? describeDropped(checkedPaths) : { error: MISSING }
+    if ('error' in checked) drafts.setError(key, checked.error)
+    else drafts.appendFiles(key, checked.files)
   })
 
   const openWindow = (island: DeskIsland) => {

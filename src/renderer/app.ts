@@ -103,6 +103,7 @@ let state: State = [
 let agentEvents: ReturnType<typeof createAgentEvents> | undefined
 let beforeSelection = () => {}
 let inheritDraft = false
+let migrateDraft = false
 const SELECTION_STARTS = new Set(['new_session_pending', 'session_switching', 'rewind_busy', 'workdir_switching'])
 
 // The column's width as the user dragged it, kept within the main area as the window and the drawer change it.
@@ -121,6 +122,10 @@ function dispatch(action: Action) {
   if (action.type === 'new_session_pending' && !state.newTopicPending) {
     composerDraft?.changed()
     inheritDraft = true
+  }
+  if (action.type === 'new_session_ready' && state.newTopicPending) {
+    composerDraft?.changed()
+    migrateDraft = true
   }
   if (SELECTION_STARTS.has(action.type ?? '')) beforeSelection()
   const timing = action.type === 'new_session_pending' ? performance.now() : null
@@ -155,11 +160,13 @@ function publishIsland() {
   const target = draftTarget(state)
   composerDraft?.expect(target.key)
   dom.input.readOnly = !composerDraft?.ready()
-  const view = JSON.stringify({ ...islandView(state), target: { ...target, working: isBusy(state), blocked: state.switching || state.newTopicPending, ...(inheritDraft ? { inheritDraft: true } : {}) } })
+  const view = JSON.stringify({ ...islandView(state), target: { ...target, working: isBusy(state), blocked: state.switching || state.newTopicPending,
+    ...(inheritDraft ? { inheritDraft: true } : {}), ...(migrateDraft ? { migrateDraft: true } : {}) } })
   if (view === publishedIsland || !api?.islandView) return
   publishedIsland = view
   api.islandView(JSON.parse(view))
   inheritDraft = false
+  migrateDraft = false
 }
 
 /** The card the agent waits on, brought into view with its first button focused. */
@@ -365,14 +372,14 @@ afterRender = () => {
 }
 
 const draftImages = createDraftImages({
-  keep: (bytes: Uint8Array<ArrayBuffer>) => api.keepImage(bytes),
+  keep: (key, images) => api.keepDraftImages(key, images),
   container: dom.draftPics,
   showError: (message: string) => historyActions.showToast(message),
   onChange: () => {
     dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
     composerDraft?.changed(); renderSendButton(dom, state)
   },
-  capture: () => composerDraft?.captureImage() ?? (() => false),
+  capture: () => composerDraft?.snapshot()?.key ?? null,
 })
 const sharedFiles = h('div', { class: 'isl-files composer-shared-files', hidden: true })
 dom.draftPics.after(sharedFiles)

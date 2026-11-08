@@ -73,6 +73,20 @@ test('desktop drafts retain text, real images and files through collapse and win
   await page.locator('#composer-input').fill('主窗口继续发送')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(page.locator('.msg-user').last()).toContainText('主窗口继续发送')
+  await expect(page.locator('#send-btn')).toHaveAttribute('data-busy', 'false')
+  const topicDraft = '返回这个话题后恢复文字与附件'
+  await page.locator('#composer-input').fill(topicDraft)
+  const originalKey = await page.evaluate(async () => (await window.agent.getDraft()).key)
+  await page.locator('#ctx-area .ctx-new').click()
+  await expect(page.locator('#send-btn')).toBeEnabled()
+  await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).key)).not.toBe(originalKey)
+  await page.locator('#composer-input').fill('另一个话题自己的草稿')
+  await page.locator('#earlier .topic-start .topic-back').click()
+  await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).key)).toBe(originalKey)
+  await expect(page.locator('#composer-input')).toHaveValue(topicDraft)
+  await page.reload()
+  await expect(page.locator('#composer-input')).toHaveValue(topicDraft)
+  await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).key)).toBe(originalKey)
 })
 
 test('fresh app opens usable settings without a model', async ({ scenario }, info) => {

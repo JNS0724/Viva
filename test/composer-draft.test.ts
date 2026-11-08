@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createComposerDraftStore, type DraftSnapshot } from '../src/shared/composer-draft.ts'
 import { createComposerDraftActions } from '../src/renderer/composer-draft-actions.ts'
+import { draftTarget } from '../src/renderer/draft-target.ts'
+import { createResumeActions } from '../src/renderer/resume-actions.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
 
 const edit = (draft: DraftSnapshot, text: string): DraftSnapshot => ({ ...draft, text, sequence: draft.sequence + 1, baseImages: draft.images.map(image => image.id) })
 const image = { id: `${'a'.repeat(64)}.png`, size: 128 }
@@ -100,4 +103,63 @@ test('explicitly starting a new topic carries the prepared draft, while resuming
   assert.deepEqual(preparing.images, [image])
   store.update('main', edit(preparing, 'new topic edit'))
   assert.equal(store.select('old', true).text, 'typing during preparation', 'an existing draft is never replaced by inherited content')
+})
+
+test('normal topic resume restores its draft across continuation segments and renderer reload', async () => {
+  const store = createComposerDraftStore()
+  const infoA = { mode: 'live', cwd: '/work', model: 'local', topicId: 'topic-a', conversationId: 'segment-a', sessionId: 'session-a' }
+  let state = reduce(initialState, { type: 'new_session', info: infoA, at: 1000 })
+  const first = store.select(draftTarget(state).key)
+  store.update('main', { ...edit(first, 'A draft'), files: [file], images: [image], error: 'A error' })
+  state = reduce(state, { type: 'new_session', info: { ...infoA, topicId: 'topic-b', conversationId: 'segment-b' }, at: 2000 })
+  store.select(draftTarget(state).key)
+  let continuation = 0
+  const resume = createResumeActions({
+    api: {
+      resumeCheck: async () => ({ exists: true, same: true, cwd: '/work' }),
+      resumeTopic: async parentId => ({ ok: true, parentId, info: { ...infoA, conversationId: `continued-a-${++continuation}` } }),
+      continueFromRecords: async parentId => ({ parentId, turns: 2, info: { ...infoA, sessionId: 'replacement-session', conversationId: 'carried-a' } }),
+      chooseWorkDir: async () => null,
+    },
+    getState: () => state,
+    dispatch: action => { state = reduce(state, action); store.select(draftTarget(state).key) },
+    busy: () => false, showToast: () => {}, errorMessage: String, afterResume: () => {},
+  })
+  await resume.resumeTopic('segment-a')
+  assert.equal(draftTarget(state).key, first.key)
+  assert.deepEqual(store.snapshot().files, [file])
+  assert.deepEqual(store.snapshot().images, [image])
+  assert.equal(store.snapshot().text, 'A draft')
+  assert.equal(store.snapshot().error, 'A error')
+  await resume.resumeTopic('continued-a-1')
+  assert.equal(store.snapshot().key, first.key)
+  state = reduce(state, { type: 'resume_ask', stage: 'gone', segmentId: 'segment-a', cwd: '/work' })
+  await resume.resumeConfirm()
+  assert.equal(store.snapshot().key, first.key, 'continuing from records keeps the backend topic identity')
+  const reloaded = reduce(reduce(initialState, { type: 'ready', info: state.info }), {
+    type: 'history_loaded', conversationId: 'carried-a', createdAt: 9999, messages: [{ role: 'user', text: 'saved words' }],
+  })
+  assert.equal(draftTarget(reloaded).key, first.key, 'history creation and resume timestamps do not change draft ownership')
+})
+
+test('new-topic readiness migrates the provisional draft and redirects late attachments and receipts', () => {
+  const store = createComposerDraftStore()
+  const original = { mode: 'live', model: 'local', cwd: '/work', topicId: 'topic-a', conversationId: 'segment-a' }
+  let state = reduce(initialState, { type: 'new_session', info: original, at: 1000 })
+  store.update('main', edit(store.select(draftTarget(state).key), 'prepared input'))
+  state = reduce(state, { type: 'new_session_pending', at: 2000 })
+  const pending = store.select(draftTarget(state).key, true)
+  store.update('main', edit(pending, 'typed while preparing'))
+  const sent = store.snapshot()
+  state = reduce(state, { type: 'new_session_ready', info: { ...original, topicId: 'topic-b', conversationId: 'segment-b', sessionId: 'session-b' } })
+  const ready = store.select(draftTarget(state).key, false, true)
+  assert.equal(ready.text, 'typed while preparing')
+  store.appendImage(pending.key, image)
+  store.appendFiles(pending.key, [file])
+  assert.deepEqual(store.snapshot().images, [image])
+  assert.deepEqual(store.snapshot().files, [file])
+  assert.equal(store.clear(sent), false, 'an earlier receipt cannot clear new attachments after migration')
+  const saved = reduce(state, { type: 'conversation_saved', id: 'segment-b' })
+  assert.equal(draftTarget(saved).key, ready.key)
+  assert.equal(store.select('topic:topic-a').text, 'prepared input', 'migration never aliases the previous topic into the new one')
 })

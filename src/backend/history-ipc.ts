@@ -124,9 +124,10 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       return await selectSession(async ({ switchAgent, select }) => {
         const started = await switchAgent(sessionId, cwd, { exactly: true })
         const { mode, model } = agentInfo()
-        const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id })
+        const topicId = found.conversation.topicId ?? found.conversation.id
+        const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id, topicId })
         select(next)
-        return { ok: true as const, info: { ...started, remembersHistory: true, conversationId: next.id }, parentId: found.conversation.id }
+        return { ok: true as const, info: { ...started, remembersHistory: true, conversationId: next.id, topicId }, parentId: found.conversation.id }
       })
     } catch (err) {
       if (!(err instanceof ResumeError)) throw err
@@ -149,10 +150,10 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(null, dir)
       const { mode, model } = agentInfo()
-      const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id })
+      const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id, topicId: topicId ?? found.conversation.id })
       select(next)
       if (carried.turns) carryNext(next.id, carried.text)
-      return { info: { ...started, remembersHistory: false, conversationId: next.id }, parentId: found.conversation.id, turns: carried.turns }
+      return { info: { ...started, remembersHistory: false, conversationId: next.id, topicId: next.topicId ?? next.id }, parentId: found.conversation.id, turns: carried.turns }
     })
   })
 

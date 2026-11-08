@@ -168,8 +168,73 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
       await page.locator(`#layout-${result.name}`).screenshot({ path: info.outputPath(`island-layout-${result.name}.png`) })
     }
     await info.attach('island-layout-metrics', { body: JSON.stringify(results, null, 2), contentType: 'application/json' })
+    await checkIslandComposition(page, info)
   } finally {
     await page.locator('#island-layout-gallery').evaluateAll(elements => elements.forEach(element => element.remove()))
     await page.emulateMedia({ reducedMotion: 'no-preference' })
+  }
+}
+
+/** Browser-native composition must survive the state updates that arrive while a draft is edited. */
+async function checkIslandComposition(page: Page, info: TestInfo): Promise<void> {
+  const probe = await page.evaluateHandle(async () => {
+    const { createIsland } = await import(new URL('./view/island-dom.js', location.href).href) as typeof import('../../src/renderer/view/island-dom.ts')
+    const { createIslandInput } = await import(new URL('./view/island-input.js', location.href).href) as typeof import('../../src/renderer/view/island-input.ts')
+    const sent: string[] = []
+    const input = createIslandInput({ send: text => sent.push(text), dismiss: () => {}, removeFile: () => {} })
+    const island = createIsland('desk', () => {}, { input })
+    const view: IslandShown = { form: 'input', tone: 'idle', mood: 'idle', label: '', recent: [], files: [], images: [], desktopOpen: true, desktopPanel: 'input' }
+    const stage = document.createElement('div')
+    stage.className = 'desk-stage'
+    stage.append(island.el)
+    document.querySelector('#island-layout-gallery')!.prepend(stage)
+    island.update(view)
+    const events: Array<{ type: string, value: string }> = []
+    for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'blur', 'focus']) {
+      input.field.addEventListener(type, event => events.push({ type: event.type, value: input.field.value }))
+    }
+    return { island, input, view, events, sent, stage }
+  })
+  const cdp = await page.context().newCDPSession(page)
+  const results = []
+  try {
+    for (const update of ['baseline', 'notice-added', 'steering-and-file', 'notice-removed']) {
+      await probe.evaluate(probe => {
+        probe.input.field.value = '前后'
+        probe.input.field.focus()
+        probe.input.field.setSelectionRange(1, 1)
+        probe.input.field.dispatchEvent(new Event('input'))
+        probe.events.length = 0
+        probe.sent.length = 0
+      })
+      await cdp.send('Input.imeSetComposition', { text: 'ni', selectionStart: 2, selectionEnd: 2 })
+      await probe.evaluate((probe, update) => {
+        if (update === 'baseline') return
+        if (update === 'notice-added') probe.view = { ...probe.view, waitingNotice: { label: '需要你回答' } }
+        if (update === 'steering-and-file') probe.view = { ...probe.view, steering: true, files: [{ path: '/ime.txt', name: 'ime.txt', size: 4 }] }
+        if (update === 'notice-removed') probe.view = { ...probe.view, waitingNotice: null, steering: false }
+        probe.island.update(probe.view)
+      }, update)
+      await cdp.send('Input.insertText', { text: '你' })
+      const result = await probe.evaluate(probe => ({
+        value: probe.input.field.value, active: document.activeElement === probe.input.field,
+        start: probe.input.field.selectionStart, end: probe.input.field.selectionEnd,
+        events: [...probe.events], files: probe.island.el.querySelectorAll('.isl-file').length,
+      }))
+      results.push({ update, ...result })
+      expect(result.value, update).toBe('前你后')
+      expect(result.active, update).toBe(true)
+      expect([result.start, result.end], update).toEqual([2, 2])
+      expect(result.events.some(event => event.type === 'blur'), update).toBe(false)
+      expect(result.events.filter(event => event.type === 'compositionend'), update).toHaveLength(1)
+      expect(result.files, update).toBe(update === 'steering-and-file' || update === 'notice-removed' ? 1 : 0)
+      await page.keyboard.press('Enter')
+      expect(await probe.evaluate(probe => probe.sent), update).toEqual(['前你后'])
+    }
+  } finally {
+    await info.attach('island-composition-events', { body: JSON.stringify(results, null, 2), contentType: 'application/json' })
+    await cdp.detach()
+    await probe.evaluate(probe => probe.stage.remove())
+    await probe.dispose()
   }
 }

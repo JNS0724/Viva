@@ -138,6 +138,7 @@ interface DraftApi extends LanguageApi {
   getDraft: Invoke<'draft:get'>
   updateDraft: (...args: Args<'draft:update'>) => void
   appendDraftImage: Invoke<'draft:append-image'>
+  keepDraftImages: Invoke<'draft:keep-images'>
   appendDraftFiles: Invoke<'draft:append-files'>
   onDraft: (callback: (draft: import('../shared/composer-draft.ts').DraftSnapshot) => void) => Unlisten
 }
@@ -264,6 +265,7 @@ interface DeskApi extends DraftApi {
   onView: (callback: (view: any) => void) => Unlisten
   act: (...args: Args<'island:act'>) => void
   describeFiles: (files: ArrayLike<File>) => Promise<{ files?: Array<{ path: string, name: string, size: number }>, error?: string }>
+  appendDroppedFiles: (key: string, files: ArrayLike<File>) => Promise<void>
   ask: (text: string, files: unknown[], images?: Array<{ id: string }>, draft?: { key: string, version: number }) => Promise<{ ok: boolean, error?: string }>
   keepImage: Invoke<'island:keep-image'>
   /** The ask shortcut as the user presses it (island-main.ts ASK_SHORTCUT). */
