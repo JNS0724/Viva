@@ -2,7 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { createPluginActions } from '../src/renderer/plugin-actions.ts'
-import { sourceFormVersion } from '../src/renderer/view/plugin-source.ts'
+import { PLUGIN_SOURCE, sourceFormVersion } from '../src/renderer/view/plugin-source.ts'
+import { pluginPane } from '../src/renderer/view/capability-plugins.ts'
 
 /** 能力 · 插件 · 插件源 (plugin-actions.ts): the company's registry and its token, set and taken away. */
 
@@ -56,4 +57,15 @@ test('every save that goes through empties the token field, even one that only r
   assert.notEqual(second, first, 'a replaced token must not be put back into the field, or a later host change would send it there')
   await actions.savePluginSource('npm.example.com', 'npm_third')
   assert.equal(sourceFormVersion(state()), second, 'a refused save leaves the form as typed, to fix and save again')
+})
+
+test('the source stays reachable while dsh does not answer: it is kept by the app, and saving it starts dsh again', () => {
+  const offline = (selected: string | null): State => ({
+    ...initialState,
+    plugins: { ...initialState.plugins, connected: false },
+    capabilities: { ...initialState.capabilities, selected },
+  })
+  assert.equal(pluginPane(offline(PLUGIN_SOURCE)), 'source')
+  assert.equal(pluginPane(offline(null)), 'not-connected')
+  assert.equal(pluginPane({ ...offline(null), plugins: { ...initialState.plugins, connected: true } }), 'plugins')
 })

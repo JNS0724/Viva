@@ -32,10 +32,19 @@ function fitText(fit: PluginFit): string | null {
 
 const pluginsOf = (state: State) => state.plugins.plugins as readonly PluginView[]
 
+/**
+ * What the main pane shows. The source whether or not dsh answers: the app keeps it, and saving it starts dsh again,
+ * which is how a source that keeps dsh from starting is put right.
+ */
+export function pluginPane(state: State): 'source' | 'not-connected' | 'plugins' {
+  if (state.capabilities.selected === PLUGIN_SOURCE) return 'source'
+  return state.plugins.connected ? 'plugins' : 'not-connected'
+}
+
 export function pluginsSide(state: State, handlers: Handlers): Node[] {
-  if (!state.plugins.connected) return [h('p', { class: 'help cap-empty', text: t('plugins.not.connected') })]
-  const adding = state.capabilities.selected === ADD_PLUGIN
   const sourcing = state.capabilities.selected === PLUGIN_SOURCE
+  if (!state.plugins.connected) return [h('p', { class: 'help cap-empty', text: t('plugins.not.connected') }), sourceRow(state, handlers, sourcing)]
+  const adding = state.capabilities.selected === ADD_PLUGIN
   const shown = adding || sourcing ? null : shownPlugin(state)
   return [
     ...pluginsOf(state).map((plugin) => {
@@ -69,8 +78,9 @@ function pluginFacts(plugin: PluginView, state: State, handlers: Handlers) {
 }
 
 export function pluginMain(state: State, handlers: Handlers): HTMLElement {
-  if (!state.plugins.connected) return h('div', { class: 'tp-main tp-empty' }, h('p', { class: 'empty', text: t('plugins.not.connected') }))
-  if (state.capabilities.selected === PLUGIN_SOURCE) return sourceMain(state, handlers)
+  const pane = pluginPane(state)
+  if (pane === 'source') return sourceMain(state, handlers)
+  if (pane === 'not-connected') return h('div', { class: 'tp-main tp-empty' }, h('p', { class: 'empty', text: t('plugins.not.connected') }))
   const plugin = state.capabilities.selected === ADD_PLUGIN ? null : shownPlugin(state)
   if (!plugin) {
     return h('div', { class: 'tp-main' },
