@@ -12,6 +12,11 @@ import type { Encryption } from './settings-store.ts'
 const FILE_VERSION = 1
 const MAX_TOKEN_CHARS = 4096
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+/**
+ * What an address may be made of once parsed. It goes on pnpm's command line (plugin-registry.ts pinArgs), which on
+ * Windows a shell reads: nothing in it may be read as more than the address (`&`, `|`, `%`, `^`, quotes, brackets…).
+ */
+const SAFE_ADDRESS = /^https?:\/\/[A-Za-z0-9.\-[\]:]+\/[A-Za-z0-9._~/-]*$/
 
 /** A registry's address as kept: https, or http on this computer; no user or password in it; one slash at the end. */
 export function normalizeRegistry(input: unknown): string {
@@ -24,7 +29,9 @@ export function normalizeRegistry(input: unknown): string {
   const local = url.protocol === 'http:' && LOCAL_HOSTS.has(url.hostname)
   if (url.protocol !== 'https:' && !local) throw new Error(t('main.plugin-source.address'))
   if (url.username || url.password) throw new Error(t('main.plugin-source.credentials'))
-  return `${url.origin}${url.pathname.replace(/\/*$/, '/')}`
+  const address = `${url.origin}${url.pathname.replace(/\/*$/, '/')}`
+  if (!SAFE_ADDRESS.test(address)) throw new Error(t('main.plugin-source.address.chars'))
+  return address
 }
 
 function validToken(input: string): string {

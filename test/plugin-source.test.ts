@@ -33,7 +33,15 @@ test('the token kept goes to its own registry only: a new host needs it typed ag
 test('a registry is an https address, or http on this computer; kept with one slash at the end', () => {
   assert.equal(normalizeRegistry(' https://npm.example.com/repo '), 'https://npm.example.com/repo/')
   assert.equal(normalizeRegistry('http://localhost:4873'), 'http://localhost:4873/')
+  assert.equal(normalizeRegistry('https://repo.example.com/artifactory/api/npm/npm-local'), 'https://repo.example.com/artifactory/api/npm/npm-local/')
+  assert.equal(normalizeRegistry('http://[::1]:4873/'), 'http://[::1]:4873/')
   for (const bad of ['npm.example.com', 'http://npm.example.com', 'ftp://npm.example.com', 'https://user:pass@npm.example.com', '']) {
+    assert.throws(() => normalizeRegistry(bad), Error, bad)
+  }
+})
+
+test('a registry address with anything a shell could read in it is not kept: it goes on pnpm\'s command line', () => {
+  for (const bad of ['https://registry.example/team&calc&/', 'https://registry.example/a|b/', 'https://registry.example/%PATH%/', 'https://registry.example/a^b/', 'https://registry.example/a(b)/', 'https://registry.example/a!b/', 'https://registry.example/a b/']) {
     assert.throws(() => normalizeRegistry(bad), Error, bad)
   }
 })

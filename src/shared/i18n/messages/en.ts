@@ -927,6 +927,8 @@ export const en = {
   "main.mcp-import.imported": "Imported {count} MCP servers: {names}.",
   "main.mcp-import.still.missing": "{name} still needs {keys}; fill them in with Edit to connect.",
   "main.plugin-source.address": "A plugin source address starts with https:// (http:// for one on this computer)",
+  "main.plugin-source.address.chars": "A plugin source address can have only letters, digits and . - _ ~ / : in it",
+  "main.plugin-source.shell": "Not passed to pnpm: the Windows command line could read “{arg}” as a command",
   "main.plugin-source.credentials": "Leave the user name and password out of the address; enter the token on its own",
   "main.plugin-source.token": "A token cannot contain spaces or line breaks",
   "main.plugin-source.busy": "Wait for this turn to finish before changing the plugin source",

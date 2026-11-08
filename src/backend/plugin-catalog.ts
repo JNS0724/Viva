@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { t } from '../shared/i18n/translate.ts'
 import { vivaFit, type VivaFit } from './plugin-fit.ts'
 
 /**
@@ -30,6 +31,8 @@ const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
 const MAX_NAME_CHARS = 214
 /** An exact version or a dist-tag: no ranges, which a shell would read. */
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/
+/** An argument the Windows shell reads as itself alone: no `&`, `|`, `%`, `^`, quotes, spaces or brackets. */
+const SHELL_PLAIN = /^[\p{L}\p{N}@/._:=~[\]+-]+$/u
 
 /** The pnpm the plugin manager installs with: its program, where it runs, its arguments for the source, its environment. */
 export interface PnpmCall { command: string, cwd: string, args: readonly string[], env: Readonly<Record<string, string | undefined>> }
@@ -138,6 +141,11 @@ export function pnpmRunner({ platform = process.platform, timeoutMs = PNPM_TIMEO
   const run = promisify(execFile)
   return async (call, args) => {
     const shell = platform === 'win32'
+    const all = [...call.args, ...args]
+    // What is typed or answered is checked where it is read; this is for the rest (a source kept before addresses
+    // were, a scope from someone's .npmrc): nothing goes to the shell that it could run.
+    const unsafe = shell ? all.find((arg) => !SHELL_PLAIN.test(arg)) : undefined
+    if (unsafe !== undefined) throw new Error(t('main.plugin-source.shell', { arg: unsafe }))
     const { stdout } = await run(shell ? `"${call.command}"` : call.command, [...args], {
       cwd: call.cwd, env: { ...call.env }, shell, encoding: 'utf8', timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true,
     })

@@ -928,6 +928,8 @@ export const zhCN = {
   "main.mcp-import.imported": "已导入 {count} 个 MCP 服务器：{names}。",
   "main.mcp-import.still.missing": "{name} 还缺 {keys}，点「编辑」补上就能连接。",
   "main.plugin-source.address": "插件源地址要以 https:// 开头（本机的可以用 http://）",
+  "main.plugin-source.address.chars": "插件源地址里只能有字母、数字和 . - _ ~ / :",
+  "main.plugin-source.shell": "没有交给 pnpm：Windows 命令行可能把“{arg}”当成命令执行",
   "main.plugin-source.credentials": "地址里不要带用户名和密码，令牌单独填",
   "main.plugin-source.token": "令牌里不能有空格或换行",
   "main.plugin-source.busy": "等这一轮结束再改插件源",

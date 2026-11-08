@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { CATALOG_LIMIT, DEFAULT_QUERY, searchCatalog, specFit, type PnpmCall } from '../src/backend/plugin-catalog.ts'
+import { CATALOG_LIMIT, DEFAULT_QUERY, pnpmRunner, searchCatalog, specFit, type PnpmCall } from '../src/backend/plugin-catalog.ts'
 
 /**
  * The company source's plugins (plugin-catalog.ts): what its search finds, kept to dsh plugins, each with whether it
@@ -106,4 +106,19 @@ test('before an install: a registry name is looked up, a folder read, anything e
     assert.deepEqual(await specFit({ spec, pnpm: PNPM, run }), { kind: 'unknown' }, spec)
   }
   assert.equal(calls.length, before, 'none of them asks pnpm')
+})
+
+test('on Windows, where pnpm runs through the shell, an argument the shell could read is refused before anything runs', async () => {
+  const call = (args: string[]): PnpmCall => ({ command: 'no-such-pnpm-is-run', cwd: os.tmpdir(), args, env: {} })
+  const run = pnpmRunner({ platform: 'win32' })
+  for (const bad of ['--registry=https://registry.example/team&calc&/', '--config.@a|b:registry=https://r.example/', '--registry=https://r.example/%PATH%/']) {
+    await assert.rejects(run(call([bad]), ['search', 'dsh']), /pnpm/, bad)
+  }
+  await assert.rejects(run(call([]), ['search', 'a"b']), /pnpm/, 'its own arguments too')
+})
+
+test('elsewhere no shell reads the arguments: they are passed as they are', async () => {
+  const run = pnpmRunner({ platform: 'linux' })
+  const said = await run({ command: process.execPath, cwd: os.tmpdir(), args: [], env: { ELECTRON_RUN_AS_NODE: '1' } }, ['-e', 'process.stdout.write(process.argv.slice(1).join(" "))', 'a&b'])
+  assert.equal(said, 'a&b')
 })

@@ -22,7 +22,7 @@ function entryItem(entry: CatalogEntry, plugins: Plugins, handlers: Handlers, pi
       h('span', { class: 'cap-catalog-version', text: entry.version }),
       fit ? h('span', { class: 'ext-status', 'data-tone': fitTone(entry.fit), title: fit, text: fit }) : null),
     entry.description ? h('p', { class: 'help', text: entry.description }) : null,
-    picked ? installCard(plugins, handlers, { listed: true }) : h('div', { class: 'settings-actions' },
+    picked ? installCard(plugins, handlers, { listed: true, listedFit: entry.fit }) : h('div', { class: 'settings-actions' },
       h('button', {
         class: 'btn btn-outline btn-small', type: 'button', disabled: plugins.busy, text: t('plugins.look'),
         'aria-label': t('plugins.catalog.look.named', { name: entry.name }), onClick: () => handlers.pickCatalogEntry(entry.name, entry.version),
