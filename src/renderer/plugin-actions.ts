@@ -43,7 +43,7 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
     dispatch({ type: 'plugins_busy' })
     try {
       const { source, view } = await api.setPluginSource(registry, token)
-      dispatch({ type: 'plugins_changed', view: { ...view, source }, notice: source.registry ? t('plugins.source.saved') : t('plugins.source.removed') })
+      dispatch({ type: 'plugins_source_saved', view: { ...view, source }, notice: source.registry ? t('plugins.source.saved') : t('plugins.source.removed') })
     } catch (err) {
       fail(errorMessage(err))
     }

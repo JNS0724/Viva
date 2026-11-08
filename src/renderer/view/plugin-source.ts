@@ -28,10 +28,19 @@ export function sourceRow(state: State, handlers: Handlers, current: boolean): H
 
 const formRow = (title: string, field: HTMLElement) => h('div', { class: 'ext-edit-row' }, label(title), field)
 
+/**
+ * The form's `data-version` for keepingInput: it changes with what is kept and with every save that went through, so a
+ * token just saved is never put back into its field (and sent along to a host changed later).
+ */
+export const sourceFormVersion = (state: State): string => {
+  const source = sourceOf(state)
+  return `${source.registry ?? ''}|${source.hasToken}|${state.plugins.sourceSaves}`
+}
+
 export function sourceMain(state: State, handlers: Handlers): HTMLElement {
   const source = sourceOf(state)
   const busy = Boolean(state.plugins.busy)
-  const version = `${source.registry ?? ''}|${source.hasToken}`
+  const version = sourceFormVersion(state)
   const field = (form: HTMLFormElement, name: string) => {
     const value = new FormData(form).get(name)
     return typeof value === 'string' ? value : ''
