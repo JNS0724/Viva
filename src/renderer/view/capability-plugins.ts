@@ -4,10 +4,12 @@ import { problemText } from '../plugins-state.ts'
 import type { PluginFit, PluginView } from '../capability-types.ts'
 import { h } from './dom.ts'
 import { installCard, installForm } from './plugins.ts'
+import { PLUGIN_SOURCE, sourceMain, sourceRow } from './plugin-source.ts'
 
 /**
  * 能力 · 插件 (view/capabilities.ts): the dsh plugins the user installed and the one picked: what it is, whether it runs
- * here (plugin-fit.ts), switched on or off, removed; and adding one (ADD_PLUGIN), by the spec, what it names, then 安装.
+ * here (plugin-fit.ts), switched on or off, removed; adding one (ADD_PLUGIN), by the spec, what it names, then 安装;
+ * and where they come from (PLUGIN_SOURCE, view/plugin-source.ts).
  */
 export const ADD_PLUGIN = '+add'
 
@@ -30,10 +32,20 @@ function fitText(fit: PluginFit): string | null {
 
 const pluginsOf = (state: State) => state.plugins.plugins as readonly PluginView[]
 
+/**
+ * What the main pane shows. The source whether or not dsh answers: the app keeps it, and saving it starts dsh again,
+ * which is how a source that keeps dsh from starting is put right.
+ */
+export function pluginPane(state: State): 'source' | 'not-connected' | 'plugins' {
+  if (state.capabilities.selected === PLUGIN_SOURCE) return 'source'
+  return state.plugins.connected ? 'plugins' : 'not-connected'
+}
+
 export function pluginsSide(state: State, handlers: Handlers): Node[] {
-  if (!state.plugins.connected) return [h('p', { class: 'help cap-empty', text: t('plugins.not.connected') })]
+  const sourcing = state.capabilities.selected === PLUGIN_SOURCE
+  if (!state.plugins.connected) return [h('p', { class: 'help cap-empty', text: t('plugins.not.connected') }), sourceRow(state, handlers, sourcing)]
   const adding = state.capabilities.selected === ADD_PLUGIN
-  const shown = adding ? null : shownPlugin(state)
+  const shown = adding || sourcing ? null : shownPlugin(state)
   return [
     ...pluginsOf(state).map((plugin) => {
       const standing = standingText(pluginStanding(plugin))
@@ -46,6 +58,7 @@ export function pluginsSide(state: State, handlers: Handlers): Node[] {
     h('button', {
       class: 'tp-row cap-row cap-add', type: 'button', 'aria-current': adding ? 'page' : null, onClick: () => handlers.selectCapability(ADD_PLUGIN),
     }, h('span', { class: 'tp-name', text: t('capabilities.add.plugin') })),
+    sourceRow(state, handlers, sourcing),
   ].filter((node) => node !== null)
 }
 
@@ -65,7 +78,9 @@ function pluginFacts(plugin: PluginView, state: State, handlers: Handlers) {
 }
 
 export function pluginMain(state: State, handlers: Handlers): HTMLElement {
-  if (!state.plugins.connected) return h('div', { class: 'tp-main tp-empty' }, h('p', { class: 'empty', text: t('plugins.not.connected') }))
+  const pane = pluginPane(state)
+  if (pane === 'source') return sourceMain(state, handlers)
+  if (pane === 'not-connected') return h('div', { class: 'tp-main tp-empty' }, h('p', { class: 'empty', text: t('plugins.not.connected') }))
   const plugin = state.capabilities.selected === ADD_PLUGIN ? null : shownPlugin(state)
   if (!plugin) {
     return h('div', { class: 'tp-main' },

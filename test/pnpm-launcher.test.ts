@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { dshRuntime } from '../src/backend/dsh-runtime.ts'
-import { launcherText, pnpmEntry, pnpmLauncher } from '../src/backend/pnpm-launcher.ts'
+import { launcherText, pnpmEntry, pnpmLauncher, refusingLauncher } from '../src/backend/pnpm-launcher.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 
@@ -20,6 +20,23 @@ test('the launcher runs the pnpm shipped with the app on the app\'s own runtime'
   const written = fs.statSync(launcher).mtimeMs
   pnpmLauncher({ dir, appRoot: ROOT, runtime })
   assert.equal(fs.statSync(launcher).mtimeMs, written, 'unchanged, not rewritten')
+})
+
+test('the refusing launcher, for when pnpm cannot be kept to the company registry, fails every call and says why', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-pnpm-refuse-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const launcher = refusingLauncher({ dir, message: "Can't keep pnpm to the registry: <restart> & \"retry\" 100%" })
+  assert.notEqual(launcher, path.join(dir, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'), 'beside the real launcher, not over it')
+  for (const args of [['add', '@company/search'], ['view', 'x'], ['--version']]) {
+    try {
+      execFileSync(process.platform === 'win32' ? `"${launcher}"` : launcher, args, { encoding: 'utf8', shell: process.platform === 'win32', stdio: 'pipe' })
+      assert.fail(`${args.join(' ')} ran`)
+    } catch (err) {
+      const { status, stderr } = err as { status: number, stderr: string }
+      assert.equal(status, 1, args.join(' '))
+      assert.match(stderr, /keep pnpm to the registry/, 'its words, any shell characters in them made harmless')
+    }
+  }
 })
 
 test('Electron runs as Node in the launcher; quotes in paths are kept', () => {

@@ -59,6 +59,8 @@ test('the app\'s layer holds the persona and each plugin by file URL with its co
 test('the plugin manager is given the app\'s pnpm when there is one', () => {
   assert.match(patchFor({ plugins: [], pnpmCommand: '/data/bin/pnpm' }), /- id: plugin-manager\n {2}config: \{"pnpmCommand":"\/data\/bin\/pnpm"\}\n/)
   assert.doesNotMatch(patchFor({ plugins: [] }), /id: plugin-manager\n/)
+  assert.match(patchFor({ plugins: [], pnpmCommand: '/data/bin/pnpm', registry: 'https://npm.example.com/' }), /- id: plugin-manager\n {2}config: \{"pnpmCommand":"\/data\/bin\/pnpm","registry":"https:\/\/npm\.example\.com\/","fallbackRegistries":\[\]\}\n/,
+    'a company registry is asked alone: no public one to fall back to')
 })
 
 test('the user\'s layer is kept from one launch to the next', (t) => {

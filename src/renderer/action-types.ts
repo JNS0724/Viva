@@ -120,6 +120,7 @@ export interface ActionPayloads extends ConversationPayloads {
   plugins_spec: { spec: State['plugins']['spec'] }
   plugins_inspected: { inspection: State['plugins']['inspection'] }
   plugins_changed: { view: Partial<State['plugins']>, notice?: string | null, pendingBuilds?: State['plugins']['pendingBuilds'] }
+  plugins_source_saved: { view: Partial<State['plugins']>, notice?: string | null }
   plugins_dismiss: {}
   capabilities_open: { tab?: CapabilityTab, id?: string | null }
   capabilities_close: {}

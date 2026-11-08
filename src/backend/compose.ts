@@ -21,7 +21,7 @@ import { DSH_PROFILE, resolveConfig } from './config.ts'
 import { createAcpBridge, switchingMessage } from './acp-bridge.ts'
 import { importDshServers, userDshHome } from './dsh-mcp-import.ts'
 import { ensureDshProfile, vivaLayerFile } from './dsh-profile.ts'
-import { pnpmLauncher } from './pnpm-launcher.ts'
+import { pnpmLauncher, refusingLauncher } from './pnpm-launcher.ts'
 import { dshEnv } from './dsh-runtime.ts'
 import { registerExtensionsIpc } from './extensions-ipc.ts'
 import { registerSkillImportIpc } from './skill-import-ipc.ts'
@@ -53,6 +53,9 @@ import { createPersonal } from './personal.ts'
 import { createPreferences } from './preferences.ts'
 import { CONFIG_IDS } from './session-info.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
+import { createPluginSourceStore } from './plugin-source.ts'
+import { launchMessage } from './dsh-launch.ts'
+import { pnpmScopes } from './plugin-registry.ts'
 import { skillRoots } from './skills.ts'
 import { historyRecall } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
@@ -120,6 +123,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return core.apply(kind, data, write)
   }
   let settingsStore!: ReturnType<typeof createSettingsStore>
+  let pluginSource!: ReturnType<typeof createPluginSourceStore>
   /** Switches from settings, such as the desktop island (preferences.ts). */
   let preferences!: ReturnType<typeof createPreferences>
   /** Model providers the user added besides DeepSeek; see model-providers.ts. */
@@ -284,17 +288,44 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * given to dsh over the profile (dsh-profile.ts). Without it dsh still runs on its stock profile, with no memory,
    * trace or policy, and without the app's layer.
    */
-  function prepareProfile(config: Config): { profile: string, overlay: string | null } {
+  function prepareProfile(config: Config): { profile: string, overlay: string | null, launch: object } {
+    // dsh takes the pnpm and the registry token over IPC (dsh-launch.ts), never in its environment.
+    let pnpmCommand: string | null = null
+    let scopes: string[] = []
+    const registry = pluginSource.registry()
+    const launch = () => launchMessage({ pnpmCommand, registry, registryToken: pluginSource.token(), scopes })
+    // With a company registry plugins cannot be kept to, dsh gets a pnpm that installs nothing (pnpm-launcher.ts).
+    const refuse = () => { pnpmCommand = refusingLauncher({ dir: path.join(userData, 'bin'), message: t('main.plugin-source.unpinned') }) }
     try {
       const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow() })
       pluginProblems = problems
       problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
-      const pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
-      ensureDshProfile({ dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand })
-      return { profile: DSH_PROFILE, overlay: vivaLayerFile(dshHomeOf(config)) }
+      pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
+      const dir = ensureDshProfile({
+        dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
+      })
+      const found = registry ? scopesOf(dir, pnpmCommand) : []
+      if (found) scopes = found
+      else refuse()
+      return { profile: DSH_PROFILE, overlay: vivaLayerFile(dshHomeOf(config)), launch: launch() }
     } catch (err: any) {
       console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
-      return { profile: FALLBACK_PROFILE, overlay: null }
+      // dsh's stock profile knows no company registry: its plugin manager would install from the public ones.
+      if (registry) refuse()
+      return { profile: FALLBACK_PROFILE, overlay: null, launch: launch() }
+    }
+  }
+
+  /**
+   * The scopes the plugin manager's pnpm finds where it installs, each to be sent to the company registry too
+   * (plugin-registry.ts); null when pnpm cannot say, which is not none.
+   */
+  function scopesOf(dir: string, pnpmCommand: string | null): string[] | null {
+    try {
+      return pnpmScopes({ command: pnpmCommand ?? 'pnpm', cwd: dir, env: process.env })
+    } catch (err: any) {
+      console.error('[plugins] could not read the scoped registries pnpm knows, so no plugin is installed until it can:', err.message)
+      return null
     }
   }
 
@@ -727,6 +758,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     registerPluginsIpc(ipcMain, {
       call: (op, args) => (dsh.current ? dsh.current.plugins(op, args) : Promise.resolve({ ok: false as const, problem: 'disconnected' })),
       profileDir: () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE),
+      source: pluginSource,
+      busy: () => turn.active,
+      restart: restartKeepingConversation,
     })
     const roots = () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd })
     registerExtensionsIpc(ipcMain, {
@@ -871,6 +905,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     settingsStore = createSettingsStore({
       file: path.join(userData, 'settings.json'), crypto: host.secrets,
       onError: (err) => console.error('[settings] could not read saved settings:', err.message),
+    })
+    pluginSource = createPluginSourceStore({
+      file: path.join(userData, 'plugin-source.json'), crypto: host.secrets,
+      onError: (err) => console.error('[plugins] could not read the plugin source:', err.message),
     })
     preferences = createPreferences({
       file: path.join(userData, 'preferences.json'),

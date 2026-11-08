@@ -18,6 +18,8 @@ function profile(t: TestContext) {
   return dir
 }
 
+const noSource = { view: () => ({ registry: null, hasToken: false }), save: () => ({ registry: null, hasToken: false }) }
+
 const LIST = {
   bundles: [
     { name: '@deepseek-ai/dsh-base', installed: false, enabled: true, optional: false, removable: false, rows: [], overrides: [] },
@@ -66,9 +68,9 @@ test('the channels ask the plugin manager; with dsh down the section says it is 
     if (op === 'inspect') return { ok: true, value: { status: 'accepted', name: 'compact', version: '2.0.0', bundle: true } }
     return { ok: true, value: { changed: true, application: 'applied' } }
   }
-  registerPluginsIpc({ handle: (channel, fn) => handlers.set(channel, fn as (...args: unknown[]) => unknown) }, { call, profileDir: () => dir })
+  registerPluginsIpc({ handle: (channel, fn) => handlers.set(channel, fn as (...args: unknown[]) => unknown) }, { call, profileDir: () => dir, source: noSource, busy: () => false, restart: async () => null })
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
-  assert.deepEqual([...handlers.keys()].sort(), ['plugins:get', 'plugins:inspect', 'plugins:install', 'plugins:remove', 'plugins:set-enabled'])
+  assert.deepEqual([...handlers.keys()].sort(), ['plugins:get', 'plugins:inspect', 'plugins:install', 'plugins:remove', 'plugins:set-enabled', 'plugins:set-source', 'plugins:source'])
 
   assert.equal(((await invoke('plugins:get')) as { plugins: unknown[] }).plugins.length, 2)
   assert.deepEqual(await invoke('plugins:inspect', 'compact'), { ok: true, name: 'compact', version: '2.0.0', description: null, bundle: true })
@@ -85,4 +87,24 @@ test('the channels ask the plugin manager; with dsh down the section says it is 
   up = false
   assert.deepEqual(await invoke('plugins:get'), { connected: false, plugins: [] })
   await assert.rejects(Promise.resolve(invoke('plugins:remove', 'compact')), /disconnected/)
+})
+
+test('the company source: the window is told the registry and whether there is a token, never the token; saved, dsh starts again with it', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  let kept: { registry: unknown, token?: unknown } | null = null
+  let restarts = 0
+  let busy = false
+  const source = {
+    view: () => ({ registry: kept ? String(kept.registry) : null, hasToken: Boolean(kept?.token) }),
+    save: (input: { registry: unknown, token?: unknown }) => { kept = input; return source.view() },
+  }
+  const call = async (): Promise<PluginsResult> => ({ ok: true, value: { bundles: [], plugins: [] } })
+  registerPluginsIpc({ handle: (channel, fn) => handlers.set(channel, fn as (...args: unknown[]) => unknown) }, { call, profileDir: () => '/none', source, busy: () => busy, restart: async () => { restarts++ } })
+  const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
+  const saved = await invoke('plugins:set-source', 'https://npm.example.com/', 'npm_secret_value') as { source: object, view: object }
+  assert.deepEqual([saved.source, restarts, kept], [{ registry: 'https://npm.example.com/', hasToken: true }, 1, { registry: 'https://npm.example.com/', token: 'npm_secret_value' }])
+  assert.ok(!JSON.stringify([saved, await invoke('plugins:source')]).includes('npm_secret_value'))
+  busy = true
+  await assert.rejects(Promise.resolve(invoke('plugins:set-source', null)), Error, 'not while a turn runs, which the restart would cut short')
+  assert.equal(restarts, 1)
 })
