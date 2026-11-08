@@ -163,3 +163,35 @@ test('new-topic readiness migrates the provisional draft and redirects late atta
   assert.equal(draftTarget(saved).key, ready.key)
   assert.equal(store.select('topic:topic-a').text, 'prepared input', 'migration never aliases the previous topic into the new one')
 })
+
+test('a queued typing edit preserves a newer image error while an explicit clear uses its error baseline', async () => {
+  let receive: (draft: DraftSnapshot) => void = () => {}
+  const notifications: DraftSnapshot[] = []
+  const writes: DraftSnapshot[] = []
+  const store = createComposerDraftStore(draft => notifications.push(draft))
+  let local = { text: '', files: [], images: [], error: null } as Pick<DraftSnapshot, 'text' | 'files' | 'images' | 'error'>
+  const actions = createComposerDraftActions({ host: 'main', api: {
+    getDraft: async () => store.snapshot(), onDraft: callback => { receive = callback; return () => {} },
+    updateDraft: draft => { writes.push(draft) }, appendDraftImage: async () => {}, appendDraftFiles: async () => {},
+  }, read: () => local, write: next => { local = next } })
+  await Promise.resolve()
+  local = { ...local, text: 'typing before the failure arrives' }
+  actions.changed()
+  store.setError('startup', 'image storage unavailable')
+  store.update('main', writes.shift()!)
+  notifications.splice(0).forEach(receive)
+  assert.equal(store.snapshot().error, 'image storage unavailable')
+  assert.equal(local.error, 'image storage unavailable')
+  assert.equal(local.text, 'typing before the failure arrives')
+  local = { ...local, error: null }
+  actions.changed()
+  store.update('main', writes.shift()!)
+  notifications.splice(0).forEach(receive)
+  assert.equal(store.snapshot().error, null, 'the acknowledged error can be explicitly cleared')
+  local = { ...local, text: 'newer typing' }
+  actions.changed()
+  store.setError('startup', 'a later image failed')
+  store.update('main', writes.shift()!)
+  notifications.splice(0).forEach(receive)
+  assert.equal(local.error, 'a later image failed')
+})

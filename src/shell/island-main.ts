@@ -61,10 +61,15 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
   ipcMain.handle('draft:append-image', (event, key, image) => {
     if (source(event) && checkImages([image])) drafts.appendImage(key, image)
   })
-  ipcMain.handle('draft:keep-images', async (event, key, images) => {
-    if (!source(event)) return
+  ipcMain.handle('island:begin-image-import', (event, key) => fromDesk(event)?.beginImport(event.sender, key) ?? null)
+  ipcMain.on('island:end-image-import', (event, ticket, error) => {
+    const key = desk()?.endImport(event.sender, ticket)
+    if (key && error) drafts.setError(key, error)
+  })
+  ipcMain.handle('draft:keep-images', async (event, key, images, ticket, readError) => {
+    if (ticket !== undefined ? !desk()?.claimImport(event.sender, key, ticket) : !source(event)) return
     const results = await Promise.allSettled(images.map(bytes => keepImage(bytes)))
-    let problem: string | null = null
+    let problem: string | null = readError ?? null
     // Keep the clipboard's order even when the saves finish in reverse, after either host is destroyed.
     for (const result of results) {
       if (result.status === 'rejected') problem ??= String((result.reason as Error | null)?.message ?? result.reason)

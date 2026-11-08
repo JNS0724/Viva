@@ -87,6 +87,43 @@ test('desktop drafts retain text, real images and files through collapse and win
   await page.reload()
   await expect(page.locator('#composer-input')).toHaveValue(topicDraft)
   await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).key)).toBe(originalKey)
+  // Use the normal close-to-tray lifecycle so Open Viva really retires the reading renderer.
+  await session.application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(true))
+  try {
+    const mainWindow = await session.application.browserWindow(page)
+    await mainWindow.evaluate(window => window.close())
+    await desk.openInput()
+    await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
+    const readingDesktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    await expect(readingDesktop.locator('.isl-field')).toHaveValue(topicDraft)
+    await readingDesktop.evaluate(async () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 16; canvas.height = 16
+      canvas.getContext('2d')!.fillRect(0, 0, 16, 16)
+      const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), 'image/png'))
+      const png = new Uint8Array(await blob.arrayBuffer())
+      const data = new DataTransfer()
+      for (const size of [20 * 1024 * 1024 - 1, 20 * 1024 * 1024]) {
+        const bytes = new Uint8Array(size)
+        bytes.set(png)
+        data.items.add(new File([bytes], `large-${size}.png`, { type: 'image/png' }))
+      }
+      const open = [...document.querySelectorAll<HTMLButtonElement>('.isl-surface-head button')].find(button => button.textContent === '打开 Viva')!
+      document.querySelector('.isl-field')!.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
+      setTimeout(() => open.click(), 0)
+    })
+    await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).images.map(image => image.size))).toEqual([20 * 1024 * 1024 - 1, 20 * 1024 * 1024])
+    await expect(page.locator('#composer-input')).toHaveValue(topicDraft)
+    await expect(page.locator('.draft-pic')).toHaveCount(2)
+    await expect.poll(() => readingDesktop.isClosed()).toBe(true)
+    const draft = await page.evaluate(() => window.agent.getDraft())
+    expect(draft.key).toBe(originalKey)
+    expect(draft.owner).toBe('main')
+    expect(draft.error).toBeNull()
+    await info.attach('large-image-handoff-draft', { body: JSON.stringify(draft, null, 2), contentType: 'application/json' })
+  } finally {
+    await session.application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(false))
+  }
 })
 
 test('fresh app opens usable settings without a model', async ({ scenario }, info) => {

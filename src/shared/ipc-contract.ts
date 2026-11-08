@@ -158,11 +158,13 @@ export const IPC_ARGS = Object.freeze({
   'draft:get': read(none),
   'draft:update': z.tuple([z.object({ key: id, version: count, epoch: count, sequence: count, baseImages: z.array(id).max(10).optional(), baseFiles: z.array(path).max(10).optional(), owner: z.enum(['main', 'desk']), text,
     files: z.array(z.object({ path, name: id, size: count })).max(10),
-    images: z.array(z.object({ id, size: count.optional() })).max(10), error: text.nullable() })]),
+    images: z.array(z.object({ id, size: count.optional() })).max(10), error: text.nullable(), baseError: text.nullable().optional() })]),
   'draft:append-image': z.tuple([id, z.object({ id, size: count.optional() })]),
-  'draft:keep-images': z.tuple([id, z.array(bytes).max(MAX_IMAGES)]),
+  'draft:keep-images': z.tuple([id, z.array(bytes).max(MAX_IMAGES), id.optional(), text.nullable().optional()]),
   'draft:append-files': z.tuple([id, z.array(path).max(10)]),
   'island:keep-image': z.tuple([bytes]),
+  'island:begin-image-import': z.tuple([id]),
+  'island:end-image-import': z.tuple([id, text.nullable().optional()]),
 })
 
 export type Channel = keyof typeof IPC_ARGS

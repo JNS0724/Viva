@@ -2,7 +2,7 @@
 export interface DraftFile { path: string, name: string, size: number }
 export interface DraftImage { id: string, size?: number }
 export interface DraftContent { text: string, files: DraftFile[], images: DraftImage[], error: string | null }
-export interface DraftSnapshot extends DraftContent { key: string, version: number, epoch: number, sequence: number, owner: 'main' | 'desk', baseImages?: string[], baseFiles?: string[] }
+export interface DraftSnapshot extends DraftContent { key: string, version: number, epoch: number, sequence: number, owner: 'main' | 'desk', baseImages?: string[], baseFiles?: string[], baseError?: string | null }
 export const EMPTY_DRAFT: Readonly<DraftContent> = Object.freeze({ text: '', files: [], images: [], error: null })
 
 /** Stale hosts cannot replace a draft after focus/target handoff; send receipts clear only their snapshot. */
@@ -44,8 +44,9 @@ export function createComposerDraftStore(changed: (snapshot: DraftSnapshot) => v
       const images = [...next.images, ...content().images.filter(image => !base.has(image.id) && !ids.has(image.id))].slice(0, 10)
       const fileBase = new Set(next.baseFiles ?? content().files.map(file => file.path)), paths = new Set(next.files.map(file => file.path))
       const files = [...next.files, ...content().files.filter(file => !fileBase.has(file.path) && !paths.has(file.path))].slice(0, 10)
+      const error = next.baseError === undefined || next.baseError === content().error ? next.error : content().error
       sequence = next.sequence
-      drafts.set(key, { text: next.text, files: structuredClone(files), images: structuredClone(images), error: next.error, version: content().version + 1 })
+      drafts.set(key, { text: next.text, files: structuredClone(files), images: structuredClone(images), error, version: content().version + 1 })
       return { ok: true, draft: publish() }
     },
     appendImage(target: string, image: DraftImage) {

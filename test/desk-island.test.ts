@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createDeskIsland, DESK_TIMES, LAYOUT_READY_MS, deskForm } from '../src/shell/desk-island.ts'
-import type { BrowserWindow, Display, Rectangle } from 'electron'
+import type { BrowserWindow, Display, Rectangle, WebContents } from 'electron'
 import type { Places } from '../src/shell/desk-place.ts'
 import { deskMenuTemplate } from '../src/shell/desk-menu.ts'
 import { describeDropped, MISSING, NOT_A_FILE } from '../src/shell/island-files.ts'
@@ -139,6 +139,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     destroy() {
       this.destroyed = true
       this.visible = false
+      this.handlers.closed?.()
     }
     isVisible() { return this.visible }
     showInactive() { this.visible = true }
@@ -174,6 +175,60 @@ function deskIsland(env: ReturnType<typeof fakes>, extra: Partial<Parameters<typ
   desk.setAway(true)
   return desk
 }
+
+test('an image import retires its hidden window, accepts one matching batch, and recreates the next island', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  const first = env.windows[0]
+  const sender = first.webContents as unknown as WebContents
+  first.handlers['did-finish-load']()
+  const ticket = desk.beginImport(sender, 'original')!
+  desk.setAway(false)
+  assert.deepEqual([first.visible, first.destroyed, desk.owns(sender)], [false, false, false])
+  assert.equal(desk.beginImport(sender, 'another'), null, 'retired renderers cannot start imports')
+  assert.equal(desk.claimImport(sender, 'other', ticket), false)
+  assert.equal(desk.claimImport({} as WebContents, 'original', ticket), false)
+  assert.equal(desk.claimImport(sender, 'original', 'missing'), false)
+  first.handlers['did-finish-load']()
+  first.handlers.focus()
+  first.handlers.blur()
+  assert.equal(desk.webContents(), null, 'late retired events cannot revive a hidden window')
+  desk.setAway(true)
+  const second = env.windows[1]
+  assert.notEqual(first, second)
+  assert.equal(second.visible, true)
+  assert.equal(desk.claimImport(sender, 'original', ticket), true)
+  assert.equal(first.destroyed, true)
+  assert.equal(second.destroyed, false)
+  assert.equal(desk.claimImport(sender, 'original', ticket), false, 'a ticket is consumed once')
+  assert.equal(desk.owns(second.webContents as unknown as WebContents), true)
+  desk.destroy()
+})
+
+test('all image import holds release on completion, renderer exit, window close, or application teardown', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  for (const finish of ['end', 'renderer-exit', 'window-close', 'destroy']) {
+    const env = fakes()
+    const desk = deskIsland(env)
+    const first = env.windows[0]
+    const sender = first.webContents as unknown as WebContents
+    const one = desk.beginImport(sender, 'one')!, two = desk.beginImport(sender, 'two')!
+    desk.setAway(false)
+    assert.equal(first.destroyed, false)
+    if (finish === 'end') {
+      assert.equal(desk.endImport(sender, one), 'one')
+      assert.equal(first.destroyed, false, 'another in-flight read still owns a hold')
+      assert.equal(desk.endImport(sender, two), 'two')
+    } else if (finish === 'renderer-exit') first.handlers['render-process-gone']()
+    else if (finish === 'window-close') first.destroy()
+    else desk.destroy()
+    assert.equal(first.destroyed, true, finish)
+    assert.equal(desk.claimImport(sender, 'one', one), false, finish)
+    assert.equal(desk.endImport(sender, two), null, finish)
+    desk.destroy()
+  }
+})
 
 test('the shortcut opens the input, which takes the keyboard until it is closed', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })

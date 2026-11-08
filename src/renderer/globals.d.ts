@@ -262,6 +262,8 @@ interface AgentApi extends DraftApi {
 
 /** The desktop island's bridge (desk-preload.cjs): dropped files are known to it only by their paths. */
 interface DeskApi extends DraftApi {
+  beginImageImport: Invoke<'island:begin-image-import'>
+  endImageImport: (...args: Args<'island:end-image-import'>) => void
   onView: (callback: (view: any) => void) => Unlisten
   act: (...args: Args<'island:act'>) => void
   describeFiles: (files: ArrayLike<File>) => Promise<{ files?: Array<{ path: string, name: string, size: number }>, error?: string }>

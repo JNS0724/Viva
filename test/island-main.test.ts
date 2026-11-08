@@ -59,9 +59,30 @@ function imageDraftHarness(keepImage: Parameters<typeof registerIslandIpc>[1]['k
   const ipc = checkedIpc({ on: (key, listener) => { listeners.set(key, listener) }, handle: (key, listener) => { listeners.set(key, listener) } })
   const main = { send() {} }, desktop = { send() {} }
   let connected = true
-  const island = { owns: (sender: unknown) => connected && sender === desktop, setView() {}, sendDraft() {} }
+  const tickets = new Map<string, { sender: unknown, key: string }>()
+  const island = {
+    owns: (sender: unknown) => connected && sender === desktop, setView() {}, sendDraft() {},
+    beginImport(sender: unknown, key: string) {
+      if (!connected || sender !== desktop) return null
+      const ticket = `import-${tickets.size}`
+      tickets.set(ticket, { sender, key })
+      return ticket
+    },
+    claimImport(sender: unknown, key: string, ticket: string) {
+      const held = tickets.get(ticket)
+      if (!held || held.sender !== sender || held.key !== key) return false
+      tickets.delete(ticket)
+      return true
+    },
+    endImport(sender: unknown, ticket: string) {
+      const held = tickets.get(ticket)
+      if (!held || held.sender !== sender) return null
+      tickets.delete(ticket)
+      return held.key
+    },
+  }
   const bridge = registerIslandIpc(ipc, {
-    desk: () => connected ? island as unknown as ReturnType<typeof createDeskIsland> : null,
+    desk: () => island as unknown as ReturnType<typeof createDeskIsland>,
     window: () => ({ webContents: main, isDestroyed: () => false }) as unknown as BrowserWindow,
     showWindow() {}, switchOff() {}, Menu: {} as Parameters<typeof registerIslandIpc>[1]['Menu'], keepImage,
   })
@@ -147,6 +168,48 @@ test('a mixed image batch preserves successful clipboard order, deduplicates, an
   await harness.emit(harness.main, 'draft:keep-images', 'origin', [1, 0, 2, 1].map(byte => new Uint8Array([byte])))
   assert.deepEqual(harness.snapshot().images, [keptImage, second])
   assert.equal(harness.snapshot().error, 'invalid pasted image', 'later successes cannot erase a batch failure')
+})
+
+test('a retired image import accepts one batch only with its sender, key, and issued ticket', async () => {
+  let calls = 0
+  const harness = imageDraftHarness(async () => { calls++; return keptImage })
+  harness.select('origin')
+  harness.bridge.ownDraft('desk')
+  const ticket = harness.emit(harness.desktop, 'island:begin-image-import', 'origin') as string
+  assert.ok(ticket)
+  harness.destroyDesk()
+  const bytes = [new Uint8Array([1])]
+  await harness.emit(harness.desktop, 'draft:keep-images', 'another', bytes, ticket)
+  await harness.emit({}, 'draft:keep-images', 'origin', bytes, ticket)
+  await harness.emit(harness.desktop, 'draft:keep-images', 'origin', bytes)
+  await harness.emit(harness.desktop, 'draft:keep-images', 'origin', bytes, '')
+  await harness.emit(harness.desktop, 'draft:keep-images', 'origin', bytes, 'missing')
+  assert.equal(calls, 0)
+  harness.emit(harness.desktop, 'draft:update', { ...harness.snapshot(), owner: 'desk', sequence: 999, text: 'retired edit' })
+  harness.emit(harness.desktop, 'island:act', { kind: 'open' })
+  assert.equal(harness.snapshot().text, '')
+  await harness.emit(harness.desktop, 'draft:keep-images', 'origin', bytes, ticket, 'another file could not be read')
+  assert.equal(calls, 1)
+  assert.deepEqual(harness.snapshot().images, [keptImage])
+  assert.equal(harness.snapshot().error, 'another file could not be read')
+  await harness.emit(harness.desktop, 'draft:keep-images', 'origin', bytes, ticket)
+  assert.equal(calls, 1, 'a consumed ticket grants no further writes')
+})
+
+test('ending a retired read records its error in the ticket origin after provisional-key migration', () => {
+  const harness = imageDraftHarness(async () => keptImage)
+  harness.select('origin')
+  const ticket = harness.emit(harness.desktop, 'island:begin-image-import', 'origin') as string
+  harness.destroyDesk()
+  harness.select('canonical', true)
+  harness.select('another')
+  harness.emit({}, 'island:end-image-import', ticket, 'wrong sender')
+  harness.emit(harness.desktop, 'island:end-image-import', ticket, 'read failed')
+  assert.equal(harness.snapshot().error, null)
+  harness.select('canonical')
+  assert.equal(harness.snapshot().error, 'read failed')
+  harness.emit(harness.desktop, 'island:end-image-import', ticket, 'reused ticket')
+  assert.equal(harness.snapshot().error, 'read failed')
 })
 
 test('only live composer hosts may initiate image keeps, and the shared draft enforces the image limit', async () => {

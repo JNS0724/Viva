@@ -46,7 +46,7 @@ export function createComposerDraftActions({ api, host, read, write }: {
     },
     changed() {
       if (applying || !current || !ready()) return
-      const edit = { ...current, ...read(), sequence: current.sequence + 1, baseImages: current.images.map(image => image.id), baseFiles: current.files.map(file => file.path) }
+      const edit = { ...current, ...read(), sequence: current.sequence + 1, baseImages: current.images.map(image => image.id), baseFiles: current.files.map(file => file.path), baseError: current.error }
       edit.images.forEach(image => knownImages.add(image.id))
       edit.files.forEach(file => knownFiles.add(file.path))
       current = { ...edit, version: edit.version + 1 }

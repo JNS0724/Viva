@@ -55,21 +55,21 @@ const messageOf = (err: unknown) => String((err as Error | null)?.message ?? err
 async function addImages(pasted: readonly File[]) {
   const origin = draftActions?.snapshot()?.key
   if (!origin) return
+  const ticket = await api.beginImageImport(origin)
+  if (!ticket) return
   try {
     const read = await Promise.allSettled(pasted.slice(0, IMAGE_LIMITS.perMessage + 1).map(file => file.arrayBuffer()))
     const bytes: Uint8Array<ArrayBuffer>[] = []
+    let readError: string | null = null
     for (const result of read) {
       if (result.status === 'fulfilled') bytes.push(new Uint8Array(result.value))
-      else if (draftActions?.snapshot()?.key === origin) {
-        error = messageOf(result.reason)
-        saveDraft(); show()
-      }
+      else readError ??= messageOf(result.reason)
     }
-    if (bytes.length) await api.keepDraftImages(origin, bytes)
+    await api.keepDraftImages(origin, bytes, ticket, readError)
   } catch (err) {
-    if (draftActions?.snapshot()?.key !== origin) return
-    error = messageOf(err)
-    saveDraft(); show()
+    api.endImageImport(ticket, messageOf(err))
+  } finally {
+    api.endImageImport(ticket)
   }
 }
 

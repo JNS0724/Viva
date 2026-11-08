@@ -21,7 +21,9 @@ contextBridge.exposeInMainWorld('desk', /** @satisfies {DeskApi} */ ({
   getDraft: () => ipcRenderer.invoke('draft:get'),
   updateDraft: (draft) => ipcRenderer.send('draft:update', draft),
   appendDraftImage: (key, image) => ipcRenderer.invoke('draft:append-image', key, image),
-  keepDraftImages: (key, images) => ipcRenderer.invoke('draft:keep-images', key, images),
+  keepDraftImages: (key, images, ticket, error) => ipcRenderer.invoke('draft:keep-images', key, images, ticket, error),
+  beginImageImport: (key) => ipcRenderer.invoke('island:begin-image-import', key),
+  endImageImport: (ticket, error) => ipcRenderer.send('island:end-image-import', ticket, error),
   appendDraftFiles: (key, paths) => ipcRenderer.invoke('draft:append-files', key, paths),
   appendDroppedFiles: (key, files) => ipcRenderer.invoke('draft:append-files', key, Array.from(files, (file) => webUtils.getPathForFile(file)).slice(0, 10)),
   onDraft: (callback) => {

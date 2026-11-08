@@ -1,4 +1,5 @@
 import type { BrowserWindow as Win, Menu, Screen, WebContents } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { DESK_SIZE, DRAG_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.ts'
 
 type Point = { x: number, y: number }
@@ -110,6 +111,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   /** Hidden from its menu: switched off until the window is next closed to the tray. */
   let hidden = false
   let win: Win | null = null
+  const retired = new Set<Win>()
+  const imports = new Map<string, { sender: WebContents, key: string, window: Win }>()
   let view: DeskView | null = null
   let doneAt = 0
   /** The window was closed to the tray. */
@@ -139,6 +142,27 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
 
   /** The island's window while it is there. */
   const live = (): Win | null => (win && !win.isDestroyed() ? win : null)
+
+  function forgetWindow(opened: Win) {
+    for (const [ticket, held] of imports) if (held.window === opened) imports.delete(ticket)
+    retired.delete(opened)
+    if (win !== opened) return
+    clearInterval(pointerTimer)
+    clearTimeout(styleTimer)
+    clearTimeout(layoutTimer)
+    win = null
+    loaded = false
+  }
+
+  function releaseImport(ticket: string) {
+    const held = imports.get(ticket)
+    if (!held) return
+    imports.delete(ticket)
+    if (retired.has(held.window) && ![...imports.values()].some(other => other.window === held.window)) {
+      retired.delete(held.window)
+      if (!held.window.isDestroyed()) held.window.destroy()
+    }
+  }
 
   // Reapply the level if native activation changed the window's topmost state.
   function restoreTopmost() {
@@ -252,14 +276,21 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       win = opened
       shown = opened
       opened.webContents.on('did-finish-load', () => {
+        if (live() !== opened) return
         loaded = true
         send()
         if (input) takeKeyboard()
       })
-      opened.on('focus', settleStyles)
+      opened.on('focus', () => { if (live() === opened) settleStyles() })
       opened.on('blur', () => {
+        if (live() !== opened) return
         if (input) closeInput()
         settleStyles()
+      })
+      opened.on('closed', () => forgetWindow(opened))
+      opened.webContents.on('render-process-gone', () => {
+        forgetWindow(opened)
+        if (!opened.isDestroyed()) opened.destroy()
       })
     }
     if (shown.isVisible()) return
@@ -282,8 +313,11 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     layoutVersion++
     const shown = live()
     if (!shown) return
-    shown.destroy()
     win = null
+    if ([...imports.values()].some(held => held.window === shown)) {
+      retired.add(shown)
+      shown.hide()
+    } else shown.destroy()
     islandRect = null
     regions = []
     drag = null
@@ -517,6 +551,25 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       const shown = live()
       return Boolean(shown && sender === shown.webContents)
     },
+    beginImport(sender: WebContents, key: string) {
+      const shown = live()
+      if (!shown || sender !== shown.webContents) return null
+      const ticket = randomUUID()
+      imports.set(ticket, { sender, key, window: shown })
+      return ticket
+    },
+    claimImport(sender: WebContents, key: string, ticket: string) {
+      const held = imports.get(ticket)
+      if (!held || held.sender !== sender || held.key !== key) return false
+      releaseImport(ticket)
+      return true
+    },
+    endImport(sender: WebContents, ticket: string) {
+      const held = imports.get(ticket)
+      if (!held || held.sender !== sender) return null
+      releaseImport(ticket)
+      return held.key
+    },
     webContents: () => live()?.webContents ?? null,
     destroy() {
       clearTimeout(timer)
@@ -524,6 +577,9 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       clearTimeout(styleTimer)
       clearTimeout(layoutTimer)
       drag = null
+      imports.clear()
+      for (const opened of retired) if (!opened.isDestroyed()) opened.destroy()
+      retired.clear()
       live()?.destroy()
       win = null
     },
