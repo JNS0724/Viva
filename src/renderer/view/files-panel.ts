@@ -153,6 +153,7 @@ function previewPane(files: Files, handlers: Handlers) {
     class: 'file-preview', 'data-path': preview.path,
     onScroll: (event: Event) => {
       const el = event.currentTarget as HTMLElement
+      if (!el.isConnected) return
       if (el.scrollHeight - el.scrollTop - el.clientHeight < MORE_MARGIN_PX) handlers.loadMorePreview()
     },
   },

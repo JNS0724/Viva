@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "revision": "halfbody-v7.2-done-v7.1-greeting",
+  "encoding": {
+    "pillow": "12.0.0",
+    "libwebp": "1.6.0",
+    "lossless": false,
+    "quality": 90,
+    "method": 4,
+    "minimize_size": true
+  },
+  "generationMode": "built-in image_gen",
+  "files": {
+    "greeting-motion.webp": {
+      "state": "greeting",
+      "deliveryRevision": "7.1-motion-fix",
+      "sourceSha256": "4590e692891331b79ac4f8d4f6f5da4b5e5a3ca4d47cfcb32349df43045c9cf6",
+      "sha256": "7649be7da62437858e16fcf13b8b109789fcad3e53d63f94f837e55994764eea",
+      "metadata": {
+        "size": [
+          400,
+          400
+        ],
+        "frames": 15,
+        "durations": [
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          90,
+          720
+        ],
+        "loop": 0
+      }
+    },
+    "done.webp": {
+      "state": "done",
+      "deliveryRevision": "7.2-done-celebration",
+      "sourceSha256": "a73b6f9ed0a930b32a00ba5ce83f5b3ded469621711d96e42bf36d78e9e47458",
+      "sha256": "29b0f6e758ab155fbdbcbf223a0bb9cfbd08294345a18890d2bc297de3649a9e",
+      "metadata": {
+        "size": [
+          400,
+          400
+        ],
+        "frames": 1,
+        "durations": [
+          0
+        ],
+        "loop": 1
+      }
+    },
+    "done-motion.webp": {
+      "state": "done",
+      "deliveryRevision": "7.2-done-celebration",
+      "sourceSha256": "ef3fd9d3edd3a39f8e2ab23acc226c6ea8ad745f9b65328d235ecddea5a584c4",
+      "sha256": "46c36df28f8998a91a393fcbf2ff4a26db7d39c7d594fe3df40cc4aff7669256",
+      "metadata": {
+        "size": [
+          256,
+          256
+        ],
+        "frames": 11,
+        "durations": [
+          450,
+          120,
+          120,
+          140,
+          140,
+          850,
+          140,
+          140,
+          120,
+          120,
+          250
+        ],
+        "loop": 0
+      }
+    }
+  }
+}

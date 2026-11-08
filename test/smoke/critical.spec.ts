@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { checkIslandLayouts } from './island-layout.ts'
+import { checkStreamingDrawer } from './drawer-interaction.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
 declare global { interface Window { vivaDraftAudit?: Array<{ key: string, version: number, sequence: number, epoch: number, owner: string, chars: number, files: number, images: number }> } }
@@ -147,7 +148,7 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   } finally { await desk.force(false) }
 })
 
-test('a real embedded agent answers and history survives a restart', async ({ scenario }) => {
+test('a real embedded agent answers and history survives a restart', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'memory', bridge: 'real' })
   let session = await run.start('send')
   await session.page.locator('#composer-input').fill('你好，外部冒烟验证')
@@ -157,6 +158,7 @@ test('a real embedded agent answers and history survives a restart', async ({ sc
   session = await run.start('restart')
   await expect(session.page.locator('.msg-user').last()).toContainText('外部冒烟验证')
   await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('外部冒烟验证')
+  await checkStreamingDrawer(session, info)
 })
 
 test('centred chat avatars and the folded desktop island animate without restarting on refresh', async ({ scenario }, info) => {
@@ -236,6 +238,17 @@ test('centred chat avatars and the folded desktop island animate without restart
       replacements, retained: face.firstChild === hovered, folded: island.el.dataset.open, hovered: island.el.dataset.hover === 'true' }
   })
   expect(stateGallery).toEqual({ loaded: true, count: 21, replacements: 0, retained: true, folded: 'false', hovered: true })
+  // Wait beyond the old one-shot greeting, then check the actual compressed
+  // half-body artwork still advances in the production renderer.
+  await page.waitForTimeout(2100)
+  for (const mood of ['greeting', 'done']) {
+    const image = page.locator(`#portrait-gallery .maid[data-mood="${mood}"][data-framing="whole"] .maid-image`)
+    const samples = new Set<string>()
+    await expect.poll(async () => {
+      samples.add(createHash('sha256').update(await image.screenshot({ animations: 'allow' })).digest('hex'))
+      return samples.size
+    }, { message: `${mood} keeps animating after the original greeting would have stopped` }).toBeGreaterThan(1)
+  }
   await page.screenshot({ path: info.outputPath('all-animated-states.png') })
   await page.locator('#portrait-gallery').evaluate(gallery => gallery.remove())
 
