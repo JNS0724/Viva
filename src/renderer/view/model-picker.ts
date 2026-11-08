@@ -1,12 +1,16 @@
 import { t } from '../../shared/i18n/translate.ts'
+import { localeRevision } from '../../shared/i18n/locale.ts'
 import { isBusy } from '../state.ts'
 import { h, label } from './dom.ts'
 import { icon } from './icons.ts'
+import { reconcileChildren } from './reconcile.ts'
 
 /** A choice dsh offers (a model, a reasoning effort): what it is called, and the value to set. */
 type Choice = { value: string, name: string, group?: string }
 
 const effortName = (info: AgentInfo) => info.efforts?.find((e: Choice) => e.value === info.effort)?.name ?? ''
+const buttons = new WeakMap<HTMLButtonElement, { name: HTMLSpanElement, effort: HTMLSpanElement, chevron: SVGSVGElement }>()
+const menus = new WeakMap<HTMLElement, { key: string, handlers: Handlers }>()
 
 function modelOption(model: Choice, info: AgentInfo, handlers: Handlers) {
   const selected = model.value === info.modelValue
@@ -50,11 +54,23 @@ export function renderModelPicker(dom: { modelArea: HTMLElement, modelBtn: HTMLB
   dom.modelBtn.disabled = disabled
   dom.modelBtn.title = isBusy(state) ? t("model-picker.you.can.switch.models.after.this.turn") : t("model-picker.switch.model.and.reasoning.effort")
   dom.modelBtn.setAttribute('aria-expanded', String(state.picker && !disabled))
-  // replaceChildren would print a null as "null", unlike h()
-  dom.modelBtn.replaceChildren(...[
-    h('span', { class: 'model-btn-name', text: info.model || '—' }),
-    effort ? h('span', { class: 'model-btn-effort', text: effort.toUpperCase() }) : null,
-    icon('chevron', 14),
-  ].filter((part): part is HTMLSpanElement | SVGSVGElement => Boolean(part)))
-  dom.modelMenu.replaceChildren(...(state.picker && !disabled ? [menu(info, handlers)] : []))
+  let parts = buttons.get(dom.modelBtn)
+  if (!parts) {
+    parts = { name: h('span', { class: 'model-btn-name' }), effort: h('span', { class: 'model-btn-effort' }), chevron: icon('chevron', 14) }
+    buttons.set(dom.modelBtn, parts)
+  }
+  if (parts.name.textContent !== (info.model || '—')) parts.name.textContent = info.model || '—'
+  if (parts.effort.textContent !== effort.toUpperCase()) parts.effort.textContent = effort.toUpperCase()
+  reconcileChildren(dom.modelBtn, effort ? [parts.name, parts.effort, parts.chevron] : [parts.name, parts.chevron])
+  if (!state.picker || disabled) {
+    if (dom.modelMenu.firstChild) dom.modelMenu.replaceChildren()
+    menus.delete(dom.modelMenu)
+    return
+  }
+  // Only the choices and their selection own this menu. Background streams do not.
+  const key = JSON.stringify([localeRevision(), info.models, info.modelValue, info.efforts, info.effort])
+  const previous = menus.get(dom.modelMenu)
+  if (previous?.key === key && previous.handlers === handlers) return
+  dom.modelMenu.replaceChildren(menu(info, handlers))
+  menus.set(dom.modelMenu, { key, handlers })
 }

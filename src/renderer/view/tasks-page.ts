@@ -16,6 +16,7 @@ import { queueLayout, reconcileChildren } from './reconcile.ts'
  */
 const groupNames = (): Readonly<Record<string, string>> => ({ waiting: t("task.status.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") })
 const LIVE = new Set(['running', 'waiting'])
+const pendingScroll = new WeakMap<HTMLElement, { follow: boolean, top: number, observedTop: number }>()
 
 /**
  * The page as it is drawn: what was picked, while it is still on the list; once it is gone from there (deleted,
@@ -26,46 +27,74 @@ export function onPage(state: State): State {
   return picked === state.tasks.page.selected ? state : { ...state, tasks: { ...state.tasks, page: { ...state.tasks.page, selected: picked } } }
 }
 
-/** A group's name and how many it holds, set apart by a gap rather than joined by a middle dot. */
-const groupHead = (name: string, count: number) => h('div', { class: 'tp-group' }, name, h('span', { class: 'tp-group-count', text: String(count) }))
-
 /**
- * Folded by the user: a narrow strip where the list was, » to unfold it, and how many wait on the user so none
- * is missed while it is folded.
+ * The list owns its navigation targets. Task streams update their labels in place, and only task ids entering,
+ * leaving or changing group affect the list order. Its scroll container and fold button live with the page.
  */
-function foldedSide(state: State, handlers: Handlers) {
-  const waiting = state.tasks.list.filter((task) => task.status === 'waiting').length
-  return h('nav', { class: 'tp-side tp-side-folded', 'aria-label': t("tasks-page.background.tasks") },
-    h('button', {
-      class: 'icon-btn tp-fold', type: 'button', title: t("dock.expand"), 'aria-label': t("dock.expand"), 'aria-expanded': 'false',
-      onClick: () => handlers.foldTaskList(false),
-    }, h('span', { text: '»', 'aria-hidden': 'true' })),
-    waiting ? h('span', { class: 'tp-count', title: t("dock.waiting.count", { p0: waiting }), text: String(waiting) }) : null)
-}
-
-/**
- * The list beside the hub's own sidebar (返回 and the other pages stay there, as on every page of the hub), « at
- * its head to fold it to a strip; the user's choice, kept, for the list is not looked at often.
- */
-function sideView(state: State, handlers: Handlers, now: number) {
-  if (state.tasks.listFolded) return foldedSide(state, handlers)
-  const selected = state.tasks.page.selected
-  return h('nav', { class: 'tp-side', 'aria-label': t("tasks-page.background.tasks") },
-    h('div', { class: 'tp-side-head' },
-      h('span', { class: 'tp-side-title', text: t("tasks-page.background.tasks") }),
-      h('button', {
-        class: 'icon-btn tp-fold', type: 'button', title: t("task.list.collapse"), 'aria-label': t("task.list.collapse"), 'aria-expanded': 'true',
-        onClick: () => handlers.foldTaskList(true),
-      }, h('span', { text: '«', 'aria-hidden': 'true' }))),
-    ...pageGroups(state).flatMap(({ key, tasks }) => [
-      groupHead(groupNames()[key], tasks.length),
-      ...tasks.map((task) => h('button', {
-        class: 'tp-row', type: 'button', 'aria-current': task.id === selected ? 'page' : null,
-        onClick: () => handlers.selectTask(task.id),
-      },
-      h('span', { class: 'tp-name', text: task.title }),
-      h('span', { class: 'tp-meta' }, statusMark(task.status), standing(task, now)))),
-    ]))
+function createTaskSidebar(handlers: Handlers) {
+  let folded = false
+  const title = h('span', { class: 'tp-side-title' })
+  const glyph = h('span', { 'aria-hidden': 'true' })
+  const fold = h('button', { class: 'icon-btn tp-fold', type: 'button', onClick: () => handlers.foldTaskList(!folded) }, glyph)
+  const head = h('div', { class: 'tp-side-head' }, title)
+  const count = h('span', { class: 'tp-count' })
+  const el = h('nav', { class: 'tp-side' })
+  const groups = new Map<string, { el: HTMLElement, name: Text, count: HTMLSpanElement }>()
+  const rows = new Map<string, { el: HTMLButtonElement, name: HTMLSpanElement, mark: HTMLSpanElement, standing: Text }>()
+  function update(state: State, now: number) {
+    folded = state.tasks.listFolded
+    el.className = folded ? 'tp-side tp-side-folded' : 'tp-side'
+    el.setAttribute('aria-label', t('tasks-page.background.tasks'))
+    title.textContent = t('tasks-page.background.tasks')
+    const label = t(folded ? 'dock.expand' : 'task.list.collapse')
+    fold.title = label
+    fold.setAttribute('aria-label', label)
+    fold.setAttribute('aria-expanded', String(!folded))
+    glyph.textContent = folded ? '»' : '«'
+    if (folded) {
+      const waiting = state.tasks.list.filter(task => task.status === 'waiting').length
+      count.textContent = String(waiting)
+      count.title = t('dock.waiting.count', { p0: waiting })
+      reconcileChildren(el, waiting ? [fold, count] : [fold])
+      return
+    }
+    reconcileChildren(head, [title, fold])
+    const names = groupNames()
+    const present = new Set<string>()
+    const children: HTMLElement[] = [head]
+    for (const { key, tasks } of pageGroups(state)) {
+      let group = groups.get(key)
+      if (!group) {
+        const name = document.createTextNode('')
+        const count = h('span', { class: 'tp-group-count' })
+        group = { el: h('div', { class: 'tp-group' }, name, count), name, count }
+        groups.set(key, group)
+      }
+      group.name.data = names[key]
+      group.count.textContent = String(tasks.length)
+      children.push(group.el)
+      for (const task of tasks) {
+        present.add(task.id)
+        let row = rows.get(task.id)
+        if (!row) {
+          const name = h('span', { class: 'tp-name' }), mark = statusMark(task.status), standing = document.createTextNode('')
+          row = { name, mark, standing, el: h('button', { class: 'tp-row', type: 'button', onClick: () => handlers.selectTask(task.id) },
+            name, h('span', { class: 'tp-meta' }, mark, standing)) }
+          rows.set(task.id, row)
+        }
+        if (task.id === state.tasks.page.selected) row.el.setAttribute('aria-current', 'page')
+        else row.el.removeAttribute('aria-current')
+        if (row.name.textContent !== task.title) row.name.textContent = task.title
+        row.mark.dataset.status = task.status
+        const text = standing(task, now)
+        if (row.standing.data !== text) row.standing.data = text
+        children.push(row.el)
+      }
+    }
+    reconcileChildren(el, children)
+    for (const id of rows.keys()) if (!present.has(id)) rows.delete(id)
+  }
+  return { el, update }
 }
 
 /**
@@ -163,6 +192,7 @@ function mainView(state: State, handlers: Handlers, now: number) {
   const live = LIVE.has(task.status)
   const thread = h('div', { class: 'thread tp-thread' })
   renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
+  const scroll = h('div', { class: 'tp-scroll', onWheel: () => pendingScroll.delete(scroll) }, thread, stepsView(state, task, handlers))
   return h('div', { class: 'tp-main', 'data-task': task.id },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: `#${task.title}` }),
@@ -170,10 +200,23 @@ function mainView(state: State, handlers: Handlers, now: number) {
       live
         ? h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("island-tasks.stop"), onClick: () => handlers.stopTask(task.id) })
         : h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("tasks-page.close.this.task"), onClick: () => handlers.closeTask(task.id) })),
-    h('div', { class: 'tp-scroll' }, thread, stepsView(state, task, handlers)))
+    scroll)
 }
 
-const renderedPages = new WeakMap<HTMLElement, { state: State, handlers: Handlers, now: number, locale: string }>()
+const renderedPages = new WeakMap<HTMLElement, { state: State, handlers: Handlers, now: number, locale: string, side: ReturnType<typeof createTaskSidebar> }>()
+
+function restoreScroll(scroller: HTMLElement, follow: boolean, top: number, observedTop = top) {
+  const pending = pendingScroll.get(scroller)
+  // Several renders may precede layout. Keep the first intended position until a real scroll changes it.
+  if (!pending || Math.abs(observedTop - pending.observedTop) > 2) pendingScroll.set(scroller, { follow, top, observedTop })
+  queueLayout(scroller, () => {
+    const target = pendingScroll.get(scroller)
+    pendingScroll.delete(scroller)
+    if (!target || !scroller.isConnected || Math.abs(scroller.scrollTop - target.observedTop) > 2) return
+    const next = target.follow ? scroller.scrollHeight : target.top
+    return () => { scroller.scrollTop = next }
+  })
+}
 
 /** Only a local disclosure changed; all other render inputs must still match. */
 export function onlyTaskStepsChanged(before: State, after: State): boolean {
@@ -201,24 +244,20 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
     return
   }
   const state = onPage(shown)
-  const scroller = container.querySelector('.tp-scroll')
+  const side = prior?.handlers === handlers ? prior.side : createTaskSidebar(handlers)
+  const scroller = container.querySelector<HTMLElement>('.tp-scroll')
   const sameTask = container.querySelector<HTMLElement>('.tp-main')?.dataset.task === state.tasks.page.selected
   const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
   const top = scroller?.scrollTop ?? 0
+  side.update(state, now)
   const task = pageTask(state)
   const steps = container.querySelector<HTMLElement>('.tp-steps')
   const toggle = steps?.querySelector<HTMLButtonElement>('.tp-toggle')
   if (prior && !localeChanged && prior.handlers === handlers && sameTask && task && steps && toggle
     && onlyTaskStepsChanged(prior.state, shown)) {
     updateSteps(steps, state, task, handlers)
-    // Where it was, or at the bottom: measured with the rest of the frame (reconcile.ts), not right after the rows went in.
-    if (scroller) {
-      queueLayout(scroller, () => {
-        const bottom = atBottom ? scroller.scrollHeight : top
-        return () => { scroller.scrollTop = bottom }
-      })
-    }
-    renderedPages.set(container, { state: shown, handlers, now, locale: getLocale() })
+    if (scroller) restoreScroll(scroller, atBottom, top)
+    renderedPages.set(container, { state: shown, handlers, now, locale: getLocale(), side })
     return
   }
   // A stream changes the task view, not its identity. Keep the thread's keyed
@@ -227,14 +266,18 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
   const main = container.querySelector<HTMLElement>('.tp-main')
   const thread = main?.querySelector<HTMLElement>('.tp-thread')
   if (prior?.handlers === handlers && sameTask && task && previousTask?.id === task.id
-    && previousTask.status === task.status && main && thread && scroller) {
-    container.querySelector('.tp-side')?.replaceWith(sideView(state, handlers, now))
+    && main && thread && scroller) {
     const title = main.querySelector('.tp-title')
     if (title && title.textContent !== `#${task.title}`) title.textContent = `#${task.title}`
-    if (localeChanged || standing(previousTask, prior.now) !== standing(task, now)) {
+    if (localeChanged || previousTask.status !== task.status || standing(previousTask, prior.now) !== standing(task, now)) {
       main.querySelector('.tp-status')?.replaceChildren(statusMark(task.status), standing(task, now))
     }
-    if (localeChanged) {
+    if (LIVE.has(previousTask.status) !== LIVE.has(task.status)) {
+      const live = LIVE.has(task.status)
+      main.querySelector('.tp-act')?.replaceWith(h('button', { class: 'btn btn-secondary tp-act', type: 'button',
+        text: t(live ? 'island-tasks.stop' : 'tasks-page.close.this.task'),
+        onClick: () => live ? handlers.stopTask(task.id) : handlers.closeTask(task.id) }))
+    } else if (localeChanged) {
       const live = LIVE.has(task.status)
       const action = main.querySelector('.tp-act')
       if (action) action.textContent = live ? t("island-tasks.stop") : t("tasks-page.close.this.task")
@@ -250,12 +293,12 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
         if (nextSteps) scroller.append(nextSteps)
       }
     }
-    scroller.scrollTop = atBottom ? scroller.scrollHeight : top
-    renderedPages.set(container, { state: shown, handlers, now, locale: getLocale() })
+    restoreScroll(scroller, atBottom, top)
+    renderedPages.set(container, { state: shown, handlers, now, locale: getLocale(), side })
     return
   }
-  keepingInput(container, () => container.replaceChildren(sideView(state, handlers, now), mainView(state, handlers, now)))
-  const next = container.querySelector('.tp-scroll')
-  if (next) next.scrollTop = sameTask && !atBottom ? top : next.scrollHeight
-  renderedPages.set(container, { state: shown, handlers, now, locale: getLocale() })
+  keepingInput(container, () => reconcileChildren(container, [side.el, mainView(state, handlers, now)]))
+  const next = container.querySelector<HTMLElement>('.tp-scroll')
+  if (next) restoreScroll(next, !sameTask || atBottom, top, 0)
+  renderedPages.set(container, { state: shown, handlers, now, locale: getLocale(), side })
 }
