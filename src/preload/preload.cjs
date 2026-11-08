@@ -133,6 +133,8 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   getPlugins: () => ipcRenderer.invoke('plugins:get'),
   /** What a spec (npm name, git address, folder) names, before anything is installed. */
   inspectPlugin: (spec) => ipcRenderer.invoke('plugins:inspect', spec),
+  /** The dsh plugins the company source finds for `query`: { ok, entries } | { ok: false, problem, detail }. */
+  searchPluginCatalog: (query) => ipcRenderer.invoke('plugins:catalog', query),
   /** approvedBuilds: the dependency build scripts the user allowed after a first attempt asked. */
   installPlugin: (spec, approvedBuilds) => ipcRenderer.invoke('plugins:install', spec, approvedBuilds),
   removePlugin: (name) => ipcRenderer.invoke('plugins:remove', name),

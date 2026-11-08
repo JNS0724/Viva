@@ -4,6 +4,7 @@ import { initialState, reduce } from '../src/renderer/state.ts'
 import { createPluginActions } from '../src/renderer/plugin-actions.ts'
 import { PLUGIN_SOURCE, sourceFormVersion } from '../src/renderer/view/plugin-source.ts'
 import { pluginPane } from '../src/renderer/view/capability-plugins.ts'
+import { setLocale } from '../src/shared/i18n/locale.ts'
 
 /** 能力 · 插件 · 插件源 (plugin-actions.ts): the company's registry and its token, set and taken away. */
 
@@ -68,4 +69,58 @@ test('the source stays reachable while dsh does not answer: it is kept by the ap
   assert.equal(pluginPane(offline(PLUGIN_SOURCE)), 'source')
   assert.equal(pluginPane(offline(null)), 'not-connected')
   assert.equal(pluginPane({ ...offline(null), plugins: { ...initialState.plugins, connected: true } }), 'plugins')
+})
+
+test('the company source\'s plugins: searched with what is typed, one picked is looked at as name@version; what went wrong said in words', async () => {
+  setLocale('en')
+  const searched: unknown[] = []
+  const inspected: unknown[] = []
+  const entries = [{ name: 'dsh-notes', version: '1.2.0', description: 'Notes', fit: { kind: 'no-conflict' } }]
+  const answers: unknown[] = [
+    { ok: true, entries },
+    { ok: false, problem: 'search', detail: 'ERR_PNPM_FETCH_404 Not Found' },
+    { ok: false, problem: 'no-source', detail: null },
+  ]
+  const { actions, state } = setup({
+    searchPluginCatalog: async (query) => { searched.push(query); return answers.shift() },
+    inspectPlugin: async (spec) => { inspected.push(spec); return { ok: true, name: 'dsh-notes', version: '1.2.0', bundle: true, fit: { kind: 'no-conflict' } } },
+  })
+  actions.editCatalogQuery(' notes ')
+  await actions.searchCatalog()
+  assert.deepEqual([searched, state().plugins.catalog.entries, state().plugins.catalog.searching, state().plugins.catalog.searched], [[' notes '], entries, false, true])
+
+  await actions.pickCatalogEntry('dsh-notes', '1.2.0')
+  assert.deepEqual([state().plugins.spec, inspected, state().plugins.inspection.fit], ['dsh-notes@1.2.0', ['dsh-notes@1.2.0'], { kind: 'no-conflict' }])
+
+  await actions.searchCatalog()
+  assert.deepEqual([state().plugins.catalog.entries, state().plugins.catalog.problem], [[], 'Could not search the plugin source: ERR_PNPM_FETCH_404 Not Found'])
+  await actions.searchCatalog()
+  assert.equal(state().plugins.catalog.problem, 'Set the company plugin source first to browse its plugins.')
+})
+
+test('a source saved or taken away forgets what the last one listed', async () => {
+  const { actions, state } = setup({
+    searchPluginCatalog: async () => ({ ok: true, entries: [{ name: 'dsh-notes', version: '1.2.0', description: null, fit: { kind: 'unknown' } }] }),
+    setPluginSource: async () => ({ source: { registry: 'https://other.example.com/', hasToken: false }, view }),
+  })
+  actions.editCatalogQuery('notes')
+  await actions.searchCatalog()
+  assert.equal(state().plugins.catalog.entries.length, 1)
+  await actions.savePluginSource('https://other.example.com/', '')
+  assert.deepEqual([state().plugins.catalog.entries, state().plugins.catalog.searched, state().plugins.catalog.query], [[], false, 'notes'], 'what is typed stays')
+})
+
+test('the install field shows what was put in it for the user, not what was typed before: a pick, or emptied after an install', async () => {
+  const { actions, state } = setup({
+    inspectPlugin: async () => ({ ok: true, name: 'dsh-notes', version: '1.2.0', bundle: true, fit: { kind: 'unknown' } }),
+    installPlugin: async () => ({ change: { changed: true, application: 'applied', error: null, pendingBuilds: [] }, view }),
+  })
+  const typed = state().plugins.specVersion
+  actions.editPluginSpec('dsh-no')
+  assert.equal(state().plugins.specVersion, typed, 'typing keeps the field as typed')
+  await actions.pickCatalogEntry('dsh-notes', '1.2.0')
+  const picked = state().plugins.specVersion
+  assert.notEqual(picked, typed, 'a pick replaces what was typed')
+  await actions.installPlugin()
+  assert.deepEqual([state().plugins.spec, state().plugins.specVersion !== picked], ['', true], 'installed, the field starts empty')
 })

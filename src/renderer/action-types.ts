@@ -117,11 +117,15 @@ export interface ActionPayloads extends ConversationPayloads {
   plugins_loaded: { view: Partial<State['plugins']> }
   plugins_busy: {}
   plugins_failed: { message: string }
-  plugins_spec: { spec: State['plugins']['spec'] }
+  plugins_spec: { spec: State['plugins']['spec'], filled?: boolean }
   plugins_inspected: { inspection: State['plugins']['inspection'] }
   plugins_changed: { view: Partial<State['plugins']>, notice?: string | null, pendingBuilds?: State['plugins']['pendingBuilds'] }
   plugins_source_saved: { view: Partial<State['plugins']>, notice?: string | null }
   plugins_dismiss: {}
+  plugins_catalog_query: { query: string }
+  plugins_catalog_searching: {}
+  plugins_catalog_found: { entries: State['plugins']['catalog']['entries'] }
+  plugins_catalog_failed: { problem: string }
   capabilities_open: { tab?: CapabilityTab, id?: string | null }
   capabilities_close: {}
   capabilities_tab: { tab: CapabilityTab }

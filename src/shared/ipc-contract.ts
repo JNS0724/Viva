@@ -135,6 +135,8 @@ export const IPC_ARGS = Object.freeze({
 
   'plugins:get': read(none),
   'plugins:inspect': read(z.tuple([path])),
+  /** Words to search the company source with; '' lists by the default word (plugin-catalog.ts). */
+  'plugins:catalog': read(z.tuple([z.string().max(200)])),
   'plugins:install': z.tuple([path, z.array(id).max(50).optional()]),
   'plugins:remove': z.tuple([id]),
   'plugins:set-enabled': z.tuple([id, z.boolean()]),

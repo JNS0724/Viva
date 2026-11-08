@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { t } from '../shared/i18n/translate.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
+import type { CatalogAnswer } from './plugin-catalog.ts'
 import type { PluginSourceView } from './plugin-source.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
 import { vivaFit, type VivaFit } from './plugin-fit.ts'
@@ -12,6 +13,8 @@ import { vivaFit, type VivaFit } from './plugin-fit.ts'
  * own plugin manager through viva-plugins (plugins-channel.ts); the app reads only the installed packages'
  * manifests, to say whether each works in Viva (plugin-fit.ts). The company's own source (plugin-source.ts) is set
  * here too: the window is told its address and whether it has a token, never the token; dsh starts again with it.
+ * What the source has is listed from its search, and whether a spec works in Viva is told before it is installed,
+ * both from the package.json on the source (plugin-catalog.ts).
  */
 const MAX_LIST = 200
 const MAX_TEXT_CHARS = 2000
@@ -111,6 +114,10 @@ export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   busy: () => boolean,
   /** dsh again, on the conversation on screen, with the source as saved. */
   restart: () => Promise<unknown>,
+  /** Whether what a spec names works in Viva, from its package.json (plugin-catalog.ts specFit). */
+  specFit: (spec: string) => Promise<VivaFit>,
+  /** The dsh plugins the company source finds (plugin-catalog.ts searchCatalog). */
+  catalog: (query: string) => Promise<CatalogAnswer>,
 }) {
   const handle = handlerOf(ipcMain)
   async function view(): Promise<PluginsView> {
@@ -121,7 +128,12 @@ export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   const changed = async (op: PluginsOp, args: Record<string, unknown>) => ({ change: changeView(await ask(deps.call, op, args)), view: await view() })
 
   handle('plugins:get', view)
-  handle('plugins:inspect', async (spec) => inspectionView(await ask(deps.call, 'inspect', { spec })))
+  // What dsh says the spec names first; only one it could look at is looked up on the source too.
+  handle('plugins:inspect', async (spec) => {
+    const found = inspectionView(await ask(deps.call, 'inspect', { spec }))
+    return found.ok ? { ...found, fit: await deps.specFit(spec) } : found
+  })
+  handle('plugins:catalog', (query) => deps.catalog(query))
   handle('plugins:install', (spec, approvedBuilds) => changed('install', { spec, ...(approvedBuilds?.length ? { approvedBuilds } : {}) }))
   handle('plugins:remove', (name) => changed('remove', { name }))
   handle('plugins:set-enabled', (name, enabled) => changed('setBundle', { name, enabled }))

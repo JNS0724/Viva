@@ -1,15 +1,18 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { pluginStanding, shownPlugin, type PluginStanding } from '../capabilities-state.ts'
-import { problemText } from '../plugins-state.ts'
-import type { PluginFit, PluginView } from '../capability-types.ts'
+import { catalogPick, problemText } from '../plugins-state.ts'
+import type { PluginView } from '../capability-types.ts'
 import { h } from './dom.ts'
+import { catalogSection } from './plugin-catalog.ts'
+import { fitText } from './plugin-fit-text.ts'
 import { installCard, installForm } from './plugins.ts'
 import { PLUGIN_SOURCE, sourceMain, sourceRow } from './plugin-source.ts'
 
 /**
  * 能力 · 插件 (view/capabilities.ts): the dsh plugins the user installed and the one picked: what it is, whether it runs
- * here (plugin-fit.ts), switched on or off, removed; adding one (ADD_PLUGIN), by the spec, what it names, then 安装;
- * and where they come from (PLUGIN_SOURCE, view/plugin-source.ts).
+ * here (plugin-fit.ts), switched on or off, removed; adding one (ADD_PLUGIN), picked from what the company source has
+ * (view/plugin-catalog.ts) or by the spec, what it names, then 安装; and where they come from (PLUGIN_SOURCE,
+ * view/plugin-source.ts).
  */
 export const ADD_PLUGIN = '+add'
 
@@ -19,15 +22,6 @@ function standingText(standing: PluginStanding) {
   if (standing.kind === 'off') return { tone: 'idle', text: t('plugins.off') }
   if (standing.kind === 'unsupported') return { tone: 'off', text: t('plugins.unsupported') }
   return { tone: 'ok', text: t('plugins.on') }
-}
-
-/** What is known of it in Viva, in words; null when nothing can be told. */
-function fitText(fit: PluginFit): string | null {
-  if (fit.kind === 'declared') return t('plugins.fit.declared')
-  if (fit.kind === 'no-conflict') return t('plugins.fit.no.conflict')
-  if (fit.kind === 'web-part') return t('plugins.fit.web.part')
-  if (fit.kind === 'needs-web') return t('plugins.fit.needs.web', { needs: fit.needs.join('、') })
-  return null
 }
 
 const pluginsOf = (state: State) => state.plugins.plugins as readonly PluginView[]
@@ -87,8 +81,10 @@ export function pluginMain(state: State, handlers: Handlers): HTMLElement {
       h('header', { class: 'tp-head' }, h('h2', { class: 'tp-title', text: t('capabilities.add.plugin') })),
       h('div', { class: 'tp-scroll' },
         h('p', { class: 'help', text: t('plugins.help') }),
+        catalogSection(state.plugins, handlers),
         installForm(state.plugins, handlers),
-        installCard(state.plugins, handlers)))
+        // One picked from the source has its card under it (view/plugin-catalog.ts).
+        catalogPick(state.plugins) ? null : installCard(state.plugins, handlers)))
   }
   const standing = standingText(pluginStanding(plugin))
   return h('div', { class: 'tp-main' },

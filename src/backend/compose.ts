@@ -55,7 +55,8 @@ import { CONFIG_IDS } from './session-info.ts'
 import { createSettingsStore, keyHint } from './settings-store.ts'
 import { createPluginSourceStore } from './plugin-source.ts'
 import { launchMessage } from './dsh-launch.ts'
-import { pnpmScopes } from './plugin-registry.ts'
+import { authVariable, pinArgs, pnpmScopes } from './plugin-registry.ts'
+import { pnpmRunner, searchCatalog, specFit, type PnpmCall } from './plugin-catalog.ts'
 import { skillRoots } from './skills.ts'
 import { historyRecall } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
@@ -149,6 +150,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let scheduleRuns: ScheduleRuns | null = null
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
   let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
+  /**
+   * The pnpm dsh's plugin manager installs with, as this start prepared it (prepareProfile), for looking at what the
+   * source has (plugin-catalog.ts); null before a start, and when a company source is set but its scopes could not be
+   * pinned, where nothing is installed either.
+   */
+  let pluginPnpm: { call: PnpmCall, registry: string | null } | null = null
+  const runPnpm = pnpmRunner()
   /** Habits, turn reports and the user's MCP servers; memory itself is the dsh plugin. See personal.ts. */
   let personal!: ReturnType<typeof createPersonal>
   /** When the running dsh was launched: the memory plugin must have started after it to count as working. */
@@ -307,12 +315,24 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const found = registry ? scopesOf(dir, pnpmCommand) : []
       if (found) scopes = found
       else refuse()
+      pluginPnpm = found ? { call: pnpmCallFor(pnpmCommand, dir, registry, found), registry } : null
       return { profile: DSH_PROFILE, overlay: vivaLayerFile(dshHomeOf(config)), launch: launch() }
     } catch (err: any) {
       console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
+      pluginPnpm = null
       // dsh's stock profile knows no company registry: its plugin manager would install from the public ones.
       if (registry) refuse()
       return { profile: FALLBACK_PROFILE, overlay: null, launch: launch() }
+    }
+  }
+
+  /** The plugin manager's pnpm, run here: the company source with its token and every scope pinned to it, as dsh-launch.ts. */
+  function pnpmCallFor(command: string | null, cwd: string, registry: string | null, scopes: readonly string[]): PnpmCall {
+    if (!registry) return { command: command ?? 'pnpm', cwd, args: [], env: process.env }
+    const token = pluginSource.token()
+    return {
+      command: command ?? 'pnpm', cwd, args: [...pinArgs(registry, scopes), `--registry=${registry}`],
+      env: { ...process.env, ...(token ? { [authVariable(registry)]: token } : {}) },
     }
   }
 
@@ -761,6 +781,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       source: pluginSource,
       busy: () => turn.active,
       restart: restartKeepingConversation,
+      specFit: (spec) => specFit({ spec, pnpm: pluginPnpm?.call ?? null, run: runPnpm }),
+      // Only a company source is searched: the public registries are not a catalog of dsh plugins.
+      catalog: (query) => searchCatalog({ query, pnpm: pluginPnpm?.registry ? pluginPnpm.call : null, run: runPnpm }),
     })
     const roots = () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd })
     registerExtensionsIpc(ipcMain, {
