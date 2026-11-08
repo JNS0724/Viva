@@ -305,7 +305,7 @@ export function createAcpBridge({
       fresh: async cwd => (await fresh.take(freshKey(cwd), cwd)).response,
     },
     foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
-    fork: forking.fork, operations, permissions: broker, questions,
+    operations, permissions: broker, questions,
     steer: (id, text) => steering.steer(text, id), markReadOnly: readOnlyDesk.mark,
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,

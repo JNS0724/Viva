@@ -81,12 +81,12 @@ test('real runtime snapshots and pieces hand off through loadKept, with taskSeq 
     let finish!: (list: KeptTask[]) => void
     const read = new Promise<KeptTask[]>(resolve => { finish = resolve })
     const tasks = createTaskActions({
-      api: { finishedTasks: () => read, startTask: async () => ({ ok: false, problem: 'unused' }), answerQuestion: async () => false, stopTask: async () => {}, closeTask: async () => {} },
+      api: { finishedTasks: () => read, answerQuestion: async () => false, stopTask: async () => {}, closeTask: async () => {} },
       getState: h.state, dispatch: h.dispatch, deliver: h.events.replay, showToast: () => {}, errorMessage: String,
     })
     h.hold(tasks.hold); h.events.initialize()
     const loading = tasks.loadKept()
-    await runtime.window.start({ text: 'job' })
+    await runtime.agent.start('job')
     runtime.dsh.receive({ type: 'task_update', taskId: 'task', update: chunk('one') })
     const baseline = await runtime.window.finished()
     runtime.dsh.receive({ type: 'task_update', taskId: 'task', update: chunk(' two') })

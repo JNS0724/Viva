@@ -79,8 +79,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
    * { ok, info, conversation: { id, messages }, folds } | { ok: false, problem }.
    */
   rewind: (request) => ipcRenderer.invoke('timeline:rewind', request),
-  /** 后台做 (a follow-up's draft): { text, words? } (words: the running turn's, to start from before it): { ok, task } | { ok: false, problem }. */
-  startTask: (request) => ipcRenderer.invoke('task:start', request),
   /** The tasks an earlier launch kept, ended or interrupted: [{ task, status, endedAt, messages }]. */
   finishedTasks: () => ipcRenderer.invoke('task:finished'),
   closeTask: (taskId) => ipcRenderer.invoke('task:close', taskId),

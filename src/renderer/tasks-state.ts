@@ -13,7 +13,6 @@ import { currentAction } from './selectors.ts'
  * out the same way, and nothing of the window's gets into it. Pure and immutable like `state.ts`, which merges these in.
  */
 export const initialTasks = Object.freeze({
-  submissions: [] as Array<{ id: string, text: string, origin: string | null, status: string, problem?: string }>,
   /** { id, segmentId, title, words, status, now, startedAt, endedAt, view } in the order they started */
   list: [] as BackgroundTask[],
   /**
@@ -125,22 +124,6 @@ export function shownOnPage(state: State): string | null {
 
 export const taskMessages = (task: BackgroundTask) => task.view.messages.map(({ role, text }: ThreadMessage) => ({ role, text }))
 
-const startsTurn = (message: ThreadMessage) => message.role === 'user' && !message.open && !message.steered && !message.asked && !message.failed
-const isBusy = (state: { phase: string }) => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'
-
-/**
- * The turn running in the conversation on screen: the words that started it, and how many saved messages come
- * before them (selectors.ts historyMessages keeps the finished ones). 后台做 starts from before it.
- */
-export function runningTurn(state: State): { words: string, keep: number } | null {
-  if (!isBusy(state) || !state.conversationId) return null
-  const saved = state.messages.filter((message) => !message.open)
-  for (let keep = saved.length - 1; keep >= 0; keep -= 1) {
-    if (startsTurn(saved[keep])) return { words: saved[keep].text, keep }
-  }
-  return null
-}
-
 const PREVIEW_CHARS = 80
 /** The first line of what a task said last, for its line in the conversation (its page has all of it). */
 export function taskPreview(view: { error?: string | null, messages: readonly ThreadMessage[] }) {
@@ -156,7 +139,7 @@ export const taskAnswer = (task: BackgroundTask): string => task.view.messages.f
 const withTasks = (state: State, changes: Partial<State['tasks']>): State => ({ ...state, tasks: { ...state.tasks, ...changes } })
 
 /**
- * A task started with no words of its own on screen (moved there mid-turn, or 后台做 while a turn ran): its card
+ * A task started with no words of its own on screen (moved there mid-turn): its card
  * goes under the message that was last when it started (view/thread.ts), so it stays where it happened as the
  * conversation goes on, instead of below everything.
  */
@@ -244,13 +227,6 @@ export function taskActions() {
 
   const ACTIONS: ActionHandlers = {
     tasks_list_folded: (state, { folded }) => withTasks(state, { listFolded: Boolean(folded) }),
-    task_submitting: (state, { submission }) => withTasks(state, {
-      submissions: [...state.tasks.submissions.filter(item => item.id !== submission.id), submission],
-    }),
-    task_submit_failed: (state, { id, problem }) => withTasks(state, {
-      submissions: state.tasks.submissions.map(item => item.id === id ? { ...item, status: 'failed', problem } : item),
-    }),
-    task_submit_dismissed: (state, { id }) => withTasks(state, { submissions: state.tasks.submissions.filter(item => item.id !== id) }),
 
     task_update: (state, action) => takePiece(state, action, (taken) => inView(taken, action.taskId, { type: 'acp_update', update: action.update, at: action.at })),
     /**
@@ -311,12 +287,6 @@ export function taskActions() {
      */
     task_asked: (state, { taskId, text, at }) =>
       mapTask({ ...state, ...hostTask(state, taskId) }, taskId, (task) => ({ ...task, view: reduceConversation(task.view, { type: 'user_prompt', text, at }) })),
-    /**
-     * 后台做: the request belongs to the task's own conversation. Only its card joins the main thread,
-     * whether the foreground is idle or busy.
-     */
-    task_started: (state, { submissionId }) =>
-      withTasks(state, { submissions: state.tasks.submissions.filter((item) => item.id !== submissionId) }),
 
     /** The 后台 page, on the task asked for, else the one it was on, else the first in its list. */
     tasks_page_open: (state, { taskId = null }) => {

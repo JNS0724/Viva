@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-07",
+  "reviewedOn": "2026-11-08",
   "pairs": [
     {
       "en": "README.md",
@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "29cad1220229ffbc2c04f296edc676052d561849e2e102586d64a6bef1ffb9d4",
-      "zhHash": "790e252c8568b33765c4a4721fc68f8b42b639020bb9190e2ad744d4e6d6c913"
+      "enHash": "6685f1827f88b0a08d5cf425e760478c35bc69e57992a43e85f3098ee8b8742f",
+      "zhHash": "15a9a7d3cbd6cb5b2b0d7db319793ac86b827c5d8ccbd19092cb105e06a9990b"
     },
     {
       "en": "docs/live-check.md",
@@ -65,14 +65,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "ae78cac39ddfba6eef48669e7a698265685bb337e5c7f43c998099d558ce6a7f",
-      "zhHash": "e82bf2267f025d398793b092bff49f389a50037642abd898d10d9a835496d858"
+      "enHash": "8e0c2afd6f4891f93aa83ddb909686a155f265d1c681b7a3f648636e0ad045c6",
+      "zhHash": "9c015a95776c341e696bc9d56fef305458bee21d72941663b6d20c24363c5668"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "33c166ea6645840cda3d4580d8c150336110fc593a3f92f9c08e15f72196d9cb",
-      "zhHash": "596bfc25a2ecd744ec20a31aec33589fc848b17272b3862cee99a0d6e09d630e"
+      "enHash": "a33539e3c532213af74dd3f91441f1a84052716ae2e0806dda10d60bb795c9b1",
+      "zhHash": "cef25e9af41463310f9d120cfa3ad25d1dcc52d3dc85b24e1c4b4ce5e26c08ae"
     },
     {
       "en": "docs/architecture-health.md",

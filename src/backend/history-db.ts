@@ -21,7 +21,7 @@ const SNIPPET_BEFORE = 20
 const SNIPPET_AFTER = 40
 /** How much of the message before and after a search hit is shown with it. */
 const CONTEXT_CHARS = 60
-/** Why a segment hangs off another instead of being in the timeline: a turn moved to the background, or a task started on its own (后台做); none, a path left behind by going back. */
+/** Why a segment hangs off another instead of being in the timeline: a turn moved to the background, or a task started on its own (start_background_task); none, a path left behind by going back. */
 const FOLD_KINDS = new Set(['task', 'side'])
 const QUESTION_TIMES_LIMIT = 1000
 /** Earlier segments of the timeline read back at a time, and the most at once. */
@@ -45,7 +45,7 @@ const SCHEMA = `
     -- The segment it went on from (another directory, or back to an earlier point), so the timeline reads as one.
     parent_id TEXT,
     -- The segment that took its place, which it hangs off folded after its first folded_at messages; fold_kind
-    -- 'task' for a turn moved to the background, 'side' for a task started on its own (后台做), null for a path
+    -- 'task' for a turn moved to the background, 'side' for a task started on its own (start_background_task), null for a path
     -- left behind by going back.
     folded_into TEXT,
     folded_at INTEGER,
@@ -500,11 +500,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * whether it is a path left behind ('path') or a turn moved to the background ('task').
    */
   const foldsOf = (id: unknown) => sql.foldsOf.all(assertId(id))
-    // A task started on its own (后台做) has its card in the conversation, not a line where it folds.
+    // A task started on its own (start_background_task) has its card in the conversation, not a line where it folds.
     .filter((row) => row.fold_kind !== 'side')
     .map((row) => ({ id: row.id, at: row.folded_at, count: Math.max(0, row.total - row.folded_at), kind: row.fold_kind ?? 'path' }))
 
-  /** A retained 后台做 task's original card position; deleted parents/segments must not resurrect a card. */
+  /** A retained task's (start_background_task) original card position; deleted parents/segments must not resurrect a card. */
   function sideTaskHost(id: unknown): { conversationId: string, at: number, order: number } | null {
     const row = db.prepare(`SELECT c.folded_into, c.folded_at, c.rowid AS position FROM conversations c
       JOIN conversations p ON p.id = c.folded_into WHERE c.id = ? AND c.fold_kind = 'side'

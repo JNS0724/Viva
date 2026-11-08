@@ -1,7 +1,6 @@
 import type { AgentEvent } from './agent-event-types.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { answersFrom, type QuestionAnswer } from './question-state.ts'
-import { runningTurn } from './tasks-state.ts'
 
 /** How much of the live channel waits for a read of the tasks at most (loadKept); more, and the read is begun again. */
 const MAX_HELD = 2_000
@@ -12,9 +11,9 @@ const MAX_RETRY_MS = 10_000
 
 
 /**
- * Background tasks from the window: 后台做 starts a task of its own (backend/task-ipc.ts task:start). The task is
- * made by the snapshot that begins it, which comes before anything it says (backend/task-runtime.ts); what the call
- * answers then only settles the submission.
+ * Background tasks in the window: the agent starts them (start_background_task); each is made by the snapshot that
+ * begins it, which comes before anything it says (backend/task-runtime.ts). From here they are answered, stopped,
+ * closed and read back after a launch.
  */
 /** A call that did not get through, or a refusal from the main process, in words for the user. */
 type Failed = { ok: false, problem: string }
@@ -30,13 +29,12 @@ const taskOf = (event: AgentEvent): string | null => {
 const pause = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
 
 export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, wait = pause }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
-  api: Pick<AgentApi, 'startTask' | 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
+  api: Pick<AgentApi, 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
   /** An event from the main process, reduced as app.ts reduces it (handleEvent). */
   deliver: (event: AgentEvent) => void,
   /** Waits before a read of the tasks is tried again (tests pass their own). */
   wait?: (ms: number) => Promise<void>,
 }) {
-  let submissionCounter = 0
   /**
    * While the tasks are read (loadKept): what the live channel says meanwhile of any task, in order, to be taken once
    * the read is, over it. Null when no read is under way.
@@ -57,30 +55,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     } catch (err) {
       return { ok: false, problem: errorMessage(err) }
     }
-  }
-
-  /**
-   * 后台做: the words go to a task of their own, from the conversation so far (before the turn running, if one
-   * is); the conversation on screen goes on as it was.
-   * @returns {Promise<boolean>} whether the task started
-   */
-  async function startTask(text: string, retryId?: string) {
-    const origin = getState().info.sessionId ?? null
-    const previous = getState().tasks.submissions.find(item => item.id === retryId)
-    if (previous && previous.origin !== origin) {
-      showToast(t("task-actions.return.to.the.topic.where.you.submitted"))
-      return false
-    }
-    const id = retryId ?? `submission-${Date.now()}-${++submissionCounter}`
-    const words = runningTurn(getState())?.words
-    dispatch({ type: 'task_submitting', submission: { id, text, origin, status: 'pending' } })
-    const result = await call(() => api.startTask(words ? { text, words } : { text }))
-    if (!result.ok) {
-      dispatch({ type: 'task_submit_failed', id, problem: result.problem ?? t("task-actions.could.not.start.in.the.background") })
-      return false
-    }
-    dispatch({ type: 'task_started', task: result.task, text, submissionId: id, origin, at: Date.now() })
-    return true
   }
 
   const taskById = (taskId: string): BackgroundTask | undefined => getState().tasks.list.find((entry: BackgroundTask) => entry.id === taskId)
@@ -182,7 +156,6 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   return {
     hold,
-    startTask,
     stopTask,
     closeTask,
     pickTaskOption,
