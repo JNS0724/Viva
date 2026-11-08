@@ -59,12 +59,13 @@ function traceView(state: State, body: HTMLElement): View[] {
 type DrawerView = {
   body: HTMLElement, tabs: HTMLButtonElement[], close: HTMLButtonElement,
   handlers: Handlers, scroll: ReturnType<typeof scrollSnapshot>,
+  fileScroll: { tree: number, preview: { path: string | undefined, top: number } | null } | null,
 }
 const drawers = new WeakMap<HTMLElement, DrawerView>()
 
 function createDrawer(container: HTMLElement, handlers: Handlers): DrawerView {
   const view: DrawerView = {
-    handlers, scroll: null,
+    handlers, scroll: null, fileScroll: null,
     body: h('div', { class: 'drawer-body', role: 'tabpanel' }),
     tabs: TABS.map(tab => h('button', { class: 'tab', role: 'tab', onClick: () => view.handlers.openDrawer(tab.id) })),
     close: h('button', { class: 'icon-btn' }, icon('close', 16)),
@@ -78,8 +79,11 @@ function createDrawer(container: HTMLElement, handlers: Handlers): DrawerView {
     if (!event.isComposing && event.keyCode !== 229 && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) yieldToReader()
   })
   view.body.addEventListener('scroll', () => {
+    if (!view.scroll) return
     const next = scrollSnapshot(view.body, container.dataset.tab ?? '')!
-    if (next.top === view.scroll?.top && next.tab === view.scroll.tab) return
+    // Keep following through the subpixel clamping of our own bottom write at fractional DPI.
+    if (next.tab === view.scroll?.tab && (next.top === view.scroll.top
+      || view.scroll.atBottom && Math.abs(next.top - view.scroll.top) <= 2)) return
     if (view.scroll?.tab === next.tab && next.top < view.scroll.top) next.atBottom = false
     view.scroll = next
   }, { passive: true })
@@ -99,7 +103,11 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
   }
   const view = drawers.get(container) ?? createDrawer(container, handlers)
   view.handlers = handlers
-  if (container.dataset.tab !== state.drawer) view.scroll = null
+  if (container.dataset.tab !== state.drawer) {
+    view.scroll = null
+    view.fileScroll = null
+  }
+  if (!state.timeline.length) view.scroll = null
   view.tabs.forEach((button, index) => {
     const tab = TABS[index]
     if (button.textContent !== tab.name) button.textContent = tab.name
@@ -109,9 +117,13 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
   const closeLabel = t('drawer.close.panel')
   if (view.close.getAttribute('aria-label') !== closeLabel) view.close.setAttribute('aria-label', closeLabel)
   // The 文件 tab scrolls inside: its tree, and its preview while the same file is shown.
-  const tree = view.body.querySelector('.file-tree')?.scrollTop ?? 0
-  const shown = view.body.querySelector<HTMLElement>('.file-preview[data-path]')
-  const preview = shown ? { path: shown.dataset.path, top: shown.scrollTop } : null
+  if (state.drawer === 'files' && !view.fileScroll) {
+    const shown = view.body.querySelector<HTMLElement>('.file-preview[data-path]')
+    view.fileScroll = {
+      tree: view.body.querySelector('.file-tree')?.scrollTop ?? 0,
+      preview: shown ? { path: shown.dataset.path, top: shown.scrollTop } : null,
+    }
+  }
   const content = state.drawer === 'files' ? filesView(state, handlers) : traceView(state, view.body)
   reconcileChildren(view.body, content.filter((node): node is Node | string => node !== null && node !== undefined && node !== false))
   container.dataset.tab = state.drawer
@@ -125,10 +137,13 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
         view.scroll = { tab, top: bottom, atBottom: true }
         view.body.scrollTop = bottom
       }
+      const savedFiles = view.fileScroll
+      if (!savedFiles) return
       const treeNow = view.body.querySelector('.file-tree')
-      if (treeNow) treeNow.scrollTop = tree
+      if (treeNow) treeNow.scrollTop = savedFiles.tree
       const previewNow = view.body.querySelector<HTMLElement>('.file-preview[data-path]')
-      if (previewNow && preview && previewNow.dataset.path === preview.path) previewNow.scrollTop = preview.top
+      if (previewNow && savedFiles.preview && previewNow.dataset.path === savedFiles.preview.path) previewNow.scrollTop = savedFiles.preview.top
+      view.fileScroll = null
     }
   })
 }

@@ -1,10 +1,13 @@
-import { expect, type TestInfo } from '@playwright/test'
+import { expect, type Page, type TestInfo } from '@playwright/test'
+import fs from 'node:fs'
+import path from 'node:path'
 import type { SmokeApplication } from './application.ts'
 
 /** Drive the production event ingress while Chromium delivers continuous wheel and held clicks. */
 export async function checkStreamingDrawer(session: SmokeApplication, info: TestInfo): Promise<void> {
   const { page, application } = session
   const current = await page.evaluate(() => window.agent.getInfo())
+  fs.writeFileSync(path.join(current.cwd, 'drawer-long-preview.txt'), Array.from({ length: 12000 }, (_, index) => `${index}: ${'test text '.repeat(8)}\n`).join(''))
   const main = await application.browserWindow(page)
   const stream = await main.evaluateHandle((window, context) => {
     const send = (event: object) => window.webContents.send('agent:event', { ...event, context })
@@ -68,11 +71,14 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
           following.readerKept = Math.abs(await page.evaluate(() => document.querySelector('#drawer .drawer-body')!.scrollTop) - afterUpdates) <= 2
           await page.evaluate(() => { const body = document.querySelector('#drawer .drawer-body')!; body.scrollTop = body.scrollHeight })
           await page.waitForTimeout(80)
-          await stream.evaluate(stream => stream.step())
-          await expect.poll(() => page.evaluate(() => {
-            const body = document.querySelector('#drawer .drawer-body')!
-            return body.scrollHeight - body.clientHeight - body.scrollTop
-          })).toBeLessThanOrEqual(2)
+          for (let step = 0; step < 5; step++) {
+            await stream.evaluate(stream => stream.step())
+            await page.waitForTimeout(80)
+            await expect.poll(() => page.evaluate(() => {
+              const body = document.querySelector('#drawer .drawer-body')!
+              return body.scrollHeight - body.clientHeight - body.scrollTop
+            })).toBeLessThanOrEqual(2)
+          }
           following.resumed = true
         }
         const closeBounds = await page.evaluate(() => document.querySelector('#drawer .drawer-head > .icon-btn')!.getBoundingClientRect().toJSON())
@@ -95,6 +101,19 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
     await expect.poll(() => stream.evaluate(stream => stream.count())).toBeGreaterThan(started + 8)
     filesRetained = await files.evaluate(files => files.isConnected && files === document.querySelector('#drawer .files'))
     await files.dispose()
+    await page.locator('#drawer .file-row').filter({ hasText: 'drawer-long-preview.txt' }).click()
+    await expect.poll(() => page.evaluate(() => document.querySelector('.file-preview[data-path]')?.textContent?.length ?? 0)).toBeGreaterThan(100000)
+    const firstPage = await page.evaluate(() => {
+      const preview = document.querySelector('.file-preview[data-path]')!
+      const top = preview.scrollHeight - preview.clientHeight
+      return { length: preview.textContent!.length, top }
+    })
+    await page.evaluate(() => { const preview = document.querySelector('.file-preview[data-path]')!; preview.scrollTop = preview.scrollHeight })
+    await expect.poll(() => page.evaluate(() => document.querySelector('.file-preview[data-path]')!.textContent!.length)).toBeGreaterThan(firstPage.length + 1000)
+    await page.waitForTimeout(120)
+    const pagedTop = await page.evaluate(() => document.querySelector('.file-preview[data-path]')!.scrollTop)
+    expect(pagedTop, 'automatic preview paging preserves the reading position').toBeGreaterThanOrEqual(firstPage.top - 2)
+    await info.attach('drawer-preview-paging', { body: JSON.stringify({ firstPage, pagedTop }), contentType: 'application/json' })
     await page.locator('#drawer .drawer-head > .icon-btn').click({ delay: 120 })
     await expect(page.locator('#drawer')).toHaveAttribute('data-open', 'false')
   } finally {
@@ -111,4 +130,63 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
   }
   expect(following).toEqual({ readerKept: true, resumed: true })
   expect(filesRetained, 'thinking updates preserve the file browser').toBe(true)
+  await checkDrawerBoundaries(page, info)
+}
+
+/** Exercise subpixel scroll writes and synchronous topic transitions in the real renderer. */
+async function checkDrawerBoundaries(page: Page, info: TestInfo): Promise<void> {
+  const boundaries = await page.evaluate(async () => {
+    const { renderDrawer } = await import(new URL('./view/drawer.js', location.href).href) as typeof import('../../src/renderer/view/drawer.ts')
+    const { initialState, reduce } = await import(new URL('./state.js', location.href).href) as typeof import('../../src/renderer/state.ts')
+    const container = document.createElement('aside')
+    container.className = 'drawer'
+    Object.assign(container.style, { position: 'fixed', right: '0px', top: '40px', height: '401px', zIndex: '1000' })
+    document.body.append(container)
+    const handlers = new Proxy({}, { get: () => () => {} }) as Handlers
+    const settle = () => new Promise(resolve => setTimeout(resolve, 100))
+    const addRows = (state: State, count: number, prefix: string): State => {
+      for (let index = 0; index < count; index++) state = reduce(state, {
+        type: 'acp_update', at: 1000 + index,
+        update: { sessionUpdate: 'tool_call', toolCallId: `${prefix}-${index}`, title: `步骤 ${index}`, kind: 'read', status: 'completed' },
+      })
+      return state
+    }
+    const distance = () => {
+      const body = container.querySelector('.drawer-body')!
+      return body.scrollHeight - body.clientHeight - body.scrollTop
+    }
+    const samples = []
+    try {
+      for (const count of [20, 31, 39]) {
+        let state = addRows({ ...initialState, drawer: 'trace' }, count, 'initial')
+        renderDrawer(container, state, handlers)
+        await settle()
+        for (let append = 0; append < 3; append++) {
+          state = addRows(state, 1, `appended-${append}`)
+          renderDrawer(container, state, handlers)
+          await settle()
+          samples.push({ name: `fractional-${count}-${append}`, distance: distance() })
+        }
+        renderDrawer(container, { ...state, drawer: null }, handlers)
+      }
+      for (const reset of ['new_session', 'topic_resumed'] as const) {
+        let state = addRows({ ...initialState, drawer: 'trace' }, 70, 'old')
+        renderDrawer(container, state, handlers)
+        await settle()
+        container.querySelector('.drawer-body')!.scrollTop = 200
+        await settle()
+        state = reduce(state, reset === 'new_session' ? { type: reset, at: 2000 }
+          : { type: reset, info: { ...state.info, conversationId: 'resumed' }, parentId: 'old', at: 2000 })
+        renderDrawer(container, state, handlers)
+        state = addRows(state, 70, 'new')
+        renderDrawer(container, state, handlers)
+        await settle()
+        samples.push({ name: reset, distance: distance() })
+        renderDrawer(container, { ...state, drawer: null }, handlers)
+      }
+      return samples
+    } finally { container.remove() }
+  })
+  await info.attach('drawer-scroll-boundaries', { body: JSON.stringify(boundaries), contentType: 'application/json' })
+  for (const sample of boundaries) expect(Math.abs(sample.distance), sample.name).toBeLessThanOrEqual(2)
 }
