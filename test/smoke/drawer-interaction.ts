@@ -7,7 +7,7 @@ import type { SmokeApplication } from './application.ts'
 export async function checkStreamingDrawer(session: SmokeApplication, info: TestInfo): Promise<void> {
   const { page, application } = session
   const current = await page.evaluate(() => window.agent.getInfo())
-  fs.writeFileSync(path.join(current.cwd, 'drawer-long-preview.txt'), Array.from({ length: 12000 }, (_, index) => `${index}: ${'test text '.repeat(8)}\n`).join(''))
+  fs.writeFileSync(path.join(current.cwd, 'drawer-long-preview.txt'), Array.from({ length: 40000 }, (_, index) => `${index}: ${'test text '.repeat(8)}\n`).join(''))
   const main = await application.browserWindow(page)
   const stream = await main.evaluateHandle((window, context) => {
     const send = (event: object) => window.webContents.send('agent:event', { ...event, context })
@@ -112,8 +112,10 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
     await expect.poll(() => page.evaluate(() => document.querySelector('.file-preview[data-path]')!.textContent!.length)).toBeGreaterThan(firstPage.length + 1000)
     await page.waitForTimeout(120)
     const pagedTop = await page.evaluate(() => document.querySelector('.file-preview[data-path]')!.scrollTop)
+    const pagedLength = await page.evaluate(() => document.querySelector('.file-preview[data-path]')!.textContent!.length)
     expect(pagedTop, 'automatic preview paging preserves the reading position').toBeGreaterThanOrEqual(firstPage.top - 2)
-    await info.attach('drawer-preview-paging', { body: JSON.stringify({ firstPage, pagedTop }), contentType: 'application/json' })
+    expect(pagedLength, 'detached preview events never request extra pages').toBeLessThan(firstPage.length * 2 + 5000)
+    await info.attach('drawer-preview-paging', { body: JSON.stringify({ firstPage, pagedTop, pagedLength }), contentType: 'application/json' })
     await page.locator('#drawer .drawer-head > .icon-btn').click({ delay: 120 })
     await expect(page.locator('#drawer')).toHaveAttribute('data-open', 'false')
   } finally {
