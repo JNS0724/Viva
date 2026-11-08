@@ -124,3 +124,18 @@ test('the install field shows what was put in it for the user, not what was type
   await actions.installPlugin()
   assert.deepEqual([state().plugins.spec, state().plugins.specVersion !== picked], ['', true], 'installed, the field starts empty')
 })
+
+test('a search still going when the source changes is let go: its answer, or its failure, belongs to the source before', async () => {
+  for (const late of [{ ok: true, entries: [{ name: 'dsh-old', version: '1.0.0', description: null, fit: { kind: 'unknown' } }] }, { ok: false, problem: 'search', detail: 'old source down' }]) {
+    let answer!: (value: unknown) => void
+    const { actions, state } = setup({
+      searchPluginCatalog: () => new Promise((resolve) => { answer = resolve }),
+      setPluginSource: async () => ({ source: { registry: 'https://new.example.com/', hasToken: false }, view }),
+    })
+    const searching = actions.searchCatalog()
+    await actions.savePluginSource('https://new.example.com/', '')
+    answer(late)
+    await searching
+    assert.deepEqual([state().plugins.catalog.entries, state().plugins.catalog.problem, state().plugins.catalog.searched, state().plugins.catalog.searching], [[], null, false, false], JSON.stringify(late))
+  }
+})

@@ -90,16 +90,22 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
     },
     dismissPluginInstall: () => dispatch({ type: 'plugins_dismiss' }),
     editCatalogQuery: (query: string) => dispatch({ type: 'plugins_catalog_query', query }),
-    /** What the company source has for the words typed (nothing typed lists dsh plugins); one search at a time. */
+    /**
+     * What the company source has for the words typed (nothing typed lists dsh plugins); one search at a time. The
+     * source saved or taken away meanwhile, its answer is the source before's, and is let go.
+     */
     async searchCatalog() {
       if (plugins().catalog.searching) return
+      const source = plugins().sourceSaves
+      const current = () => plugins().sourceSaves === source
       dispatch({ type: 'plugins_catalog_searching' })
       try {
         const answer = await api.searchPluginCatalog(plugins().catalog.query)
+        if (!current()) return
         if (answer.ok) dispatch({ type: 'plugins_catalog_found', entries: answer.entries })
         else dispatch({ type: 'plugins_catalog_failed', problem: catalogProblem(answer.problem, answer.detail) })
       } catch (err) {
-        dispatch({ type: 'plugins_catalog_failed', problem: catalogProblem('search', errorMessage(err)) })
+        if (current()) dispatch({ type: 'plugins_catalog_failed', problem: catalogProblem('search', errorMessage(err)) })
       }
     },
     /** One the source has, looked at as if typed: its name at the version listed, then 安装 as usual. */
