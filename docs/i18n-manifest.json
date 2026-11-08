@@ -90,6 +90,11 @@
       "path": "docs/qa-desktop-island-interaction-20261108.md",
       "locale": "zh-CN",
       "sha256": "e1e9e8537e233bca874cbdbadea9eaf3dd21759b9147205ce54b2241d86f7953"
+    },
+    {
+      "path": "docs/qa-windows-ui-issues-20261108.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "ba6691b0828cdba750e9cd08d47ee0d790284906bdb344b06bfd9ef9874b3bc3"
     }
   ]
 }

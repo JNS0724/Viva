@@ -1,0 +1,254 @@
+{
+  "date": "2026-11-08",
+  "auditedCommit": "80b482c6255d450410131bb8f241a755d60038b6",
+  "platform": "Windows 11 Pro",
+  "systemScale": 1.75,
+  "electron": "44.7.0",
+  "states": 22,
+  "border": {
+    "source": "06-user-border.png",
+    "imageSize": [
+      191,
+      160
+    ],
+    "horizontalScanY": 79,
+    "horizontalDarkRuns": [
+      [
+        23,
+        28
+      ],
+      [
+        155,
+        162
+      ]
+    ],
+    "horizontalBorderWidthsPixels": {
+      "left": 6,
+      "right": 8
+    },
+    "verticalScanX": 92,
+    "verticalDarkRuns": [
+      [
+        9,
+        14
+      ],
+      [
+        141,
+        148
+      ]
+    ],
+    "verticalBorderWidthsPixels": {
+      "top": 6,
+      "bottom": 8
+    },
+    "method": "Direct pixel cross-sections through the outer-circle center. Dark threshold max(R,G,B)<110 and R+G+B<240. Interior artwork pixels excluded from rim runs.",
+    "interpretation": "The portrait disc is offset approximately one image pixel toward the upper left relative to the outer disc.",
+    "limits": "Measurements apply to this supplied screenshot. macOS comparison and anti-aliasing root cause remain unverified."
+  },
+  "modelNamePlatformFonts": [
+    {
+      "familyName": "NSimSun",
+      "postScriptName": "NSimSun",
+      "isCustomFont": false,
+      "glyphCount": 6
+    },
+    {
+      "familyName": "Cascadia Mono",
+      "postScriptName": "CascadiaMonoRoman",
+      "isCustomFont": false,
+      "glyphCount": 6
+    }
+  ],
+  "placeholder": {
+    "scope": "Sampled editable main-window field",
+    "foreground": "#757575",
+    "background": "#060B16",
+    "fontSizeCssPx": 14,
+    "contrastRatioRounded": 4.27
+  },
+  "layout": {
+    "nativeConfiguredHeightCssPx": 352,
+    "observedViewportHeightCssPx": 353,
+    "longQuestionHeightCssPx": 398,
+    "tenFilesHeightCssPx": 564
+  },
+  "drag": {
+    "runs": 2,
+    "millisecondsAfterPress": [
+      13.8,
+      13.3
+    ],
+    "viewportCssPx": [
+      105,
+      105
+    ],
+    "panelCssPx": [
+      560,
+      115
+    ],
+    "panelPositionCssPx": [
+      -227.43,
+      -4.93
+    ],
+    "observedRadiusCssPx": 40,
+    "evidenceType": "requestAnimationFrame layout samples before paint",
+    "nativeCompositorFlashFrameCaptured": false
+  },
+  "images": [
+    {
+      "file": "background-empty.png",
+      "bytes": 31319,
+      "sha256": "88447b48d2c93520eece81c3eaad33fd8c76043525336190d63df009317bdc1a"
+    },
+    {
+      "file": "csv-fonts.png",
+      "bytes": 48890,
+      "sha256": "60ec64e858d69aa42f0e330935afd6d040d2eb9171d040cdb5ae88279df1735d"
+    },
+    {
+      "file": "island-01.jpg",
+      "bytes": 10367,
+      "sha256": "a185800572acd78fb87dcbd4c50ab21a0b66a636637062a48d6770b6fc22a1f2"
+    },
+    {
+      "file": "island-02.jpg",
+      "bytes": 13695,
+      "sha256": "f988fb8f04a9c865f55cd924fc7a47cae5d5440eec3d3683cd17561eb15a824f"
+    },
+    {
+      "file": "island-03.jpg",
+      "bytes": 18995,
+      "sha256": "5405255f284f111be102a12a0e3bd33a11c10604dd4746ee70dfd61d9dc55887"
+    },
+    {
+      "file": "island-04.jpg",
+      "bytes": 10284,
+      "sha256": "43818f8f88b5741344d0d8056c959a94b0fbb911f552c7548fa3a251952dabbb"
+    },
+    {
+      "file": "island-05.jpg",
+      "bytes": 11570,
+      "sha256": "9967eda3f821786d2e56a3bc55945726c6fd3e12aa802bf8ac65baec24e31b8b"
+    },
+    {
+      "file": "island-06.jpg",
+      "bytes": 12431,
+      "sha256": "8f88c68610de12bf0d91980803a71b5983c6cabdef6b5890eb326c52652cf612"
+    },
+    {
+      "file": "island-07.jpg",
+      "bytes": 18324,
+      "sha256": "11c9e1cfd2d8a31607e30ec0b63ee96b42183f1ed3a465633369b3042e76aa84"
+    },
+    {
+      "file": "island-08.jpg",
+      "bytes": 18499,
+      "sha256": "e6a04c05e087e10ab6e67e633d340dda52817386368512c3237c87e36d1a883d"
+    },
+    {
+      "file": "island-09.jpg",
+      "bytes": 31994,
+      "sha256": "83ab4eac4788f5c2e2d879babee73e1c17b645607c7749ce64b485c9bff1a818"
+    },
+    {
+      "file": "island-10.jpg",
+      "bytes": 13419,
+      "sha256": "527d84614ad09f798010b608ef40569771f69ffb2ad41d2342a92fa78614572e"
+    },
+    {
+      "file": "island-11.jpg",
+      "bytes": 15002,
+      "sha256": "05751be1305bec7bb9d177454c80eeed6e76bc7cb378a39a26244e25145948e4"
+    },
+    {
+      "file": "island-12.jpg",
+      "bytes": 12537,
+      "sha256": "f7ae8f7664336740eb64908c410c631fc492698e9c56de12b4fda92019f6cc69"
+    },
+    {
+      "file": "island-13.jpg",
+      "bytes": 23756,
+      "sha256": "ed8bf4d8db6c77b2663dcbaf388bf7121657e14813ffab2adac8e846a5e64aa5"
+    },
+    {
+      "file": "island-14.jpg",
+      "bytes": 18621,
+      "sha256": "c1878be0c494eb187e8a206e2eaaebce224f8ba9f79f6558cf0f03ddc896f364"
+    },
+    {
+      "file": "island-15.jpg",
+      "bytes": 16192,
+      "sha256": "cdc9922b6befb081826263fcc902f0b248310f9b249d8f90514915c561393265"
+    },
+    {
+      "file": "island-16.jpg",
+      "bytes": 13019,
+      "sha256": "48ebb0ae94f55b778e26d9daa43b68863103c1a2fd841d6a7029ee582f121e3b"
+    },
+    {
+      "file": "island-17.jpg",
+      "bytes": 14360,
+      "sha256": "f002e151f62578b54ca27d1f9c349bc0dd2e5bdce776af65d95cba1a46a9b1f7"
+    },
+    {
+      "file": "island-18.jpg",
+      "bytes": 10258,
+      "sha256": "e8c5a81dc34b173986ca6f370611b3dcbccd7699ad2e3e19603fce48ca67b36c"
+    },
+    {
+      "file": "island-19.jpg",
+      "bytes": 19735,
+      "sha256": "e1e3e4e57b9d4fe223c069af53c41caaecb16c2f7bbc06803f3db9575f1fe43d"
+    },
+    {
+      "file": "island-20.jpg",
+      "bytes": 14407,
+      "sha256": "113aea03a0ba3600b1264d157a3dec27490be1503b6cd5fcf3cabce3f113b6ed"
+    },
+    {
+      "file": "island-21.jpg",
+      "bytes": 38513,
+      "sha256": "bf6c49b1f0f481697b1a8f76c3078601ac980994124dc0b70021982f9158056d"
+    },
+    {
+      "file": "island-22.jpg",
+      "bytes": 18826,
+      "sha256": "6eec18169dc029bd00784477b1154b64a3fec3e81522cb263e7f30cd0d013492"
+    },
+    {
+      "file": "model-fonts.png",
+      "bytes": 78698,
+      "sha256": "fd2e0e09df76c972da724c61da1d636948ef2df090f88ea47e4877d74f8e9b8e"
+    },
+    {
+      "file": "profile.png",
+      "bytes": 63007,
+      "sha256": "c4a4770d3ff09ae006a89bf2d01bc46c3f45538eb430811d3294477d32481dd2"
+    },
+    {
+      "file": "settings.png",
+      "bytes": 46163,
+      "sha256": "7f8b943f8e849872d3898dadb16b9eee86d2e2efaf3c483cd205fa47ec03d3da"
+    },
+    {
+      "file": "text-fonts.png",
+      "bytes": 56995,
+      "sha256": "9f64c063768a0a7c997e58467d065d6f36dde157931c85058682830c8b35678f"
+    },
+    {
+      "file": "trace-fonts.png",
+      "bytes": 58914,
+      "sha256": "f05997d557459e207aca053c234ae5631777ed81d12a595bd5779cc5d8d728d9"
+    },
+    {
+      "file": "user-border.png",
+      "bytes": 37636,
+      "sha256": "6bc88d3f66623cd4f01106493ce6b97c5180027d03b8ae7f9481e1922bf6af30"
+    },
+    {
+      "file": "user-input.png",
+      "bytes": 55844,
+      "sha256": "1d738d3edb4662d3e5d4e7a345ead42498e23663afaf6b7f6ae286f18cef4224"
+    }
+  ]
+}
