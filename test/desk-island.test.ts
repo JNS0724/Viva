@@ -221,13 +221,14 @@ test('closed without asking, an island that is switched off goes at once; with t
 
 test('clicks reach only the island, without waiting for the pointer poll on Windows', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
-  const env = fakes({ cursor: { x: 700, y: 50 } })
+  const env = fakes()
   const desk = deskIsland(env)
   desk.setView(view('working'))
   const [win] = env.windows
+  Object.assign(env.cursor, { x: win.bounds.x + 300, y: win.bounds.y + 30 })
   desk.setIslandRect({ x: 150, y: 10, width: 300, height: 48 })
-  assert.equal(win.ignoring.at(-1), false, 'the pointer is over the island (its window at x 420, y 31)')
-  env.cursor.x = 100
+  assert.equal(win.ignoring.at(-1), false, 'the pointer is inside the reported region at the current native bounds')
+  env.cursor.x = win.bounds.x - 100
   t.mock.timers.tick(60)
   if (process.platform === 'win32') {
     assert.equal(win.ignoring.at(-1), false, 'native region stays interactive even while the cursor is outside')
