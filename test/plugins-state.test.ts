@@ -2,9 +2,10 @@ import { initialState, reduce } from '../src/renderer/state.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createPluginActions } from '../src/renderer/plugin-actions.ts'
-import { problemText } from '../src/renderer/plugins-state.ts'
+import { catalogPick, problemText } from '../src/renderer/plugins-state.ts'
 import { initialPlugins, PLUGIN_ACTIONS } from '../src/renderer/plugins-state.ts'
 import { setLocale } from '../src/shared/i18n/locale.ts'
+import { cardFit } from '../src/renderer/view/plugins.ts'
 
 type Plugins = State['plugins']
 const start = (changes: Partial<Plugins> = {}): State => ({ ...initialState, plugins: { ...initialPlugins, loaded: true, ...changes } })
@@ -80,4 +81,23 @@ test('dsh\'s refusals are put in the user\'s words; a change that failed still s
   assert.equal(state().plugins.error, 'This plugin does not support the dsh version in Viva.')
   assert.equal(state().plugins.plugins.length, 1)
   setLocale('zh-CN')
+})
+
+test('a lookup of one the source listed belongs under that one, not under the install field', () => {
+  const entries = [{ name: 'dsh-notes', version: '1.2.0', description: null, fit: { kind: 'unknown' } }]
+  const listed = start({ catalog: { ...initialPlugins.catalog, searched: true, entries } })
+  const looked = { ok: true, name: 'dsh-notes', version: '1.2.0', bundle: true }
+  assert.equal(catalogPick({ ...listed.plugins, spec: 'dsh-notes@1.2.0', inspection: looked }), 'dsh-notes')
+  assert.equal(catalogPick({ ...listed.plugins, spec: 'dsh-notes@1.2.0', pendingBuilds: ['esbuild'] }), 'dsh-notes', 'its build scripts asked for there too')
+  assert.equal(catalogPick({ ...listed.plugins, spec: 'dsh-notes@1.2.0' }), null, 'nothing looked up yet')
+  assert.equal(catalogPick({ ...listed.plugins, spec: 'dsh-notes', inspection: looked }), null, 'typed by name: under the field')
+  assert.equal(catalogPick({ ...start().plugins, spec: 'dsh-notes@1.2.0', inspection: looked }), null, 'nothing listed')
+})
+
+test('under an entry the card leaves out whether it works, unless the look-up found out other than the entry says', () => {
+  const needsWeb = { kind: 'needs-web', needs: ['@deepseek-ai/dsh-web-app'] } as const
+  assert.deepEqual(cardFit(needsWeb), needsWeb, 'typed in the field: the card says it')
+  assert.equal(cardFit(needsWeb, { listed: true, listedFit: needsWeb }), null, 'the entry says it already')
+  assert.deepEqual(cardFit(needsWeb, { listed: true, listedFit: { kind: 'unknown' } }), needsWeb, 'the listing could not tell; the look-up could')
+  assert.equal(cardFit(undefined, { listed: true, listedFit: { kind: 'unknown' } }), null, 'nothing looked up')
 })

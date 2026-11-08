@@ -934,6 +934,15 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .cap-row .ext-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* How the one picked stands, by its name: one line, cut short, so the name keeps its room (the whole in its title). */
 .cap-standing { flex: 0 1 auto; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The company source's plugins under 添加插件 (view/plugin-catalog.ts): name, version and whether it works here on one line, its description, 查看. */
+.cap-catalog-list { margin: 0; padding: 0; list-style: none; }
+.cap-catalog-item { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; font-size: 13px; }
+.cap-catalog-item + .cap-catalog-item { border-top: 1px solid var(--line); }
+.cap-catalog-item .help { margin: 0; }
+.cap-catalog-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.cap-catalog-name { font-weight: 700; overflow-wrap: anywhere; }
+.cap-catalog-version { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+.cap-catalog-head .ext-status { margin-left: auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* What the last change came to, under the tabs (view/capabilities.ts feedback). */
 .cap-feedback { margin: 0 12px 4px; overflow-wrap: anywhere; }
 /* What the import did, under 从 dsh 导入: paths break anywhere rather than widen the list. */

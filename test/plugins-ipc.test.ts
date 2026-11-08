@@ -68,12 +68,22 @@ test('the channels ask the plugin manager; with dsh down the section says it is 
     if (op === 'inspect') return { ok: true, value: { status: 'accepted', name: 'compact', version: '2.0.0', bundle: true } }
     return { ok: true, value: { changed: true, application: 'applied' } }
   }
-  registerPluginsIpc({ handle: (channel, fn) => handlers.set(channel, fn as (...args: unknown[]) => unknown) }, { call, profileDir: () => dir, source: noSource, busy: () => false, restart: async () => null })
+  const looked: string[] = []
+  const searched: string[] = []
+  registerPluginsIpc({ handle: (channel, fn) => handlers.set(channel, fn as (...args: unknown[]) => unknown) }, {
+    call, profileDir: () => dir, source: noSource, busy: () => false, restart: async () => null,
+    specFit: async (spec) => { looked.push(spec); return { kind: 'needs-web', needs: ['@deepseek-ai/dsh-web-app'] } },
+    catalog: async (query) => { searched.push(query); return { ok: true, entries: [] } },
+  })
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
-  assert.deepEqual([...handlers.keys()].sort(), ['plugins:get', 'plugins:inspect', 'plugins:install', 'plugins:remove', 'plugins:set-enabled', 'plugins:set-source', 'plugins:source'])
+  assert.deepEqual([...handlers.keys()].sort(), ['plugins:catalog', 'plugins:get', 'plugins:inspect', 'plugins:install', 'plugins:remove', 'plugins:set-enabled', 'plugins:set-source', 'plugins:source'])
 
   assert.equal(((await invoke('plugins:get')) as { plugins: unknown[] }).plugins.length, 2)
-  assert.deepEqual(await invoke('plugins:inspect', 'compact'), { ok: true, name: 'compact', version: '2.0.0', description: null, bundle: true })
+  assert.deepEqual(await invoke('plugins:inspect', 'compact'), {
+    ok: true, name: 'compact', version: '2.0.0', description: null, bundle: true, fit: { kind: 'needs-web', needs: ['@deepseek-ai/dsh-web-app'] },
+  }, 'what it names, and whether it works in Viva, before anything is installed')
+  assert.deepEqual(await invoke('plugins:catalog', 'notes'), { ok: true, entries: [] })
+  assert.deepEqual([looked, searched], [['compact'], ['notes']])
   const installed = await invoke('plugins:install', 'compact', ['esbuild']) as { change: { application: string }, view: { plugins: unknown[] } }
   assert.equal(installed.change.application, 'applied')
   assert.equal(installed.view.plugins.length, 2, 'the list as it is after the change')
@@ -86,6 +96,8 @@ test('the channels ask the plugin manager; with dsh down the section says it is 
 
   up = false
   assert.deepEqual(await invoke('plugins:get'), { connected: false, plugins: [] })
+  await assert.rejects(Promise.resolve(invoke('plugins:inspect', 'other')), /disconnected/)
+  assert.deepEqual(looked, ['compact'], 'a spec dsh could not look at is not looked up on the source either')
   await assert.rejects(Promise.resolve(invoke('plugins:remove', 'compact')), /disconnected/)
 })
 
@@ -99,7 +111,10 @@ test('the company source: the window is told the registry and whether there is a
     save: (input: { registry: unknown, token?: unknown }) => { kept = input; return source.view() },
   }
   const call = async (): Promise<PluginsResult> => ({ ok: true, value: { bundles: [], plugins: [] } })
-  registerPluginsIpc({ handle: (channel, fn) => handlers.set(channel, fn as (...args: unknown[]) => unknown) }, { call, profileDir: () => '/none', source, busy: () => busy, restart: async () => { restarts++ } })
+  registerPluginsIpc({ handle: (channel, fn) => handlers.set(channel, fn as (...args: unknown[]) => unknown) }, {
+    call, profileDir: () => '/none', source, busy: () => busy, restart: async () => { restarts++ },
+    specFit: async () => ({ kind: 'unknown' }), catalog: async () => ({ ok: false, problem: 'no-source', detail: null }),
+  })
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
   const saved = await invoke('plugins:set-source', 'https://npm.example.com/', 'npm_secret_value') as { source: object, view: object }
   assert.deepEqual([saved.source, restarts, kept], [{ registry: 'https://npm.example.com/', hasToken: true }, 1, { registry: 'https://npm.example.com/', token: 'npm_secret_value' }])

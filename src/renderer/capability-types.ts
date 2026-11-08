@@ -50,6 +50,9 @@ export interface PluginRow { id: string, entryId: string | null, enabled: boolea
 
 export type PluginFit = { kind: 'declared' } | { kind: 'no-conflict' } | { kind: 'web-part' } | { kind: 'needs-web', needs: readonly string[] } | { kind: 'unknown' }
 
+/** A dsh plugin the company source has (plugin-catalog.ts CatalogEntry), with whether it works in Viva. */
+export interface CatalogEntry { name: string, version: string, description: string | null, fit: PluginFit }
+
 /** An installed dsh plugin. */
 export interface PluginView {
   name: string

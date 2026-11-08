@@ -240,6 +240,7 @@ interface AgentApi extends DraftApi {
   importMcp: Invoke<'ext:import-mcp'>
   getPlugins: Invoke<'plugins:get'>
   inspectPlugin: Invoke<'plugins:inspect'>
+  searchPluginCatalog: Invoke<'plugins:catalog'>
   installPlugin: Invoke<'plugins:install'>
   removePlugin: Invoke<'plugins:remove'>
   setPluginEnabled: Invoke<'plugins:set-enabled'>
