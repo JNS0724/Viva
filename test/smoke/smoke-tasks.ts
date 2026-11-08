@@ -300,12 +300,12 @@ async function leaveRunning(win: SmokeWindow) {
   await until(win, `(${cardOf(LEFT_ASK)})?.dataset.status === 'waiting'`, 'the task left going')
 }
 
-/** Build only the three real task sessions that the restart acceptance reads. */
+/**
+ * Build only the three real task sessions that the restart acceptance reads, started as the user starts them: the
+ * agent asked to (start_background_task), each once the conversation is free.
+ */
 export async function prepareResume(win: SmokeWindow, outDir: string): Promise<string[]> {
-  const start = async (text: string) => {
-    const result = await run(win, `window.agent.startTask({ text: ${JSON.stringify(text)} })`)
-    if (!result.ok) throw new Error(`Could not prepare restart task: ${JSON.stringify(result)}`)
-  }
+  const start = (text: string) => startInBackground(win, text)
   await start(ASKS_LATER)
   await until(win, `(${cardOf(ASKS_LATER)})?.dataset.status === 'waiting'`, 'the question task approval before restart')
   await answerOnPage(win, ASKS_LATER, '拒绝')

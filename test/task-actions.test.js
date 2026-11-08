@@ -39,72 +39,35 @@ function windowWith(api, deps = {}) {
   return { actions, said, arrive, dispatch, state: () => state }
 }
 
-function deferred() {
-  let resolve
-  const promise = new Promise((done) => { resolve = done })
-  return { promise, resolve }
-}
+const started = { id: 's1', segmentId: 'c9', title: WORDS, words: WORDS }
+/** The snapshot the backend sends as the agent starts a task (task-runtime.ts): the one that makes it. */
+const begins = { type: 'task_snapshot', snapshot: { taskId: 's1', runId: 'run-1', title: WORDS, status: 'running', currentAction: null, waitingFor: null,
+  startedAt: 10, updatedAt: 10, endedAt: null, resultPreview: '', revision: 1, taskSeq: 0,
+  opening: { words: WORDS, task: started, hostSession: 'main' } } }
 
-test('a background submission is visible before the slow session responds; switching topics cannot attach it to the new topic', async () => {
-  const reply = deferred()
-  const win = windowWith({ startTask: () => reply.promise })
-  const pending = win.actions.startTask('长文字'.repeat(5000))
-  assert.equal(win.state().tasks.submissions.length, 1)
-  assert.equal(win.state().tasks.submissions[0].text.length, 15000)
-  assert.equal(win.state().tasks.submissions[0].status, 'pending')
-  win.dispatch({ type: 'new_session', info: { sessionId: 'another' }, at: 100 })
-  reply.resolve({ ok: true, task: { id: 'background', title: '长文字', words: '长文字' } })
-  await pending
-  assert.equal(win.state().tasks.submissions.length, 0)
-  assert.equal(win.state().messages.length, 0)
-  assert.equal(win.state().tasks.list.length, 1)
-})
-
-test('failed background submissions retain text for retry, without duplicate tasks or silent foreground steering', async () => {
-  let calls = 0
-  const win = windowWith({ startTask: async () => ++calls === 1 ? { ok: false, problem: 'timeout' } : { ok: true, task: { id: 's9', title: 'words', words: 'words' } } })
-  assert.equal(await win.actions.startTask('words'), false)
-  const failed = win.state().tasks.submissions[0]
-  assert.equal(failed.text, 'words')
-  assert.equal(failed.status, 'failed')
-  assert.equal(await win.actions.startTask(failed.text, failed.id), true)
-  assert.equal(win.state().tasks.submissions.length, 0)
-  assert.equal(win.state().tasks.list.length, 1)
-  assert.deepEqual(win.said.steered, [])
-})
-
-const startedReply = { ok: true, task: { id: 's1', segmentId: 'c9', title: WORDS, words: WORDS } }
-
-/** 后台做 with the words, and the task saying something: a task in the background to work with. */
-async function withTask(win) {
-  await win.actions.startTask(WORDS)
+/** A task the agent started, saying something: a task in the background to work with. */
+function withTask(win) {
+  win.arrive(begins)
   win.dispatch({ type: 'task_update', taskId: 's1', update: chunk('先看提交…'), at: 20 })
 }
 
-test('a task is made by the snapshot that begins it, before what it says; the call\'s answer then only settles the submission', async () => {
-  const reply = deferred()
-  const win = windowWith({ startTask: () => reply.promise })
-  const starting = win.actions.startTask(WORDS)
-  // The backend's order (task-runtime.ts): the snapshot that makes it, then its first piece, then the call's answer.
-  win.arrive({ type: 'task_snapshot', snapshot: { taskId: 's1', runId: 'run-1', title: WORDS, status: 'running', currentAction: null, waitingFor: null,
-    startedAt: 10, updatedAt: 10, endedAt: null, resultPreview: '', revision: 1, taskSeq: 0,
-    opening: { words: WORDS, task: startedReply.task, hostSession: 'main' } } })
+test('a task is made by the snapshot that begins it, before what it says; each piece of its run is taken once', () => {
+  const win = windowWith({})
+  // The backend's order (task-runtime.ts): the snapshot that makes it, then its first piece.
+  win.arrive(begins)
   // Each as the event core sends it: its own `seq` (the event log's) beside the task's `taskSeq`.
   win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 1, seq: 900, update: chunk('三组改动。') })
   win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-1', taskSeq: 1, seq: 900, update: chunk('三组改动。') })
   win.arrive({ type: 'task_update', taskId: 's1', runId: 'run-0', taskSeq: 2, seq: 900, update: chunk('别的运行说的') })
-  reply.resolve(startedReply)
-  await starting
-  assert.equal(win.state().tasks.list.length, 1, 'one task, not made again by the answer')
-  assert.equal(win.state().tasks.submissions.length, 0, 'its submission settled')
+  assert.equal(win.state().tasks.list.length, 1, 'one task')
   assert.deepEqual(taskMessages(liveTasks(win.state())[0]).map((m) => m.text), [WORDS, '三组改动。'], 'each piece once; one of another run left out')
   assert.deepEqual(win.state().messages.map((m) => m.text), ['做周报', '写好了', WORDS, '先看提交…'], 'the conversation on screen as it was')
 })
 
 test('a task\'s question is answered there: one choice by picking it, more with 提交, or skipped', async () => {
   const answered = []
-  const win = windowWith({ startTask: async () => startedReply, answerQuestion: async (...args) => { answered.push(args); return true } })
-  await withTask(win)
+  const win = windowWith({ answerQuestion: async (...args) => { answered.push(args); return true } })
+  withTask(win)
   const city = { id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }, { label: '北京' }] }
   win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q1', questions: [city], at: 70 })
   win.actions.pickTaskOption('s1', 'city', '上海')
@@ -122,23 +85,6 @@ test('a task\'s question is answered there: one choice by picking it, more with 
   ])
   assert.equal(liveTasks(win.state())[0].question, null)
   assert.equal(win.state().question, null, 'the conversation on screen was never asked')
-})
-
-test('后台做 while a turn runs: a task of its own, started from before that turn; the turn goes on in front', async () => {
-  const requests = []
-  const win = windowWith({ startTask: async (request) => { requests.push(request); return { ok: true, task: { id: 's9', segmentId: 'c9', title: '查天气', words: '查天气' } } } })
-  await win.actions.startTask('查天气')
-
-  assert.deepEqual(requests, [{ text: '查天气', words: WORDS }])
-  assert.deepEqual(liveTasks(win.state()).map((task) => [task.id, task.status]), [['s9', 'running']])
-  assert.equal(win.state().phase, 'working', 'the turn on screen goes on')
-  assert.ok(!win.state().messages.some((message) => message.taskId), 'its answer is still coming: the words are on the card, not in between')
-
-  const refused = windowWith({ startTask: async () => ({ ok: false, problem: '没能交给后台（invalid）' }) })
-  await refused.actions.startTask('查天气')
-  assert.deepEqual(liveTasks(refused.state()), [])
-  assert.equal(refused.state().tasks.submissions[0].problem, '没能交给后台（invalid）')
-  assert.equal(refused.state().tasks.submissions[0].text, '查天气')
 })
 
 test('the tasks the last launch kept come back at the start, with what they said', async () => {

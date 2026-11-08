@@ -49,7 +49,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error', 'task_started'])
+const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error'])
 const api = window.agent
 const platform = api?.platform ?? 'darwin'
 const dom = createPageElements(document, platform)
@@ -434,11 +434,6 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
 }
 
 const handlers = {
-  retrySubmission: (id: string) => {
-    const item = state.tasks.submissions.find(item => item.id === id)
-    if (item?.status === 'failed') void taskActions.startTask(item.text, id)
-  },
-  dismissSubmission: (id: string) => dispatch({ type: 'task_submit_dismissed', id }),
   ...historyActions,
   ...reviewActions,
   /** ⌘F and 回顾 in the sidebar: the field focused, and the timeline by day read again. */

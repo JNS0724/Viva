@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 
 /**
- * Background tasks inside the real dsh: 后台做 starts a task in a session of its own, beside the main
+ * Background tasks inside the real dsh: the agent starts a task in a fresh session of its own, beside the main
  * conversation, and a task Viva quit on is taken up again at the next launch.
  */
 
@@ -13,7 +13,7 @@ test('after a relaunch, a task left unfinished is taken up again, remembering wh
   const { events, llm, bridge } = await setup(t)
   const first = bridge()
   await first.start()
-  const task = await first.startTask({})
+  const task = await first.startTask()
   assert.equal(task.ok, true, JSON.stringify(task))
   const running = first.promptTask(task.taskId, '明天天气怎么样').catch(() => {})
   await eventually(() => events.find((e) => e.type === 'task_question' && e.taskId === task.taskId))
@@ -37,7 +37,7 @@ test('after a relaunch, a task left unfinished is taken up again, remembering wh
   assert.deepEqual(await second.resumeTask({ taskId: 'no-such-session' }).then((r) => r.ok), false)
 })
 
-test('后台做: a task of its own starts from the conversation so far, on the model the conversation is on', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+test('a task starts in a fresh session of its own, on the model the conversation is on', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { events, llm, bridge } = await setup(t)
   const agent = bridge()
   const info = await agent.start()
@@ -46,26 +46,26 @@ test('后台做: a task of its own starts from the conversation so far, on the m
   await agent.prompt('记住这个暗号：蓝色鲸鱼')
   const mainModel = llm.requests.at(-1).model
 
-  const started = await agent.startTask({})
+  const started = await agent.startTask()
   assert.equal(started.ok, true, JSON.stringify(started))
   assert.notEqual(started.taskId, info.sessionId, 'a session of its own')
   await agent.promptTask(started.taskId, '午饭吃什么')
 
   assert.ok(taskReplies(events, started.taskId).includes('午饭吃什么'), 'it answers as a task')
   const asked = llm.requests.find((request) => JSON.stringify(request).includes('午饭吃什么'))
-  assert.ok(JSON.stringify(asked).includes('蓝色鲸鱼'), 'it knows what was said before it')
+  assert.ok(!JSON.stringify(asked).includes('蓝色鲸鱼'), 'fresh: the conversation does not come along, the brief says what to do')
   assert.equal(asked.model, mainModel, 'on the model picked for the conversation, not the profile\'s first')
   assert.equal(events.filter((e) => e.type === 'turn_end').length, 1, 'the main conversation saw only its own turn')
 })
 
-test('后台做 with nothing said yet starts afresh, still on the model the conversation is on', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+test('a task started before anything was said is still on the model the conversation is on', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { llm, bridge } = await setup(t)
   const agent = bridge()
   const info = await agent.start()
   const other = info.models.find((model) => model.value !== info.modelValue)
   await agent.setConfig('model', other.value)
 
-  const started = await agent.startTask({})
+  const started = await agent.startTask()
   assert.equal(started.ok, true, JSON.stringify(started))
   await agent.promptTask(started.taskId, '午饭吃什么')
   await agent.prompt('你好')

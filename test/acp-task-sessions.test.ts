@@ -2,7 +2,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { NewSessionResponse, ResumeSessionResponse, SessionConfigOption, SetSessionConfigOptionRequest } from '@agentclientprotocol/sdk'
 import { createAcpTaskSessions } from '../src/backend/acp-task-sessions.ts'
-import type { ForkResult } from '../src/backend/fork-channel.ts'
 
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (error: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const select = (value: string): SessionConfigOption => ({ id: 'model', name: 'Model', type: 'select', currentValue: value, options: [{ value, name: value }] })
@@ -14,7 +13,7 @@ function harness(overrides: Partial<Parameters<typeof createAcpTaskSessions>[0]>
   const sessions = createAcpTaskSessions({
     connection: () => ({ closeSession: async request => { closed.push(request.sessionId); return {} }, setSessionConfigOption: async request => { configured.push(request); if ('type' in request && request.type === 'boolean') returnedFlag = request.value; return { configOptions: [select('chosen'), toggle(returnedFlag)] } } }),
     acquire: { fresh: async () => ({ sessionId: 'task', configOptions: [select('default'), toggle(false)] }), resume: async () => ({ configOptions: [select('default')] }) },
-    foreground: () => ({ sessionId: 'main', cwd: '/origin', config: source }), canResume: () => true, prepareFresh: () => { prepares++ }, fork: async () => ({ ok: false, reason: 'unavailable' }),
+    foreground: () => ({ sessionId: 'main', cwd: '/origin', config: source }), canResume: () => true, prepareFresh: () => { prepares++ },
     operations: { run: async () => {}, cancelInTime: async () => {}, count: () => 0 },
     permissions: { pendingFor: () => [], waitingSessions: () => new Set() }, questions: { declineTask: () => {}, pendingOf: () => [] },
     steer: async () => ({ ok: true }), markReadOnly: async () => true, emit: event => { events.push(event) }, describeError: String, goneMessage: () => 'gone', stoppedMessage: () => 'stopped',
@@ -23,13 +22,12 @@ function harness(overrides: Partial<Parameters<typeof createAcpTaskSessions>[0]>
   return { sessions, closed, configured, events, prepares: () => prepares, source: (value: readonly SessionConfigOption[]) => { source = value } }
 }
 
-test('task configuration and directory capture precede fork acquisition, including boolean options', async () => {
-  const fork = deferred<ForkResult>(), dirs: string[] = []
-  const h = harness({ fork: () => fork.promise, acquire: {
-    fresh: async cwd => { dirs.push(cwd); return { sessionId: 'task', configOptions: [select('default'), toggle(false)] } }, resume: async () => ({}),
-  } })
+test('task configuration and directory are captured before its fresh session arrives, including boolean options', async () => {
+  const fresh = deferred<NewSessionResponse>(), dirs: string[] = []
+  const h = harness({ acquire: { fresh: cwd => { dirs.push(cwd); return fresh.promise }, resume: async () => ({}) } })
   const original = select('chosen'); h.source([original, toggle(true)])
-  const pending = h.sessions.startTask(); original.currentValue = 'mutated'; h.source([select('later'), toggle(false)]); fork.resolve({ ok: false, reason: 'unavailable' })
+  const pending = h.sessions.startTask(); original.currentValue = 'mutated'; h.source([select('later'), toggle(false)])
+  fresh.resolve({ sessionId: 'task', configOptions: [select('default'), toggle(false)] })
   assert.deepEqual(await pending, { ok: true, taskId: 'task' })
   assert.deepEqual(dirs, ['/origin'])
   assert.deepEqual(h.configured, [{ sessionId: 'task', configId: 'model', value: 'chosen' }, { sessionId: 'task', configId: 'flag', type: 'boolean', value: true }])
@@ -38,7 +36,7 @@ test('task configuration and directory capture precede fork acquisition, includi
 
 for (const mode of ['fresh', 'resume'] as const) test(`disposal revokes in-flight ${mode} acquisition and releases its late native session`, async () => {
   const gate = deferred<NewSessionResponse>(), h = harness({ acquire: { fresh: () => gate.promise, resume: () => gate.promise } })
-  const pending = mode === 'fresh' ? h.sessions.startTask({ afresh: true }) : h.sessions.resumeTask({ taskId: 'task' })
+  const pending = mode === 'fresh' ? h.sessions.startTask() : h.sessions.resumeTask({ taskId: 'task' })
   await new Promise<void>(resolve => setImmediate(resolve))
   h.sessions.dispose(); gate.resolve({ sessionId: 'task' })
   assert.equal((await pending).ok, false)
@@ -58,7 +56,7 @@ test('failed unattended permission marking closes the acquired session before re
 test('failed model matching retires the unreported session instead of keeping a native attachment', async t => {
   t.mock.method(console, 'error', () => {})
   const closed: string[] = [], h = harness({ connection: () => ({ closeSession: async request => { closed.push(request.sessionId); return {} }, setSessionConfigOption: async () => { throw new Error('no such option') } }) })
-  assert.equal((await h.sessions.startTask({ afresh: true })).ok, false)
+  assert.equal((await h.sessions.startTask()).ok, false)
   assert.deepEqual(closed, ['task']); assert.equal(h.sessions.has('task'), false); assert.deepEqual(h.events, [])
 })
 
@@ -77,7 +75,7 @@ test('an old configuration rejection cannot delete or close a newer attachment o
   t.mock.method(console, 'error', () => {})
   const config = deferred<{ configOptions: SessionConfigOption[] }>(), closed: string[] = []
   const h = harness({ connection: () => ({ setSessionConfigOption: () => config.promise, closeSession: async request => { closed.push(request.sessionId); return {} } }) })
-  const pending = h.sessions.startTask({ afresh: true })
+  const pending = h.sessions.startTask()
   await new Promise<void>(resolve => setImmediate(resolve))
   await h.sessions.closeTask('task')
   assert.equal((await h.sessions.resumeTask({ taskId: 'task' })).ok, true)
@@ -94,7 +92,7 @@ test('a reattachment waits for the previous native close and cannot have its per
     acquire: { fresh: async () => ({ sessionId: 'task' }), resume: async () => { log.push('resume'); return {} } },
     questions: { declineTask: () => { log.push('decline-old') }, pendingOf: () => [] },
   })
-  await h.sessions.startTask({ afresh: true })
+  await h.sessions.startTask()
   const closing = h.sessions.closeTask('task'), pending = h.sessions.resumeTask({ taskId: 'task' })
   await new Promise<void>(resolve => setImmediate(resolve))
   assert.deepEqual(log, ['decline-old', 'closing'])

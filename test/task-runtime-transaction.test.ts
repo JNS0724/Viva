@@ -81,12 +81,19 @@ function setup(t: TestContext, { uncancelled = false } = {}) {
   const kept = () => realStore.list().find((entry) => entry.id === 'task-0001')
   const ended = () => core.since(0).filter((event) => event.kind === 'task.ended')
   const reports = () => effects.list().filter((effect) => effect.kind === 'report').map((effect) => effect.key)
-  return { window, closed, tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
+  /** A task started as the agent starts one (start_background_task), with the segment its words are kept in. */
+  const start = async (brief: string): Promise<Started> => {
+    const { taskId } = await tasks.agent.start(brief)
+    const entry = realStore.list().find((task) => task.id === taskId)
+    assert.ok(entry, `task ${taskId} kept`)
+    return { ok: true, task: { id: taskId, segmentId: entry.segmentId } }
+  }
+  return { start, window, closed, tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
-  const { tasks, failing, snapshots, reported, runDue, status, kept, ended } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, failing, snapshots, reported, runDue, status, kept, ended } = setup(t)
+  const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('写好了。') })
   failing.ending = true
   const before = snapshots.length
@@ -108,8 +115,8 @@ test('a task\'s end that cannot be kept leaves nothing, in the database or in me
 })
 
 test('what the task said cannot be saved: its end is not kept either', async (t) => {
-  const { tasks, failing, runDue, status, kept, ended, history } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, failing, runDue, status, kept, ended, history } = setup(t)
+  const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('写好了。') })
   failing.words = true
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
@@ -124,8 +131,8 @@ test('what the task said cannot be saved: its end is not kept either', async (t)
 })
 
 test('a task\'s run is kept with it: after a relaunch it is the run it ended with; asked again, a new one is kept', async (t) => {
-  const { tasks, make, kept } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, make, kept } = setup(t)
+  const { task } = await start('整理发布说明')
   assert.equal(kept()?.runId, 'run-1', 'kept as it starts')
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   assert.equal(kept()?.runId, 'run-1', 'and as it ends')
@@ -137,8 +144,8 @@ test('a task\'s run is kept with it: after a relaunch it is the run it ended wit
 })
 
 test('dsh restarting while an end is still to be kept: the end is kept on its next try, the task not interrupted', async (t) => {
-  const { tasks, failing, runDue, due, status, kept, ended, reported } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, failing, runDue, due, status, kept, ended, reported } = setup(t)
+  const { task } = await start('整理发布说明')
   failing.ending = true
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   tasks.dsh.gone()
@@ -151,8 +158,8 @@ test('dsh restarting while an end is still to be kept: the end is kept on its ne
 })
 
 test('closing a task lets its end still to be kept go', async (t) => {
-  const { tasks, failing, runDue, due, ended, reported } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, failing, runDue, due, ended, reported } = setup(t)
+  const { task } = await start('整理发布说明')
   failing.ending = true
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   await tasks.window.close(task.id)
@@ -162,8 +169,8 @@ test('closing a task lets its end still to be kept go', async (t) => {
 })
 
 test('a try that runs after its run was replaced ends nothing: the run guards it, not only its cancelling', async (t) => {
-  const { tasks, failing, runDue, due, status, kept, ended, reported } = setup(t, { uncancelled: true })
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, failing, runDue, due, status, kept, ended, reported } = setup(t, { uncancelled: true })
+  const { task } = await start('整理发布说明')
   failing.ending = true
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   tasks.dsh.gone()
@@ -175,8 +182,8 @@ test('a try that runs after its run was replaced ends nothing: the run guards it
 })
 
 test('a run\'s end queues its report in the same transaction: an end not kept queues none', async (t) => {
-  const { tasks, failing, runDue, reports, effects } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, failing, runDue, reports, effects } = setup(t)
+  const { task } = await start('整理发布说明')
   failing.ending = true
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   assert.deepEqual(reports(), [], 'no report for an end not kept')
@@ -185,13 +192,13 @@ test('a run\'s end queues its report in the same transaction: an end not kept qu
   assert.deepEqual(reports(), [`${task.id}:run-1`], 'kept with its end, keyed by its run')
   const [queued] = effects().filter((effect) => effect.kind === 'report')
   const payload = queued.payload as { request: string, topic: string | null, by: string, startedAt: number, token: string }
-  assert.deepEqual([payload.request, payload.by, typeof payload.startedAt], ['整理发布说明', 'user', 'number'], 'its background kept with it: what it was asked, by whom, when')
+  assert.deepEqual([payload.request, payload.by, typeof payload.startedAt], ['整理发布说明', 'agent', 'number'], 'its background kept with it: what it was asked, by whom, when')
   assert.match(payload.token, /^[0-9a-f]{32}$/, 'and a token no one else knows')
 })
 
 test('a new run, or the task closed, lets the report of the run before go; a report is there after a relaunch', async (t) => {
-  const { tasks, make, reports } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, make, reports } = setup(t)
+  const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   const later = make()
   assert.deepEqual(reports(), [`${task.id}:run-1`], 'still there after a relaunch')
@@ -206,10 +213,10 @@ test('a new run, or the task closed, lets the report of the run before go; a rep
 })
 
 test('a task let go among the oldest ended still has its result reported: only a new run or closing it makes it moot', async (t) => {
-  const { tasks, store, reports } = setup(t)
+  const { start, tasks, store, reports } = setup(t)
   // The latest kept have ended later than this one will: it is the oldest, let go as it ends.
   for (let i = 0; i < KEEP_ENDED; i++) store.add({ id: `kept-${i}`, segmentId: 'seg', title: `${i}`, endedAt: Date.now() + 1e9 + i, status: 'done' })
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   assert.equal(store.list().some((entry) => entry.id === task.id), false, 'let go from the store')
   assert.deepEqual(reports(), [`${task.id}:run-1`], 'its report still queued')
@@ -217,9 +224,9 @@ test('a task let go among the oldest ended still has its result reported: only a
 })
 
 test('a task let go among the oldest ended, then closed by the user: its report goes with it', async (t) => {
-  const { tasks, store, reports } = setup(t)
+  const { start, tasks, store, reports } = setup(t)
   for (let i = 0; i < KEEP_ENDED; i++) store.add({ id: `kept-${i}`, segmentId: 'seg', title: `${i}`, endedAt: Date.now() + 1e9 + i, status: 'done' })
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   assert.equal(store.list().some((entry) => entry.id === task.id), false, 'let go from the store')
   assert.deepEqual(reports(), [`${task.id}:run-1`])
@@ -228,8 +235,8 @@ test('a task let go among the oldest ended, then closed by the user: its report 
 })
 
 test('through the event core to the window, a piece keeps its own number: the push\'s `seq` is the event log\'s, `taskSeq` the task\'s', async (t) => {
-  const { tasks, window } = setup(t)
-  const { task } = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const { start, tasks, window } = setup(t)
+  const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('先看') })
   tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('提交') })
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
@@ -241,12 +248,12 @@ test('through the event core to the window, a piece keeps its own number: the pu
 })
 
 test('a task whose start cannot be kept: its session let go, its place given back, nothing of it kept', async (t) => {
-  const { tasks, failing, closed, store } = setup(t)
+  const { start, tasks, failing, closed, store } = setup(t)
   failing.words = true
-  await assert.rejects(tasks.window.start({ text: '整理发布说明' }), /disk full/)
+  await assert.rejects(start('整理发布说明'), /disk full/)
   assert.deepEqual(closed, ['task-0001'], 'the session dsh made for it, let go')
   assert.deepEqual(store.list(), [], 'no task kept')
   failing.words = false
-  const again = await tasks.window.start({ text: '整理发布说明' }) as Started
+  const again = await start('整理发布说明')
   assert.equal(again.ok, true, 'its place given back')
 })

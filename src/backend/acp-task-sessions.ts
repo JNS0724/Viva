@@ -1,6 +1,5 @@
 import type { ClientSideConnection, NewSessionResponse, ResumeSessionResponse, SessionConfigOption } from '@agentclientprotocol/sdk'
 import type { AcpOperations } from './acp-operations.ts'
-import type { ForkPoint, ForkResult } from './fork-channel.ts'
 import type { SteerResult } from '../shared/agent-info.ts'
 
 type Choice = { id: string } & ({ type: 'select', currentValue: string } | { type: 'boolean', currentValue: boolean })
@@ -13,12 +12,11 @@ const choices = (options: readonly SessionConfigOption[] | null | undefined): re
 const resultOf = (result: Acquired): Started => result.ok ? { ok: true, taskId: result.taskId } : result
 
 /** Native attachment/request identities only. TaskRuntime owns admission, application runs, status and storage. */
-export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, fork, operations, permissions, questions, steer, markReadOnly, emit, describeError, goneMessage, stoppedMessage }: {
+export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, markReadOnly, emit, describeError, goneMessage, stoppedMessage }: {
   connection: () => Pick<ClientSideConnection, 'setSessionConfigOption' | 'closeSession'>
   acquire: { resume: (id: string, cwd: string) => Promise<ResumeSessionResponse>, fresh: (cwd: string) => Promise<NewSessionResponse> }
   foreground: () => { sessionId: string | null, cwd: string, config: readonly SessionConfigOption[] | null }
   canResume: () => boolean, prepareFresh: () => void
-  fork: (point: ForkPoint) => Promise<ForkResult>
   operations: Pick<AcpOperations, 'run' | 'cancelInTime' | 'count'>
   permissions: { pendingFor: (id: string) => readonly unknown[], waitingSessions: () => Set<string> }
   questions: { declineTask: (id: string) => void, pendingOf: (id: string) => readonly unknown[] }
@@ -86,26 +84,18 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     }
     return current(id, attachment)
   }
-  async function start({ words, afresh = false, cwd }: { words?: string, afresh?: boolean, cwd?: string } = {}): Promise<Acquired> {
+  /** A task's session, fresh (the agent hands it a brief), working where the conversation does unless told `cwd`. */
+  async function start({ cwd }: { cwd?: string } = {}): Promise<Acquired> {
     const origin = foreground(), source = choices(origin.config)
     if (disposed || !origin.sessionId) return { ok: false, reason: 'missing' }
-    const directory = afresh && cwd ? cwd : origin.cwd
     let acquired: { id: string, attachment: Attachment } | null = null
     try {
-      const forked = afresh ? { ok: false as const } : await fork(words ? { words, occurrence: 0 } : {})
-      if (disposed) { if (forked.ok) await closeNative(forked.sessionId); return { ok: false, reason: 'unavailable' } }
-      if (forked.ok) {
-        const taken = await resume({ taskId: forked.sessionId, cwd: directory })
-        if (!taken.ok) return taken
-        acquired = { id: taken.taskId, attachment: taken.attachment }
-      } else {
-        const response = await acquire.fresh(directory)
-        const attachment: Attachment = { attached: true, unattended: false, config: choices(response.configOptions) ?? [] }
-        acquired = { id: response.sessionId, attachment }
-        if (disposed) { await release(acquired.id, attachment); return { ok: false, reason: 'unavailable' } }
-        prepareFresh()
-        sessions.set(acquired.id, attachment)
-      }
+      const response = await acquire.fresh(cwd ?? origin.cwd)
+      const attachment: Attachment = { attached: true, unattended: false, config: choices(response.configOptions) ?? [] }
+      acquired = { id: response.sessionId, attachment }
+      if (disposed) { await release(acquired.id, attachment); return { ok: false, reason: 'unavailable' } }
+      prepareFresh()
+      sessions.set(acquired.id, attachment)
       if (!await matchConfig(acquired.id, acquired.attachment, source)) { await release(acquired.id, acquired.attachment); return { ok: false, reason: 'unavailable' } }
       return { ok: true, taskId: acquired.id, attachment: acquired.attachment }
     } catch (error) {
@@ -130,7 +120,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     })
   }
   async function startReadOnlyTask({ cwd }: { cwd: string }): Promise<Started> {
-    const started = await start({ afresh: true, cwd })
+    const started = await start({ cwd })
     if (!started.ok) return started
     const { taskId, attachment } = started
     if (!current(taskId, attachment)) return { ok: false, reason: 'unavailable' }
@@ -156,7 +146,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
   return {
     has, startReadOnlyTask, promptTask, cancelTask, closeTask,
     resumeTask: async (request: Parameters<typeof resume>[0]): Promise<Started> => resultOf(await resume(request)),
-    startTask: async (request: Parameters<typeof start>[0] = {}): Promise<Started> => resultOf(await start(request)),
+    startTask: async (): Promise<Started> => resultOf(await start()),
     taskOf: (id: string) => has(id) ? id : null,
     isUnattended: (id: string) => sessions.get(id)?.unattended === true,
     async steerTask(id: string, text: string): Promise<SteerResult> {

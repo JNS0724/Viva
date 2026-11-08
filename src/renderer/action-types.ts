@@ -169,10 +169,6 @@ export interface ActionPayloads extends ConversationPayloads {
   workdir_switching: {}
   workdir_failed: { message: string | null }
   tasks_list_folded: { folded: boolean }
-  task_submitting: { submission: State['tasks']['submissions'][number] }
-  task_submit_failed: { id: string, problem: string }
-  task_submit_dismissed: { id: string }
-  task_started: { submissionId: string, origin?: string | null, task?: import('../shared/ipc-results.ts').TaskSummary, text?: string, at?: number, hostSession?: string | null }
   task_asked: { taskId: string, text: string, at: number }
   tasks_restored: { list: readonly KeptTask[] }
   tasks_page_open: { taskId?: string | null }

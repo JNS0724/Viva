@@ -352,8 +352,6 @@ html:not([data-platform="darwin"]) .titlebar {
 .msg-user .msg-fold-toggle { display: block; margin-left: auto; white-space: normal; }
 /* Going back to something the user said (view/rewind.js): a bar beside the bubble, shown on hover or focus. */
 .msg-user-row { position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
-.task-submission { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-.task-submit-status { color: var(--ink-3); font-size: 12px; }
 .msg-user-row > .rewind-bar { position: absolute; right: 0; bottom: 100%; margin-bottom: 2px; z-index: 1; background: var(--bg); }
 .rewind-bar {
   display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel-2);
