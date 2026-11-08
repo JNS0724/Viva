@@ -121,7 +121,9 @@ function renderThreadFollowing(dom: Dom, state: State, handlers: Handlers, now: 
 
 /** The drawer only depends on these slices; skipping identical renders keeps its scroll and hover state intact. */
 function renderDrawerIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
-  const inputs = [localeRevision(), state.drawer, state.timeline, state.tools, state.thoughts, state.usage, state.phase, state.restoredTrace, state.files, state.info.cwd, state.tasks.list]
+  const inputs = state.drawer === 'files'
+    ? [localeRevision(), state.drawer, state.files, state.timeline, state.tools, state.info.cwd]
+    : [localeRevision(), state.drawer, state.timeline, state.tools, state.thoughts, state.usage, state.restoredTrace]
   if (inputs.every((value, i) => value === renderedDrawerInputs[i])) return
   renderedDrawerInputs = inputs
   renderDrawer(container, state, handlers)

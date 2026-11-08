@@ -5,6 +5,7 @@ import { filesView } from './files-panel.ts'
 import { h, label } from './dom.ts'
 import { icon } from './icons.ts'
 import { drawerScrollPlan, scrollSnapshot } from './scroll-follow.ts'
+import { queueLayout, reconcileChildren } from './reconcile.ts'
 
 let TABS = [
   { id: 'trace', name: t("drawer.activity") },
@@ -18,29 +19,74 @@ let RESTORED_TRACE_NOTES: Readonly<Record<string, string>> = {
   unavailable: t("drawer.earlier.activity.is.unavailable.dsh.logs.may"),
 }
 
-function traceView(state: State): View[] {
+type TraceItem = ReturnType<typeof traceItems>[number]
+const traceRows = new WeakMap<HTMLElement, Map<string, { item: TraceItem, node: HTMLElement }>>()
+
+function traceView(state: State, body: HTMLElement): View[] {
   const items = traceItems(state)
   const usage = usageLabel(state.usage)
   const note = RESTORED_TRACE_NOTES[state.restoredTrace]
-  return [
-    note ? h('div', { class: 'trace-note', text: note }) : null,
-    usage ? label(usage) : null,
-    items.length
-      ? h('ol', { class: 'trace' }, items.map((item: { tone: string, title: string, time: string, detail?: string }) => h('li', { class: 'trace-row' },
+  const previous = traceRows.get(body)
+  const next = new Map<string, { item: TraceItem, node: HTMLElement }>()
+  const rows = items.map(item => {
+    const cached = previous?.get(item.key)
+    const node = cached && cached.item.title === item.title && cached.item.detail === item.detail
+      && cached.item.time === item.time && cached.item.tone === item.tone ? cached.node
+      : h('li', { class: 'trace-row' },
         h('span', { class: 'trace-rail' }, h('span', { class: 'dot', 'data-tone': item.tone }), h('span', { class: 'line' })),
         h('div', { class: 'trace-main' },
           h('div', { class: 'row-between' },
             h('span', { class: 'trace-title', text: item.title }),
             h('span', { class: 'trace-time', text: item.time })),
-          item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))))
-      : empty(t("drawer.the.assistant.s.thoughts.and.tool.calls")),
+          item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))
+    next.set(item.key, { item, node })
+    return node
+  })
+  traceRows.set(body, next)
+  const list = body.querySelector<HTMLOListElement>(':scope > .trace') ?? h('ol', { class: 'trace' })
+  reconcileChildren(list, rows)
+  const noteNode = body.querySelector<HTMLElement>(':scope > .trace-note') ?? h('div', { class: 'trace-note' })
+  if (noteNode.textContent !== (note ?? '')) noteNode.textContent = note ?? ''
+  const usageNode = body.querySelector<HTMLElement>(':scope > .label') ?? label('')
+  if (usageNode.textContent !== usage) usageNode.textContent = usage
+  return [
+    note ? noteNode : null,
+    usage ? usageNode : null,
+    items.length ? list : empty(t("drawer.the.assistant.s.thoughts.and.tool.calls")),
   ]
 }
 
-const TAB_VIEWS: Readonly<Record<string, (state: State, handlers: Handlers) => View[]>> = { trace: traceView, files: filesView }
+type DrawerView = {
+  body: HTMLElement, tabs: HTMLButtonElement[], close: HTMLButtonElement,
+  handlers: Handlers, scroll: ReturnType<typeof scrollSnapshot>,
+}
+const drawers = new WeakMap<HTMLElement, DrawerView>()
 
-/** Background tasks have a page of their own (view/tasks-page.js); the drawer is the conversation's. */
-const bodyOf = (state: State, handlers: Handlers) => (TAB_VIEWS[state.drawer] ?? traceView)(state, handlers)
+function createDrawer(container: HTMLElement, handlers: Handlers): DrawerView {
+  const view: DrawerView = {
+    handlers, scroll: null,
+    body: h('div', { class: 'drawer-body', role: 'tabpanel' }),
+    tabs: TABS.map(tab => h('button', { class: 'tab', role: 'tab', onClick: () => view.handlers.openDrawer(tab.id) })),
+    close: h('button', { class: 'icon-btn' }, icon('close', 16)),
+  }
+  view.close.addEventListener('click', () => view.handlers.closeDrawer())
+  const yieldToReader = () => {
+    view.scroll = { tab: container.dataset.tab ?? '', top: view.body.scrollTop, atBottom: false }
+  }
+  view.body.addEventListener('wheel', event => { if (event.deltaY < 0) yieldToReader() }, { passive: true })
+  view.body.addEventListener('keydown', event => {
+    if (!event.isComposing && event.keyCode !== 229 && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) yieldToReader()
+  })
+  view.body.addEventListener('scroll', () => {
+    const next = scrollSnapshot(view.body, container.dataset.tab ?? '')!
+    if (next.top === view.scroll?.top && next.tab === view.scroll.tab) return
+    if (view.scroll?.tab === next.tab && next.top < view.scroll.top) next.atBottom = false
+    view.scroll = next
+  }, { passive: true })
+  container.append(h('div', { class: 'drawer-head' }, h('div', { class: 'tabs', role: 'tablist' }, view.tabs), view.close), view.body)
+  drawers.set(container, view)
+  return view
+}
 
 /** Right-hand drawer, opened from the title bar: the trace and the files the agent touched. */
 export function renderDrawer(container: HTMLElement, state: State, handlers: Handlers) {
@@ -48,32 +94,43 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
   if (!state.drawer) {
     container.dataset.tab = ''
     container.replaceChildren()
+    drawers.delete(container)
     return
   }
-  const before = scrollSnapshot(container.querySelector('.drawer-body'), container.dataset.tab ?? '')
+  const view = drawers.get(container) ?? createDrawer(container, handlers)
+  view.handlers = handlers
+  if (container.dataset.tab !== state.drawer) view.scroll = null
+  view.tabs.forEach((button, index) => {
+    const tab = TABS[index]
+    if (button.textContent !== tab.name) button.textContent = tab.name
+    const selected = String(tab.id === state.drawer)
+    if (button.getAttribute('aria-selected') !== selected) button.setAttribute('aria-selected', selected)
+  })
+  const closeLabel = t('drawer.close.panel')
+  if (view.close.getAttribute('aria-label') !== closeLabel) view.close.setAttribute('aria-label', closeLabel)
   // The 文件 tab scrolls inside: its tree, and its preview while the same file is shown.
-  const tree = container.querySelector('.file-tree')?.scrollTop ?? 0
-  const shown = container.querySelector<HTMLElement>('.file-preview[data-path]')
+  const tree = view.body.querySelector('.file-tree')?.scrollTop ?? 0
+  const shown = view.body.querySelector<HTMLElement>('.file-preview[data-path]')
   const preview = shown ? { path: shown.dataset.path, top: shown.scrollTop } : null
-  container.replaceChildren(
-    h('div', { class: 'drawer-head' },
-      h('div', { class: 'tabs', role: 'tablist' }, TABS.map((tab) => h('button', {
-        class: 'tab',
-        role: 'tab',
-        'aria-selected': String(tab.id === state.drawer),
-        text: tab.name,
-        onClick: () => handlers.openDrawer(tab.id),
-      }))),
-      h('button', { class: 'icon-btn', 'aria-label': t("drawer.close.panel"), onClick: handlers.closeDrawer }, icon('close', 16))),
-    h('div', { class: 'drawer-body', role: 'tabpanel' }, bodyOf(state, handlers)))
-  const body = container.querySelector('.drawer-body')
-  const plan = drawerScrollPlan(before, state.drawer)
-  if (body) body.scrollTop = plan.stickToBottom ? body.scrollHeight : plan.top
+  const content = state.drawer === 'files' ? filesView(state, handlers) : traceView(state, view.body)
+  reconcileChildren(view.body, content.filter((node): node is Node | string => node !== null && node !== undefined && node !== false))
   container.dataset.tab = state.drawer
-  const treeNow = container.querySelector('.file-tree')
-  if (treeNow) treeNow.scrollTop = tree
-  const previewNow = container.querySelector<HTMLElement>('.file-preview[data-path]')
-  if (previewNow && preview && previewNow.dataset.path === preview.path) previewNow.scrollTop = preview.top
+  const tab = state.drawer
+  queueLayout(view.body, () => {
+    if (!view.body.isConnected || container.dataset.open !== 'true' || container.dataset.tab !== tab) return
+    const plan = drawerScrollPlan(view.scroll, tab)
+    const bottom = plan.stickToBottom ? Math.max(0, view.body.scrollHeight - view.body.clientHeight) : null
+    return () => {
+      if (bottom !== null && drawerScrollPlan(view.scroll, tab).stickToBottom) {
+        view.scroll = { tab, top: bottom, atBottom: true }
+        view.body.scrollTop = bottom
+      }
+      const treeNow = view.body.querySelector('.file-tree')
+      if (treeNow) treeNow.scrollTop = tree
+      const previewNow = view.body.querySelector<HTMLElement>('.file-preview[data-path]')
+      if (previewNow && preview && previewNow.dataset.path === preview.path) previewNow.scrollTop = preview.top
+    }
+  })
 }
 
 onLocaleChange(() => {

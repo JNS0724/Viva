@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { checkIslandLayouts } from './island-layout.ts'
+import { checkStreamingDrawer } from './drawer-interaction.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
 declare global { interface Window { vivaDraftAudit?: Array<{ key: string, version: number, sequence: number, epoch: number, owner: string, chars: number, files: number, images: number }> } }
@@ -147,7 +148,7 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   } finally { await desk.force(false) }
 })
 
-test('a real embedded agent answers and history survives a restart', async ({ scenario }) => {
+test('a real embedded agent answers and history survives a restart', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'memory', bridge: 'real' })
   let session = await run.start('send')
   await session.page.locator('#composer-input').fill('你好，外部冒烟验证')
@@ -157,6 +158,7 @@ test('a real embedded agent answers and history survives a restart', async ({ sc
   session = await run.start('restart')
   await expect(session.page.locator('.msg-user').last()).toContainText('外部冒烟验证')
   await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('外部冒烟验证')
+  await checkStreamingDrawer(session, info)
 })
 
 test('centred chat avatars and the folded desktop island animate without restarting on refresh', async ({ scenario }, info) => {
