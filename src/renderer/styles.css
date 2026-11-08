@@ -27,7 +27,7 @@
   /* The maid's own cream (view/maid.ts): her pictures come on it, so her disc is it. Used for her and nothing else. */
   --maid-paper: #FAF7F2;
   --font-sans: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Consolas, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', ui-monospace, monospace;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Consolas, Menlo, Monaco, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', ui-monospace, monospace;
   --font-dot: 'Doto', 'JetBrains Mono', ui-monospace, monospace;
   --radius-tile: 28px;
   /* main's window-options.ts TITLEBAR_HEIGHT matches it; the island (36px, view/island-dom.ts) is centred in it. */

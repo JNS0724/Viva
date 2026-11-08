@@ -97,7 +97,7 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
       const mono = document.createElement('span')
       mono.id = 'island-cjk-probe'
       mono.className = 'mono'
-      mono.textContent = '中文示例 Model'
+      mono.textContent = '中文示例 iiiiWWWW'
       const profile = document.createElement('div')
       profile.className = 'profile'
       const field = document.createElement('input')
@@ -106,12 +106,20 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
       profile.append(field)
       gallery.append(mono, profile)
       const placeholder = getComputedStyle(field, '::placeholder')
+      const range = document.createRange()
+      range.setStart(mono.firstChild!, 5)
+      range.setEnd(mono.firstChild!, 9)
+      const narrowWidth = range.getBoundingClientRect().width
+      range.setStart(mono.firstChild!, 9)
+      range.setEnd(mono.firstChild!, 13)
+      const wideWidth = range.getBoundingClientRect().width
       return { results, typography: { profileFamily: getComputedStyle(field).fontFamily,
-        placeholder: placeholder.color, placeholderOpacity: placeholder.opacity } }
+        placeholder: placeholder.color, placeholderOpacity: placeholder.opacity, narrowWidth, wideWidth } }
     })
     expect(typography.profileFamily).toContain('Space Grotesk')
     expect(typography.placeholder).toBe('rgb(118, 134, 166)')
     expect(typography.placeholderOpacity).toBe('1')
+    expect(Math.abs(typography.narrowWidth - typography.wideWidth)).toBeLessThan(0.1)
     const cdp = await page.context().newCDPSession(page)
     try {
       await cdp.send('DOM.enable')
