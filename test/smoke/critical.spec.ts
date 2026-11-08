@@ -1,15 +1,28 @@
 import { test, expect } from './fixtures.ts'
 import { createHash } from 'node:crypto'
+import { checkIslandLayouts } from './island-layout.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
 
-test('fresh app opens usable settings without a model', async ({ scenario }) => {
+test('fresh app opens usable settings without a model', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'setup', bridge: 'real' })
-  const { page } = await run.start('startup')
+  const session = await run.start('startup')
+  const { page } = session
   await expect(page.locator('#composer-input')).toBeDisabled()
   await page.getByRole('button', { name: '回顾、后台、关于你和设置', exact: true }).click()
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.locator('#settings-root')).toBeVisible()
+  await checkIslandLayouts(page, info)
+  const desk = session.hooks.desk()
+  await desk.force(true)
+  try {
+    await desk.openInput()
+    await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
+    const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    await desktop.getByRole('button', { name: '去设置', exact: true }).click()
+    await expect(page.locator('#settings-root')).toBeVisible()
+    await expect.poll(() => desk.inputOpen()).toBe(false)
+  } finally { await desk.force(false) }
 })
 
 test('a real embedded agent answers and history survives a restart', async ({ scenario }) => {
@@ -54,7 +67,11 @@ test('centred chat avatars and the folded desktop island animate without restart
     const coach = desktop.locator('.isl[data-form="coach"] .isl-btn-blue')
     if (await coach.isVisible()) await coach.click()
     await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'false')
-    await expect(desktop.locator('.isl-face .maid-image')).toHaveAttribute('src', /\/maid\/\w+-motion\.webp$/)
+    await expect.poll(() => desktop.locator('.isl').evaluate(element => {
+      const portrait = element.querySelector<HTMLElement>('.maid')!
+      const image = portrait.querySelector<HTMLImageElement>('img')!
+      return portrait.dataset.framing === (element.dataset.layout === 'rest' ? 'whole' : 'face') && /-motion\.webp$/.test(image.src)
+    })).toBe(true)
     await desktop.screenshot({ path: info.outputPath('animated-desktop.png') })
     await desktop.emulateMedia({ reducedMotion: 'reduce' })
     await expect.poll(() => desktop.locator('.isl-face .maid-image').evaluate((image: HTMLImageElement) => image.currentSrc)).toMatch(/\/[a-z]+\.webp$/)
@@ -85,17 +102,18 @@ test('centred chat avatars and the folded desktop island animate without restart
     document.body.append(gallery)
     await Promise.all([...gallery.querySelectorAll('img')].map(image => image.decode()))
     const face = island.el.querySelector('.isl-face')!
-    const original = face.firstChild
     let replacements = 0
     const observer = new MutationObserver(records => { replacements += records.length })
     observer.observe(face, { childList: true })
     island.setPointer(true)
     await new Promise(resolve => setTimeout(resolve, 450))
+    const hovered = face.firstChild
+    island.update({ form: 'mini', mood: 'idle', tone: 'quiet', label: '', recent: [] }, { now: Date.now() + 1000 })
     observer.disconnect()
     return { loaded: [...gallery.querySelectorAll('img')].every(image => image.naturalWidth > 0), count: gallery.querySelectorAll('img').length,
-      replacements, retained: face.firstChild === original, folded: island.el.dataset.open, hovered: Boolean(island.el.querySelector('.isl-grip')) }
+      replacements, retained: face.firstChild === hovered, folded: island.el.dataset.open, hovered: Boolean(island.el.querySelector('.isl-grip')) }
   })
-  expect(stateGallery).toEqual({ loaded: true, count: 21, replacements: 0, retained: true, folded: 'false', hovered: true })
+  expect(stateGallery).toEqual({ loaded: true, count: 21, replacements: 1, retained: true, folded: 'false', hovered: true })
   await page.screenshot({ path: info.outputPath('all-animated-states.png') })
   await page.locator('#portrait-gallery').evaluate(gallery => gallery.remove())
 

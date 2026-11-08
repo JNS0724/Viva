@@ -3,12 +3,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createDeskIsland, DESK_TIMES, deskForm } from '../src/shell/desk-island.ts'
+import { createDeskIsland, DESK_TIMES, LAYOUT_READY_MS, deskForm } from '../src/shell/desk-island.ts'
+import type { BrowserWindow, Display, Rectangle } from 'electron'
+import type { Places } from '../src/shell/desk-place.ts'
 import { deskMenuTemplate } from '../src/shell/desk-menu.ts'
 import { describeDropped, MISSING, NOT_A_FILE } from '../src/shell/island-files.ts'
 import { ASK_LIMITS, checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from '../src/shell/island-ipc.ts'
 
-const view = (form, extra = {}) => ({ form, tone: 'idle', mood: 'idle', label: 'x', recent: [], ...extra })
+const view = (form: string, extra: Record<string, unknown> = {}) => ({ form, tone: 'idle', mood: 'idle', label: 'x', recent: [], ...extra })
 const away = { enabled: true, away: true, sinceDone: 0 }
 
 test('the desktop island shows once the window is closed to the tray: what goes on, else just the cat', () => {
@@ -96,11 +98,22 @@ test('dropped files are described; a folder or a missing file is refused with a 
 /** Stand-ins for Electron's window and screen, recording what the island asks of them. */
 function fakes({ cursor = { x: 0, y: 0 } } = {}) {
   const display = { id: 1, workArea: { x: 0, y: 25, width: 1440, height: 875 } }
-  const windows = []
+  const windows: FakeWindow[] = []
   class FakeWindow {
-    constructor(options) {
+    visible: boolean
+    focusable: boolean
+    focused: boolean
+    bounds: Rectangle
+    ignoring: boolean[]
+    sent: Array<[string, { form: string, dragging: boolean, dir: string, coach: boolean, layoutVersion: number }]>
+    handlers: Record<string, () => void>
+    webContents: { send: (channel: string, payload: FakeWindow['sent'][number][1]) => void, on: (event: string, callback: () => void) => void, setWindowOpenHandler: () => void }
+    onTop = false
+    destroyed = false
+    shape: Rectangle[] = []
+    constructor(options: { focusable?: boolean, width: number, height: number }) {
       this.visible = false
-      this.focusable = options.focusable
+      this.focusable = Boolean(options.focusable)
       this.focused = false
       this.bounds = { x: 0, y: 0, width: options.width, height: options.height }
       this.ignoring = []
@@ -113,14 +126,14 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
       }
       windows.push(this)
     }
-    setAlwaysOnTop(value) { this.onTop = value }
+    setAlwaysOnTop(value: boolean) { this.onTop = value }
     isAlwaysOnTop() { return Boolean(this.onTop) }
-    setShape(rects) { this.shape = rects }
+    setShape(rects: Rectangle[]) { this.shape = rects }
     setVisibleOnAllWorkspaces() {}
     setContentProtection() {}
-    setIgnoreMouseEvents(value) { this.ignoring.push(value) }
+    setIgnoreMouseEvents(value: boolean) { this.ignoring.push(value) }
     loadFile() {}
-    on(event, callback) { this.handlers[event] = callback }
+    on(event: string, callback: () => void) { this.handlers[event] = callback }
     isDestroyed() { return Boolean(this.destroyed) }
     destroy() {
       this.destroyed = true
@@ -129,32 +142,32 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     isVisible() { return this.visible }
     showInactive() { this.visible = true }
     hide() { this.visible = false }
-    setBounds(bounds) { this.bounds = bounds }
+    setBounds(bounds: Rectangle) { this.bounds = bounds }
     getBounds() { return this.bounds }
     // As on Windows: changing whether the window takes the keyboard loses its place on top (DeepSeek, 2026-10-26).
-    setFocusable(value) {
+    setFocusable(value: boolean) {
       this.focusable = value
       this.onTop = false
     }
     focus() { this.focused = this.focusable; this.onTop = false }
     isFocused() { return this.focused }
     blur() { this.focused = false }
-    lastView() { return this.sent.filter(([channel]) => channel === 'island:view').at(-1)?.[1] }
+    lastView() { return this.sent.filter(([channel]) => channel === 'island:view').at(-1)![1] }
   }
   const screen = {
-    getAllDisplays: () => [display],
-    getDisplayMatching: () => display,
-    getDisplayNearestPoint: () => display,
+    getAllDisplays: () => [display as Display],
+    getDisplayMatching: () => display as Display,
+    getDisplayNearestPoint: () => display as Display,
     getCursorScreenPoint: () => ({ ...cursor }),
   }
-  let saved = { last: null, places: {} }
-  const places = { get: () => saved, set: (value) => { saved = value } }
+  let saved: Places = { last: null, places: {} }
+  const places = { get: () => saved, set: (value: Places) => { saved = value } }
   return { windows, screen, cursor, places, saved: () => saved, BrowserWindow: FakeWindow }
 }
 
-function deskIsland(env, extra = {}) {
+function deskIsland(env: ReturnType<typeof fakes>, extra: Partial<Parameters<typeof createDeskIsland>[0]> = {}) {
   const desk = createDeskIsland({
-    BrowserWindow: env.BrowserWindow, screen: env.screen, preload: 'p', page: 'q', mainWindow: { getBounds: () => ({}) },
+    BrowserWindow: env.BrowserWindow as unknown as typeof BrowserWindow, screen: env.screen, preload: 'p', page: 'q', mainWindow: { getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }) },
     enabled: true, places: env.places, ...extra,
   })
   desk.setAway(true)
@@ -250,6 +263,7 @@ test('dragged, the island shrinks to its head, follows the pointer at each frame
   const [win] = env.windows
   win.handlers['did-finish-load']()
   desk.startDrag()
+  desk.setIslandRect({ x: 260, y: 136, width: 80, height: 80 }, win.lastView().layoutVersion, true)
   assert.deepEqual([win.lastView().dragging, win.bounds], [true, { x: -12, y: 13, width: 104, height: 104 }], 'just the island, under the pointer, kept on the screen')
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
   t.mock.timers.tick(200)
@@ -319,8 +333,8 @@ test('the first time the cat rests on the desktop it says what it can do, until 
 })
 
 test('the right-click menu: ask, open, stop only while working, put back, hide for now or for good', () => {
-  const calls = []
-  const make = (working) => deskMenuTemplate({
+  const calls: string[] = []
+  const make = (working: boolean) => deskMenuTemplate({
     working, shortcut: 'CommandOrControl+Shift+Space',
     ask: () => calls.push('ask'), open: () => calls.push('open'), stop: () => calls.push('stop'),
     resetPlace: () => calls.push('reset'), hide: () => calls.push('hide'), switchOff: () => calls.push('off'),
@@ -330,9 +344,12 @@ test('the right-click menu: ask, open, stop only while working, put back, hide f
     '提问…', '打开 Viva 窗口', '停止', '放回顶部正中', '先隐藏（下次关闭窗口时再出现）', '不再显示桌面岛（可在设置里打开）',
   ])
   assert.equal(items[0].registerAccelerator, false, 'the shortcut is shown, not registered twice')
-  for (const item of items) item.click()
+  for (const item of items) {
+    assert.ok(item.click)
+    Reflect.apply(item.click, undefined, [])
+  }
   assert.deepEqual(calls, ['ask', 'open', 'stop', 'reset', 'hide', 'off'])
-  assert.equal(make(false).find((item) => item.label === '停止').enabled, false)
+  assert.equal(make(false).find((item) => item.label === '停止')?.enabled, false)
 })
 
 test('the island may open its menu, open its input and say the user has seen what it can do', () => {
@@ -354,7 +371,7 @@ test('hidden from its menu, the island stays away until the window is next close
   assert.equal(win.visible, false)
   desk.setAway(false)
   desk.setAway(true)
-  assert.equal(env.windows.at(-1).visible, true, 'back once the window is closed again')
+  assert.equal(env.windows.at(-1)?.visible, true, 'back once the window is closed again')
   desk.destroy()
 })
 
@@ -368,7 +385,78 @@ test('gone and back, the island is a new window, letting the pointer through unt
   assert.equal(first.isDestroyed(), true, 'closed, not hidden: on Windows a hidden one shown again lost its left button presses')
   desk.setAway(true)
   const second = env.windows.at(-1)
+  assert.ok(second)
   assert.notEqual(second, first)
   assert.deepEqual([second.visible, second.ignoring], [true, [true]])
   desk.destroy()
+})
+
+test('drag resizing waits for the current compact layout and rejects stale or incomplete reports', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes({ cursor: { x: 700, y: 200 } })
+  const desk = deskIsland(env)
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  desk.startDrag()
+  const version = win.lastView().layoutVersion
+  const compact = { x: 260, y: 136, width: 80, height: 80 }
+  assert.equal(win.bounds.width, 600)
+  desk.dragMove()
+  desk.setIslandRect(compact, version - 1, true)
+  desk.setIslandRect(compact, version, false)
+  desk.setIslandRect({ ...compact, width: 520 }, version, true)
+  assert.equal(win.bounds.width, 600)
+  desk.setIslandRect(compact, version, true)
+  assert.deepEqual(win.bounds, { x: 648, y: 148, width: 104, height: 104 })
+  if (process.platform === 'win32') assert.deepEqual(win.shape, [{ x: 8, y: 8, width: 88, height: 88 }])
+  desk.destroy()
+})
+
+test('a quick release saves the latest cursor and invalidates the outstanding compact acknowledgement', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes({ cursor: { x: 700, y: 200 } })
+  const desk = deskIsland(env)
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  desk.startDrag()
+  const oldVersion = win.lastView().layoutVersion
+  Object.assign(env.cursor, { x: 1080, y: 681.25 })
+  desk.endDrag()
+  desk.setIslandRect({ x: 12, y: 12, width: 80, height: 80 }, oldVersion, true)
+  t.mock.timers.tick(LAYOUT_READY_MS + 1)
+  assert.equal(win.bounds.width, 600)
+  assert.equal(win.lastView().dragging, false)
+  assert.ok(win.lastView().layoutVersion > oldVersion)
+  assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: .75, fy: .75 } } })
+  desk.destroy()
+})
+
+test('a delayed renderer keeps a full surface until its compact acknowledgement arrives', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes({ cursor: { x: 900, y: 500 } })
+  const desk = deskIsland(env)
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  desk.startDrag()
+  const version = win.lastView().layoutVersion
+  t.mock.timers.tick(LAYOUT_READY_MS + 1)
+  assert.deepEqual(win.bounds, { x: 600, y: 324, width: 600, height: 352 })
+  desk.setIslandRect({ x: 260, y: 136, width: 80, height: 80 }, version, true)
+  assert.deepEqual(win.bounds, { x: 848, y: 448, width: 104, height: 104 })
+  desk.endDrag()
+  assert.equal(win.ignoring.at(-1), true)
+  desk.setIslandRect({ x: 80, y: 10, width: 440, height: 72 }, version, true)
+  assert.equal(win.ignoring.at(-1), true)
+  desk.setIslandRect({ x: 80, y: 10, width: 440, height: 72 }, win.lastView().layoutVersion, true)
+  if (process.platform === 'win32') assert.deepEqual(win.shape, [{ x: 76, y: 6, width: 448, height: 80 }])
+  desk.destroy()
+})
+
+test('layout acknowledgements cross IPC with a finite version and a boolean readiness flag', () => {
+  const rect = { kind: 'rect', x: 0, y: 0, width: 80, height: 80 }
+  assert.deepEqual(checkIslandAction({ ...rect, version: 3, ready: true }), { ...rect, version: 3, ready: true })
+  for (const version of [-1, .5, Infinity, '1']) assert.equal(checkIslandAction({ ...rect, version, ready: true }), null)
+  assert.equal(checkIslandAction({ ...rect, ready: true }), null)
+  assert.equal(checkIslandAction({ ...rect, version: 1, ready: 'yes' }), null)
+  assert.deepEqual(checkIslandAction({ kind: 'settings', path: '/other' }), { kind: 'settings' })
 })

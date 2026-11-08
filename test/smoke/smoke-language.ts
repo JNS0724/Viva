@@ -18,7 +18,7 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
   await run(win, `window.agent.setLanguage('zh-CN')`)
   await until(win, `document.getElementById('settings-title')?.textContent === '设置'`, 'Chinese settings')
   const preserved = await run(win, `(() => { const input = document.getElementById('settings-key'); return { value: input.value, start: input.selectionStart, end: input.selectionEnd, focused: input === document.activeElement }; })()`)
-  if (preserved.value !== 'unsaved-example' || preserved.start !== 2 || preserved.end !== 5 || !preserved.focused) problems.push('Language switching lost unsaved input or selection')
+  if (preserved.value !== 'unsaved-example' || preserved.start !== 2 || preserved.end !== 5 || !preserved.focused) problems.push('Language switching lost unsaved input or selection: ' + JSON.stringify(preserved))
   await capture(win, outDir, 'language-zh-settings')
   await run(win, `(() => { const select = document.querySelector('select[name="language"]'); select.value = 'en'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`)
   await until(win, `document.getElementById('settings-title')?.textContent === 'Settings'`, 'English language control')

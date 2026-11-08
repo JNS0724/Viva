@@ -13,6 +13,7 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 
 /* ---------- dialog ---------- */
 .profile { width: min(760px, 100%); }
+.profile .field { font-family: var(--font-sans); }
 .profile-head-actions { display: flex; align-items: center; gap: 8px; }
 .profile-intro { display: flex; flex-direction: column; gap: 8px; }
 .profile-section { display: flex; flex-direction: column; gap: 12px; }

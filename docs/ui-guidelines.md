@@ -56,7 +56,7 @@ Mix alpha variants from the token, for example `color-mix(in srgb, var(--accent)
 | Token | Font | Use |
 | --- | --- | --- |
 | `--font-sans` | Space Grotesk → Noto Sans SC → PingFang SC → Microsoft YaHei | Interface and body text |
-| `--font-mono` | JetBrains Mono → SF Mono / Cascadia Mono / Consolas | Data only: paths, shortcuts, keys, code, times, model names |
+| `--font-mono` | JetBrains Mono → SF Mono / Cascadia Mono / Consolas → Noto Sans SC / PingFang / Microsoft YaHei → generic monospace | Paths, shortcuts, keys, code, times and model names, with explicit sans-serif CJK fallback |
 | `--font-dot` | Doto | Large dot-matrix figures, used only for the key status in settings |
 
 Web fonts load from Google Fonts with `display=optional`: if a font can't load, the system font is used and nothing flashes. The CSP allows only fonts.googleapis.com and fonts.gstatic.com, so any new font has to come from there too.
@@ -99,7 +99,7 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 
 ## Layout
 
-- **Title bar.** `--titlebar-h` is 56px and the island, `--island-h`, is 36px, centred in it. The title-bar island carries no picture of her, only a dot in the tone of the moment; the desktop island is 80px with her at 72px. It must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
+- **Title bar.** `--titlebar-h` is 56px and the island, `--island-h`, is 36px, centred in it. The title-bar island uses a state dot. The height must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
 - **Room for window buttons.** On macOS, `--reserve-left` keeps 84px on the left for the traffic lights. On Windows and Linux, `env(titlebar-area-width)` gives how much to leave on the right. This value is set only on `.titlebar`, so resizing the window doesn't invalidate the inherited style of every message.
 - **Status capsule.** It is always centered on the whole window. When space runs out it shrinks first, so it never covers the buttons on either side.
 - **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail.
@@ -120,6 +120,23 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 
 For a new layer, pick one of these existing levels. Don't add new numbers.
 
+### Desktop island layouts
+
+Sizes use the `--desk-*` tokens in `styles.css`. Expansion direction changes placement. Reading order remains header, content and actions.
+
+| Family | Size | Portrait and content |
+| --- | --- | --- |
+| Resting circle | 80px hit area, 72px image | Independently centred portrait, transparent outer space and one 1px outline |
+| Status capsule | 440 × 72px | 48px portrait. Status and elapsed time share the first line, the summary truncates separately, and background counts and tools have their own space |
+| Plain input | Starts at 520 × 112px, at most 320px tall | 56px portrait centred alongside the input group, with 16px left padding. Multiline input grows to 72px |
+| Content card | 440px wide, at most 320px tall | 40px portrait in an approximately 70px header, 16px content padding and an approximately 60px fixed action area |
+
+Permissions, questions, coaching, attachments and background lists share the content card. Long questions and task lists scroll in the body. Attachments have their own scroll area capped at 128px. Content areas support keyboard focus, text selection and scrolling independently of window dragging.
+
+Input preserves drafts. Enter sends, Shift+Enter inserts a line and Esc closes, with IME composition retaining candidate selection. Disconnected input offers settings. Permission and question headers open the main window. Input and coaching close controls use their existing actions.
+
+Dragging waits for a versioned compact-layout acknowledgement before shrinking the native window and discards stale acknowledgements. A readiness timeout keeps the full transparent surface following the pointer. Release restores the host bounds and hit region.
+
 ## Components
 
 Reuse existing components before writing similar styles of your own.
@@ -134,7 +151,7 @@ Reuse existing components before writing similar styles of your own.
   - A card has only one filled main button; the others are outlined or text buttons. See `prompt-card.ts`.
 - **Icon buttons, `.icon-btn`.** 40px (36px in the title bar), 10px radius, `--panel` background. They must have an `aria-label`. The pressed state is `aria-pressed="true"`, which turns the border and icon blue.
 - **Icons.** Use `icon(name, size)` from `view/icons.ts`: 24-unit viewBox, 1.9 stroke, round caps, color from `currentColor`, `aria-hidden`. Add new icons to `ICONS` in the same line style. Don't bring in an icon library.
-- **Fields, `.field`.** 48px, 12px radius, `--bg` background, `--line-2` border, blue border on focus. They use the monospace font by default (keys, paths, model names); `textarea.field` and `select.field` switch to sans. Put fields side by side with `.field-row`.
+- **Fields, `.field`.** 48px, 12px radius, `--bg` background, `--line-2` border, blue border on focus. They use monospace for keys, paths and model names. `textarea.field`, `select.field` and natural-language profile fields use sans. Placeholders use `--ink-3` at opacity 1. Put fields side by side with `.field-row`.
 - **Switches.** A native checkbox, `.switch`, with `accent-color: var(--accent)`. Make the whole row a `.pref-row` label, with the title and description in `.pref-copy`.
 - **Segmented controls, `.seg`.** The selected item has `aria-pressed="true"` and becomes bold on `--raised`.
 - **Tabs, `.tabs` / `.tab`.** The selected tab has `aria-selected="true"`: dark text on blue.
@@ -170,7 +187,7 @@ Elevation (only for things that float):
 Motion:
 
 - Hover, opacity and small moves: 0.1–0.15s. Color, border and shadow: 0.3s.
-- The island resizes on a spring curve, `cubic-bezier(.3, 1.3, .5, 1)`, over 0.5s. Don't use springs anywhere else.
+- The title-bar island resizes with `cubic-bezier(.3, 1.3, .5, 1)` over 0.5s. Desktop width uses a 0.2s ease transition and changes immediately during dragging.
 - Looping animation only means "in progress" or "waiting on you": pulse dots, spinners, breathing, the typing caret, her animations. Where she may move is set in [Her character](#her-character).
 - `prefers-reduced-motion: reduce` turns off all animation and transitions globally. A new looping animation still gets its own reduce rule, with a still state where one is needed (for example, breathing rests at `opacity: .8`).
 
@@ -200,10 +217,10 @@ Ring colors match the interface's state colors: orange waits on you, red is an e
 
 Drawn by `src/renderer/view/maid.ts`:
 
-- **Framing:** `whole` shows the whole half-body picture, used at 200 px on the home page, 96 px on cards, 72 px on the desktop island and 64 px on 动态's details. `face` uses the dedicated centred assets in `avatars/` at 48 px in the conversation. Both sets display their complete canvas without additional zoom or translation.
+- **Framing:** `whole` shows the half-body picture at 200px on the home page, 96px on cards, 72px on the resting desktop island and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 48px in conversation and 40, 48 or 56px in compact desktop layouts. Both sets display their complete canvas.
 - **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Feed lists and details remain still. Reduced motion selects the matching still.
 - **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
-- **On the desktop island** she moves both folded and open. Updates within the same mood retain the image node so the animation is not restarted. `!`, `?` and `✓` badges say what her props can't at small sizes.
+- **On the desktop island** she moves both folded and open. Updates within the same layout and mood retain the image node. Text and a dot convey status, with one thin portrait outline. Other cards retain their existing character badges.
 - **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
 - All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc.
 - After changing assets, check the home page, conversation, approval cards, 动态's details and desktop island, and switch through several states in a row.

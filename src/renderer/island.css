@@ -10,8 +10,6 @@
 }
 /* In the title bar it never grows past the room left between the window's buttons. */
 .isl[data-host="bar"] { max-width: 100%; }
-/* The desktop's: she is the island, 72px and whole, so her expression reads from another app (view/maid.ts). */
-.isl[data-host="desk"] { --isl-head: 80px; --isl-pad: 86px; }
 .isl[data-open="true"] { border-radius: calc(var(--isl-head) / 2); box-shadow: 0 24px 60px rgba(0, 0, 0, .6); }
 .isl[data-tone="idle"] { --isl-dot: var(--ink-3); }
 .isl[data-tone="pending"] { --isl-rim: var(--line-2); --isl-dot: var(--ink-3); }
@@ -26,7 +24,6 @@
 .isl-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
 /* Concentric with the capsule's rounded end: the same gap all round. */
 .isl-face { position: absolute; left: 12.5px; top: 12.5px; pointer-events: none; }
-.isl[data-host="desk"] .isl-face { left: 2.5px; top: 2.5px; }
 .isl-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--isl-dot); transition: background .3s; }
 .isl[data-tone="waiting"] .isl-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 25%, transparent); }
 
@@ -64,7 +61,6 @@
 .isl-head:has(> .isl-ring:last-child) { padding-right: calc((var(--isl-head) - 3px - 16px) / 2); }
 /* The label gives way (…) before the tail does: a long task name never pushes 「✓ 4 做完了」 out of the island. */
 .isl-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 700; }
-.isl[data-host="desk"] .isl-label { font-size: 15px; }
 .isl[data-tone="waiting"] .isl-label { color: var(--orange); }
 .isl[data-tone="error"] .isl-label { color: var(--red); }
 .isl-time { flex: none; font-family: var(--font-mono); color: var(--accent); }
@@ -76,7 +72,6 @@
 .isl-ring path { stroke: var(--accent); }
 
 .isl-panel { position: absolute; left: 0; top: calc(var(--isl-head) - 3px); box-sizing: border-box; padding: 2px 14px 14px var(--isl-pad); }
-.isl[data-host="desk"] .isl-panel { padding: 4px 16px 16px var(--isl-pad); }
 .isl-in { display: flex; flex-direction: column; gap: 12px; animation: isl-in .3s .15s ease-out both; }
 /* Redrawn while already open: no fade again, or a panel redrawn every second never shows (view/island-dom.js). */
 .isl-in-still { animation: none; }
@@ -96,7 +91,6 @@
   height: 34px; padding: 0 14px; border-radius: 10px; border: 1.5px solid transparent; background: none; color: var(--ink);
   font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
 }
-.isl[data-host="desk"] .isl-btn { height: 40px; padding: 0 16px; border-radius: 12px; font-size: 14px; }
 .isl-btn-line, .isl-btn-secondary { border-color: var(--line-2); }
 .isl-btn-line:hover, .isl-btn-secondary:hover { border-color: var(--ink-3); }
 /* What waits on the user, by role (prompt-card.js), as on the thread's card. */
@@ -193,13 +187,6 @@
 .isl-drop b { font-size: 16px; }
 .isl-drop span { font-size: 12px; color: var(--ink-3); }
 
-/* In the lower half of the screen the island unfolds upwards: the head stays put, the panel opens above it. */
-.isl[data-dir="up"] .isl-row, .isl[data-dir="up"] .isl-entry { position: absolute; top: auto; bottom: 0; left: 0; }
-.isl[data-dir="up"] .isl-entry { left: var(--isl-pad); }
-.isl[data-dir="up"] .isl-panel { top: auto; bottom: calc(var(--isl-head) - 3px); }
-.isl[data-host="desk"][data-dir="up"] .isl-panel { padding: 16px 16px 4px var(--isl-pad); }
-.isl[data-host="desk"][data-dir="up"] .isl-face { top: auto; bottom: 2.5px; }
-
 /* The desktop island's own page (desk.html): a transparent window with the island at its top or bottom
    (data-dir), left, centre or right (data-align), as desk-place.js places it; the padding is its STAGE_PAD. */
 html.desk, html.desk body { height: 100%; margin: 0; background: transparent; overflow: hidden; }
@@ -213,6 +200,81 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 /* Windows' native hit region also clips painting, so an outer blur becomes a rectangular plate.
    Keep every desktop state inside its rounded border, including input, drop and drag. */
 .desk-stage .isl[data-host="desk"] { box-shadow: none; }
+
+/* Desktop families (view/island-dom.ts): one portrait outline, explicit content and action ownership. */
+.isl[data-host="desk"] {
+  --isl-head: var(--desk-capsule-height); --isl-rim: var(--line-2);
+  width: var(--desk-capsule-width); height: auto; border-width: 1px; border-color: var(--isl-rim);
+  transition: width .2s ease, border-color .2s ease;
+}
+.isl[data-host="desk"][data-tone="waiting"] { --isl-rim: color-mix(in srgb, var(--orange) 30%, var(--line-2)); }
+.isl[data-host="desk"][data-tone="error"] { --isl-rim: color-mix(in srgb, var(--red) 35%, var(--line-2)); }
+.isl[data-host="desk"][data-tone="error"] .isl-label { color: var(--error-ink); }
+.isl[data-host="desk"] .isl-clip { position: relative; display: flex; flex-direction: column; height: auto; min-height: 0; }
+.isl[data-host="desk"] .isl-row { flex: none; height: calc(var(--desk-capsule-height) - 2px); }
+.isl[data-host="desk"] .isl-face { left: 12px; top: 50%; bottom: auto; transform: translateY(-50%); }
+.isl[data-host="desk"] .maid { box-shadow: 0 0 0 1px var(--line-2); }
+.isl[data-host="desk"] .isl-head {
+  flex: 1; min-width: 0; height: 100%; padding: 0 var(--desk-gap) 0 calc(12px + var(--desk-face-capsule) + var(--desk-pad));
+  gap: var(--desk-gap);
+}
+.isl-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.isl-status { display: flex; align-items: center; gap: 8px; }
+.isl-status .isl-label { flex: none; font-size: 14px; }
+.isl-status .isl-dot { width: 5px; height: 5px; flex: none; box-shadow: none; }
+.isl-status .isl-time { font-size: 11px; color: var(--ink-3); }
+.isl-copy .isl-more { display: block; font-size: 12px; }
+.isl[data-host="desk"] .isl-tools { padding-right: 12px; }
+.isl[data-host="desk"] .isl-bg { border-left: 0; padding: 4px 8px; border: 1px solid var(--line-2); border-radius: 7px; }
+.isl[data-host="desk"] .isl-panel { position: static; flex: 1; display: flex; min-height: 0; padding: 0; }
+.isl[data-host="desk"] .isl-in { flex: 1; min-height: 0; gap: 0; animation: none; }
+.isl[data-host="desk"] .isl-body { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 12px; overflow: auto; padding: 0 var(--desk-pad) var(--desk-pad); overscroll-behavior: contain; }
+.isl[data-host="desk"] .isl-footer {
+  display: flex; flex: none; align-items: center; flex-wrap: wrap; gap: 8px; box-sizing: border-box;
+  min-height: var(--desk-card-footer); max-height: calc(var(--desk-card-max) / 2); overflow: auto; padding: 12px var(--desk-pad); background: var(--panel);
+}
+.isl[data-host="desk"] .isl-footer .isl-btn { height: 36px; padding: 0 14px; border-radius: 10px; }
+.isl[data-host="desk"] .isl-title { font-size: 16px; line-height: 1.6; }
+.isl-choices { display: flex; flex-direction: column; gap: 7px; }
+.isl-choices .isl-btn { display: flex; justify-content: space-between; align-items: center; gap: var(--desk-pad); width: 100%; height: auto; min-height: 40px; padding: 9px 12px; text-align: left; font-size: 13px; line-height: 1.5; font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
+.isl-choices .isl-btn::after { content: ''; width: 12px; height: 12px; flex: none; border: 1px solid var(--ink-3); border-radius: 50%; }
+.isl-choices .isl-btn:hover { background: var(--raised); border-color: var(--accent); }
+.isl[data-host="desk"] .isl-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
+.isl[data-host="desk"] .isl-bg-list ol { max-height: none; overflow: visible; }
+.isl[data-host="desk"][data-layout="rest"] { width: var(--desk-round); height: var(--desk-round); border: none; background: transparent; }
+.isl[data-host="desk"][data-layout="rest"] .isl-face { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.isl[data-host="desk"][data-layout="rest"] .isl-row { height: var(--desk-round); }
+.isl[data-host="desk"][data-layout="rest"] .isl-head { padding: 0; opacity: 0; }
+.isl[data-host="desk"][data-layout="rest"] .isl-panel { display: none; }
+.isl[data-host="desk"][data-layout="content"] { width: var(--desk-card-width); max-height: var(--desk-card-max); border-radius: var(--desk-radius); }
+.isl[data-host="desk"][data-layout="content"] .isl-clip { max-height: calc(var(--desk-card-max) - 2px); }
+.isl[data-host="desk"][data-layout="content"] .isl-row { height: var(--desk-card-head); }
+.isl[data-host="desk"][data-layout="content"] .isl-face { left: var(--desk-pad); top: calc(var(--desk-card-head) / 2); }
+.isl[data-host="desk"][data-layout="content"] .isl-head { padding-left: calc(var(--desk-pad) * 2 + var(--desk-face-card)); }
+.isl[data-host="desk"][data-layout="input"] { width: var(--desk-input-width); max-height: var(--desk-card-max); border-radius: var(--desk-radius); }
+.isl[data-host="desk"][data-layout="input"] .isl-clip { box-sizing: border-box; min-height: calc(var(--desk-input-height) - 2px); max-height: calc(var(--desk-card-max) - 2px); justify-content: center; gap: var(--desk-gap); padding: var(--desk-pad) var(--desk-pad) var(--desk-pad) calc(var(--desk-pad) * 2 + var(--desk-face-input)); }
+.isl[data-host="desk"][data-layout="input"] .isl-face { left: var(--desk-pad); }
+.isl[data-host="desk"][data-layout="input"] .isl-row { display: none; }
+.isl[data-host="desk"][data-layout="input"] .isl-panel { flex: 0 1 auto; order: 2; overflow: auto; }
+.isl[data-host="desk"][data-layout="input"] .isl-in { gap: 8px; }
+.isl[data-host="desk"] .isl-entry { position: static; order: 1; left: auto; top: auto; right: auto; bottom: auto; height: auto; min-height: var(--desk-control); flex: none; }
+.isl[data-host="desk"][data-layout="content"] .isl-entry { margin: 0 var(--desk-pad) var(--desk-gap); }
+.isl[data-host="desk"][data-layout="content"] .isl-panel { order: 2; }
+.isl[data-host="desk"] .isl-field { field-sizing: content; min-height: 28px; max-height: var(--desk-field-max); height: auto; font-size: 16px; line-height: 28px; white-space: pre-wrap; overflow: auto; }
+.isl[data-host="desk"] .isl-field::placeholder { opacity: 1; }
+.isl-send { display: inline-grid; flex: none; place-items: center; width: var(--desk-control); height: var(--desk-control); padding: 0; border: none; border-radius: 10px; background: var(--accent); color: var(--bg); cursor: pointer; }
+.isl-send:disabled { background: var(--panel-2); color: var(--ink-3); cursor: default; }
+.isl-footer > .isl-send { margin-left: auto; }
+.isl-link { padding: 0; border: none; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.isl[data-host="desk"] .isl-hint { font-size: 11px; }
+.isl[data-host="desk"] .isl-files { flex-direction: column; flex-wrap: nowrap; gap: 5px; max-height: var(--desk-files-max); overflow: auto; overscroll-behavior: contain; }
+.isl[data-host="desk"] .isl-file { width: 100%; flex: none; height: 39px; }
+.isl[data-host="desk"] .isl-file-name { flex: 1; }
+.isl[data-host="desk"] .isl-body:focus-visible, .isl[data-host="desk"] .isl-files:focus-visible { outline-offset: -2px; }
+.isl-body, .isl-files, .isl[data-layout="input"] .isl-panel { scrollbar-width: auto; scrollbar-color: auto; }
+.isl-body::-webkit-scrollbar, .isl-files::-webkit-scrollbar, .isl[data-layout="input"] .isl-panel::-webkit-scrollbar { width: 6px; height: 6px; }
+.isl-body::-webkit-scrollbar-thumb, .isl-files::-webkit-scrollbar-thumb, .isl[data-layout="input"] .isl-panel::-webkit-scrollbar-thumb { border-radius: 3px; border: none; background: var(--mute); }
+.isl-body::-webkit-scrollbar-button, .isl-files::-webkit-scrollbar-button, .isl[data-layout="input"] .isl-panel::-webkit-scrollbar-button { display: none; }
 
 @keyframes isl-spin { to { transform: rotate(360deg); } }
 @keyframes isl-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }

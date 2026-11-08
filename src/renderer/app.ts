@@ -173,6 +173,7 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   task: ({ taskId }) => handlers.openTasks(taskId),
   /** The count at the island's tail: the 后台 page. */
   tasks: () => handlers.openTasks(),
+  settings: () => handlers.openSettings(),
   /** A notification of something new, or the tray's count: the 动态 page (system-design §12.2). */
   feed: () => handlers.openFeed(),
   /** 停下 on a task's line in the island's 后台 list. */

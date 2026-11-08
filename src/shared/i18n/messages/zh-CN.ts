@@ -398,6 +398,8 @@ export const zhCN = {
   "island-dom.view.full.activity": "查看完整过程",
   "island-dom.drag.to.move": "按住拖动",
   "island-dom.open.window": "打开窗口",
+  "island-dom.content": "卡片内容，可滚动",
+  "island-input.attachments": "{count} 份附件",
   "island-input.ask.viva": "问 Viva…",
   "island-input.what.should.i.do.you.can.also": "要它做什么？直接按「总结」也行",
   "island-input.add.or.change.instructions": "插话：补充或修改要求…",

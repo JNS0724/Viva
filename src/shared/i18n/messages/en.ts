@@ -397,6 +397,8 @@ export const en = {
   "island-dom.view.full.activity": "View full activity",
   "island-dom.drag.to.move": "Drag to move",
   "island-dom.open.window": "Open window",
+  "island-dom.content": "Card content, scrollable",
+  "island-input.attachments": "{count} attachments",
   "island-input.ask.viva": "Ask Viva…",
   "island-input.what.should.i.do.you.can.also": "What should I do? You can also click “Summarize”.",
   "island-input.add.or.change.instructions": "Add or change instructions…",

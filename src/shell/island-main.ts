@@ -54,11 +54,15 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
 
   // The actions come checked (checkIslandAction): each has the fields its kind needs, of their types.
   const LOCAL: Readonly<Record<string, (island: DeskIsland, action: any) => unknown>> = {
-    rect: (island, { x, y, width, height }) => island.setIslandRect({ x, y, width, height }),
+    rect: (island, { x, y, width, height, version, ready }) => island.setIslandRect({ x, y, width, height }, version, ready),
     drag: (island, { phase }: { phase: 'start' | 'move' | 'end' }) => ({ start: island.startDrag, move: island.dragMove, end: island.endDrag })[phase](),
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
     open: openWindow,
+    settings: (island) => {
+      toWindow({ kind: 'settings' })
+      openWindow(island)
+    },
     // Background tasks are on the window's 后台 page: the window comes forward on it (on the task, for a line).
     task: (island, action: IslandAction) => {
       toWindow(action)

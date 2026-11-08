@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-07",
+  "reviewedOn": "2026-11-08",
   "pairs": [
     {
       "en": "README.md",
@@ -65,8 +65,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "ae78cac39ddfba6eef48669e7a698265685bb337e5c7f43c998099d558ce6a7f",
-      "zhHash": "e82bf2267f025d398793b092bff49f389a50037642abd898d10d9a835496d858"
+      "enHash": "0ce6f928a97ccb2b956d6af23627967f0a86e53187a45067c99487412e533fc3",
+      "zhHash": "f56921eb5d9f7da0218fc056091b83bdb107732c969440e6cf140ec5b498d65c"
     },
     {
       "en": "docs/system-design.md",

@@ -38,6 +38,7 @@ export function checkIslandView(view: any): { form: string, label: string, recen
 
 const ACTIONS: Readonly<Record<string, (fields: Fields) => IslandAction | null>> = {
   open: () => ({ kind: 'open' }),
+  settings: () => ({ kind: 'settings' }),
   cancel: () => ({ kind: 'cancel' }),
   /** Files dropped on the island, or the input closed with Esc. */
   input: () => ({ kind: 'input' }),
@@ -45,9 +46,12 @@ const ACTIONS: Readonly<Record<string, (fields: Fields) => IslandAction | null>>
   /** The right-click menu, and the first-time note seen. */
   menu: () => ({ kind: 'menu' }),
   coached: () => ({ kind: 'coached' }),
-  rect: ({ x, y, width, height }) => (isPx(x) && isPx(y) && isPx(width) && isPx(height) && width >= 0 && height >= 0
-    ? { kind: 'rect', x, y, width, height }
-    : null),
+  rect: ({ x, y, width, height, version, ready }) => {
+    if (!isPx(x) || !isPx(y) || !isPx(width) || !isPx(height) || width < 0 || height < 0) return null
+    if (version !== undefined && (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 0)) return null
+    if (ready !== undefined && (typeof ready !== 'boolean' || version === undefined)) return null
+    return { kind: 'rect', x, y, width, height, ...(version === undefined ? {} : { version }), ...(ready === undefined ? {} : { ready }) }
+  },
   /** Held and moved: start, a move at each frame the page draws meanwhile, end. */
   drag: ({ phase }) => (typeof phase === 'string' && DRAG_PHASES.has(phase) ? { kind: 'drag', phase } : null),
   permission: ({ requestId, optionId }) => (isText(requestId, MAX_ID_CHARS) && isText(optionId, MAX_ID_CHARS)

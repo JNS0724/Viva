@@ -1,5 +1,5 @@
-import type { BrowserWindow as Win, Display, Menu, Screen, WebContents } from 'electron'
-import { DESK_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.ts'
+import type { BrowserWindow as Win, Menu, Screen, WebContents } from 'electron'
+import { DESK_SIZE, DRAG_SIZE, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.ts'
 
 type Point = { x: number, y: number }
 type Rect = { x: number, y: number, width: number, height: number }
@@ -28,6 +28,8 @@ const SHOWN = new Set(['working', 'waiting', 'asking', 'error'])
 const POINTER_MS = 50
 /** The island takes the pointer this far beyond its edge. */
 const POINTER_SLOP = 4
+/** If the renderer is slow, keep the full transparent surface until its compact layout is ready. */
+export const LAYOUT_READY_MS = 250
 // On Windows the floating level can be demoted during activation. The screen-saver
 // level keeps the native topmost band; macOS keeps its non-activating panel level.
 const TOP_LEVEL = process.platform === 'win32' ? 'screen-saver' : 'floating'
@@ -127,8 +129,10 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   let ignoring = true
   let pointerTimer: ReturnType<typeof setInterval> | undefined
   let styleTimer: ReturnType<typeof setTimeout> | undefined
-  /** While the island is dragged: where the pointer was, and the display and point it is over. */
-  let drag: { cursor: Point | null, display: Display, point: Point | null } | null = null
+  /** Pointer position and renderer readiness for the current drag. */
+  let drag: { cursor: Point | null, layout: 'waiting' | 'compact' | 'full' } | null = null
+  let layoutVersion = 0
+  let layoutTimer: ReturnType<typeof setTimeout> | undefined
 
   /** The island's window while it is there. */
   const live = (): Win | null => (win && !win.isDestroyed() ? win : null)
@@ -157,7 +161,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     const shown = live()
     if (process.platform !== 'win32' || !shown || !islandRect) return
     const bounds = shown.getBounds()
-    const rect = drag ? { x: 0, y: 0, width: bounds.width, height: bounds.height } : islandRect
+    if (drag && drag.layout !== 'compact') return
+    const rect = drag ? { ...islandRect, x: (bounds.width - islandRect.width) / 2, y: (bounds.height - islandRect.height) / 2 } : islandRect
     const x = Math.max(0, Math.floor(rect.x - POINTER_SLOP))
     const y = Math.max(0, Math.floor(rect.y - POINTER_SLOP))
     const right = Math.min(bounds.width, Math.ceil(rect.x + rect.width + POINTER_SLOP))
@@ -171,7 +176,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     const shown = live()
     if (!shown || !loaded || !form) return
     shown.webContents.send('island:view', {
-      view, form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached, hover: hovering,
+      view, form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached, hover: hovering, layoutVersion,
     })
   }
 
@@ -263,6 +268,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   function hide() {
     clearInterval(pointerTimer)
     clearTimeout(styleTimer)
+    clearTimeout(layoutTimer)
+    layoutVersion++
     const shown = live()
     if (!shown) return
     shown.destroy()
@@ -325,13 +332,15 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
    */
   function dragMove() {
     const shown = live()
-    if (!shown || !drag) return
+    if (!shown || !drag || drag.layout === 'waiting') return
     const cursor = screen.getCursorScreenPoint()
     if (drag.cursor?.x === cursor.x && drag.cursor?.y === cursor.y) return
     const display = screen.getDisplayNearestPoint(cursor)
     const point = keepInside(cursor, display.workArea)
-    shown.setBounds(dragBounds(point))
-    drag = { cursor, display, point }
+    shown.setBounds(drag.layout === 'compact' ? dragBounds(point) : {
+      x: Math.round(point.x - DESK_SIZE.width / 2), y: Math.round(point.y - DESK_SIZE.height / 2), ...DESK_SIZE,
+    })
+    drag = { ...drag, cursor }
   }
 
   return {
@@ -349,7 +358,15 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       refresh()
     },
     /** Where the island is inside its window (the page reports it whenever its shape changes). */
-    setIslandRect(rect: Rect) {
+    setIslandRect(rect: Rect, version?: number, ready = false) {
+      if (version !== undefined && version !== layoutVersion) return
+      if (drag && drag.layout !== 'compact') {
+        if (!ready || version === undefined || rect.width <= 0 || rect.height <= 0 || rect.width > DRAG_SIZE.width || rect.height > DRAG_SIZE.height) return
+        clearTimeout(layoutTimer)
+        drag.layout = 'compact'
+        drag.cursor = null
+        dragMove()
+      }
       islandRect = rect
       shape()
       checkPointer()
@@ -368,25 +385,41 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     inputOpen: () => input,
     /** The user holds the island and moves it: it shrinks to the cat and follows the pointer until let go. */
     startDrag() {
-      if (drag || !live()) return
+      const shown = live()
+      if (drag || !shown) return
       markCoached()
-      drag = { cursor: null, display: currentDisplay(), point: null }
+      drag = { cursor: null, layout: 'waiting' }
+      layoutVersion++
+      if (process.platform === 'win32') {
+        const bounds = shown.getBounds()
+        shown.setShape([{ x: 0, y: 0, width: bounds.width, height: bounds.height }])
+      }
+      setIgnoring(false)
       send()
-      dragMove()
-      shape()
+      layoutTimer = setTimeout(() => {
+        if (drag?.layout !== 'waiting') return
+        drag.layout = 'full'
+        dragMove()
+      }, LAYOUT_READY_MS)
     },
     dragMove,
     endDrag() {
       if (!drag) return
-      const { display, point } = drag
+      clearTimeout(layoutTimer)
+      const cursor = screen.getCursorScreenPoint()
+      const display = screen.getDisplayNearestPoint(cursor)
+      const point = keepInside(cursor, display.workArea)
       drag = null
-      if (point) {
-        places = withPlace(places, display.id, settle(point, display.workArea))
-        placeStore.set(places)
-      }
+      islandRect = null
+      layoutVersion++
+      places = withPlace(places, display.id, settle(point, display.workArea))
+      placeStore.set(places)
       const shown = live()
-      if (shown) place(shown)
-      shape()
+      if (shown) {
+        setIgnoring(true)
+        place(shown)
+        if (process.platform === 'win32') shown.setShape([{ x: 0, y: 0, ...DESK_SIZE }])
+      }
       send()
     },
     /** Settings: back to the top centre, on every display. */
@@ -431,6 +464,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       clearTimeout(timer)
       clearInterval(pointerTimer)
       clearTimeout(styleTimer)
+      clearTimeout(layoutTimer)
       drag = null
       live()?.destroy()
       win = null
