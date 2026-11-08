@@ -48,6 +48,24 @@ function boundaryOf(events: readonly SessionEvent[], before: number | undefined)
   return start === 0 ? undefined : SessionSeq(start - 1)
 }
 
+/**
+ * The turn under way at the end of the log, begun and not ended (one waiting on the user, or answering a background
+ * task's report the app opened it with): its index, or undefined when the last turn has ended.
+ */
+function turnUnderWay(events: readonly SessionEvent[]): number | undefined {
+  let begun = 0
+  let open = false
+  for (const event of events) {
+    if (event.type === 'turn/start') {
+      begun += 1
+      open = true
+    } else if (event.type === 'turn/end') {
+      open = false
+    }
+  }
+  return open ? begun - 1 : undefined
+}
+
 const WORD_EVENTS = new Set(['agent/inbox/spliced', 'user/message'])
 
 /**
@@ -87,7 +105,10 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     const source = ctx.sessions.get(SessionId(sessionId))
     if (!source) throw refuse(REASONS.missing, `no live session ${sessionId}`)
     const events = source.snapshotEvents()
-    const boundary = boundaryOf(events, words === undefined ? before : turnWithWords(events, words, occurrence))
+    // No point given: everything that ended. A turn under way has no answer yet; its words would read as the new
+    // session's own (a task started while a report's turn runs would take up the report).
+    const point = words !== undefined ? turnWithWords(events, words, occurrence) : before ?? turnUnderWay(events)
+    const boundary = boundaryOf(events, point)
     const childId = SessionId(`fork-${randomUUID()}`)
     const seed = boundary === undefined ? [] : ownMarkers(buildForkSeed(events, boundary), source.id, childId)
     // Made by dsh's agent factory, which stores a seeded session as its own fork children are stored, then let go

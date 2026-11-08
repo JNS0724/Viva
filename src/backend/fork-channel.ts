@@ -11,7 +11,8 @@ export type ForkResult = { ok: true, sessionId: string } | { ok: false, reason: 
 
 /**
  * before: index of the user message to go back to; or words: what the user said there, the occurrence-th
- * such turn from the end; cwd: where the new session works.
+ * such turn from the end; neither, every turn that ended (a turn under way is left out); cwd: where the new
+ * session works.
  */
 export interface ForkPoint { before?: number, words?: string, occurrence?: number, cwd?: string }
 

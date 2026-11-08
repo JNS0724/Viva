@@ -4,7 +4,8 @@
  *
  *   app → plugin  { type: 'fork', id, sessionId, before?, cwd? }    before: index of the user message to go back
  *                                                                   to (that message and all after it are left
- *                                                                   out); omitted, everything so far comes along
+ *                                                                   out); omitted, every turn that ended comes
+ *                                                                   along (a turn under way is left out)
  *                 { ..., words, occurrence? } instead of before:    go back to the turn where the user said
  *                                                                   `words`, the occurrence-th such turn from the
  *                                                                   end (0, the last); none, reason invalid
@@ -29,7 +30,7 @@ export interface ForkRequest { sessionId: string, before?: number, words?: strin
 const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0
 
-/** Where to go back to: a turn index, or the words of a turn (not both); neither, everything comes along. */
+/** Where to go back to: a turn index, or the words of a turn (not both); neither, every turn that ended comes along. */
 function pointOf(message: Incoming): { before?: number } | { words: string, occurrence: number } | null {
   const { before, words, occurrence } = message
   if (words === undefined) return before === undefined || isCount(before) ? { before } : null
