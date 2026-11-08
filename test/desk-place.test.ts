@@ -6,8 +6,8 @@ const mac = { x: 0, y: 25, width: 1440, height: 875 }
 const left = { x: -1920, y: 0, width: 1920, height: 1040 }
 
 test('by default the island sits at the top centre of the screen', () => {
-  assert.deepEqual(deskLayout(homePoint(mac), mac), { bounds: { x: 420, y: 31, width: 600, height: 352 }, align: 'center', dir: 'down' })
-  assert.deepEqual(deskLayout(homePoint(left), left).bounds, { x: -1260, y: 6, width: 600, height: 352 }, 'on a display left of the main one too')
+  assert.deepEqual(deskLayout(homePoint(mac), mac), { bounds: { x: 660, y: 31, width: 600, height: 352 }, align: 'start', dir: 'down', anchor: { x: 60, y: 50 }, side: 'right', panelWidth: 440 })
+  assert.deepEqual(deskLayout(homePoint(left), left).bounds, { x: -1020, y: 6, width: 600, height: 352 }, 'on a display left of the main one too')
 })
 
 test('in the lower half it unfolds upwards, its head staying where it was put', () => {
@@ -19,7 +19,7 @@ test('in the lower half it unfolds upwards, its head staying where it was put', 
 
 test('near a side it keeps to that side, so what it unfolds stays on the screen', () => {
   const nearLeft = deskLayout({ x: 100, y: 300 }, mac)
-  assert.deepEqual([nearLeft.align, nearLeft.bounds.x], ['start', 0])
+  assert.deepEqual([nearLeft.align, nearLeft.bounds.x], ['start', 40])
   const nearRight = deskLayout({ x: 1400, y: 300 }, mac)
   assert.deepEqual([nearRight.align, nearRight.bounds.x], ['end', 1440 - 600])
 })
@@ -30,7 +30,8 @@ test('dragged, the window is just the island, centred under the pointer', () => 
 
 test('dropped near home it goes home; elsewhere it is kept as fractions of the screen', () => {
   const home = homePoint(mac)
-  assert.equal(settle({ x: home.x + 30, y: home.y + 20 }, mac), null)
+  assert.equal(settle(home, mac), null)
+  assert.notEqual(settle({ x: home.x + 30, y: home.y + 20 }, mac), null, 'an intentional short drag is kept instead of snapping back')
   const place = settle({ x: 1080, y: 681.25 }, mac)
   assert.deepEqual(place, { fx: 0.75, fy: 0.75 })
   assert.deepEqual(pointOf(place, mac), { x: 1080, y: 681.25 })
@@ -41,6 +42,19 @@ test('dropped near home it goes home; elsewhere it is kept as fractions of the s
 test('the head is never off the screen', () => {
   assert.deepEqual(keepInside({ x: -50, y: 2000 }, mac), { x: 40, y: 900 - 40 })
   assert.deepEqual(pointOf({ fx: 1, fy: 0 }, mac), { x: 1440 - 40, y: 25 + 40 })
+})
+
+test('every layout keeps the saved avatar centre and its neighbouring panel within the host', () => {
+  for (const area of [mac, left, { x: 0, y: 0, width: 1024, height: 768 }]) {
+    for (const fx of [0, .25, .5, .75, 1]) for (const fy of [0, .5, 1]) {
+      const point = pointOf({ fx, fy }, area)
+      const { bounds, anchor, side, panelWidth } = deskLayout(point, area)
+      assert.ok(Math.abs(bounds.x + anchor.x - point.x) <= 1)
+      assert.ok(Math.abs(bounds.y + anchor.y - point.y) <= 1)
+      const panelX = side === 'right' ? anchor.x + 52 : anchor.x - 52 - panelWidth
+      assert.ok(panelX >= 0 && panelX + panelWidth <= bounds.width)
+    }
+  }
 })
 
 test('what preferences.json holds is checked; a place per display, the last one dragged to', () => {

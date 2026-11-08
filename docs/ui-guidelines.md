@@ -127,13 +127,14 @@ Sizes use the `--desk-*` tokens in `styles.css`. Expansion direction changes pla
 | Family | Size | Portrait and content |
 | --- | --- | --- |
 | Resting circle | 80px hit area, 72px image | Independently centred portrait, transparent outer space and one 1px outline |
-| Status capsule | 440 × 72px | 48px portrait. Status and elapsed time share the first line, the summary truncates separately, and background counts and tools have their own space |
-| Plain input | Starts at 520 × 112px, at most 320px tall | 56px portrait centred alongside the input group, with 16px left padding. Multiline input grows to 72px |
-| Content card | 440px wide, at most 320px tall | 40px portrait in an approximately 70px header, 16px content padding and an approximately 60px fixed action area |
+| Quiet status | At most 320 × 72px | The same 72px portrait stays in an independent 80px hit area, 12px from its neighbouring status surface. The background count is a separate button |
+| Input and content | 440px wide, at most 320px tall | The portrait keeps its size and screen centre. Header, content and actions belong to the neighbouring panel, placed left near the right edge and upwards near the bottom |
 
-Permissions, questions, coaching, attachments and background lists share the content card. Long questions and task lists scroll in the body. Attachments have their own scroll area capped at 128px. Content areas support keyboard focus, text selection and scrolling independently of window dragging.
+Permissions, questions, coaching, attachments and background lists share the content card. Long questions, attachments and task lists scroll in the body, avoiding nested scrolling. Content areas support keyboard focus, text selection and scrolling independently of window dragging.
 
-Input preserves drafts. Enter sends, Shift+Enter inserts a line and Esc closes, with IME composition retaining candidate selection. Disconnected input offers settings. Permission and question headers open the main window. Input and coaching close controls use their existing actions.
+Hover only provides feedback. Clicking the portrait consistently expands or collapses the desktop panel; Open Viva is a separate action. Pressing records the grab offset; moving 8 logical pixels starts dragging. Release keeps the panel collapsed; Esc or pointer cancellation restores the original position. Text selection, scrolling and panel controls never drag the island. Every panel supports collapse and Esc, keeping pending requests; collapse never rejects or skips. The menu offers four corner presets.
+
+Text, file references, pictures and errors share a topic-scoped draft for the current application run. Explicitly starting a new topic carries the prepared draft. Preparation uses a provisional key that migrates to the backend topic identity, including late attachment completions. Returning to an existing topic or reloading the renderer restores its own draft. Host handoffs carry an ownership epoch so stale hosts cannot overwrite newer edits. Image imports continue through opening Viva, retaining their originating topic and clipboard order. Queued typing preserves newer asynchronous error messages. Incoming requests add a notice while editing and keep the editor connected, preserving focus and IME composition. Explicit clicks open requests. Single-choice questions explain that clicking answers immediately. Enter sends, Shift+Enter inserts a line and IME composition retains candidate selection. A main-window acceptance receipt clears only the sent draft version, preserving later typing. Disconnected input offers settings.
 
 Dragging waits for a versioned compact-layout acknowledgement before shrinking the native window and discards stale acknowledgements. A readiness timeout keeps the full transparent surface following the pointer. Release restores the host bounds and hit region.
 
@@ -187,7 +188,7 @@ Elevation (only for things that float):
 Motion:
 
 - Hover, opacity and small moves: 0.1–0.15s. Color, border and shadow: 0.3s.
-- The title-bar island resizes with `cubic-bezier(.3, 1.3, .5, 1)` over 0.5s. Desktop width uses a 0.2s ease transition and changes immediately during dragging.
+- The title-bar island resizes with `cubic-bezier(.3, 1.3, .5, 1)` over 0.5s. The desktop portrait has no geometry transition; neighbouring content switches directly, with immediate layout changes while dragging.
 - Looping animation only means "in progress" or "waiting on you": pulse dots, spinners, breathing, the typing caret, her animations. Where she may move is set in [Her character](#her-character).
 - `prefers-reduced-motion: reduce` turns off all animation and transitions globally. A new looping animation still gets its own reduce rule, with a still state where one is needed (for example, breathing rests at `opacity: .8`).
 
@@ -217,7 +218,7 @@ Ring colors match the interface's state colors: orange waits on you, red is an e
 
 Drawn by `src/renderer/view/maid.ts`:
 
-- **Framing:** `whole` shows the half-body picture at 200px on the home page, 96px on cards, 72px on the resting desktop island and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 48px in conversation and 40, 48 or 56px in compact desktop layouts. Both sets display their complete canvas.
+- **Framing:** `whole` shows the half-body picture at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 48px in conversation. Both sets display their complete canvas.
 - **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Feed lists and details remain still. Reduced motion selects the matching still.
 - **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
 - **On the desktop island** she moves both folded and open. Updates within the same layout and mood retain the image node. Text and a dot convey status, with one thin portrait outline. Other cards retain their existing character badges.

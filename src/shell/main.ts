@@ -18,6 +18,7 @@ import { type Channel, checkedIpc } from '../shared/ipc-contract.ts'
 import { ASK_SHORTCUT, registerAskShortcut, registerIslandIpc } from './island-main.ts'
 import type { Notice } from '../backend/host.ts'
 import type { Preferences } from '../backend/preferences.ts'
+import type { KeptImage } from '../backend/image-store.ts'
 import { createTray } from './tray.ts'
 import { installAutomationDriver } from './automation-driver.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
@@ -60,6 +61,7 @@ type ShellPreferences = Pick<Preferences, 'deskIsland' | 'deskPlaces' | 'deskCoa
 let win: BrowserWindow | null = null
 /** The island on the desktop, shown while the window is in the background (desk-island.ts). */
 let desk: ReturnType<typeof createDeskIsland> | null = null
+let ownDraft = (_owner: 'main' | 'desk'): unknown => undefined
 /** False in smoke runs, which turn the desktop island on only while they check it. */
 let deskAllowed = true
 /** The tray icon, made the first time the window is closed to it (tray.ts). */
@@ -336,6 +338,7 @@ function attachDeskIsland(window: BrowserWindow) {
     page: path.join(CODE_ROOT, 'src', 'renderer', 'desk.html'),
     mainWindow: window,
     enabled: deskAllowed && shellPreferences.deskIsland,
+    onOwnership: owner => ownDraft(owner),
     places: { get: () => shellPreferences.deskPlaces, set: (places) => { setShellPreference('deskPlaces', places).catch(logged('places')) } },
     coach: { get: () => shellPreferences.deskCoached, set: () => { setShellPreference('deskCoached', true).catch(logged('coached')) } },
   })
@@ -443,7 +446,9 @@ app.whenReady().then(async () => {
   shellPreferences = await started.connection.control<Preferences>('preferences-get')
   registerImageProtocol(protocol, async (url) => (await backendConnection()).image(url))
   registerShellSettingsIpc()
-  registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu, switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } })
+  ownDraft = registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu,
+    keepImage: async bytes => (await backendConnection()).rpc('images:keep', [bytes]) as Promise<KeptImage>,
+    switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } }).ownDraft
   installAutomationDriver(automationMode, {
     agentPid: async () => (await backendConnection()).control<number | null>('agent-pid'),
     backendPid: () => keeper.running()?.pid ?? null,

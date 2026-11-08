@@ -24,13 +24,13 @@ test('a new question or the island folding redraws the panel', () => {
 test('desktop layout separates the resting portrait, status, input and content', () => {
   const mini = { form: 'mini', tone: 'idle', mood: 'idle', label: '', recent: [] }
   assert.equal(deskLayoutFor(mini, false, false), 'rest')
-  assert.equal(deskLayoutFor(mini, false, true), 'capsule')
+  assert.equal(deskLayoutFor(mini, false, true), 'rest', 'hover never changes the layout')
   assert.equal(deskLayoutFor({ ...mini, dragging: true }, false, false), 'rest')
   assert.equal(deskLayoutFor({ ...mini, background: { count: 2 } }, false, false), 'capsule')
   assert.equal(deskLayoutFor(asking, true, false), 'content')
   const input = { ...mini, form: 'input', files: [], images: [] }
   assert.equal(deskLayoutFor(input, true, false), 'input')
-  assert.equal(deskLayoutFor({ ...input, files: [{ name: 'old.pdf', path: '/old.pdf', size: 1 }] }, true, false), 'content')
-  assert.equal(deskLayoutFor({ ...input, images: [{ id: 'image', size: 1 }] }, true, false), 'content')
+  assert.equal(deskLayoutFor({ ...input, files: [{ name: 'old.pdf', path: '/old.pdf', size: 1 }] }, true, false), 'input')
+  assert.equal(deskLayoutFor({ ...input, images: [{ id: 'image', size: 1 }] }, true, false), 'input')
   assert.equal(deskLayoutFor({ ...mini, form: 'drop' }, true, false), 'content')
 })

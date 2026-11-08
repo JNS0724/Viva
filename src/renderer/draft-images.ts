@@ -1,22 +1,20 @@
-import { onLocaleChange } from '../shared/i18n/locale.ts'
-import { t } from '../shared/i18n/translate.ts'
-import { IMAGE_LIMITS } from '../shared/images.ts'
 import { draftPictures, pictureKept } from './view/pictures.ts'
+import { IMAGE_LIMITS } from '../shared/images.ts'
 
-let TOO_MANY = t("desk.up.to.images.per.message", { perMessage: IMAGE_LIMITS.perMessage })
 /** IPC errors arrive as "Error invoking remote method 'x': Error: msg"; keep only the message. */
 const messageOf = (err: unknown) => String((err as { message?: unknown } | null)?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
 /**
  * The pictures pasted or dropped into an input, waiting to be sent with its words: each kept in the pictures
  * folder as soon as it comes in (main/image-store.js), shown small above the words, and handed over on send.
- * Like the words in the field, they live with the page, not in the conversation's state.
+ * Their draft references belong to the main process, which completes a keep after a composer is destroyed.
  */
-export function createDraftImages({ keep, container, onChange = () => {}, showError }: {
-  keep: (bytes: Uint8Array<ArrayBuffer>) => Promise<{ id: string, mimeType: string, size: number }>,
+export function createDraftImages({ keep, container, onChange = () => {}, showError, capture }: {
+  keep: (key: string, images: Uint8Array<ArrayBuffer>[]) => Promise<void>,
   container: HTMLElement,
   onChange?: () => void,
   showError: (message: string) => void,
+  capture: () => string | null,
 }) {
   let images: Array<{ id: string }> = []
 
@@ -31,28 +29,32 @@ export function createDraftImages({ keep, container, onChange = () => {}, showEr
     render()
   }
 
-  /** @param files pictures pasted or dropped; each kept, in order, the same picture once */
+  /** @param files pictures pasted or dropped; every keep is registered against the originating draft. */
   async function add(files: readonly Blob[]) {
-    for (const file of files) {
-      if (images.length >= IMAGE_LIMITS.perMessage) {
-        showError(TOO_MANY)
-        break
-      }
-      try {
-        const kept = await keep(new Uint8Array(await file.arrayBuffer()))
-        pictureKept(kept.id)
-        if (!images.some((image) => image.id === kept.id)) images = [...images, { id: kept.id }]
-      } catch (err) {
-        showError(messageOf(err))
-      }
+    const origin = capture()
+    if (!origin) return
+    const read = await Promise.allSettled(files.slice(0, IMAGE_LIMITS.perMessage + 1).map(file => file.arrayBuffer()))
+    const bytes: Uint8Array<ArrayBuffer>[] = []
+    for (const result of read) {
+      if (result.status === 'fulfilled') bytes.push(new Uint8Array(result.value))
+      else if (capture() === origin) showError(messageOf(result.reason))
     }
-    render()
+    try {
+      if (bytes.length) await keep(origin, bytes)
+    } catch (err) {
+      if (capture() === origin) showError(messageOf(err))
+    }
   }
 
   return {
     add,
     remove,
     list: (): Array<{ id: string }> => images,
+    replace(next: ReadonlyArray<{ id: string }>) {
+      images = next.map(image => ({ id: image.id }))
+      images.forEach(image => pictureKept(image.id))
+      render()
+    },
     clear() {
       if (!images.length) return
       images = []
@@ -60,7 +62,3 @@ export function createDraftImages({ keep, container, onChange = () => {}, showEr
     },
   }
 }
-
-onLocaleChange(() => {
-  TOO_MANY = t("desk.up.to.images.per.message", { perMessage: IMAGE_LIMITS.perMessage })
-})

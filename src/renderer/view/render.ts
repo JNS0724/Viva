@@ -181,7 +181,7 @@ function renderComposerAvailability(dom: Dom, setup: SetupCopy | null, switching
 
 /** While the agent works the button stops it, unless there are words to send into the turn. */
 export function renderSendButton(dom: Dom, state: State) {
-  const stops = isBusy(state) && !dom.input.value.trim()
+  const stops = isBusy(state) && !dom.input.value.trim() && !Number(dom.composer.dataset.attachments ?? 0)
   if (dom.sendBtn.dataset.busy === String(stops) && dom.sendBtn.dataset.locale === String(localeRevision())) return
   dom.sendBtn.dataset.locale = String(localeRevision())
   dom.sendBtn.dataset.busy = String(stops)

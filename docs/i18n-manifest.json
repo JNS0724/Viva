@@ -65,8 +65,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "6b240f981e816608b3ca047631f05bf078f1525c15bccddbf6260a1852aea2cb",
-      "zhHash": "6717a7d0b6766f581c23dd42624317026a54e33ba64d491fa75f5ad62f547433"
+      "enHash": "81834cf557d942654a33e6839ec2fda51e811df47e6b8fa06b02c2fa6064bf47",
+      "zhHash": "8441178aeab22d263f58245e72f927d85620f484b2ef8e1b7d2eb7fb86e40230"
     },
     {
       "en": "docs/system-design.md",
@@ -86,6 +86,11 @@
     "build/icons/README.txt"
   ],
   "sourceReports": [
+    {
+      "path": "docs/qa-desktop-island-interaction-20261108.md",
+      "locale": "zh-CN",
+      "sha256": "e1e9e8537e233bca874cbdbadea9eaf3dd21759b9147205ce54b2241d86f7953"
+    },
     {
       "path": "docs/qa-windows-ui-issues-20261108.zh-CN.md",
       "locale": "zh-CN",

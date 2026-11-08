@@ -15,7 +15,7 @@ export const ASK_LIMITS = Object.freeze({ chars: 4000, files: 10, pathChars: 102
 /** The island's place in its window, in pixels (desk-place.js DESK_SIZE, with room to spare). */
 const MAX_RECT_PX = 2000
 
-const DRAG_PHASES = new Set(['start', 'move', 'end'])
+const DRAG_PHASES = new Set(['start', 'move', 'end', 'cancel'])
 
 /** What the page sent, before it is checked: its fields by name. */
 type Fields = { readonly [field: string]: unknown }
@@ -43,17 +43,28 @@ const ACTIONS: Readonly<Record<string, (fields: Fields) => IslandAction | null>>
   /** Files dropped on the island, or the input closed with Esc. */
   input: () => ({ kind: 'input' }),
   dismiss: () => ({ kind: 'dismiss' }),
+  toggle: () => ({ kind: 'toggle' }),
+  panel: ({ panel }) => panel === 'input' || panel === 'request' || panel === 'background' || panel === 'status' ? { kind: 'panel', panel } : null,
+  place: ({ corner }) => ['left-top', 'right-top', 'left-bottom', 'right-bottom'].includes(String(corner)) ? { kind: 'place', corner } : null,
   /** The right-click menu, and the first-time note seen. */
   menu: () => ({ kind: 'menu' }),
   coached: () => ({ kind: 'coached' }),
-  rect: ({ x, y, width, height, version, ready }) => {
+  rect: ({ x, y, width, height, version, ready, regions }) => {
     if (!isPx(x) || !isPx(y) || !isPx(width) || !isPx(height) || width < 0 || height < 0) return null
     if (version !== undefined && (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 0)) return null
     if (ready !== undefined && (typeof ready !== 'boolean' || version === undefined)) return null
-    return { kind: 'rect', x, y, width, height, ...(version === undefined ? {} : { version }), ...(ready === undefined ? {} : { ready }) }
+    if (regions !== undefined && (!Array.isArray(regions) || regions.length > 4 || !regions.every(rect => rect && isPx(rect.x) && isPx(rect.y) && isPx(rect.width) && isPx(rect.height) && rect.width > 0 && rect.height > 0))) return null
+    return { kind: 'rect', x, y, width, height, ...(regions ? { regions: regions.map(({ x, y, width, height }) => ({ x, y, width, height })) } : {}), ...(version === undefined ? {} : { version }), ...(ready === undefined ? {} : { ready }) }
   },
   /** Held and moved: start, a move at each frame the page draws meanwhile, end. */
-  drag: ({ phase }) => (typeof phase === 'string' && DRAG_PHASES.has(phase) ? { kind: 'drag', phase } : null),
+  drag: ({ phase, x, y }) => {
+    if (typeof phase !== 'string' || !DRAG_PHASES.has(phase)) return null
+    if (x !== undefined || y !== undefined) {
+      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 1e6 || Math.abs(y) > 1e6) return null
+      return { kind: 'drag', phase, x, y }
+    }
+    return { kind: 'drag', phase }
+  },
   permission: ({ requestId, optionId }) => (isText(requestId, MAX_ID_CHARS) && isText(optionId, MAX_ID_CHARS)
     ? { kind: 'permission', requestId, optionId }
     : null),
@@ -86,10 +97,10 @@ export function checkAsk(ask: any): { text: string, files: string[], images: Arr
   if (!ask || typeof ask !== 'object') return null
   const images = checkImages(ask.images)
   if (!images) return null
-  // With pictures the words may be left out.
-  const text = typeof ask.text === 'string' ? ask.text.trim() : null
-  if (text === null || !(isText(text, ASK_LIMITS.chars) || (text === '' && images.length))) return null
   const files = ask.files ?? []
   if (!Array.isArray(files) || (files.length > 0 && !checkDroppedPaths(files))) return null
+  // With pictures the words may be left out.
+  const text = typeof ask.text === 'string' ? ask.text.trim() : null
+  if (text === null || !(isText(text, ASK_LIMITS.chars) || (text === '' && (images.length || files.length)))) return null
   return { text, files: [...files], images }
 }

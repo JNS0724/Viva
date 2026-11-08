@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createDeskIsland, DESK_TIMES, LAYOUT_READY_MS, deskForm } from '../src/shell/desk-island.ts'
-import type { BrowserWindow, Display, Rectangle } from 'electron'
+import type { BrowserWindow, Display, Rectangle, WebContents } from 'electron'
 import type { Places } from '../src/shell/desk-place.ts'
 import { deskMenuTemplate } from '../src/shell/desk-menu.ts'
 import { describeDropped, MISSING, NOT_A_FILE } from '../src/shell/island-files.ts'
@@ -72,6 +72,7 @@ test('a view from the window must look like one and stay small', () => {
 test('a question from the island: text within bounds, and only paths for files', () => {
   assert.deepEqual(checkAsk({ text: '  总结 ', files: ['/a/b.docx'], extra: 1 }), { text: '总结', files: ['/a/b.docx'], images: [] })
   assert.deepEqual(checkAsk({ text: '在吗' }), { text: '在吗', files: [], images: [] })
+  assert.deepEqual(checkAsk({ text: '', files: ['/a/note.txt'] }), { text: '', files: ['/a/note.txt'], images: [] })
   assert.equal(checkAsk({ text: '   ' }), null)
   // A pasted picture: only its name in the pictures folder; with one, the words may be left out.
   const pic = { id: `${'f'.repeat(64)}.png` }
@@ -138,6 +139,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     destroy() {
       this.destroyed = true
       this.visible = false
+      this.handlers.closed?.()
     }
     isVisible() { return this.visible }
     showInactive() { this.visible = true }
@@ -173,6 +175,60 @@ function deskIsland(env: ReturnType<typeof fakes>, extra: Partial<Parameters<typ
   desk.setAway(true)
   return desk
 }
+
+test('an image import retires its hidden window, accepts one matching batch, and recreates the next island', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  const first = env.windows[0]
+  const sender = first.webContents as unknown as WebContents
+  first.handlers['did-finish-load']()
+  const ticket = desk.beginImport(sender, 'original')!
+  desk.setAway(false)
+  assert.deepEqual([first.visible, first.destroyed, desk.owns(sender)], [false, false, false])
+  assert.equal(desk.beginImport(sender, 'another'), null, 'retired renderers cannot start imports')
+  assert.equal(desk.claimImport(sender, 'other', ticket), false)
+  assert.equal(desk.claimImport({} as WebContents, 'original', ticket), false)
+  assert.equal(desk.claimImport(sender, 'original', 'missing'), false)
+  first.handlers['did-finish-load']()
+  first.handlers.focus()
+  first.handlers.blur()
+  assert.equal(desk.webContents(), null, 'late retired events cannot revive a hidden window')
+  desk.setAway(true)
+  const second = env.windows[1]
+  assert.notEqual(first, second)
+  assert.equal(second.visible, true)
+  assert.equal(desk.claimImport(sender, 'original', ticket), true)
+  assert.equal(first.destroyed, true)
+  assert.equal(second.destroyed, false)
+  assert.equal(desk.claimImport(sender, 'original', ticket), false, 'a ticket is consumed once')
+  assert.equal(desk.owns(second.webContents as unknown as WebContents), true)
+  desk.destroy()
+})
+
+test('all image import holds release on completion, renderer exit, window close, or application teardown', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  for (const finish of ['end', 'renderer-exit', 'window-close', 'destroy']) {
+    const env = fakes()
+    const desk = deskIsland(env)
+    const first = env.windows[0]
+    const sender = first.webContents as unknown as WebContents
+    const one = desk.beginImport(sender, 'one')!, two = desk.beginImport(sender, 'two')!
+    desk.setAway(false)
+    assert.equal(first.destroyed, false)
+    if (finish === 'end') {
+      assert.equal(desk.endImport(sender, one), 'one')
+      assert.equal(first.destroyed, false, 'another in-flight read still owns a hold')
+      assert.equal(desk.endImport(sender, two), 'two')
+    } else if (finish === 'renderer-exit') first.handlers['render-process-gone']()
+    else if (finish === 'window-close') first.destroy()
+    else desk.destroy()
+    assert.equal(first.destroyed, true, finish)
+    assert.equal(desk.claimImport(sender, 'one', one), false, finish)
+    assert.equal(desk.endImport(sender, two), null, finish)
+    desk.destroy()
+  }
+})
 
 test('the shortcut opens the input, which takes the keyboard until it is closed', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
@@ -220,13 +276,14 @@ test('closed without asking, an island that is switched off goes at once; with t
 
 test('clicks reach only the island, without waiting for the pointer poll on Windows', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
-  const env = fakes({ cursor: { x: 700, y: 50 } })
+  const env = fakes()
   const desk = deskIsland(env)
   desk.setView(view('working'))
   const [win] = env.windows
+  Object.assign(env.cursor, { x: win.bounds.x + 300, y: win.bounds.y + 30 })
   desk.setIslandRect({ x: 150, y: 10, width: 300, height: 48 })
-  assert.equal(win.ignoring.at(-1), false, 'the pointer is over the island (its window at x 420, y 31)')
-  env.cursor.x = 100
+  assert.equal(win.ignoring.at(-1), false, 'the pointer is inside the reported region at the current native bounds')
+  env.cursor.x = win.bounds.x - 100
   t.mock.timers.tick(60)
   if (process.platform === 'win32') {
     assert.equal(win.ignoring.at(-1), false, 'native region stays interactive even while the cursor is outside')
@@ -262,7 +319,7 @@ test('dragged, the island shrinks to its head, follows the pointer at each frame
   desk.setView(view('working'))
   const [win] = env.windows
   win.handlers['did-finish-load']()
-  desk.startDrag()
+  desk.startDrag({ x: 720, y: 81 })
   desk.setIslandRect({ x: 260, y: 136, width: 80, height: 80 }, win.lastView().layoutVersion, true)
   assert.deepEqual([win.lastView().dragging, win.bounds], [true, { x: -12, y: 13, width: 104, height: 104 }], 'just the island, under the pointer, kept on the screen')
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
@@ -275,7 +332,7 @@ test('dragged, the island shrinks to its head, follows the pointer at each frame
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 0.75, fy: 0.75 } } })
   assert.equal(win.lastView().dragging, false)
   desk.resetPlace()
-  assert.deepEqual([env.saved(), win.bounds.x, win.bounds.y], [{ last: null, places: {} }, 420, 31], 'back at the top centre')
+  assert.deepEqual([env.saved(), win.bounds.x, win.bounds.y], [{ last: null, places: {} }, 660, 31], 'back at the top centre')
   desk.destroy()
 })
 
@@ -298,7 +355,7 @@ test('done stays up while the pointer rests on it, and a moment after it leaves'
   const desk = deskIsland(env)
   const [win] = (desk.setView(view('done')), env.windows)
   win.handlers['did-finish-load']()
-  desk.setIslandRect({ x: 150, y: 10, width: 300, height: 48 })
+  desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 })
   t.mock.timers.tick(DESK_TIMES.done + 1000)
   assert.equal(win.lastView().form, 'done', 'held while the pointer is over it')
   env.cursor.x = 100
@@ -397,7 +454,7 @@ test('drag resizing waits for the current compact layout and rejects stale or in
   const desk = deskIsland(env)
   const [win] = env.windows
   win.handlers['did-finish-load']()
-  desk.startDrag()
+  desk.startDrag({ x: 720, y: 81 })
   const version = win.lastView().layoutVersion
   const compact = { x: 260, y: 136, width: 80, height: 80 }
   assert.equal(win.bounds.width, 600)
@@ -418,7 +475,7 @@ test('a quick release saves the latest cursor and invalidates the outstanding co
   const desk = deskIsland(env)
   const [win] = env.windows
   win.handlers['did-finish-load']()
-  desk.startDrag()
+  desk.startDrag({ x: 720, y: 81 })
   const oldVersion = win.lastView().layoutVersion
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
   desk.endDrag()
@@ -437,10 +494,10 @@ test('a delayed renderer keeps a full surface until its compact acknowledgement 
   const desk = deskIsland(env)
   const [win] = env.windows
   win.handlers['did-finish-load']()
-  desk.startDrag()
+  desk.startDrag({ x: 720, y: 81 })
   const version = win.lastView().layoutVersion
   t.mock.timers.tick(LAYOUT_READY_MS + 1)
-  assert.deepEqual(win.bounds, { x: 600, y: 324, width: 600, height: 352 })
+  assert.deepEqual(win.bounds, { x: 840, y: 450, width: 600, height: 352 })
   desk.setIslandRect({ x: 260, y: 136, width: 80, height: 80 }, version, true)
   assert.deepEqual(win.bounds, { x: 848, y: 448, width: 104, height: 104 })
   desk.endDrag()
@@ -459,4 +516,37 @@ test('layout acknowledgements cross IPC with a finite version and a boolean read
   assert.equal(checkIslandAction({ ...rect, ready: true }), null)
   assert.equal(checkIslandAction({ ...rect, version: 1, ready: 'yes' }), null)
   assert.deepEqual(checkIslandAction({ kind: 'settings', path: '/other' }), { kind: 'settings' })
+})
+
+test('dragging preserves an off-centre grab, and cancellation restores position and expansion without saving', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes({ cursor: { x: 860, y: 240 } })
+  const desk = deskIsland(env)
+  desk.openInput()
+  const win = env.windows[0]
+  win.handlers['did-finish-load']()
+  const original = { ...win.bounds }
+  desk.startDrag({ x: 740, y: 100 })
+  desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 }, win.lastView().layoutVersion, true)
+  assert.deepEqual(win.bounds, { x: 788, y: 169, width: 104, height: 104 }, 'the 20px/19px grab offset remains under the pointer')
+  desk.endDrag(true)
+  assert.deepEqual(win.bounds, original)
+  assert.deepEqual(env.saved(), { last: null, places: {} })
+  assert.equal(desk.inputOpen(), true)
+  desk.destroy()
+})
+
+test('native hit regions preserve the transparent gap between the portrait and its panel', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes(), desk = deskIsland(env)
+  const win = env.windows[0]
+  win.handlers['did-finish-load']()
+  desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 }, 0, true, [
+    { x: 20, y: 10, width: 80, height: 80 }, { x: 112, y: 10, width: 440, height: 260 },
+  ])
+  if (process.platform === 'win32') {
+    assert.equal(win.shape.length, 2)
+    assert.ok(win.shape[0].x + win.shape[0].width < win.shape[1].x)
+  }
+  desk.destroy()
 })

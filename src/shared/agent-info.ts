@@ -3,6 +3,8 @@ export interface AgentInfo {
   mode: string, model: string, cwd: string
   sessionId?: string | null
   conversationId?: string
+  /** Stable across the continuation segments of one topic. */
+  topicId?: string
   reason?: string, problem?: string, remembersHistory?: boolean
   modelValue?: string, effort?: string
   models?: readonly { value: string, name: string, group?: string }[]

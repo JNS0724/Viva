@@ -505,7 +505,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   const stopBridge = dsh.stop
 
   /** Nothing to start yet (no key, or dsh not installed): the window shows how to fix it. */
-  const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem ?? undefined, cwd: config.cwd, model: '', models: [], efforts: [], reason: '', conversationId: sessions.current().id })
+  const setupInfo = (config: Config) => ({ mode: 'setup', problem: config.problem ?? undefined, cwd: config.cwd, model: '', models: [], efforts: [], reason: '', conversationId: sessions.current().id, topicId: sessions.topicId() })
   const setupMessages = (): Readonly<Record<string, string>> => ({ 'no-key': t("main.main.enter.a.deepseek.api.key.or.add"), 'no-dsh': t("main.main.deepseek.harness.not.found.run.npm.install") })
   let SETUP_MESSAGES = setupMessages()
 

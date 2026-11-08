@@ -6,6 +6,10 @@ import type { BrowserWindow, GlobalShortcut, IpcMainEvent, IpcMainInvokeEvent, M
 import type { createDeskIsland } from './desk-island.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView, type IslandAction } from './island-ipc.ts'
+import { createComposerDraftStore } from '../shared/composer-draft.ts'
+import { checkImages, IMAGE_LIMITS } from '../shared/images.ts'
+import type { KeptImage } from '../backend/image-store.ts'
+import { randomUUID } from 'node:crypto'
 
 type DeskIsland = ReturnType<typeof createDeskIsland>
 
@@ -18,10 +22,17 @@ export const ASK_SHORTCUT = 'CommandOrControl+Shift+Space'
 let NOT_SENT = t("main.island-main.could.not.send.please.try.again")
 
 /** deps.Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu */
-export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff }: {
+export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage }: {
   desk: () => DeskIsland | null, window: () => BrowserWindow | null, showWindow: () => void,
   Menu: Pick<typeof ElectronMenu, 'buildFromTemplate'>, switchOff: () => void,
+  keepImage: (bytes: Uint8Array | ArrayBuffer) => Promise<KeptImage>,
 }) {
+  const drafts = createComposerDraftStore(snapshot => {
+    const main = window()
+    if (main && !main.isDestroyed()) main.webContents.send('draft:changed', snapshot)
+    desk()?.sendDraft(snapshot)
+  })
+  const receipts = new Map<string, { finish: (result: { ok: boolean, error?: string }) => void, timer: ReturnType<typeof setTimeout> }>()
   const fromDesk = (event: IpcMainEvent | IpcMainInvokeEvent) => {
     const island = desk()
     return island?.owns(event.sender) ? island : null
@@ -34,7 +45,44 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
   ipcMain.on('island:view', (event, raw) => {
     if (event.sender !== window()?.webContents) return
     const view = checkIslandView(raw)
-    if (view) desk()?.setView(view)
+    if (view) {
+      if (typeof view.target?.key === 'string' && view.target.key.length <= 1000) drafts.select(view.target.key, view.target.inheritDraft === true, view.target.migrateDraft === true)
+      desk()?.setView(view)
+    }
+  })
+  const source = (event: IpcMainEvent | IpcMainInvokeEvent) => event.sender === window()?.webContents ? 'main' : fromDesk(event) ? 'desk' : null
+  ipcMain.handle('draft:get', event => source(event) ? drafts.snapshot() : null)
+  ipcMain.on('draft:update', (event, snapshot) => {
+    const host = source(event)
+    if (!host || !checkImages(snapshot.images)) return
+    const result = drafts.update(host, snapshot)
+    if (!result.ok) event.sender.send('draft:changed', result.draft)
+  })
+  ipcMain.handle('draft:append-image', (event, key, image) => {
+    if (source(event) && checkImages([image])) drafts.appendImage(key, image)
+  })
+  ipcMain.handle('island:begin-image-import', (event, key) => fromDesk(event)?.beginImport(event.sender, key) ?? null)
+  ipcMain.on('island:end-image-import', (event, ticket, error) => {
+    const key = desk()?.endImport(event.sender, ticket)
+    if (key && error) drafts.setError(key, error)
+  })
+  ipcMain.handle('draft:keep-images', async (event, key, images, ticket, readError) => {
+    if (ticket !== undefined ? !desk()?.claimImport(event.sender, key, ticket) : !source(event)) return
+    const results = await Promise.allSettled(images.map(bytes => keepImage(bytes)))
+    let problem: string | null = readError ?? null
+    // Keep the clipboard's order even when the saves finish in reverse, after either host is destroyed.
+    for (const result of results) {
+      if (result.status === 'rejected') problem ??= String((result.reason as Error | null)?.message ?? result.reason)
+      else if (!drafts.appendImage(key, result.value)) problem ??= t('desk.up.to.images.per.message', { perMessage: IMAGE_LIMITS.perMessage })
+    }
+    if (problem) drafts.setError(key, problem)
+  })
+  ipcMain.handle('draft:append-files', (event, key, paths) => {
+    if (!source(event)) return
+    const checkedPaths = checkDroppedPaths(paths)
+    const checked = checkedPaths ? describeDropped(checkedPaths) : { error: MISSING }
+    if ('error' in checked) drafts.setError(key, checked.error)
+    else drafts.appendFiles(key, checked.files)
   })
 
   const openWindow = (island: DeskIsland) => {
@@ -48,14 +96,22 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     open: () => openWindow(island),
     stop: () => toWindow({ kind: 'cancel' }),
     resetPlace: () => island.resetPlace(),
+    placeAt: corner => island.placeAt(corner),
     hide: () => island.hideUntilAway(),
     switchOff,
   }))
 
   // The actions come checked (checkIslandAction): each has the fields its kind needs, of their types.
   const LOCAL: Readonly<Record<string, (island: DeskIsland, action: any) => unknown>> = {
-    rect: (island, { x, y, width, height, version, ready }) => island.setIslandRect({ x, y, width, height }, version, ready),
-    drag: (island, { phase }: { phase: 'start' | 'move' | 'end' }) => ({ start: island.startDrag, move: island.dragMove, end: island.endDrag })[phase](),
+    rect: (island, { x, y, width, height, version, ready, regions }) => island.setIslandRect({ x, y, width, height }, version, ready, regions),
+    drag: (island, { phase, x, y }) => {
+      if (phase === 'start') island.startDrag(x === undefined ? undefined : { x, y })
+      else if (phase === 'move') island.dragMove()
+      else island.endDrag(phase === 'cancel')
+    },
+    toggle: island => island.togglePanel(),
+    panel: (island, { panel }) => island.openPanel(panel),
+    place: (island, { corner }) => island.placeAt(corner),
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
     open: openWindow,
@@ -94,16 +150,32 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
    * A question from the island's input goes to the window, which sends it as if typed there: while the agent
    * works, into its turn.
    */
+  ipcMain.on('island:ask-result', (event, receiptId, result) => {
+    if (event.sender !== window()?.webContents) return
+    const receipt = receipts.get(receiptId)
+    if (!receipt) return
+    clearTimeout(receipt.timer); receipts.delete(receiptId); receipt.finish(result)
+  })
   ipcMain.handle('island:ask', (event, raw) => {
     const island = fromDesk(event)
     const ask = island && checkAsk(raw)
     if (!ask) return { ok: false, error: NOT_SENT }
     const checked = ask.files.length ? describeDropped(ask.files) : { files: [] }
     if ('error' in checked) return { ok: false, error: checked.error }
-    toWindow({ kind: 'ask', text: ask.text, files: ask.files, images: ask.images })
-    island.closeInput({ sent: true })
-    return { ok: true }
+    const snapshot = drafts.snapshot()
+    const target = raw.draft as { key?: unknown, version?: unknown } | undefined
+    if (!target || target.key !== snapshot.key || target.version !== snapshot.version || snapshot.owner !== 'desk') return { ok: false, error: NOT_SENT }
+    const receiptId = randomUUID()
+    return new Promise<{ ok: boolean, error?: string }>(resolve => {
+      const timer = setTimeout(() => { receipts.delete(receiptId); resolve({ ok: false, error: NOT_SENT }) }, 10_000)
+      receipts.set(receiptId, { timer, finish: result => {
+        if (result.ok) { drafts.clear(snapshot); island.closeInput({ sent: true }) }
+        resolve(result)
+      } })
+      toWindow({ kind: 'ask', text: ask.text, files: ask.files, images: ask.images, targetKey: snapshot.key, receiptId, expiresAt: Date.now() + 10_000 })
+    })
   })
+  return { ownDraft: drafts.own }
 }
 
 /**

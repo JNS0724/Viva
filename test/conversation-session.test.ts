@@ -65,7 +65,31 @@ test('readiness reconciles the same segment with the actual session and its reme
   assert.equal(h.sessions.current().sessionId, 'replacement')
   assert.equal(h.sessions.cwd(), '/next')
   assert.equal(info.remembersHistory, false, 'saved history is not automatically context in a fresh session')
+  assert.equal(info.topicId, before.id)
   assert.equal(h.sessions.ready({ ...started('resumed'), resumed: true }, '/next').remembersHistory, true)
+})
+
+test('backend topic identity survives resumed segments, carried records, directory forks and readiness', async t => {
+  const h = harness(t, {}, true)
+  const original = h.sessions.current()
+  assert.equal(h.sessions.ready(started('old'), '/work').topicId, original.id)
+  const nextTopic = await h.sessions.newTopic()
+  assert.notEqual(nextTopic.topicId, original.id)
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
+  registerHistoryIpc(ipc, {
+    db: h.db, current: h.sessions.current, setCurrent: h.sessions.select,
+    agentInfo: h.view, isBusy: () => false, selectSession: h.sessions.withSelection,
+    dshHome: '/unused-test-home', chooseExportPath: async () => null,
+  })
+  const resumed = await handlers.get('history:resume-topic')!({}, original.id) as { info: ConversationInfo }
+  assert.equal(resumed.info.topicId, original.id)
+  assert.notEqual(resumed.info.conversationId, original.id)
+  const carried = await handlers.get('history:continue-from-records')!({}, original.id, '/other') as { info: ConversationInfo }
+  assert.equal(carried.info.topicId, original.id)
+  const fork = await h.sessions.switchDirectory('/third')
+  assert.equal(fork.topicId, original.id)
+  assert.equal(h.sessions.ready(started('reconnected', '/third'), '/third').topicId, original.id)
 })
 
 test('concurrent new topics share acquisition and commit only after model matching', async t => {

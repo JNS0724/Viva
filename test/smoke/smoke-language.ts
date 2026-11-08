@@ -88,11 +88,11 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
     await desk.force(true)
     await desk.openInput()
     const page = { webContents: (await desk.webContents()) }
-    await until(page, `document.documentElement.lang === 'en' && document.querySelector('.isl-field')?.getAttribute('aria-label') === 'Ask Viva…'`, 'English desktop island text')
+    await until(page, `document.documentElement.lang === 'en' && document.querySelector('.isl-field')?.getAttribute('aria-label') === 'What would you like Viva to help with…'`, 'English desktop island text')
     await run(page, `document.querySelector('.isl-field').value = 'island draft'`)
     await run(win, `window.agent.setLanguage('zh-CN')`)
     await until(page, `document.documentElement.lang === 'zh-CN'`, 'desktop island language broadcast')
-    await until(page, `document.querySelector('.isl-field')?.getAttribute('aria-label') === '问 Viva…'`, 'Chinese desktop island text')
+    await until(page, `document.querySelector('.isl-field')?.getAttribute('aria-label') === '让 Viva 帮你做点什么…'`, 'Chinese desktop island text')
     if (await run(page, `document.querySelector('.isl-field')?.value !== 'island draft'`)) problems.push('Desktop island lost its draft during language switching')
     await desk.force(false)
   } else problems.push('Desktop island missing from language smoke')

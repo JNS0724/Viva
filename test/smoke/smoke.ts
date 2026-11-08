@@ -240,6 +240,8 @@ async function checkDeskIsland(win: SmokeWindow, outDir: string, desk: SmokeDesk
     const page = { webContents: contents }
     const logged: string[] = []
     contents.on('console-message', (event: { level: string, message: string }) => logged.push(`${event.level}: ${event.message}`))
+    await until(page, `document.querySelector('.isl')?.dataset.form === 'waiting' && document.querySelector('.isl')?.dataset.open === 'false'`, 'the pending request staying collapsed')
+    await run(page, `document.querySelector('.isl-anchor').click()`)
     const seen = await until(page, `(() => { const s = ${DESK_ISLAND_STATE}; return s?.form === 'waiting' && s.allow && s })()`, 'the desktop island asking to allow')
       .catch(async (err) => {
         throw new Error(`${err.message}; it showed ${JSON.stringify(await run(page, DESK_ISLAND_STATE))}, logged ${JSON.stringify(logged)}`)
