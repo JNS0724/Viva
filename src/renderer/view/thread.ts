@@ -476,7 +476,7 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     refreshAvatar(view, message, look)
     return view
   })
-  // A background task's card goes under the words that started it (后台做), or under the message that was last when
+  // A background task's card goes under the words that started it, or under the message that was last when
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
   const cards = new Map(cardedTasks(state).map((task) => [task.id,
     part(`task:${task.id}`, taskCardInputs(task, now), () => taskCard(task, handlers, now))]))
@@ -509,12 +509,6 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),
     ...recordsAfter(start),
     ...divided.flat().filter(isContent),
-    ...state.tasks.submissions.map(item => part(`submission:${item.id}`, [item], () => h('section', { class: 'task-submission' },
-      h('b', { class: 'task-name', text: item.text }),
-      h('div', { class: 'task-submit-status', role: 'status', text: item.status === 'failed' ? t("thread.not.started.in.background", { problem: item.problem ?? '' }) : t("thread.received.preparing.background.task") }),
-      item.status === 'failed' ? h('div', {},
-        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("thread.retry"), onClick: () => handlers.retrySubmission(item.id) }),
-        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t("extensions.remove"), onClick: () => handlers.dismissSubmission(item.id) })) : null))),
     // The schedules the model proposed in this conversation, each to be decided on (view/proposal-card.ts).
     ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from './fixtures/task-window.ts'
-import { liveTasks, runningTurn, taskMessages, taskPreview } from '../src/renderer/tasks-state.ts'
+import { liveTasks, taskMessages, taskPreview } from '../src/renderer/tasks-state.ts'
 import { showsHome } from '../src/renderer/view/render.ts'
 import { cardedTasks } from '../src/renderer/view/task-card.ts'
 
@@ -63,11 +63,6 @@ test('a background request while idle adds only its card; the original words sta
   const kept = reduce(initialState, { type: 'tasks_restored', list: [{ task: { id: 'resumed', title: '恢复任务' }, status: 'interrupted', endedAt: 3, messages: [{ role: 'user', text: '原始请求' }] }] })
   const restored = reduce(kept, { type: 'task_snapshot', snapshot: { ...snapshotOf('resumed', 'run-2', 4), opening: { words: '接着做' } } })
   assert.deepEqual(restored.taskCards, ['resumed'], 'resuming persisted task data restores its standalone card')
-})
-
-test('the turn running: the words that started it and where they are among what is saved', () => {
-  assert.deepEqual(runningTurn(working()), { words: '整理这周的提交，写成发布说明', keep: 2 })
-  assert.equal(runningTurn(initialState), null)
 })
 
 test('a task with no words of its own on screen hangs its card under the message last when it started, and stays there', () => {

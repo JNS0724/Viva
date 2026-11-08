@@ -13,7 +13,7 @@ import type { StoredTask } from '../src/backend/task-store.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
 /**
- * Background tasks from the window: 后台做 starts a task in a session of its own, its segment hanging off the
+ * Background tasks: the agent starts a task in a fresh session of its own, its segment hanging off the
  * conversation. What it says is kept there by the backend as the agent says it (task-words.ts), across launches
  * too, until it is closed.
  */
@@ -107,8 +107,8 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
         steerTask: async (taskId: string, text: string) => { calls.push(['steerTask', taskId, text]); return { ok: steerable } },
         resumeTask: async (request: { taskId: string }) => { calls.push(['resumeTask', request.taskId]); return resumable ?? { ok: true } },
         promptTask: async (taskId: string, text: string) => { calls.push(['promptTask', taskId, text]); onPrompt(taskId) },
-        startTask: async (request: unknown) => {
-          calls.push(['startTask', request])
+        startTask: async () => {
+          calls.push(['startTask'])
           await gate()
           if (!startable()) return { ok: false, reason: 'missing' }
           started += 1
@@ -118,12 +118,19 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
     })
     registerTaskIpc(ipc, tasks.window)
     const call = async <T = unknown>(channel: string, ...args: unknown[]) => await handlers[channel]({}, ...args) as T
+    /** A task started as the agent starts one (start_background_task), with the segment its words are kept in. */
+    const start = async (brief: string): Promise<Started> => {
+      const { taskId } = await tasks.agent.start(brief)
+      const entry = kept.find((task) => task.id === taskId)
+      assert.ok(entry, `task ${taskId} kept`)
+      return { ok: true, task: { id: taskId, segmentId: entry.segmentId } }
+    }
     /** The agent says `text` in the task's turn. */
     /** An event from the agent, as compose.ts passes it on (its end and waits by way of their signals). */
     const emit = (event: object) => tasks.dsh.receive(event)
     const says = (taskId: string, text: string) => emit({ type: 'task_update', taskId, update: chunk(text) })
     const ends = (taskId: string, stopReason = 'end_turn') => emit({ type: 'task_end', taskId, stopReason })
-    return { call, calls, tasks, says, ends, snapshots, pushes, emit }
+    return { call, start, calls, tasks, says, ends, snapshots, pushes, emit }
   }
 
   const first = register()
@@ -133,8 +140,8 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
 }
 
 test('what the task says is saved along the way, once however much it says meanwhile, and at once when it ends', async () => {
-  const { call, says, ends, texts, runPending, pending, kept } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, ends, texts, runPending, pending, kept } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '先看提交…')
   says(task.id, '三组改动。')
   assert.equal(pending(), 1, 'one save waiting')
@@ -153,8 +160,8 @@ test('what the task says is saved along the way, once however much it says meanw
 })
 
 test('each change of a task is one event with its task and run; a run is a turn, from its start or the next question', async () => {
-  const { call, says, ends, events, snapshots } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, ends, events, snapshots } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '写好了。')
   ends(task.id)
   const kinds = events.map(({ kind, data }) => [kind, data.taskId, data.runId ?? null, data.status ?? null])
@@ -163,8 +170,8 @@ test('each change of a task is one event with its task and run; a run is a turn,
 })
 
 test('asked again, a task starts a new run; closed, it is one event more', async () => {
-  const { call, ends, events, tasks, snapshots } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, ends, events, tasks, snapshots } = setup()
+  const { task } = await start('整理发布说明')
   ends(task.id)
   await tasks.agent.message(task.id, '再加上已知问题')
   ends(task.id, 'cancelled')
@@ -178,8 +185,8 @@ test('asked again, a task starts a new run; closed, it is one event more', async
 })
 
 test('a task\'s end is written inside its event\'s transaction, and the window hears of it only once that commits', async () => {
-  const { call, says, ends, writtenIn, pushedInside, snapshots } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, ends, writtenIn, pushedInside, snapshots } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '写好了。')
   const before = writtenIn.length
   ends(task.id)
@@ -190,8 +197,8 @@ test('a task\'s end is written inside its event\'s transaction, and the window h
 })
 
 test('an end for a task not at work is no change: closed meanwhile, or ended already', async () => {
-  const { call, ends, events } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, ends, events } = setup()
+  const { task } = await start('整理发布说明')
   ends(task.id)
   ends(task.id)
   await call('task:close', task.id)
@@ -201,8 +208,8 @@ test('an end for a task not at work is no change: closed meanwhile, or ended alr
 })
 
 test('a task\'s ending is kept once, as the registry decided it: the store and the window say the same', async () => {
-  const { call, says, ends, kept, writes, snapshots } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, ends, kept, writes, snapshots } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '写好了。')
   const before = writes.length
   ends(task.id, 'cancelled')
@@ -216,8 +223,8 @@ test('a task\'s ending is kept once, as the registry decided it: the store and t
 })
 
 test('flushed when Viva quits: what the task said so far is saved, and the next launch lists it as interrupted', async () => {
-  const { call, says, tasks, texts, relaunch } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, tasks, texts, relaunch } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '说到一半')
   tasks.dsh.flush()
   assert.deepEqual(texts(task.segmentId), ['整理发布说明', '说到一半'])
@@ -226,8 +233,8 @@ test('flushed when Viva quits: what the task said so far is saved, and the next 
 })
 
 test('words into its turn and answers to its questions are kept with what the task says', async () => {
-  const { call, calls, says, ends, tasks, texts } = setup()
-  const { task } = await call<Started>('task:start', { text: '查一下明天的天气' })
+  const { start, call, calls, says, ends, tasks, texts } = setup()
+  const { task } = await start('查一下明天的天气')
   const city = { id: 'city', question: '哪个城市？', options: [{ label: '上海' }, { label: '北京' }] }
   tasks.dsh.receive({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [city] })
   tasks.dsh.answer('q1', [{ id: 'city', selected: ['上海'] }])
@@ -242,11 +249,11 @@ test('words into its turn and answers to its questions are kept with what the ta
 
 test('a task is kept while it goes on and once it ended, until it is closed; closed, what it said is saved', async () => {
   const ended = setup()
-  const { task } = await ended.call<Started>('task:start', { text: '整理发布说明' })
+  const { task } = await ended.start('整理发布说明')
   assert.deepEqual(ended.kept().map((entry) => [entry.id, entry.segmentId, entry.title, entry.keep]), [[task.id, task.segmentId, '整理发布说明', 0]])
 
   const other = setup()
-  const started = await other.call<Started>('task:start', { text: '整理发布说明' })
+  const started = await other.start('整理发布说明')
   other.says(started.task.id, '先看提交…')
   await other.call('task:close', started.task.id)
   assert.deepEqual(other.calls.at(-1), ['closeTask', 's9'])
@@ -256,8 +263,8 @@ test('a task is kept while it goes on and once it ended, until it is closed; clo
 })
 
 test('at the next launch an unfinished task is listed as interrupted; messaged, it is taken up and goes on from what it had said', async () => {
-  const { call, says, tasks, relaunch, texts } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, tasks, relaunch, texts } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '先看提交…')
   tasks.dsh.flush()
 
@@ -277,8 +284,8 @@ test('at the next launch an unfinished task is listed as interrupted; messaged, 
 })
 
 test('a task that ended is asked again in its own session; what it says next follows what it said before', async () => {
-  const { call, calls, says, ends, kept, texts, tasks } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, calls, says, ends, kept, texts, tasks } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '写好了')
   ends(task.id)
 
@@ -291,8 +298,8 @@ test('a task that ended is asked again in its own session; what it says next fol
 })
 
 test('at the next launch tasks that had ended come back with what they said; asked again, their session is taken up first', async () => {
-  const { call, says, ends, relaunch, texts } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, ends, relaunch, texts } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '写好了')
   ends(task.id, 'cancelled')
 
@@ -314,8 +321,8 @@ test('at the next launch tasks that had ended come back with what they said; ask
 test('a task that ended and cannot be taken up says so; only the latest few ended tasks are kept', async () => {
   const old = (i: number): StoredTask => ({ id: `old${i}`, segmentId: 'c1', title: `旧的 ${i}`, words: `旧的 ${i}`, keep: 0, next: 'c1', cwd: '/w', startedAt: i, endedAt: i, status: 'done' })
   const olds = Array.from({ length: KEEP_ENDED }, (_, i) => old(i + 1))
-  const { call, ends, relaunch, kept } = setup({ resumable: { ok: false, reason: 'missing' }, stored: olds })
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, ends, relaunch, kept } = setup({ resumable: { ok: false, reason: 'missing' }, stored: olds })
+  const { task } = await start('整理发布说明')
   ends(task.id)
   assert.deepEqual(kept().map((entry) => entry.id).sort(), [...olds.slice(1).map((entry) => entry.id), task.id].sort(), 'the oldest is let go')
 
@@ -324,8 +331,8 @@ test('a task that ended and cannot be taken up says so; only the latest few ende
 })
 
 test('an interrupted task dsh cannot take up says so; closed, it is not listed again', async () => {
-  const { call, relaunch } = setup({ resumable: { ok: false, reason: 'missing' } })
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, relaunch } = setup({ resumable: { ok: false, reason: 'missing' } })
+  const { task } = await start('整理发布说明')
   const later = relaunch()
   assert.deepEqual((await later.call<Kept[]>('task:finished')).map((entry) => entry.status), ['interrupted'])
   await assert.rejects(later.tasks.agent.message(task.id, '接着做'), /接不上/)
@@ -333,14 +340,14 @@ test('an interrupted task dsh cannot take up says so; closed, it is not listed a
   assert.deepEqual(await relaunch().call('task:finished'), [])
 })
 
-test('后台做: the words start a task of their own, from the conversation so far, kept out of the timeline', async () => {
-  const { db, call, calls, current, kept, says, ends, texts } = setup()
+test('a task the agent starts gets a fresh session and a segment of its own, kept out of the timeline', async () => {
+  const { db, start, calls, current, kept, says, ends, texts } = setup()
   const main = current()
 
-  const started = await call<Started>('task:start', { text: '把这周的提交整理成发布说明' })
+  const started = await start('把这周的提交整理成发布说明')
   assert.equal(started.ok, true, JSON.stringify(started))
   assert.deepEqual(started.task.id, 's9')
-  assert.deepEqual(calls, [['startTask', {}], ['promptTask', 's9', '把这周的提交整理成发布说明']])
+  assert.deepEqual(calls, [['startTask'], ['promptTask', 's9', '把这周的提交整理成发布说明']])
   assert.deepEqual(texts(started.task.segmentId), ['把这周的提交整理成发布说明'], 'what it says is kept in its own segment')
   assert.equal(current().id, main.id, 'the conversation on screen stays where it is')
   assert.deepEqual(db.foldsOf(main.id), [], 'no line in the conversation for it: its card is there')
@@ -351,13 +358,6 @@ test('后台做: the words start a task of their own, from the conversation so f
   ends('s9')
   assert.deepEqual(texts(started.task.segmentId), ['把这周的提交整理成发布说明', '写好了'])
   assert.deepEqual(texts(main.id), ['做周报', '写好了', '整理发布说明'], 'the conversation on screen is left alone')
-})
-
-test('后台做 while a turn runs starts from before that turn, named by its words', async () => {
-  const { call, calls } = setup()
-  await call('task:start', { text: '查一下明天上海的天气', words: '整理发布说明' })
-  assert.deepEqual(calls[0], ['startTask', { words: '整理发布说明' }])
-  await assert.rejects(call('task:start', { text: '' }), /invalid task request/)
 })
 
 test('what an agent says in a task this launch does not hold, or in the conversation on screen, is not kept as a task\'s', () => {
@@ -373,7 +373,7 @@ test('the agent starts a task afresh from its brief; the window is told, and the
   const { tasks, calls, pushes, texts, kept, snapshots } = setup()
   const result = await tasks.agent.start('把 docs 里的发布说明按版本整理好，输出中文')
   assert.deepEqual(result, { taskId: 's9', title: '把 docs 里的发布说明按版本整理好，输出中文', status: 'running' })
-  assert.deepEqual(calls.slice(0, 2), [['startTask', { afresh: true }], ['promptTask', 's9', '把 docs 里的发布说明按版本整理好，输出中文']])
+  assert.deepEqual(calls.slice(0, 2), [['startTask'], ['promptTask', 's9', '把 docs 里的发布说明按版本整理好，输出中文']])
   const [made] = snapshots
   assert.deepEqual([made.taskId, made.opening?.words, made.opening?.task?.id, made.opening?.hostSession], ['s9', '把 docs 里的发布说明按版本整理好，输出中文', 's9', 's1'],
     'the window is told by the snapshot that makes it: the brief, and the conversation its card goes in')
@@ -381,12 +381,11 @@ test('the agent starts a task afresh from its brief; the window is told, and the
   assert.deepEqual(texts(kept()[0].segmentId), ['把 docs 里的发布说明按版本整理好，输出中文'])
 })
 
-test(`at most ${MAX_RUNNING} tasks work at once: one more is refused, not queued, by the agent and by 后台做 alike`, async () => {
-  const { tasks, call, ends } = setup()
+test(`at most ${MAX_RUNNING} tasks work at once: one more is refused, not queued`, async () => {
+  const { tasks, ends } = setup()
   const ids = []
   for (let i = 0; i < MAX_RUNNING; i++) ids.push((await tasks.agent.start(`任务 ${i}`)).taskId)
   await assert.rejects(tasks.agent.start('再来一个'), /最多 5 个/)
-  assert.match((await call<{ ok: boolean, problem: string }>('task:start', { text: '后台做一个' })).problem, /最多 5 个/)
   ends(ids[0])
   assert.equal((await tasks.agent.start('现在可以了')).status, 'running', 'one ended: room for another')
 })
@@ -446,8 +445,8 @@ test('words into a task\'s turn are in a read of it exactly when its mark counts
 })
 
 test('a task read at work gives the tool calls it has at work, for its card; one done is not among them', async () => {
-  const { call, emit } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, emit } = setup()
+  const { task } = await start('整理发布说明')
   emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call' as const, toolCallId: 't1', title: '读提交记录', status: 'in_progress' } })
   emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call' as const, toolCallId: 't2', title: '列出文件', status: 'in_progress' } })
   emit({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'tool_call_update', toolCallId: 't2', status: 'completed' } })
@@ -460,8 +459,8 @@ const place = (state: State, taskId: string) => { const task = state.tasks.list.
 const setupKept = (call: <T>(channel: string, ...args: unknown[]) => Promise<T>) => call<Kept[]>('task:finished')
 
 test('a window reloaded while a task works gets it back at work, with what it said so far, saved or not', async () => {
-  const { call, says } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '先看提交…')
   const [listed] = await call<Array<Kept & { startedAt: number | null }>>('task:finished')
   assert.deepEqual([listed.task.id, listed.status, listed.endedAt, typeof listed.startedAt], [task.id, 'running', null, 'number'])
@@ -482,8 +481,8 @@ test('after dsh went, a message to a task takes its session up again first, rath
 })
 
 test('an answer is kept even though dsh closes the question as it takes the answer', async () => {
-  const { call, tasks, ends, texts } = setup()
-  const { task } = await call<Started>('task:start', { text: '查一下明天的天气' })
+  const { start, call, tasks, ends, texts } = setup()
+  const { task } = await start('查一下明天的天气')
   const city = { id: 'city', question: '哪个城市？', options: [{ label: '上海' }, { label: '北京' }] }
   tasks.dsh.receive({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [city] })
   // As compose.ts does: held, then dsh takes the answer (and says the question closed), then kept.
@@ -499,8 +498,8 @@ test('a window reloaded while a task waits on the user shows what it waits for, 
   const permission = { requestId: 'p1', toolCall: { toolCallId: 't1', title: '写入 docs/release.md' }, options: [{ optionId: 'ok', name: '允许', kind: 'allow_once' }] }
   const question = { questionId: 'q1', questions: [{ id: 'city', question: '哪个城市？', options: [{ label: '上海' }] }] }
   for (const [name, waits] of [['permission', { permissions: [permission], questions: [] }], ['question', { permissions: [], questions: [question] }]] as const) {
-    const { call, emit } = setup({ waits })
-    const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+    const { start, call, emit } = setup({ waits })
+    const { task } = await start('整理发布说明')
     // It waits on the user, as dsh said (the registry's); what it waits for is dsh's (waitsOf).
     emit(name === 'permission' ? { type: 'permission', taskId: task.id, requestId: 'p1' } : { type: 'task_question', taskId: task.id, questionId: 'q1', questions: [] })
     const listed = await call<Kept[]>('task:finished')
@@ -514,8 +513,8 @@ test('a window reloaded while a task waits on the user shows what it waits for, 
 })
 
 test('a window reloaded while a task streams its answer carries the same message on, not a second one', async () => {
-  const { call, tasks } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, tasks } = setup()
+  const { task } = await start('整理发布说明')
   const stream = (kind: string, extra: object) => tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: { sessionUpdate: 'viva_stream' as const, key: 'k1', kind, ...extra } })
   stream('delta', { index: 0, blockType: 'text' as const, text: '前半段' })
   const state = reduce(initialState, { type: 'tasks_restored', list: await call<Kept[]>('task:finished') })
@@ -525,8 +524,8 @@ test('a window reloaded while a task streams its answer carries the same message
 })
 
 test('a stream with words said into it, then a reload, still settles into one message', async () => {
-  const { call, tasks } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, tasks } = setup()
+  const { task } = await start('整理发布说明')
   const update = (kind: string, extra: object) => { const parsed = decodeUpdate({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra }); assert.ok(parsed); return parsed }
   tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: update('delta', { index: 0, blockType: 'text' as const, text: '前半段' }) })
   await tasks.agent.message(task.id, '用户补充')
@@ -537,8 +536,8 @@ test('a stream with words said into it, then a reload, still settles into one me
 })
 
 test('an answer streamed and settled, then a reload, then the turn falling back to plain text: one answer, not two', async () => {
-  const { call, tasks } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, tasks } = setup()
+  const { task } = await start('整理发布说明')
   const update = (kind: string, extra: object) => { const parsed = decodeUpdate({ sessionUpdate: 'viva_stream', key: 'k1', kind, ...extra }); assert.ok(parsed); return parsed }
   const says = (raw: object) => tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: raw })
   says(update('delta', { index: 0, blockType: 'text' as const, text: '回答' }))
@@ -555,8 +554,8 @@ test('an answer streamed and settled, then a reload, then the turn falling back 
 })
 
 test('the window\'s order: the snapshot that begins a run first, then each piece numbered with its run, each snapshot after the pieces it includes', async () => {
-  const { call, says, ends, pushes, emit, tasks } = setup()
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { start, call, says, ends, pushes, emit, tasks } = setup()
+  const { task } = await start('整理发布说明')
   says(task.id, '先看提交…')
   emit({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [] })
   ends(task.id)
@@ -581,11 +580,11 @@ test('the window\'s order: the snapshot that begins a run first, then each piece
 })
 
 test('what dsh says of a task unknown, or no longer at work, goes nowhere; the window opening gets each task\'s mark', async () => {
-  const { call, says, ends, pushes, emit } = setup()
+  const { start, call, says, ends, pushes, emit } = setup()
   emit({ type: 'task_update', taskId: 'nobody', update: chunk('谁的？') })
   emit({ type: 'task_question', taskId: 'nobody', questionId: 'q1', questions: [] })
   assert.deepEqual(pushes.filter((push) => push.taskId === 'nobody'), [], 'no task\'s: nothing waits for it to be known')
-  const { task } = await call<Started>('task:start', { text: '整理发布说明' })
+  const { task } = await start('整理发布说明')
   says(task.id, '写好了')
   ends(task.id)
   const before = pushes.length

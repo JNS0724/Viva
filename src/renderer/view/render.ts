@@ -201,7 +201,7 @@ function renderComposer(dom: Dom, state: State, handlers: Handlers) {
 
 /** Cards are conversation content even when no foreground user bubble was created. */
 export const showsHome = (state: State) => state.messages.length === 0 && state.earlier.segments.length === 0
-  && state.tasks.submissions.length === 0 && cardedTasks(state).length === 0
+  && cardedTasks(state).length === 0
   && !state.newTopicPending && state.phase !== 'error'
 
 /** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */

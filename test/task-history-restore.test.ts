@@ -62,21 +62,21 @@ test('an empty conversation can restore task rows before any foreground question
   assert.equal(state.messages.length, 0)
 })
 
-test('后台做 before the first foreground message persists its empty parent instead of creating an orphan link', async t => {
+test('a task started before the first foreground message persists its empty parent instead of creating an orphan link', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-empty-parent-'))
   const db = openHistoryDb({ file: path.join(dir, 'history.db') })
   t.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }) })
   const main = db.create({ sessionId: 'main' })
-  const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
-  const ipc = checkedIpc({ handle: (channel, listener) => { handlers.set(channel, listener) }, on: () => {} })
   const unexpected = () => { throw new Error('unexpected agent operation') }
-  registerTaskIpc(ipc, createTaskRuntime({ db, current: () => main,
+  const runtime = createTaskRuntime({ db, current: () => main,
     agentInfo: () => ({}), agent: { closeTask: unexpected, cancelTask: unexpected,
-      steerTask: unexpected, resumeTask: unexpected, startTask: async () => ({ ok: true, taskId: 'only-background' }), promptTask: () => {} } }).window)
-  const result = await handlers.get('task:start')!({}, { text: '只在后台做，不发前台消息' }) as { task: { segmentId: string } }
+      steerTask: unexpected, resumeTask: unexpected, startTask: async () => ({ ok: true, taskId: 'only-background' }), promptTask: () => {} } })
+  const { taskId } = await runtime.agent.start('只在后台做，不发前台消息')
+  const segment = db.bySession(taskId)
+  assert.ok(segment, 'its segment kept')
   assert.deepEqual(db.get(main.id)?.messages, [])
   assert.equal(db.latest()?.conversation.id, main.id)
-  assert.equal(db.sideTaskHost(result.task.segmentId)?.conversationId, main.id)
+  assert.equal(db.sideTaskHost(segment.id)?.conversationId, main.id)
 })
 
 test('restored rows stay in their own topic, survive being seen, and do not resurrect closed or expired tasks', () => {

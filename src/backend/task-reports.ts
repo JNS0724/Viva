@@ -51,7 +51,7 @@ export interface ReportPayload {
   token?: string
   /** What the task was asked (its words, the start of them), and the title of the topic it was started from. */
   request?: string, topic?: string | null
-  /** When it was started, and by whom: the model (start_background_task) or the user (后台做). */
+  /** When it was started, and by whom: the model (start_background_task); 'user' only on tasks kept from before 后台做 was removed. */
   startedAt?: number | null, by?: 'agent' | 'user' | null
   /** The session it was delivered to (steered in, or a turn opened), kept before it is sent: asked there first after. */
   deliveredTo?: string | null

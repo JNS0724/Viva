@@ -10,7 +10,6 @@ import { recallCandidates, recallMatches, MIN_COVERAGE } from '../plugins/memory
 import { memoryTools } from '../plugins/memory/lib/tools.ts'
 import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
-import { registerTaskIpc } from '../src/backend/task-ipc.ts'
 import { createTaskRuntime, taskProblems } from '../src/backend/task-runtime.ts'
 
 test('approval shows the complete command and every additional argument', () => {
@@ -46,24 +45,20 @@ test('recall tool labels partial matches and never recovers invalidated memories
   assert.doesNotMatch(recall.run({ query: '常住 城市 地点' }), /我常住杭州/)
 })
 
-test('connecting background submission fails before creating a task, then can retry when connected', async t => {
+test('a task asked for while connecting is refused before one is created, and starts once connected', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-connecting-regression-'))
   const db = openHistoryDb({ file: path.join(dir, 'history.db') })
   t.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }) })
   const conversation = db.create({ sessionId: 'main', cwd: dir })
   let mode = 'connecting', calls = 0
-  let invoke: (() => Promise<{ ok: boolean, problem?: string }>) | undefined
   const idle = async () => ({ ok: true })
-  registerTaskIpc({ handle(channel, listener) {
-    if (channel === 'task:start') invoke = async () => await Reflect.apply(listener, undefined, [null, { text: '完整保留的请求' }]) as { ok: boolean, problem?: string }
-  } }, createTaskRuntime({ db, current: () => conversation, agentInfo: () => ({ mode }),
+  const runtime = createTaskRuntime({ db, current: () => conversation, agentInfo: () => ({ mode }),
     agent: { closeTask: idle, cancelTask: idle, steerTask: idle, resumeTask: idle,
-      startTask: async () => { calls++; return { ok: true, taskId: 'task1' } }, promptTask: idle } }).window)
-  assert.ok(invoke)
-  assert.deepEqual(await invoke(), { ok: false, problem: taskProblems().connecting })
+      startTask: async () => { calls++; return { ok: true, taskId: 'task1' } }, promptTask: idle } })
+  await assert.rejects(runtime.agent.start('完整保留的请求'), (err: Error) => err.message === taskProblems().connecting)
   assert.equal(calls, 0)
   mode = 'live'
-  assert.equal((await invoke()).ok, true)
+  assert.equal((await runtime.agent.start('完整保留的请求')).status, 'running')
   assert.equal(calls, 1)
 })
 

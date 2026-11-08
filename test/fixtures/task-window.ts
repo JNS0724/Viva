@@ -3,7 +3,7 @@ import { initialState, reduce as windowReduce } from '../../src/renderer/state.t
 /**
  * The window as the backend drives it (system-design §11.3): a task's lifecycle is its snapshots' alone, and the
  * task runtime sends one where tests say only what happened. A test that starts a task (`task_started` with its
- * summary, as 后台做 answers), asks one again (`task_asked`) or ends one (`task_end`) gets the snapshot the runtime
+ * summary: a fixture name only, for the snapshot that makes it), asks one again (`task_asked`) or ends one (`task_end`) gets the snapshot the runtime
  * would send with it: the one that begins the run first, the one that says it ended after its end. Everything else is
  * the window's own reducer.
  */
@@ -45,21 +45,19 @@ export function reduce(state: WindowState, incoming: TestAction): WindowState {
   if (action.type === 'permission_request' && id) action = { ...action, type: 'task_permission_request', taskId: id, ...place }
   if (action.type === 'question_pick' && id) action = { ...action, type: 'task_question_pick', taskId: id }
   if (action.type === 'question_answered' && id) action = { ...action, type: 'task_question_answered', taskId: id }
-  const committed: Action = action.type === 'task_started'
-    ? { type: 'task_started', submissionId: 'submissionId' in action ? action.submissionId : 'fixture' }
-    : action.type === 'task_end' ? { ...place, ...action } : action
   const at = 'at' in action ? action.at ?? 0 : 0
 
-  const source = action.type === 'task_started' ? action : null
-  const started = source?.task
-  if (started && !state.tasks.list.some((task) => task.id === started.id)) {
-    const host = hostOf(state, source?.origin)
+  if (action.type === 'task_started') {
+    const started = action.task
+    if (state.tasks.list.some((task) => task.id === started.id)) return state
+    const host = hostOf(state, action.origin)
     const own = state.info.sessionId ? state : { ...state, info: { ...state.info, sessionId: host === '-not-here-' ? undefined : host } }
     const begun = windowReduce(own as WindowState, { type: 'task_snapshot', snapshot: snapshotOf(started, {
-      startedAt: at, updatedAt: at, opening: { words: source?.text ?? started.words ?? '', task: { id: started.id, title: started.title ?? started.id, words: started.words ?? source?.text ?? '', segmentId: started.segmentId ?? `segment-${started.id}` }, hostSession: host === '-not-here-' ? null : host },
+      startedAt: at, updatedAt: at, opening: { words: action.text ?? started.words ?? '', task: { id: started.id, title: started.title ?? started.id, words: started.words ?? action.text ?? '', segmentId: started.segmentId ?? `segment-${started.id}` }, hostSession: host === '-not-here-' ? null : host },
     }) })
-    return windowReduce({ ...begun, info: state.info }, committed)
+    return { ...begun, info: state.info }
   }
+  const committed: Action = action.type === 'task_end' ? { ...place, ...action } : action
   if (action?.type === 'task_asked') {
     const task = state.tasks.list.find((entry) => entry.id === action.taskId)
     if (!task) return windowReduce(state, committed)

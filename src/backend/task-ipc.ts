@@ -6,7 +6,6 @@ import type { TaskWindow } from './task-runtime.ts'
  * holds and writes the tasks. Nothing is kept here.
  */
 export function registerTaskIpc(ipcMain: Pick<IpcRegistry, 'handle'>, tasks: TaskWindow): void {
-  ipcMain.handle('task:start', (_event, request) => tasks.start(request))
   ipcMain.handle('task:finished', () => tasks.finished())
   ipcMain.handle('task:close', (_event, taskId) => tasks.close(taskId))
   ipcMain.handle('task:stop', (_event, taskId) => tasks.stop(taskId))

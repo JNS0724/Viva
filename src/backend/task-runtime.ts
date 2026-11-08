@@ -11,9 +11,9 @@ import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary }
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
 
 /**
- * TaskRuntime (docs/system-design.md §11.2): the one writer of the background tasks. 后台做 starts a task in a
- * session of its own, forked from the conversation (before the turn running there, if one is), its segment hanging
- * off the conversation, out of the timeline. It holds each task's life (task-registry.ts: at work, waiting, how it
+ * TaskRuntime (docs/system-design.md §11.2): the one writer of the background tasks. The agent starts a task
+ * (start_background_task) in a fresh session of its own, from its brief, its segment hanging off the conversation,
+ * out of the timeline. It holds each task's life (task-registry.ts: at work, waiting, how it
  * ended), what the task says (task-words.ts) and what is kept of it (task-store.ts); no other module writes these.
  *
  * - Each change is one transaction with its event (`apply`): `task.started`, `task.restarted`, `task.ended`,
@@ -75,7 +75,7 @@ type StartedTask = { ok: boolean, taskId?: string, reason?: string }
 type Maybe<T> = T | Promise<T>
 /** What the runtime asks of dsh for its tasks (compose.ts taskAgent, over acp-bridge.ts). */
 export interface TaskAgent {
-  startTask: (how: { words?: string, afresh?: boolean }) => Maybe<StartedTask>
+  startTask: () => Maybe<StartedTask>
   promptTask: (taskId: string, text: string) => unknown
   steerTask: (taskId: string, text: string) => Maybe<{ ok: boolean } | null | undefined>
   resumeTask: (request: { taskId: string, cwd?: string }) => Maybe<{ ok: boolean }>
@@ -210,17 +210,6 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   const detach = (taskId: string) => { attached = new Set([...attached].filter((id) => id !== taskId)) }
 
   /**
-   * 后台做: `text` goes to a task of its own, in a session forked from the conversation as it is (before the
-   * turn running there, named by its `words`, if one is). The conversation on screen stays where it is; the
-   * task's segment hangs off it, out of the timeline, and is kept like any task going on.
-   */
-  async function start(request: { text?: unknown, words?: unknown } | null | undefined): Promise<TaskStartResult> {
-    const { text, words = null } = request ?? {}
-    if (!isText(text) || (words !== null && !isText(words))) throw new Error('invalid task request')
-    return begin(text, words === null ? {} : { words })
-  }
-
-  /**
    * Runs being begun and not yet kept, each holding a place among the MAX_RUNNING. Every run (a new task, one asked
    * again, one taken up) begins through `reserveRun`, before anything it awaits, so runs begun together cannot all
    * pass the count; the place goes once the run is kept (counted as at work by the registry) or has failed.
@@ -253,23 +242,26 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     }
   }
 
-  /** A task begun: from the conversation (后台做), or afresh from the agent's brief (start_background_task). */
-  async function begin(text: string, how: { words?: string, afresh?: boolean }): Promise<TaskStartResult> {
+  /**
+   * A task begun from the agent's brief (start_background_task), in a fresh session. The conversation on screen
+   * stays where it is; the task's segment hangs off it, out of the timeline, and is kept like any task going on.
+   */
+  async function begin(text: string): Promise<TaskStartResult> {
     const main = current()
     const { mode, model } = agentInfo()
     if (mode === 'connecting') return { ok: false as const, problem: taskProblems().connecting }
     const place = reserveRun(null)
     if ('problem' in place) return { ok: false as const, problem: place.problem }
     try {
-      return await beginReserved(text, how, main, mode, model, place.counted)
+      return await beginReserved(text, main, mode, model, place.counted)
     } finally {
       place.release()
     }
   }
 
-  async function beginReserved(text: string, how: { words?: string, afresh?: boolean }, main: Conversation, mode: string | undefined,
-    model: string | undefined, counted: () => void): Promise<TaskStartResult> {
-    const started = await agent.startTask(how)
+  async function beginReserved(text: string, main: Conversation, mode: string | undefined, model: string | undefined,
+    counted: () => void): Promise<TaskStartResult> {
+    const started = await agent.startTask()
     if (!started.ok || !started.taskId) {
       const reason = started.reason ?? 'missing'
       return { ok: false as const, problem: taskProblems()[reason] ?? t("main.task-ipc.could.not.start.in.background", { reason }) }
@@ -277,13 +269,13 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const taskId = started.taskId
     const runId = newRunId()
     const task = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
-      // A conversation with only 后台做 requests has no foreground messages yet. Keep its identity too,
+      // A conversation whose only turns started background tasks may have no messages kept yet. Keep its identity too,
       // otherwise the task points at an absent parent and its history row cannot return after a restart.
       if (!db.get(main.id)) db.save(main, [], { keepEmpty: true })
       const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(text), words: text }
-      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: how.afresh ? 'agent' : 'user' })
+      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent' })
       opens(taskId, { words: text, task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
       return begun
@@ -460,7 +452,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
 
   /** start_background_task: afresh, from the agent's brief, its card in the conversation on screen. */
   async function agentStart(brief: string) {
-    const started = await begin(brief, { afresh: true })
+    const started = await begin(brief)
     if (!started.ok) throw new Error(started.problem)
     return { taskId: started.task.id, title: started.task.title, status: 'running' }
   }
@@ -600,7 +592,6 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   return {
     /** The window's channels (task-ipc.ts). */
     window: {
-      start,
       finished,
       close,
       /** Its turn stops; the task stays, to be asked again. */

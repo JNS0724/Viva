@@ -17,7 +17,7 @@ export interface TaskSummary {
 /** What a task said, as kept in its segment (history-db.ts): a message by its role and words. */
 export interface KeptMessage { role: string, text: string, [field: string]: unknown }
 
-/** 后台做: started, or why not, in words for the user. */
+/** A background task started (task-runtime.ts begin), or why not, in words for the user. */
 export type TaskStartResult = { ok: true, task: TaskSummary } | { ok: false, problem: string }
 
 /**
@@ -63,7 +63,6 @@ export interface IpcResults {
   'agent:secrets': boolean
   'schedules:accept': { title: string, nextAt: string }
   'schedules:decline': void
-  'task:start': TaskStartResult
   'task:finished': KeptTask[]
   /** Said on the live channel (`waits`, a SessionWaits), in its place among the pushes. */
   'agent:waits': true

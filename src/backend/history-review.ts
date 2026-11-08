@@ -7,7 +7,7 @@ import { assertId, autoTitle } from './history-schema.ts'
  * 回顾 (view/review.ts): the one timeline read back a topic at a time, the topic last talked in first, each with
  * what all of it holds (history-topics.ts says which segments are one topic); a topic's messages to read; and the
  * messages the user starred. A segment folded off another is part of its topic only when it is a background task
- * (后台做, 放到后台), listed under the topic on its own line; a path left behind by going back is not listed.
+ * (started by the agent, or moved there before), listed under the topic on its own line; a path left behind by going back is not listed.
  */
 const REVIEW_PAGE = 30
 const MAX_REVIEW_PAGE = 100

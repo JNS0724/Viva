@@ -70,13 +70,13 @@ test('the checked ipcMain runs a handler only for arguments that fit, passing th
   const refused = []
   const ipc = checkedIpc(ipcMain, { onRefused: (channel, problem) => refused.push([channel, problem]) })
   const request = { text: '继续', extra: true }
-  ipc.handle('task:start', (event, given) => ({ event, given }))
-  const result = ipcMain.send('task:start', request)
+  ipc.handle('timeline:rewind', (event, given) => ({ event, given }))
+  const result = ipcMain.send('timeline:rewind', request)
   assert.equal(result.given, request, 'the same object, not a copy')
   assert.deepEqual(result.event, { sender: 'page' })
-  assert.throws(() => ipcMain.send('task:start', 'not a request'), /invalid task:start arguments/)
+  assert.throws(() => ipcMain.send('timeline:rewind', 'not a request'), /invalid timeline:rewind arguments/)
   assert.equal(refused.length, 1)
-  assert.equal(refused[0][0], 'task:start')
+  assert.equal(refused[0][0], 'timeline:rewind')
 })
 
 test('a one-way message that does not fit is dropped, not thrown', () => {

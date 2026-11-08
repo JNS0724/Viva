@@ -90,7 +90,6 @@ export const IPC_ARGS = Object.freeze({
   'timeline:folded': read(z.tuple([id])),
   'timeline:switch-path': z.tuple([id]),
 
-  'task:start': z.tuple([record]),
   'task:finished': read(none),
   'task:close': z.tuple([id]),
   'task:stop': z.tuple([id]),
