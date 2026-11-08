@@ -73,8 +73,6 @@
 
 .isl-panel { position: absolute; left: 0; top: calc(var(--isl-head) - 3px); box-sizing: border-box; padding: 2px 14px 14px var(--isl-pad); }
 .isl-in { display: flex; flex-direction: column; gap: 12px; animation: isl-in .3s .15s ease-out both; }
-/* Redrawn while already open: no fade again, or a panel redrawn every second never shows (view/island-dom.js). */
-.isl-in-still { animation: none; }
 .isl-steps { margin: 0 0 0 -17px; padding: 4px 0 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--ink-2); }
 .isl-steps li { position: relative; padding-left: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .isl-steps li::before {

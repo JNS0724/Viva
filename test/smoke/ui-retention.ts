@@ -1,22 +1,37 @@
 import { expect, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { SmokeApplication } from './application.ts'
+import { settle } from './smoke-kit.ts'
 
 /** Deliver a real Chromium press across updates, instead of dispatching element.click(). */
-async function heldClick(page: Page, target: Locator, update: () => Promise<unknown>): Promise<boolean> {
+async function heldClick(page: Page, target: Locator, update: () => Promise<unknown>, info: TestInfo): Promise<boolean> {
   await target.click({ trial: true })
   const original = await target.elementHandle()
   if (!original) throw new Error('Missing interaction target')
   const box = await target.boundingBox()
   if (!box) throw new Error('Interaction target has no bounds')
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  const measure = (node: Element, point: { x: number, y: number }) => {
+    const hit = document.elementFromPoint(point.x, point.y)
+    return { connected: node.isConnected, hit: Boolean(hit && node.contains(hit)),
+      bounds: node.getBoundingClientRect().toJSON(), clipTop: node.closest('.isl-clip')?.scrollTop ?? null }
+  }
   try {
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.move(point.x, point.y)
+    const before = await original.evaluate(measure, point)
+    expect(before.hit, 'the press begins on the visible target').toBe(true)
+    if (before.clipTop !== null) expect(before.clipTop, 'the open panel is fully revealed').toBe(0)
     await page.mouse.down()
-    let connected = false
+    let after = before
     try {
       await update()
-      connected = await original.evaluate(node => node.isConnected)
+      after = await original.evaluate(measure, point)
     } finally { await page.mouse.up() }
-    return connected
+    await info.attach('held-click-geometry', { body: JSON.stringify({ target: target.toString(), point, before, after }), contentType: 'application/json' })
+    if (after.connected) {
+      expect(after.hit, 'the retained target remains under the release point').toBe(true)
+      if (after.clipTop !== null) expect(after.clipTop, 'updates preserve the revealed panel').toBe(0)
+    }
+    return after.connected
   } finally { await original.dispose() }
 }
 
@@ -55,21 +70,21 @@ export async function checkStreamingNavigation(session: SmokeApplication, info: 
       return seen
     })
     try {
-      retained.model = await heldClick(page, model, acrossUpdates)
+      retained.model = await heldClick(page, model, acrossUpdates, info)
       expect(await clicked.evaluate(seen => seen.clicks), 'one native model selection click arrives').toBe(1)
     } finally { await clicked.dispose() }
     await page.locator('#model-btn').click()
     await page.locator('#composer-context').click()
-    retained.workdir = await heldClick(page, page.locator('#workdir-menu .workdir-item[aria-current="true"]'), acrossUpdates)
+    retained.workdir = await heldClick(page, page.locator('#workdir-menu .workdir-item[aria-current="true"]'), acrossUpdates, info)
     await expect(page.locator('#workdir-menu .workdir-menu')).toHaveCount(0)
 
     await page.locator('#open-profile').click()
     await page.locator('.hub-nav[data-page="tasks"]').click()
-    retained.task = await heldClick(page, page.locator('#tasks-page .tp-row').filter({ hasText: 'ui-retention-other' }), acrossUpdates)
+    retained.task = await heldClick(page, page.locator('#tasks-page .tp-row').filter({ hasText: 'ui-retention-other' }), acrossUpdates, info)
     await expect(page.locator('#tasks-page .tp-main')).toHaveAttribute('data-task', 'ui-retention-other')
-    retained.fold = await heldClick(page, page.locator('#tasks-page .tp-fold'), acrossUpdates)
+    retained.fold = await heldClick(page, page.locator('#tasks-page .tp-fold'), acrossUpdates, info)
     await expect(page.locator('#tasks-page .tp-side')).toHaveClass(/tp-side-folded/)
-    retained.unfold = await heldClick(page, page.locator('#tasks-page .tp-fold'), acrossUpdates)
+    retained.unfold = await heldClick(page, page.locator('#tasks-page .tp-fold'), acrossUpdates, info)
     await expect(page.locator('#tasks-page .tp-row')).toHaveCount(2)
 
     await page.locator('#tasks-page .tp-row').filter({ hasText: 'ui-retention-running' }).click()
@@ -90,12 +105,14 @@ export async function checkStreamingNavigation(session: SmokeApplication, info: 
     await stream.evaluate(stream => stream.stop())
     await stream.dispose()
   }
-  await checkRequestRegions(page, info)
+  await checkRequestRegions(session, info)
   await checkTaskPageTransitions(page, info)
 }
 
 /** Request identity, isolated from summaries: updates retain a request, replacements receive new handlers. */
-async function checkRequestRegions(page: Page, info: TestInfo): Promise<void> {
+async function checkRequestRegions(session: SmokeApplication, info: TestInfo): Promise<void> {
+  const { page, window } = session
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
   const probe = await page.evaluateHandle(async () => {
     const { createIsland } = await import(new URL('./view/island-dom.js', location.href).href) as typeof import('../../src/renderer/view/island-dom.ts')
     const { renderWorkDir } = await import(new URL('./view/workdir.js', location.href).href) as typeof import('../../src/renderer/view/workdir.ts')
@@ -162,6 +179,13 @@ async function checkRequestRegions(page: Page, info: TestInfo): Promise<void> {
         }
       },
       result: () => ({ same: original === stage.querySelector(expected), connected: original?.isConnected, focused: document.activeElement === original, calls: [...calls] }),
+      openingAnimation: () => stage.querySelector('.isl-in')?.getAnimations().find(animation => animation instanceof CSSAnimation && animation.animationName === 'isl-in') ?? null,
+      async reopen() {
+        island!.update(view, { pinned: false })
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+        island!.update(view, { pinned: true })
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      },
       dispose() {
         stage.remove()
         if (active instanceof HTMLElement && active.isConnected) active.focus({ preventScroll: true })
@@ -173,16 +197,29 @@ async function checkRequestRegions(page: Page, info: TestInfo): Promise<void> {
     for (const kind of ['workdir-confirm', 'permission', 'question', 'bar']) {
       const selector = await probe.evaluate((probe, kind) => probe.mount(kind), kind)
       const target = page.locator(selector)
+      // The island measures width and height in successive frames, then starts its finite opening transitions.
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+      if (kind === 'bar') {
+        const opening = await probe.evaluateHandle(probe => probe.openingAnimation())
+        try {
+          expect(await opening.evaluate(animation => Boolean(animation)), 'the panel has its opening animation').toBe(true)
+          await probe.evaluate(probe => probe.update(false))
+          expect(await opening.evaluate(animation => animation?.playState !== 'idle'), 'stream updates preserve the opening animation').toBe(true)
+          await probe.evaluate(probe => probe.reopen())
+          expect(await probe.evaluate(probe => probe.openingAnimation()?.playState)).toBe('running')
+        } finally { await opening.dispose() }
+      }
+      await settle(window)
       await target.click({ trial: true })
       await probe.evaluate(probe => probe.retain())
-      await heldClick(page, target, () => probe.evaluate(probe => probe.update(false)))
+      await heldClick(page, target, () => probe.evaluate(probe => probe.update(false)), info)
       const result = await probe.evaluate(probe => probe.result())
       results.push({ kind, ...result })
       expect(result.same && result.connected && result.focused, kind).toBe(true)
       expect(result.calls, kind).toHaveLength(1)
       if (kind === 'permission' || kind === 'question') {
         const count = result.calls.length
-        await heldClick(page, target, () => probe.evaluate(probe => probe.update(true)))
+        await heldClick(page, target, () => probe.evaluate(probe => probe.update(true)), info)
         const replaced = await probe.evaluate(probe => probe.result())
         expect(replaced.connected, 'the old request target is detached').toBe(false)
         expect(replaced.calls, 'releasing over a replacement never answers the new request').toHaveLength(count)
@@ -196,6 +233,7 @@ async function checkRequestRegions(page: Page, info: TestInfo): Promise<void> {
     await info.attach('request-region-retention', { body: JSON.stringify(results, null, 2), contentType: 'application/json' })
     await probe.evaluate(probe => probe.dispose())
     await probe.dispose()
+    await page.emulateMedia({ reducedMotion: null })
   }
 }
 

@@ -268,7 +268,6 @@ function createBarIsland(act: IslandAct) {
       if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
       return
     }
-    const wasOpen = el.dataset.open === 'true'
     signature = next
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
     if (rowChanged) {
@@ -282,7 +281,6 @@ function createBarIsland(act: IslandAct) {
     }
     if (panelChanged) {
       if (open) {
-        inner.className = wasOpen ? 'isl-in isl-in-still' : 'isl-in'
         reconcileChildren(inner, parts(view, now).filter((part): part is HTMLElement => part instanceof HTMLElement))
       }
       reconcileChildren(panel, open ? [inner] : [])
