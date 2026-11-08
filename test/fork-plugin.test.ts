@@ -13,8 +13,10 @@ import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fi
  * The model's request answering `prompt`: its last message is the user's, with those words. (The memory plugin's
  * background pass also calls the model after a turn, with the whole log; that is not what the agent sees.)
  */
-function requestFor(llm, prompt) {
-  const answering = llm.requests.filter((request) => {
+type ModelRequest = { messages?: Array<{ role: string, content: unknown }> }
+
+function requestFor(llm: { requests: object[] }, prompt: string) {
+  const answering = (llm.requests as ModelRequest[]).filter((request) => {
     const last = request.messages?.at(-1)
     return last?.role === 'user' && JSON.stringify(last.content).includes(prompt)
   })
@@ -96,4 +98,23 @@ test('in the forked session the agent can still ask and be answered', { timeout:
   agent.answerQuestion(question.questionId, [{ id: 'city', selected: ['上海'] }])
   await turn
   assert.ok(replies(events).join('').includes('按上海来看'))
+})
+
+test('forked with no point given while a turn is under way, the new session leaves that turn out', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const { events, llm, bridge } = await setup(t)
+  const agent = bridge()
+  await agent.start()
+  await agent.prompt('记住这个暗号：蓝色鲸鱼')
+  // A turn waiting on the user's answer is under way: its words are in the log, its end is not.
+  const turn = agent.prompt('明天天气怎么样')
+  const question = await eventually(() => events.find((event) => event.type === 'question'))
+
+  const forked = await agent.fork({})
+  assert.equal(forked.ok, true, JSON.stringify(forked))
+  await agent.prompt('另起一件事')
+  const seen = requestFor(llm, '另起一件事')
+  assert.ok(seen.includes('蓝色鲸鱼'), 'the turns that ended come along')
+  assert.ok(!seen.includes('明天天气怎么样'), 'the turn under way, not answered yet, is left out')
+  agent.answerQuestion(question.questionId, [{ id: 'city', selected: ['上海'] }])
+  await turn.catch(() => {})
 })
