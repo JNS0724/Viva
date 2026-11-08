@@ -22,7 +22,7 @@ export async function skillImportSteps(win: SmokeWindow, outDir: string, expect:
   try {
     await openCapabilityTab(win, 'skills')
     await run(win, `document.querySelector('#capabilities-root .cap-search-row button').click()`)
-    await until(win, `document.querySelector('#capabilities-root .cap-source') || null`, 'where to import from')
+    await until(win, `[...document.querySelectorAll('#capabilities-root .cap-source')].some((el) => el.textContent.includes('你自己的 dsh'))`, 'the dsh import source to finish scanning')
     await run(win, `[...document.querySelectorAll('#capabilities-root .cap-source')].find((el) => el.textContent.includes('你自己的 dsh')).click()`)
     await until(win, `document.querySelector('#capabilities-root .cap-candidate') || null`, 'what was found')
     const found = await run(win, `[...document.querySelectorAll('#capabilities-root .cap-candidate')].map((row) => ({

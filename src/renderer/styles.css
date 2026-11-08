@@ -27,12 +27,17 @@
   /* The maid's own cream (view/maid.ts): her pictures come on it, so her disc is it. Used for her and nothing else. */
   --maid-paper: #FAF7F2;
   --font-sans: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Consolas, Menlo, Monaco, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', ui-monospace, monospace;
   --font-dot: 'Doto', 'JetBrains Mono', ui-monospace, monospace;
   --radius-tile: 28px;
   /* main's window-options.ts TITLEBAR_HEIGHT matches it; the island (36px, view/island-dom.ts) is centred in it. */
   --titlebar-h: 56px;
   --island-h: 36px;
+  /* Desktop island families (view/island-dom.ts and island-input.ts). */
+  --desk-round: 80px; --desk-face-rest: 72px; --desk-face-capsule: 48px; --desk-face-input: 56px; --desk-face-card: 40px;
+  --desk-capsule-width: 440px; --desk-capsule-height: 72px; --desk-input-width: 520px; --desk-input-height: 112px;
+  --desk-card-width: 440px; --desk-card-max: 320px; --desk-card-head: 70px; --desk-card-footer: 60px;
+  --desk-pad: 16px; --desk-gap: 10px; --desk-control: 32px; --desk-radius: 22px; --desk-files-max: 128px; --desk-field-max: 72px;
   --titlebar-gutter: 12px;
   /* the 动态 button (about 96px) and 2 title bar buttons (36px), with 6px gaps */
   --titlebar-actions: 180px;
@@ -774,6 +779,7 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   color: var(--ink); padding: 0 14px; font-family: var(--font-mono); font-size: 14px;
 }
 .field:focus { outline: none; border-color: var(--accent); }
+.field::placeholder { color: var(--ink-3); opacity: 1; }
 .field:disabled, .btn:disabled { opacity: .5; cursor: not-allowed; }
 .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; }
 .btn-accent { background: var(--accent); color: var(--bg); border: none; }

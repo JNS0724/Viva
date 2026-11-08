@@ -3,6 +3,7 @@ import { t } from '../../shared/i18n/translate.ts'
 import { formatSize } from '../selectors.ts'
 import { h } from './dom.ts'
 import { picture } from './pictures.ts'
+import { icon } from './icons.ts'
 
 /**
  * The desktop island's input (desk.js): what the user asks from any app, with the shortcut or by dropping
@@ -22,15 +23,17 @@ let SUMMARIZE = t("island-input.summarize")
 let TARGET = t("island-input.send.to.current.conversation")
 let TARGET_STEER = t("island-input.the.assistant.is.working.and.will.read")
 
-export function createIslandInput({ send, dismiss, removeFile, removeImage = () => {}, paste = null }: {
+export function createIslandInput({ send, dismiss, removeFile, removeImage = () => {}, paste = null, configure }: {
   send: (text: string) => void, dismiss: () => void, removeFile: (path: string) => void,
   removeImage?: (id: string) => void, paste?: ((event: ClipboardEvent) => void) | null,
+  configure?: () => void,
 }) {
   const field = h('textarea', { class: 'isl-field', rows: '1', 'aria-label': PLACEHOLDER, spellcheck: 'false' })
-  const enter = h('span', { class: 'isl-kbd', 'aria-hidden': 'true', text: '↵' })
+  const enter = h('button', { class: 'isl-send', type: 'button', disabled: true, 'aria-label': t('render.send'),
+    onClick: () => { if (!enter.disabled) send(field.value.trim()) } }, icon('send', 17))
   const entry = h('div', { class: 'isl-entry' }, field, enter)
 
-  const ready = () => enter.classList.toggle('hot', field.value.trim() !== '')
+  const ready = () => { enter.disabled = field.disabled || (!field.value.trim() && !pictures) }
   field.addEventListener('input', ready)
   if (paste) field.addEventListener('paste', paste)
   field.addEventListener('keydown', (event) => {
@@ -41,8 +44,8 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
       dismiss()
     } else if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      const text = field.value.trim()
-      if (text || pictures) send(text)
+      ready()
+      enter.click()
     }
   })
   /** Pictures waiting to go: with them the words may be left out. */
@@ -51,7 +54,10 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
   /** The field as the view wants it: open for typing, or showing why it is not. */
   function sync(view: IslandShown) {
     field.setAttribute('aria-label', PLACEHOLDER)
+    field.title = t('island-input.shift.enter.for.a.new.line.esc')
+    enter.setAttribute('aria-label', t('render.send'))
     pictures = view.images?.length ?? 0
+    if (!view.files.length && !pictures && enter.parentNode !== entry) entry.append(enter)
     field.disabled = Boolean(view.busy)
     field.placeholder = view.busy?.text ?? (view.steering ? PLACEHOLDER_STEER : view.files.length ? PLACEHOLDER_FILES : pictures ? PLACEHOLDER_IMAGES : PLACEHOLDER)
     enter.hidden = Boolean(view.busy)
@@ -73,27 +79,25 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
   /** What unfolds below the field. */
   function panel(view: IslandShown): View[] {
     if (view.form === 'drop') {
-      return [h('div', { class: 'isl-drop' },
+      return [h('div', { class: 'isl-body' }, h('div', { class: 'isl-drop' },
         h('b', { text: t("island-input.drop.to.give.to.viva") }),
-        h('span', { text: t("island-input.only.file.paths.are.shared.with.the", { value1: view.count > 1 ? t("island-input.files", { count: view.count }) : t("drawer.files") }) }))]
+        h('span', { text: t("island-input.only.file.paths.are.shared.with.the", { value1: view.count > 1 ? t("island-input.files", { count: view.count }) : t("drawer.files") }) }))) ]
     }
     const error = view.error ? h('div', { class: 'isl-error', role: 'alert', text: view.error }) : null
-    if (view.busy) return [hint(h('span', { class: 'isl-push', text: t("island-input.esc.to.close") })), error]
+    if (view.busy) return [hint(configure ? h('button', { type: 'button', class: 'isl-link', text: t('selectors.open.settings'), onClick: configure }) : null,
+      h('span', { class: 'isl-push', text: t("island-input.esc.to.close") })), error]
     const target = view.steering ? TARGET_STEER : TARGET
     const images = view.images ?? []
-    if (images.length && !view.files.length) {
-      return [h('div', { class: 'isl-files' }, images.map(imageChip)), hint(target, h('span', { class: 'isl-push', text: t("island-input.enter.to.send.esc.to.close") })), error]
-    }
-    if (view.files.length) {
+    if (view.files.length || images.length) {
       return [
-        h('div', { class: 'isl-files' }, images.map(imageChip), view.files.map(fileChip)),
-        h('div', { class: 'isl-actions' },
-          h('button', { type: 'button', class: 'isl-btn isl-btn-blue', text: SUMMARIZE, onClick: () => send(SUMMARIZE) }),
-          hint(target)),
-        error,
+        h('div', { class: 'isl-body' },
+          h('div', { class: 'isl-files', tabindex: '0', 'aria-label': t('island-input.attachments', { count: images.length + view.files.length }) }, images.map(imageChip), view.files.map(fileChip)), error),
+        h('div', { class: 'isl-footer' },
+          view.files.length ? h('button', { type: 'button', class: 'isl-btn isl-btn-blue', text: SUMMARIZE, onClick: () => send(SUMMARIZE) }) : null,
+          hint(target), enter),
       ]
     }
-    return [hint(target, h('span', { class: 'isl-push', text: t("island-input.shift.enter.for.a.new.line.esc") })), error]
+    return [hint(target, h('span', { class: 'isl-push', text: t("island-input.enter.to.send.esc.to.close") })), error]
   }
 
   return {

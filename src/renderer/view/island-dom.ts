@@ -4,6 +4,7 @@ import { formatElapsed } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
+import { icon } from './icons.ts'
 import { queueLayout } from './reconcile.ts'
 import { INPUT_FORMS } from './island-input.ts'
 import type { createIslandInput } from './island-input.ts'
@@ -12,8 +13,8 @@ import { backgroundSection, tailCell, taskTag } from './island-tasks.ts'
 /**
  * The Viva island as an element, for its two hosts: the capsule in the window's title bar ('bar') and the
  * island on the desktop ('desk', desk.js). It is made once and updated in place, so a change of state
- * reads as one shape growing or shrinking around the cat, not as a new element. The cat stays at the top
- * left in every form. What it shows comes from islandView (island-view.js).
+ * reads as one shape changing around her. Desktop layouts give the portrait its own space beside the
+ * input or in the card header. What it shows comes from islandView (island-view.js).
  *
  * Actions go to `act`: toggle, jump (to the card in the thread), cancel, trace, open (the window),
  * input (the desktop's), coached, permission { requestId, optionId }, answer { questionId, id, label },
@@ -38,8 +39,46 @@ type Host = 'bar' | 'desk'
  */
 const SIZES: Record<Host, { head: number, panel: number, maxHead: number, maid: number, input?: number }> = {
   bar: { head: 36, panel: 360, maxHead: 360, maid: 0 },
-  desk: { head: 80, panel: 420, maxHead: 460, maid: 72, input: 560 },
+  desk: { head: 80, panel: 440, maxHead: 440, maid: 72, input: 520 },
 }
+
+export type DeskLayout = 'rest' | 'capsule' | 'input' | 'content'
+const DESK_PORTRAITS: Readonly<Record<DeskLayout, number>> = Object.freeze({ rest: 72, capsule: 48, input: 56, content: 40 })
+
+/** Desktop layout follows content, independently of the title bar's compact representation. */
+export function deskLayoutFor(view: IslandShown, open: boolean, tools: boolean): DeskLayout {
+  if (view.form === 'input') return view.files.length || view.images?.length ? 'content' : 'input'
+  if (open) return 'content'
+  return view.form === 'mini' && !tools && !view.background?.count && !view.background?.done ? 'rest' : 'capsule'
+}
+
+function deskHead(view: IslandShown, layout: DeskLayout, now: number) {
+  const attachments = view.form === 'input'
+  const tasks = layout === 'content' && !OPENS_ITSELF.has(view.form) && !INPUT_FORMS.has(view.form)
+  let label = view.label
+  let detail = view.action ?? view.task ?? view.question?.header ?? view.detail
+  if (tasks) {
+    label = t('tasks-page.background.tasks')
+    detail = t('background.running.count', { p0: view.background?.count ?? 0 })
+  } else if (attachments || view.form === 'drop') {
+    label = t('desk.give.to.viva')
+    if (attachments) detail = t('island-input.attachments', { count: view.files.length + (view.images?.length ?? 0) })
+  } else if (view.form === 'mini') {
+    label = t('desk.ask.viva')
+    detail = t('island-dom.ask.viva.or.drop.files.here')
+  }
+  const elapsed = view.form === 'working' ? elapsedSince(view, now)
+    : view.form === 'done' && !view.task ? formatElapsed(view.elapsedMs ?? 0) : null
+  return h('span', { class: 'isl-copy' },
+    h('span', { class: 'isl-status' }, h('span', { class: 'isl-dot', 'aria-hidden': 'true' }),
+      h('b', { class: 'isl-label', text: label }), elapsed ? h('span', { class: 'isl-time', text: elapsed }) : null),
+    detail ? h('span', { class: 'isl-more', text: detail, title: detail }) : null)
+}
+
+const desktopPanel = (body: View[], actions: View[]) => [
+  h('div', { class: 'isl-body', tabindex: '0', 'aria-label': t('island-dom.content') }, ...body),
+  h('div', { class: 'isl-footer' }, ...actions),
+]
 
 /** Forms that need the user; on the desktop their panel opens by itself, as does the first-time note. */
 const NEEDS_USER = new Set(['waiting', 'asking'])
@@ -102,36 +141,36 @@ const ROLE: Readonly<Record<string, string>> & { text: string, secondary: string
 /** What it is to allow: its title and, for a command, the command itself on one line. */
 function permissionPanel(view: IslandShown, act: IslandAct) {
   const { permission } = view
-  return [
+  return desktopPanel([
     taskTag(view),
     h('div', { class: 'isl-title', text: permission.title }),
     permission.command ? h('pre', { class: 'isl-detail', text: permission.command, title: permission.command }) : null,
-    h('div', { class: 'isl-actions' },
-      permission.options.map((option: { optionId: string, name: string, role: string }) => button(option.name, ROLE[option.role],
-        () => act({ kind: 'permission', requestId: permission.requestId, optionId: option.optionId }))),
-      button(t("island-dom.view.details"), `${ROLE.text} isl-push`, () => act({ kind: 'open' }))),
-  ]
+  ], [
+    permission.options.map((option: { optionId: string, name: string, role: string }) => button(option.name, ROLE[option.role],
+      () => act({ kind: 'permission', requestId: permission.requestId, optionId: option.optionId }))),
+    button(t("island-dom.view.details"), `${ROLE.text} isl-push`, () => act({ kind: 'open' })),
+  ])
 }
 
 function questionPanel(view: IslandShown, act: IslandAct) {
   const { question } = view
-  return [
+  return desktopPanel([
     question.header ? h('span', { class: 'isl-tag', text: question.header }) : null,
     h('div', { class: 'isl-title', text: question.text }),
-    h('div', { class: 'isl-actions' },
-      question.options.map((label: string) => button(label, ROLE.secondary, () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }))),
-      button(question.options.length ? t("island-dom.other") : t("island-dom.open.window.to.answer"), question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
-      question.skippable ? button(t("island-dom.skip"), `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null),
-  ]
+    h('div', { class: 'isl-choices' },
+      question.options.map((label: string) => button(label, ROLE.secondary, () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label })))),
+  ], [
+    button(question.options.length ? t("island-dom.other") : t("island-dom.open.window.to.answer"), question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
+    question.skippable ? button(t("island-dom.skip"), `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null,
+  ])
 }
 
 /** The first time the cat rests on the desktop: what it can do, which nothing on it shows otherwise. */
 function coachPanel(act: IslandAct, shortcut: string) {
   const tips = [t("island-dom.click.me.or.press.in.any.app", { shortcut: shortcut }), t("island-dom.drop.files.onto.me.for.help"), t("island-dom.drag.to.move.right.click.for.more")]
-  return [
+  return desktopPanel([
     h('ul', { class: 'isl-tips' }, tips.map((text) => h('li', { text }))),
-    h('div', { class: 'isl-actions' }, button(t("island-dom.got.it"), 'isl-btn-blue', () => act({ kind: 'coached' }))),
-  ]
+  ], [button(t("island-dom.got.it"), 'isl-btn-blue', () => act({ kind: 'coached' }))])
 }
 
 /**
@@ -150,7 +189,9 @@ function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: str
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
   if (host === 'desk' && view.form === 'coach') return coachPanel(act, shortcut)
-  if (host === 'desk') return [backgroundSection(view, act, now)]
+  if (host === 'desk') return desktopPanel([backgroundSection(view, act, now)], [
+    button(t('island-dom.view.full.activity'), `${ROLE.text} isl-push`, () => act({ kind: 'tasks' })),
+  ])
   const working = view.form === 'working'
   const steps = view.recent.length ? [
     stepList(view),
@@ -222,6 +263,7 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
    * @param wide the input's forms, as wide as the input
    */
   function layout(open: boolean, wide: boolean) {
+    if (host === 'desk') return
     head.style.width = 'max-content'
     queueLayout(el, () => {
       if (!el.isConnected) return
@@ -256,6 +298,7 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
     const unfolds = wide || hasPanel(view, host, pinned)
     const open = unfolds && (wide || pinned || host === 'desk')
     const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
+    const desktopLayout = host === 'desk' ? deskLayoutFor(view, open, showTools) : null
     const next = islandSignatures(view, open, showTools)
     next.row = `${localeRevision()}:${next.row}`
     next.panel = `${localeRevision()}:${next.panel}`
@@ -269,14 +312,23 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
     // The panel fades in as it opens; redrawn while open (a step every second as the agent works) it stays put.
     const wasOpen = el.dataset.open === 'true'
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
+    if (desktopLayout) el.dataset.layout = desktopLayout
     // The desktop portrait stays animated when folded too; reuse it across clock and hover updates.
     const mood = view.form === 'drop' ? 'listening' : maidMood(view.form === 'mini' ? 'idle' : view.mood, view.tone)
-    const portrait = size.maid ? maidFor(maids, 'island', mood, { size: size.maid, moving: host === 'desk' || open, badge: true }) : dot
+    const portraitSize = desktopLayout ? DESK_PORTRAITS[desktopLayout] : size.maid
+    const portrait = size.maid ? maidFor(maids, 'island', mood, {
+      size: portraitSize, framing: desktopLayout === 'rest' ? 'whole' : 'face', moving: host === 'desk' || open, badge: host !== 'desk',
+    }) : dot
     if (face.firstChild !== portrait) face.replaceChildren(portrait)
     const tail = tailCell(view)
-    const parts = view.form === 'input' ? [] : [...headParts(view, { host, now, tools: showTools, shortcut }), tail]
+    const parts = desktopLayout ? [deskHead(view, desktopLayout, now), tail]
+      : [...headParts(view, { host, now, tools: showTools, shortcut }), tail]
     head.replaceChildren(...parts.filter((part): part is NonNullable<typeof part> => Boolean(part)))
-    tools.replaceChildren(...(showTools ? deskTools(view, act) : []))
+    const closable = view.form === 'input' || view.form === 'coach'
+    const contentTool = desktopLayout === 'content' ? tool(t(closable ? 'review.close' : 'island-dom.open.window'), 'isl-tool-open',
+      () => act({ kind: view.form === 'input' ? 'dismiss' : view.form === 'coach' ? 'coached' : 'open' })) : null
+    if (contentTool) contentTool.append(icon(closable ? 'close' : 'panel', 17))
+    tools.replaceChildren(...(contentTool ? [contentTool] : showTools ? deskTools(view, act) : []))
     if (input && view.form === 'input') {
       input.sync(view)
       if (input.entry.parentNode !== clip) clip.append(input.entry)

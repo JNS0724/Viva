@@ -31,7 +31,7 @@ await initializeLanguage(api, () => { if (languageReady) show() })
  * From the main process: the window's view, the form to show, where the island sits, whether it is dragged,
  * whether the user has yet to see what it can do (coach).
  */
-let payload: { view?: any, form?: string, align?: string, dir?: string, dragging?: boolean, hover?: boolean, coach?: boolean } | null = null
+let payload: { view?: any, form?: string, align?: string, dir?: string, dragging?: boolean, hover?: boolean, coach?: boolean, layoutVersion?: number } | null = null
 /**
  * The input's own state: files dropped so far, pictures pasted (kept in the pictures folder), the last refusal,
  * files being dragged over (their count).
@@ -64,6 +64,7 @@ async function addImages(pasted: readonly File[]) {
 const input = createIslandInput({
   send: (text) => ask(text),
   dismiss: () => api.act({ kind: 'dismiss' }),
+  configure: () => api.act({ kind: 'settings' }),
   removeFile: (path) => {
     files = files.filter((file) => file.path !== path)
     show()
@@ -115,7 +116,7 @@ function show() {
   const view = shownView()
   if (!view.background?.items.length) listOpen = false
   island.update(view, { now: Date.now(), pinned: listOpen })
-  if (view.form === 'input' && !view.busy && document.activeElement !== input.field) input.field.focus()
+  if (view.form === 'input' && !view.busy && !island.el.contains(document.activeElement)) input.field.focus()
 }
 
 async function ask(text: string) {
@@ -129,7 +130,9 @@ async function ask(text: string) {
   show()
 }
 
+let layoutFrame = 0
 const takeView = (next: any) => {
+  const layoutChanged = !payload || payload.layoutVersion !== next.layoutVersion
   if (payload?.form === 'input' && next.form !== 'input') {
     files = []
     images = []
@@ -140,6 +143,7 @@ const takeView = (next: any) => {
   island.el.dataset.dir = next.dir
   island.setPointer(Boolean(next.hover))
   show()
+  if (layoutChanged) acknowledgeLayout(next.layoutVersion ?? 0)
 }
 api.onView(takeView)
 stopEarly()
@@ -148,12 +152,22 @@ setInterval(show, TICK_MS)
 
 // The main process lets clicks through to what is below except over the island, so it needs to know where
 // the island is; that changes with every change of shape and place.
-function reportRect() {
+function reportRect(ready = false) {
+  if (!payload) return
   const { x, y, width, height } = island.el.getBoundingClientRect()
-  api.act({ kind: 'rect', x, y, width, height })
+  api.act({ kind: 'rect', x, y, width, height, version: payload?.layoutVersion ?? 0, ready })
 }
-new ResizeObserver(reportRect).observe(island.el)
-new MutationObserver(reportRect).observe(stage, { attributes: true, attributeFilter: ['data-align', 'data-dir', 'data-dragging'] })
+/** One painted frame separates the compact renderer layout from the native window resize. */
+function acknowledgeLayout(version: number) {
+  cancelAnimationFrame(layoutFrame)
+  layoutFrame = requestAnimationFrame(() => {
+    layoutFrame = requestAnimationFrame(() => {
+      if ((payload?.layoutVersion ?? 0) === version) reportRect(true)
+    })
+  })
+}
+new ResizeObserver(() => reportRect()).observe(island.el)
+new MutationObserver(() => reportRect()).observe(stage, { attributes: true, attributeFilter: ['data-align', 'data-dir', 'data-dragging'] })
 
 // Holding the island and moving it drags it; the main process moves the window with the pointer, and the
 // island shrinks to its cat meanwhile. It moves at this page's frames, so in step with the screen at any
@@ -169,7 +183,7 @@ function dragFrame() {
   frame = requestAnimationFrame(dragFrame)
 }
 island.el.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0 || targetOf(event).closest('textarea, button:not(.isl-head)')) return
+  if (event.button !== 0 || targetOf(event).closest('textarea, input, button:not(.isl-head), .isl-body, .isl-files')) return
   press = { x: event.screenX, y: event.screenY, id: event.pointerId }
   dragged = false
 })
