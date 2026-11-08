@@ -1,5 +1,10 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
+import { localeRevision } from '../../shared/i18n/locale.ts'
+import type { IslandView } from '../island-view.ts'
+import { reconcileChildren } from './reconcile.ts'
+
+type IslandTask = NonNullable<IslandView['background']>['items'][number]
 
 /**
  * Tasks in the background on the island (island-view.js background): the island stays one, with the
@@ -13,22 +18,27 @@ import { h } from './dom.ts'
  * not counted, so the cell goes once all are).
  * @returns nothing with no task and no follow-up to speak of
  */
-export function tailCell(view: IslandShown, interactive = false): HTMLElement | null {
-  const tag = interactive ? 'button' : 'span'
-  const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
-  if (alsoWaiting) {
-    return h(tag, { ...(interactive ? { type: 'button' } : {}), class: 'isl-bg isl-bg-waits', title: t("island-tasks.more.waiting.for.you", { alsoWaiting: alsoWaiting }), 'aria-label': t("island-tasks.more.waiting.for.you", { alsoWaiting }) },
-      h('b', { text: `+${alsoWaiting}` }), h('span', { text: t("island-tasks.waiting.for.you") }))
+export function createTailCell(interactive = false) {
+  const el = h(interactive ? 'button' : 'span', interactive ? { type: 'button' } : {})
+  let signature = ''
+  function update(view: IslandShown): HTMLElement | null {
+    const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
+    if (!count && !done && !alsoWaiting) return null
+    const next = JSON.stringify([count, done, alsoWaiting, localeRevision()])
+    if (next === signature) return el
+    signature = next
+    const label = alsoWaiting ? t('island-tasks.more.waiting.for.you', { alsoWaiting })
+      : count ? t('background.running.count', { p0: count }) : t('background.completed.count', { p0: done })
+    el.title = label
+    el.setAttribute('aria-label', label)
+    el.className = `isl-bg ${alsoWaiting ? 'isl-bg-waits' : count ? 'isl-bg-live' : 'isl-bg-done'}`
+    el.replaceChildren(...(alsoWaiting
+      ? [h('b', { text: `+${alsoWaiting}` }), h('span', { text: t('island-tasks.waiting.for.you') })]
+      : count ? [h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) })]
+        : [h('b', { text: `✓ ${done}` })]))
+    return el
   }
-  if (count) {
-    return h(tag, { ...(interactive ? { type: 'button' } : {}), class: 'isl-bg isl-bg-live', title: t("background.running.count", { p0: count }), 'aria-label': t("background.running.count", { p0: count }) },
-      h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) }))
-  }
-  if (done) {
-    return h(tag, { ...(interactive ? { type: 'button' } : {}), class: 'isl-bg isl-bg-done', title: t("background.completed.count", { p0: done }), 'aria-label': t("background.completed.count", { p0: done }) },
-      h('b', { text: `✓ ${done}` }))
-  }
-  return null
+  return { el, update }
 }
 
 /** Whose request it is, when a task in the background asks. */
@@ -41,33 +51,62 @@ const runningFor = (startedAt: number | undefined, now: number) => {
   return minutes < 1 ? t("island-tasks.just.started") : t("island-tasks.minutes", { minutes: minutes })
 }
 
-function itemLine(item: Untyped, act: IslandAct, now: number) {
-  const asks = item.permission
-  const doing = asks ? t("island-tasks.wants.to", { title: asks.title }) : item.status === 'waiting' ? t("island-tasks.waiting.for.your.answer") : item.now ? t("island-tasks.currently", { now: item.now }) : t("island-tasks.working")
-  const actions = asks
-    ? asks.options.map((option: { optionId: string, name: string, role: string }) => h('button', {
-      type: 'button',
-      class: `isl-mini ${option.role === 'primary' ? 'isl-mini-primary' : ''}`,
-      text: option.name,
-      onClick: () => act({ kind: 'permission', requestId: asks.requestId, optionId: option.optionId }),
-    }))
-    : [h('span', { class: 'isl-bg-time', text: runningFor(item.startedAt, now) }),
-      h('button', { type: 'button', class: 'isl-mini', text: t("island-tasks.stop"), onClick: () => act({ kind: 'stop-task', taskId: item.id }) })]
-  return h('li', { class: 'isl-bg-item', 'data-status': item.status },
-    // The line opens what the task did, in the drawer.
-    h('button', { type: 'button', class: 'isl-bg-mid', title: t("island-tasks.view.activity"), onClick: () => act({ kind: 'task', taskId: item.id }) },
-      h('b', { text: `#${item.title}` }),
-      h('span', { text: doing })),
-    ...actions)
+function createItemLine(id: string, act: IslandAct) {
+  const title = h('b'), detail = h('span'), time = h('span', { class: 'isl-bg-time' })
+  const open = h('button', { type: 'button', class: 'isl-bg-mid', onClick: () => act({ kind: 'task', taskId: id }) }, title, detail)
+  const stop = h('button', { type: 'button', class: 'isl-mini', onClick: () => act({ kind: 'stop-task', taskId: id }) })
+  const el = h('li', { class: 'isl-bg-item' }, open)
+  let signature = '', actions: HTMLElement[] = []
+  function update(item: IslandTask, now: number) {
+    el.dataset.status = item.status
+    const name = `#${item.title}`
+    if (title.textContent !== name) title.textContent = name
+    const asks = item.permission
+    const doing = asks ? t('island-tasks.wants.to', { title: asks.title }) : item.status === 'waiting' ? t('island-tasks.waiting.for.your.answer')
+      : item.now ? t('island-tasks.currently', { now: item.now }) : t('island-tasks.working')
+    if (detail.textContent !== doing) detail.textContent = doing
+    open.title = t('island-tasks.view.activity')
+    stop.textContent = t('island-tasks.stop')
+    const elapsed = runningFor(item.startedAt, now)
+    if (time.textContent !== elapsed) time.textContent = elapsed
+    // A request owns its option handlers. A different request receives new buttons and ids.
+    const next = JSON.stringify([localeRevision(), asks?.requestId, asks?.options])
+    if (signature !== next) {
+      signature = next
+      actions = asks ? asks.options.map(option => h('button', {
+        type: 'button', class: `isl-mini ${option.role === 'primary' ? 'isl-mini-primary' : ''}`, text: option.name,
+        onClick: () => act({ kind: 'permission', requestId: asks.requestId, optionId: option.optionId }),
+      })) : [time, stop]
+    }
+    reconcileChildren(el, [open, ...actions])
+  }
+  return { el, update }
 }
 
 /** Opened: a section under the conversation's steps, one line a task, and how many are done. */
-export function backgroundSection(view: IslandShown, act: IslandAct, now = Date.now()) {
-  const items: Untyped[] = view.background?.items ?? []
-  if (!items.length) return null
-  const done = view.background.done ?? 0
-  return h('section', { class: 'isl-bg-list', 'aria-label': t("island-tasks.background") },
-    h('div', { class: 'isl-sect' }, h('span', { text: t("island-tasks.background.2") }), h('b', { text: String(items.length) }),
-      done ? h('span', { text: t("island-tasks.done.2", { done: done }) }) : null),
-    h('ol', {}, items.map((item) => itemLine(item, act, now))))
+export function createBackgroundSection(act: IslandAct) {
+  const label = h('span'), count = h('b'), done = h('span')
+  const head = h('div', { class: 'isl-sect' }, label, count)
+  const list = h('ol')
+  const el = h('section', { class: 'isl-bg-list' }, head, list)
+  const rows = new Map<string, ReturnType<typeof createItemLine>>()
+  function update(view: IslandShown, now: number): HTMLElement | null {
+    const items: readonly IslandTask[] = view.background?.items ?? []
+    const present = new Set(items.map(item => item.id))
+    for (const id of rows.keys()) if (!present.has(id)) rows.delete(id)
+    if (!items.length) { reconcileChildren(list, []); return null }
+    el.setAttribute('aria-label', t('island-tasks.background'))
+    label.textContent = t('island-tasks.background.2')
+    count.textContent = String(items.length)
+    done.textContent = t('island-tasks.done.2', { done: view.background.done ?? 0 })
+    reconcileChildren(head, view.background.done ? [label, count, done] : [label, count])
+    reconcileChildren(list, items.map(item => {
+      let row = rows.get(item.id)
+      if (!row) { row = createItemLine(item.id, act); rows.set(item.id, row) }
+      row.update(item, now)
+      return row.el
+    }))
+    return el
+  }
+  return { update }
 }

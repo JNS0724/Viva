@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { checkIslandLayouts } from './island-layout.ts'
 import { checkStreamingDrawer } from './drawer-interaction.ts'
+import { checkStreamingNavigation } from './ui-retention.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
 declare global { interface Window { vivaDraftAudit?: Array<{ key: string, version: number, sequence: number, epoch: number, owner: string, chars: number, files: number, images: number }> } }
@@ -159,6 +160,7 @@ test('a real embedded agent answers and history survives a restart', async ({ sc
   await expect(session.page.locator('.msg-user').last()).toContainText('外部冒烟验证')
   await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('外部冒烟验证')
   await checkStreamingDrawer(session, info)
+  await checkStreamingNavigation(session, info)
 })
 
 test('centred chat avatars and the folded desktop island animate without restarting on refresh', async ({ scenario }, info) => {

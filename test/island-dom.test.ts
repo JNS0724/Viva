@@ -21,6 +21,17 @@ test('a new question or the island folding redraws the panel', () => {
   assert.notEqual(islandSignatures(asking, false, true).panel, shown.panel)
 })
 
+test('background activity and recent steps do not invalidate the title-bar head', () => {
+  const view = { ...asking, form: 'working', recent: [{ title: 'First step', tone: 'live' }],
+    background: { count: 1, done: 0, items: [{ id: 'task', title: 'Task', status: 'running', now: 'Read' }] } }
+  const changed = { ...view, recent: [{ title: 'Second step', tone: 'live' }],
+    background: { ...view.background, items: [{ ...view.background.items[0], now: 'Write' }] } }
+  assert.equal(islandSignatures(view, true, false).row, islandSignatures(changed, true, false).row)
+  assert.notEqual(islandSignatures(view, true, false).panel, islandSignatures(changed, true, false).panel)
+  assert.notEqual(islandSignatures(view, true, false).row,
+    islandSignatures({ ...view, background: { ...view.background, count: 2 } }, true, false).row)
+})
+
 test('desktop layout separates the resting portrait, status, input and content', () => {
   const mini = { form: 'mini', tone: 'idle', mood: 'idle', label: '', recent: [] }
   assert.equal(deskLayoutFor(mini, false, false), 'rest')

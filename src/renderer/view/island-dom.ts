@@ -6,7 +6,7 @@ import type { MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
 import type { createIslandInput } from './island-input.ts'
-import { backgroundSection, tailCell, taskTag } from './island-tasks.ts'
+import { createBackgroundSection, createTailCell, taskTag } from './island-tasks.ts'
 
 /** Shared task/request content with separate title-bar and desktop hosts. The desktop keeps a 72px
  * portrait in one 80px target, with explicit expansion of its neighbouring surface. Views wire actions;
@@ -100,10 +100,6 @@ function headParts(view: IslandShown, { host, now, tools, shortcut }: { host: Ho
   }
 }
 
-function stepList(view: IslandShown) {
-  return h('ol', { class: 'isl-steps' }, view.recent.map((step) => h('li', { 'data-tone': step.tone, text: step.title })))
-}
-
 const button = (text: string, cls: string, onClick: () => void) => h('button', { type: 'button', class: `isl-btn ${cls}`, text, onClick })
 /** Buttons by role (prompt-card.js), as on the thread's card: the main one filled, the others outlined, the least a link. */
 const ROLE: Readonly<Record<string, string>> & { text: string, secondary: string } = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
@@ -154,26 +150,51 @@ function hasPanel(view: IslandShown) {
   return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || tasks)
 }
 
-/** The unfolded part: on the desktop what the agent waits on, in the title bar the steps so far, then the tasks. */
-function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: string, now: number): View[] {
-  if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
-  if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
-  if (host === 'desk' && view.form === 'coach') return coachPanel(act, shortcut)
-  if (host === 'desk' && ['resolved', 'done', 'error', 'pending'].includes(view.form)) return desktopPanel([
-    h('div', { class: 'isl-title', text: view.detail || view.label }),
-  ], [button(t('desk.interaction.open'), 'isl-btn-blue', () => act({ kind: 'open' })),
-    button(t('desk.interaction.continue'), ROLE.text, () => act({ kind: 'input' }))])
-  if (host === 'desk') return desktopPanel([backgroundSection(view, act, now)], [
-    button(t('island-dom.view.full.activity'), `${ROLE.text} isl-push`, () => act({ kind: 'tasks' })),
-  ])
-  const working = view.form === 'working'
-  const steps = view.recent.length ? [
-    stepList(view),
-    h('div', { class: 'isl-actions' },
-      working ? button(t("island-dom.stop"), 'isl-btn-line', () => act({ kind: 'cancel' })) : null,
-      button(t("island-dom.view.full.activity"), ROLE.text, () => act({ kind: 'trace' }))),
-  ] : []
-  return [...steps, backgroundSection(view, act, now)]
+/** Each region owns its nodes: summaries may change while a request or an action stays valid. */
+function createPanelParts(host: Host, act: IslandAct, shortcut: string) {
+  const background = createBackgroundSection(act)
+  const steps = h('ol', { class: 'isl-steps' })
+  const stop = button('', 'isl-btn-line', () => act({ kind: 'cancel' }))
+  const trace = button('', ROLE.text, () => act({ kind: 'trace' }))
+  const actions = h('div', { class: 'isl-actions' })
+  const body = h('div', { class: 'isl-body', tabindex: '0' })
+  const tasks = button('', `${ROLE.text} isl-push`, () => act({ kind: 'tasks' }))
+  const footer = h('div', { class: 'isl-footer' }, tasks)
+  let requestKey = '', request: View[] = [], stepsKey = ''
+  return (view: IslandShown, now: number): View[] => {
+    if (host === 'desk' && ['waiting', 'asking', 'coach', 'resolved', 'done', 'error', 'pending'].includes(view.form)) {
+      const content = view.form === 'waiting' ? [view.task, view.permission]
+        : view.form === 'asking' ? view.question : view.form === 'coach' ? null : view.detail || view.label
+      const key = JSON.stringify([localeRevision(), view.form, content])
+      if (key !== requestKey) {
+        requestKey = key
+        if (view.form === 'waiting') request = permissionPanel(view, act)
+        else if (view.form === 'asking') request = questionPanel(view, act)
+        else if (view.form === 'coach') request = coachPanel(act, shortcut)
+        else request = desktopPanel([h('div', { class: 'isl-title', text: view.detail || view.label })], [
+          button(t('desk.interaction.open'), 'isl-btn-blue', () => act({ kind: 'open' })),
+          button(t('desk.interaction.continue'), ROLE.text, () => act({ kind: 'input' })),
+        ])
+      }
+      return request
+    }
+    const section = background.update(view, now)
+    if (host === 'desk') {
+      body.setAttribute('aria-label', t('island-dom.content'))
+      tasks.textContent = t('island-dom.view.full.activity')
+      reconcileChildren(body, section ? [section] : [])
+      return [body, footer]
+    }
+    const nextSteps = JSON.stringify(view.recent)
+    if (nextSteps !== stepsKey) {
+      stepsKey = nextSteps
+      steps.replaceChildren(...view.recent.map(step => h('li', { 'data-tone': step.tone, text: step.title })))
+    }
+    stop.textContent = t('island-dom.stop')
+    trace.textContent = t('island-dom.view.full.activity')
+    reconcileChildren(actions, view.form === 'working' ? [stop, trace] : [trace])
+    return [...(view.recent.length ? [steps, actions] : []), ...(section ? [section] : [])]
+  }
 }
 
 /**
@@ -192,7 +213,10 @@ function headAction(view: IslandShown, unfolds: boolean): { kind: string } | nul
  */
 export function islandSignatures(view: IslandShown, open: boolean, showTools: boolean) {
   const panel = JSON.stringify([view, open])
-  return { panel, row: JSON.stringify([panel, showTools]) }
+  const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
+  const row = JSON.stringify([view.form, view.tone, view.label, view.action, view.detail, view.task,
+    view.startedAt, view.steps, view.elapsedMs, hasPanel(view), Boolean(view.background), count, done, alsoWaiting, open, showTools])
+  return { panel, row }
 }
 
 /** options: the desktop's input, and the ask shortcut as the user presses it */
@@ -205,6 +229,9 @@ function createBarIsland(act: IslandAct) {
   const panel = h('div', { class: 'isl-panel' })
   const clip = h('div', { class: 'isl-clip' }, row, panel)
   const el = h('div', { class: 'isl', 'data-host': 'bar' }, clip, face)
+  const parts = createPanelParts('bar', act, '')
+  const tail = createTailCell()
+  const inner = h('div', { class: 'isl-in' })
   let signature = { panel: '', row: '' }
   let onHead: { kind: string } | null = null
   head.addEventListener('click', event => {
@@ -235,22 +262,28 @@ function createBarIsland(act: IslandAct) {
     const unfolds = hasPanel(view), open = unfolds && pinned
     const next = islandSignatures(view, open, false)
     next.row = `${localeRevision()}:${next.row}`; next.panel = `${localeRevision()}:${next.panel}`
-    if (next.row === signature.row) {
+    const rowChanged = next.row !== signature.row, panelChanged = next.panel !== signature.panel
+    if (!rowChanged && !panelChanged) {
       const clock = head.querySelector('.isl-time')
       if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
       return
     }
-    const panelChanged = next.panel !== signature.panel, wasOpen = el.dataset.open === 'true'
     signature = next
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
-    head.replaceChildren(...[...headParts(view, { host: 'bar', now, tools: false, shortcut: '' }), tailCell(view)].filter((part): part is NonNullable<typeof part> => Boolean(part)))
-    onHead = headAction(view, unfolds)
-    head.disabled = !onHead && !view.background
-    head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
-    if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
-    else head.removeAttribute('aria-expanded')
+    if (rowChanged) {
+      reconcileChildren(head, [...headParts(view, { host: 'bar', now, tools: false, shortcut: '' }), tail.update(view)]
+        .filter((part): part is NonNullable<typeof part> => Boolean(part)))
+      onHead = headAction(view, unfolds)
+      head.disabled = !onHead && !view.background
+      head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
+      if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
+      else head.removeAttribute('aria-expanded')
+    }
     if (panelChanged) {
-      panel.replaceChildren(...(open ? [h('div', { class: wasOpen ? 'isl-in isl-in-still' : 'isl-in' }, panelParts(view, 'bar', act, '', now))] : []))
+      if (open) {
+        reconcileChildren(inner, parts(view, now).filter((part): part is HTMLElement => part instanceof HTMLElement))
+      }
+      reconcileChildren(panel, open ? [inner] : [])
       panel.inert = !open
     }
     layout(open)
@@ -264,6 +297,20 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   const surface = h('section', { class: 'isl-surface', 'aria-label': t('island-dom.content') })
   const peek = h('div', { class: 'isl-peek' })
   const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, peek, surface)
+  const parts = createPanelParts('desk', act, shortcut)
+  const tail = createTailCell(true)
+  tail.el.addEventListener('click', () => act({ kind: 'panel', panel: 'background' }))
+  const peekOpen = h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) })
+  const label = h('b', { class: 'isl-label' }), target = h('span', { class: 'isl-more' })
+  const copy = h('div', { class: 'isl-copy' }, label)
+  const openWindow = button('', ROLE.text, () => act({ kind: 'open' }))
+  const collapse = button('', ROLE.text, () => act({ kind: 'dismiss' }))
+  const header = h('header', { class: 'isl-surface-head' }, copy, openWindow, collapse)
+  const noticeLabel = h('span'), noticeButton = button('', ROLE.text, () => act({ kind: 'panel', panel: 'request' }))
+  const notice = h('div', { class: 'isl-notice', role: 'status' }, noticeLabel, noticeButton)
+  const runningLabel = h('span'), runningStop = button('', ROLE.secondary, () => act({ kind: 'cancel' }))
+  const running = h('div', { class: 'isl-running' }, runningLabel, runningStop)
+  let inputKey = '', inputParts: View[] = []
   let signature = ''
   function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
     const open = Boolean(view.desktopOpen ?? (view.form === 'input' || pinned)) && !view.dragging
@@ -283,31 +330,36 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
       return
     }
     signature = next
-    const tail = tailCell(view, true)
-    if (tail) {
-      tail.addEventListener('click', () => act({ kind: 'panel', panel: 'background' }))
-      tail.setAttribute('aria-expanded', String(open && view.desktopPanel === 'background'))
-    }
-    peek.replaceChildren(h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) }, deskHead(view, now)), ...(tail ? [tail] : []))
+    const cell = tail.update(view)
+    cell?.setAttribute('aria-expanded', String(open && view.desktopPanel === 'background'))
+    peekOpen.replaceChildren(deskHead(view, now))
+    reconcileChildren(peek, [peekOpen, ...(cell ? [cell] : [])])
     if (!open) { surface.inert = true; return }
     surface.inert = false
     const title = view.desktopPanel === 'background' ? t('tasks-page.background.tasks')
       : wide ? t(view.steering ? 'desk.interaction.supplement' : 'desk.ask.viva') : view.label
-    const header = h('header', { class: 'isl-surface-head' },
-      h('div', { class: 'isl-copy' }, h('b', { class: 'isl-label', text: title }),
-        view.targetLabel ? h('span', { class: 'isl-more', text: view.targetLabel, title: view.targetLabel }) : null),
-      button(t('desk.interaction.open'), ROLE.text, () => act({ kind: 'open' })),
-      button(t('desk.interaction.collapse'), ROLE.text, () => act({ kind: 'dismiss' })))
-    const notice = view.waitingNotice ? h('div', { class: 'isl-notice', role: 'status' },
-      h('span', { text: view.waitingNotice.label }), button(t('desk.interaction.view'), ROLE.text, () => act({ kind: 'panel', panel: 'request' }))) : null
-    const running = wide && view.steering ? h('div', { class: 'isl-running' }, h('span', { text: t('desk.interaction.running') }),
-      button(t('desk.interaction.stop.current'), ROLE.secondary, () => act({ kind: 'cancel' }))) : null
-    const content = (wide || view.form === 'drop') && input ? input.panel(view) : panelParts(view, 'desk', act, shortcut, now)
+    if (label.textContent !== title) label.textContent = title
+    if (target.textContent !== (view.targetLabel ?? '')) target.textContent = view.targetLabel ?? ''
+    target.title = view.targetLabel ?? ''
+    reconcileChildren(copy, view.targetLabel ? [label, target] : [label])
+    openWindow.textContent = t('desk.interaction.open')
+    collapse.textContent = t('desk.interaction.collapse')
+    noticeLabel.textContent = view.waitingNotice?.label ?? ''
+    noticeButton.textContent = t('desk.interaction.view')
+    runningLabel.textContent = t('desk.interaction.running')
+    runningStop.textContent = t('desk.interaction.stop.current')
+    let content: View[]
+    if ((wide || view.form === 'drop') && input) {
+      const key = JSON.stringify([localeRevision(), view.form, view.count, view.files, view.images, view.busy, view.error, view.steering])
+      if (key !== inputKey) { inputKey = key; inputParts = input.panel(view) }
+      content = inputParts
+    } else content = parts(view, now)
     if (wide && input) input.sync(view)
     // Detaching a focused textarea ends native IME composition, even if its value and caret are restored.
     reconcileChildren(surface, [
       header,
-      ...[notice, running, wide && input ? input.entry : null].filter((node): node is NonNullable<typeof node> => Boolean(node)),
+      ...[view.waitingNotice ? notice : null, wide && view.steering ? running : null, wide && input ? input.entry : null]
+        .filter((node): node is NonNullable<typeof node> => Boolean(node)),
       ...content.filter((node): node is HTMLElement => node instanceof HTMLElement),
     ])
   }
