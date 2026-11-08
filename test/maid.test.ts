@@ -62,7 +62,7 @@ test('half-body and centred portraits both use the complete canvas without a sec
 })
 
 type Manifest = {
-  source: { revision: string },
+  source: { revision: string, overrides?: { path: string, revision: string, manifestSha256: string } },
   encoding: { lossless: boolean, quality: number },
   states: Array<{ id: string, static: string, animation: string, frames: number, loopCount: number, staticSize: number[], animationSize: number[], durationsMs: number[] }>,
   sourceSha256: Record<string, string>,
@@ -97,7 +97,7 @@ function dimensionsOf(chunks: ReturnType<typeof chunksOf>): number[] {
   return [lossy.data.readUInt16LE(6) & 0x3fff, lossy.data.readUInt16LE(8) & 0x3fff]
 }
 
-test('runtime assets match their hashes, real dimensions, frame timings and greeting-only single playback', () => {
+test('runtime assets match their hashes, real dimensions, frame timings and framing-specific playback', () => {
   for (const directory of [ASSETS, path.join(ASSETS, 'avatars')]) {
     const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8')) as Manifest
     assert.match(manifest.source.revision, /^[a-f0-9]{40}$/)
@@ -122,10 +122,47 @@ test('runtime assets match their hashes, real dimensions, frame timings and gree
         assert.equal(chunks.filter(chunk => chunk.kind === 'ANMF').length, state.frames)
         assert.deepEqual(dimensionsOf(chunks), state.animationSize)
         assert.deepEqual(chunks.filter(chunk => chunk.kind === 'ANMF').map(chunk => chunk.data.readUIntLE(12, 3)), state.durationsMs)
-        assert.equal(anim.data.readUInt16LE(4), state.id === 'greeting' ? 1 : 0, state.id)
+        const expectedLoops = state.id === 'greeting' && directory !== ASSETS ? 1 : 0
+        assert.equal(anim.data.readUInt16LE(4), expectedLoops, `${path.basename(directory)}/${state.id}`)
         assert.equal(anim.data.readUInt16LE(4), state.loopCount)
       }
     }
+  }
+})
+
+test('the half-body greeting keeps waving and completion lifts the card with a held thumbs-up', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ASSETS, 'manifest.json'), 'utf8')) as Manifest
+  const greeting = manifest.states.find(state => state.id === 'greeting')!
+  assert.equal(greeting.loopCount, 0)
+  assert.equal(greeting.frames, 15)
+  assert.equal(greeting.durationsMs.reduce((sum, ms) => sum + ms, 0), 1980)
+  assert.equal(greeting.durationsMs.at(-1), 720, 'a short rest between wrist waves')
+  const done = manifest.states.find(state => state.id === 'done')!
+  assert.deepEqual(done.staticSize, [400, 400])
+  assert.deepEqual(done.animationSize, [256, 256])
+  assert.equal(done.frames, 11)
+  assert.equal(done.loopCount, 0)
+  assert.equal(done.durationsMs.reduce((sum, ms) => sum + ms, 0), 2590)
+  assert.equal(done.durationsMs[5], 850, 'hold the completed-task gesture at its high point')
+})
+
+test('approved runtime overrides are reproducible without another lossy encoding pass', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ASSETS, 'manifest.json'), 'utf8')) as Manifest
+  const overrides = manifest.source.overrides!
+  assert.equal(overrides.path, 'build/maid-overrides')
+  const directory = path.resolve(ASSETS, '../../..', overrides.path)
+  const bytes = fs.readFileSync(path.join(directory, 'manifest.json'))
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), overrides.manifestSha256)
+  const source = JSON.parse(bytes.toString('utf8')) as {
+    revision: string,
+    files: Record<string, { sha256: string, sourceSha256: string }>,
+  }
+  assert.equal(source.revision, overrides.revision)
+  assert.deepEqual(Object.keys(source.files).sort(), ['done-motion.webp', 'done.webp', 'greeting-motion.webp'])
+  for (const [file, expected] of Object.entries(source.files)) {
+    assert.equal(createHash('sha256').update(fs.readFileSync(path.join(directory, file))).digest('hex'), expected.sha256)
+    assert.equal(manifest.sha256[file], expected.sha256, file)
+    assert.equal(manifest.sourceSha256[file], expected.sourceSha256, file)
   }
 })
 

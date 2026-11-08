@@ -1,4 +1,4 @@
-"""Export bounded runtime WebP assets from the recorded delivery commit.
+"""Export bounded runtime WebP assets from the delivery commit and approved overrides.
 
 Development-only tool. Requires Pillow 12.0.0 with libwebp 1.6.0.
 Use --output with a new directory, inspect the result, then copy it to src/assets/maid.
@@ -18,6 +18,7 @@ from PIL import Image, features
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = '463fac186619fcf1bbdb8746035fc2fb21c168e5'
 OPTIONS = dict(format='WEBP', lossless=False, quality=90, method=4, exact=True)
+OVERRIDES = ROOT / 'build/maid-overrides'
 
 
 def source_bytes(relative):
@@ -52,7 +53,35 @@ def encode(source, target):
     return dict(size=list(image.size), frames=len(frames), durations=durations, loop=image.info.get('loop', 0))
 
 
+def copy_override(name, output, overrides):
+    """Keep reviewed quality-90 bytes intact instead of encoding a lossy image again."""
+    entry = overrides['files'].get(name)
+    if entry is None:
+        return None
+    if Path(name).name != name or not name.endswith('.webp'):
+        raise ValueError(f'Invalid override filename: {name}')
+    source = (OVERRIDES / name).read_bytes()
+    if hashlib.sha256(source).hexdigest() != entry['sha256']:
+        raise ValueError(f'Override digest mismatch for {name}')
+    with Image.open(io.BytesIO(source)) as image:
+        durations = []
+        for index in range(image.n_frames):
+            image.seek(index)
+            image.load()
+            if image.convert('RGBA').getextrema()[3] != (255, 255):
+                raise ValueError(f'Override must be opaque: {name}')
+            durations.append(image.info.get('duration', 0))
+        metadata = dict(size=list(image.size), frames=image.n_frames,
+                        durations=durations, loop=image.info.get('loop', 0))
+    if metadata != entry['metadata']:
+        raise ValueError(f'Override playback metadata mismatch for {name}')
+    (output / name).write_bytes(source)
+    return metadata, entry['sourceSha256']
+
+
 def export(directory):
+    override_bytes = (OVERRIDES / 'manifest.json').read_bytes()
+    overrides = json.loads(override_bytes)
     for framing in ['', 'avatars']:
         relative = '/'.join(part for part in ['src/assets/maid', framing] if part)
         delivered = json.loads(source_bytes(f'{relative}/manifest.json'))
@@ -64,16 +93,25 @@ def export(directory):
                         encoding=dict(pillow=PIL.__version__, libwebp=features.version('webp'),
                         lossless=False, quality=90, method=4, minimize_size=True),
                         background='#FAF7F2', alpha=False, states=[], sourceSha256={}, sha256={})
+        if not framing:
+            if overrides['encoding'] != manifest['encoding']:
+                raise ValueError('Override encoding must match the recorded runtime encoder')
+            manifest['source']['overrides'] = dict(path='build/maid-overrides',
+                revision=overrides['revision'], manifestSha256=hashlib.sha256(override_bytes).hexdigest())
         for state in delivered['states']:
             still = f"{state['id']}.webp"
             motion = f"{state['id']}-motion.webp"
             metadata = {}
             for file in [still, motion]:
-                source = source_bytes(f'{relative}/{file}')
-                digest = hashlib.sha256(source).hexdigest()
-                if digest != delivered['sha256'][f'webp/{file}']:
-                    raise ValueError(f'Source digest mismatch for {relative}/{file}')
-                metadata[file] = encode(source, output / file)
+                replacement = copy_override(file, output, overrides) if not framing else None
+                if replacement is not None:
+                    metadata[file], digest = replacement
+                else:
+                    source = source_bytes(f'{relative}/{file}')
+                    digest = hashlib.sha256(source).hexdigest()
+                    if digest != delivered['sha256'][f'webp/{file}']:
+                        raise ValueError(f'Source digest mismatch for {relative}/{file}')
+                    metadata[file] = encode(source, output / file)
                 manifest['sourceSha256'][file] = digest
                 manifest['sha256'][file] = hashlib.sha256((output / file).read_bytes()).hexdigest()
             animation = metadata[motion]

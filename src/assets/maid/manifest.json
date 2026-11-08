@@ -5,7 +5,12 @@
     "revision": "463fac186619fcf1bbdb8746035fc2fb21c168e5",
     "path": "src/assets/maid",
     "exportRevision": "7-viva-palette",
-    "generationMode": "built-in image_gen"
+    "generationMode": "built-in image_gen",
+    "overrides": {
+      "path": "build/maid-overrides",
+      "revision": "halfbody-v7.2-done-v7.1-greeting",
+      "manifestSha256": "7105e693e1411659b9437489428a861642c7bb30c8f0e81eaa9d5c066b7bc65d"
+    }
   },
   "encoding": {
     "pillow": "12.0.0",
@@ -46,10 +51,10 @@
         90,
         90,
         90,
-        60
+        720
       ],
-      "durationMs": 1320,
-      "loopCount": 1
+      "durationMs": 1980,
+      "loopCount": 0
     },
     {
       "id": "idle",
@@ -228,25 +233,21 @@
         256,
         256
       ],
-      "frames": 15,
+      "frames": 11,
       "durationsMs": [
+        450,
         120,
         120,
+        140,
+        140,
+        850,
+        140,
+        140,
         120,
         120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        60
+        250
       ],
-      "durationMs": 1740,
+      "durationMs": 2590,
       "loopCount": 0
     },
     {
@@ -351,7 +352,7 @@
   ],
   "sourceSha256": {
     "greeting.webp": "1cb24dfd825165c1e4a3f575602dbee0d8e8be6ad97e99b08d5c8fbb5c1a9d43",
-    "greeting-motion.webp": "2588b0231d1d8bbb3b0000c166389d092aaaf59cb6fc861cc148bda95fa88b9c",
+    "greeting-motion.webp": "4590e692891331b79ac4f8d4f6f5da4b5e5a3ca4d47cfcb32349df43045c9cf6",
     "idle.webp": "fc050dea85c4bf8c6e1153eec402f453acf67dc9a878542bd86d780485f13586",
     "idle-motion.webp": "f52ee826de8f8b494faf42f3313f1a73bd2bd02b82eea0dbeda561424522c77a",
     "thinking.webp": "ea0a0ba7e4435faf6d1b3fd6a0e3d863cde1d624cd6cad8463d264f441745bec",
@@ -362,8 +363,8 @@
     "ask-motion.webp": "ba4e47d5352b9c5e353a998a2f2504bfbefb25ba9334a7269f026a7a298ee08a",
     "confirm.webp": "dff4978b76ac8633e8a940d2e546276215f21c3de8caf7a894f50a77d08c83c9",
     "confirm-motion.webp": "3500b86330ed4699a1e3d60bba5f7d1a526a507486db46d4757f2ac822d83e9f",
-    "done.webp": "47e4cfb8be1a99629ea20bbd1078134f6dd54b94daf7c244f6bdfb781acccaa2",
-    "done-motion.webp": "e79ba132745130acc4def903810fd59a13ee6f80f1500488b925186771100f14",
+    "done.webp": "a73b6f9ed0a930b32a00ba5ce83f5b3ded469621711d96e42bf36d78e9e47458",
+    "done-motion.webp": "ef3fd9d3edd3a39f8e2ab23acc226c6ea8ad745f9b65328d235ecddea5a584c4",
     "error.webp": "010a70d1f2c1f301cad01b61fb881e933203daa44e6447c672a946abe0b7d25c",
     "error-motion.webp": "2735e6a8b0e27df3c31d20461acc90fe4d5313391dc94de3f887daa8fb2824aa",
     "offline.webp": "e892e51e11d110fa6c14ba0bf33385d94d8d308067700d70bc22544403986169",
@@ -373,7 +374,7 @@
   },
   "sha256": {
     "greeting.webp": "520e9d0e586921b2b358b2cddbe76fafc11c7cff482c07f7cc8473dc1eef5fff",
-    "greeting-motion.webp": "92b2196edc47154ef64bf7afe4733585f3aef5374eabc26193b1f0e1ab086189",
+    "greeting-motion.webp": "7649be7da62437858e16fcf13b8b109789fcad3e53d63f94f837e55994764eea",
     "idle.webp": "081ccea15e74cc5d85d53fcf14de146857d3a723db80c930cf9b6fab62f5c5fa",
     "idle-motion.webp": "27e6d9d6bd4947bfd917a976bdb90c76a3ec59eda919cfb214f66bf60b9281b7",
     "thinking.webp": "45ce80654b552e01895a6663e40c44e0bd12bb0776c88d412e74aa75109c44e5",
@@ -384,8 +385,8 @@
     "ask-motion.webp": "b190aa7cd6677d49adf73bf7de8553472c074df5208756746780726ee379d59f",
     "confirm.webp": "22bd7a5a7d8ad4bd283dc88e3015e2c5fd61228a32f265a6fb99aebda52b236e",
     "confirm-motion.webp": "3231b59fbed013ce6a4ed65989ec146e241df9753a071a043094ba735e401d49",
-    "done.webp": "eeb1aea18c4fdc68e31a4b2282e859280f979fbee93f2c2f763ad0b82d610b3a",
-    "done-motion.webp": "e04d1ed908fad2ea809af43a96ea9677b96ee71444ae16d92f5c52aea1160438",
+    "done.webp": "29b0f6e758ab155fbdbcbf223a0bb9cfbd08294345a18890d2bc297de3649a9e",
+    "done-motion.webp": "46c36df28f8998a91a393fcbf2ff4a26db7d39c7d594fe3df40cc4aff7669256",
     "error.webp": "5f143b18f68da6caa15f8dd4b066a4fa0078d496af57c2958460f28563f99bf3",
     "error-motion.webp": "24e6aad100ef51d71ee40b27f6550f6d1199f2aaaa5981ddd613ac3ea47d6781",
     "offline.webp": "da12e0322d7183dc99a43b3728dbeaf901a01b7b931dda5ad6ffdd13b9df4bcc",
