@@ -238,6 +238,17 @@ test('centred chat avatars and the folded desktop island animate without restart
       replacements, retained: face.firstChild === hovered, folded: island.el.dataset.open, hovered: island.el.dataset.hover === 'true' }
   })
   expect(stateGallery).toEqual({ loaded: true, count: 21, replacements: 0, retained: true, folded: 'false', hovered: true })
+  // Wait beyond the old one-shot greeting, then check the actual compressed
+  // half-body artwork still advances in the production renderer.
+  await page.waitForTimeout(2100)
+  for (const mood of ['greeting', 'done']) {
+    const image = page.locator(`#portrait-gallery .maid[data-mood="${mood}"][data-framing="whole"] .maid-image`)
+    const samples = new Set<string>()
+    await expect.poll(async () => {
+      samples.add(createHash('sha256').update(await image.screenshot({ animations: 'allow' })).digest('hex'))
+      return samples.size
+    }, { message: `${mood} keeps animating after the original greeting would have stopped` }).toBeGreaterThan(1)
+  }
   await page.screenshot({ path: info.outputPath('all-animated-states.png') })
   await page.locator('#portrait-gallery').evaluate(gallery => gallery.remove())
 
