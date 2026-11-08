@@ -152,7 +152,7 @@ test('approved runtime overrides are reproducible without another lossy encoding
   assert.equal(overrides.path, 'build/maid-overrides')
   const directory = path.resolve(ASSETS, '../../..', overrides.path)
   const bytes = fs.readFileSync(path.join(directory, 'manifest.json'))
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), overrides.manifestSha256)
+  assert.equal(createHash('sha256').update(bytes.toString('utf8').replaceAll('\r\n', '\n')).digest('hex'), overrides.manifestSha256)
   const source = JSON.parse(bytes.toString('utf8')) as {
     revision: string,
     files: Record<string, { sha256: string, sourceSha256: string }>,

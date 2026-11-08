@@ -80,7 +80,9 @@ def copy_override(name, output, overrides):
 
 
 def export(directory):
-    override_bytes = (OVERRIDES / 'manifest.json').read_bytes()
+    # Git may check text out with CRLF on Windows; use the same manifest digest
+    # on both platforms while keeping every compressed WebP byte unchanged.
+    override_bytes = (OVERRIDES / 'manifest.json').read_bytes().replace(b'\r\n', b'\n')
     overrides = json.loads(override_bytes)
     for framing in ['', 'avatars']:
         relative = '/'.join(part for part in ['src/assets/maid', framing] if part)
