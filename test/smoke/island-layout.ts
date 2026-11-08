@@ -7,6 +7,7 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
     const { results, typography } = await page.evaluate(async () => {
       const { createIsland } = await import(new URL('./view/island-dom.js', location.href).href) as typeof import('../../src/renderer/view/island-dom.ts')
       const { createIslandInput } = await import(new URL('./view/island-input.js', location.href).href) as typeof import('../../src/renderer/view/island-input.ts')
+      const { placeDesktopIsland } = await import(new URL('./view/desktop-layout.js', location.href).href) as typeof import('../../src/renderer/view/desktop-layout.ts')
       const base = { tone: 'idle', mood: 'idle', label: '', recent: [] }
       const question = {
         ...base, form: 'asking', tone: 'waiting', mood: 'ask', label: '需要你回答',
@@ -28,6 +29,8 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
           path: `/layout/${index}.pdf`, name: `项目资料-${index + 1}-桌面岛视觉评审与布局验收记录.pdf`, size: 1200000,
         })), images: [] } },
         { name: 'input', view: { ...base, form: 'input', files: [], images: [] }, draft: '保留的草稿' },
+        { name: 'done', view: { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', detail: '桌面岛体验审查已整理' } },
+        { name: 'incoming-request', view: { ...base, form: 'input', files: [], images: [], waitingNotice: question }, draft: '继续编辑这份草稿' },
         { name: 'multiline-input', view: { ...base, form: 'input', files: [], images: [] }, draft: '第一行\n第二行\n第三行\n第四行' },
         { name: 'input-error', view: { ...base, form: 'input', files: [], images: [], error: '连接失败，草稿已保留。'.repeat(40) }, draft: '失败后保留的输入' },
         { name: 'up-question', view: question, up: true },
@@ -51,34 +54,42 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
         const input = createIslandInput({ send: () => {}, dismiss: () => {}, removeFile: () => {} })
         const island = createIsland('desk', () => {}, { input })
         island.el.dataset.dir = stage.dataset.dir
-        island.update(sample.view, { pinned: sample.pinned })
+        const shown = { ...sample.view, desktopOpen: sample.name !== 'circle' && sample.name !== 'working', desktopPanel: sample.pinned ? 'background' : sample.view.form === 'input' ? 'input' : 'request' }
+        island.update(sample.name === 'incoming-request' ? { ...shown, waitingNotice: null } : shown, { pinned: sample.pinned })
         stage.append(island.el)
         gallery.append(stage)
+        const anchor = sample.up ? { x: 540, y: 302 } : { x: 60, y: 50 }
+        placeDesktopIsland(island.el, stage, { anchor, side: sample.up ? 'left' : 'right', panelWidth: 440 })
         if (sample.draft) {
           input.field.value = sample.draft
           input.field.dispatchEvent(new Event('input'))
-          island.update(sample.view, { now: Date.now() + 1000 })
+          if (sample.name === 'incoming-request') input.field.focus()
+          island.update(shown, { now: Date.now() + 1000 })
         }
         await document.fonts.ready
         await Promise.all([...island.el.querySelectorAll('img')].map(image => image.decode()))
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-        const card = island.el.getBoundingClientRect()
+        const card = island.el.querySelector('.isl-surface:not([hidden]), .isl-peek:not([hidden])')?.getBoundingClientRect() ?? island.el.getBoundingClientRect()
+        const avatar = island.el.querySelector('.isl-anchor')!.getBoundingClientRect()
         const bounds = stage.getBoundingClientRect()
         const face = island.el.querySelector('.maid')!.getBoundingClientRect()
         const footer = island.el.querySelector('.isl-footer')?.getBoundingClientRect()
+        const entry = island.el.querySelector('.isl-entry')?.getBoundingClientRect()
         const body = island.el.querySelector<HTMLElement>('.isl-body')
         const list = island.el.querySelector<HTMLElement>('.isl-files')
         if (body) body.scrollTop = body.scrollHeight
         if (list) list.scrollTop = list.scrollHeight
         const last = list?.lastElementChild ?? body?.querySelector('.isl-choices')?.lastElementChild
         const lastBounds = last?.getBoundingClientRect()
-        const visibleBody = (list ?? body)?.getBoundingClientRect()
+        const visibleBody = body?.getBoundingClientRect()
         const label = island.el.querySelector<HTMLElement>('.isl-label')
         results.push({
           name: sample.name, layout: island.el.dataset.layout, width: card.width, height: card.height,
           inside: card.left >= bounds.left && card.right <= bounds.right && card.top >= bounds.top && card.bottom <= bounds.bottom,
-          portrait: face.width, portraitCentered: Math.abs(face.left + face.width / 2 - card.left - card.width / 2) < 1,
+          portrait: face.width, portraitCentered: Math.abs(face.left + face.width / 2 - avatar.left - avatar.width / 2) < 1,
+          anchorStable: Math.abs(avatar.left + avatar.width / 2 - bounds.left - anchor.x) <= 1 && Math.abs(avatar.top + avatar.height / 2 - bounds.top - anchor.y) <= 1,
           footerVisible: !footer || (footer.top >= card.top && footer.bottom <= card.bottom),
+          entryBeforeFooter: !entry || !footer || entry.bottom <= footer.top + 1,
           statusClipped: Boolean(label && label.scrollWidth > label.clientWidth),
           optionsClipped: [...island.el.querySelectorAll<HTMLElement>('.isl-choices .isl-btn')].some(option => option.scrollHeight > option.clientHeight + 1 || option.scrollWidth > option.clientWidth + 1),
           lastItemVisible: !lastBounds || Boolean(visibleBody && lastBounds.top >= visibleBody.top - 1 && lastBounds.bottom <= visibleBody.bottom + 1),
@@ -89,7 +100,8 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
             && getComputedStyle(element, '::-webkit-scrollbar-button').display === 'none'
             && getComputedStyle(element, '::-webkit-scrollbar-thumb').borderTopWidth === '0px'),
           draftRetained: !sample.draft || input.field.value === sample.draft,
-          backgroundToggleRetained: !sample.pinned || Boolean(island.el.querySelector('.isl-head .isl-bg')),
+          focusRetained: sample.name !== 'incoming-request' || document.activeElement === input.field,
+          backgroundToggleRetained: !sample.pinned || Boolean(island.el.querySelector('button.isl-bg')),
         })
         if (body) body.scrollTop = 0
         if (list) list.scrollTop = 0
@@ -135,24 +147,24 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
       expect(result.inside, result.name).toBe(true)
       expect(result.height, result.name).toBeLessThanOrEqual(320.1)
       expect(result.footerVisible, result.name).toBe(true)
+      expect(result.entryBeforeFooter, result.name).toBe(true)
       expect(result.statusClipped, result.name).toBe(false)
       expect(result.optionsClipped, result.name).toBe(false)
       expect(result.lastItemVisible, result.name).toBe(true)
       expect(result.draftRetained, result.name).toBe(true)
+      expect(result.focusRetained, result.name).toBe(true)
       expect(result.themedScrollbars, result.name).toBe(true)
       expect(result.backgroundToggleRetained, result.name).toBe(true)
+      expect(result.anchorStable, result.name).toBe(true)
       if (result.name === 'circle') {
         expect(result.width).toBeCloseTo(80, 0)
         expect(result.portraitCentered).toBe(true)
-      } else if (result.layout === 'input') {
-        expect(result.width).toBeCloseTo(520, 0)
-        expect(result.portrait).toBeCloseTo(56, 0)
       } else {
-        expect(result.width).toBeCloseTo(440, 0)
-        expect(result.portrait).toBeCloseTo(result.layout === 'content' ? 40 : 48, 0)
+        expect(result.width).toBeCloseTo(result.name === 'working' ? 320 : 440, 0)
       }
+      expect(result.portrait).toBeCloseTo(72, 0)
       if (result.name === 'long-question') expect(result.bodyScrollable).toBe(true)
-      if (result.name === 'files') expect(result.filesScrollable).toBe(true)
+      if (result.name === 'files') expect(result.bodyScrollable).toBe(true)
       await page.locator(`#layout-${result.name}`).screenshot({ path: info.outputPath(`island-layout-${result.name}.png`) })
     }
     await info.attach('island-layout-metrics', { body: JSON.stringify(results, null, 2), contentType: 'application/json' })

@@ -20,7 +20,7 @@ const CAPTIONS = Object.freeze({
 
 /** The island alone: the window around it is mostly clear. */
 async function captureIsland(page: SmokeWindow, outDir: string, name: string) {
-  const rect = await run(page, `(() => { const r = document.querySelector('.isl').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } })()`)
+  const rect = await run(page, `(() => { const r = [...document.querySelectorAll('.isl-anchor, .isl-peek:not([hidden]), .isl-surface:not([hidden])')].map(el=>el.getBoundingClientRect());const x=Math.min(...r.map(v=>v.x)),y=Math.min(...r.map(v=>v.y));return {x,y,width:Math.max(...r.map(v=>v.right))-x,height:Math.max(...r.map(v=>v.bottom))-y} })()`)
   const pad = (n: number) => Math.max(0, Math.floor(n - SHADOW_PX))
   const x = pad(rect.x)
   const y = pad(rect.y)
@@ -36,6 +36,7 @@ export async function deskWaiting(outDir: string, desk: SmokeDesk) {
   await desk.force(true)
   try {
     const page = { webContents: (await desk.webContents()) }
+    await run(page, `document.querySelector('.isl-anchor').click()`)
     await until(page, `document.querySelector('.isl')?.dataset.form === 'waiting' && Boolean(document.querySelector('.isl .isl-btn-primary'))`, 'the desktop island asking to allow')
     await wait(UI_WAIT_MS)
     await captureIsland(page, outDir, 'desk-waiting')

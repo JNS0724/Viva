@@ -13,18 +13,19 @@ import { h } from './dom.ts'
  * not counted, so the cell goes once all are).
  * @returns nothing with no task and no follow-up to speak of
  */
-export function tailCell(view: IslandShown): HTMLElement | null {
+export function tailCell(view: IslandShown, interactive = false): HTMLElement | null {
+  const tag = interactive ? 'button' : 'span'
   const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
   if (alsoWaiting) {
-    return h('span', { class: 'isl-bg isl-bg-waits', title: t("island-tasks.more.waiting.for.you", { alsoWaiting: alsoWaiting }) },
+    return h(tag, { ...(interactive ? { type: 'button' } : {}), class: 'isl-bg isl-bg-waits', title: t("island-tasks.more.waiting.for.you", { alsoWaiting: alsoWaiting }), 'aria-label': t("island-tasks.more.waiting.for.you", { alsoWaiting }) },
       h('b', { text: `+${alsoWaiting}` }), h('span', { text: t("island-tasks.waiting.for.you") }))
   }
   if (count) {
-    return h('span', { class: 'isl-bg isl-bg-live', title: t("background.running.count", { p0: count }), 'aria-label': t("background.running.count", { p0: count }) },
+    return h(tag, { ...(interactive ? { type: 'button' } : {}), class: 'isl-bg isl-bg-live', title: t("background.running.count", { p0: count }), 'aria-label': t("background.running.count", { p0: count }) },
       h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) }))
   }
   if (done) {
-    return h('span', { class: 'isl-bg isl-bg-done', title: t("background.completed.count", { p0: done }), 'aria-label': t("background.completed.count", { p0: done }) },
+    return h(tag, { ...(interactive ? { type: 'button' } : {}), class: 'isl-bg isl-bg-done', title: t("background.completed.count", { p0: done }), 'aria-label': t("background.completed.count", { p0: done }) },
       h('b', { text: `✓ ${done}` }))
   }
   return null

@@ -65,8 +65,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "6b240f981e816608b3ca047631f05bf078f1525c15bccddbf6260a1852aea2cb",
-      "zhHash": "6717a7d0b6766f581c23dd42624317026a54e33ba64d491fa75f5ad62f547433"
+      "enHash": "11742ed01c7a93bfa894a46118979d449d19d8f23b3f5a71d1d5e279bc801abc",
+      "zhHash": "71b3e03292c8a8ca94bf9cd10bb073ac8df26a7acb6493b786542ee9c438922b"
     },
     {
       "en": "docs/system-design.md",
@@ -85,5 +85,11 @@
     "AGENTS.md",
     "build/icons/README.txt"
   ],
-  "sourceReports": []
+  "sourceReports": [
+    {
+      "path": "docs/qa-desktop-island-interaction-20261108.md",
+      "locale": "zh-CN",
+      "sha256": "c3f909880ddb8caeb22771211d7b78cd11a7799d37698408ea1b11e20f6562d1"
+    }
+  ]
 }

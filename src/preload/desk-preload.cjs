@@ -18,9 +18,18 @@ contextBridge.exposeInMainWorld('desk', /** @satisfies {DeskApi} */ ({
     return () => ipcRenderer.removeListener('island:view', listener)
   },
   act: (action) => ipcRenderer.send('island:act', action),
+  getDraft: () => ipcRenderer.invoke('draft:get'),
+  updateDraft: (draft) => ipcRenderer.send('draft:update', draft),
+  appendDraftImage: (key, image) => ipcRenderer.invoke('draft:append-image', key, image),
+  appendDraftFiles: (key, paths) => ipcRenderer.invoke('draft:append-files', key, paths),
+  onDraft: (callback) => {
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../shared/composer-draft.ts').DraftSnapshot} */ draft) => callback(draft)
+    ipcRenderer.on('draft:changed', listener)
+    return () => ipcRenderer.removeListener('draft:changed', listener)
+  },
   /** The files of a drop, by their paths: what they are, or why they cannot be handed over. */
   describeFiles: (files) => ipcRenderer.invoke('island:files', Array.from(files, (file) => webUtils.getPathForFile(file))),
-  ask: (text, files, images = []) => ipcRenderer.invoke('island:ask', { text, files, images }),
+  ask: (text, files, images = [], draft) => ipcRenderer.invoke('island:ask', { text, files, images, draft }),
   /** A picture pasted into the island's input, into the pictures folder: { id, mimeType, size } (main/image-ipc.js). */
   keepImage: (bytes) => ipcRenderer.invoke('island:keep-image', bytes),
   /** The ask shortcut as the user presses it (island-main.js ASK_SHORTCUT). */

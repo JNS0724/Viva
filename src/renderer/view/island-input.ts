@@ -19,7 +19,6 @@ let PLACEHOLDER = t("island-input.ask.viva")
 let PLACEHOLDER_FILES = t("island-input.what.should.i.do.you.can.also")
 let PLACEHOLDER_STEER = t("island-input.add.or.change.instructions")
 let PLACEHOLDER_IMAGES = t("island-input.what.would.you.like.to.know.about")
-let SUMMARIZE = t("island-input.summarize")
 let TARGET = t("island-input.send.to.current.conversation")
 let TARGET_STEER = t("island-input.the.assistant.is.working.and.will.read")
 
@@ -28,12 +27,12 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
   removeImage?: (id: string) => void, paste?: ((event: ClipboardEvent) => void) | null,
   configure?: () => void,
 }) {
-  const field = h('textarea', { class: 'isl-field', rows: '1', 'aria-label': PLACEHOLDER, spellcheck: 'false' })
+  const field = h('textarea', { class: 'isl-field', name: 'island-draft', rows: '2', 'aria-label': PLACEHOLDER, spellcheck: 'false' })
   const enter = h('button', { class: 'isl-send', type: 'button', disabled: true, 'aria-label': t('render.send'),
     onClick: () => { if (!enter.disabled) send(field.value.trim()) } }, icon('send', 17))
-  const entry = h('div', { class: 'isl-entry' }, field, enter)
+  const entry = h('div', { class: 'isl-entry' }, field)
 
-  const ready = () => { enter.disabled = field.disabled || (!field.value.trim() && !pictures) }
+  const ready = () => { enter.disabled = field.disabled || sending || (!field.value.trim() && !attachments) }
   field.addEventListener('input', ready)
   if (paste) field.addEventListener('paste', paste)
   field.addEventListener('keydown', (event) => {
@@ -41,6 +40,7 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
     if (event.isComposing || event.keyCode === 229) return
     if (event.key === 'Escape') {
       event.preventDefault()
+      event.stopPropagation()
       dismiss()
     } else if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -49,15 +49,17 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
     }
   })
   /** Pictures waiting to go: with them the words may be left out. */
-  let pictures = 0
+  let attachments = 0
+  let sending = false
 
   /** The field as the view wants it: open for typing, or showing why it is not. */
   function sync(view: IslandShown) {
     field.setAttribute('aria-label', PLACEHOLDER)
     field.title = t('island-input.shift.enter.for.a.new.line.esc')
     enter.setAttribute('aria-label', t('render.send'))
-    pictures = view.images?.length ?? 0
-    if (!view.files.length && !pictures && enter.parentNode !== entry) entry.append(enter)
+    const pictures = view.images?.length ?? 0
+    attachments = view.files.length + pictures
+    sending = Boolean(view.sending)
     field.disabled = Boolean(view.busy)
     field.placeholder = view.busy?.text ?? (view.steering ? PLACEHOLDER_STEER : view.files.length ? PLACEHOLDER_FILES : pictures ? PLACEHOLDER_IMAGES : PLACEHOLDER)
     enter.hidden = Boolean(view.busy)
@@ -93,16 +95,16 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
         h('div', { class: 'isl-body' },
           h('div', { class: 'isl-files', tabindex: '0', 'aria-label': t('island-input.attachments', { count: images.length + view.files.length }) }, images.map(imageChip), view.files.map(fileChip)), error),
         h('div', { class: 'isl-footer' },
-          view.files.length ? h('button', { type: 'button', class: 'isl-btn isl-btn-blue', text: SUMMARIZE, onClick: () => send(SUMMARIZE) }) : null,
           hint(target), enter),
       ]
     }
-    return [hint(target, h('span', { class: 'isl-push', text: t("island-input.enter.to.send.esc.to.close") })), error]
+    return [h('div', { class: 'isl-body' }, error), h('div', { class: 'isl-footer' }, hint(target), enter)]
   }
 
   return {
     entry,
     field,
+    ready,
     sync,
     panel,
     clear() {
@@ -117,7 +119,6 @@ onLocaleChange(() => {
   PLACEHOLDER_FILES = t("island-input.what.should.i.do.you.can.also")
   PLACEHOLDER_STEER = t("island-input.add.or.change.instructions")
   PLACEHOLDER_IMAGES = t("island-input.what.would.you.like.to.know.about")
-  SUMMARIZE = t("island-input.summarize")
   TARGET = t("island-input.send.to.current.conversation")
   TARGET_STEER = t("island-input.the.assistant.is.working.and.will.read")
 })

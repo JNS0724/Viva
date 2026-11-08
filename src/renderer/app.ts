@@ -6,6 +6,10 @@ import { withFiles } from '../shared/attachments.ts'
 import { IMAGE_TYPES } from '../shared/images.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
 import { createDraftImages } from './draft-images.ts'
+import { createComposerDraftActions } from './composer-draft-actions.ts'
+import { draftTarget } from './draft-target.ts'
+import type { DraftFile } from '../shared/composer-draft.ts'
+import { h } from './view/dom.ts'
 import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
@@ -98,6 +102,7 @@ let state: State = [
 ].reduce((before: State, action) => reduce(before, action), initialState)
 let agentEvents: ReturnType<typeof createAgentEvents> | undefined
 let beforeSelection = () => {}
+let inheritDraft = false
 const SELECTION_STARTS = new Set(['new_session_pending', 'session_switching', 'rewind_busy', 'workdir_switching'])
 
 // The column's width as the user dragged it, kept within the main area as the window and the drawer change it.
@@ -113,6 +118,10 @@ let afterRender: (() => void) | null = null
 const LIVE_TEXT_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 'viva_stream'])
 
 function dispatch(action: Action) {
+  if (action.type === 'new_session_pending' && !state.newTopicPending) {
+    composerDraft?.changed()
+    inheritDraft = true
+  }
   if (SELECTION_STARTS.has(action.type ?? '')) beforeSelection()
   const timing = action.type === 'new_session_pending' ? performance.now() : null
   const next = reduce(state, action)
@@ -137,13 +146,20 @@ function dispatch(action: Action) {
 }
 
 let publishedIsland = ''
+let composerDraft: ReturnType<typeof createComposerDraftActions> | undefined
+let composerFiles: DraftFile[] = []
+let composerError: string | null = null
 
 /** The desktop island (desk.js) shows the same view while the window is in the background; send it when it changes. */
 function publishIsland() {
-  const view = JSON.stringify(islandView(state))
+  const target = draftTarget(state)
+  composerDraft?.expect(target.key)
+  dom.input.readOnly = !composerDraft?.ready()
+  const view = JSON.stringify({ ...islandView(state), target: { ...target, working: isBusy(state), blocked: state.switching || state.newTopicPending, ...(inheritDraft ? { inheritDraft: true } : {}) } })
   if (view === publishedIsland || !api?.islandView) return
   publishedIsland = view
   api.islandView(JSON.parse(view))
+  inheritDraft = false
 }
 
 /** The card the agent waits on, brought into view with its first button focused. */
@@ -194,8 +210,9 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
     return task ? handlers.skipTaskQuestion(task.id) : undefined
   },
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
-  ask: ({ text, files, images = [] }) => {
-    if (!ask(withFiles(text, files), { via: 'island', images })) historyActions.showToast(t("app.the.island.question.was.not.sent.the"))
+  ask: ({ text, files, images = [], targetKey, receiptId, expiresAt }) => {
+    const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt && ask(withFiles(text, files), { via: 'island', images })
+    api.islandAskResult(receiptId, { ok: Boolean(ok), ...(ok ? {} : { error: t('desk.interaction.draft.not.sent') }) })
   },
 }
 
@@ -351,6 +368,30 @@ const draftImages = createDraftImages({
   keep: (bytes: Uint8Array<ArrayBuffer>) => api.keepImage(bytes),
   container: dom.draftPics,
   showError: (message: string) => historyActions.showToast(message),
+  onChange: () => {
+    dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
+    composerDraft?.changed(); renderSendButton(dom, state)
+  },
+  capture: () => composerDraft?.captureImage() ?? (() => false),
+})
+const sharedFiles = h('div', { class: 'isl-files composer-shared-files', hidden: true })
+dom.draftPics.after(sharedFiles)
+composerDraft = createComposerDraftActions({ api, host: 'main',
+  read: () => ({ text: dom.input.value, files: composerFiles, images: draftImages.list(), error: composerError }),
+  write: draft => {
+    dom.input.readOnly = draft.owner !== 'main'
+    if (dom.input.value !== draft.text) dom.input.value = draft.text
+    composerFiles = draft.files; composerError = draft.error
+    draftImages.replace(draft.images)
+    sharedFiles.hidden = !draft.files.length && !draft.error
+    sharedFiles.replaceChildren(...draft.files.map(file => h('div', { class: 'isl-file', title: file.path },
+      h('span', { class: 'isl-file-name', text: file.name }), h('button', { type: 'button', class: 'isl-file-x', text: '×',
+        'aria-label': t('island-input.remove', { name: file.name }), onClick: () => {
+          composerFiles = composerFiles.filter(item => item.path !== file.path); composerDraft?.changed()
+          sharedFiles.querySelector(`[title="${CSS.escape(file.path)}"]`)?.remove()
+        } }))), ...(draft.error ? [h('div', { class: 'isl-error', role: 'alert', text: draft.error })] : []))
+    renderSendButton(dom, state)
+  },
 })
 
 /** How long a message found by search stays marked after the timeline scrolls to it. */
@@ -481,6 +522,7 @@ const handlers = {
   submitTaskAnswer: (taskId: string) => taskActions.submitTaskAnswer(taskId),
   skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
+    if (api && !composerDraft?.ready()) return
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     const text = dom.input.value.trim()
@@ -488,10 +530,13 @@ const handlers = {
       if (!text) return
       answer(answersFrom(state.question, text))
       dom.input.value = ''
-    } else if (ask(text, { images: draftImages.list() })) {
+    } else if (ask(withFiles(text, composerFiles.map(file => file.path)), { images: draftImages.list() })) {
       dom.input.value = ''
       draftImages.clear()
+      composerFiles = []; composerError = null; sharedFiles.hidden = true
     }
+    dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
+    composerDraft?.changed()
     // Emptied while the agent works, the button goes back to stopping it.
     renderSendButton(dom, state)
   },
@@ -698,10 +743,11 @@ function wireComposer() {
   dom.composer.addEventListener('submit', (event) => {
     event.preventDefault()
     // Words in the composer go in (an answer while the agent asks, else into the turn); with none, it stops.
-    if (isBusy(state) && !dom.input.value.trim()) handlers.cancel()
+    if (isBusy(state) && !dom.input.value.trim() && !composerFiles.length && !draftImages.list().length) handlers.cancel()
     else handlers.send()
   })
   dom.input.addEventListener('input', () => {
+    composerDraft?.changed()
     renderSendButton(dom, state)
   })
   // Pictures go above the words; words that came only as formatted text are put in by hand (paste.js).
@@ -710,6 +756,7 @@ function wireComposer() {
     if (text === null) return
     event.preventDefault()
     insertText(dom.input, text)
+    composerDraft?.changed()
     if (images.length) draftImages.add(images)
   })
   dom.input.addEventListener('keydown', (event) => {

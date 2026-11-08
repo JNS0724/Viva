@@ -148,6 +148,16 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   markFeedSeen: (id) => ipcRenderer.invoke('feed:seen', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
+  islandAskResult: (receiptId, result) => ipcRenderer.send('island:ask-result', receiptId, result),
+  getDraft: () => ipcRenderer.invoke('draft:get'),
+  updateDraft: (draft) => ipcRenderer.send('draft:update', draft),
+  appendDraftImage: (key, image) => ipcRenderer.invoke('draft:append-image', key, image),
+  appendDraftFiles: (key, paths) => ipcRenderer.invoke('draft:append-files', key, paths),
+  onDraft: (callback) => {
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../shared/composer-draft.ts').DraftSnapshot} */ draft) => callback(draft)
+    ipcRenderer.on('draft:changed', listener)
+    return () => ipcRenderer.removeListener('draft:changed', listener)
+  },
   /** The shortcut, pressed with the window in front: its own input takes the keyboard. */
   onFocusComposer: (callback) => {
     const listener = () => callback()

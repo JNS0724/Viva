@@ -52,6 +52,9 @@ export type KeptTask = ({ mark?: TaskMark }) & (
 export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
 export interface IpcResults {
+  'draft:get': import('./composer-draft.ts').DraftSnapshot
+  'draft:append-image': void
+  'draft:append-files': void
   'agent:info': import('./agent-info.ts').AgentInfo
   'agent:prompt': void
   'agent:steer': import('./agent-info.ts').SteerResult

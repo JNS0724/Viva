@@ -14,7 +14,7 @@ export const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
 /** The home place: this far below the top of the work area. */
 const TOP_GAP = 6
 /** Dropped this close to home, the island goes home. */
-const SNAP_PX = 48
+const SNAP_PX = 1
 /**
  * While dragged the window shrinks to the island (80px, her picture) and a little room for its shadow (island.css data-dragging):
  * a transparent window costs in proportion to its area every time it moves, so the smaller the better.
@@ -43,16 +43,18 @@ export function keepInside(point: Point, area: Area): Point {
   }
 }
 
-export function deskLayout(point: Point, area: Area): { bounds: Area, align: 'start' | 'center' | 'end', dir: 'down' | 'up' } {
+export function deskLayout(point: Point, area: Area): { bounds: Area, align: 'start' | 'center' | 'end', dir: 'down' | 'up', anchor: Point, side: 'left' | 'right', panelWidth: number } {
   const { width, height } = DESK_SIZE
   const dir = point.y > area.y + area.height / 2 ? 'up' : 'down'
-  let align: 'start' | 'center' | 'end' = 'center'
-  if (point.x - area.x < width / 2) align = 'start'
-  else if (area.x + area.width - point.x < width / 2) align = 'end'
-  const x = { start: area.x, end: area.x + area.width - width, center: Math.round(point.x - width / 2) }[align]
+  const side = point.x > area.x + area.width / 2 ? 'left' : 'right'
+  const align = side === 'left' ? 'end' : 'start'
+  const preferredX = side === 'left' ? point.x + HEAD / 2 + STAGE_PAD.side - width : point.x - HEAD / 2 - STAGE_PAD.side
+  const x = Math.round(clamp(preferredX, area.x, Math.max(area.x, area.x + area.width - width)))
   const y = dir === 'down' ? point.y - HEAD / 2 - STAGE_PAD.end : point.y + HEAD / 2 + STAGE_PAD.end - height
-  const top = Math.round(clamp(y, area.y, area.y + area.height - height))
-  return { bounds: { x, y: top, width, height }, align, dir }
+  const top = Math.round(clamp(y, area.y, Math.max(area.y, area.y + area.height - height)))
+  const anchor = { x: point.x - x, y: point.y - top }
+  const room = side === 'left' ? anchor.x - HEAD / 2 - 12 : width - anchor.x - HEAD / 2 - 12
+  return { bounds: { x, y: top, width, height }, align, dir, anchor, side, panelWidth: Math.min(440, room - 2) }
 }
 
 /** The dragged window, its cat centred on `point`. */

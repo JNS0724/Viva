@@ -97,10 +97,11 @@ function openWindow({ BrowserWindow, preload, page }: { BrowserWindow: typeof Wi
  * deps.places: where the island was dragged to (preferences.json deskPlaces); coach: whether the user has
  * seen what the island can do (preferences.json deskCoached)
  */
-export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN as { get: () => boolean, set: () => void } }: {
+export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN as { get: () => boolean, set: () => void }, onOwnership = (_owner: 'main' | 'desk') => {} }: {
   BrowserWindow: typeof Win, screen: Pick<Screen, 'getAllDisplays' | 'getDisplayMatching' | 'getCursorScreenPoint' | 'getDisplayNearestPoint'>,
   preload: string, page: string, mainWindow: Pick<Win, 'getBounds'>, enabled: boolean,
   places: { get: () => unknown, set: (places: ReturnType<typeof readPlaces>) => void }, coach?: { get: () => boolean, set: () => void },
+  onOwnership?: (owner: 'main' | 'desk') => void,
 }) {
   let enabled = initiallyEnabled
   let coached = coach.get()
@@ -120,17 +121,19 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   let loaded = false
   /** The input is open (the shortcut, or files dropped on the island). */
   let input = false
+  let panel: 'input' | 'request' | 'background' | 'status' = 'input'
   /** Called up while the island is switched off: it stays until what was asked is done. */
   let summoned = false
   let places = readPlaces(placeStore.get())
   let layout: ReturnType<typeof deskLayout> | null = null
   /** The island inside its window, as the page last reported it. */
   let islandRect: Rect | null = null
+  let regions: Rect[] = []
   let ignoring = true
   let pointerTimer: ReturnType<typeof setInterval> | undefined
   let styleTimer: ReturnType<typeof setTimeout> | undefined
   /** Pointer position and renderer readiness for the current drag. */
-  let drag: { cursor: Point | null, layout: 'waiting' | 'compact' | 'full' } | null = null
+  let drag: { cursor: Point | null, layout: 'waiting' | 'compact' | 'full', grab: Point, origin: ReturnType<typeof deskLayout>, expanded: boolean } | null = null
   let layoutVersion = 0
   let layoutTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -162,13 +165,16 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (process.platform !== 'win32' || !shown || !islandRect) return
     const bounds = shown.getBounds()
     if (drag && drag.layout !== 'compact') return
-    const rect = drag ? { ...islandRect, x: (bounds.width - islandRect.width) / 2, y: (bounds.height - islandRect.height) / 2 } : islandRect
-    const x = Math.max(0, Math.floor(rect.x - POINTER_SLOP))
-    const y = Math.max(0, Math.floor(rect.y - POINTER_SLOP))
-    const right = Math.min(bounds.width, Math.ceil(rect.x + rect.width + POINTER_SLOP))
-    const bottom = Math.min(bounds.height, Math.ceil(rect.y + rect.height + POINTER_SLOP))
-    if (right <= x || bottom <= y) return
-    shown.setShape([{ x, y, width: right - x, height: bottom - y }])
+    const hit = drag ? [{ x: (bounds.width - 80) / 2, y: (bounds.height - 80) / 2, width: 80, height: 80 }] : regions.length ? regions : [islandRect]
+    const shapes = hit.map(rect => {
+      const x = Math.max(0, Math.floor(rect.x - POINTER_SLOP))
+      const y = Math.max(0, Math.floor(rect.y - POINTER_SLOP))
+      const right = Math.min(bounds.width, Math.ceil(rect.x + rect.width + POINTER_SLOP))
+      const bottom = Math.min(bounds.height, Math.ceil(rect.y + rect.height + POINTER_SLOP))
+      return { x, y, width: right - x, height: bottom - y }
+    }).filter(rect => rect.width > 0 && rect.height > 0)
+    if (!shapes.length) return
+    shown.setShape(shapes)
     setIgnoring(false)
   }
 
@@ -177,6 +183,9 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (!shown || !loaded || !form) return
     shown.webContents.send('island:view', {
       view, form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached, hover: hovering, layoutVersion,
+      expanded: input && !drag, panel,
+      anchor: drag?.layout === 'compact' ? { x: DRAG_SIZE.width / 2, y: DRAG_SIZE.height / 2 } : layout?.anchor,
+      side: layout?.side ?? 'right', panelWidth: layout?.panelWidth ?? 440,
     })
   }
 
@@ -212,7 +221,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (!islandRect) return setIgnoring(true)
     const bounds = shown.getBounds()
     const cursor = screen.getCursorScreenPoint()
-    const inside = within({ x: cursor.x - bounds.x, y: cursor.y - bounds.y }, islandRect)
+    const local = { x: cursor.x - bounds.x, y: cursor.y - bounds.y }
+    const inside = (regions.length ? regions : [islandRect]).some(rect => within(local, rect))
     if (process.platform !== 'win32') setIgnoring(!inside)
     return setHovering(inside)
   }
@@ -275,6 +285,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     shown.destroy()
     win = null
     islandRect = null
+    regions = []
     drag = null
     hovering = false
   }
@@ -336,9 +347,9 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     const cursor = screen.getCursorScreenPoint()
     if (drag.cursor?.x === cursor.x && drag.cursor?.y === cursor.y) return
     const display = screen.getDisplayNearestPoint(cursor)
-    const point = keepInside(cursor, display.workArea)
+    const point = keepInside({ x: cursor.x - drag.grab.x, y: cursor.y - drag.grab.y }, display.workArea)
     shown.setBounds(drag.layout === 'compact' ? dragBounds(point) : {
-      x: Math.round(point.x - DESK_SIZE.width / 2), y: Math.round(point.y - DESK_SIZE.height / 2), ...DESK_SIZE,
+      x: Math.round(point.x - drag.origin.anchor.x), y: Math.round(point.y - drag.origin.anchor.y), ...DESK_SIZE,
     })
     drag = { ...drag, cursor }
   }
@@ -352,13 +363,14 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     },
     /** Whether the app's window was closed to the tray; shown again, it has its own island and input. */
     setAway(value: boolean) {
+      onOwnership(value ? 'desk' : 'main')
       away = value
       if (value) hidden = false
       if (!value) closeInput()
       refresh()
     },
     /** Where the island is inside its window (the page reports it whenever its shape changes). */
-    setIslandRect(rect: Rect, version?: number, ready = false) {
+    setIslandRect(rect: Rect, version?: number, ready = false, hitRegions: Rect[] = []) {
       if (version !== undefined && version !== layoutVersion) return
       if (drag && drag.layout !== 'compact') {
         if (!ready || version === undefined || rect.width <= 0 || rect.height <= 0 || rect.width > DRAG_SIZE.width || rect.height > DRAG_SIZE.height) return
@@ -366,8 +378,10 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
         drag.layout = 'compact'
         drag.cursor = null
         dragMove()
+        send()
       }
       islandRect = rect
+      regions = hitRegions
       shape()
       checkPointer()
     },
@@ -375,6 +389,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     openInput() {
       if (!away && !forced) return false
       input = true
+      onOwnership('desk')
+      panel = 'input'
       summoned = summoned || !enabled
       markCoached()
       refresh()
@@ -382,13 +398,33 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       return true
     },
     closeInput,
+    openPanel(next: 'input' | 'request' | 'background' | 'status') {
+      if (!away && !forced) return false
+      input = true
+      onOwnership('desk')
+      panel = next
+      markCoached()
+      refresh()
+      takeKeyboard()
+      return true
+    },
+    togglePanel() {
+      if (input) return closeInput()
+      const next = view?.form === 'waiting' || view?.form === 'asking' ? 'request'
+        : view?.form === 'done' || view?.form === 'error' ? 'status'
+        : view?.form !== 'working' && view?.background?.items?.length ? 'background' : 'input'
+      return this.openPanel(next)
+    },
     inputOpen: () => input,
     /** The user holds the island and moves it: it shrinks to the cat and follows the pointer until let go. */
-    startDrag() {
+    startDrag(start?: Point) {
       const shown = live()
-      if (drag || !shown) return
+      if (drag || !shown || !layout) return
       markCoached()
-      drag = { cursor: null, layout: 'waiting' }
+      const bounds = shown.getBounds()
+      const pressed = start ?? screen.getCursorScreenPoint()
+      drag = { cursor: null, layout: 'waiting', origin: layout, expanded: input,
+        grab: { x: pressed.x - bounds.x - layout.anchor.x, y: pressed.y - bounds.y - layout.anchor.y } }
       layoutVersion++
       if (process.platform === 'win32') {
         const bounds = shown.getBounds()
@@ -396,6 +432,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       }
       setIgnoring(false)
       send()
+      takeKeyboard()
       layoutTimer = setTimeout(() => {
         if (drag?.layout !== 'waiting') return
         drag.layout = 'full'
@@ -403,24 +440,43 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       }, LAYOUT_READY_MS)
     },
     dragMove,
-    endDrag() {
+    endDrag(cancel = false) {
       if (!drag) return
       clearTimeout(layoutTimer)
       const cursor = screen.getCursorScreenPoint()
       const display = screen.getDisplayNearestPoint(cursor)
-      const point = keepInside(cursor, display.workArea)
+      const point = keepInside({ x: cursor.x - drag.grab.x, y: cursor.y - drag.grab.y }, display.workArea)
+      const previous = drag
       drag = null
       islandRect = null
+      regions = []
       layoutVersion++
-      places = withPlace(places, display.id, settle(point, display.workArea))
-      placeStore.set(places)
+      input = cancel && previous.expanded
+      if (!cancel) {
+        places = withPlace(places, display.id, settle(point, display.workArea))
+        placeStore.set(places)
+      }
       const shown = live()
       if (shown) {
         setIgnoring(true)
-        place(shown)
+        if (cancel) { layout = previous.origin; shown.setBounds(layout.bounds) }
+        else place(shown)
         if (process.platform === 'win32') shown.setShape([{ x: 0, y: 0, ...DESK_SIZE }])
       }
-      send()
+      refresh()
+      if (shown && !input) {
+        if (shown.isFocused()) shown.blur()
+        setFocusable(shown, false)
+      }
+    },
+    placeAt(corner: string) {
+      const display = currentDisplay(), area = display.workArea
+      const point = { x: corner.startsWith('right') ? area.x + area.width - 60 : area.x + 60,
+        y: corner.endsWith('bottom') ? area.y + area.height - 60 : area.y + 60 }
+      places = withPlace(places, display.id, settle(point, area))
+      placeStore.set(places)
+      const shown = live()
+      if (shown) { layoutVersion++; place(shown); send() }
     },
     /** Settings: back to the top centre, on every display. */
     resetPlace() {
@@ -440,6 +496,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       if (shown?.isVisible()) menu.popup({ window: shown })
     },
     working: () => view?.form === 'working',
+    sendDraft(draft: unknown) { const shown = live(); if (shown && loaded) shown.webContents.send('draft:changed', draft) },
     /** 先隐藏 in its menu: gone until the window is next closed to the tray; the shortcut still calls it up. */
     hideUntilAway() {
       hidden = true
@@ -453,6 +510,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     /** For the smoke run, whose window is never in front: show the island as if it were away. */
     force(on: boolean) {
       forced = on
+      onOwnership(on || away ? 'desk' : 'main')
       refresh()
     },
     owns: (sender: WebContents) => {

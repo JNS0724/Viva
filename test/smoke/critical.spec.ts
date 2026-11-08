@@ -1,8 +1,79 @@
 import { test, expect } from './fixtures.ts'
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { checkIslandLayouts } from './island-layout.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
+declare global { interface Window { vivaDraftAudit?: Array<{ key: string, version: number, sequence: number, epoch: number, owner: string, chars: number, files: number, images: number }> } }
+
+test('desktop drafts retain text, real images and files through collapse and window recreation, then return editing to the main window', async ({ scenario }, info) => {
+  const run = await scenario({ phase: 'memory', bridge: 'real' })
+  const session = await run.start('shared-draft')
+  const { page } = session, desk = session.hooks.desk()
+  await page.evaluate(() => {
+    window.vivaDraftAudit = []
+    window.agent.onDraft(draft => window.vivaDraftAudit!.push({ key: draft.key, version: draft.version, sequence: draft.sequence, epoch: draft.epoch, owner: draft.owner, chars: draft.text.length, files: draft.files.length, images: draft.images.length }))
+  })
+  const text = '保留这份跨窗口草稿'
+  const file = { path: path.join(run.profile.workspace, 'draft-note.txt'), name: 'draft-note.txt', size: 4 }
+  fs.writeFileSync(file.path, 'demo')
+  await page.locator('#composer-input').fill(text)
+  await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).text)).toBe(text)
+  await desk.force(true)
+  try {
+    await desk.openInput()
+    await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
+    let desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    await expect(desktop.locator('.isl-field')).toHaveValue(text)
+    const before = await desktop.locator('.isl-anchor').boundingBox()
+    await desktop.evaluate(async () => {
+      const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 16
+      canvas.getContext('2d')!.fillRect(0, 0, 16, 16)
+      const blob = await new Promise<Blob>(resolve => canvas.toBlob(value => resolve(value!), 'image/png'))
+      const data = new DataTransfer(); data.items.add(new File([blob], 'draft.png', { type: 'image/png' }))
+      document.querySelector('.isl-field')!.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
+    })
+    await expect(desktop.locator('.isl-image')).toHaveCount(1)
+    await desktop.evaluate(async file => {
+      const draft = await window.desk.getDraft()
+      window.desk.updateDraft({ ...draft, sequence: draft.sequence + 1, files: [file] })
+    }, file)
+    await expect(desktop.locator('.isl-file')).toHaveCount(2)
+    await desktop.locator('.isl-field').press('Escape')
+    await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'false')
+    const folded = await desktop.locator('.isl-anchor').boundingBox()
+    expect(Math.abs(before!.x - folded!.x)).toBeLessThanOrEqual(1)
+    expect(Math.abs(before!.y - folded!.y)).toBeLessThanOrEqual(1)
+    await desktop.locator('.isl-anchor').click()
+    await expect(desktop.locator('.isl-field')).toHaveValue(text)
+    await expect(desktop.locator('.isl-file')).toHaveCount(2)
+    await desktop.screenshot({ path: info.outputPath('shared-desktop-draft.png') })
+    await desktop.getByRole('button', { name: '打开 Viva', exact: true }).click()
+    await expect(page.locator('#composer-input')).toHaveValue(text)
+    await expect(page.locator('.composer-shared-files .isl-file')).toHaveCount(1)
+    await expect(page.locator('.draft-pic')).toHaveCount(1)
+    await page.screenshot({ path: info.outputPath('shared-main-draft.png') })
+    await desk.force(true); await desk.openInput()
+    await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
+    desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    await expect(desktop.locator('.isl-field')).toHaveValue(text)
+    await expect(desktop.locator('.isl-file')).toHaveCount(2)
+    await desktop.locator('.isl-image .isl-file-x').click()
+    await expect(desktop.locator('.isl-file')).toHaveCount(1)
+    await desktop.locator('.isl-field').fill('')
+    await desktop.locator('.isl-field').press('Enter')
+    await expect(page.locator('.msg-user').last()).toContainText(file.name)
+    await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'false')
+    await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).text)).toBe('')
+  } finally {
+    await info.attach('shared-draft-events', { body: JSON.stringify(await page.evaluate(() => window.vivaDraftAudit), null, 2), contentType: 'application/json' })
+    await desk.force(false)
+  }
+  await page.locator('#composer-input').fill('主窗口继续发送')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(page.locator('.msg-user').last()).toContainText('主窗口继续发送')
+})
 
 test('fresh app opens usable settings without a model', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'setup', bridge: 'real' })
@@ -63,20 +134,20 @@ test('centred chat avatars and the folded desktop island animate without restart
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
     await desktop.emulateMedia({ reducedMotion: 'no-preference' })
-    await expect(desktop.locator('.isl-face .maid-image')).toBeVisible()
+    await expect(desktop.locator('.isl-anchor .maid-image')).toBeVisible()
     const coach = desktop.locator('.isl[data-form="coach"] .isl-btn-blue')
     if (await coach.isVisible()) await coach.click()
     await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'false')
     await expect.poll(() => desktop.locator('.isl').evaluate(element => {
       const portrait = element.querySelector<HTMLElement>('.maid')!
       const image = portrait.querySelector<HTMLImageElement>('img')!
-      return portrait.dataset.framing === (element.dataset.layout === 'rest' ? 'whole' : 'face') && /-motion\.webp$/.test(image.src)
+      return portrait.dataset.framing === 'whole' && /-motion\.webp$/.test(image.src)
     })).toBe(true)
     await desktop.screenshot({ path: info.outputPath('animated-desktop.png') })
     await desktop.emulateMedia({ reducedMotion: 'reduce' })
-    await expect.poll(() => desktop.locator('.isl-face .maid-image').evaluate((image: HTMLImageElement) => image.currentSrc)).toMatch(/\/[a-z]+\.webp$/)
+    await expect.poll(() => desktop.locator('.isl-anchor .maid-image').evaluate((image: HTMLImageElement) => image.currentSrc)).toMatch(/\/[a-z]+\.webp$/)
     await desktop.emulateMedia({ reducedMotion: 'no-preference' })
-    await expect.poll(() => desktop.locator('.isl-face .maid-image').evaluate((image: HTMLImageElement) => image.currentSrc)).toMatch(/-motion\.webp$/)
+    await expect.poll(() => desktop.locator('.isl-anchor .maid-image').evaluate((image: HTMLImageElement) => image.currentSrc)).toMatch(/-motion\.webp$/)
   } finally { await desk.force(false) }
 
   // Use the production renderer for all states, including a hover redraw with the same portrait.
@@ -101,7 +172,7 @@ test('centred chat avatars and the folded desktop island animate without restart
     gallery.append(island.el)
     document.body.append(gallery)
     await Promise.all([...gallery.querySelectorAll('img')].map(image => image.decode()))
-    const face = island.el.querySelector('.isl-face')!
+    const face = island.el.querySelector('.isl-anchor')!
     let replacements = 0
     const observer = new MutationObserver(records => { replacements += records.length })
     observer.observe(face, { childList: true })
@@ -111,9 +182,9 @@ test('centred chat avatars and the folded desktop island animate without restart
     island.update({ form: 'mini', mood: 'idle', tone: 'quiet', label: '', recent: [] }, { now: Date.now() + 1000 })
     observer.disconnect()
     return { loaded: [...gallery.querySelectorAll('img')].every(image => image.naturalWidth > 0), count: gallery.querySelectorAll('img').length,
-      replacements, retained: face.firstChild === hovered, folded: island.el.dataset.open, hovered: Boolean(island.el.querySelector('.isl-grip')) }
+      replacements, retained: face.firstChild === hovered, folded: island.el.dataset.open, hovered: island.el.dataset.hover === 'true' }
   })
-  expect(stateGallery).toEqual({ loaded: true, count: 21, replacements: 1, retained: true, folded: 'false', hovered: true })
+  expect(stateGallery).toEqual({ loaded: true, count: 21, replacements: 0, retained: true, folded: 'false', hovered: true })
   await page.screenshot({ path: info.outputPath('all-animated-states.png') })
   await page.locator('#portrait-gallery').evaluate(gallery => gallery.remove())
 

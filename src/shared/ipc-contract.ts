@@ -154,6 +154,13 @@ export const IPC_ARGS = Object.freeze({
   'island:act': z.tuple([record]),
   'island:files': read(z.tuple([z.array(path).max(MAX_LIST)])),
   'island:ask': z.tuple([record]),
+  'island:ask-result': z.tuple([id, z.object({ ok: z.boolean(), error: text.optional() })]),
+  'draft:get': read(none),
+  'draft:update': z.tuple([z.object({ key: id, version: count, epoch: count, sequence: count, baseImages: z.array(id).max(10).optional(), baseFiles: z.array(path).max(10).optional(), owner: z.enum(['main', 'desk']), text,
+    files: z.array(z.object({ path, name: id, size: count })).max(10),
+    images: z.array(z.object({ id, size: count.optional() })).max(10), error: text.nullable() })]),
+  'draft:append-image': z.tuple([id, z.object({ id, size: count.optional() })]),
+  'draft:append-files': z.tuple([id, z.array(path).max(10)]),
   'island:keep-image': z.tuple([bytes]),
 })
 

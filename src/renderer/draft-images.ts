@@ -12,11 +12,12 @@ const messageOf = (err: unknown) => String((err as { message?: unknown } | null)
  * folder as soon as it comes in (main/image-store.js), shown small above the words, and handed over on send.
  * Like the words in the field, they live with the page, not in the conversation's state.
  */
-export function createDraftImages({ keep, container, onChange = () => {}, showError }: {
+export function createDraftImages({ keep, container, onChange = () => {}, showError, capture }: {
   keep: (bytes: Uint8Array<ArrayBuffer>) => Promise<{ id: string, mimeType: string, size: number }>,
   container: HTMLElement,
   onChange?: () => void,
   showError: (message: string) => void,
+  capture?: () => (image: { id: string, size: number }) => boolean,
 }) {
   let images: Array<{ id: string }> = []
 
@@ -33,6 +34,7 @@ export function createDraftImages({ keep, container, onChange = () => {}, showEr
 
   /** @param files pictures pasted or dropped; each kept, in order, the same picture once */
   async function add(files: readonly Blob[]) {
+    const late = capture?.()
     for (const file of files) {
       if (images.length >= IMAGE_LIMITS.perMessage) {
         showError(TOO_MANY)
@@ -40,6 +42,7 @@ export function createDraftImages({ keep, container, onChange = () => {}, showEr
       }
       try {
         const kept = await keep(new Uint8Array(await file.arrayBuffer()))
+        if (late?.(kept)) continue
         pictureKept(kept.id)
         if (!images.some((image) => image.id === kept.id)) images = [...images, { id: kept.id }]
       } catch (err) {
@@ -53,6 +56,7 @@ export function createDraftImages({ keep, container, onChange = () => {}, showEr
     add,
     remove,
     list: (): Array<{ id: string }> => images,
+    replace(next: ReadonlyArray<{ id: string }>) { images = next.map(image => ({ id: image.id })); render() },
     clear() {
       if (!images.length) return
       images = []

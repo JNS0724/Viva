@@ -3,31 +3,14 @@ import { localeRevision } from '../../shared/i18n/locale.ts'
 import { formatElapsed } from '../selectors.ts'
 import { maidFor, maidMood } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
-import { h } from './dom.ts'
-import { icon } from './icons.ts'
+import { h, keepingInput } from './dom.ts'
 import { queueLayout } from './reconcile.ts'
-import { INPUT_FORMS } from './island-input.ts'
 import type { createIslandInput } from './island-input.ts'
 import { backgroundSection, tailCell, taskTag } from './island-tasks.ts'
 
-/**
- * The Viva island as an element, for its two hosts: the capsule in the window's title bar ('bar') and the
- * island on the desktop ('desk', desk.js). It is made once and updated in place, so a change of state
- * reads as one shape changing around her. Desktop layouts give the portrait its own space beside the
- * input or in the card header. What it shows comes from islandView (island-view.js).
- *
- * Actions go to `act`: toggle, jump (to the card in the thread), cancel, trace, open (the window),
- * input (the desktop's), coached, permission { requestId, optionId }, answer { questionId, id, label },
- * tasks (the count at the tail: the 后台 page).
- *
- * In the title bar a click unfolds the steps. On the desktop the island is glanced at from another app, so
- * it never unfolds the steps: it opens by itself only for what needs the user (and, once, to say what it
- * can do), and a pointer resting on it shows what it can do instead: stop, open the window, the grip to
- * drag it by, and, when idle, that it takes questions and files.
- *
- * On the desktop the island may also be an input (island-input.js), given as `input`: its forms are as wide
- * as the input, always open, and their field lies over the head.
- */
+/** Shared task/request content with separate title-bar and desktop hosts. The desktop keeps a 72px
+ * portrait in one 80px target, with explicit expansion of its neighbouring surface. Views wire actions;
+ * the controller owns IPC, pointer intention, draft lifetime and native placement. */
 
 const NS = 'http://www.w3.org/2000/svg'
 /** The island's border, on both sides: its content is this much narrower than the shape. */
@@ -37,30 +20,24 @@ type Host = 'bar' | 'desk'
  * In the title bar the island carries no picture of her, only a dot in the tone of the moment: the conversation's
  * latest answer shows her already. On the desktop she is the island, large enough to read her expression.
  */
-const SIZES: Record<Host, { head: number, panel: number, maxHead: number, maid: number, input?: number }> = {
-  bar: { head: 36, panel: 360, maxHead: 360, maid: 0 },
-  desk: { head: 80, panel: 440, maxHead: 440, maid: 72, input: 520 },
+const SIZES = {
+  bar: { head: 36, panel: 360, maxHead: 360 },
 }
 
 export type DeskLayout = 'rest' | 'capsule' | 'input' | 'content'
-const DESK_PORTRAITS: Readonly<Record<DeskLayout, number>> = Object.freeze({ rest: 72, capsule: 48, input: 56, content: 40 })
 
 /** Desktop layout follows content, independently of the title bar's compact representation. */
-export function deskLayoutFor(view: IslandShown, open: boolean, tools: boolean): DeskLayout {
-  if (view.form === 'input') return view.files.length || view.images?.length ? 'content' : 'input'
-  if (open) return 'content'
-  return view.form === 'mini' && !tools && !view.background?.count && !view.background?.done ? 'rest' : 'capsule'
+export function deskLayoutFor(view: IslandShown, open: boolean, _tools = false): DeskLayout {
+  if (view.dragging) return 'rest'
+  if (open) return view.form === 'input' ? 'input' : 'content'
+  return view.form === 'mini' && !view.background?.count && !view.background?.done ? 'rest' : 'capsule'
 }
 
-function deskHead(view: IslandShown, layout: DeskLayout, now: number) {
+function deskHead(view: IslandShown, now: number) {
   const attachments = view.form === 'input'
-  const tasks = layout === 'content' && !OPENS_ITSELF.has(view.form) && !INPUT_FORMS.has(view.form)
   let label = view.label
   let detail = view.action ?? view.task ?? view.question?.header ?? view.detail
-  if (tasks) {
-    label = t('tasks-page.background.tasks')
-    detail = t('background.running.count', { p0: view.background?.count ?? 0 })
-  } else if (attachments || view.form === 'drop') {
+  if (attachments || view.form === 'drop') {
     label = t('desk.give.to.viva')
     if (attachments) detail = t('island-input.attachments', { count: view.files.length + (view.images?.length ?? 0) })
   } else if (view.form === 'mini') {
@@ -80,15 +57,8 @@ const desktopPanel = (body: View[], actions: View[]) => [
   h('div', { class: 'isl-footer' }, ...actions),
 ]
 
-/** Forms that need the user; on the desktop their panel opens by itself, as does the first-time note. */
+/** Requests jump to their card in the title bar; on the desktop they wait for explicit expansion. */
 const NEEDS_USER = new Set(['waiting', 'asking'])
-const OPENS_ITSELF = new Set([...NEEDS_USER, 'coach'])
-/**
- * On the desktop, a pointer resting this long on the island shows what it can do; one passing by does not.
- * Once it leaves, the island waits a little before it shrinks, so a pointer slipping off the edge does not jolt it.
- */
-const HOVER_MS = 320
-const LEAVE_MS = 400
 
 function ring() {
   const svg = document.createElementNS(NS, 'svg')
@@ -157,10 +127,12 @@ function questionPanel(view: IslandShown, act: IslandAct) {
   return desktopPanel([
     question.header ? h('span', { class: 'isl-tag', text: question.header }) : null,
     h('div', { class: 'isl-title', text: question.text }),
+    question.options.length ? h('p', { class: 'isl-choice-hint', text: t('desk.interaction.immediate.answer') }) : null,
     h('div', { class: 'isl-choices' },
-      question.options.map((label: string) => button(label, ROLE.secondary, () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label })))),
+      question.options.map((label: string) => h('button', { type: 'button', class: 'isl-btn isl-btn-secondary', onClick: () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }) },
+        h('span', { text: label }), h('span', { class: 'isl-choice-action', text: t('desk.interaction.answer') })))),
   ], [
-    button(question.options.length ? t("island-dom.other") : t("island-dom.open.window.to.answer"), question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
+    button(t('desk.interaction.other.answer'), question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
     question.skippable ? button(t("island-dom.skip"), `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null,
   ])
 }
@@ -177,10 +149,8 @@ function coachPanel(act: IslandAct, shortcut: string) {
  * Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the
  * steps and the tasks in the background.
  */
-function hasPanel(view: IslandShown, host: Host, pinned = false) {
+function hasPanel(view: IslandShown) {
   const tasks = Boolean(view.background?.items.length)
-  // On the desktop the 后台 list opens only when asked for (a click on the count at the tail, desk.js).
-  if (host === 'desk') return OPENS_ITSELF.has(view.form) || (pinned && tasks)
   return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || tasks)
 }
 
@@ -189,6 +159,10 @@ function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: str
   if (host === 'desk' && view.form === 'waiting') return permissionPanel(view, act)
   if (host === 'desk' && view.form === 'asking') return questionPanel(view, act)
   if (host === 'desk' && view.form === 'coach') return coachPanel(act, shortcut)
+  if (host === 'desk' && ['resolved', 'done', 'error', 'pending'].includes(view.form)) return desktopPanel([
+    h('div', { class: 'isl-title', text: view.detail || view.label }),
+  ], [button(t('desk.interaction.open'), 'isl-btn-blue', () => act({ kind: 'open' })),
+    button(t('desk.interaction.continue'), ROLE.text, () => act({ kind: 'input' }))])
   if (host === 'desk') return desktopPanel([backgroundSection(view, act, now)], [
     button(t('island-dom.view.full.activity'), `${ROLE.text} isl-push`, () => act({ kind: 'tasks' })),
   ])
@@ -202,25 +176,11 @@ function panelParts(view: IslandShown, host: Host, act: IslandAct, shortcut: str
   return [...steps, backgroundSection(view, act, now)]
 }
 
-const tool = (label: string, cls: string, onClick: () => void, text = '') => h('button', { type: 'button', class: `isl-tool ${cls}`, title: label, 'aria-label': label, text, onClick })
-
-/**
- * On the desktop, with the pointer resting on the island: stop while it works, the window when a click
- * would not open it, and the grip it is dragged by.
- */
-function deskTools(view: IslandShown, act: IslandAct) {
-  const grip = h('span', { class: 'isl-grip', title: t("island-dom.drag.to.move"), 'aria-hidden': 'true' })
-  if (view.form === 'working') return [tool(t("island-dom.stop"), 'isl-tool-stop', () => act({ kind: 'cancel' })), grip]
-  if (view.form === 'mini') return [tool(t("island-dom.open.window"), 'isl-tool-open', () => act({ kind: 'open' }), '↗'), grip]
-  return [grip]
-}
-
 /**
  * A click on the head. On the desktop: the resting cat takes a question, anything else opens the window.
  * In the title bar it unfolds the steps, or, when the agent waits on the user, goes to the card.
  */
-function headAction(view: IslandShown, host: Host, unfolds: boolean): { kind: string } | null {
-  if (host === 'desk') return view.form === 'mini' || view.form === 'coach' ? { kind: 'input' } : { kind: 'open' }
+function headAction(view: IslandShown, unfolds: boolean): { kind: string } | null {
   if (NEEDS_USER.has(view.form)) return { kind: 'jump' }
   return unfolds ? { kind: 'toggle' } : null
 }
@@ -236,49 +196,33 @@ export function islandSignatures(view: IslandShown, open: boolean, showTools: bo
 }
 
 /** options: the desktop's input, and the ask shortcut as the user presses it */
-export function createIsland(host: Host, act: IslandAct, { input = null as ReturnType<typeof createIslandInput> | null, shortcut = '' } = {}) {
-  const size = SIZES[host]
-  const maids: MaidSlots = new Map()
-  const face = h('span', { class: 'isl-face', 'aria-hidden': 'true' })
-  const dot = h('span', { class: 'isl-dot' })
+function createBarIsland(act: IslandAct) {
+  const size = SIZES.bar
+  const face = h('span', { class: 'isl-face', 'aria-hidden': 'true' }, h('span', { class: 'isl-dot' }))
   const head = h('button', { type: 'button', class: 'isl-head' })
   const tools = h('span', { class: 'isl-tools' })
   const row = h('div', { class: 'isl-row' }, head, tools)
   const panel = h('div', { class: 'isl-panel' })
   const clip = h('div', { class: 'isl-clip' }, row, panel)
-  const el = h('div', { class: 'isl', 'data-host': host }, clip, face)
-  let last: { view: IslandShown, now: number, pinned: boolean } | null = null
+  const el = h('div', { class: 'isl', 'data-host': 'bar' }, clip, face)
   let signature = { panel: '', row: '' }
-  let hovered = false
   let onHead: { kind: string } | null = null
-
-  // The count at the tail is the way to the 后台 page; the rest of the head does what its form says.
-  head.addEventListener('click', (event) => {
-    if ((event.target as Element).closest?.('.isl-bg')) act({ kind: 'tasks' })
+  head.addEventListener('click', event => {
+    if ((event.target as Element).closest('.isl-bg')) act({ kind: 'tasks' })
     else if (onHead) act(onHead)
   })
-
-  /**
-   * Sizes are set in pixels, so the shape can animate between them; never wider than its place allows.
-   * @param wide the input's forms, as wide as the input
-   */
-  function layout(open: boolean, wide: boolean) {
-    if (host === 'desk') return
+  function layout(open: boolean) {
     head.style.width = 'max-content'
     queueLayout(el, () => {
       if (!el.isConnected) return
       const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
       const toolsWidth = Math.ceil(tools.getBoundingClientRect().width)
-      // With nothing beside the cat the island is a circle around it, not a capsule with an empty end.
       const bare = !head.childElementCount && !toolsWidth
-      const contentWidth = bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth
-      const headWidth = Math.min(contentWidth, size.maxHead, room)
-      const opened = open ? Math.min(size.panel - BORDER, room) : headWidth
-      const inner = wide ? Math.min((size.input ?? size.panel) - BORDER, room) : opened
+      const headWidth = Math.min(bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth, size.maxHead, room)
+      const inner = open ? Math.min(size.panel - BORDER, room) : headWidth
       return () => {
         head.style.width = `${Math.max(inner - toolsWidth, 0)}px`
-        panel.style.width = `${inner}px`
-        el.style.width = `${inner + BORDER}px`
+        panel.style.width = `${inner}px`; el.style.width = `${inner + BORDER}px`
         if (!open) el.style.height = `${size.head}px`
         else queueLayout(panel, () => {
           const height = size.head + panel.scrollHeight
@@ -287,100 +231,86 @@ export function createIsland(host: Host, act: IslandAct, { input = null as Retur
       }
     })
   }
-
-  /**
-   * @param view from islandView, with form 'mini' for the desktop's resting cat
-   * @param options pinned: opened by a click in the title bar
-   */
   function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
-    last = { view, now, pinned }
-    const wide = Boolean(input) && INPUT_FORMS.has(view.form)
-    const unfolds = wide || hasPanel(view, host, pinned)
-    const open = unfolds && (wide || pinned || host === 'desk')
-    const showTools = host === 'desk' && hovered && !wide && !view.dragging && view.form !== 'coach'
-    const desktopLayout = host === 'desk' ? deskLayoutFor(view, open, showTools) : null
-    const next = islandSignatures(view, open, showTools)
-    next.row = `${localeRevision()}:${next.row}`
-    next.panel = `${localeRevision()}:${next.panel}`
+    const unfolds = hasPanel(view), open = unfolds && pinned
+    const next = islandSignatures(view, open, false)
+    next.row = `${localeRevision()}:${next.row}`; next.panel = `${localeRevision()}:${next.panel}`
     if (next.row === signature.row) {
-      const time = head.querySelector('.isl-time')
-      if (time && view.form === 'working') time.textContent = elapsedSince(view, now)
+      const clock = head.querySelector('.isl-time')
+      if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
       return
     }
-    const panelChanged = next.panel !== signature.panel
+    const panelChanged = next.panel !== signature.panel, wasOpen = el.dataset.open === 'true'
     signature = next
-    // The panel fades in as it opens; redrawn while open (a step every second as the agent works) it stays put.
-    const wasOpen = el.dataset.open === 'true'
     Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
-    if (desktopLayout) el.dataset.layout = desktopLayout
-    // The desktop portrait stays animated when folded too; reuse it across clock and hover updates.
-    const mood = view.form === 'drop' ? 'listening' : maidMood(view.form === 'mini' ? 'idle' : view.mood, view.tone)
-    const portraitSize = desktopLayout ? DESK_PORTRAITS[desktopLayout] : size.maid
-    const portrait = size.maid ? maidFor(maids, 'island', mood, {
-      size: portraitSize, framing: desktopLayout === 'rest' ? 'whole' : 'face', moving: host === 'desk' || open, badge: host !== 'desk',
-    }) : dot
-    if (face.firstChild !== portrait) face.replaceChildren(portrait)
-    const tail = tailCell(view)
-    const parts = desktopLayout ? [deskHead(view, desktopLayout, now), tail]
-      : [...headParts(view, { host, now, tools: showTools, shortcut }), tail]
-    head.replaceChildren(...parts.filter((part): part is NonNullable<typeof part> => Boolean(part)))
-    const closable = view.form === 'input' || view.form === 'coach'
-    const contentTool = desktopLayout === 'content' ? tool(t(closable ? 'review.close' : 'island-dom.open.window'), 'isl-tool-open',
-      () => act({ kind: view.form === 'input' ? 'dismiss' : view.form === 'coach' ? 'coached' : 'open' })) : null
-    if (contentTool) contentTool.append(icon(closable ? 'close' : 'panel', 17))
-    tools.replaceChildren(...(contentTool ? [contentTool] : showTools ? deskTools(view, act) : []))
-    if (input && view.form === 'input') {
-      input.sync(view)
-      if (input.entry.parentNode !== clip) clip.append(input.entry)
-    } else input?.entry.remove()
-    onHead = wide ? null : headAction(view, host, unfolds)
-    head.disabled = !onHead && !tail
+    head.replaceChildren(...[...headParts(view, { host: 'bar', now, tools: false, shortcut: '' }), tailCell(view)].filter((part): part is NonNullable<typeof part> => Boolean(part)))
+    onHead = headAction(view, unfolds)
+    head.disabled = !onHead && !view.background
     head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
     if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
     else head.removeAttribute('aria-expanded')
     if (panelChanged) {
-      const parts = wide && input ? input.panel(view) : panelParts(view, host, act, shortcut, now)
-      panel.replaceChildren(...(open ? [h('div', { class: wasOpen ? 'isl-in isl-in-still' : 'isl-in' }, parts)] : []))
+      panel.replaceChildren(...(open ? [h('div', { class: wasOpen ? 'isl-in isl-in-still' : 'isl-in' }, panelParts(view, 'bar', act, '', now))] : []))
       panel.inert = !open
     }
-    layout(open, wide)
+    layout(open)
   }
+  return { el, update, setPointer(_on: boolean) {} }
+}
+/** The desktop portrait is a stable target. Only its neighbouring surface changes shape. */
+function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIslandInput> | null, shortcut: string) {
+  const maids: MaidSlots = new Map()
+  const avatar = h('button', { type: 'button', class: 'isl-anchor', 'aria-label': t('desk.interaction.toggle'), onClick: () => act({ kind: 'toggle' }) })
+  const surface = h('section', { class: 'isl-surface', 'aria-label': t('island-dom.content') })
+  const peek = h('div', { class: 'isl-peek' })
+  const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, peek, surface)
+  let signature = ''
+  function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
+    const open = Boolean(view.desktopOpen ?? (view.form === 'input' || pinned)) && !view.dragging
+    const wide = view.form === 'input'
+    Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open), layout: deskLayoutFor(view, open) })
+    avatar.setAttribute('aria-expanded', String(open))
+    avatar.setAttribute('aria-label', t('desk.interaction.toggle'))
+    avatar.title = t('desk.interaction.gesture')
+    const portrait = maidFor(maids, 'island', view.form === 'drop' ? 'listening' : maidMood(view.mood, view.tone), { size: 72, framing: 'whole', moving: true, badge: false })
+    if (avatar.firstChild !== portrait) avatar.replaceChildren(portrait)
+    surface.hidden = !open
+    peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count && !view.background?.done
+    const next = JSON.stringify([view, open, localeRevision()])
+    if (next === signature) {
+      const clock = peek.querySelector('.isl-time')
+      if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
+      return
+    }
+    signature = next
+    const tail = tailCell(view, true)
+    if (tail) {
+      tail.addEventListener('click', () => act({ kind: 'panel', panel: 'background' }))
+      tail.setAttribute('aria-expanded', String(open && view.desktopPanel === 'background'))
+    }
+    peek.replaceChildren(h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) }, deskHead(view, now)), ...(tail ? [tail] : []))
+    if (!open) { surface.inert = true; return }
+    surface.inert = false
+    const title = view.desktopPanel === 'background' ? t('tasks-page.background.tasks')
+      : wide ? t(view.steering ? 'desk.interaction.supplement' : 'desk.ask.viva') : view.label
+    const header = h('header', { class: 'isl-surface-head' },
+      h('div', { class: 'isl-copy' }, h('b', { class: 'isl-label', text: title }),
+        view.targetLabel ? h('span', { class: 'isl-more', text: view.targetLabel, title: view.targetLabel }) : null),
+      button(t('desk.interaction.open'), ROLE.text, () => act({ kind: 'open' })),
+      button(t('desk.interaction.collapse'), ROLE.text, () => act({ kind: 'dismiss' })))
+    const notice = view.waitingNotice ? h('div', { class: 'isl-notice', role: 'status' },
+      h('span', { text: view.waitingNotice.label }), button(t('desk.interaction.view'), ROLE.text, () => act({ kind: 'panel', panel: 'request' }))) : null
+    const running = wide && view.steering ? h('div', { class: 'isl-running' }, h('span', { text: t('desk.interaction.running') }),
+      button(t('desk.interaction.stop.current'), ROLE.secondary, () => act({ kind: 'cancel' }))) : null
+    keepingInput(surface, () => {
+      const content = (wide || view.form === 'drop') && input ? input.panel(view) : panelParts(view, 'desk', act, shortcut, now)
+      if (wide && input) input.sync(view)
+      surface.replaceChildren(header, ...[notice, running, wide && input ? input.entry : null].filter((node): node is NonNullable<typeof node> => Boolean(node)), ...content.filter((node): node is HTMLElement => node instanceof HTMLElement))
+    })
+  }
+  return { el, update, setPointer(on: boolean) { el.dataset.hover = String(on) } }
+}
 
-  /**
-   * On the desktop, whether the pointer is over the island, as the main process sees it (desk.js): a pointer
-   * resting on it shows its tools, one passing by on its way elsewhere does not.
-   */
-  let hoverTimer: ReturnType<typeof setTimeout> | undefined
-  let pointer = false
-  let pressed = false
-  function setPointer(on: boolean) {
-    if (pointer === on) return
-    pointer = on
-    scheduleHover()
-  }
-  function scheduleHover() {
-    clearTimeout(hoverTimer)
-    if (pressed || hovered === pointer) return
-    hoverTimer = setTimeout(() => {
-      hovered = pointer
-      if (last) update(last.view, last)
-    }, pointer ? HOVER_MS : LEAVE_MS)
-  }
-  // Keep the pressed button in place until release, including the pause before a drag starts.
-  const release = () => {
-    pressed = false
-    el.ownerDocument.removeEventListener('pointerup', release, true)
-    el.ownerDocument.removeEventListener('pointercancel', release, true)
-    el.ownerDocument.defaultView?.removeEventListener('blur', release)
-    scheduleHover()
-  }
-  el.addEventListener('pointerdown', () => {
-    pressed = true
-    clearTimeout(hoverTimer)
-    el.ownerDocument.addEventListener('pointerup', release, true)
-    el.ownerDocument.addEventListener('pointercancel', release, true)
-    el.ownerDocument.defaultView?.addEventListener('blur', release)
-  }, true)
-
-  return { el, update, setPointer }
+export function createIsland(host: Host, act: IslandAct, { input = null as ReturnType<typeof createIslandInput> | null, shortcut = '' } = {}) {
+  return host === 'desk' ? createDesktopIsland(act, input, shortcut) : createBarIsland(act)
 }

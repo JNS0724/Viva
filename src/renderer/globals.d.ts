@@ -134,7 +134,14 @@ interface LanguageApi {
   setLanguage: (language: import('../shared/i18n/locale.ts').Language) => Promise<import('../shared/i18n/locale.ts').LanguageState>
   onLanguage: (callback: (state: import('../shared/i18n/locale.ts').LanguageState) => void) => Unlisten
 }
-interface AgentApi extends LanguageApi {
+interface DraftApi extends LanguageApi {
+  getDraft: Invoke<'draft:get'>
+  updateDraft: (...args: Args<'draft:update'>) => void
+  appendDraftImage: Invoke<'draft:append-image'>
+  appendDraftFiles: Invoke<'draft:append-files'>
+  onDraft: (callback: (draft: import('../shared/composer-draft.ts').DraftSnapshot) => void) => Unlisten
+}
+interface AgentApi extends DraftApi {
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: string
   getInfo: Invoke<'agent:info'>
@@ -246,17 +253,18 @@ interface AgentApi extends LanguageApi {
   markFeedSeen: Invoke<'feed:seen'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (...args: Args<'island:view'>) => void
+  islandAskResult: (...args: Args<'island:ask-result'>) => void
   onFocusComposer: (callback: () => void) => Unlisten
   onIslandAction: (callback: (action: any) => void) => Unlisten
   onEvent: (callback: (event: unknown) => void) => Unlisten
 }
 
 /** The desktop island's bridge (desk-preload.cjs): dropped files are known to it only by their paths. */
-interface DeskApi extends LanguageApi {
+interface DeskApi extends DraftApi {
   onView: (callback: (view: any) => void) => Unlisten
   act: (...args: Args<'island:act'>) => void
   describeFiles: (files: ArrayLike<File>) => Promise<{ files?: Array<{ path: string, name: string, size: number }>, error?: string }>
-  ask: (text: string, files: unknown[], images?: Array<{ id: string }>) => Promise<any>
+  ask: (text: string, files: unknown[], images?: Array<{ id: string }>, draft?: { key: string, version: number }) => Promise<{ ok: boolean, error?: string }>
   keepImage: Invoke<'island:keep-image'>
   /** The ask shortcut as the user presses it (island-main.ts ASK_SHORTCUT). */
   shortcut: string
