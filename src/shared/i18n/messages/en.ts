@@ -1,4 +1,5 @@
 export const en = {
+  "main.history-schema.invalid.message.key": "Invalid message identity",
   "turn.output.limit": "This turn reached its output limit and the reply may be incomplete. Existing content is kept. Send “Continue” to carry on.",
   "turn.no.final.reply": "This turn ended without a final reply. Existing content is kept. Send “Continue” to carry on.",
   "island-view.incomplete": "Incomplete",

@@ -1,5 +1,6 @@
 import type { MessageKey } from './en.ts'
 export const zhCN = {
+  "main.history-schema.invalid.message.key": "消息标识不正确",
   "turn.output.limit": "已达到本轮输出上限，回复可能不完整。已有内容已保留，可发送“继续”接着处理。",
   "turn.no.final.reply": "本轮已结束，但没有生成最终回复。已有内容已保留，可发送“继续”接着处理。",
   "island-view.incomplete": "未完成",

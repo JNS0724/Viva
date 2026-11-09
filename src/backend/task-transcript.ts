@@ -17,7 +17,7 @@ export interface TranscriptMessage {
 }
 export type Transcript = readonly TranscriptMessage[]
 /** A message as the history keeps it (history-db.ts save). */
-export interface SavedMessage { role: string, text: string }
+export interface SavedMessage { role: string, text: string, key?: string }
 
 type Update = Readonly<Record<string, unknown>>
 type Blocks = NonNullable<TranscriptMessage['blocks']>
@@ -107,10 +107,10 @@ export function ended(transcript: Transcript, stopReason: unknown): Transcript {
 }
 
 /** As the history keeps it. */
-export const saved = (transcript: Transcript): SavedMessage[] => transcript.map(({ role, text }) => ({ role, text }))
+export const saved = (transcript: Transcript): SavedMessage[] => transcript.map(({ role, text, streamKey }) => ({ role, text, ...(streamKey ? { key: streamKey } : {}) }))
 
 /** A transcript from what the history kept, to go on from. */
-export const fromSaved = (messages: ReadonlyArray<{ role?: unknown, text?: unknown }>): Transcript => messages.flatMap((message): TranscriptMessage[] => {
+export const fromSaved = (messages: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown }>): Transcript => messages.flatMap((message): TranscriptMessage[] => {
   const { role, text } = message
-  return (role === 'user' || role === 'assistant' || role === 'note') && typeof text === 'string' ? [{ role, text }] : []
+  return (role === 'user' || role === 'assistant' || role === 'note') && typeof text === 'string' ? [{ role, text, ...(typeof message.key === 'string' ? { streamKey: message.key } : {}) }] : []
 })

@@ -228,7 +228,7 @@ function saveHistory() {
   if (!historyReady || state.messages.length === 0) return
   const sessionId = state.info.sessionId
   const topicStartedAt = state.topic.startedAt
-  api.saveHistory(historyMessages(state))
+  api.saveHistory(historyMessages(state, { keys: true }))
     .then((summary) => {
       // A save from the topic just left must not attach its id to the new blank topic.
       if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })

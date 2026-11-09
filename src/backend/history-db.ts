@@ -67,6 +67,7 @@ const SCHEMA = `
     created_at INTEGER NOT NULL,
     -- The pictures pasted with a question, as JSON [{ id }] (shared/images.ts); the files are in the pictures folder.
     images TEXT,
+    source_key TEXT,
     UNIQUE (conversation_id, seq)
   );
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5 (
@@ -161,7 +162,7 @@ export interface ReportRecord { reportId: string, at: number, text: string, afte
 const toRecord = (row: Row): ReportRecord => ({ reportId: row.report_id, at: Number(row.at), text: row.text, after: Number(row.after_seq) })
 
 const toMessage = (row: Row) => ({
-  role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}),
+  role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}), ...(row.source_key ? { key: row.source_key } : {}),
 })
 /** A message of an earlier segment of the timeline: its id, where it is, and when it was written (ms). */
 const toTimelineMessage = (row: Row) => ({ id: row.id, seq: row.seq, ...toMessage(row), at: row.created_at })
@@ -204,6 +205,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const db = given ?? new DatabaseSync(file!)
   if (!given) db.exec(APP_DB_PRAGMAS)
   db.exec(SCHEMA)
+  inTransaction(db, () => {
+    if (!db.prepare('PRAGMA table_info(messages)').all().some(row => row.name === 'source_key')) db.exec('ALTER TABLE messages ADD COLUMN source_key TEXT')
+  })
   db.exec(COUNT_MESSAGE_IDS)
   const reviewing = reviewQueries(db, now)
   const reading = readerQueries(db, reviewing.reviewTopic)
@@ -218,7 +222,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       ON CONFLICT (id) DO UPDATE SET title = :title, updated_at = :updatedAt,
         session_id = :sessionId, mode = :mode, model = :model, cwd = :cwd`),
     topicOf: db.prepare('SELECT topic_id FROM conversations WHERE id = ?'),
-    storedMessage: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
+    storedMessage: db.prepare('SELECT role, text, source_key FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropMessage: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropStar: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq = ?'),
     messageById: db.prepare(`SELECT m.id, m.conversation_id, m.seq, c.deleted_at FROM messages m
@@ -231,8 +235,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
-    timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
-    messages: db.prepare('SELECT role, text, receipt, images FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, source_key, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    messages: db.prepare('SELECT role, text, receipt, images, source_key FROM messages WHERE conversation_id = ? ORDER BY seq'),
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
@@ -240,7 +244,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     moveRecords: db.prepare('UPDATE report_records SET conversation_id = ? WHERE conversation_id = ? AND after_seq <= ?'),
     bySession: db.prepare('SELECT * FROM conversations WHERE session_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     neighbour: db.prepare('SELECT role, text FROM messages WHERE conversation_id = ? AND seq = ?'),
-    count: db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?'),
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
     // A message cut off (going back, a turn redone) takes its star along: the next one there is another message.
     trimStars: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq >= ?'),
@@ -249,10 +252,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     moveMessagePosition: db.prepare('UPDATE messages SET seq = ? WHERE conversation_id = ? AND seq = ?'),
     moveStarPosition: db.prepare('UPDATE stars SET seq = ? WHERE conversation_id = ? AND seq = ?'),
     moveRecordPosition: db.prepare('UPDATE report_records SET after_seq = ? WHERE report_id = ?'),
-    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ? WHERE conversation_id = ? AND seq = ?'),
+    sidePositions: db.prepare("SELECT id, folded_at FROM conversations WHERE folded_into = ? AND fold_kind = 'side'"),
+    moveSidePosition: db.prepare('UPDATE conversations SET folded_at = ? WHERE id = ?'),
+    update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ?, source_key = COALESCE(?, source_key) WHERE conversation_id = ? AND seq = ?'),
     nextMessageId: db.prepare(`UPDATE id_counters SET value = value + 1 WHERE name = 'messages' RETURNING value`),
-    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at, source_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
@@ -284,11 +289,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     while (start < Math.min(previous.length, messages.length)) {
       const old = previous[start], next = messages[start]
       if (old.role !== next.role || old.text !== next.text || old.receipt !== (next.receipt ? JSON.stringify(next.receipt) : null)
-        || old.images !== (next.images?.length ? JSON.stringify(next.images) : null)) break
+        || old.images !== (next.images?.length ? JSON.stringify(next.images) : null) || (next.key && old.source_key !== next.key)) break
       start += 1
     }
     if (messages.length > previous.length && start < previous.length) {
-      const positions = retainedMessagePositions(previous, messages, (old, next) => old.role === next.role && next.text.startsWith(old.text)
+      const positions = retainedMessagePositions(previous, messages, (old, next) => old.role === next.role
+        && (old.source_key || next.key ? old.source_key === next.key : old.text === next.text)
         && old.images === (next.images?.length ? JSON.stringify(next.images) : null))
       if (positions) {
         sql.stageMessagePositions.run(id, start)
@@ -298,24 +304,25 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
           sql.moveStarPosition.run(positions[index], id, -index - 1)
         }
         for (const record of sql.records.all(id)) sql.moveRecordPosition.run(retainedMessageBoundary(record.after_seq, positions), record.report_id)
+        for (const side of sql.sidePositions.all(id)) sql.moveSidePosition.run(retainedMessageBoundary(side.folded_at, positions), side.id)
       }
     }
     sql.trim.run(id, messages.length)
     sql.trimStars.run(id, messages.length)
     for (let seq = start; seq < messages.length; seq += 1) {
-      const { role, text, receipt, images } = messages[seq]
+      const { role, text, receipt, images, key } = messages[seq]
       const json = receipt ? JSON.stringify(receipt) : null
       const pictures = images?.length ? JSON.stringify(images) : null
       const kept = sql.storedMessage.get(id, seq)
-      if (kept && kept.role === role && text.startsWith(kept.text)) {
-        sql.update.run(role, text, json, pictures, id, seq)
+      if (kept && kept.role === role && text.startsWith(kept.text) && (!key || !kept.source_key || kept.source_key === key)) {
+        sql.update.run(role, text, json, pictures, key ?? null, id, seq)
         continue
       }
       if (kept) {
         sql.dropStar.run(id, seq)
         sql.dropMessage.run(id, seq)
       }
-      sql.insert.run(sql.nextMessageId.get().value, id, seq, role, text, json, pictures, sessionId ?? null, at)
+      sql.insert.run(sql.nextMessageId.get().value, id, seq, role, text, json, pictures, sessionId ?? null, at, key ?? null)
     }
   }
 
