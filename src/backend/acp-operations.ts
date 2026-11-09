@@ -44,7 +44,10 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       if (current(sessionId, operation)) onEnd(response, finalReply)
     } catch (error) {
       if (!current(sessionId, operation)) return
-      if (operation.stream) await streams.complete(operation.stream)
+      if (operation.stream) {
+        try { await streams.complete(operation.stream) }
+        catch { /* Recovery cannot prevent the original prompt failure from settling. */ }
+      }
       if (current(sessionId, operation)) onError(error)
     } finally {
       if (running.get(sessionId) === operation) running.delete(sessionId)

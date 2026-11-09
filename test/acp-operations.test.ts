@@ -83,3 +83,14 @@ test('cancelled preparation cannot start a late prompt or release a newer operat
   result.resolve({ stopReason: 'end_turn' }); await next
   assert.equal(finished, 1)
 })
+
+test('a prompt failure still settles once when gated output recovery fails too', async () => {
+  const failure = new Error('Native prompt failed')
+  const errors: unknown[] = []
+  const streams = createAssistantStream({ send: () => {}, emit: () => {}, allowAcpFallback: false })
+  const operations = createAcpOperations({ streams, cancelPermissions: () => {}, streamUpdate: () => {},
+    connection: () => ({ prompt: async () => { throw failure }, cancel: async () => {} }) })
+  await operations.run({ sessionId: 'session', prompt, onEnd: fail, onError: error => errors.push(error) })
+  assert.deepEqual(errors, [failure])
+  assert.equal(operations.has('session'), false)
+})
