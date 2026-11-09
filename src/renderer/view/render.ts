@@ -112,7 +112,8 @@ function latestQuestionTop(thread: HTMLElement, scroll: HTMLElement) {
 
 /** Re-render the thread, then let the follower decide whether (and how far) to scroll. */
 function renderThreadFollowing(dom: Dom, state: State, handlers: Handlers, now: number) {
-  if (!renderThread(dom.thread, state, handlers, now)) return
+  // Stream updates grow retained text nodes even when the thread's direct children stay attached.
+  renderThread(dom.thread, state, handlers, now)
   queueLayout(dom.thread, () => {
     if (!dom.thread.isConnected || dom.thread.hidden) return
     return dom.follower.measureAfterRender(() => latestQuestionTop(dom.thread, dom.scroll))

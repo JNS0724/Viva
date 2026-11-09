@@ -25,7 +25,6 @@ import { checkAnswerExpansion } from './smoke-answer-expansion.ts'
 
 const DRAWER_PARK_AFTER_MS = 2200
 const DRAWER_HOLD_MS = 1500
-const LONG_ANSWER_WAIT_MS = 5500
 const DRAWER_PARK_TOP = 120
 /** The latest question may sit a little below the top (gap + padding), but must stay on screen. */
 const QUESTION_TOP_RANGE = [0, 80]
@@ -86,7 +85,11 @@ async function longTaskAtCurrentSize(win: SmokeWindow, outDir: string) {
   else if (Math.abs(drawerTop - parked.top) > 1) failures.push(`drawer jumped from ${parked.top} to ${drawerTop}`)
   await capture(win, outDir, 'long-drawer')
 
-  await wait(LONG_ANSWER_WAIT_MS)
+  await until(win, `(() => {
+    const replies = document.querySelectorAll('.msg-agent .msg-text')
+    return (replies[replies.length - 1]?.textContent.length ?? 0) > 400
+  })()`, 'the long answer growing inside its retained message node')
+  await settle(win)
   const during = await run(win, THREAD_METRICS)
   report(`thread during long answer: ${JSON.stringify(during)}`)
   if (during.questionTop < QUESTION_TOP_RANGE[0] || during.questionTop > QUESTION_TOP_RANGE[1]) {

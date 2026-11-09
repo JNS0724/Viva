@@ -314,7 +314,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       const json = receipt ? JSON.stringify(receipt) : null
       const pictures = images?.length ? JSON.stringify(images) : null
       const kept = sql.storedMessage.get(id, seq)
-      if (kept && kept.role === role && text.startsWith(kept.text) && (!key || !kept.source_key || kept.source_key === key)) {
+      const sameMessage = kept && (key && kept.source_key ? kept.source_key === key : text.startsWith(kept.text))
+      if (kept && kept.role === role && sameMessage) {
         sql.update.run(role, text, json, pictures, key ?? null, id, seq)
         continue
       }
