@@ -137,6 +137,13 @@ const ACTION_HANDLERS: ActionHandlers = {
 
   user_prompt: (state, action) => ({ ...reduceConversation(state, { ...action, type: 'user_prompt' }), island: false }),
 
+  turn_end: (state, action) => {
+    // A delegation can end without a reply while its task and result delivery continue.
+    const delegated = state.tasks.list.some(task => task.status !== 'interrupted' && typeof task.startedAt === 'number'
+      && task.startedAt >= (state.turn?.startedAt ?? Infinity))
+    return reduceConversation(state, { ...action, type: 'turn_end', ...(delegated ? { finalReply: undefined } : {}) })
+  },
+
   /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
   steer_resent: (state, { at }) => ({
     ...state,

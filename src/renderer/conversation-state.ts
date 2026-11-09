@@ -1,6 +1,7 @@
 import type { ConversationState, ConversationUpdate, ConversationHandlers, ConversationAction } from './conversation-types.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { isSilentReply } from '../shared/task-report.ts'
+import { turnProblem } from '../shared/turn-outcome.ts'
 import { approvalTitle, optionName } from './approval.ts'
 import { assistantStream } from './assistant-stream.ts'
 import { QUESTION_ACTIONS } from './question-state.ts'
@@ -14,7 +15,7 @@ import { closeLast, closeStreams } from './streams.ts'
  */
 export const initialConversation: Readonly<ConversationState> = Object.freeze({
   phase: 'idle', messages: [], thoughts: [], tools: {}, timeline: [], permission: null, question: null,
-  secret: null, turn: null, lastReceipt: null, error: null, usage: null,
+  secret: null, turn: null, lastReceipt: null, completedTurn: null, error: null, usage: null,
 })
 
 const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput'] as const
@@ -97,8 +98,9 @@ function updateConversation(view: ConversationView, update: AcpUpdate, at: numbe
 
 function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
   const last = messages[messages.length - 1]
-  if (last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
-  const text = receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn")
+  const problem = turnProblem(receipt.stopReason)
+  if (!problem && last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
+  const text = problem ?? (receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn"))
   return [...messages, { id: `m${messages.length}`, role: 'note', text, open: false, receipt }]
 }
 
@@ -182,11 +184,13 @@ export const CONVERSATION_ACTIONS = {
 
   permission_closed: (view, { requestId }) => view.permission?.requestId !== requestId ? view : ({ ...view, permission: null, phase: view.phase === 'waiting' ? 'working' : view.phase }),
 
-  turn_end: (view, { stopReason, at }) => {
+  turn_end: (view, { stopReason, finalReply, at }) => {
     const closed = closeStreams(view)
     const turn = closed.turn ?? { startedAt: at, tools: 0, thoughts: 0 }
-    const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason }
-    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt }
+    const reason = stopReason === 'end_turn' && finalReply === false && turn.by !== 'task' ? 'no_response' : stopReason
+    const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason: reason }
+    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt,
+      completedTurn: { startedAt: turn.startedAt, endedAt: at } }
     // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
     if (turn.by === 'task') {
       const last = closed.messages.at(-1)

@@ -85,7 +85,7 @@ export function serverForm(server: Server, draft: Draft, extensions: Extensions,
       h('button', { class: 'link-btn ext-add-key', type: 'button', text: t("extensions.add.credential"), onClick: () => handlers.addEditKey() })), true),
     h('div', { class: 'ext-edit-foot' },
       h('button', { class: 'btn btn-accent btn-small', type: 'submit', disabled: extensions.busy, text: extensions.busy ? t("extensions.saving") : t("extensions.save") }),
-      smallButton(t("extensions.cancel"), { onClick: () => handlers.cancelEdit() }),
+      smallButton(t("extensions.cancel"), { onClick: () => handlers.cancelServerEdit() }),
       h('p', { class: 'help', text: t("extensions.credentials.are.encrypted.on.this.computer.saving") }))))
 }
 

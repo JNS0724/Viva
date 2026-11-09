@@ -1,4 +1,5 @@
 import { objectOf } from '../shared/unknown-value.ts'
+import { turnProblem } from '../shared/turn-outcome.ts'
 import { calendarDays, formatDate } from '../shared/i18n/format.ts'
 import { onLocaleChange, localeRevision, getLocale } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -226,6 +227,7 @@ export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'mes
   if (state.phase === 'asking') return 'ask'
   if (state.phase === 'error') return 'error'
   if (state.phase === 'working') return latestActiveTool(state) || state.messages.at(-1)?.open ? 'typing' : 'thinking'
+  if (turnProblem(state.lastReceipt?.stopReason)) return 'error'
   if (state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled') return 'done'
   return 'idle'
 }
@@ -242,6 +244,8 @@ export function statusView(state: State, now = Date.now()): { tone: string, labe
   if (state.info.mode === 'connecting') return { tone: 'pending', label: t("island-view.connecting"), event: 'DEEPSEEK HARNESS' }
   if (state.info.mode === 'setup') return { tone: 'pending', label: t("island-view.not.connected"), event: state.info.problem === 'no-dsh' ? t("selectors.dsh.not.installed") : t("selectors.set.up.a.model") }
   if (state.lastReceipt) {
+    const problem = turnProblem(state.lastReceipt.stopReason)
+    if (problem) return { tone: 'error', label: t('island-view.incomplete'), event: problem }
     const stopped = state.lastReceipt.stopReason === 'cancelled'
     return { tone: stopped ? 'idle' : 'done', label: stopped ? t("island-view.stopped") : t("island-view.completed"), event: formatElapsed(state.lastReceipt.ms) }
   }
@@ -251,8 +255,9 @@ export function statusView(state: State, now = Date.now()): { tone: string, labe
 /** One-line receipt under an answer, e.g. "用时 42 秒 · 3 次工具". */
 export function receiptLine(receipt: Receipt): string {
   const seconds = Math.max(1, Math.round(receipt.ms / 1000))
+  const incomplete = turnProblem(receipt.stopReason) ? t('island-view.incomplete') : null
   return [
-    receipt.stopReason === 'cancelled' ? t("island-view.stopped") : t("selectors.seconds", { seconds: seconds }),
+    incomplete ?? (receipt.stopReason === 'cancelled' ? t("island-view.stopped") : t("selectors.seconds", { seconds: seconds })),
     receipt.tools ? t("selectors.tool.calls", { tools: receipt.tools }) : '',
   ].filter(Boolean).join(' · ')
 }

@@ -2,6 +2,7 @@
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { SessionId } from '@deepseek-ai/dsh-session'
 
 export const name = 'viva-stream'
 export const inject = ['agents']
@@ -12,17 +13,30 @@ const visible = (block: any) => block && (block.type === 'text' || block.type ==
 export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') return
   const send = (message: object) => { if (port.connected) port.send!(message, () => {}) }
-  const bindings = new Map<string, string>()
+  const bindings = new Map<string, { operation: string, from: number, keys: Map<number, string> }>()
   const generations = new WeakMap<Agent, number>()
   const active = new WeakMap<object, { operation: string, key: string, attemptId: string, turn: number, step: number, event?: any }>()
   let generation = 0
   const receive = (message: any) => {
     if (message?.type === 'assistant_stream_flush' && message.version === 1) {
-      send({ type: 'assistant_stream_flushed', version: 1, operation: message.operation })
+      const bound = [...bindings].find(([, binding]) => binding.operation === message.operation)
+      const agent = bound && ctx.agents?.get(SessionId(bound[0]))
+      const binding = bound?.[1]
+      const events = agent && binding ? agent.session.snapshotEvents().filter(event => event.seq >= binding.from) : null
+      const answers = events?.filter(event => event.type === 'assistant/message')
+      const last = answers?.at(-1)
+      const messages = answers?.map(event => ({
+        key: binding!.keys.get(event.seq) ?? `${message.operation}:committed:${event.seq}`,
+        blocks: event.data.message.content.filter(visible).map(block => ({ type: block.type, text: (block as { text: string }).text })),
+      }))
+      send({ type: 'assistant_stream_flushed', version: 1, operation: message.operation,
+        ...(messages ? { messages, finalReply: Boolean(last?.data.message.content.some(block => block.type === 'text' && block.text.trim())
+          && !last.data.message.content.some(block => block.type === 'tool-call')) } : {}) })
       return
     }
     if (message?.type !== 'assistant_stream_bind' || message.version !== 1 || typeof message.sessionId !== 'string' || typeof message.operation !== 'string') return
-    bindings.set(message.sessionId, message.operation)
+    const agent = ctx.agents?.get(SessionId(message.sessionId))
+    bindings.set(message.sessionId, { operation: message.operation, from: agent?.session.seq ?? 0, keys: new Map() })
     send({ type: 'assistant_stream_bound', version: 1, operation: message.operation })
   }
   port.on('message', receive)
@@ -31,14 +45,18 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
   ctx.on('session/event', (session, event) => {
     const attempt = active.get(session)
     if (attempt && (event.type === 'assistant/message' || event.type === 'assistant/attempt')
-      && event.data.turn === attempt.turn && event.data.step === attempt.step) attempt.event = event
+      && event.data.turn === attempt.turn && event.data.step === attempt.step) {
+      attempt.event = event
+      const binding = bindings.get(String(session.id))
+      if (event.type === 'assistant/message' && binding?.operation === attempt.operation) binding.keys.set(event.seq, attempt.key)
+    }
   })
   ctx.on('agent/disposed', ({ agent }) => { bindings.delete(String(agent.session.id)); active.delete(agent.session) })
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     const session = agent.session
     const sessionId = String(session.id)
     if (frame.type === 'start') {
-      const operation = bindings.get(sessionId)
+      const operation = bindings.get(sessionId)?.operation
       if (!operation) return
       if (!generations.has(agent)) generations.set(agent, ++generation)
       const key = `${operation}:${generations.get(agent)}:${frame.attemptId}`

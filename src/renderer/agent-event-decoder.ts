@@ -168,7 +168,8 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (!context || item.taskId !== undefined) return null
   if (type === 'update') { const update = decodeUpdate(item.update); return update ? { type, context, update } : null }
   if (type === 'turn_started') return optional(item.by, nullableText) ? { type, context, by: item.by } : null
-  if (type === 'turn_end') return optional(item.stopReason, string) ? { type, context, stopReason: item.stopReason } : null
+  if (type === 'turn_end') return optional(item.stopReason, string) && (item.finalReply === undefined || typeof item.finalReply === 'boolean')
+    ? { type, context, stopReason: item.stopReason, ...(item.finalReply === undefined ? {} : { finalReply: item.finalReply }) } : null
   if (type === 'question') { const questions = decodeQuestions(item.questions); return string(item.questionId) && questions ? { type, context, questionId: item.questionId, questions } : null }
   if (type === 'question_closed') return string(item.questionId) ? { type, context, questionId: item.questionId } : null
   if (type === 'secret_request') { const parsed = secret(item); return parsed ? { type, context, ...parsed } : null }

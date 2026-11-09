@@ -176,6 +176,20 @@ function deskIsland(env: ReturnType<typeof fakes>, extra: Partial<Parameters<typ
   return desk
 }
 
+test('the menu stop action targets a working foreground conversation while background tasks have their own controls', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const desk = deskIsland(fakes())
+  desk.setView(view('working', { target: { working: false } }))
+  assert.equal(desk.working(), false)
+  desk.setView(view('working', { target: { working: true } }))
+  assert.equal(desk.working(), true)
+  desk.setView(view('working'))
+  assert.equal(desk.working(), true)
+  desk.setView(view('done', { target: { working: true } }))
+  assert.equal(desk.working(), false)
+  desk.destroy()
+})
+
 test('an image import retires its hidden window, accepts one matching batch, and recreates the next island', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()

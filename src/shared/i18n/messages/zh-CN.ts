@@ -1,5 +1,8 @@
 import type { MessageKey } from './en.ts'
 export const zhCN = {
+  "turn.output.limit": "已达到本轮输出上限，回复可能不完整。已有内容已保留，可发送“继续”接着处理。",
+  "turn.no.final.reply": "本轮已结束，但没有生成最终回复。已有内容已保留，可发送“继续”接着处理。",
+  "island-view.incomplete": "未完成",
   "desk.interaction.toggle": "展开或收起桌面岛，按住拖动可移动",
   "desk.interaction.gesture": "点击展开 · 拖动移动 · Esc 收起",
   "desk.interaction.open": "打开 Viva",
@@ -196,6 +199,8 @@ export const zhCN = {
   "history-actions.could.not.jump.to.the.message": "跳转失败",
   "island-view.stopped": "已停止",
   "island-view.completed": "已完成",
+  "island-view.background.working": "后台执行中",
+  "island-view.preparing.result": "正在整理结果",
   "island-view.done": "做完了",
   "island-view.stopped.2": "停下了",
   "island-view.something.went.wrong": "出错了",

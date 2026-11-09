@@ -29,3 +29,22 @@ test('explicitly revealing an answer keeps the reading offset and still offers t
   assert.equal(follower.isFollowing(), true)
   assert.equal(jump.hidden, true)
 })
+
+test('island submissions follow output beyond a long question until the reader takes control', () => {
+  const pane = Object.assign(new EventTarget(), {
+    scrollTop: 0, scrollHeight: 3000, clientHeight: 600, style: { overflowAnchor: 'auto' },
+  })
+  const jump = { hidden: true }
+  const follower = createScrollFollower(pane as unknown as HTMLElement, jump as HTMLElement)
+  follower.resetForPrompt({ anchor: false })
+  follower.afterRender({ anchorTop: 100 })
+  assert.equal(pane.scrollTop, 2400)
+  assert.equal(follower.isFollowing(), true)
+  assert.equal(jump.hidden, true)
+  takeReaderControl(pane as unknown as Element)
+  pane.scrollHeight = 5000
+  follower.afterRender({ anchorTop: 100 })
+  assert.equal(pane.scrollTop, 2400)
+  assert.equal(follower.isFollowing(), false)
+  assert.equal(jump.hidden, false)
+})

@@ -44,7 +44,7 @@ const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = nu
     return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...stream }
   }),
   thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
-  turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, lastReceipt: null, error: null,
+  turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, lastReceipt: null, completedTurn: null, error: null,
 })
 
 /** A task as `task:finished` gives it back: at rest, or (a reloaded window) at work with what it waits on. */

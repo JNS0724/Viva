@@ -3,6 +3,7 @@ import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
 import { catMood, currentAction, traceItems, truncate } from './selectors.ts'
 import { liveTasks, unseenEnded } from './tasks-state.ts'
+import { turnProblem } from '../shared/turn-outcome.ts'
 
 /**
  * What the Viva island shows, for both of its hosts: the capsule in the window's title bar (view/island.js)
@@ -82,9 +83,21 @@ function lastAnswer(state: State) {
   return message ? answerPreview(message.text) : ''
 }
 
-function afterTurn(state: State, base: IslandBase): IslandView {
+function afterTurn(state: State, base: IslandBase, background: IslandBackground | null): IslandView {
   const receipt = state.lastReceipt!
   if (receipt.stopReason === 'cancelled') return { ...base, form: 'idle', tone: 'idle', label: t("island-view.stopped"), detail: state.info.model || '' }
+  const completed = state.completedTurn
+  const awaitingResult = completed && state.tasks.list.some(task => task.status !== 'interrupted'
+    && typeof task.endedAt === 'number' && task.endedAt >= completed.startedAt
+    && !state.records.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= completed.endedAt))
+  if (background?.count || awaitingResult) {
+    const running = background?.items[0]
+    return { ...base, recent: [], mood: 'thinking', form: 'working', tone: 'working',
+      label: background?.count ? t('island-view.background.working') : t('island-view.preparing.result'),
+      action: running?.now ?? running?.title ?? null, startedAt: running?.startedAt ?? completed?.startedAt ?? null, steps: 0 }
+  }
+  const problem = turnProblem(receipt.stopReason)
+  if (problem) return { ...base, mood: 'error', form: 'error', tone: 'error', label: t('island-view.incomplete'), detail: problem }
   return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: lastAnswer(state) }
 }
 
@@ -151,6 +164,6 @@ function mainView(state: State, background: IslandBackground | null): IslandView
   if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: t("island-view.error"), detail: truncate(state.error, DETAIL_LIMIT) }
   if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.connecting") }
   if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected") }
-  if (state.lastReceipt) return afterTurn(state, base)
+  if (state.lastReceipt) return afterTurn(state, base, background)
   return { ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' }
 }

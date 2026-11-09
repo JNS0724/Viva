@@ -219,6 +219,7 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
   ask: ({ text, files, images = [], targetKey, receiptId, expiresAt }) => {
     const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt && ask(withFiles(text, files), { via: 'island', images })
+    if (ok) dom.follower.resetForPrompt({ anchor: false })
     api.islandAskResult(receiptId, { ok: Boolean(ok), ...(ok ? {} : { error: t('desk.interaction.draft.not.sent') }) })
   },
 }

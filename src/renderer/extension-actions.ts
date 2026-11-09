@@ -61,7 +61,7 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
     },
 
     editServer: (server: NonNullable<import('./action-types.ts').ActionPayloads['extensions_edit']['server']>) => dispatch({ type: 'extensions_edit', server }),
-    cancelEdit: () => dispatch({ type: 'extensions_edit', server: null }),
+    cancelServerEdit: () => dispatch({ type: 'extensions_edit', server: null }),
     setEditType: (kind: 'stdio' | 'http') => dispatch({ type: 'extensions_edit_type', kind }),
     addEditKey: () => dispatch({ type: 'extensions_edit_key_add' }),
     removeEditKey: (id: number) => dispatch({ type: 'extensions_edit_key_remove', id }),

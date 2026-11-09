@@ -425,9 +425,9 @@ export function createAcpBridge({
     ]
     await operations.run({
       sessionId: asked, prompt: blocks, context,
-      onEnd: response => {
+      onEnd: (response, finalReply) => {
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
-        else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason, ...scoped(context) })
+        else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason, ...(finalReply === undefined ? {} : { finalReply }), ...scoped(context) })
       },
       onError: error => {
         const message = describeError(error, stderrTail)

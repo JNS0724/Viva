@@ -529,7 +529,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       const shown = live()
       if (shown?.isVisible()) menu.popup({ window: shown })
     },
-    working: () => view?.form === 'working',
+    working: () => view?.form === 'working' && view?.target?.working !== false,
     sendDraft(draft: unknown) { const shown = live(); if (shown && loaded) shown.webContents.send('draft:changed', draft) },
     /** 先隐藏 in its menu: gone until the window is next closed to the tray; the shortcut still calls it up. */
     hideUntilAway() {

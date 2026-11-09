@@ -1,4 +1,7 @@
 export const en = {
+  "turn.output.limit": "This turn reached its output limit and the reply may be incomplete. Existing content is kept. Send “Continue” to carry on.",
+  "turn.no.final.reply": "This turn ended without a final reply. Existing content is kept. Send “Continue” to carry on.",
+  "island-view.incomplete": "Incomplete",
   "desk.interaction.toggle": "Expand or collapse the desktop island; drag to move",
   "desk.interaction.gesture": "Click to expand · Drag to move · Esc to collapse",
   "desk.interaction.open": "Open Viva",
@@ -195,6 +198,8 @@ export const en = {
   "history-actions.could.not.jump.to.the.message": "Could not jump to the message",
   "island-view.stopped": "Stopped",
   "island-view.completed": "Completed",
+  "island-view.background.working": "Working in background",
+  "island-view.preparing.result": "Preparing results",
   "island-view.done": "Done",
   "island-view.stopped.2": "Stopped",
   "island-view.something.went.wrong": "Something went wrong",
