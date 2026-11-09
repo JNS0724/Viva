@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { APP_PLUGINS, PERSONA } from '../src/backend/app-plugins.ts'
 import { createRoutingDesk, fastLaneEnabled, REQUEST_HEADER, routingEnabled, routingPersona, routingPlugins, withRequestHeader } from '../src/backend/routing-prototype.ts'
 import { parsePlan, planProblem } from '../plugins/routing/lib/protocol.ts'
@@ -25,7 +26,7 @@ test('routing swaps viva-stream for viva-routing and leaves the other plugins an
   assert.ok(!swapped.some((plugin) => plugin.name === 'viva-stream'))
   const routing = swapped.find((plugin) => plugin.name === 'viva-routing')
   assert.equal(routing?.contract, 'stream')
-  assert.deepEqual(routing?.config({ userData: '/u', permission: 'workspace-write' }), { evidence: '/u/routing-evidence.jsonl', fast: true })
+  assert.deepEqual(routing?.config({ userData: '/u', permission: 'workspace-write' }), { evidence: path.join('/u', 'routing-evidence.jsonl'), fast: true })
   assert.deepEqual(swapped.filter((plugin) => plugin.name !== 'viva-routing'), APP_PLUGINS.filter((plugin) => plugin.name !== 'viva-stream'))
   const persona = routingPersona(PERSONA)
   assert.ok(persona.prefix.startsWith(PERSONA.prefix) && persona.prefix.includes('commit_route'))
