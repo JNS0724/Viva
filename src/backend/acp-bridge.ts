@@ -426,8 +426,6 @@ export function createAcpBridge({
     }
     const asked = sessionId
     const origin = contextFor(asked), context = origin ? { ...origin } : null
-    // The role is confirmed before the prompt goes, so the first step is assembled with the main agent's tools.
-    if (routing && asked && !(await routing.bind(asked))) console.error('[routing] main role not confirmed before the prompt')
     const words = routing ? asRequest(text) : text
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
@@ -435,6 +433,10 @@ export function createAcpBridge({
     ]
     await operations.run({
       sessionId: asked, prompt: blocks, context,
+      // Register ownership before waiting. A cancelled or retired preparation cannot start a late prompt.
+      prepare: routing && asked ? async () => {
+        if (!(await routing.bind(asked))) console.error('[routing] main role not confirmed before the prompt')
+      } : undefined,
       onEnd: (response, finalReply) => {
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
         else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason,
@@ -451,6 +453,8 @@ export function createAcpBridge({
   async function cancel() {
     broker.cancelAll(sessionId)
     if (!connection || !sessionId) return
+    const context = operations.context(sessionId)
+    if (operations.cancelPreparing(sessionId, () => emit({ type: 'turn_end', stopReason: 'cancelled', ...scoped(context) }))) return
     try {
       await live().cancel({ sessionId })
     } catch (err) {
@@ -462,7 +466,7 @@ export function createAcpBridge({
     if (closing.has(id)) return
     const cleanup = (async () => {
       if (operations.has(id)) {
-        try { await measure('session.cancel', () => live().cancel({ sessionId: id })) }
+        try { if (!operations.cancelPreparing(id, () => {})) await measure('session.cancel', () => live().cancel({ sessionId: id })) }
         catch (err) { console.error('[acp-bridge] cancel failed; still closing session:', describeError(err)) }
       }
       await measure('session.close', () => live().closeSession({ sessionId: id }))

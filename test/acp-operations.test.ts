@@ -64,3 +64,22 @@ test('captured context cannot be changed by the caller or a reader, and complete
   assert.deepEqual(events, [{ conversationId: 'original', sessionId: 's' }])
   operations.dispose()
 })
+
+test('cancelled preparation cannot start a late prompt or release a newer operation', async () => {
+  const binding = deferred<void>(), result = deferred<PromptResponse>()
+  const streams = createAssistantStream({ send: () => {}, emit: () => {} })
+  let prompted = 0, cancelled = 0, finished = 0
+  const operations = createAcpOperations({ streams, cancelPermissions: () => {}, streamUpdate: () => {},
+    connection: () => ({ prompt: () => { prompted++; return result.promise }, cancel: async () => {} }) })
+  const first = operations.run({ sessionId: 'session', prompt, prepare: () => binding.promise, onEnd: fail, onError: fail })
+  assert.equal(operations.has('session'), true)
+  assert.equal(operations.cancelPreparing('session', () => { cancelled++ }), true)
+  const next = operations.run({ sessionId: 'session', prompt, onEnd: () => { finished++ }, onError: fail })
+  await flush()
+  binding.resolve(); await first
+  assert.equal(prompted, 1, 'only the new request may prompt')
+  assert.equal(operations.has('session'), true)
+  assert.equal(cancelled, 1)
+  result.resolve({ stopReason: 'end_turn' }); await next
+  assert.equal(finished, 1)
+})

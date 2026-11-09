@@ -18,6 +18,34 @@ function deferred() {
   return { promise, resolve }
 }
 
+test('a routing bind arriving after its session retires cannot prompt the closed session', { timeout: 5000 }, async () => {
+  const input = new PassThrough(), output = new PassThrough(), entered = deferred(), retired = deferred()
+  const calls: string[] = []
+  let serial = 0, binding: { id: string } | undefined
+  const child = Object.assign(new EventEmitter(), { stdin: input, stdout: output, stderr: new PassThrough(), exitCode: null as number | null,
+    signalCode: null, connected: true, kill: () => true,
+    send: (message: { type: string, id: string }) => { if (message.type === 'routing_bind') { binding = message; entered.resolve() } } })
+  new AgentSideConnection(() => ({
+    initialize: () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }), authenticate: () => ({}),
+    newSession: () => ({ sessionId: `session-${++serial}` }), cancel: () => {},
+    closeSession: params => { calls.push(`close:${params.sessionId}`); retired.resolve(); return {} },
+    prompt: params => { calls.push(`prompt:${params.sessionId}`); return { stopReason: 'end_turn' } },
+  } satisfies Agent), ndJsonStream(Writable.toWeb(output), Readable.toWeb(input) as ReadableStream<Uint8Array>))
+  const bridge = createAcpBridge({ dshBin: '/fixture/dsh', profile: 'viva', cwd: process.cwd(), env: {}, routeRequests: true,
+    spawnFn: (() => child as unknown as ChildProcess) as typeof spawn, emit: () => {} })
+  try {
+    await bridge.start()
+    const pending = bridge.prompt('Analyze the repository')
+    await entered.promise
+    await bridge.newSession()
+    await retired.promise
+    child.emit('message', { type: 'routing_bound', version: 1, id: binding!.id, ok: true })
+    await pending
+    assert.ok(calls.includes('close:session-1'))
+    assert.equal(calls.some(call => call.startsWith('prompt:')), false)
+  } finally { child.exitCode = 0; bridge.dispose(); input.destroy(); output.destroy() }
+})
+
 for (const failure of [false, true]) test(`foreground ${failure ? 'error' : 'completion'} retains the originating history segment`, async () => {
   const entered = deferred(), finish = deferred()
   const old = { conversationId: 'old', sessionId: 'reused-session' }

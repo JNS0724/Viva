@@ -11,6 +11,7 @@ import { historyMessages } from '../src/renderer/selectors.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { DatabaseSync } from 'node:sqlite'
 import { createTaskRegistry } from '../src/backend/task-registry.ts'
+import { installGatedStream } from '../plugins/routing/lib/stream.ts'
 
 test('completion recovers canonical ACP output when a settled live channel omits the final answer', async () => {
   for (const missing of ['attempt', 'settlement', 'text-block', 'none']) {
@@ -198,4 +199,33 @@ test('legacy history without committed identities opens and retains its existing
     assert.equal(reopened.get(conversation.id)!.messages[0].text, 'Legacy question')
     assert.ok(sqlite.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'source_key'))
   } finally { sqlite.close() }
+})
+
+test('routing recovery respects each attempt gate while recovering an allowed final reply', async () => {
+  for (const allowFinal of [false, true]) {
+    const events: Array<{ seq: number, type: string, data: { turn: number, step: number, message: { content: Array<{ type: string, text: string }> } } }> = []
+    const session = { id: 'session', seq: 0, snapshotEvents: () => events }
+    const agent = { session }
+    const ctx = Object.assign(new EventEmitter(), { agents: { get: () => agent }, effect: () => {} })
+    const updates: ConversationUpdate[] = []
+    const port = Object.assign(new EventEmitter(), { connected: true, send: (message: { type: string }) => {
+      // Drop all native frames. The committed flush must still apply the routing gate.
+      if (message.type !== 'assistant_stream') stream.receive(message)
+    } })
+    const stream = createAssistantStream({ send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update) })
+    installGatedStream(ctx as unknown as Context, (_session, step) => allowFinal && step === 2, port as unknown as NodeJS.Process)
+    const operation = await stream.begin('session')
+    for (const [step, text] of [[1, 'Hidden planning text'], [2, 'Allowed final reply']] as const) {
+      const frame = { attemptId: `attempt-${step}`, turn: 1, step }
+      ctx.emit('agent/assistant-stream', { agent, frame: { ...frame, type: 'start' } })
+      const event = { seq: session.seq++, type: 'assistant/message', data: { turn: 1, step, message: { content: [{ type: 'text', text }] } } }
+      events.push(event)
+      ctx.emit('session/event', session, event)
+      ctx.emit('agent/assistant-stream', { agent, frame: { ...frame, type: 'end', outcome: { kind: 'committed', eventType: event.type, seq: event.seq } } })
+      stream.suppress('session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+    }
+    assert.equal(await stream.complete(operation), allowFinal)
+    assert.doesNotMatch(JSON.stringify(updates), /Hidden planning text/)
+    assert.equal(JSON.stringify(updates).includes('Allowed final reply'), allowFinal)
+  }
 })
