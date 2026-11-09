@@ -7,6 +7,7 @@ import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
+import { retainedMessagePositions, retainedMessageBoundary } from '../shared/message-order.ts'
 
 const PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 200
@@ -243,6 +244,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     trim: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq >= ?'),
     // A message cut off (going back, a turn redone) takes its star along: the next one there is another message.
     trimStars: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq >= ?'),
+    stageMessagePositions: db.prepare('UPDATE messages SET seq = -seq - 1 WHERE conversation_id = ? AND seq >= ?'),
+    stageStarPositions: db.prepare('UPDATE stars SET seq = -seq - 1 WHERE conversation_id = ? AND seq >= ?'),
+    moveMessagePosition: db.prepare('UPDATE messages SET seq = ? WHERE conversation_id = ? AND seq = ?'),
+    moveStarPosition: db.prepare('UPDATE stars SET seq = ? WHERE conversation_id = ? AND seq = ?'),
+    moveRecordPosition: db.prepare('UPDATE report_records SET after_seq = ? WHERE report_id = ?'),
     update: db.prepare('UPDATE messages SET role = ?, text = ?, receipt = ?, images = ? WHERE conversation_id = ? AND seq = ?'),
     nextMessageId: db.prepare(`UPDATE id_counters SET value = value + 1 WHERE name = 'messages' RETURNING value`),
     insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at)
@@ -267,21 +273,40 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
 
   /**
-   * Earlier messages never change; only the last stored one (receipt, final text) and new ones are written. The
-   * last stored one keeps its id (what a link or a star names) while it is the same message finishing: same speaker,
+   * Skip the unchanged prefix, including when committed output repairs an earlier message. An insertion preserves
+   * retained message identities, stars and report anchors. A message keeps its id while it is finishing: same speaker,
    * its text going on from what was kept. Said again differently (a turn redone), it is another message: a new id,
    * and a star on the old one goes with it.
    */
   function syncMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined, at: number) {
-    const stored = sql.count.get(id).n
-    const start = Math.max(0, Math.min(stored, messages.length) - 1)
+    const previous = sql.messages.all(id)
+    let start = 0
+    while (start < Math.min(previous.length, messages.length)) {
+      const old = previous[start], next = messages[start]
+      if (old.role !== next.role || old.text !== next.text || old.receipt !== (next.receipt ? JSON.stringify(next.receipt) : null)
+        || old.images !== (next.images?.length ? JSON.stringify(next.images) : null)) break
+      start += 1
+    }
+    if (messages.length > previous.length && start < previous.length) {
+      const positions = retainedMessagePositions(previous, messages, (old, next) => old.role === next.role && next.text.startsWith(old.text)
+        && old.images === (next.images?.length ? JSON.stringify(next.images) : null))
+      if (positions) {
+        sql.stageMessagePositions.run(id, start)
+        sql.stageStarPositions.run(id, start)
+        for (let index = start; index < positions.length; index += 1) {
+          sql.moveMessagePosition.run(positions[index], id, -index - 1)
+          sql.moveStarPosition.run(positions[index], id, -index - 1)
+        }
+        for (const record of sql.records.all(id)) sql.moveRecordPosition.run(retainedMessageBoundary(record.after_seq, positions), record.report_id)
+      }
+    }
     sql.trim.run(id, messages.length)
     sql.trimStars.run(id, messages.length)
     for (let seq = start; seq < messages.length; seq += 1) {
       const { role, text, receipt, images } = messages[seq]
       const json = receipt ? JSON.stringify(receipt) : null
       const pictures = images?.length ? JSON.stringify(images) : null
-      const kept = seq < stored ? sql.storedMessage.get(id, seq) : undefined
+      const kept = sql.storedMessage.get(id, seq)
       if (kept && kept.role === role && text.startsWith(kept.text)) {
         sql.update.run(role, text, json, pictures, id, seq)
         continue

@@ -91,7 +91,10 @@ export function decodeUpdate(value: unknown): ConversationUpdate | null {
     if (!string(item.key)) return null
     if (item.kind === 'settle') {
       const blocks = list(item.blocks, value => { const block = objectOf(value); return block && string(block.type) && optional(block.text, string) ? { type: block.type, text: block.text } : null })
-      return blocks ? { sessionUpdate: item.sessionUpdate, key: item.key, kind: 'settle', blocks } : null
+      const before = item.before === undefined ? undefined : objectOf(item.before)
+      if (before === null || (before && (!optional(before.text, string) || !optional(before.reasoning, string)))) return null
+      return blocks ? { sessionUpdate: item.sessionUpdate, key: item.key, kind: 'settle', blocks,
+        ...(before ? { before: { text: before.text as string | undefined, reasoning: before.reasoning as string | undefined } } : {}) } : null
     }
     if ((item.kind === 'delta' || item.kind === 'block') && natural(item.index) && (item.blockType === 'text' || item.blockType === 'reasoning') && string(item.text)) return { sessionUpdate: item.sessionUpdate, key: item.key, kind: item.kind, index: item.index, blockType: item.blockType, text: item.text }
     return null

@@ -79,7 +79,10 @@ function onStream(transcript: Transcript, update: Update): Transcript {
   const message: TranscriptMessage = settled
     ? { role: 'assistant', text, streamKey: key }
     : { role: 'assistant', text, streamKey: key, blocks, open: true }
-  return found ? transcript.map((old) => (old === found ? message : old)) : [...transcript, message]
+  if (found) return transcript.map((old) => (old === found ? message : old))
+  const before = isRecord(update.before) ? textOf(update.before.text) : ''
+  const position = before ? transcript.findIndex(old => old.streamKey === before) : -1
+  return position < 0 ? [...transcript, message] : [...transcript.slice(0, position), message, ...transcript.slice(position)]
 }
 
 /** What an ACP session update does to what was said: text adds to it; thoughts and tool calls close what was written. */

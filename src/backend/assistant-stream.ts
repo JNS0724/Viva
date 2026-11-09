@@ -30,7 +30,7 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
   }
   const operations = new Map<string, Operation>()
   const begin = async (sessionId: string) => {
-    const operation: Operation = { id: `${instance}:${++sequence}`, sessionId, live: false, active: new Set(), keys: new Set(), settled: new Map(), fallback: [], closed: new Map() }
+    const operation: Operation = { id: `${instance}:${++sequence}`, sessionId, live: false, finalReply: false, active: new Set(), keys: new Set(), settled: new Map(), fallback: [], closed: new Map() }
     operations.set(sessionId, operation)
     if (ready) {
       operation.live = await new Promise<boolean>(resolve => {
@@ -106,11 +106,18 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
         if (operation.committed) {
           const keys = new Set(operation.committed.map(message => message.key))
           for (const key of operation.keys) if (!keys.has(key)) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
-          for (const message of operation.committed) {
+          const before: { text?: string, reasoning?: string } = {}
+          let recovered = false
+          for (const message of [...operation.committed].reverse()) {
             if (JSON.stringify(operation.settled.get(message.key)) !== JSON.stringify(message.blocks)) {
-              emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks })
+              emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks, before: { ...before } })
+              recovered = true
             }
+            for (const block of message.blocks) if (block.text) before[block.type] = message.key
           }
+          // Task previews consume settlements too. Finish recovery on the last committed text.
+          const lastText = operation.committed.findLast(message => message.blocks.some(block => block.type === 'text' && block.text))
+          if (recovered && lastText) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: lastText.key, kind: 'settle', blocks: lastText.blocks })
           operation.active.clear()
           finish(operation)
           return operation.finalReply

@@ -18,7 +18,10 @@ export function assistantStream(state: ConversationView, update: VivaStreamUpdat
     if (!text) return found ? list.filter(item => item !== found) : list
     const item = make({ id: found?.id ?? `stream:${key}:${type}`, streamKey: key, streamBlocks: settled ? undefined : blocks,
       text, open: !settled, at: found?.at ?? at }, found)
-    return found ? list.map(old => old === found ? item : old) : [...list, item]
+    if (found) return list.map(old => old === found ? item : old)
+    const before = update.kind === 'settle' ? update.before?.[type as 'text' | 'reasoning'] : undefined
+    const position = before === undefined ? -1 : list.findIndex(old => old.streamKey === before)
+    return position < 0 ? [...list, item] : [...list.slice(0, position), item, ...list.slice(position)]
   }
   const messages = change(state.messages, 'text', (base, prior) => ({ ...prior, ...base, role: 'assistant', shown: base.text.length, receipt: prior?.receipt ?? null }))
   const thoughts = change(state.thoughts, 'reasoning', (base, prior) => ({ ...prior, ...base }))

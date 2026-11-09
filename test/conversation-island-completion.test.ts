@@ -92,3 +92,24 @@ test('a delegation with no final reply waits for its task and report instead of 
   assert.equal(islandView(state).label, '后台执行中')
   assert.equal(state.lastReceipt?.stopReason, 'end_turn')
 })
+
+test('a result already read in the delegation turn still requires its final response', () => {
+  let state = reduce(task(start()), { type: 'task_end', taskId: 'background-task', stopReason: 'end_turn', at: 115 })
+  state = reduce(state, { type: 'report_delivered', conversationId: state.conversationId, sessionId: state.info.sessionId ?? null,
+    reportId: 'background-task:run-1', text: 'Result', at: 116 })
+  state = reduce(state, { type: 'turn_end', stopReason: 'end_turn', finalReply: false, at: 120 })
+  assert.equal(islandView(state).label, '未完成')
+})
+
+test('task-result turns preserve intentional silence but flag unfinished work after a preamble and steering', () => {
+  let state = reduce(start(), { type: 'turn_end', stopReason: 'end_turn', at: 101 })
+  state = reduce(state, { type: 'agent_turn_started', by: 'task', at: 110 })
+  const silent = reduce(state, { type: 'turn_end', stopReason: 'end_turn', finalReply: false, at: 120 })
+  assert.equal(silent.lastReceipt?.stopReason, 'end_turn')
+  state = reduce(state, { type: 'acp_update', at: 111, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I will check.' } } })
+  state = reduce(state, { type: 'acp_update', at: 112, update: { sessionUpdate: 'tool_call', toolCallId: 'check' } })
+  state = reduce(state, { type: 'user_steer', text: 'Check the tests too.' })
+  state = reduce(state, { type: 'turn_end', stopReason: 'end_turn', finalReply: false, at: 120 })
+  assert.equal(islandView(state).label, '未完成')
+  assert.match(state.messages.at(-1)!.text, /没有生成最终回复/)
+})

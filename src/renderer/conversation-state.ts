@@ -122,7 +122,7 @@ export const CONVERSATION_ACTIONS = {
     ...closeStreams(view),
     phase: 'working',
     error: null,
-    turn: { startedAt: at, tools: 0, thoughts: 0, ...(by ? { by } : {}) },
+    turn: { startedAt: at, tools: 0, thoughts: 0, messageCount: view.messages.length, ...(by ? { by } : {}) },
   }),
 
   /**
@@ -187,16 +187,15 @@ export const CONVERSATION_ACTIONS = {
   turn_end: (view, { stopReason, finalReply, at }) => {
     const closed = closeStreams(view)
     const turn = closed.turn ?? { startedAt: at, tools: 0, thoughts: 0 }
-    const reason = stopReason === 'end_turn' && finalReply === false && turn.by !== 'task' ? 'no_response' : stopReason
+    const last = closed.messages.slice(turn.messageCount ?? 0).at(-1)
+    const silentTask = stopReason === 'end_turn' && turn.by === 'task'
+      && (!last || (last.role === 'assistant' && isSilentReply(last.text)))
+    const reason = stopReason === 'end_turn' && finalReply === false && !silentTask ? 'no_response' : stopReason
     const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason: reason }
     const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt,
       completedTurn: { startedAt: turn.startedAt, endedAt: at } }
     // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
-    if (turn.by === 'task') {
-      const last = closed.messages.at(-1)
-      const silent = !last || last.role !== 'assistant' || isSilentReply(last.text)
-      if (silent) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }
-    }
+    if (silentTask) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }
     return { ...ended, messages: attachReceipt(closed.messages, receipt) }
   },
 
