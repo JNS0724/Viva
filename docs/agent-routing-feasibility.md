@@ -6,7 +6,7 @@ Date: 2026-11-09. Related [routing and task dispatch proposal](agent-routing-des
 
 **Verdict: the runtime mechanisms are feasible, but the current routing protocol and instructions do not meet implementation acceptance.** Mechanical checks passed 12/12; actual-model formal samples passed 22/27 structured-contract assertions. All five failures retain their original outputs. Correct prose is not sufficient evidence that the backend can reliably continue the workflow.
 
-**Supplementary validation (section 9):** rerun in the real app with a switch-guarded prototype, the production persona, plugins and default thinking: handover, addition, stop, interjection, cross-topic recovery, schedule and memory scenarios each passed 5/5, and the first round's clarification failures came mainly from the reduced persona and disabled thinking. Configuration that needs the user's confirmation cannot yet leave the main session, and constraints on binding timing, the output gate and turns ending in errors must be added to the proposal (section 17 of the proposal).
+**Supplementary validation (section 9):** rerun in the real app with a switch-guarded prototype, the production persona, plugins and default thinking: handover, addition, stop, interjection, cross-topic recovery, schedule and memory scenarios each passed 5/5, and the first round's clarification failures came mainly from the reduced persona and disabled thinking. Configuration that needs the user's confirmation cannot yet leave the main session, and constraints on binding timing, the output gate and turns ending in errors must be added to the proposal. **Layered narrowing (section 10):** with app tools kept in the main session's scope and called on a grant, 10 real-app scenarios passed 50/50, MCP setup included. The findings are organized into sections 4 and 7–11 of the proposal.
 
 ## 1 Method and evidence
 
@@ -136,7 +136,7 @@ The supplement targets the first round's weak points in three layers. Summarized
 
 Replaced runs are kept with their reasons: attempts of one run shared the task list and filled the task places (now each attempt has its own material and stops its tasks when it ends), and one run's argument check read the schema wrongly (fixed and rerun).
 
-New findings are written into section 17 of the proposal: binding timing, the output gate, a restricted scope unable to run application tools on the agent's behalf, approvals unable to outlive their turn, invalid JSON tool arguments leaving requests silently unrouted (9 times), telling the user when task places are full, and several versions of one rule in long-term memory, of which the wrong one was picked once.
+New findings are organized into the proposal (sections 7, 8, 10 and 11): binding timing, the output gate, a restricted scope unable to run application tools on the agent's behalf, approvals unable to outlive their turn, invalid JSON tool arguments leaving requests silently unrouted (9 times), telling the user when task places are full, and several versions of one rule in long-term memory, of which the wrong one was picked once.
 
 On the PR revision with the supplement, `npm run typecheck`, `npm test` and `npm run check:i18n` pass.
 
@@ -152,3 +152,21 @@ VIVA_ROUTING=1 VIVA_ROUTING_FAST=1 npm run live -- --only route-reply,route-hand
 ```
 
 The real-app set uses its own temporary profile and never reads everyday data. Every actual-model run incurs usage charges.
+
+## 10 Layered narrowing
+
+In the supplement, app operations performed by the host on the agent's behalf ran into two problems: a restricted scope treats tools narrowed away as absent, and the main agent cannot see their parameters. Layered narrowing keeps the schedule, memory, MCP and skill tools in the main session's scope, lets the guard allow one call per committed `app_action`, and keeps execution tools out of scope ([proposal section 7](agent-routing-design.md#7-tool-layers-and-runtime-constraints)). The request header, protocol and ledger shared by the app and the plugin moved to `src/shared/request-routing`, and the ledger became turn-aware, fixing leave to answer that never ended with its turn (proposal section 4).
+
+Real app, production persona, plugins and default thinking, fast lane on, five runs each:
+
+| Scenario | Result | Data |
+| --- | --- | --- |
+| Ordinary answer | 5/5 | First text in 3.1 to 5.0 s |
+| Brief from notes, addition to the task, corrected agreement in a new topic, stopping a task | 5/5 each | Additions always went to the original task |
+| Interjection mid-answer | 5/5 | All handed over by the fast lane; task card after 1.6 to 2.8 s (once 6.4 s) |
+| Interjection correcting the current answer | 5/5 | All went back to the main agent; no task started |
+| Weekly reminder | 5/5 | An `app_action` first, then `schedule_create` proposed the card; the conversation went on while it waited |
+| Remember my manager | 5/5 | Written by `memory_remember`; a new topic answers |
+| Add an MCP server | 5/5 | Option a: the main session called `viva_mcp_add`; the approval card and key window worked and the key was stored only encrypted; 6.8 to 10.3 s per turn |
+
+Across all 50 runs, forbidden calls 0 and routing failures 0 (including requests left by turns ending in errors). Twice the schedule scenario committed two `app_action`s at once; the spare grant was dropped at the end of the turn. After the shared contracts moved to `src/shared`, a confirmation run of the ordinary answer, brief, interjection, reminder and MCP scenarios twice each passed 10/10. The harness removes the temporary profile of a fully passing run, so per-attempt data comes from the summaries it keeps, collected under `layeredNarrowing` in the [results](agent-routing-supplement-results.json).
