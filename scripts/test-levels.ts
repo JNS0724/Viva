@@ -155,6 +155,7 @@ export const testLevels = {
     'task-steps-render',
     'task-store',
     'task-transcript',
+    'tasks-routing-prototype',
     'tasks-state',
     'test-feature',
     'text-submit-boundary',

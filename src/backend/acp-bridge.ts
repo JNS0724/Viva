@@ -12,6 +12,7 @@ import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk, interjection } from './steer-channel.ts'
+import { createRoutingDesk, newRequestId, withRequestHeader } from './routing-prototype.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createReadOnlyDesk } from './read-only-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
@@ -90,7 +91,7 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
-  launch = null as object | null,
+  launch = null as object | null, routeRequests = false,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -110,6 +111,8 @@ export function createAcpBridge({
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
   conversationContext?: (sessionId: string) => ConversationContext | null,
+  /** PROTOTYPE (routing-prototype.ts): bind the main session's role and mark each request for the viva-routing plugin. */
+  routeRequests?: boolean,
 }) {
   const broker = createPermissionBroker()
   let mcp: { active: string[], dropped: Array<{ name: string, reason: string }> } = { active: [], dropped: [] }
@@ -154,6 +157,9 @@ export function createAcpBridge({
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || taskSessions.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || taskSessions.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
+  const routing = routeRequests ? createRoutingDesk({ send: toPlugins }) : null
+  /** With routing on, the words as the main agent reads them: under a request header of their own. */
+  const asRequest = (words: string) => routing ? withRequestHeader(words, newRequestId()) : words
   const operations = createAcpOperations({
     connection: live, streams,
     cancelPermissions: id => broker.cancelAll(id),
@@ -218,6 +224,7 @@ export function createAcpBridge({
       historyDesk.receive(message)
       pluginsDesk.receive(message)
       streams.receive(message)
+      routing?.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
@@ -419,9 +426,12 @@ export function createAcpBridge({
     }
     const asked = sessionId
     const origin = contextFor(asked), context = origin ? { ...origin } : null
+    // The role is confirmed before the prompt goes, so the first step is assembled with the main agent's tools.
+    if (routing && asked && !(await routing.bind(asked))) console.error('[routing] main role not confirmed before the prompt')
+    const words = routing ? asRequest(text) : text
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
-      ...(text ? [{ type: 'text' as const, text }] : []),
+      ...(words ? [{ type: 'text' as const, text: words }] : []),
     ]
     await operations.run({
       sessionId: asked, prompt: blocks, context,
@@ -550,7 +560,7 @@ export function createAcpBridge({
    * plugin's reasons).
    */
   /** The user's words into the running turn of the conversation on screen, marked as said mid-turn. */
-  const steer = (text: string) => steering.steer(interjection(text))
+  const steer = (text: string) => steering.steer(interjection(asRequest(text)))
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
   const deliverReport = (session: string, reportId: string, token: string, text: string) => steering.report(session, reportId, token, text)
   /** How a background task's result stands in `session`: read, pending, or nowhere. */

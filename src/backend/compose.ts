@@ -15,7 +15,8 @@ import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { registerLanguageIpc } from './language-ipc.ts'
-import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
+import { APP_PLUGINS, DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
+import { fastLaneEnabled, routingEnabled, routingPersona, routingPlugins } from './routing-prototype.ts'
 import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
 import { DSH_PROFILE, resolveConfig } from './config.ts'
 import { createAcpBridge, switchingMessage } from './acp-bridge.ts'
@@ -305,12 +306,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     // With a company registry plugins cannot be kept to, dsh gets a pnpm that installs nothing (pnpm-launcher.ts).
     const refuse = () => { pnpmCommand = refusingLauncher({ dir: path.join(userData, 'bin'), message: t('main.plugin-source.unpinned') }) }
     try {
-      const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow() })
+      // PROTOTYPE: VIVA_ROUTING=1 swaps viva-stream for the gated viva-routing and adds its persona rules (routing-prototype.ts).
+      const routing = routingEnabled()
+      const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(), plugins: routing ? routingPlugins(APP_PLUGINS, fastLaneEnabled()) : APP_PLUGINS })
       pluginProblems = problems
       problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
       const dir = ensureDshProfile({
-        dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
+        dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: routing ? routingPersona(PERSONA) : PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
       })
       const found = registry ? scopesOf(dir, pnpmCommand) : []
       if (found) scopes = found
@@ -386,6 +389,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function createBridge(config: Config, cwd: string, lifetime: DshLifetime) {
     return createAcpBridge({
       prewarmSessions: true,
+      routeRequests: routingEnabled(),
       dshBin: config.dshBin,
       nodeBin: config.nodeBin,
       ...prepareProfile(config),

@@ -79,6 +79,18 @@
       "zh": "docs/architecture-health.zh-CN.md",
       "enHash": "6fd68cf2215c553d2b8bcb39d4fa4c126346def14417ada892ff313caeec92e5",
       "zhHash": "a7cd843eb80c16a2e3dcb158402dfc9660e83477835d1294a252a251fe3969e2"
+    },
+    {
+      "en": "docs/agent-routing-design.md",
+      "zh": "docs/agent-routing-design.zh-CN.md",
+      "enHash": "afc12a355ca65b1d41d7bd2a5d445e0193ef3b6754b282d1c4bb0b79d0ca98d7",
+      "zhHash": "ff3e270dfe180620a749740439ad3d39373b089f775eacd086d5a9bcdca119ad"
+    },
+    {
+      "en": "docs/agent-routing-feasibility.md",
+      "zh": "docs/agent-routing-feasibility.zh-CN.md",
+      "enHash": "e597695cc4eb3d8b5678d7ff9f66fe3cc41a2b6ae9a883e3f81fe282459d3bcb",
+      "zhHash": "cacf1f1ab014fe8cda9ccde9b0e7679a536ae36be539ffb9db5e929d244cf526"
     }
   ],
   "bilingual": [
