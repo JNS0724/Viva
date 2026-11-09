@@ -1,4 +1,5 @@
 import { t } from '../../shared/i18n/translate.ts'
+import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { h } from './dom.ts'
 
 /**
@@ -17,9 +18,10 @@ export function attachStars(container: HTMLElement, { placeOf, isStarred, toggle
   let frame = 0
 
   const show = (button: HTMLButtonElement, starred: boolean) => {
-    if (button.getAttribute('aria-pressed') === String(starred)) return
+    const label = starred ? t("bookmarks.remove") : t("bookmarks.add")
+    if (button.getAttribute('aria-pressed') === String(starred) && button.getAttribute('aria-label') === label) return
     button.setAttribute('aria-pressed', String(starred))
-    button.setAttribute('aria-label', starred ? t("bookmarks.remove") : t("bookmarks.add"))
+    button.setAttribute('aria-label', label)
     button.title = starred ? t("bookmarks.remove") : t("bookmarks.add.hint")
     button.textContent = starred ? '★' : '☆'
   }
@@ -58,6 +60,10 @@ export function attachStars(container: HTMLElement, { placeOf, isStarred, toggle
     const el = (event.target as Element | null)?.closest<HTMLElement>(STARRABLE)
     if (el && container.contains(el)) ensure(el)
   })
-  new MutationObserver(schedule).observe(container, { childList: true, subtree: true })
+  new MutationObserver(records => {
+    if (records.some(record => [...record.addedNodes, ...record.removedNodes].some(node =>
+      node instanceof Element && (node.matches(STARRABLE) || Boolean(node.querySelector(STARRABLE)))))) schedule()
+  }).observe(container, { childList: true, subtree: true })
+  onLocaleChange(schedule)
   return { sync: schedule }
 }

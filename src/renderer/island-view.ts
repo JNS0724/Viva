@@ -1,7 +1,7 @@
 import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
-import { catMood, currentAction, traceItems, truncate } from './selectors.ts'
+import { catMood, currentAction, traceTail, truncate } from './selectors.ts'
 import { liveTasks, unseenEnded } from './tasks-state.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 
@@ -38,7 +38,7 @@ export type IslandView = {
 }
 type IslandBase = Pick<IslandView, 'mood' | 'recent'>
 
-const recentSteps = (state: State): IslandStep[] => traceItems(state).slice(-RECENT_STEPS).map(({ title, tone }: IslandStep) => ({ title, tone }))
+const recentSteps = (state: State): IslandStep[] => traceTail(state, RECENT_STEPS).map(({ title, tone }: IslandStep) => ({ title, tone }))
 
 /** The first line of an answer as plain text: what the island shows of it once the turn is done. */
 export function answerPreview(text: unknown) {

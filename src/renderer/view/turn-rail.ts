@@ -1,6 +1,8 @@
-import { localeRevision } from '../../shared/i18n/locale.ts'
+import { localeRevision, onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
+import { queueLayout } from './reconcile.ts'
+import { takeReaderControl } from './scroll-follow.ts'
 
 /**
  * 按轮次跳转: down the left edge of the main area, a line per question of the topic on screen and, above them,
@@ -43,7 +45,7 @@ export function turnPreview(text: string): string {
 }
 
 /** What was typed: the bubble's own text, not the names of the pictures and files above it. */
-const questionText = (bubble: Element) => [...bubble.childNodes]
+const questionText = (bubble: Element) => bubble.querySelector('.msg-user-text')?.textContent ?? [...bubble.childNodes]
   .filter((node) => node.nodeType === Node.TEXT_NODE)
   .map((node) => node.textContent ?? '')
   .join(' ')
@@ -54,12 +56,13 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
   let places: HTMLElement[] = []
   let marks: HTMLButtonElement[] = []
   let active = -1
-  let frame = 0
+  let dirty = true
 
   const jump = (index: number) => {
     const place = places[index]
     const target = place?.matches(FOLDED) ? place : place?.closest<HTMLElement>('.msg-user-row') ?? place
     if (!target) return
+    takeReaderControl(scroll)
     const far = Math.abs(target.getBoundingClientRect().top - scroll.getBoundingClientRect().top) > scroll.clientHeight * SMOOTH_SCREENS
     target.scrollIntoView({ block: 'start', behavior: far ? 'instant' : 'smooth' })
   }
@@ -71,11 +74,6 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
     active = index
     marks[active]?.setAttribute('aria-current', 'step')
     marks[active]?.setAttribute('tabindex', '0')
-  }
-
-  const updateActive = () => {
-    const box = scroll.getBoundingClientRect()
-    light(activeTurn(places.length, (index) => places[index].getBoundingClientRect().top, box.top + box.height * READING_LINE))
   }
 
   const rebuild = () => {
@@ -93,18 +91,22 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
   }
 
   let shownLocale = -1
-  const refresh = () => {
-    frame = 0
+  const schedule = () => queueLayout(rail, () => {
     // A question inside a folded topic is that topic's dot, not a line of its own.
-    const found = [...scroll.querySelectorAll<HTMLElement>(PLACES)].filter((place) => place.matches(FOLDED) || !place.closest(FOLDED))
-    if (!sameList(found, places) || shownLocale !== localeRevision()) {
-      shownLocale = localeRevision()
-      places = found
-      rebuild()
+    const found = dirty ? [...scroll.querySelectorAll<HTMLElement>(PLACES)].filter((place) => place.matches(FOLDED) || !place.closest(FOLDED)) : places
+    const changed = dirty || !sameList(found, places) || shownLocale !== localeRevision()
+    dirty = false
+    const box = scroll.getBoundingClientRect()
+    const index = activeTurn(found.length, index => found[index].getBoundingClientRect().top, box.top + box.height * READING_LINE)
+    return () => {
+      if (changed) {
+        shownLocale = localeRevision()
+        places = found
+        rebuild()
+      }
+      if (!rail.hidden) light(index)
     }
-    if (!rail.hidden) updateActive()
-  }
-  const schedule = () => { frame ||= requestAnimationFrame(refresh) }
+  })
 
   rail.addEventListener('keydown', (event) => {
     const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
@@ -113,7 +115,12 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
     event.preventDefault()
     marks[Math.min(marks.length - 1, Math.max(0, from + step))].focus()
   })
-  new MutationObserver(schedule).observe(scroll, { childList: true, subtree: true })
+  new MutationObserver(records => {
+    dirty ||= records.some(record => record.target instanceof Element && Boolean(record.target.closest('.msg-user')) || [...record.addedNodes, ...record.removedNodes].some(node =>
+      node instanceof Element && (node.matches(PLACES) || Boolean(node.querySelector(PLACES)))))
+    schedule()
+  }).observe(scroll, { childList: true, subtree: true })
   scroll.addEventListener('scroll', schedule, { passive: true })
+  onLocaleChange(schedule)
   schedule()
 }

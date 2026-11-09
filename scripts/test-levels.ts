@@ -113,6 +113,7 @@ export const testLevels = {
     'reconcile',
     'remove-tree',
     'renderer-css',
+    'renderer-hotpaths',
     'report-records',
     'resume-actions',
     'resume-carry',
