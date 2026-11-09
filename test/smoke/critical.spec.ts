@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { checkIslandLayouts } from './island-layout.ts'
+import { checkDesktopHost } from './desktop-host.ts'
 import { checkStreamingDrawer } from './drawer-interaction.ts'
 import { checkStreamingNavigation } from './ui-retention.ts'
 
@@ -197,6 +198,8 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
     await desk.openInput()
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    await checkDesktopHost(session.application, desktop, info)
+    await desk.openInput()
     await desktop.getByRole('button', { name: '去设置', exact: true }).click()
     await expect(page.locator('#settings-root')).toBeVisible()
     await expect.poll(() => desk.inputOpen()).toBe(false)
