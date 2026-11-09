@@ -156,7 +156,7 @@ export function createAcpBridge({
   const pluginsDesk = createPluginsDesk({ send: toPlugins })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || taskSessions.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || taskSessions.has(id) })
-  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
+  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update), allowAcpFallback: !routeRequests })
   const routing = routeRequests ? createRoutingDesk({ send: toPlugins }) : null
   /** With routing on, the words as the main agent reads them: under a request header of their own. */
   const asRequest = (words: string) => routing ? withRequestHeader(words, newRequestId()) : words

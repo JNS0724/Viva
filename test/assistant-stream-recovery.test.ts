@@ -212,7 +212,7 @@ test('routing recovery respects each attempt gate while recovering an allowed fi
       // Drop all native frames. The committed flush must still apply the routing gate.
       if (message.type !== 'assistant_stream') stream.receive(message)
     } })
-    const stream = createAssistantStream({ send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update) })
+    const stream = createAssistantStream({ send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update), allowAcpFallback: false })
     installGatedStream(ctx as unknown as Context, (_session, step) => allowFinal && step === 2, port as unknown as NodeJS.Process)
     const operation = await stream.begin('session')
     for (const [step, text] of [[1, 'Hidden planning text'], [2, 'Allowed final reply']] as const) {
@@ -227,5 +227,32 @@ test('routing recovery respects each attempt gate while recovering an allowed fi
     assert.equal(await stream.complete(operation), allowFinal)
     assert.doesNotMatch(JSON.stringify(updates), /Hidden planning text/)
     assert.equal(JSON.stringify(updates).includes('Allowed final reply'), allowFinal)
+  }
+})
+
+test('routing keeps ACP behind its gate when ready, bind or flush confirmation is missing', async () => {
+  for (const failure of ['ready', 'bound', 'flushed']) for (const allowed of [false, true]) {
+    const event = { seq: 0, type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'Gated text' }] } } }
+    const events: Array<typeof event> = []
+    const session = { id: 'session', seq: 0, snapshotEvents: () => events }
+    const agent = { session }
+    const ctx = Object.assign(new EventEmitter(), { agents: { get: () => agent }, effect: () => {} })
+    const updates: ConversationUpdate[] = []
+    const port = Object.assign(new EventEmitter(), { connected: true, send: (message: { type: string }) => {
+      if (message.type !== `assistant_stream_${failure}`) stream.receive(message)
+    } })
+    const stream = createAssistantStream({ timeoutMs: 5, allowAcpFallback: false,
+      send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update) })
+    installGatedStream(ctx as unknown as Context, () => allowed, port as unknown as NodeJS.Process)
+    const operation = await stream.begin('session')
+    const frame = { attemptId: 'attempt', turn: 1, step: 1 }
+    ctx.emit('agent/assistant-stream', { agent, frame: { ...frame, type: 'start' } })
+    events.push(event); session.seq++
+    ctx.emit('session/event', session, event)
+    ctx.emit('agent/assistant-stream', { agent, frame: { ...frame, type: 'end', outcome: { kind: 'committed', eventType: event.type, seq: event.seq } } })
+    assert.equal(stream.suppress('session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Gated text' } }), true)
+    await assert.rejects(stream.complete(operation), /确认|confirm/i)
+    assert.equal(JSON.stringify(updates).includes('Gated text'), allowed && failure === 'flushed')
+    assert.equal(updates.some(update => update.sessionUpdate === 'agent_message_chunk'), false)
   }
 })

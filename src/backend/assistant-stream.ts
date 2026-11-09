@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { objectOf } from '../shared/unknown-value.ts'
+import { t } from '../shared/i18n/translate.ts'
 
 type OutputBlock = { type: 'text' | 'reasoning', text: string }
 type CommittedOutput = { key: string, blocks: OutputBlock[] }
@@ -12,10 +13,12 @@ const committedOutput = (value: unknown): value is CommittedOutput => {
 }
 
 /** Source selection belongs to a prompt operation, never a reusable session flag. */
-export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
+export function createAssistantStream({ send, emit, timeoutMs = 1000, allowAcpFallback = true }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
   timeoutMs?: number,
+  /** Disable raw ACP replay when only the native channel can authorize visible output. */
+  allowAcpFallback?: boolean,
 }) {
   let ready = false
   const instance = randomUUID()
@@ -87,10 +90,12 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
     suppress: (sessionId: string, update: any) => {
       const operation = operations.get(sessionId)
       if (!operation) return false
+      const textUpdate = ['agent_message_chunk', 'agent_thought_chunk'].includes(update?.sessionUpdate)
+      if (textUpdate && !allowAcpFallback) return true
       if (update?.sessionUpdate === 'tool_call') operation.finalReply = false
       if (update?.sessionUpdate === 'agent_thought_chunk') operation.finalReply ??= false
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text' && update.content.text.trim()) operation.finalReply = true
-      if (!operation.live || !['agent_message_chunk', 'agent_thought_chunk'].includes(update?.sessionUpdate)) return false
+      if (!operation.live || !textUpdate) return false
       operation.fallback.push(update)
       return true
     },
@@ -132,13 +137,14 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
             .filter(block => block.type === type).map(block => block.text ?? '').join('')
           return expected.length > 0 && expected !== actual
         })
-        if (!flushed || operation.active.size || missingContent || (!operation.keys.size && operation.fallback.length)) {
+        if (allowAcpFallback && (!flushed || operation.active.size || missingContent || (!operation.keys.size && operation.fallback.length))) {
           for (const key of operation.keys) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
           operation.active.clear()
           for (const update of operation.fallback) emit(operation.sessionId, update)
         }
       }
       finish(operation)
+      if (!allowAcpFallback) throw new Error(t('main.assistant-stream.output.not.confirmed'))
       return operation.finalReply
     },
     close() { ready = false; for (const operation of [...operations.values()]) finish(operation) },
