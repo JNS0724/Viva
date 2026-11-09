@@ -23,7 +23,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
 
   async function run({ sessionId, prompt, context = null, onEnd, onError }: {
     sessionId: string | null, prompt: Prompt, context?: ConversationContext | null
-    onEnd: (response: PromptResponse) => void
+    onEnd: (response: PromptResponse, finalReply?: boolean) => void
     onError: (error: unknown) => void
   }) {
     if (closed) return
@@ -35,8 +35,8 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       if (!current(sessionId, operation)) return
       const response = await connection().prompt({ sessionId, prompt })
       if (!current(sessionId, operation)) return
-      await streams.complete(operation.stream)
-      if (current(sessionId, operation)) onEnd(response)
+      const finalReply = await streams.complete(operation.stream)
+      if (current(sessionId, operation)) onEnd(response, finalReply)
     } catch (error) {
       if (!current(sessionId, operation)) return
       if (operation.stream) await streams.complete(operation.stream)

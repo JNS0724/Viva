@@ -48,14 +48,16 @@ export interface ConversationState {
   permission: AskedPermission | null
   question: AskedQuestion | null
   secret: AskedSecret | null
-  turn: { startedAt: number, tools: number, thoughts: number, by?: string } | null
+  turn: { startedAt: number, tools: number, thoughts: number, by?: string, messageCount?: number } | null
   lastReceipt: TurnReceipt | null
+  /** Runtime timing of the last completed turn, used to distinguish pending background results from older tasks. */
+  completedTurn: { startedAt: number, endedAt: number } | null
   error: string | null
   usage: { used: number, size: number } | null
 }
 export type VivaStreamUpdate = { sessionUpdate: 'viva_stream', key: string } & (
   | { kind: 'delta' | 'block', index: number, blockType: 'text' | 'reasoning', text: string }
-  | { kind: 'settle', blocks: readonly { type: string, text?: string }[] }
+  | { kind: 'settle', blocks: readonly { type: string, text?: string }[], before?: { text?: string, reasoning?: string } }
 )
 type ChunkKind = 'agent_message_chunk' | 'agent_thought_chunk'
 type ToolKind = 'tool_call' | 'tool_call_update'
@@ -91,7 +93,7 @@ export interface ConversationPayloads {
   secret_resolved: { requestId: string, provided: boolean, at: number }
   secret_closed: { requestId: string }
   waits_restored: Partial<ForegroundWaits> & { at: number }
-  turn_end: { stopReason?: string, at: number }
+  turn_end: { stopReason?: string, finalReply?: boolean, at: number }
   error: { message: string }
   memory_context: { injected: readonly MemoryInjection[] }
   report_delivered: { conversationId: string | null, sessionId: string | null, reportId: string, text: string, at: number }

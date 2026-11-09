@@ -26,7 +26,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'waits': return { type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at }
       case 'secret_request': return { type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at }
       case 'secret_closed': return { type: 'secret_closed', requestId: event.requestId }
-      case 'turn_end': return { type: 'turn_end', stopReason: event.stopReason, at }
+      case 'turn_end': return { type: 'turn_end', stopReason: event.stopReason, ...(event.finalReply === undefined ? {} : { finalReply: event.finalReply }), at }
       case 'memory_context': return { type: 'memory_context', injected: event.injected }
       case 'error': return { type: 'error', message: event.message }
       case 'schedule_propose': return { type: 'schedule_proposed', proposal: event.proposal }

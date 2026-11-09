@@ -91,7 +91,10 @@ export function decodeUpdate(value: unknown): ConversationUpdate | null {
     if (!string(item.key)) return null
     if (item.kind === 'settle') {
       const blocks = list(item.blocks, value => { const block = objectOf(value); return block && string(block.type) && optional(block.text, string) ? { type: block.type, text: block.text } : null })
-      return blocks ? { sessionUpdate: item.sessionUpdate, key: item.key, kind: 'settle', blocks } : null
+      const before = item.before === undefined ? undefined : objectOf(item.before)
+      if (before === null || (before && (!optional(before.text, string) || !optional(before.reasoning, string)))) return null
+      return blocks ? { sessionUpdate: item.sessionUpdate, key: item.key, kind: 'settle', blocks,
+        ...(before ? { before: { text: before.text as string | undefined, reasoning: before.reasoning as string | undefined } } : {}) } : null
     }
     if ((item.kind === 'delta' || item.kind === 'block') && natural(item.index) && (item.blockType === 'text' || item.blockType === 'reasoning') && string(item.text)) return { sessionUpdate: item.sessionUpdate, key: item.key, kind: item.kind, index: item.index, blockType: item.blockType, text: item.text }
     return null
@@ -168,7 +171,8 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (!context || item.taskId !== undefined) return null
   if (type === 'update') { const update = decodeUpdate(item.update); return update ? { type, context, update } : null }
   if (type === 'turn_started') return optional(item.by, nullableText) ? { type, context, by: item.by } : null
-  if (type === 'turn_end') return optional(item.stopReason, string) ? { type, context, stopReason: item.stopReason } : null
+  if (type === 'turn_end') return optional(item.stopReason, string) && (item.finalReply === undefined || typeof item.finalReply === 'boolean')
+    ? { type, context, stopReason: item.stopReason, ...(item.finalReply === undefined ? {} : { finalReply: item.finalReply }) } : null
   if (type === 'question') { const questions = decodeQuestions(item.questions); return string(item.questionId) && questions ? { type, context, questionId: item.questionId, questions } : null }
   if (type === 'question_closed') return string(item.questionId) ? { type, context, questionId: item.questionId } : null
   if (type === 'secret_request') { const parsed = secret(item); return parsed ? { type, context, ...parsed } : null }

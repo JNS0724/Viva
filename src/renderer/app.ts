@@ -41,6 +41,7 @@ import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createPageElements } from './page-elements.ts'
+import { takeReaderControl } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
 import { openEarlierRow } from './view/earlier.ts'
@@ -219,6 +220,7 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
   ask: ({ text, files, images = [], targetKey, receiptId, expiresAt }) => {
     const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt && ask(withFiles(text, files), { via: 'island', images })
+    if (ok) dom.follower.resetForPrompt({ anchor: false })
     api.islandAskResult(receiptId, { ok: Boolean(ok), ...(ok ? {} : { error: t('desk.interaction.draft.not.sent') }) })
   },
 }
@@ -227,7 +229,7 @@ function saveHistory() {
   if (!historyReady || state.messages.length === 0) return
   const sessionId = state.info.sessionId
   const topicStartedAt = state.topic.startedAt
-  api.saveHistory(historyMessages(state))
+  api.saveHistory(historyMessages(state, { keys: true }))
     .then((summary) => {
       // A save from the topic just left must not attach its id to the new blank topic.
       if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
@@ -412,6 +414,7 @@ const timelineRow = (msgId: string) => dom.thread.querySelector<HTMLElement>(`[d
 
 /** Scrolls a row of the timeline to the middle and marks it a moment. */
 function revealRow(row: HTMLElement) {
+  takeReaderControl(dom.scroll)
   row.scrollIntoView({ block: 'center' })
   row.classList.add('msg-found')
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
