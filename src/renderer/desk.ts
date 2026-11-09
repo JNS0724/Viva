@@ -169,8 +169,8 @@ async function ask(text: string) {
 }
 
 let layoutFrame = 0
-let placementRevision = 0
-let paintedRevision = -1
+let paintedVersion = -1
+let acknowledgingVersion = -1
 let readyVersion = -1
 const takeView = (next: Payload) => {
   if (next.expanded && next.panel === 'request' && (!payload?.expanded || payload.panel !== 'request')) activeRequest = next.view ?? null
@@ -189,7 +189,7 @@ setInterval(show, TICK_MS)
 // The main process lets clicks through to what is below except over the island, so it needs to know where
 // the island is; that changes with every change of shape and place.
 function reportRect(ready = false) {
-  if (!payload || paintedRevision !== placementRevision) return
+  if (!payload || paintedVersion !== (payload.layoutVersion ?? 0)) return
   const { x, y, width, height } = island.el.getBoundingClientRect()
   const regions = [...island.el.querySelectorAll<HTMLElement>('.isl-anchor, .isl-peek:not([hidden]), .isl-surface:not([hidden])')].map(el => {
     const { x, y, width, height } = el.getBoundingClientRect(); return { x, y, width, height }
@@ -198,21 +198,21 @@ function reportRect(ready = false) {
 }
 function placeSurface() {
   if (!payload) return
-  const revision = ++placementRevision
   const version = payload.layoutVersion ?? 0
   placeDesktopIsland(island.el, stage!, { anchor: payload.anchor ?? { x: 60, y: 50 }, side: payload.side ?? 'right', panelWidth: payload.panelWidth ?? 440, viewport: payload.viewport }, () => {
-    if (revision !== placementRevision || version !== (payload?.layoutVersion ?? 0)) return
-    paintedRevision = revision
+    if (version !== (payload?.layoutVersion ?? 0)) return
+    paintedVersion = version
     reportRect()
-    if (readyVersion !== version) acknowledgeLayout(version, revision)
+    if (readyVersion !== version && acknowledgingVersion !== version) acknowledgeLayout(version)
   })
 }
 /** Acknowledge only after queued placement commits and its geometry has had time to paint. */
-function acknowledgeLayout(version: number, revision: number) {
+function acknowledgeLayout(version: number) {
   cancelAnimationFrame(layoutFrame)
+  acknowledgingVersion = version
   layoutFrame = requestAnimationFrame(() => {
     layoutFrame = requestAnimationFrame(() => {
-      if ((payload?.layoutVersion ?? 0) === version && paintedRevision === revision && placementRevision === revision) {
+      if ((payload?.layoutVersion ?? 0) === version && paintedVersion === version) {
         readyVersion = version
         reportRect(true)
       }

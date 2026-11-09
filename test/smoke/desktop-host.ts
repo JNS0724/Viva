@@ -14,6 +14,8 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
     const requested: Array<Partial<Electron.Rectangle>> = []
     const originalCursor = screen.getCursorScreenPoint.bind(screen)
     const originalBounds = window.setBounds.bind(window)
+    const originalSend = window.webContents.send.bind(window.webContents)
+    let originalView: Parameters<typeof desk.setView>[0] | undefined
     let pointer = originalCursor()
     const record = (_event: unknown, channel: string, value: unknown) => {
       if (channel === 'island:act' && value && typeof value === 'object' && 'kind' in value && value.kind === 'rect') reports.push(value as Geometry)
@@ -28,9 +30,15 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
       }
     }
     window.webContents.on('ipc-message', record)
+    window.webContents.send = (channel, ...args) => {
+      if (channel === 'island:view' && !originalView) originalView = (args[0] as { view: Parameters<typeof desk.setView>[0] }).view
+      originalSend(channel, ...args)
+    }
     window.setBounds = (next, animate) => { requested.push({ ...next }); originalBounds(next, animate); bounds.push(window.getBounds()) }
     screen.getCursorScreenPoint = () => pointer
     const corners = [], drags = []
+    let updates = 0
+    let producer: ReturnType<typeof setInterval> | undefined
     try {
       let beforeVersion = version()
       desk.resetPlace()
@@ -61,6 +69,17 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
           contained: native.x + current.x >= area.x - 1 && native.y + current.y >= area.y - 1
             && native.x + current.x + current.width <= area.x + area.width + 1 && native.y + current.y + current.height <= area.y + area.height + 1 })
       }
+      // Same-version status updates must not restart layout readiness indefinitely.
+      producer = setInterval(() => desk.setView({ form: 'working', tone: 'working', mood: 'thinking',
+        label: '正在处理', recent: [], action: '状态刷新 ' + ++updates }), 16)
+      await wait(200)
+      beforeVersion = version()
+      desk.resetPlace()
+      await settled(beforeVersion)
+      await wait(150)
+      clearInterval(producer)
+      producer = undefined
+      if (originalView) desk.setView(originalView)
       beforeVersion = version()
       desk.resetPlace()
       await settled(beforeVersion)
@@ -87,11 +106,14 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
         await settled(beforeVersion)
         drags.push({ cancel, expandedBefore, origin, beforeRelease, after: window.getBounds(), expandedAfter: desk.inputOpen() })
       }
-      return { corners, drags, reports, bounds, requested, scaleFactor: screen.getPrimaryDisplay().scaleFactor }
+      return { corners, drags, reports, bounds, requested, updates, scaleFactor: screen.getPrimaryDisplay().scaleFactor }
     } finally {
+      clearInterval(producer)
       screen.getCursorScreenPoint = originalCursor
       window.setBounds = originalBounds
+      window.webContents.send = originalSend
       window.webContents.removeListener('ipc-message', record)
+      if (originalView) desk.setView(originalView)
       desk.closeInput()
       desk.resetPlace()
     }
@@ -100,6 +122,7 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
   fs.writeFileSync(resultFile, JSON.stringify(result, null, 2))
   await info.attach('windows-desktop-host', { path: resultFile, contentType: 'application/json' })
   for (const corner of result.corners) expect(corner.contained, corner.corner).toBe(true)
+  expect(result.updates).toBeGreaterThan(5)
   expect(result.bounds.length).toBeGreaterThan(10)
   for (const bounds of result.requested) {
     expect(bounds.width).toBe(DESK_SIZE.width)
