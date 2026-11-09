@@ -41,6 +41,7 @@ import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createPageElements } from './page-elements.ts'
+import { takeReaderControl } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
 import { openEarlierRow } from './view/earlier.ts'
@@ -413,6 +414,7 @@ const timelineRow = (msgId: string) => dom.thread.querySelector<HTMLElement>(`[d
 
 /** Scrolls a row of the timeline to the middle and marks it a moment. */
 function revealRow(row: HTMLElement) {
+  takeReaderControl(dom.scroll)
   row.scrollIntoView({ block: 'center' })
   row.classList.add('msg-found')
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
