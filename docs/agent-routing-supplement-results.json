@@ -1,0 +1,2286 @@
+{
+  "date": "2026-11-09",
+  "baseline": "0fc159bd8dbbb42bfbcf05ee5f9150dbb9df426b",
+  "model": "deepseek-official/deepseek-flash (DeepSeek-V41-Flash), thinking at the app default",
+  "mechanical": {
+    "gated": [
+      {
+        "id": "m-parallel-a",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-parallel-b",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-parallel-c",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-leak-reply",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-leak-start",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-leak-omit",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-interject",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-interject-omit",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-dup",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-bad-v2",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-unbound",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      }
+    ],
+    "naive": [
+      {
+        "id": "m-parallel-a",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-parallel-b",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-parallel-c",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-leak-reply",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-leak-start",
+        "attempts": 3,
+        "passed": 0,
+        "failures": [
+          "pre-route text reached the app",
+          "pre-route text reached the app",
+          "pre-route text reached the app"
+        ]
+      },
+      {
+        "id": "m-leak-omit",
+        "attempts": 3,
+        "passed": 0,
+        "failures": [
+          "unrouted text reached the app",
+          "unrouted text reached the app",
+          "unrouted text reached the app"
+        ]
+      },
+      {
+        "id": "m-interject",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-interject-omit",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-dup",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-bad-v2",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-unbound",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      }
+    ],
+    "stock": [
+      {
+        "id": "m-parallel-a",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-parallel-b",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-parallel-c",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-leak-reply",
+        "attempts": 3,
+        "passed": 0,
+        "failures": [
+          "pre-route text reached the app",
+          "pre-route text reached the app",
+          "pre-route text reached the app"
+        ]
+      },
+      {
+        "id": "m-leak-start",
+        "attempts": 3,
+        "passed": 0,
+        "failures": [
+          "pre-route text reached the app",
+          "pre-route text reached the app",
+          "pre-route text reached the app"
+        ]
+      },
+      {
+        "id": "m-leak-omit",
+        "attempts": 3,
+        "passed": 0,
+        "failures": [
+          "unrouted text reached the app",
+          "unrouted text reached the app",
+          "unrouted text reached the app"
+        ]
+      },
+      {
+        "id": "m-interject",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-interject-omit",
+        "attempts": 3,
+        "passed": 0,
+        "failures": [
+          "text shown while a request was pending",
+          "text shown while a request was pending",
+          "text shown while a request was pending"
+        ]
+      },
+      {
+        "id": "m-dup",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-bad-v2",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      },
+      {
+        "id": "m-unbound",
+        "attempts": 3,
+        "passed": 3,
+        "failures": []
+      }
+    ]
+  },
+  "bridgeLive": {
+    "A": {
+      "what": "v2 gated: delegation, update, mixed, ambiguous",
+      "scenarios": [
+        {
+          "id": "new-work",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "work not delegated",
+            "work not delegated",
+            "work not delegated",
+            "work not delegated",
+            "work not delegated"
+          ]
+        },
+        {
+          "id": "update-existing",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        },
+        {
+          "id": "mixed",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        },
+        {
+          "id": "ambiguous",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        }
+      ],
+      "ttftMs": [],
+      "interjection": []
+    },
+    "B": {
+      "what": "v2 gated: suggestion, retrieval, stream",
+      "scenarios": [
+        {
+          "id": "suggestion",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        },
+        {
+          "id": "retrieval",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        },
+        {
+          "id": "stream",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        }
+      ],
+      "ttftMs": [
+        {
+          "id": "stream",
+          "ttftMs": 3929
+        },
+        {
+          "id": "stream",
+          "ttftMs": 3587
+        },
+        {
+          "id": "stream",
+          "ttftMs": 4643
+        },
+        {
+          "id": "stream",
+          "ttftMs": 3604
+        },
+        {
+          "id": "stream",
+          "ttftMs": 4277
+        }
+      ],
+      "interjection": []
+    },
+    "C": {
+      "what": "v2 gated: interjection mid-answer",
+      "scenarios": [
+        {
+          "id": "interject",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        }
+      ],
+      "ttftMs": [
+        {
+          "id": "interject",
+          "ttftMs": 8267
+        },
+        {
+          "id": "interject",
+          "ttftMs": 4795
+        },
+        {
+          "id": "interject",
+          "ttftMs": 14583
+        },
+        {
+          "id": "interject",
+          "ttftMs": 4308
+        },
+        {
+          "id": "interject",
+          "ttftMs": 14216
+        }
+      ],
+      "interjection": [
+        {
+          "steerToDecisionMs": 14405,
+          "delegatedAfterSteer": true,
+          "deniedAfterSteer": []
+        },
+        {
+          "steerToDecisionMs": 15075,
+          "delegatedAfterSteer": true,
+          "deniedAfterSteer": []
+        },
+        {
+          "steerToDecisionMs": 13907,
+          "delegatedAfterSteer": true,
+          "deniedAfterSteer": []
+        },
+        {
+          "steerToDecisionMs": 18028,
+          "delegatedAfterSteer": true,
+          "deniedAfterSteer": []
+        },
+        {
+          "steerToDecisionMs": 12226,
+          "delegatedAfterSteer": true,
+          "deniedAfterSteer": []
+        }
+      ]
+    },
+    "D2": {
+      "what": "v2 gated, forced compaction",
+      "scenarios": [
+        {
+          "id": "compact",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        }
+      ],
+      "ttftMs": [],
+      "interjection": []
+    },
+    "E": {
+      "what": "v1 (PR protocol) gated, production config",
+      "scenarios": [
+        {
+          "id": "ambiguous",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        },
+        {
+          "id": "suggestion",
+          "attempts": 5,
+          "passed": 4,
+          "failures": [
+            "unconfirmed suggestion used to start work"
+          ]
+        },
+        {
+          "id": "retrieval",
+          "attempts": 5,
+          "passed": 4,
+          "failures": [
+            "work not delegated",
+            "amended standard not carried into brief"
+          ]
+        }
+      ],
+      "ttftMs": [],
+      "interjection": []
+    },
+    "F": {
+      "what": "baseline: production without routing",
+      "scenarios": [
+        {
+          "id": "new-work",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        },
+        {
+          "id": "stream",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        },
+        {
+          "id": "interject",
+          "attempts": 5,
+          "passed": 5,
+          "failures": []
+        }
+      ],
+      "ttftMs": [
+        {
+          "id": "new-work",
+          "ttftMs": 16116
+        },
+        {
+          "id": "new-work",
+          "ttftMs": 11961
+        },
+        {
+          "id": "new-work",
+          "ttftMs": 2252
+        },
+        {
+          "id": "new-work",
+          "ttftMs": 2995
+        },
+        {
+          "id": "new-work",
+          "ttftMs": 1882
+        },
+        {
+          "id": "stream",
+          "ttftMs": 1397
+        },
+        {
+          "id": "stream",
+          "ttftMs": 4826
+        },
+        {
+          "id": "stream",
+          "ttftMs": 1225
+        },
+        {
+          "id": "stream",
+          "ttftMs": 1950
+        },
+        {
+          "id": "stream",
+          "ttftMs": 969
+        },
+        {
+          "id": "interject",
+          "ttftMs": 3228
+        },
+        {
+          "id": "interject",
+          "ttftMs": 8160
+        },
+        {
+          "id": "interject",
+          "ttftMs": 5085
+        },
+        {
+          "id": "interject",
+          "ttftMs": 12157
+        },
+        {
+          "id": "interject",
+          "ttftMs": 4897
+        }
+      ],
+      "interjection": [
+        {
+          "steerToDecisionMs": null,
+          "delegatedAfterSteer": false,
+          "deniedAfterSteer": [
+            "web_search",
+            "web_fetch",
+            "ask_user_question"
+          ]
+        },
+        {
+          "steerToDecisionMs": null,
+          "delegatedAfterSteer": false,
+          "deniedAfterSteer": [
+            "web_search",
+            "web_search",
+            "ask_user_question"
+          ]
+        },
+        {
+          "steerToDecisionMs": null,
+          "delegatedAfterSteer": false,
+          "deniedAfterSteer": [
+            "web_search",
+            "web_fetch",
+            "web_fetch",
+            "ask_user_question"
+          ]
+        },
+        {
+          "steerToDecisionMs": null,
+          "delegatedAfterSteer": false,
+          "deniedAfterSteer": [
+            "web_search",
+            "web_search",
+            "ask_user_question"
+          ]
+        },
+        {
+          "steerToDecisionMs": null,
+          "delegatedAfterSteer": false,
+          "deniedAfterSteer": [
+            "web_search",
+            "web_search",
+            "web_fetch"
+          ]
+        }
+      ]
+    }
+  },
+  "appLive": [
+    {
+      "run": "routing-B",
+      "note": "fast lane on, interjection; before per-attempt isolation (earlier attempts' tasks visible)",
+      "scenarios": [
+        {
+          "id": "route-interject",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "cardAfterMs": 2512,
+              "answerCharsWhenCardShowed": 479,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 1260,
+              "answerCharsWhenCardShowed": 253,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 1311,
+              "answerCharsWhenCardShowed": 257,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 26224,
+              "answerCharsWhenCardShowed": 1033,
+              "fastLane": true,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "read",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "这是与当前代码评审回答无关的新委托，但后台已有三个高度相似的任务，目标、范围几乎一致，需要用户确认是新建还是并入已有任务，不能贸然指派。"
+              ]
+            },
+            {
+              "cardAfterMs": 20604,
+              "answerCharsWhenCardShowed": 938,
+              "fastLane": true,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "glob",
+                "glob",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "已有多个同类待办整理任务，无法确定这句是新任务还是对哪个现有任务的补充"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "routing-C",
+      "note": "fast lane on, all scenarios; app operations ran in the restricted scope (unknown tool), MCP via detached approval",
+      "scenarios": [
+        {
+          "id": "route-reply",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "firstTextMs": 4224,
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "firstTextMs": 3141,
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "firstTextMs": 3068,
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "firstTextMs": 3200,
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "firstTextMs": 2415,
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-handoff",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "freeAfterMs": 7552,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "freeAfterMs": 10492,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "freeAfterMs": 17213,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "list_background_tasks",
+                "read",
+                "read",
+                "read",
+                "get_background_task",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "freeAfterMs": 14952,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "list_background_tasks",
+                "get_background_task",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "freeAfterMs": 9618,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-update",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "taskStatusAtUpdate": "running",
+              "decisions": [
+                "message"
+              ],
+              "denied": [],
+              "tools": [
+                "get_background_task",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "taskStatusAtUpdate": "waiting",
+              "decisions": [
+                "message"
+              ],
+              "denied": [],
+              "tools": [
+                "list_background_tasks",
+                "list_background_tasks",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "taskStatusAtUpdate": "running",
+              "decisions": [
+                "message"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "taskStatusAtUpdate": "running",
+              "decisions": [
+                "message"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "taskStatusAtUpdate": "running",
+              "decisions": [
+                "message"
+              ],
+              "denied": [],
+              "tools": [
+                "get_background_task",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-interject",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "cardAfterMs": 21259,
+              "answerCharsWhenCardShowed": 895,
+              "fastLane": true,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "这是新的独立文件整理任务，但当前回答正进行五点代码评审讲解，且此前同类后台任务全部已停止，宜等当前回答结束后再处理，以免打断。"
+              ]
+            },
+            {
+              "cardAfterMs": 1657,
+              "answerCharsWhenCardShowed": 335,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 1514,
+              "answerCharsWhenCardShowed": 294,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 1603,
+              "answerCharsWhenCardShowed": 363,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 2701,
+              "answerCharsWhenCardShowed": 464,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-history",
+          "attempts": 5,
+          "passed": 4,
+          "failures": [
+            "the brief handed over should carry the corrected rule: {\"brief\":\"任务：把工作目录下 notes-aa1323 文件夹里的会议纪要整理成「今天（2026-11-09，周一）」的工作简报，写入 notes-aa1323/brief-aa1323.md（UTF-8，新建或覆盖该文件）。\\n\\n用户原话：「按老规矩，把 notes-aa1323 里的纪要整理成今天的简报，写到 n"
+          ],
+          "numbers": [
+            {
+              "recoveredWith": [
+                "search_conversations",
+                "read_conversation"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "search_conversations",
+                "glob",
+                "read_conversation",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [
+                "memory_recall",
+                "search_conversations",
+                "read_conversation"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "memory_recall",
+                "read",
+                "read",
+                "read",
+                "search_conversations",
+                "read_conversation",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [
+                "memory_recall",
+                "search_conversations",
+                "read_conversation",
+                "memory_recall"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "memory_recall",
+                "read",
+                "read",
+                "read",
+                "search_conversations",
+                "read_conversation",
+                "memory_recall",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [
+                "search_conversations"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "search_conversations",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "glob",
+                "read",
+                "read",
+                "read",
+                "glob",
+                "glob",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-stop",
+          "attempts": 5,
+          "passed": 4,
+          "failures": [
+            "the translation should start a task"
+          ],
+          "numbers": [
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "list_background_tasks",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "list_background_tasks",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            null,
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "get_background_task",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-schedule",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the schedule should be asked for as an app operation: {\"decisions\":[],\"denied\":[],\"tools\":[],\"failed\":0,\"deferred\":[]} | the schedule card should show, naming it: \"\"",
+            "the schedule card should show, naming it: \"提醒没能真正创建成功，我先如实跟你说明一下结果。结果：定时提醒没有设置成功。我在当前应用里调用了「新建定时任务（schedule_create）」，但应用返回「unknown tool \\\"schedule_create\\\"」，说明当前这个版本没有可用的定时任务功能，所以每周五 17:00 的固定提醒没办法在你这里注册，周五也不会自动响。这不是提醒的内",
+            "the schedule card should show, naming it: \"我没能建成这个提醒：提交定时任务时，系统返回「unknown tool \\\"schedule_create\\\"」，也就是说当前这个运行环境里没有可用的定时任务接口，因此「每周五 17:00 提醒写周报」这条计划没有保存下来，周五不会自动提醒你。可以这样处理：稍后再试一次：如果这是临时状况，我可以重新提交一次。或者你在 Viva 的「定时任务」页面里手动",
+            "the schedule card should show, naming it: \"定时提醒这件事没能办成：我尝试创建「每周五 17:00 提醒写周报」的定时任务，但当前环境返回 unknown tool \\\"schedule_create\\\"，也就是这台设备上的 Viva 还没有开放定时任务功能，因此并没有创建出任何任务。目前的状况如下：没有生成定时任务，本周五（2026-11-13）17:00 不会自动提醒。「每周五下午五点写周报",
+            "the schedule card should show, naming it: \"这件事没有办成，我如实说明情况：没办成的： 每周五 17:00 的定时提醒没有被创建。原因是当前环境里没有 schedule_create 这个定时任务工具，提交后返回的是 “unknown tool “schedule_create””，也就是本环境的定时任务功能不可用，而不是你说错了什么。目前的状态： 提醒没有建立，不可能在周五自动响。不过你「每周"
+          ],
+          "numbers": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "id": "route-memory",
+          "attempts": 5,
+          "passed": 4,
+          "failures": [
+            "a new topic should know it: \"周岚\""
+          ],
+          "numbers": [
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "memory_recall",
+                "commit_route",
+                "memory_recall",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "memory_recall",
+                "memory_recall",
+                "search_conversations",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-mcp",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the approval card should come, naming the server: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the key window should come: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the server should be kep",
+            "the approval card should come, naming the server: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the key window should come: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the server should be kep",
+            "the approval card should come, naming the server: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the key window should come: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the server should be kep",
+            "the approval card should come, naming the server: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the key window should come: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the server should be kep",
+            "the approval card should come, naming the server: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the key window should come: {\"approval\":\"\",\"secret\":false,\"approvalAfterTurn\":false} | the server should be kep"
+          ],
+          "numbers": [
+            {
+              "turnMs": 2996,
+              "approval": "",
+              "secret": false,
+              "approvalAfterTurn": false,
+              "done": [],
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 6060,
+              "approval": "",
+              "secret": false,
+              "approvalAfterTurn": false,
+              "done": [],
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 4255,
+              "approval": "",
+              "secret": false,
+              "approvalAfterTurn": false,
+              "done": [],
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 3163,
+              "approval": "",
+              "secret": false,
+              "approvalAfterTurn": false,
+              "done": [],
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 3638,
+              "approval": "",
+              "secret": false,
+              "approvalAfterTurn": false,
+              "done": [],
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "routing-D",
+      "note": "fast lane off, interjection (control)",
+      "scenarios": [
+        {
+          "id": "route-interject",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "cardAfterMs": 18088,
+              "answerCharsWhenCardShowed": 688,
+              "fastLane": false,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "glob",
+                "read",
+                "read",
+                "read",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 16563,
+              "answerCharsWhenCardShowed": 987,
+              "fastLane": false,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 15706,
+              "answerCharsWhenCardShowed": 819,
+              "fastLane": false,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 10461,
+              "answerCharsWhenCardShowed": 687,
+              "fastLane": false,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 13165,
+              "answerCharsWhenCardShowed": 718,
+              "fastLane": false,
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "routing-E",
+      "note": "fast lane on; history and stop after isolation; MCP via executor task; run ended after MCP attempt 3",
+      "scenarios": [
+        {
+          "id": "route-history",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "recoveredWith": [
+                "search_conversations",
+                "memory_recall"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "search_conversations",
+                "memory_recall",
+                "glob",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [
+                "search_conversations",
+                "read_conversation",
+                "read_conversation"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "search_conversations",
+                "read_conversation",
+                "read_conversation",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [
+                "search_conversations",
+                "memory_recall",
+                "read_conversation"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "search_conversations",
+                "memory_recall",
+                "read_conversation",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [
+                "search_conversations",
+                "read_conversation"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "glob",
+                "search_conversations",
+                "read_conversation",
+                "glob",
+                "read",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "recoveredWith": [
+                "memory_recall",
+                "search_conversations",
+                "search_conversations"
+              ],
+              "decisions": [
+                "start"
+              ],
+              "denied": [],
+              "tools": [
+                "memory_recall",
+                "glob",
+                "search_conversations",
+                "search_conversations",
+                "read",
+                "read",
+                "read",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-stop",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "list_background_tasks",
+                "list_background_tasks",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "status": "stopped",
+              "decisions": [
+                "stop"
+              ],
+              "denied": [],
+              "tools": [
+                "list_background_tasks",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-schedule",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the schedule proposal should be made: [{\"type\":\"app_action_done\",\"at\":1794204493063,\"sessionId\":\"309c6147-9098-4019-80cd-f0a4ac0819f3\",\"operation\":\"schedule_create\",\"ok\":false,\"text\":\"unknown tool \\\"schedule_create\\\"\",\"m",
+            "the schedule proposal should be made: [{\"type\":\"app_action_done\",\"at\":1794204530526,\"sessionId\":\"9a6820d0-2c16-40e9-9216-8c3e1d23baac\",\"operation\":\"schedule_create\",\"ok\":false,\"text\":\"unknown tool \\\"schedule_create\\\"\",\"m",
+            "the schedule proposal should be made: [] | the schedule should be asked for as an app operation: {\"decisions\":[],\"denied\":[],\"tools\":[],\"failed\":0,\"deferred\":[]} | the schedule card should show, naming it: \"\"",
+            "the schedule proposal should be made: [{\"type\":\"app_action_done\",\"at\":1794204606431,\"sessionId\":\"30c276de-d536-4ae2-a415-d02bb69519da\",\"operation\":\"schedule_create\",\"ok\":false,\"text\":\"unknown tool \\\"schedule_create\\\"\",\"m",
+            "the schedule proposal should be made: [{\"type\":\"app_action_done\",\"at\":1794204645199,\"sessionId\":\"0c0c4e9c-140b-4072-ab69-d70715952257\",\"operation\":\"schedule_create\",\"ok\":false,\"text\":\"unknown tool \\\"schedule_create\\\"\",\"m"
+          ],
+          "numbers": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "id": "route-memory",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794204684167,\"sessionId\":\"150c5705-64a6-47ce-a2b5-168d49f36fd4\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"unknown tool \\\"memory_remember\\\"\",\"ms",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794204736915,\"sessionId\":\"04084b11-fabf-4a32-ba45-d1cd2a16f2c2\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"unknown tool \\\"memory_remember\\\"\",\"ms",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794204790197,\"sessionId\":\"623888af-2067-442a-a3bc-9d1e39ddf277\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"unknown tool \\\"memory_remember\\\"\",\"ms",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794204842716,\"sessionId\":\"2d87e6c2-c674-43aa-b97c-0139fa132070\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"unknown tool \\\"memory_remember\\\"\",\"ms",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794204900543,\"sessionId\":\"fce3fc70-65bd-4b91-be86-2a54a8b0d000\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"unknown tool \\\"memory_remember\\\"\",\"ms"
+          ],
+          "numbers": [
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-mcp",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the key window should come: {\"taskWaited\":true,\"approval\":\"需要你确认接入 MCP 服务器「mail-9ff895」完整操作参数{\\n  \\\"name\\\": \\\"mail-9ff895\\\",\\n  \\\"command\\\": \\\"node\\\",\\n  \\\"args\\\": [\\n    \\\"/Users/victorlin/code/viva-main/test/fixtures/m",
+            "the key window should come: {\"taskWaited\":true,\"approval\":\"需要你确认接入 MCP 服务器「mail-6a750d」完整操作参数{\\n  \\\"name\\\": \\\"mail-6a750d\\\",\\n  \\\"command\\\": \\\"node\\\",\\n  \\\"args\\\": [\\n    \\\"/Users/victorlin/code/viva-main/test/fixtures/m",
+            "the key window should come: {\"taskWaited\":true,\"approval\":\"需要你确认接入 MCP 服务器「mail-6aa971」完整操作参数{\\n  \\\"name\\\": \\\"mail-6aa971\\\",\\n  \\\"command\\\": \\\"node\\\",\\n  \\\"args\\\": [\\n    \\\"/Users/victorlin/code/viva-main/test/fixtures/m",
+            "the key window should come: {\"taskWaited\":true,\"approval\":\"需要你确认接入 MCP 服务器「mail-ff72b2」完整操作参数{\\n  \\\"name\\\": \\\"mail-ff72b2\\\",\\n  \\\"command\\\": \\\"node\\\",\\n  \\\"args\\\": [\\n    \\\"/Users/victorlin/code/viva-main/test/fixtures/m",
+            "the key window should come: {\"taskWaited\":true,\"approval\":\"需要你确认接入 MCP 服务器「mail-d8ebc8」完整操作参数{\\n  \\\"name\\\": \\\"mail-d8ebc8\\\",\\n  \\\"command\\\": \\\"node\\\",\\n  \\\"args\\\": [\\n    \\\"/Users/victorlin/code/viva-main/test/fixtures/m"
+          ],
+          "numbers": [
+            {
+              "turnMs": 5141,
+              "taskWaited": true,
+              "approval": "需要你确认接入 MCP 服务器「mail-9ff895」完整操作参数{\n  \"name\": \"mail-9ff895\",\n  \"command\": \"node\",\n  \"args\": [\n    \"/Users/victorlin/code/viva-main/test/fixtures/mail-mcp.js\"\n  ],\n  \"env\": {\n    \"MAIL_TOKEN\": \"\"\n  }\n}允许拒绝有风险的操作总会先问你",
+              "secret": false,
+              "where": "",
+              "done": [],
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 2917,
+              "taskWaited": true,
+              "approval": "需要你确认接入 MCP 服务器「mail-6a750d」完整操作参数{\n  \"name\": \"mail-6a750d\",\n  \"command\": \"node\",\n  \"args\": [\n    \"/Users/victorlin/code/viva-main/test/fixtures/mail-mcp.js\"\n  ],\n  \"secrets\": [\n    \"MAIL_TOKEN\"\n  ]\n}允许拒绝有风险的操作总会先问你",
+              "secret": false,
+              "where": "",
+              "done": [],
+              "decisions": [
+                "app_action",
+                "reply+app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 3962,
+              "taskWaited": true,
+              "approval": "需要你确认接入 MCP 服务器「mail-6aa971」完整操作参数{\n  \"name\": \"mail-6aa971\",\n  \"command\": \"node\",\n  \"args\": [\n    \"/Users/victorlin/code/viva-main/test/fixtures/mail-mcp.js\"\n  ],\n  \"secrets\": [\n    \"MAIL_TOKEN\"\n  ]\n}允许拒绝有风险的操作总会先问你",
+              "secret": false,
+              "where": "",
+              "done": [],
+              "decisions": [
+                "app_action",
+                "reply+app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 2643,
+              "taskWaited": true,
+              "approval": "需要你确认接入 MCP 服务器「mail-ff72b2」完整操作参数{\n  \"name\": \"mail-ff72b2\",\n  \"command\": \"node\",\n  \"args\": [\n    \"/Users/victorlin/code/viva-main/test/fixtures/mail-mcp.js\"\n  ],\n  \"secrets\": [\n    \"MAIL_TOKEN\"\n  ]\n}允许拒绝有风险的操作总会先问你",
+              "secret": false,
+              "where": "",
+              "done": [],
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 25696,
+              "taskWaited": true,
+              "approval": "需要你确认接入 MCP 服务器「mail-d8ebc8」完整操作参数{\n  \"name\": \"mail-d8ebc8\",\n  \"command\": \"node\",\n  \"args\": [\n    \"/Users/victorlin/code/viva-main/test/fixtures/mail-mcp.js\"\n  ],\n  \"secrets\": [\n    \"MAIL_TOKEN\"\n  ]\n}允许拒绝有风险的操作总会先问你",
+              "secret": false,
+              "where": "",
+              "done": [],
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "search_conversations",
+                "memory_recall",
+                "read_conversation",
+                "grep",
+                "search_conversations",
+                "read_conversation",
+                "glob",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "routing-F",
+      "note": "fast lane on; interjection after the fast-lane prompt fix; correction counter-example",
+      "scenarios": [
+        {
+          "id": "route-interject",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "cardAfterMs": 1731,
+              "answerCharsWhenCardShowed": 388,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 2002,
+              "answerCharsWhenCardShowed": 351,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 1898,
+              "answerCharsWhenCardShowed": 369,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 1451,
+              "answerCharsWhenCardShowed": 335,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "cardAfterMs": 1779,
+              "answerCharsWhenCardShowed": 338,
+              "fastLane": true,
+              "decisions": [
+                "fast:start"
+              ],
+              "denied": [],
+              "tools": [],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-interject-correct",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "这是要求改变当前回答的语言，属于对当前回答的补充要求，应由当前回答处理。"
+              ]
+            },
+            {
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "这是对当前回答语言要求的修改（改为英文），需由当前回答处理，不是独立的后台任务。"
+              ]
+            },
+            {
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "这是对当前回答的语言要求，属于改变当前回答的补充，不是独立的后台任务。"
+              ]
+            },
+            {
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "这是要求改变当前回答的语言，属于对当前回答的补充，不是独立的后台任务。"
+              ]
+            },
+            {
+              "decisions": [
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": [
+                "这是要求改变当前回答的语言，属于对当前回答的补充或纠正，不是独立的后台任务。"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "route-schedule",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the schedule proposal should be made: [] | the schedule should be asked for as an app operation: {\"decisions\":[],\"denied\":[],\"tools\":[],\"failed\":0,\"deferred\":[]} | the schedule card should show, naming it: \"\"",
+            "the schedule proposal should be made: [{\"type\":\"app_action_done\",\"at\":1794205926602,\"sessionId\":\"5a969561-585e-4521-8104-91a47047ab4b\",\"operation\":\"schedule_create\",\"ok\":false,\"text\":\"invalid arguments: missing required ",
+            "the schedule proposal should be made: [] | the schedule should be asked for as an app operation: {\"decisions\":[],\"denied\":[],\"tools\":[],\"failed\":0,\"deferred\":[]} | the schedule card should show, naming it: \"\"",
+            "the schedule proposal should be made: [] | the schedule should be asked for as an app operation: {\"decisions\":[],\"denied\":[],\"tools\":[],\"failed\":0,\"deferred\":[]} | the schedule card should show, naming it: \"\"",
+            "the schedule proposal should be made: [{\"type\":\"app_action_done\",\"at\":1794206042364,\"sessionId\":\"35cf8e6e-4e52-4b75-96cc-66ac2bc4d078\",\"operation\":\"schedule_create\",\"ok\":false,\"text\":\"invalid arguments: missing required "
+          ],
+          "numbers": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "id": "route-memory",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794206082928,\"sessionId\":\"d0ea9203-7874-4d57-be78-20de6e548dc8\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"invalid arguments: missing required p",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794206135044,\"sessionId\":\"245ec83e-0aed-45b7-ae83-1dad1345a2fe\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"invalid arguments: missing required p",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794206192327,\"sessionId\":\"ff0957d8-f514-4557-95c8-5e674b55dd24\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"invalid arguments: missing required p",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794206246193,\"sessionId\":\"17858006-e886-472b-b3fd-a7804ec03cb2\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"invalid arguments: missing required p",
+            "the memory operation should succeed: [{\"type\":\"app_action_done\",\"at\":1794206299978,\"sessionId\":\"272e0383-8808-4451-9ee4-9de7a4883028\",\"operation\":\"memory_remember\",\"ok\":false,\"text\":\"invalid arguments: missing required p"
+          ],
+          "numbers": [
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": "routing-H",
+      "note": "fast lane on; schedule and memory after the argument check fix",
+      "scenarios": [
+        {
+          "id": "route-schedule",
+          "attempts": 5,
+          "passed": 0,
+          "failures": [
+            "the schedule card should show, naming it: \"要我定时做吗？每周五 17:00 提醒写周报每周五 17:00提醒用户：现在是周五下午五点，该写本周周报了。请提醒用户撰写本周周报，并问一句是否需要帮忙整理本周工作要点、起草周报草稿；如果用户说要，就根据本周的对话和文件记录帮他汇总成一份周报草稿。定时不用你点了「定时」才会保存\" | kept, the schedule should be in 接下",
+            "the schedule card should show, naming it: \"要我定时做吗？每周五写周报提醒每周五 17:00现在该写本周周报了。请帮我起草本周周报，按「本周完成事项 / 进行中与进展 / 下周计划 / 需要协调的问题」四部分组织，条目化、语气简洁客观。如果缺少本周的工作记录，先问我本周主要推进了哪几件事再动笔。定时不用你点了「定时」才会保存\" | kept, the schedule should be in ",
+            "the schedule card should show, naming it: \"要我定时做吗？写周报提醒每周五 17:00现在是周五下午五点，提醒用户该写本周周报了。定时不用你点了「定时」才会保存\" | kept, the schedule should be in 接下来: [\"每周五 17:00 提醒写周报下次 周五 17:00\",\"每周五写周报提醒下次 周五 17:00\",\"写周报提醒下次 周五 17:00\"]",
+            "the schedule card should show, naming it: \"要我定时做吗？写周报提醒每周五 17:00提醒用户写周报：现在是周五下午五点，该写本周周报了。用一句话提醒，可以顺带问一句要不要帮忙整理本周要点。定时不用你点了「定时」才会保存\" | kept, the schedule should be in 接下来: [\"每周五 17:00 提醒写周报下次 周五 17:00\",\"每周五写周报提醒下次 周五 17:",
+            "the schedule card should show, naming it: \"要我定时做吗？写周报提醒每周五 17:00提醒用户：现在是周五下午五点，该写本周周报了。请提醒用户整理本周完成的工作、进行中的事项和下周计划，动笔写周报。定时不用你点了「定时」才会保存\" | kept, the schedule should be in 接下来: [\"每周五 17:00 提醒写周报下次 周五 17:00\",\"每周五写周报提醒下次 周五"
+          ],
+          "numbers": [
+            {
+              "turnMs": 12801,
+              "followUpMs": 4151,
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "memory_recall",
+                "memory_recall",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 12906,
+              "followUpMs": 2792,
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "memory_recall",
+                "memory_recall",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 6466,
+              "followUpMs": 3581,
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 8741,
+              "followUpMs": 4001,
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "memory_recall",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "turnMs": 8983,
+              "followUpMs": 3030,
+              "decisions": [
+                "app_action"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "memory_recall",
+                "memory_recall",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        },
+        {
+          "id": "route-memory",
+          "attempts": 5,
+          "passed": 5,
+          "failures": [],
+          "numbers": [
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            },
+            {
+              "decisions": [
+                "app_action",
+                "reply"
+              ],
+              "denied": [],
+              "tools": [
+                "commit_route",
+                "commit_route"
+              ],
+              "failed": 0,
+              "deferred": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "run": "routing-A",
+      "reason": "stopped: attempts shared one task list and filled the five task places; replaced by C/E after isolation"
+    },
+    {
+      "run": "routing-G",
+      "reason": "probe bug: the app_action argument check read the compiled schema wrongly; replaced by H"
+    }
+  ],
+  "dshErrors": {
+    "malformedToolInput": 9,
+    "sessions": 206,
+    "note": "Turns ended with \"DeepSeek Messages stream: tool input is invalid JSON\" in app runs C/E/F/G (206 sessions incl. tasks); none in H. All nine were commit_route calls: eight for the weekly-reminder request (nested app_action args), one for a translation start with a long brief. An error-ended turn fires no turn-stopping, so its request was left unrouted and nothing was shown."
+  }
+}

@@ -6,6 +6,8 @@ Date: 2026-11-09. Related [routing and task dispatch proposal](agent-routing-des
 
 **Verdict: the runtime mechanisms are feasible, but the current routing protocol and instructions do not meet implementation acceptance.** Mechanical checks passed 12/12; actual-model formal samples passed 22/27 structured-contract assertions. All five failures retain their original outputs. Correct prose is not sufficient evidence that the backend can reliably continue the workflow.
 
+**Supplementary validation (section 9):** rerun in the real app with a switch-guarded prototype, the production persona, plugins and default thinking: handover, addition, stop, interjection, cross-topic recovery, schedule and memory scenarios each passed 5/5, and the first round's clarification failures came mainly from the reduced persona and disabled thinking. Configuration that needs the user's confirmation cannot yet leave the main session, and constraints on binding timing, the output gate and turns ending in errors must be added to the proposal (section 17 of the proposal).
+
 ## 1 Method and evidence
 
 Sources are the [isolated runner](../test/fixtures/routing-feasibility/run.ts), [probe plugin](../test/fixtures/routing-feasibility/index.ts) and [contract and instructions](../test/fixtures/routing-feasibility/contract.ts). These are not production implementation, are not loaded by the production profile, and the CLI does not match automatic `.test.ts` discovery. [Machine-readable evidence](agent-routing-feasibility-results.json) includes complete results, actions, selected events, source hashes and exploratory failures.
@@ -25,7 +27,7 @@ Formal history tests create 80 valid synthetic historical turns, persist, close 
 | End the main turn after start | 3/3 | Actual independent worker session; main turn finishes before the worker |
 | Repeated refusal to route | 3/3 | Exactly two repairs followed by failure; uncommitted text absent from the probe's visible output |
 
-The main session's actual tools comprise history, task queries, relevant file reads and `commit_route`. A deliberately registered scope-local escape remains visible but is denied at execution. Workers have only the safe step tool, without main-agent routing. Visibility filtering and execution guards are both necessary.
+The main session's actual tools comprise history, task queries, relevant file reads and `commit_route` (supplementary correction: true only from the second step; the first request still carried every tool, see section 9). A deliberately registered scope-local escape remains visible but is denied at execution. Workers have only the safe step tool, without main-agent routing. Visibility filtering and execution guards are both necessary.
 
 Streaming evidence identifies route and answer steps: visible deltas occur after reply acceptance in a later model step. Suppression is implemented in the probe event gate and visible-output collector, not Viva's production renderer; it does not establish that the product UI has this behavior already.
 
@@ -108,3 +110,45 @@ ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron test/fixtures/routing-feasib
 ```
 
 `--out` selects a new experiment output directory; `--only` takes comma-separated scenario IDs. Live mode incurs model usage charges. Credentials are reused only in process memory and child environments, never written to reports or command arguments.
+
+## 9 Supplementary validation
+
+The supplement targets the first round's weak points in three layers. Summarized evidence is in the [supplementary results](agent-routing-supplement-results.json).
+
+**Deterministic set.** Real DSH, production plugins and a scriptable fake model, three runs each ([probe](../test/fixtures/routing-feasibility/supplement/run.ts)). Forbidden calls in the same step (before routing, after routing and after a reply) were denied 9/9 and no forbidden body ran. Interjected requests were tracked on their own, repaired only for themselves when omitted, and no text was released while one was pending, 6/6. Duplicate submissions and inconsistent plans were rejected 6/6. Unbound sessions were refused before their first step, 3/3. For visible output, the unchanged production stream passed 0/9 leak checks (control), dropping unauthorized attempts whole passed 3/9, and keeping start and settle with emptied content passed 9/9. The first-round probe narrowed tools in `pre-step`, so the first request still carried all 49 tools; binding at creation left 10.
+
+**Bridge-level actual-model set.** Production persona, production plugins and default thinking, five runs per cell. With the v2 protocol, ambiguity, an unconfirmed suggestion, retrieval of a corrected standard, recovery after real compaction of a long session (the summary kept the corrected version), task updates, mixed requests, ordinary streaming and interjection each passed 5/5. In an empty workspace, "make a brief" asked for the source material first in 5/5; the production baseline also asked first and delegated 0/5. The first round's v1 protocol under the production configuration passed ambiguity 5/5, the unconfirmed suggestion 5/5 (one check false positive) and retrieval 4/5 (one reasonable follow-up question), so the first round's four clarifications given as replies came mainly from the experimental configuration. For the interjection, the production baseline handed over 0/5 times; all five tried the web inside the main session and wrote a report outline there. Median time to first text was 3.9 seconds, against 1.4 in production.
+
+**Real-app set.** The Electron app with its real renderer, database and TaskRuntime, synthetic meeting notes in the workspace ([scenarios](../test/smoke/live-scenarios-routing.ts)), five runs each:
+
+| Scenario | Result | Data |
+| --- | --- | --- |
+| Ordinary answer | 5/5 | First text in 2.4 to 4.2 s; no routing traces in the database or window |
+| Brief from the notes (proactive handover) | 5/5 | Conversation free after 7.5 to 17 s; the task's brief carries the notes' issue numbers and owners |
+| Add a risks section to the brief | 5/5 | Always sent to the original task |
+| Interjection mid-answer (fast lane) | 5/5 | Task card after 1.5 to 2.0 s; 10.5 to 18 s without the fast lane |
+| Interjection "say it in English" | 5/5 | No task started; the answer continued in English |
+| "The usual rules" in a new topic | 5/5 | The corrected rules were recovered and written into the brief |
+| Stop a task just started | 5/5 | The card shows stopped |
+| Remind me every Friday | Function 5/5 | While the proposal card waited, the conversation went on; once confirmed, it showed in Coming up. The check required a test suffix in the title, which the model rewrote, so the report counts these as failures |
+| Remember my manager | 5/5 | Written by `app_action`; a new topic answers |
+| Add an MCP server | 0/3 | The approval was cancelled with the turn; with an executor task the approval appeared, but the configuration channel refused the task session |
+
+Replaced runs are kept with their reasons: attempts of one run shared the task list and filled the task places (now each attempt has its own material and stops its tasks when it ends), and one run's argument check read the schema wrongly (fixed and rerun).
+
+New findings are written into section 17 of the proposal: binding timing, the output gate, a restricted scope unable to run application tools on the agent's behalf, approvals unable to outlive their turn, invalid JSON tool arguments leaving requests silently unrouted (9 times), telling the user when task places are full, and several versions of one rule in long-term memory, of which the wrong one was picked once.
+
+On the PR revision with the supplement, `npm run typecheck`, `npm test` and `npm run check:i18n` pass.
+
+```sh
+# Deterministic set; no paid model calls
+ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron test/fixtures/routing-feasibility/supplement/run.ts --suite mech --stream gated --repeat 3
+
+# Bridge-level actual-model set
+ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron test/fixtures/routing-feasibility/supplement/run.ts --suite live --protocol v2 --stream gated --repeat 5
+
+# Real-app set
+VIVA_ROUTING=1 VIVA_ROUTING_FAST=1 npm run live -- --only route-reply,route-handoff,route-update,route-interject,route-interject-correct,route-history,route-stop,route-schedule,route-memory,route-mcp --repeat 5
+```
+
+The real-app set uses its own temporary profile and never reads everyday data. Every actual-model run incurs usage charges.

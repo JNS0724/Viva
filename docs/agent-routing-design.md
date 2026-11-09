@@ -249,4 +249,61 @@ Isolated experiments on 2026-11-09 used real DSH and the existing DeepSeek v4.1 
 
 Five contract failures comprise four clarifications submitted as reply and one recovered standard without delegating the requested briefing. The model did not select an ambiguous object or treat unconfirmed assistant advice as an agreement; the backend lacked the correct question state or delivery action. Before R1, clarify the boundary between ordinary replies and persisted questions and explicitly account for every goal in the original request. These fields remain insufficient to guarantee semantic correctness.
 
-Set retrieval deduplication and budgets, retain the failures as regressions, and repeat the full actual-model evaluation after revision. The probe uses safe workers and an experimental output gate; production UI, nonblocking application approvals, every role-recovery path and crash reconciliation remain unverified. Runtime mechanisms are feasible, but the semantic protocol needs revision. This is neither production activation approval nor authorization to start implementation.
+Set retrieval deduplication and budgets, retain the failures as regressions, and repeat the full actual-model evaluation after revision. The probe uses safe workers and an experimental output gate; production UI, nonblocking application approvals, every role-recovery path and crash reconciliation remain unverified. Runtime mechanisms are feasible, but the semantic protocol needs revision. This is neither production activation approval nor authorization to start implementation. Revisions after the supplementary validation are in section 17.
+
+## 17 Revisions after the supplementary validation
+
+The supplementary validation of 2026-11-09 added a switch-guarded prototype to the real app (`VIVA_ROUTING=1`; see [routing-prototype](../src/backend/routing-prototype.ts) and [plugins/routing](../plugins/routing/index.ts)) and ran actual-model scenarios with the production persona, production plugins and default thinking. Results are in [section 9 of the feasibility report](agent-routing-feasibility.md#9-supplementary-validation). The revisions below override the sections they cite; everything else stands. With the switch off, the app behaves as before; the prototype is not approval to ship.
+
+### 17.1 Role binding timing (§7)
+
+DSH assembles a step's system prompt and tools before `agent/pre-step`, so narrowing tools inside pre-step only affects the next step. The first-round probe's main session therefore sent all 49 tools with its first request, and live runs produced `bash` calls that the guard denied. The host must bind before the first step: before each main-session prompt, send the role binding and wait for the plugin's confirmation; narrow at once when the session already has an agent, otherwise at `agent/created`. Background tasks are never bound. In the prototype, the first request carries only the 10 main-session tools.
+
+### 17.2 Visible output gate (§8)
+
+A streaming attempt of an unauthorized step must still send start and settle, only without text or blocks. Dropping it whole lets the app's ACP fallback send the original text to the window when the operation produced no stream. In the deterministic set, the unchanged production stream passed 0/9 leak checks, dropping attempts whole passed 3/9, and keeping start and settle with empty content passed 9/9. In the real app, neither the conversation database nor the window showed request headers, routing JSON or dispatch notices.
+
+### 17.3 Fast lane for interjections (§4)
+
+The main agent reads an interjection only after its current step ends; during a long answer, the task card appeared 10.5 to 18 seconds after the interjection. A fast lane is added: when an interjection arrives, the routing plugin makes one model call without thinking, given the recent conversation, the task list and the interjected words. It hands over directly only when the words are clearly a new, independent job or clearly an addition to, or a stop of, exactly one task; anything else goes back to the main agent. After a handover, a notice is injected into the main session so the request is not submitted twice. In the real app, the fast lane decided in about 1.4 seconds and the task card appeared in 1.5 to 2.0 seconds; corrections to the current answer went back to the main agent in 5/5 runs. Fast-lane handovers use the same task interface and task ID checks as the main session.
+
+### 17.4 Application operations (§9)
+
+`commit_route` gains `app_action`, whose `operation` is a closed enumeration and whose arguments match the tool of the same name. Findings:
+
+- A restricted scope treats a global tool it does not include as absent, so the host cannot run it through the registry on the main session's behalf. The prototype runs the global definition directly instead, which skips DSH's argument check, guards and observers. A real implementation needs DSH to run an authorized out-of-scope call, or to let a scope hold a tool without showing it to the model.
+- The main agent cannot see the parameters of tools narrowed away and repeatedly passed wrong fields. The host must check arguments against the tool schema before accepting the plan and reject with the parameter format; after this fix, schedules and memory each passed 5/5.
+- A schedule proposal does not block: while its card waits, a new question is answered; once confirmed, it appears in Coming up.
+- Configuration that needs approval (adding an MCP server, saving a skill and so on) cannot outlive its turn: DSH cancels a turn's pending approvals when the turn ends. With an executor task instead, the approval appears on the task card, but `config-channel` accepts requests only from the current main session, so the key step is refused. Options are in 17.5.
+
+### 17.5 Configuration that needs confirmation
+
+| Option | What the user sees | Changes needed |
+| --- | --- | --- |
+| a Main session waits | As today: the approval card and key window appear in the conversation; the turn does not end until confirmed, and new messages wait as interjections; if the user ignores the card, the conversation keeps waiting | Only keep such an operation's turn open |
+| b Executor task | A task card such as "connect a service" appears and the turn ends at once; approval happens on the task card and the key window returns to the conversation; chatting continues meanwhile, at the cost of one task place and one more task start | `config-channel` accepts an executor task belonging to the current conversation, and shows the key window in the conversation |
+| c Standalone confirmation card | Like a schedule proposal: a card that can be confirmed at any time appears and the turn ends at once; confirming opens the key window and the result is reported in the conversation | DSH approvals that outlive a turn, or, on the app side, configuration tools that propose a card the way `schedule_create` does, with the app collecting the confirmation |
+
+For the first release, a is recommended: these operations are rare and the experience matches today's. For R3, take c's app-side form, which reuses the validated schedule-proposal pattern and needs no DSH change.
+
+### 17.6 Turns ending in errors and failed receipts (§10, §11)
+
+Across 206 sessions in the real app, 9 turns ended in an error because the model produced tool arguments that were not valid JSON. All nine were `commit_route` calls: eight schedule requests with nested `app_action` arguments and one very long start brief. An error ending does not fire `turn-stopping`, so the request was left unrouted silently and the user saw no response. The host must turn requests still pending at an error ending into failures reported to the user, or retry them a bounded number of times; protocol arguments should be kept flat.
+
+When a handover receipt fails (for example, all five task places are taken), the turn must not end at once. The prototype turns the request into an answerable one, so the main agent says plainly what was not done and why.
+
+### 17.7 Recovering from a misrouted interjection (§6, §12)
+
+Four misjudgements are possible: an addition sent to the wrong task; a new task started where an addition was meant; a correction to the current answer treated as a task; new work merged into an existing task. Recovery has five layers:
+
+1. Prevent: the fast lane hands over directly only on a unique match and otherwise defers to the main agent; task IDs for `message` and `stop` must come from the tasks the host listed.
+2. Show: every handover immediately shows in the conversation where it went (task name and action), so the user can spot a mistake within seconds.
+3. Withdraw: an addition sent to a running task is read only at the task's next step. It should be withdrawable until read, which needs the host or DSH to remove an unread message from the task's inbox. Once read, only a correction can follow, with a stop and restart if needed. A task started by mistake is simply stopped; the stop path passed 5/5.
+4. Correct by a new request: "not that one" becomes a new request referring to the original action. The host compensates (a retraction to the wrong task, delivery to the right one or a new task) and marks the original action as corrected.
+5. Side effects: a task may already have changed files on the wrong addition. The first release cannot roll back automatically; record the files a task touches before it reads an addition, or rely on the user's version control. Task-level snapshots remain to be assessed.
+
+Withdrawing unread additions, compensation and file rollback are not yet implemented or validated.
+
+### 17.8 Still unverified
+
+History after reopening a conversation was checked only in the database. Crash-time action reconciliation, durable storage of requests and actions, Windows, production FTS recall on real history, other models and the changes in 17.5 and 17.7 are not implemented or validated. The supplement shows how the mechanisms and these scenarios behave on one model; it is not approval to ship.

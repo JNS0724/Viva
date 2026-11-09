@@ -83,14 +83,14 @@
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "7a5e387961c50ed2c7fd584fa076678ec1be4da3ea6247b1adeae2ee64fc7c4c",
-      "zhHash": "f16a0e9aad2631c3a90d54ed5403c30acb3baf1ddbcc7c5279930f91f1307797"
+      "enHash": "afc12a355ca65b1d41d7bd2a5d445e0193ef3b6754b282d1c4bb0b79d0ca98d7",
+      "zhHash": "ff3e270dfe180620a749740439ad3d39373b089f775eacd086d5a9bcdca119ad"
     },
     {
       "en": "docs/agent-routing-feasibility.md",
       "zh": "docs/agent-routing-feasibility.zh-CN.md",
-      "enHash": "288bd077fd3093d3ba99eb3684e6da044c7853d260105df12393e1ae920ebd0c",
-      "zhHash": "d786e05ef22b1b5a3ab5e23c25d1088245faf35f4dd552acc580f27367044110"
+      "enHash": "e597695cc4eb3d8b5678d7ff9f66fe3cc41a2b6ae9a883e3f81fe282459d3bcb",
+      "zhHash": "cacf1f1ab014fe8cda9ccde9b0e7679a536ae36be539ffb9db5e929d244cf526"
     }
   ],
   "bilingual": [
