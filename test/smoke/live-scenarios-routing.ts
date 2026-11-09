@@ -270,24 +270,35 @@ const routeReply: LiveScenario = {
 }
 
 const SCHEDULE_CARD = `[...document.querySelectorAll('#thread .fu-card[aria-label="要我定时做吗？"]')].at(-1)`
-const PERMISSION = `[...document.querySelectorAll('.confirm:not(.ask):not(.fu-card)')].find((el) => !el.closest('#tasks-page'))`
+
+/**
+ * An app change as the layered policy has it (plugins/routing/lib/policy.ts): committed as an app_action, then done
+ * by the main agent's own call of the app's tool, which the guard let through on that grant.
+ */
+const appChange = (evidence: Evidence[], tool: string) => ({
+  committed: actionsOf(evidence).some((a) => a.kind === 'app_action' && a.operation === tool),
+  called: evidence.some((e) => e.type === 'tool_call' && e.tool === tool),
+  refused: evidence.filter((e) => e.type === 'guard_denied').map((e) => `${String(e.tool)}: ${String(e.reason ?? '')}`),
+})
+
+/** A different project each attempt, as a user with several would name it; a schedule left by one is not the next's. */
+const PROJECTS = ['北辰', '启明', '远帆', '青禾', '长庚', '星河', '云杉', '澄湖', '暮山', '晴川']
 
 const routeSchedule: LiveScenario = {
   id: 'route-schedule',
-  title: '「每周五下午五点提醒我写周报」：定时卡片出来，对话不被卡住，卡片没点也能接着问，点了之后在动态里',
+  title: '「每周五下午五点提醒我写某项目周报」：经授权调用定时工具，卡片出来，没点也能接着问，点了之后在动态里',
   feature: '路由原型',
   async run(ctx) {
-    const { win, expect, tag } = ctx
+    const { win, expect } = ctx
+    const project = PROJECTS[(ctx.attempt - 1) % PROJECTS.length]
     await fresh(win)
-    const name = `周报-${tag}`
     const since = Date.now()
-    const out = await ask(win, `每周五下午五点提醒我写${name}。`)
-    const proposed = evidenceSince(ctx, since).filter((e) => e.type === 'app_action_done' && e.operation === 'schedule_create')
-    expect(proposed.some((e) => e.ok === true), 'the schedule proposal should be made', proposed)
+    const out = await ask(win, `每周五下午五点提醒我写${project}项目的周报。`)
     const card: string | null = await until(win, `${SCHEDULE_CARD}?.textContent ?? null`, 'the schedule card', 30_000).catch(() => null)
     const evidence = evidenceSince(ctx, since)
-    expect(actionsOf(evidence).some((a) => a.kind === 'app_action' && a.operation === 'schedule_create'), 'the schedule should be asked for as an app operation', summary(evidence))
-    expect(card !== null && card.includes(name), 'the schedule card should show, naming it', clip(card ?? out.answer, 300))
+    const change = appChange(evidence, 'schedule_create')
+    expect(change.committed && change.called, 'the schedule should be committed as an app operation, then proposed by its own tool', { ...change, ...summary(evidence) })
+    expect(card !== null && card.includes(project), 'the schedule card should show, naming the project', clip(card ?? out.answer, 300))
     if (!card) return
     // The card still waiting, the conversation goes on.
     const next = await ask(win, '顺便问下，周报一般写哪几块？一句话回答。')
@@ -298,8 +309,8 @@ const routeSchedule: LiveScenario = {
     await until(win, `!document.getElementById('feed-page').hidden`, 'the 动态 page')
     await wait(UI_WAIT_MS)
     const rows: string[] = await run(win, `[...document.querySelectorAll('#feed-page .fu-row[data-status="active"]')].map((row) => row.textContent)`)
-    expect(rows.some((row) => row.includes(name)), 'kept, the schedule should be in 接下来', rows)
-    keep(ctx, 'numbers', { turnMs: out.ms, followUpMs: next.ms, ...summary(evidence) })
+    expect(rows.some((row) => row.includes(project)), 'kept, the schedule should be in 接下来', rows)
+    keep(ctx, 'numbers', { turnMs: out.ms, followUpMs: next.ms, ...change, ...summary(evidence) })
     await ctx.shot('route-schedule')
     await escape(win)
   },
@@ -310,28 +321,26 @@ const BOSSES = ['顾远航', '沈清和', '陆知遥', '许一诺', '孟川岳',
 
 const routeMemory: LiveScenario = {
   id: 'route-memory',
-  title: '「记住：我的直属上级是某某」：作为应用操作存进记忆，新话题里问得出来',
+  title: '「记住：我的直属上级是某某」：经授权调用记忆工具存下，新话题里问得出来',
   feature: '路由原型',
   async run(ctx) {
-    const { win, expect, tag } = ctx
+    const { win, expect } = ctx
     const boss = BOSSES[(ctx.attempt - 1) % BOSSES.length]
     try {
       await fresh(win)
       const since = Date.now()
       await ask(win, `记住：我的直属上级是 ${boss}。`)
       const evidence = evidenceSince(ctx, since)
-      expect(actionsOf(evidence).some((a) => a.kind === 'app_action' && a.operation === 'memory_remember'), 'remembering should be an app operation', summary(evidence))
-      // Kept by the operation itself, not only by the memory plugin's pass after the turn.
-      expect(evidence.some((e) => e.type === 'app_action_done' && e.operation === 'memory_remember' && e.ok === true), 'the memory operation should succeed', evidence.filter((e) => e.type === 'app_action_done'))
-      await wait(MEMORY_SETTLE_MS)
+      const change = appChange(evidence, 'memory_remember')
+      expect(change.committed && change.called, 'remembering should be committed as an app operation, then done by its own tool', { ...change, ...summary(evidence) })
       expect((await memoriesWith(win, boss)).length > 0, 'the fact should be kept in memory')
       await fresh(win)
       const out = await ask(win, '我的直属上级是谁？只回答名字。')
       expect(out.answer.includes(boss), 'a new topic should know it', clip(out.answer))
-      keep(ctx, 'numbers', summary(evidenceSince(ctx, since)))
+      keep(ctx, 'numbers', { ...change, ...summary(evidenceSince(ctx, since)) })
       await ctx.shot('route-memory')
     } finally {
-      // After the memory plugin's pass, which may keep the fact a second time.
+      // After the memory plugin's own pass, which may keep the fact a second time.
       await wait(MEMORY_SETTLE_MS)
       await forgetMemories(win, boss)
     }
@@ -340,7 +349,7 @@ const routeMemory: LiveScenario = {
 
 const routeMcp: LiveScenario = {
   id: 'route-mcp',
-  title: '对话里接入 MCP：主会话不等审批就结束；审批卡和密钥窗口照常出现，确认后服务器存好',
+  title: '对话里接入 MCP（方案 a）：经授权调用接入工具，审批卡和密钥窗口照常，确认后服务器存好、密钥只加密保存',
   feature: '路由原型',
   async run(ctx) {
     const { win, expect, tag } = ctx
@@ -348,39 +357,16 @@ const routeMcp: LiveScenario = {
     const server = path.join(ctx.hooks.fixtures, 'mail-mcp.js')
     await fresh(win)
     const since = Date.now()
-    const out = await ask(win, `帮我接入一个本地 MCP 服务器：名字叫 ${name}，命令是 node，参数只有一个：${server}。它需要一个密钥，环境变量名叫 MAIL_TOKEN。`)
-    const turnEnded = Date.now()
-    // After the turn: the approval on the executor task's card, then the key, as the owner does them.
-    const stored = path.join(ctx.userData, 'mcp-servers.json')
-    const deadline = Date.now() + 180_000
-    const seen = { taskWaited: false, approval: '', secret: false, where: '' }
-    while (Date.now() < deadline && !fileHolds(stored, name)) {
-      const waiting: string | null = await run(win, `${CARDS}.find((card) => card.dataset.status === 'waiting')?.dataset.task ?? null`)
-      if (waiting) {
-        seen.taskWaited = true
-        await run(win, `${CARDS}.find((card) => card.dataset.task === ${JSON.stringify(waiting)})?.click()`)
-        await wait(800)
-        const card: string | null = await run(win, `document.querySelector('#tasks-page .confirm')?.textContent ?? null`)
-        if (card) { seen.approval ||= card; await run(win, `document.querySelector('#tasks-page .confirm .btn-primary')?.click()`); await wait(UI_WAIT_MS) }
-      }
-      const main: string | null = await run(win, `${PERMISSION}?.textContent ?? null`)
-      if (main) { seen.approval ||= main; seen.where = 'conversation'; await run(win, `(${PERMISSION}).querySelector('.btn-primary').click()`); await wait(UI_WAIT_MS) }
-      if (await run(win, `Boolean(document.querySelector('.secret'))`)) {
-        seen.where ||= await run(win, `document.querySelector('.secret').closest('#tasks-page') ? 'task page' : 'conversation'`)
-        await run(win, `(() => { const card = document.querySelector('.secret'); card.querySelectorAll('input').forEach((input) => { input.value = ${JSON.stringify(secret)} }); card.requestSubmit() })()`)
-        seen.secret = true
-        await wait(UI_WAIT_MS)
-      }
-      await escape(win)
-      await wait(POLL_MS * 2)
-    }
+    const out = await ask(win, `帮我接入一个本地 MCP 服务器：名字叫 ${name}，命令是 node，参数只有一个：${server}。它需要一个密钥，环境变量名叫 MAIL_TOKEN。`, { permission: 'allow', secret })
     const evidence = evidenceSince(ctx, since)
-    expect(actionsOf(evidence).some((a) => a.kind === 'app_action' && a.operation === 'viva_mcp_add'), 'adding the server should be an app operation', summary(evidence))
-    expect(seen.approval.includes(name), 'the approval card should come, naming the server', seen)
-    expect(out.ms < 60_000 && !out.waiting, 'the conversation should not wait on the approval', { turnMs: out.ms })
-    expect(seen.secret, 'the key window should come', seen)
-    expect(fileHolds(stored, name) && !fileHolds(stored, secret), 'the server should be kept, its key only encrypted', { done: evidence.filter((e) => e.type === 'app_action_done') })
-    keep(ctx, 'numbers', { turnMs: out.ms, ...seen, done: evidence.filter((e) => e.type === 'app_action_done').map((e) => ({ ok: e.ok, ms: e.ms, text: clip(String(e.text), 120) })), ...summary(evidence) })
+    const change = appChange(evidence, 'viva_mcp_add')
+    const stored = path.join(ctx.userData, 'mcp-servers.json')
+    expect(change.committed && change.called, 'adding the server should be committed as an app operation, then done by its own tool', { ...change, ...summary(evidence) })
+    expect(out.cards.some((title) => title.includes(name)), 'the approval card should come, naming the server', out.cards)
+    expect(out.secrets.includes('MAIL_TOKEN'), 'the key should be asked for in the window, by its name', out.secrets)
+    expect(fileHolds(stored, name) && !fileHolds(stored, secret), 'the server should be kept, its key only encrypted', { stored: fs.existsSync(stored) })
+    expect(!fileHolds(path.join(ctx.userData, 'app.db'), secret), 'the key should never be in the app database')
+    keep(ctx, 'numbers', { turnMs: out.ms, cards: out.cards, secrets: out.secrets, ...change, ...summary(evidence) })
     await ctx.shot('route-mcp')
   },
 }

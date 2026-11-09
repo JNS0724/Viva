@@ -269,7 +269,7 @@ The main agent reads an interjection only after its current step ends; during a 
 
 ### 17.4 Application operations (§9)
 
-`commit_route` gains `app_action`, whose `operation` is a closed enumeration and whose arguments match the tool of the same name. Findings:
+`commit_route` gains `app_action`, whose `operation` is a closed enumeration and whose arguments match the tool of the same name. Findings (the handling of the first two is superseded by the layered narrowing in 17.9):
 
 - A restricted scope treats a global tool it does not include as absent, so the host cannot run it through the registry on the main session's behalf. The prototype runs the global definition directly instead, which skips DSH's argument check, guards and observers. A real implementation needs DSH to run an authorized out-of-scope call, or to let a scope hold a tool without showing it to the model.
 - The main agent cannot see the parameters of tools narrowed away and repeatedly passed wrong fields. The host must check arguments against the tool schema before accepting the plan and reject with the parameter format; after this fix, schedules and memory each passed 5/5.
@@ -306,4 +306,32 @@ Withdrawing unread additions, compensation and file rollback are not yet impleme
 
 ### 17.8 Still unverified
 
-History after reopening a conversation was checked only in the database. Crash-time action reconciliation, durable storage of requests and actions, Windows, production FTS recall on real history, other models and the changes in 17.5 and 17.7 are not implemented or validated. The supplement shows how the mechanisms and these scenarios behave on one model; it is not approval to ship.
+History after reopening a conversation was checked only in the database. Crash-time action reconciliation, durable storage of requests and actions, Windows, production FTS recall on real history, other models, options b and c of 17.5 and the changes in 17.7 are not implemented or validated; option a is validated in 17.9. The supplement shows how the mechanisms and these scenarios behave on one model; it is not approval to ship.
+
+### 17.9 Layered narrowing of the main session's tools
+
+The main session's tools come in five layers, defined in one place, [policy](../plugins/routing/lib/policy.ts):
+
+| Layer | Tools | Rule |
+| --- | --- | --- |
+| Route | `commit_route` | Called for every request |
+| Context | Conversation search and reading, `memory_recall`, task queries, read-only file tools | Always available |
+| App query | `schedule_list`, `viva_mcp_list`, `viva_skill_list` | Always available |
+| App change | Creating, changing and deleting schedules; remembering and forgetting memories; adding, changing, removing and importing MCP servers and skills | In scope and visible to the model; the turn must first commit the matching `app_action`, and the guard lets the call through on that grant, one call per grant |
+| Execution | Shell, file writes, web, sub-agents, the background-task tools, MCP servers' tools and everything else | Out of scope; such work goes to a task through `commit_route` |
+
+Narrowing happens before the first step (17.1), and the guard applies the same rule again at execution, covering tools added later. App tools stay in scope, so they keep DSH's argument check, approvals, key windows and observers. The two problems in 17.4, a restricted scope unable to run a tool on the agent's behalf and the agent unable to see its parameters, disappear: the prototype no longer runs tool definitions directly, and no new DSH interface is needed. An `app_action` names only the tool; the model gives the arguments in its own call of that tool at the next step, so the protocol stays flat. Configuration that needs approval follows option a of 17.5: when the main session calls `viva_mcp_add`, the approval card and key window are as they are today.
+
+Validation ran in the real app with the production persona, plugins and default thinking, five runs each: 10 scenarios passed 50/50; forbidden calls 0, routing failures 0; schedules, memory and MCP setup committed an `app_action` and were then done by the matching tool in 15/15; MCP setup took 6.8 to 10.3 seconds per turn with the approval card and key window as usual; after an interjection the task card appeared in 1.6 to 2.8 seconds (once 6.4); corrections to the current answer went back to the main agent in 5/5; first text came in 3.1 to 5.0 seconds. Twice the schedule scenario committed two `app_action`s at once; the spare grant was dropped at the end of the turn, and the protocol's wording needs to be clearer.
+
+Experience change: tools of MCP servers the user has added are no longer called by the main session directly; that work goes to a task, and the main session does not wait for it.
+
+### 17.10 Code structure
+
+The supplementary prototype is split by responsibility, and implementation keeps this split:
+
+- `src/shared/request-routing/`: contracts the app shares with the plugin. `header.ts` is the one definition of the request header; `protocol.ts` holds the routing protocol and the closed set of app operations; `ledger.ts` is the pure, immutable request ledger with every state transition, including closing the last turn's leave to speak when a new turn starts and failing undecided requests when a turn ends in an error. The app-side request runtime reuses this ledger when it adds durable storage.
+- `plugins/routing/`: what is dsh's alone. `lib/policy.ts` holds the tool layers and grants; `lib/task-actions.ts` hands over through the viva-tasks channel, every call answering with a receipt; `lib/stream.ts` is the gate; `lib/fast-lane.ts` is the fast lane; `index.ts` only wires dsh's events to these modules. The evidence file is an optional observation port.
+- `src/backend/routing-prototype.ts` and the bridge: the switch, the persona rules, the plugin swap and the confirmed role binding.
+
+The restructuring fixed an existing problem: leave to speak did not end with its turn, so once a session had answered anything, later handovers no longer ended the turn and the gate let text through. Unit tests cover the ledger's transitions, the tool layers and grants, the protocol, the request header and the fast lane's parsing.

@@ -155,6 +155,8 @@ export const testLevels = {
     'task-steps-render',
     'task-store',
     'task-transcript',
+    'tasks-routing-ledger',
+    'tasks-routing-policy',
     'tasks-routing-prototype',
     'tasks-state',
     'test-feature',

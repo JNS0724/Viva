@@ -2282,5 +2282,1085 @@
     "malformedToolInput": 9,
     "sessions": 206,
     "note": "Turns ended with \"DeepSeek Messages stream: tool input is invalid JSON\" in app runs C/E/F/G (206 sessions incl. tasks); none in H. All nine were commit_route calls: eight for the weekly-reminder request (nested app_action args), one for a translation start with a long brief. An error-ended turn fires no turn-stopping, so its request was left unrouted and nothing was shown."
+  },
+  "layeredNarrowing": {
+    "note": "Layered narrowing (proposal 17.9) in the real app, production persona, plugins and default thinking. Profiles of fully passing runs are removed by the harness, so per-attempt numbers come from numbers.json.",
+    "runs": {
+      "layered-1": {
+        "what": "fast lane on; reply, handoff, update, interjection, correction",
+        "scenarios": [
+          {
+            "id": "route-reply",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "firstTextMs": 3248,
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "firstTextMs": 3910,
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "firstTextMs": 3583,
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "firstTextMs": 3125,
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "firstTextMs": 5005,
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-handoff",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "freeAfterMs": 7383,
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "freeAfterMs": 7050,
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "freeAfterMs": 5954,
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "freeAfterMs": 14767,
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "read",
+                  "read",
+                  "read",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "freeAfterMs": 6732,
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-update",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "taskStatusAtUpdate": "running",
+                "decisions": [
+                  "message"
+                ],
+                "denied": [],
+                "tools": [
+                  "list_background_tasks",
+                  "list_background_tasks",
+                  "commit_route",
+                  "commit_route",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "taskStatusAtUpdate": "running",
+                "decisions": [
+                  "message"
+                ],
+                "denied": [],
+                "tools": [
+                  "get_background_task",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "taskStatusAtUpdate": "running",
+                "decisions": [
+                  "message"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "taskStatusAtUpdate": "running",
+                "decisions": [
+                  "message"
+                ],
+                "denied": [],
+                "tools": [
+                  "get_background_task",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "taskStatusAtUpdate": "running",
+                "decisions": [
+                  "message"
+                ],
+                "denied": [],
+                "tools": [
+                  "list_background_tasks",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-interject",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "cardAfterMs": 2775,
+                "answerCharsWhenCardShowed": 436,
+                "fastLane": true,
+                "decisions": [
+                  "fast:start"
+                ],
+                "denied": [],
+                "tools": [],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "cardAfterMs": 2492,
+                "answerCharsWhenCardShowed": 490,
+                "fastLane": true,
+                "decisions": [
+                  "fast:start"
+                ],
+                "denied": [],
+                "tools": [],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "cardAfterMs": 1654,
+                "answerCharsWhenCardShowed": 281,
+                "fastLane": true,
+                "decisions": [
+                  "fast:start"
+                ],
+                "denied": [],
+                "tools": [],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "cardAfterMs": 1593,
+                "answerCharsWhenCardShowed": 344,
+                "fastLane": true,
+                "decisions": [
+                  "fast:start"
+                ],
+                "denied": [],
+                "tools": [],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "cardAfterMs": 6375,
+                "answerCharsWhenCardShowed": 739,
+                "fastLane": true,
+                "decisions": [
+                  "fast:start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "read",
+                  "read",
+                  "read"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-interject-correct",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": [
+                  "这是要求改变当前回答的语言，属于对当前回答的补充，不是独立的新任务。"
+                ]
+              },
+              {
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": [
+                  "这是要求改变当前回答的语言，属于对当前回答的调整，并非独立的后台任务。"
+                ]
+              },
+              {
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": [
+                  "这是对当前回答语言形式的修改要求，需要影响当前回答本身，并非独立后台任务。"
+                ]
+              },
+              {
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": [
+                  "这是要求改变当前回答的语言，属于对当前回答的补充要求"
+                ]
+              },
+              {
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": [
+                  "用户要求改变当前回答的语言，属于对当前回答的补充，不是独立后台任务"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "layered-2": {
+        "what": "fast lane on; history, stop, schedule, memory, MCP (option a)",
+        "scenarios": [
+          {
+            "id": "route-history",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "recoveredWith": [
+                  "memory_recall"
+                ],
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "memory_recall",
+                  "read",
+                  "read",
+                  "read",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "recoveredWith": [
+                  "memory_recall"
+                ],
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "memory_recall",
+                  "glob",
+                  "read",
+                  "read",
+                  "read",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "recoveredWith": [
+                  "search_conversations",
+                  "read_conversation"
+                ],
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "search_conversations",
+                  "glob",
+                  "read_conversation",
+                  "read",
+                  "read",
+                  "read",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "recoveredWith": [
+                  "memory_recall",
+                  "search_conversations",
+                  "read_conversation"
+                ],
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "memory_recall",
+                  "read",
+                  "read",
+                  "read",
+                  "read",
+                  "search_conversations",
+                  "read_conversation",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "recoveredWith": [
+                  "memory_recall",
+                  "search_conversations",
+                  "read_conversation",
+                  "read_conversation",
+                  "search_conversations",
+                  "search_conversations"
+                ],
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "memory_recall",
+                  "search_conversations",
+                  "read_conversation",
+                  "read_conversation",
+                  "search_conversations",
+                  "search_conversations",
+                  "read",
+                  "read",
+                  "read",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-stop",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "status": "stopped",
+                "decisions": [
+                  "stop"
+                ],
+                "denied": [],
+                "tools": [
+                  "list_background_tasks",
+                  "list_background_tasks",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "status": "stopped",
+                "decisions": [
+                  "stop"
+                ],
+                "denied": [],
+                "tools": [
+                  "list_background_tasks",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "status": "stopped",
+                "decisions": [
+                  "stop"
+                ],
+                "denied": [],
+                "tools": [
+                  "list_background_tasks",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "status": "stopped",
+                "decisions": [
+                  "stop"
+                ],
+                "denied": [],
+                "tools": [
+                  "list_background_tasks",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "status": "stopped",
+                "decisions": [
+                  "stop"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-schedule",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "turnMs": 15265,
+                "followUpMs": 4023,
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action+app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "memory_recall",
+                  "memory_recall",
+                  "commit_route",
+                  "schedule_create",
+                  "memory_remember"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 9478,
+                "followUpMs": 3734,
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "memory_recall",
+                  "memory_recall",
+                  "schedule_list",
+                  "commit_route",
+                  "schedule_create"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 13818,
+                "followUpMs": 4187,
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "memory_recall",
+                  "memory_recall",
+                  "search_conversations",
+                  "search_conversations",
+                  "schedule_list",
+                  "commit_route",
+                  "schedule_create"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 7145,
+                "followUpMs": 5200,
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action+app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "schedule_create",
+                  "memory_remember"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 11590,
+                "followUpMs": 4142,
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "memory_recall",
+                  "schedule_list",
+                  "commit_route",
+                  "schedule_create"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-memory",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action",
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "memory_remember",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action",
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "memory_remember",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action",
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "memory_remember",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action",
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "memory_remember",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action",
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "memory_remember",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-mcp",
+            "attempts": 5,
+            "passed": 5,
+            "numbers": [
+              {
+                "turnMs": 8090,
+                "cards": [
+                  "接入 MCP 服务器「mail-e9f6e7」"
+                ],
+                "secrets": [
+                  "MAIL_TOKEN"
+                ],
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "viva_mcp_add"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 7998,
+                "cards": [
+                  "接入 MCP 服务器「mail-e86332」"
+                ],
+                "secrets": [
+                  "MAIL_TOKEN"
+                ],
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "viva_mcp_add"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 10270,
+                "cards": [
+                  "接入 MCP 服务器「mail-dbca9f」"
+                ],
+                "secrets": [
+                  "MAIL_TOKEN"
+                ],
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "viva_mcp_add"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 6754,
+                "cards": [
+                  "接入 MCP 服务器「mail-2c3180」"
+                ],
+                "secrets": [
+                  "MAIL_TOKEN"
+                ],
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "viva_mcp_add"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 7280,
+                "cards": [
+                  "接入 MCP 服务器「mail-32b3e8」"
+                ],
+                "secrets": [
+                  "MAIL_TOKEN"
+                ],
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "viva_mcp_add"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          }
+        ]
+      },
+      "layered-3": {
+        "what": "after moving the shared contracts to src/shared; confirmation subset",
+        "scenarios": [
+          {
+            "id": "route-reply",
+            "attempts": 2,
+            "passed": 2,
+            "numbers": [
+              {
+                "firstTextMs": 5826,
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "firstTextMs": 4067,
+                "decisions": [
+                  "reply"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-handoff",
+            "attempts": 2,
+            "passed": 2,
+            "numbers": [
+              {
+                "freeAfterMs": 13426,
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "read",
+                  "read",
+                  "read",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "freeAfterMs": 13253,
+                "decisions": [
+                  "start"
+                ],
+                "denied": [],
+                "tools": [
+                  "glob",
+                  "read",
+                  "read",
+                  "read",
+                  "commit_route"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-interject",
+            "attempts": 2,
+            "passed": 2,
+            "numbers": [
+              {
+                "cardAfterMs": 2067,
+                "answerCharsWhenCardShowed": 386,
+                "fastLane": true,
+                "decisions": [
+                  "fast:start"
+                ],
+                "denied": [],
+                "tools": [],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "cardAfterMs": 1390,
+                "answerCharsWhenCardShowed": 305,
+                "fastLane": true,
+                "decisions": [
+                  "fast:start"
+                ],
+                "denied": [],
+                "tools": [],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-schedule",
+            "attempts": 2,
+            "passed": 2,
+            "numbers": [
+              {
+                "turnMs": 21680,
+                "followUpMs": 4083,
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "memory_recall",
+                  "memory_recall",
+                  "memory_recall",
+                  "commit_route",
+                  "schedule_create"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 5711,
+                "followUpMs": 11773,
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "schedule_create"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          },
+          {
+            "id": "route-mcp",
+            "attempts": 2,
+            "passed": 2,
+            "numbers": [
+              {
+                "turnMs": 6996,
+                "cards": [
+                  "接入 MCP 服务器「mail-270b75」"
+                ],
+                "secrets": [
+                  "MAIL_TOKEN"
+                ],
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "viva_mcp_add"
+                ],
+                "failed": 0,
+                "deferred": []
+              },
+              {
+                "turnMs": 7717,
+                "cards": [
+                  "接入 MCP 服务器「mail-e37b47」"
+                ],
+                "secrets": [
+                  "MAIL_TOKEN"
+                ],
+                "committed": true,
+                "called": true,
+                "refused": [],
+                "decisions": [
+                  "app_action"
+                ],
+                "denied": [],
+                "tools": [
+                  "commit_route",
+                  "viva_mcp_add"
+                ],
+                "failed": 0,
+                "deferred": []
+              }
+            ]
+          }
+        ]
+      }
+    }
   }
 }

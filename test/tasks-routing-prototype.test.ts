@@ -2,9 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { APP_PLUGINS, PERSONA } from '../src/backend/app-plugins.ts'
-import { createRoutingDesk, fastLaneEnabled, REQUEST_HEADER, routingEnabled, routingPersona, routingPlugins, withRequestHeader } from '../src/backend/routing-prototype.ts'
-import { parsePlan, planProblem } from '../plugins/routing/lib/protocol.ts'
+import { createRoutingDesk, fastLaneEnabled, routingEnabled, routingPersona, routingPlugins, withRequestHeader } from '../src/backend/routing-prototype.ts'
+import { parsePlan, planProblem } from '../src/shared/request-routing/protocol.ts'
 import { fastInput, fastNotice, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
+import { requestsIn, withoutHeaders } from '../src/shared/request-routing/header.ts'
 
 test('routing is off unless VIVA_ROUTING=1, and the fast lane needs routing on', () => {
   assert.equal(routingEnabled({}), false)
@@ -14,10 +15,15 @@ test('routing is off unless VIVA_ROUTING=1, and the fast lane needs routing on',
   assert.equal(fastLaneEnabled({ VIVA_ROUTING: '1', VIVA_ROUTING_FAST: '1' }), true)
 })
 
-test('the request header carries the id and keeps the words as they were', () => {
-  const marked = withRequestHeader('把纪要整理成简报\n第二行', 'r-abc123')
-  assert.equal(REQUEST_HEADER.exec(marked)?.[1], 'r-abc123')
-  assert.equal(marked.replace(REQUEST_HEADER, ''), '把纪要整理成简报\n第二行')
+test('the request header carries the id and keeps the words as they were, and the plugin reads it back', () => {
+  assert.deepEqual(requestsIn(withRequestHeader('把纪要整理成简报\n第二行', 'r-abc123')), [{ id: 'r-abc123', words: '把纪要整理成简报\n第二行' }])
+})
+
+test('one message can carry two requests, their words kept apart', () => {
+  assert.deepEqual(requestsIn(withRequestHeader('做简报', 'r-1')), [{ id: 'r-1', words: '做简报' }])
+  const two = `【插话】你还在处理用户之前交代的事时，用户又说了下面这句（原话）：\n${withRequestHeader('另外整理待办', 'r-2')}\n${withRequestHeader('再加风险', 'r-3')}`
+  assert.deepEqual(requestsIn(two).map((r) => [r.id, r.words.trim()]), [['r-2', '另外整理待办'], ['r-3', '再加风险']])
+  assert.equal(withoutHeaders(withRequestHeader('做简报', 'r-1')), '做简报')
 })
 
 test('routing swaps viva-stream for viva-routing and leaves the other plugins and the persona suffix alone', () => {
@@ -52,6 +58,12 @@ test('a plan is accepted only when goals and actions agree both ways', () => {
   assert.match(planProblem({ goals: [{ goal: '解释', disposition: 'answer' }], actions: [{ kind: 'reply', scope: '解释' }, start] }) ?? '', /start 没有对应的目标/)
   assert.ok('problem' in parsePlan({ goals: [], actions: [start] }))
   assert.ok('problem' in parsePlan({ goals: [{ goal: 'x', disposition: 'delegate' }], actions: [{ kind: 'start', brief: '太短' }] }))
+  // An app operation names only its tool; its arguments go to the tool's own call, so the plan stays flat.
+  assert.ok('plan' in parsePlan({ goals: [{ goal: '每周五提醒', disposition: 'app_operation' }], actions: [{ kind: 'app_action', operation: 'schedule_create' }] }))
+  assert.ok('problem' in parsePlan({ goals: [{ goal: '跑命令', disposition: 'app_operation' }], actions: [{ kind: 'app_action', operation: 'bash' }] }))
+  const withArgs = parsePlan({ goals: [{ goal: '每周五提醒', disposition: 'app_operation' }], actions: [{ kind: 'app_action', operation: 'schedule_create', args: { title: 'x' } }] })
+  assert.ok('plan' in withArgs)
+  assert.deepEqual(withArgs.plan.actions, [{ kind: 'app_action', operation: 'schedule_create' }], 'arguments passed in the plan are dropped, never carried')
 })
 
 test('the fast lane acts only on a clear decision, and only on a task it was shown', () => {
