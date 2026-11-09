@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createDeskIsland, DESK_TIMES, LAYOUT_READY_MS, deskForm } from '../src/shell/desk-island.ts'
 import type { BrowserWindow, Display, Rectangle, WebContents } from 'electron'
 import type { Places } from '../src/shell/desk-place.ts'
+import { DESK_SIZE, DRAG_SIZE, FIXED_DESK_HOST, dragBounds, deskLayout, homePoint } from '../src/shell/desk-place.ts'
 import { deskMenuTemplate } from '../src/shell/desk-menu.ts'
 import { describeDropped, MISSING, NOT_A_FILE } from '../src/shell/island-files.ts'
 import { ASK_LIMITS, checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from '../src/shell/island-ipc.ts'
@@ -106,13 +107,14 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     focused: boolean
     bounds: Rectangle
     ignoring: boolean[]
-    sent: Array<[string, { form: string, dragging: boolean, dir: string, coach: boolean, layoutVersion: number }]>
+    sent: Array<[string, { form: string, dragging: boolean, dir: string, coach: boolean, layoutVersion: number, anchor: { x: number, y: number }, viewport: { top: number, bottom: number } }]>
     handlers: Record<string, () => void>
     webContents: { send: (channel: string, payload: FakeWindow['sent'][number][1]) => void, on: (event: string, callback: () => void) => void, setWindowOpenHandler: () => void }
     onTop = false
     destroyed = false
     shape: Rectangle[] = []
     shapeCalls = 0
+    boundsHistory: Rectangle[] = []
     constructor(options: { focusable?: boolean, width: number, height: number }) {
       this.visible = false
       this.focusable = Boolean(options.focusable)
@@ -145,7 +147,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     isVisible() { return this.visible }
     showInactive() { this.visible = true }
     hide() { this.visible = false }
-    setBounds(bounds: Rectangle) { this.bounds = bounds }
+    setBounds(bounds: Rectangle) { this.bounds = bounds; this.boundsHistory.push({ ...bounds }) }
     getBounds() { return this.bounds }
     // As on Windows: changing whether the window takes the keyboard loses its place on top (DeepSeek, 2026-10-26).
     setFocusable(value: boolean) {
@@ -347,7 +349,7 @@ test('unchanged island hit regions reuse the native shape and a new window reapp
   assert.equal(recreated.shapeCalls, process.platform === 'win32' ? 1 : 0)
 })
 
-test('dragged, the island shrinks to its head, follows the pointer at each frame, and is remembered where it is let go', (t) => {
+test('dragged, the portrait follows the pointer at each frame and is remembered where it is let go', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
   const desk = deskIsland(env)
@@ -356,18 +358,21 @@ test('dragged, the island shrinks to its head, follows the pointer at each frame
   win.handlers['did-finish-load']()
   desk.startDrag({ x: 720, y: 81 })
   desk.setIslandRect({ x: 260, y: 136, width: 80, height: 80 }, win.lastView().layoutVersion, true)
-  assert.deepEqual([win.lastView().dragging, win.bounds], [true, { x: -12, y: 13, width: 104, height: 104 }], 'just the island, under the pointer, kept on the screen')
+  const initial = dragBounds({ x: 40, y: 65 })
+  assert.deepEqual([win.lastView().dragging, win.bounds], [true, initial], 'the portrait stays under the pointer, kept on the screen')
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
   t.mock.timers.tick(200)
-  assert.equal(win.bounds.x, -12, 'no timer moves it: the page\'s frames do')
+  assert.equal(win.bounds.x, initial.x, 'no timer moves it: the page\'s frames do')
   desk.dragMove()
-  assert.deepEqual(win.bounds, { x: 1028, y: 629, width: 104, height: 104 })
+  assert.deepEqual(win.bounds, dragBounds({ x: 1080, y: 681.25 }))
   desk.endDrag()
-  assert.deepEqual([win.bounds.width, win.bounds.height, win.lastView().dir], [600, 352, 'up'], 'its full size again, opening upwards')
+  assert.deepEqual([win.bounds.width, win.bounds.height, win.lastView().dir], [DESK_SIZE.width, DESK_SIZE.height, 'up'])
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 0.75, fy: 0.75 } } })
   assert.equal(win.lastView().dragging, false)
   desk.resetPlace()
-  assert.deepEqual([env.saved(), win.bounds.x, win.bounds.y], [{ last: null, places: {} }, 660, 31], 'back at the top centre')
+  assert.deepEqual(env.saved(), { last: null, places: {} })
+  const area = env.screen.getAllDisplays()[0].workArea
+  assert.deepEqual(win.bounds, deskLayout(homePoint(area), area).bounds, 'back at the top centre')
   desk.destroy()
 })
 
@@ -390,7 +395,9 @@ test('done stays up while the pointer rests on it, and a moment after it leaves'
   const desk = deskIsland(env)
   const [win] = (desk.setView(view('done')), env.windows)
   win.handlers['did-finish-load']()
-  desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 })
+  const anchor = win.lastView().anchor
+  Object.assign(env.cursor, { x: win.bounds.x + anchor.x, y: win.bounds.y + anchor.y })
+  desk.setIslandRect({ x: anchor.x - 40, y: anchor.y - 40, width: 80, height: 80 })
   t.mock.timers.tick(DESK_TIMES.done + 1000)
   assert.equal(win.lastView().form, 'done', 'held while the pointer is over it')
   env.cursor.x = 100
@@ -483,7 +490,7 @@ test('gone and back, the island is a new window, letting the pointer through unt
   desk.destroy()
 })
 
-test('drag resizing waits for the current compact layout and rejects stale or incomplete reports', (t) => {
+test('drag resizing waits for the current compact layout and rejects stale or incomplete reports', { skip: FIXED_DESK_HOST }, (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes({ cursor: { x: 700, y: 200 } })
   const desk = deskIsland(env)
@@ -492,7 +499,7 @@ test('drag resizing waits for the current compact layout and rejects stale or in
   desk.startDrag({ x: 720, y: 81 })
   const version = win.lastView().layoutVersion
   const compact = { x: 260, y: 136, width: 80, height: 80 }
-  assert.equal(win.bounds.width, 600)
+  assert.equal(win.bounds.width, DESK_SIZE.width)
   desk.dragMove()
   desk.setIslandRect(compact, version - 1, true)
   desk.setIslandRect(compact, version, false)
@@ -516,14 +523,68 @@ test('a quick release saves the latest cursor and invalidates the outstanding co
   desk.endDrag()
   desk.setIslandRect({ x: 12, y: 12, width: 80, height: 80 }, oldVersion, true)
   t.mock.timers.tick(LAYOUT_READY_MS + 1)
-  assert.equal(win.bounds.width, 600)
+  assert.equal(win.bounds.width, DESK_SIZE.width)
   assert.equal(win.lastView().dragging, false)
   assert.ok(win.lastView().layoutVersion > oldVersion)
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: .75, fy: .75 } } })
   desk.destroy()
 })
 
-test('a delayed renderer keeps a full surface until its compact acknowledgement arrives', (t) => {
+test('Windows follows a drag immediately and keeps its canvas, anchor and hit region through release', { skip: !FIXED_DESK_HOST }, t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes({ cursor: { x: 738, y: 74 } })
+  const desk = deskIsland(env)
+  t.after(() => desk.destroy())
+  const win = env.windows[0]
+  win.handlers['did-finish-load']()
+  desk.openInput()
+  const anchor = win.lastView().anchor
+  const rect = { x: anchor.x - 40, y: anchor.y - 40, width: 80, height: 80 }
+  desk.setIslandRect(rect, win.lastView().layoutVersion, true, [rect, { x: anchor.x + 52, y: rect.y, width: 440, height: 260 }])
+  desk.startDrag({ ...env.cursor })
+  const dragVersion = win.lastView().layoutVersion
+  assert.equal(win.shape.length, 1, 'keep only the known portrait region while the panel collapses')
+  const mask = [...win.shape]
+  for (const point of [{ x: 900, y: 600 }, { x: 500, y: 200 }, { x: 1080, y: 700 }]) {
+    Object.assign(env.cursor, point)
+    desk.dragMove()
+    assert.deepEqual(win.bounds, dragBounds({ x: point.x - 18, y: point.y + 7 }), 'movement does not wait for a renderer acknowledgement')
+  }
+  const beforeRelease = { ...win.bounds }
+  desk.endDrag()
+  assert.deepEqual(win.bounds, beforeRelease, 'release does not relocate or resize the canvas')
+  assert.deepEqual(win.lastView().anchor, anchor)
+  assert.deepEqual(win.shape, mask, 'release never temporarily enables a full rectangular native region')
+  assert.ok(win.boundsHistory.every(bounds => bounds.width === DESK_SIZE.width && bounds.height === DESK_SIZE.height))
+  assert.equal(desk.inputOpen(), false)
+  const calls = win.shapeCalls
+  desk.setIslandRect({ x: 12, y: 12, width: 80, height: 80 }, dragVersion, true)
+  desk.setIslandRect({ x: 12, y: 12, width: 80, height: 80 }, win.lastView().layoutVersion, false)
+  assert.equal(win.shapeCalls, calls, 'neither old-version nor not-yet-committed geometry can replace the mask')
+  desk.setIslandRect(rect, win.lastView().layoutVersion, true, [rect])
+  assert.deepEqual(win.shape, mask)
+  assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 1062 / 1440, fy: (707 - 25) / 875 } } })
+})
+
+test('fixed-host placement reports the screen viewport and invalidates acknowledgements on reset', { skip: !FIXED_DESK_HOST }, t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes(), desk = deskIsland(env)
+  t.after(() => desk.destroy())
+  const win = env.windows[0]
+  win.handlers['did-finish-load']()
+  const homeVersion = win.lastView().layoutVersion
+  desk.placeAt('right-bottom')
+  const movedVersion = win.lastView().layoutVersion
+  assert.ok(movedVersion > homeVersion)
+  assert.deepEqual(win.lastView().viewport, { top: 25 - win.bounds.y, bottom: 900 - win.bounds.y })
+  desk.resetPlace()
+  assert.ok(win.lastView().layoutVersion > movedVersion)
+  const calls = win.shapeCalls
+  desk.setIslandRect({ x: 12, y: 12, width: 80, height: 80 }, movedVersion, true)
+  assert.equal(win.shapeCalls, calls)
+})
+
+test('a delayed renderer keeps a full surface until its compact acknowledgement arrives', { skip: FIXED_DESK_HOST }, (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes({ cursor: { x: 900, y: 500 } })
   const desk = deskIsland(env)
@@ -563,7 +624,7 @@ test('dragging preserves an off-centre grab, and cancellation restores position 
   const original = { ...win.bounds }
   desk.startDrag({ x: 740, y: 100 })
   desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 }, win.lastView().layoutVersion, true)
-  assert.deepEqual(win.bounds, { x: 788, y: 169, width: 104, height: 104 }, 'the 20px/19px grab offset remains under the pointer')
+  assert.deepEqual(win.bounds, dragBounds({ x: 840, y: 221 }), 'the 20px/19px grab offset remains under the pointer')
   desk.endDrag(true)
   assert.deepEqual(win.bounds, original)
   assert.deepEqual(env.saved(), { last: null, places: {} })

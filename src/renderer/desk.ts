@@ -34,6 +34,7 @@ await initializeLanguage(api, () => { if (languageReady) show() })
  * whether the user has yet to see what it can do (coach).
  */
 type Payload = { view?: IslandShown, form?: string, align?: string, dir?: string, dragging?: boolean, hover?: boolean, coach?: boolean, layoutVersion?: number,
+  viewport?: { top: number, bottom: number },
   expanded?: boolean, panel?: 'input' | 'request' | 'background' | 'status', anchor?: { x: number, y: number }, side?: 'left' | 'right', panelWidth?: number }
 let payload: Payload | null = null
 /**
@@ -124,8 +125,7 @@ function shownView() {
   const view = payload?.view ?? IDLE_VIEW
   const context = { desktopOpen: Boolean(payload?.expanded) || Boolean(dropping), desktopPanel: payload?.panel, targetLabel: view.target?.label }
   if (dropping) return { ...context, desktopOpen: true, form: 'drop', tone: 'done', mood: 'idle', label: t("desk.give.to.viva"), recent: [], count: dropping }
-  // Dragged, it is the cat alone, the size of the window that follows the pointer (desk-place.ts DRAG_SIZE): the
-  // tail of tasks and preparation would make it wider and be cut off on both sides.
+  // While dragged only the portrait remains; the canvas and local anchor may stay fixed on Windows.
   if (payload?.dragging) return { ...view, ...context, desktopOpen: false, form: 'mini', dragging: true, background: null }
   if (payload?.expanded && payload.panel === 'input') {
     return { ...context, form: 'input', tone: 'done', mood: view.mood, label: t("desk.ask.viva"), recent: [], busy: busyOf(view), steering: view.target?.working ?? view.form === 'working',
@@ -169,8 +169,10 @@ async function ask(text: string) {
 }
 
 let layoutFrame = 0
+let placementRevision = 0
+let paintedRevision = -1
+let readyVersion = -1
 const takeView = (next: Payload) => {
-  const layoutChanged = !payload || payload.layoutVersion !== next.layoutVersion
   if (next.expanded && next.panel === 'request' && (!payload?.expanded || payload.panel !== 'request')) activeRequest = next.view ?? null
   payload = next
   if (next.view?.target?.key) draftActions?.expect(next.view.target.key)
@@ -178,7 +180,6 @@ const takeView = (next: Payload) => {
   island.el.dataset.dir = next.dir
   island.setPointer(Boolean(next.hover))
   show()
-  if (layoutChanged) acknowledgeLayout(next.layoutVersion ?? 0)
 }
 api.onView(takeView)
 stopEarly()
@@ -188,7 +189,7 @@ setInterval(show, TICK_MS)
 // The main process lets clicks through to what is below except over the island, so it needs to know where
 // the island is; that changes with every change of shape and place.
 function reportRect(ready = false) {
-  if (!payload) return
+  if (!payload || paintedRevision !== placementRevision) return
   const { x, y, width, height } = island.el.getBoundingClientRect()
   const regions = [...island.el.querySelectorAll<HTMLElement>('.isl-anchor, .isl-peek:not([hidden]), .isl-surface:not([hidden])')].map(el => {
     const { x, y, width, height } = el.getBoundingClientRect(); return { x, y, width, height }
@@ -196,14 +197,25 @@ function reportRect(ready = false) {
   api.act({ kind: 'rect', x, y, width, height, regions, version: payload?.layoutVersion ?? 0, ready })
 }
 function placeSurface() {
-  if (payload) placeDesktopIsland(island.el, stage!, { anchor: payload.anchor ?? { x: 60, y: 50 }, side: payload.side ?? 'right', panelWidth: payload.panelWidth ?? 440 }, reportRect)
+  if (!payload) return
+  const revision = ++placementRevision
+  const version = payload.layoutVersion ?? 0
+  placeDesktopIsland(island.el, stage!, { anchor: payload.anchor ?? { x: 60, y: 50 }, side: payload.side ?? 'right', panelWidth: payload.panelWidth ?? 440, viewport: payload.viewport }, () => {
+    if (revision !== placementRevision || version !== (payload?.layoutVersion ?? 0)) return
+    paintedRevision = revision
+    reportRect()
+    if (readyVersion !== version) acknowledgeLayout(version, revision)
+  })
 }
-/** One painted frame separates the compact renderer layout from the native window resize. */
-function acknowledgeLayout(version: number) {
+/** Acknowledge only after queued placement commits and its geometry has had time to paint. */
+function acknowledgeLayout(version: number, revision: number) {
   cancelAnimationFrame(layoutFrame)
   layoutFrame = requestAnimationFrame(() => {
     layoutFrame = requestAnimationFrame(() => {
-      if ((payload?.layoutVersion ?? 0) === version) reportRect(true)
+      if ((payload?.layoutVersion ?? 0) === version && paintedRevision === revision && placementRevision === revision) {
+        readyVersion = version
+        reportRect(true)
+      }
     })
   })
 }
