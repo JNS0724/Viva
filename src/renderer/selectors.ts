@@ -290,10 +290,20 @@ type TimelineEntry = State['timeline'][number]
 
 /** What of a conversation its trace is drawn from: the order of what happened, the tools and the thoughts. */
 type TraceSource = Pick<ConversationView, 'timeline' | 'tools' | 'thoughts'>
+const thoughtIndexes = new WeakMap<TraceSource['thoughts'], Map<string, TraceSource['thoughts'][number]>>()
+function thoughtOf(state: TraceSource, id: string) {
+  let index = thoughtIndexes.get(state.thoughts)
+  if (!index) {
+    index = new Map()
+    for (const thought of state.thoughts) if (!index.has(thought.id)) index.set(thought.id, thought)
+    thoughtIndexes.set(state.thoughts, index)
+  }
+  return index.get(id)
+}
 const TRACE_BUILDERS: { [K in TimelineEntry['kind']]: (state: TraceSource, entry: Extract<TimelineEntry, { kind: K }> extends never ? TimelineEntry & { kind: K } : Extract<TimelineEntry, { kind: K }>) => TraceRow | null | undefined } = {
   memory: (_state, entry) => memoryTrace(entry.injection),
   thought: (state, entry) => {
-    const thought = state.thoughts.find((t) => t.id === entry.ref)
+    const thought = thoughtOf(state, entry.ref)
     return thought && { title: t("selectors.thinking.2"), detail: truncate(thought.text, DETAIL_LIMIT), tone: 'think' }
   },
   tool: (state, entry) => {
@@ -325,6 +335,18 @@ export function traceItems(state: TraceSource): Array<TraceRow & { key: string, 
     const item = build(state, entry)
     return item ? [{ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item }] : []
   })
+}
+
+/** The last visible steps, keeping their timeline keys without formatting the whole trace. */
+export function traceTail(state: TraceSource, count: number): ReturnType<typeof traceItems> {
+  const rows: ReturnType<typeof traceItems> = []
+  for (let index = state.timeline.length - 1; index >= 0 && rows.length < count; index -= 1) {
+    const entry = state.timeline[index]
+    const build = TRACE_BUILDERS[entry.kind] as (state: TraceSource, entry: TimelineEntry) => TraceRow | null | undefined
+    const item = build(state, entry)
+    if (item) rows.push({ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item })
+  }
+  return rows.reverse()
 }
 
 const toolsInOrder = (state: State) =>

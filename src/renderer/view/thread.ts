@@ -61,8 +61,8 @@ function avatar(message: ThreadMessage, look: Look) {
 
 /** Status changes update only the portrait, keeping a reader-expanded answer and its nodes intact. */
 function refreshAvatar(view: View, message: ThreadMessage, look: Look) {
-  if (message.role !== 'assistant') return
-  const slot = elementsOf(view)[0]?.querySelector<HTMLElement>('.maid-avatar')
+  if (message.role !== 'assistant' || !look.latest) return
+  const slot = firstElement(view)?.querySelector<HTMLElement>('.maid-avatar')
   if (!slot) return
   const key = lookKey(message, look)
   if (avatarLooks.get(slot) === key) return
@@ -144,14 +144,15 @@ function typeOn(message: ThreadMessage, handlers: Handlers, look: Look, before: 
   const typing = message.open || (message.shown ?? message.text.length) < message.text.length
   if (message.role !== 'assistant' || !typing || !look.streams) return false
   if (before.length !== after.length || before.some((value, i) => !TYPED_INPUTS.has(i) && value !== after[i])) return false
-  const el = elementsOf(view)[0]?.querySelector<HTMLElement>('.msg-text.markdown')
+  const el = firstElement(view)?.querySelector<HTMLElement>('.msg-text.markdown')
   const stream = look.streams.get(message.id)
   if (!el || !stream || stream.el !== el) return false
   const drawn = streamMarkdown(stream, visibleText(message.text, message.shown), { openLink: handlers.openLink, image: null })
   look.streams.set(message.id, drawn)
   if (drawn.el !== el) return false
-  el.querySelector('.caret')?.remove()
-  caretHost(el).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
+  const caret = el.querySelector('.caret')
+  const host = caretHost(el)
+  if (caret?.parentElement !== host) host.append(caret ?? h('span', { class: 'caret', 'aria-hidden': 'true' }))
   return true
 }
 
@@ -332,6 +333,7 @@ function secretCard(secret: { requestId: string, server: string, names: readonly
 
 /** The elements of a view, one level down, without the empty parts. */
 const elementsOf = (view: View): Element[] => [view].flat().filter((el): el is Element => el instanceof Element)
+const firstElement = (view: View): Element | undefined => view instanceof Element ? view : elementsOf(view)[0]
 
 /**
  * A message with what going back adds to it: over the user's words the bar to go back there (or the editor, in

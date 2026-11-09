@@ -139,6 +139,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   let drag: { cursor: Point | null, layout: 'waiting' | 'compact' | 'full', grab: Point, origin: ReturnType<typeof deskLayout>, expanded: boolean } | null = null
   let layoutVersion = 0
   let layoutTimer: ReturnType<typeof setTimeout> | undefined
+  let appliedShape: { window: Win, rects: Rect[] } | null = null
 
   /** The island's window while it is there. */
   const live = (): Win | null => (win && !win.isDestroyed() ? win : null)
@@ -147,6 +148,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     for (const [ticket, held] of imports) if (held.window === opened) imports.delete(ticket)
     retired.delete(opened)
     if (win !== opened) return
+    appliedShape = null
     clearInterval(pointerTimer)
     clearTimeout(styleTimer)
     clearTimeout(layoutTimer)
@@ -198,7 +200,13 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       return { x, y, width: right - x, height: bottom - y }
     }).filter(rect => rect.width > 0 && rect.height > 0)
     if (!shapes.length) return
-    shown.setShape(shapes)
+    if (!appliedShape || appliedShape.window !== shown || shapes.length !== appliedShape.rects.length || shapes.some((rect, i) => {
+      const before = appliedShape!.rects[i]
+      return rect.x !== before.x || rect.y !== before.y || rect.width !== before.width || rect.height !== before.height
+    })) {
+      shown.setShape(shapes)
+      appliedShape = { window: shown, rects: shapes }
+    }
     setIgnoring(false)
   }
 
@@ -320,6 +328,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     } else shown.destroy()
     islandRect = null
     regions = []
+    appliedShape = null
     drag = null
     hovering = false
   }
@@ -463,6 +472,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       if (process.platform === 'win32') {
         const bounds = shown.getBounds()
         shown.setShape([{ x: 0, y: 0, width: bounds.width, height: bounds.height }])
+        appliedShape = null
       }
       setIgnoring(false)
       send()
@@ -495,7 +505,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
         setIgnoring(true)
         if (cancel) { layout = previous.origin; shown.setBounds(layout.bounds) }
         else place(shown)
-        if (process.platform === 'win32') shown.setShape([{ x: 0, y: 0, ...DESK_SIZE }])
+        if (process.platform === 'win32') { shown.setShape([{ x: 0, y: 0, ...DESK_SIZE }]); appliedShape = null }
       }
       refresh()
       if (shown && !input) {

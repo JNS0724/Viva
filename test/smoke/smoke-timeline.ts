@@ -80,6 +80,7 @@ const TIMELINE = `(() => {
     more: document.querySelector('#earlier .timeline-more')?.textContent ?? null,
     dots: marks.filter((mark) => mark.classList.contains('turn-topic')).length,
     lines: marks.filter((mark) => !mark.classList.contains('turn-topic')).length,
+    tips: marks.filter((mark) => !mark.classList.contains('turn-topic')).map(mark => mark.getAttribute('data-tip')),
   }
 })()`
 
@@ -150,6 +151,7 @@ async function checkFolded(win: SmokeAppWindow, outDir: string, expect: Expect) 
   expect(seen.open === 0 && seen.titles.some((title: string) => title.includes('把这周的进展整理一下')), 'earlier topics should be folded to a line named by their first question', seen)
   expect(seen.more?.includes('回顾'), 'past the recent days, the top should point to 回顾 instead of reading further back', seen)
   expect(seen.dots === seen.folded && seen.lines === 4, 'the rail: a dot per earlier topic, a line per question of this one', seen)
+  expect(seen.tips[0]?.includes('帮我列一下季度复盘 PPT 的大纲') && seen.tips[3]?.includes('最后一页呢'), 'turn tooltips should use the user text inside the folded message body', seen.tips)
   const many = await run(win, MANY_MARKS)
   expect(many.marks >= MANY_QUESTIONS && many.outside === 0 && many.reachable, 'with many questions every mark of the rail should stay in the window, the last one reachable', many)
   await run(win, `document.getElementById('scroll').scrollTop = 0`)

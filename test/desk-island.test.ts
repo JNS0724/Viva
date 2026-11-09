@@ -112,6 +112,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     onTop = false
     destroyed = false
     shape: Rectangle[] = []
+    shapeCalls = 0
     constructor(options: { focusable?: boolean, width: number, height: number }) {
       this.visible = false
       this.focusable = Boolean(options.focusable)
@@ -129,7 +130,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     }
     setAlwaysOnTop(value: boolean) { this.onTop = value }
     isAlwaysOnTop() { return Boolean(this.onTop) }
-    setShape(rects: Rectangle[]) { this.shape = rects }
+    setShape(rects: Rectangle[]) { this.shape = rects; this.shapeCalls += 1 }
     setVisibleOnAllWorkspaces() {}
     setContentProtection() {}
     setIgnoreMouseEvents(value: boolean) { this.ignoring.push(value) }
@@ -324,6 +325,26 @@ test('native topmost loss after activation is repaired without taking focus', (t
   assert.deepEqual([win.onTop, win.focused, desk.inputOpen()], [true, false, false])
   desk.destroy()
   t.mock.timers.tick(100)
+})
+
+test('unchanged island hit regions reuse the native shape and a new window reapplies it', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  t.after(() => desk.destroy())
+  const [win] = env.windows
+  const rect = { x: 20, y: 10, width: 80, height: 80 }
+  desk.setIslandRect(rect)
+  const calls = win.shapeCalls
+  for (let i = 0; i < 60; i++) desk.setIslandRect({ ...rect })
+  assert.equal(win.shapeCalls, calls)
+  desk.setIslandRect({ ...rect, width: 100 })
+  assert.equal(win.shapeCalls, calls + (process.platform === 'win32' ? 1 : 0))
+  desk.setAway(false)
+  desk.setAway(true)
+  const recreated = env.windows.at(-1)!
+  desk.setIslandRect(rect)
+  assert.equal(recreated.shapeCalls, process.platform === 'win32' ? 1 : 0)
 })
 
 test('dragged, the island shrinks to its head, follows the pointer at each frame, and is remembered where it is let go', (t) => {
