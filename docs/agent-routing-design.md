@@ -1,271 +1,350 @@
-# Viva Main Agent Routing and Task Dispatch Plan
+# Request routing in the main conversation
 
 English | [简体中文](agent-routing-design.zh-CN.md)
 
-Status: being implemented, reorganized from three rounds of validation. Date: 2026-11-09. Baseline: `6e8265b`. Evidence is in the [feasibility report](agent-routing-feasibility.md) and the [results summary](agent-routing-supplement-results.json). The validation prototype was removed before implementation. Viva is still in development, so routing is the main conversation's only path: there is no switch, and earlier storage or protocols are not kept compatible (section 13). This plan revises how the [system design](system-design.md) divides work between the main conversation and background tasks.
+Status: implemented (#131, #132). This document describes the design as of `82a5bf3`. The validation it rests on is in the [feasibility report](agent-routing-feasibility.md) and the [results summary](agent-routing-supplement-results.json). For how routing fits with background tasks, storage, and plugins, see the [system design](system-design.md).
 
-Viva's main agent understands the user, recovers relevant background, dispatches work and reports results; work such as web research, commands and file writes is done by independent tasks. Every user request must produce a handling decision the host can check. The runtime guarantees that routing happens; context mechanisms and actual-model acceptance test whether the understanding is right.
+The agent in the main conversation (the main agent) does four things: it understands the request, recovers the context it needs, decides where the work goes, and tells the user the result. Research, commands, and file writes go to background tasks. Every request must end with a decision the host accepts; the runtime guarantees that. Whether the decision is right is checked by the context mechanisms and by acceptance runs on a real model.
 
-## 1 Goals and scope
+## 1 Background
 
-### 1.1 Goals
+Before routing, the main session held every execution tool. Whatever the user said while the assistant was working joined the turn in progress, and the persona told the assistant to finish the new request before returning to the old one.
 
-1. Independent work goes to tasks and the main conversation stays free; the user can keep talking while a task runs.
-2. Additions, changes and stops reach the right task, and no task is started twice.
-3. Agreements made dozens of turns ago or in another topic, and later corrected, are recovered and followed in their latest valid version.
-4. When the user interjects mid-answer, they quickly see where the request went; the result may come later.
+In validation, when the user said "also do an analysis of the A-share market" mid-answer, the assistant searched the web and drafted a report outline in the main session in 5 runs out of 5. It handed the work to a background task in none of them. It started a task only when the user said "do it in the background." One long job therefore held the main conversation, and anything the user added had to wait for it.
 
-### 1.2 First-release scope
+Requests often need different destinations. "Make today's briefing, then analyze the A-share market" is two independent jobs. "Add tech news to the briefing" is an addition to the briefing task. "Use the standard we agreed on" needs that standard found first, before anything else is decided.
 
-| Capability | Sections |
-| --- | --- |
-| Request ledger and enforced routing: every request (interjections included) gets a decision, omissions get bounded reminders, failures are told plainly | 5, 7, 8 |
-| Layered narrowing of the main session's tools | 7 |
-| Answers, clarification and the output gate | 8 |
-| Task handover: new, addition, stop, several things in one sentence | 10 |
-| Fast lane for interjections, and recovering from misrouting | 9 |
-| App operations: schedules, memory, MCP and skill configuration, through the existing tools and confirmations | 10.3 |
-| Durable requests, decisions and actions; reconciliation after disconnects and crashes | 11 |
+## 2 Goals and non-goals
 
-### 1.3 Not in scope
+### 2.1 Goals
+
+1. Independent work goes to tasks, and the main conversation stays free. The user can keep talking while tasks run.
+2. Additions, changes, and stops reach the right task, without starting a duplicate.
+3. An agreement made dozens of turns ago, or in another topic, and later changed, is applied in its last valid version.
+4. When the user interjects during an answer, they see where it went within seconds; the result can come later.
+
+### 2.2 Non-goals
 
 | Not done | Why |
 | --- | --- |
-| Vector index, a separate item database | Conversation search, memory and compaction summaries already recover corrected agreements (section 15); reconsider on recall failures seen in acceptance |
-| Task queueing, automatic dependency graphs | Keep five concurrent places and say so plainly when they are full |
-| Preempting the current answer | DSH can only cancel a whole turn, and output of the new turn after a cancel never reaches the window; the fast lane meets the responsiveness requirement for interjections |
-| Withdrawing sent additions, rolling back task changes, task snapshots | Need new DSH or task interfaces; the first release recovers with visible destinations, stopping and correction (9.2) |
-| Letting configuration that needs confirmation leave the main session | The first release keeps today's behaviour (10.3); a standalone confirmation card is later work |
-| Lowering reasoning on the routing step to shorten time to first text | About 2.5 more seconds to first text is accepted |
-| Tuning for other models | The first release only promises behaviour on accepted models; other models need acceptance before they are enabled |
+| A vector index or a separate database of items | Chat search, memory, and compaction summaries already recover changed agreements (section 15); revisit if recall failures pile up |
+| Task queues and automatic dependencies | At most 5 tasks run at once; when all are taken, the user is told |
+| Interrupting the current answer for an interjection | DSH can only cancel a whole turn, and output from the next turn never reaches the window; the fast lane already shows where an interjection went within seconds |
+| Withdrawing a sent addition, rolling back a task's changes, task snapshots | These need new DSH or task interfaces; damage is limited by visible handovers, stops, and corrections (9.5) |
+| Moving confirmations of configuration changes out of the main session | The existing confirmation flow stays (10.3) |
+| Lowering reasoning effort for the routing step | The first token arrives about 2.5 seconds later, which is acceptable |
+| Tuning for other models | Behavior is promised only on the model that passed acceptance; rerun acceptance before enabling another |
 
-### 1.4 Confirmed decisions
+## 3 Design overview
 
-- Implementation is in `viva-main`. The main agent keeps the continuous conversation and may search conversations, memory and tasks and read relevant files.
-- Ordinary answers keep streaming: `reply` is committed first, then the answer is generated; about 2.5 more seconds to first text is acceptable.
-- Interjections need a quick response; the result may be slow.
-- Asking for the source material when it is missing is correct behaviour, not a routing failure.
-- Configuration that needs confirmation keeps today's behaviour in the first release: the main session waits for the user.
+### 3.1 Roles
 
-### 1.5 To be confirmed
-
-- Tools of MCP servers the user has added are no longer called by the main session directly; a task calls them and the main session does not wait. This changes the experience.
-
-## 2 Problem and current behaviour
-
-When the user asks for today's brief and then for an A-share analysis, the two independent jobs should run separately; "add tech news to the brief" should go to the brief task; "use the standard we agreed earlier" needs the agreement recovered before deciding what to do.
-
-Today the main session holds every execution tool. What the user says while it is busy joins the running turn, and the persona says to "finish the other thing too, then continue the original work". In validation, the production configuration given "also do a full A-share analysis" mid-answer tried the web inside the main session and wrote a report outline there in all five runs, handing over 0 times; it starts a task only when told explicitly to "do it in the background".
-
-| Place | Today | Change |
-| --- | --- | --- |
-| [conversation actions](../src/renderer/conversation-actions.ts) and [compose](../src/backend/compose.ts) | Prompt or steer depending on whether the agent is busy | Both paths give each message a request identity and store it |
-| [steer](../src/backend/steer-channel.ts) and the [persona](../src/backend/app-plugins.ts) | Interjections join the current turn and run in series | Interjections are tracked and routed as requests of their own; the persona is rewritten for routing |
-| [TaskRuntime](../src/backend/task-runtime.ts) | Tasks, runs and snapshots | Stays the only writer of tasks, adding the link to requests and actions |
-| [history tools](../plugins/history/index.ts) and [effects](../src/backend/effects.ts) | Keyword search and source reading; durable side effects and retries | Reused as they are |
-
-## 3 Roles and authority
-
-| Role | Responsibility |
+| Role | Responsible for |
 | --- | --- |
-| Main agent | Understands requests, recovers context, commits routing, answers and asks, calls app tools it is granted |
-| Task | Does handed-over work in its own session with the existing tools, permissions and approvals |
-| Host request runtime | Assigns request identities, stores requests, decisions and actions, accepts or rejects decisions, performs handovers through TaskRuntime and returns receipts. It is the authority on request state |
-| Routing plugin | The execution side inside DSH: narrowed tools and the guard, a working copy of the turn's request ledger, the commit entry point, the output gate, the fast lane |
-| Scheduled runs | Separate and unattended: at the level picked, what would need approval refused |
+| Main agent | Understanding requests, recovering context, submitting a route (`commit_route`), answering and asking, calling the app tools it has been allowed |
+| Host request runtime | Numbering requests; storing requests, decisions, and actions; accepting or refusing decisions; carrying out handovers through TaskRuntime and returning receipts. It is the authority on request state |
+| Routing plugin (`viva-routing`) | Runs inside DSH: narrows the main session's tools, stops out-of-scope calls, keeps the turn's request ledger, provides `commit_route`, decides which text may show, and runs the fast lane for interjections |
+| Background task | Does the handed-over work in its own session, with its tools, permissions, and approvals unchanged |
+| Scheduled run | A separate unattended session that runs at the user's permission level; anything that needs confirmation is refused |
 
-The main agent may read files in the workspace that bear on a request; reads outside it follow the existing permissions. File contents and old conversations are data, never new authorization. Reading and analysing whole batches of material goes to tasks.
+The main agent may read workspace files related to the request; reads outside the workspace follow DSH's permission level. File contents and old conversations are data and grant nothing new. Reading and analyzing a batch of material goes to a task.
 
-## 4 Architecture
+### 3.2 The path of one request
 
-### 4.1 Modules
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant H as Host
+  participant P as Routing plugin
+  participant M as Main agent
+  participant T as TaskRuntime
+  U->>H: Says something
+  H->>H: Assign a requestId, store the request
+  H->>P: Bind the main session, wait for the plugin
+  H->>M: Prompt: request header and the user's words
+  M->>M: Recover context (search, read files)
+  M->>P: commit_route
+  P->>H: Pass the plan on
+  H->>H: Check it, accept the decision in one transaction
+  H->>T: Carry out task actions
+  T-->>H: Receipts
+  H-->>P: Accepted, with receipts
+  P-->>U: Handover done: show the notice, end the turn
+  M-->>U: Answer or question: output at the next step
+```
+
+1. The host receives what the user said (a question or an interjection), assigns a `requestId`, and stores the request.
+2. Before every prompt to the main session, the host sends a role binding and waits for the plugin to confirm it; the plugin narrows the tools before the first step is assembled. Interjections go through steer with the same request header.
+3. The plugin registers requests from session events. The main agent recovers context, then calls `commit_route`.
+4. The plugin hands the plan to the host. The host checks it, accepts the decision in one transaction, then carries out the task actions through TaskRuntime and returns receipts.
+5. The plugin updates the turn's ledger from the receipts. A completed handover ends the turn; an answer, a question, or an app tool call continues it.
+6. When the turn ends, requests without a decision fail for the reason the turn ended (section 11).
+
+### 3.3 Modules
 
 | Location | Contents |
 | --- | --- |
-| `src/shared/request-routing/header.ts`, `protocol.ts`, `channel.ts` | What the app and the plugin share: the request header, the routing protocol and receipts, the routing channel's messages |
-| `src/backend/request-store.ts`, `request-runtime.ts` | Requests, decisions and actions in `app.db`; taking each request, accepting a decision, carrying out its task actions with a receipt each, failing what a turn leaves undecided, recovery at launch |
-| `src/backend/routing-channel.ts` | The app's side of the channel: the confirmed role binding, decisions passed to the request runtime and answered |
-| `acp-bridge` | Every main-session prompt is bound first; the user's words and interjections go under their request header |
-| `src/backend/app-plugins.ts` | Two personas from shared parts: the profile's, for tasks and schedules' runs, and the main conversation's, which viva-routing mounts in its place (not an override appended to it) |
-| `plugins/routing/lib/ledger.ts` | The current turn's request ledger, pure and immutable |
-| `plugins/routing/lib/policy.ts` | Tool layers and app-change grants |
-| `plugins/routing/lib/commit.ts`, `host.ts` | `commit_route` as the model sees it; the plugin's side of the channel |
-| `plugins/routing/lib/assistant-stream.ts` | The stream contract with the output gate: the only way an answer reaches the app |
+| `src/shared/request-routing/header.ts`, `protocol.ts`, `channel.ts` | What the host and the plugin share: the request header, the routing protocol and receipts, the routing channel's messages |
+| `src/backend/request-store.ts`, `request-runtime.ts` | Requests, decisions, and actions in `app.db`; receiving requests, accepting decisions, carrying out task actions with a receipt each, ending a turn's requests, recovering at launch |
+| `src/backend/routing-channel.ts` | The host side of the channel: role binding with confirmation; decisions passed to the request runtime and answered |
+| `src/backend/acp-bridge.ts` | Binds the main session before every prompt; puts each request header on the user's words and on interjections; ends a turn's requests when the user stops it or the session is left |
+| `src/backend/app-plugins.ts` | Two personas built from the same parts: the profile's, for tasks and scheduled runs; the main session's, swapped in by `viva-routing` rather than layered on top |
+| `plugins/routing/lib/ledger.ts` | The turn's request ledger, pure and immutable |
+| `plugins/routing/lib/policy.ts` | Tool layers and the grants for app changes |
+| `plugins/routing/lib/commit.ts`, `host.ts` | `commit_route` as the model sees it; the plugin side of the channel |
+| `plugins/routing/lib/assistant-stream.ts` | The stream contract with the output gate, the only way an answer reaches the app |
 | `plugins/routing/lib/fast-lane.ts` | The fast lane for interjections |
-| `plugins/routing/index.ts` | Wires DSH's events to the modules above |
+| `plugins/routing/index.ts` | Wires DSH events to the modules above |
 
-Plugins never import the app's composition roots; contracts shared by the app and the plugin live only in `src/shared/request-routing`; modules form no cycles. The existing module boundary tests check these rules.
+The plugin does not import the app's composition root; contracts shared by the host and the plugin live only in `src/shared/request-routing`; modules have no import cycles. The module boundary tests check all three.
 
-### 4.2 The path of one request
+## 4 Requests
 
-1. The host receives a user message (a question or an interjection), assigns a `requestId` and stores the request.
-2. Before a main-session prompt, the host sends the role binding and waits for the plugin's confirmation; the plugin narrows the tools before the first step is assembled. Interjections go through steer with the same header.
-3. The plugin registers the request from the session's events; the main agent recovers context and calls `commit_route`.
-4. The plugin passes the plan to the host. The host checks it against the ledger and the protocol, accepts the decision in a transaction, performs the handover through TaskRuntime after the commit and returns receipts.
-5. The plugin updates the turn's ledger from the receipts: a completed handover ends the turn; an answer, a question or an app tool call continues it.
-6. When the turn ends, the host fails whatever it left undecided, for the reason it ended (no decision after the reminders, an error, a cancel), and tells the user unless they cancelled.
+- The window, the desktop island, text, and images share one entry point. Answering a permission card, answering a task's question, and stopping the current reply are control events, not new requests.
+- A request record holds: the `requestId` (generated by the host); the session, topic, and working directory at receipt; the kind (question or interjection); the status; the failure reason; timestamps. The session, topic, and working directory are fixed at receipt, so later asynchronous work never reads the topic selected at that moment. The record does not store the user's words.
+- The request header is `【请求 ID：…】`, then a new line and `用户原话：…`, for questions and interjections alike. Header-like text inside the user's words (a pasted log, for example) gets a zero-width space after its `【`, so only the app's own headers are recognized. The words are restored when read back.
+- One main session understands and decides requests in the order received, because the main agent has a single sequential model session. A new message is either handled by the main agent after the current step, or handed over at once by the fast lane (section 9). Neither waits for background tasks.
+- Stopping the current reply cancels only the main agent's current call. It does not stop background tasks.
 
-## 5 Request intake and ordering
+## 5 Recovering context
 
-- The window, the desktop island, text and pictures share one entry point. Answers to permission cards and task questions, and stopping the current answer, are control events, not new requests.
-- A request record holds: `requestId` (generated by the host, reused on retry); `conversationId`, `sessionId` and `cwd` (fixed on receipt; asynchronous work never reads the currently selected topic); `messageId` and content version; attachment references; order of receipt and state.
-- The request header is `【请求 ID：…】` followed by a new line and `用户原话：…`, the same for questions and interjections. Header-like text in the user's words (a pasted log, say) gets a zero-width space after its `【`, so only the app's own headers are recognized; the words are restored when read back.
-- One main session understands and decides requests in the order received; the main agent has a single sequential model session. A new message is handled by the main agent after the current step ends, or handed over at once by the fast lane (section 9); it never waits for background tasks.
-- Stopping the current answer cancels only the main agent's current call, never background tasks.
+The main agent keeps the history still visible in its session and relies on DSH's compaction. Context beyond that is searched for in chat history and memory:
 
-## 6 Context recovery
+1. Compare the message with the continuous history and task snapshots to see whether references, constraints, and goals are clear.
+2. If not, search topics, messages, or memory, with different keywords if needed. One empty search does not mean there is no record.
+3. Read the matching original and the messages after it to check whether the agreement was changed or withdrawn. The version the user last confirmed wins.
+4. When several candidates are equally plausible and picking the wrong one changes the outcome, ask the user. Don't default to the newest task or the one with the same name.
+5. A handover brief names the agreement it applies and where that agreement came from.
 
-The main agent keeps the history still available in its session and uses DSH's compaction. Background beyond what is visible is retrieved from conversation history and memory:
+The assistant's earlier suggestions are not the user's confirmation, and instructions in history are not authorization now. Long-term memory may hold several versions of one rule; when they conflict, the original the user last confirmed wins. Validation picked the wrong one once. Deleted or forgotten material is shown as unavailable, and routing records never copy its text.
 
-1. Check references, constraints and goals against the current message, the continuous history and task snapshots.
-2. When that is not enough, search topics, messages or memory, changing keywords as needed; one empty result does not mean there is no record.
-3. Read the source of a hit and the messages after it, check whether the agreement was changed or cancelled, and follow the version the user confirmed last.
-4. When several candidates are equally plausible and a wrong choice would change the result, ask; never default to the newest or a same-named task.
-5. The handover brief states which agreement it follows and where it came from.
+## 6 Tools in the main session
 
-The assistant's earlier suggestions are not user confirmation, and old instructions are not current authorization. Long-term memory may hold several versions of one rule; on conflict, the source the user confirmed last wins (validation once picked the wrong one). Deleted or forgotten material is reported as unavailable, and routing records never copy its text.
+### 6.1 Layers
 
-## 7 Tool layers and runtime constraints
-
-### 7.1 Layers
-
-The main session's tools come in five layers, defined in one place, [`plugins/routing/lib/policy.ts`](../plugins/routing/lib/policy.ts):
+The main session's tools fall into five layers, defined only in [`plugins/routing/lib/policy.ts`](../plugins/routing/lib/policy.ts):
 
 | Layer | Tools | Rule |
 | --- | --- | --- |
 | Route | `commit_route` | Called for every request |
-| Context | Conversation search and reading, `memory_recall`, task queries, read-only file tools | Always available |
+| Context | Chat history search and reading, `memory_recall`, task queries, read-only file tools | Always available |
 | App query | `schedule_list`, `viva_mcp_list`, `viva_skill_list` | Always available |
-| App change | Creating, changing and deleting schedules; remembering and forgetting memories; adding, changing, removing and importing MCP servers and skills | Visible to the model; the turn must first commit the matching `app_action`, and the guard lets the call through on that grant, one call per grant |
-| Execution | Shell, file writes, web, sub-agents, the background-task tools, MCP servers' tools and everything else | Out of scope; such work goes to a task through `commit_route` |
+| App change | Creating, changing, and deleting schedules; remembering and forgetting memories; adding, changing, removing, and importing MCP servers and skills | Visible to the model; needs a matching `app_action` accepted in this turn, and one `app_action` allows one call |
+| Execution | Shell, file writes, web access, subagents, background task tools, tools from the user's MCP servers, and every other tool | Outside the main session's scope; the work goes to a task through `commit_route` |
 
-App tools stay in the main session's scope, so they keep DSH's argument check, approval cards, key windows and observers, and no new DSH interface is needed.
+App tools stay inside the main session's scope, so they still pass through DSH's argument checks, approval cards, secret prompts, and observers. No new DSH interface is needed.
 
-### 7.2 Constraints
+### 6.2 Constraints
 
-- Narrowing happens before the first step is assembled. The host binds the role and waits for confirmation before every main-session prompt; new, prewarmed, resumed and switched sessions all go through the same binding. Narrowing only in `pre-step` leaves every tool in the first request; validation saw calls to `bash` that way.
-- Every call of the main session is decided again by the same layers in `tools/pre-execute`, before DSH asks the user to approve it: a call outside the scope still reaches approval by its name, so a refusal there means no approval card ever shows for it. This also covers tools registered in the scope later; newly installed plugins never gain main-session permissions by themselves.
-- App changes need a grant from an `app_action` accepted in the same turn, one call per grant; unused grants are dropped when the turn ends.
-- Tasks and scheduled runs are not narrowed and keep their permissions and approvals.
-- An omitted decision gets at most two reminders. When the turn ends, the host fails each request it left undecided and tells the user; a turn ending in an error (for example, the model produced tool arguments that are not valid JSON) fails them the same way, so nothing is left silently. Cancellation fails them without a message and gets no reminders; requests a stopped app left undecided fail at the next launch.
+- Narrowing happens before the first step is assembled. Before every prompt to the main session, the host binds the role and waits for confirmation; creating, prewarming, resuming, and switching sessions all go through this binding.
+- Every tool call in the main session is checked again by layer in `tools/pre-execute`. That check runs before DSH asks the user for approval, so an out-of-scope call is refused there and no approval card appears. Tools registered into the main session's scope later are checked too; a newly installed plugin gets no main-session rights by default.
+- App changes are allowed by an `app_action` accepted in this turn. Each grant allows one call, and unused grants are dropped when the turn ends. The plugin reads the accepted plan with the host's own `parsePlan` before granting (`grantsOf`), so an `app_action` the host inferred (7.2) works the same way.
+- Background tasks and scheduled runs are not narrowed. They keep their existing permissions and approvals.
 
-## 8 Routing protocol, answers and the gate
+## 7 The routing protocol
 
-### 8.1 Protocol
+### 7.1 `commit_route`
 
-`commit_route` submits goals (where each goal of the sentence goes) and actions:
+`commit_route` submits goals and actions. The goals list each goal in what the user said and where it goes; the actions carry those out:
 
 | Disposition | Action | Contents | Result |
 | --- | --- | --- | --- |
-| answer | `reply` | Scope of the answer | Answer at the next step |
-| delegate | `start` | A task name, `title` (optional), and a self-contained brief | A new task |
-| update_task | `message` | Task ID and addition | The task is told, or resumed |
+| answer | `reply` | The scope of the answer | Answer at the next step |
+| delegate | `start` | A task name, `title` (optional), and a self-contained `brief` | A new task |
+| update_task | `message` | Task ID and the addition | The task is told, or resumed |
 | stop_task | `stop` | Task ID | The task's current run stops |
-| needs_input | `clarify` | Question and options | Ask at the next step, then wait for the answer after the turn |
+| needs_input | `clarify` | The question | Ask at the next step, then wait for the answer after the turn |
 | app_operation | `app_action` | The app tool's name | The main agent calls that tool at the next step |
 
-A handover also carries a `notice`, one line for the user: once the handover is done, the plugin shows it as the turn's answer and ends the turn, with no further model call; it is only shown, never part of the host's decision record. Without one, the main agent says it at its next step. Goals and actions must agree both ways; the host checks and rejects a mismatch with its reason. The protocol stays flat: an `app_action` names only the tool, and the arguments go to the tool's own call; nested free-form arguments made the model produce invalid JSON. When an action leaves out its `kind`, the host infers it from the fields it carries: only a `brief` (with an optional `title`) is a `start`, only a `scope` a `reply`, a `taskId` with a `text` a `message`, a `taskId` alone a `stop`, and so on; fields that match no kind, or more than one, are still refused. For this, `kind` is not required in the tool's parameters: dsh checks them before calling the plugin, so a required `kind` left out would never reach the host. One missing field is not worth the model writing a brief of several hundred characters again (in the trial, two handovers each took 5 to 13 seconds longer for it). The task card's title is the `title`, or else the delegate goal the action serves. A request takes one decision only; the user's corrections arrive as new requests referring to the original action. A submission that gets no answer (a timeout, the turn stopped, the app gone) is not taken as a refusal: the host may have accepted it, so it is not submitted again, and the main agent tells the user it was submitted and is not yet confirmed; the host's record is what counts.
+- Goals and actions must match both ways. The host checks this and refuses a mismatch, saying why.
+- The protocol is flat: an `app_action` names only the tool, and the arguments go to the tool's own call. Nested free-form arguments made the model produce invalid JSON.
+- A request takes one decision only. Corrections from the user arrive as new requests that refer to the original action.
+- A handover carries a `notice`, one line for the user. Once the handover is done, the plugin shows it as the turn's answer and ends the turn, with no further model call. The notice is only shown, never stored in the host's records. Without one, the main agent says it in one sentence at its next step.
+- The task card's title is the `start` action's `title`. Without one, it is the delegate goal the action serves: the nth `start` takes the nth delegate goal.
 
-### 8.2 Answers and questions
+### 7.2 Actions without a `kind`
 
-Once a `reply`, `clarify` or `app_action` is accepted, the request may show text in that turn. When a new turn starts, leave to answer ends, a question turns into awaiting its answer, and the user's answer arrives as a new request. The first release shows a clarification as question text only and records it as awaiting in the ledger; no new question card is added.
+When an action leaves out its `kind`, the host infers it from the fields it carries:
 
-When a handover fails (for example, all five places are taken), the turn does not end; the request becomes an answer, and the main agent says plainly what was not done and why.
+| Fields | Inferred as |
+| --- | --- |
+| `brief`, optionally with `title` | `start` |
+| `scope` | `reply` |
+| `taskId` and `text` | `message` |
+| `taskId` alone | `stop` |
+| `question` | `clarify` |
+| `operation` | `app_action` |
 
-### 8.3 Output gate
+Fields that match no kind, or more than one, are still refused. An action with a `kind` is taken as written.
 
-Only steps after leave to answer was given show text, and nothing shows while a request is undecided; a turn with no request (a task result coming back) speaks freely. A streaming attempt of an unauthorized step keeps its start and settle and only empties its content. The app never shows ACP's copy of the text: a call whose output the plugin did not confirm withdraws what it showed and ends in an error. Neither the window nor the conversation database shows request headers, routing JSON or dispatch notices.
+For this to work, the tool's parameters only restrict the values of `kind` and do not require it. DSH checks tool parameters before it calls the plugin, so a required `kind` left out would never reach the host.
+
+Why: in the trial, the model left out `"kind": "start"` in two handovers. After the refusal it rewrote a brief of several hundred characters from scratch, which cost about 13 and 5 seconds. The fields already said which kind of action it was.
+
+### 7.3 Submissions without an answer
+
+When the plugin sends a decision and gets no answer (a 60-second timeout, the turn stopped, or the app gone), it does not treat that as a refusal, because the host may have accepted it. The plugin does not submit for that request again, and the main agent tells the user it was submitted and is not yet confirmed. The host's record is what counts.
+
+## 8 Answers, questions, and the output gate
+
+### 8.1 Answers and questions
+
+Once a `reply`, `clarify`, or `app_action` is accepted, the request may show text in this turn. When a new turn starts, permission to answer ends; a question becomes a wait for the answer, and the user's answer arrives as a new request. A clarification shows only the question text, with no separate question card.
+
+When a handover fails (for example, all 5 task slots are taken), the turn does not end. The request becomes an answer, and the main agent says plainly what was not done and why.
+
+### 8.2 The output gate
+
+Text shows only for steps after permission to answer was given, and nothing shows while any request is undecided. A turn with no request (a background result coming back, for example) shows as usual. For a step without permission, a streaming attempt keeps its start and end and only its content is emptied.
+
+The app never shows ACP's copy of the text. A call whose output the plugin did not confirm withdraws what it showed and ends in an error. Request headers, routing JSON, and dispatch notices never appear in the window or in the conversation database.
 
 ## 9 Interjections
 
-### 9.1 Fast lane
+### 9.1 The fast lane
 
-When an interjection arrives, the plugin makes one model call without reasoning, given the recent conversation, the task list and the interjected words, and hands over directly in only two cases: the words are clearly a new, independent job; or they are clearly an addition to, or a stop of, exactly one task. Everything else (a correction to the current answer, an ordinary question, an unclear reference, anything that needs history or confirmation) goes back to the main agent after its current step. After a handover, a notice is injected into the main session so the agent does not submit the request again and mentions it at the end of its answer; it goes only to the turn the interjection was said in, while that turn still runs. Fast-lane handovers use the same task interface and task ID checks as the main session. When the host accepts the fast lane's decision but a task action is not done (for example, every task slot is taken), the request is already decided and cannot be committed again: the notice carries the failure, and the main agent tells the user at the end of its answer, as when an action fails after its own commit.
+When an interjection arrives, the plugin makes one model call with reasoning off. The input is the last 12 turns of the conversation, the task list, and the interjected words. It hands over directly in only two cases:
 
-On a handover the model gives a task name (the card's title; the start of the words when it gives none) and a brief. The user's words are always appended to the brief as said, because the model's paraphrase can drop exact requirements such as a file name or a format. A short brief is no reason to defer. Each fast-lane outcome is recorded as a `request.fast` event: the outcome (handed, deferred, already taken by the main agent, failed), a defer reason code (the model's own choice, or which field of its output was invalid) and the time taken, without the words.
+- the words are clearly a new, independent job;
+- they are clearly an addition to, or a stop of, exactly one task.
 
-In validation, the fast lane decided in about 1.4 seconds and the task card appeared in 1.5 to 2.8 seconds (once 6.4 seconds in 15 runs), against 10.5 to 18 seconds without it. With the words appended and the task name as its own field, the interjection scenario handed over through the fast lane in 5/5 runs, with the task card after 1.2 to 3.2 seconds. Corrections to the current answer went back to the main agent in 10/10 runs.
+Everything else goes back to the main agent and is handled after the current step: a correction to the current answer, an ordinary question, an unclear reference, or anything that needs history or the user's confirmation.
 
-### 9.2 Recovering from misrouting
+The fast lane's decision goes to the host for checking like the main agent's, through the same task interface and task ID checks. Deciding has a 20-second limit; once the plan is sent, the host's answer is awaited as for any submission.
+
+### 9.2 What is handed over
+
+- The model gives a task name and a brief. Without a task name, the first 20 characters of the interjection are used.
+- The user's words are always appended to the brief as said. The model's paraphrase can drop exact requirements such as a file name or a format; in validation, a task once wrote the wrong file because of it.
+- A short brief is no reason to send the request back, because the words go along.
+
+### 9.3 Telling the main agent
+
+After a handover, the plugin injects a notice into the main session. The main agent does not submit for that interjection again, and mentions at the end of its answer that the work went to the background.
+
+- The notice goes only to the turn the interjection was said in, while that turn still runs. If that turn was stopped and a new one has started, the notice is not sent.
+- When the host accepted the decision but the task action failed (for example, every slot is taken), the request is already decided and cannot be submitted again. The notice carries the failure, and the main agent tells the user at the end of its answer, as it does when an action fails after its own submission.
+- When the submission got no answer (7.3), the notice says it was submitted and is not yet confirmed.
+
+### 9.4 Observability
+
+Each fast-lane outcome is recorded as a `request.fast` event: the outcome (handed over, sent back, already taken by the main agent, failed), a reason code when sent back (the model's own choice, or which field of its output was invalid), and the time taken. The user's words are not recorded.
+
+These codes are how slow interjections were traced. The task name and the brief used to share one field; the model sometimes wrote only the name, the brief was judged too short, the request went back to the main agent, and the task card took more than 10 seconds to appear.
+
+### 9.5 Limiting misrouting
 
 - Prevent: hand over directly only on a unique match; task IDs must come from the tasks the host listed.
-- Show: every handover immediately shows where it went, as a task card and one sentence.
-- Correct: when the user points out a mistake, a new request refers to the original action; a task started by mistake is stopped, and a misplaced addition is followed by a correction to that task.
+- Show: a handover immediately shows a task card and one line about it.
+- Correct: when the user points out a mistake, it becomes a new request that refers to the original action. A task started by mistake is stopped; an addition sent to the wrong task is followed by a correction to that task.
 
-Withdrawing unread additions, rolling back task changes and task snapshots are out of first-release scope (1.3).
+### 9.6 Results
+
+| Path | Task card appears |
+| --- | --- |
+| Handed over by the fast lane | 1.2 to 3.2 seconds after the interjection (5 runs) |
+| Sent back to the main agent, handled after the current step | 10.5 to 18 seconds |
+
+The fast lane decides in about 1.4 seconds. Corrections to the current answer went back to the main agent in 10 runs out of 10.
 
 ## 10 Task handover and app operations
 
 ### 10.1 Handover
 
-TaskRuntime is the only writer of tasks. A task starts from the conversation on screen, which during a turn is the request's own (switching topics is refused while a turn runs); when a decision is still being carried out after its turn stopped and another conversation is on screen, its remaining starts are not made and their receipts record the failure; only tasks of the request's working folder can be stopped or messaged. A brief is self-contained: the user's words, the goal, the agreements found and their sources, files and output requirements; a summary of old background never replaces the original reference.
+- TaskRuntime is the only writer of tasks.
+- A new task starts from the conversation the request came from. Topics cannot be switched while a turn runs, so this is usually the conversation on screen. When a decision is still being carried out after its turn ended and another conversation is on screen, its remaining starts are not made and their receipts record the failure.
+- Only tasks in the request's working directory can be stopped or sent an addition.
+- A brief stands on its own: the user's words, the goal, the agreements found and their sources, files, and output requirements. A summary of old context never replaces the original reference.
 
-### 10.2 Places
+### 10.2 Slots
 
-At most five tasks run at once. When all places are taken, the action returns a clear failure and the user is told; there is no queue, and the work never falls back to the main agent.
+At most 5 tasks run at once. When all slots are taken, the handover fails with a clear reason and the user is told. Work is not queued, and the main agent does not do it itself instead.
 
 ### 10.3 App operations
 
-Changes to schedules, memory, MCP and skills are made by the main agent calling the original tool after its `app_action` is accepted; the argument checks, approval cards, key windows and results are unchanged. Schedule proposals do not block the conversation; configuration that needs approval keeps the main session waiting in the first release, as today. Plugin management is outside the main session's scope. If confirmation should later leave the main session, the preferred way is an app-side proposal card (the pattern `schedule_create` already uses), which needs no DSH change.
+Changes to schedules, memories, MCP servers, and skills are made by the main agent calling the original tools once the `app_action` is accepted. Argument checks, approval cards, secret prompts, and results are unchanged. A schedule proposal does not block the conversation. A configuration change that needs approval keeps the main session waiting for the user, as before routing. Plugin management is outside the main session's scope.
 
-## 11 Durability and recovery
+If confirmations ever need to leave the main session, the first choice is an app-side proposal card (the same pattern as `schedule_create`), which needs no DSH changes.
 
-`app.db` gains request, decision and action records, reusing the existing event transactions and effects. The host's records are authoritative on request state; the plugin's ledger only tracks the current turn.
+Tools from the user's MCP servers belong to the execution layer. The main session no longer calls them directly; using one means handing work to a task, and the main session does not wait for the result. This is a change in experience that routing brings.
 
-| Object | Contents |
-| --- | --- |
-| Request | Session, topic and working folder at receipt, kind (question or interjection), order of receipt, state, reason for failure; never the words |
-| Decision | Goals and actions as accepted |
-| Action | Execution state, the task it concerns, the error of a failure |
+## 11 How a turn ends
 
-Decisions are accepted in a transaction with their events (ids and kinds only), and task actions run after the commit, each receipt kept with its event. When a turn ends (the user stops it, say) while its decision is being carried out, the action under way finishes and the rest are not sent; their receipts record the failure. When the user presses Stop, the host ends the turn's requests at once, without waiting for it to wind down, and refuses any decision that arrives later (the fast lane's included). Leaving the main session (switching topics, dsh exiting or restarting) ends its turn the same way, even though the old session's turn_end no longer arrives. Exactly-once cannot be guaranteed when the app stops after a task action and before its receipt is kept: the next launch marks such an action uncertain and never sends it again; actions of the same decision that already succeeded are not redone. Routing records keep no model reasoning and none of the user's words.
+A turn can end normally, end in an error, be stopped by the user, or disappear with its session. In every case the host ends the turn's requests: those without a decision fail, and decisions still being carried out send no further actions.
 
-Not done yet: reconciling an uncertain action from the task and session links and telling the user about it (it is only logged); clearing routing records when a topic is deleted (they hold the topic's id, not its words).
-
-## 12 Reports and control events
-
-Reuse [task reports](../src/backend/task-reports.ts) and their effects queue, keeping deduplication per task and run, read confirmation and cross-topic origin. A completion notice is a typed event, not a new user request, and never starts a task. The main agent reports results at a suitable moment; the user's new messages come before a report that has not started.
-
-Stopping the current answer affects only the main agent's current call; stopping background work must name the task, and "stop everything" needs the user's intended scope first. Answers to approvals and questions go back to their original task, regardless of where the user is looking.
-
-## 13 Delivery batches and acceptance
-
-Viva is in development, so routing replaces the main conversation's old path outright, with no switch and no compatibility layer. The main session can no longer run commands, write files or start tasks through tools, so the first delivery has to carry everything that path used to do: R1, R2 and the app operations of R3 land together, and the task tools the main agent no longer has (`start_background_task`, `stop_background_task`, `message_background_task`) are removed rather than left unused.
-
-| Batch | Delivery | Acceptance |
+| Case | Handling | What the user sees |
 | --- | --- | --- |
-| R1 | Host request runtime and storage; request header and role binding; layered narrowing and the guard; `commit_route` and the ledger; `reply` and the output gate; reminders and failing what a turn leaves undecided | Ordinary answers 5/5 in the real app, no forbidden calls, no routing traces in the window or database; requests intact after a restart; deterministic tests for same-step forbidden calls, unbound sessions, omissions and error endings |
-| R2 | Handover (new, addition, stop, several in one sentence); clarification; context recovery; fast lane and misrouting recovery; task result reports (a completion notice is a control event, not a new request) | Matching scenarios of 13.1 each 5/5; median time from interjection to task card under 3 seconds |
-| R3 | App operations (with R1 and R2); crash recovery's uncertain actions (with R1 and R2); the open items of section 11; Windows and full regression | Schedule, memory and MCP scenarios each 5/5; uncertain actions are not resent after a crash; full smoke on macOS and Windows |
+| Normal end, with requests still not submitted | The plugin reminds the main agent to submit, at most twice; then the host fails them (`unrouted`) | "The assistant didn't get to handle this message. Send it again." |
+| Error, for example tool arguments that are not valid JSON | Fails them (`turn_error`) | Same as above |
+| The user presses Stop | The host ends the turn's requests at once (`cancelled`) without waiting for the turn to wind down, and refuses every later decision, the fast lane's included; the plugin stops waiting for the fast lane and sends no reminders | Nothing |
+| Switching topics, dsh exiting or restarting | The old session's `turn_end` no longer arrives, so the bridge ends its turn when it closes the session, and the host does so when dsh exits (`cancelled`) | Nothing |
+| The app quits | At the next launch, requests without a decision fail (`interrupted`) | Nothing |
 
-### 13.1 Actual-model acceptance scenarios
+A decision still being carried out finishes the action in hand. The rest are not sent, and their receipts read "the turn has ended; this step was not carried out."
 
-Real-app scenarios ([`test/smoke/live-scenarios-routing.ts`](../test/smoke/live-scenarios-routing.ts)): an ordinary answer; a brief from workspace material (proactive handover); an addition to a running task; an interjection handing over new work mid-answer; an interjection correcting the current answer; following a corrected agreement in a new topic; stopping a task just started; a weekly reminder; remembering a fact; adding an MCP server.
+Before a normal end, the plugin waits for every fast-lane handover to settle. Each fast-lane step has its own limit (20 seconds to decide, 60 seconds for the host to answer), so the wait is bounded. Without it, the outcome would arrive after the main agent went idle, and nobody would tell the user whether the handover succeeded or why it failed.
 
-Before R2, scenarios validated at the bridge level in the first round and the supplement join the real-app set: ambiguity between same-named tasks, an assistant suggestion the user never confirmed, and recovery after compaction of a long session.
+## 12 Persistence and recovery
 
-Measurements: receipt to decision, decision to handover, time to first text, interjection to task card, tokens, kinds of routing failure, reminders, error endings.
+`app.db` has three routing tables, and writes to them reuse the event core's transactions. Request state is authoritative here; the plugin's ledger only holds the working state of the current turn.
 
-Before each batch's commit, run the relevant tests, `npm run typecheck`, the full `npm test` and `npm run check:i18n`; batches touching IPC, sessions or storage run `npm run build` and `npm run smoke` locally before the PR, and the PR's current-commit CI on macOS and Windows decides.
+| Table | Contents |
+| --- | --- |
+| `routing_requests` | Session, topic, and working directory at receipt; kind; status; failure reason; received and updated times. No user words |
+| `routing_decisions` | The accepted goals and actions, and when they were accepted |
+| `routing_actions` | Each action's status, the task it touched, and the error when it failed |
 
-## 14 Risks
+- A decision is accepted in one transaction with its event. Task actions run after the commit, and each receipt is stored with its event.
+- If the app quits after a task action and before its receipt is stored, exactly-once cannot be guaranteed. The next launch marks that action uncertain and never sends it again; actions of the same decision that already succeeded are not redone.
+- Events record only IDs, kinds, and codes: `request.received`, `request.decided`, `request.acted`, `request.failed`, `request.uncertain`, `request.fast`. Routing records store neither the user's words nor the model's reasoning.
+
+## 13 Result reports and control events
+
+Result reports reuse the [task reports](../src/backend/task-reports.ts) and their effects queue, including deduplication by task and run, read confirmation, and naming the source topic across topics. A completion notice is a typed event, not a new instruction from the user, and never starts a task. The main agent reports results when it fits; a new message from the user comes before a report that has not started.
+
+Stopping the current reply affects only the main agent's current call. Stopping background work requires naming the task; "stop everything" first needs the user's scope confirmed. Answers to approvals and questions go back to the task that asked, regardless of where the user is looking.
+
+## 14 Alternatives considered
+
+| Approach | Why not |
+| --- | --- |
+| Keep execution tools in the main session and rely on the persona to delegate | New work raised mid-answer went to a task in 0 of 5 runs (section 1) |
+| Narrow tools only at `pre-step` | The first request still carried every tool, and validation saw a call to `bash`; the role is now bound before every prompt and tools are narrowed before the first step is assembled |
+| Stop out-of-scope calls with DSH's guard | The guard runs after approval, so an out-of-scope call showed an approval card first; the check moved to `tools/pre-execute`, which runs before approval |
+| Put the tool's full arguments in `app_action` | Nested free-form arguments made the model produce invalid JSON; `app_action` now names only the tool, and the arguments go to the original tool's call |
+| Always handle interjections after the main agent's current step | Task cards took 10.5 to 18 seconds; the fast lane handles the clear cases |
+| Interrupt the current answer and start a new turn | DSH can only cancel a whole turn, and output from the next turn never reaches the window |
+| Refuse an action without a `kind` and let the model resubmit | Each time cost 5 to 13 seconds (7.2) |
+| Put the fast lane's task name and brief in one field | The model sometimes wrote only the name and the request went back (9.4); they are now two fields, and the user's words go along separately |
+
+## 15 Validation
+
+Real-app scenarios live in [`test/smoke/live-scenarios-routing.ts`](../test/smoke/live-scenarios-routing.ts): an ordinary answer; turning workspace material into a briefing (a proactive handover); adding a section to a running task; handing over new work from an interjection; correcting the current answer by interjecting; applying a changed agreement after switching topics; stopping a task that just started; a weekly reminder; remembering a fact; adding an MCP server.
+
+| Round | Setup | Result |
+| --- | --- | --- |
+| First round | Isolated probes, a trimmed persona, reasoning off | Mechanisms 12/12; structured contract 22/27, mostly failing by using `reply` for clarification ([report sections 1–8](agent-routing-feasibility.md)) |
+| Supplementary | Deterministic tests, the bridge layer with the production configuration, the real app | Parallel out-of-scope calls, interjection bookkeeping, the gate, and binding all passed; the first round's clarification failures disappeared with the production configuration; constraints found on binding timing, the gate, app operations and approval, and invalid JSON (report section 9) |
+| Layered narrowing | Real app, 10 scenarios, 5 runs each | 50/50; 0 out-of-scope calls and 0 routing failures; 15/15 app operations completed by the original tools under grants; adding an MCP server took 6.8 to 10.3 seconds per turn (report section 10) |
+| After implementation | Real app, the three core scenarios (answer, handover, interjection), 3 runs each | 9/9 before #131 merged; 9/9 after #132 merged, every handover accepted on its first submission |
+
+To investigate slowness or failures, start in two places. The routing tables and the `request.*` events in `app.db` hold each request's receipt, decision, and action times and its failure reason. `trace.db` holds every tool call the main agent made, with its arguments.
+
+## 16 Risks and open items
 
 | Risk | Detail | Response |
 | --- | --- | --- |
-| Only one model validated | All actual-model acceptance ran on DeepSeek Flash | Rerun 13.1 before enabling other models |
-| No actual-model acceptance on Windows | CI covers deterministic tests and smoke only | An R3 acceptance item |
-| Unknown recall of production search on real history | Validation used synthetic data | Watch recall failures before deciding on an index (1.3) |
-| Several versions of one rule in long-term memory | The wrong one was picked once | Section 6 follows the source the user confirmed last; covered by R2 scenarios |
-| Several identical `app_action`s in one commit | 2/5 in the schedule scenario | Reword the protocol; spare grants are already dropped at the end of the turn |
-| Persona conflict | The original persona says to do the work and names the background-task tools | The main conversation's persona is built from the shared parts plus the routing rules and mounted in place of the profile's, never appended to it |
-| Cost of the fast lane | One more model call per interjection | Triggered only by interjections; watch tokens |
+| Only one model validated | All real-model acceptance ran on DeepSeek Flash | Rerun the section 15 scenarios before enabling another model |
+| No real-model acceptance on Windows | CI runs only deterministic tests and smoke | Open item |
+| Recall of production search on real history is unknown | Validation used synthetic data | Watch for recall failures, then decide whether to add an index |
+| Several versions of one rule in long-term memory | Validation picked the wrong one once | The original the user last confirmed wins (section 5) |
+| Several identical `app_action`s in one submission | Seen in 2 of 5 schedule runs | The protocol description was rewritten; extra grants are dropped when the turn ends |
+| Cost of the fast lane | One more model call per interjection | Triggered only by interjections |
+| Inferring `kind` loosens the check | Actions without a `kind` can be accepted | Inferred only when the fields match exactly one kind; an explicit `kind` is never changed; protocol tests cover every kind |
 
-## 15 Evidence
+Open items:
 
-| Round | What | Result |
-| --- | --- | --- |
-| First round | Isolated probe, reduced persona, reasoning off | Mechanisms 12/12; structured contract 22/27, failing mainly by clarifying through `reply` ([report sections 1–8](agent-routing-feasibility.md)) |
-| Supplement | Deterministic set, bridge-level set with the production configuration, real-app set | All deterministic checks passed (same-step forbidden calls, interjection tracking, the gate, binding); the first round's clarification failures disappeared under the production configuration; constraints found on binding timing, the gate, app operations and approvals, and invalid JSON (report section 9) |
-| Layered narrowing | Real app, 10 scenarios five times each | 50/50; forbidden calls 0, routing failures 0; app operations done by their own tools on a grant in 15/15; MCP setup 6.8 to 10.3 seconds per turn (report section 10) |
-
-This document does not authorize implementation. Before R1, the item in 1.5 needs confirming and this plan needs approval.
+- Uncertain actions are only logged. They are not yet verified against the task–session link, and the user is not told.
+- Deleting a topic does not clean up its routing records. The records hold only the topic ID, not the user's words.
+- Real-app scenarios do not yet cover an ambiguous reference to tasks with the same name, a suggestion from the assistant that the user never confirmed, or recovery after compaction in a long session. All three were validated at the bridge layer.
+- The main session no longer calls MCP tools directly (10.3). This change in experience has not been confirmed by the user yet.

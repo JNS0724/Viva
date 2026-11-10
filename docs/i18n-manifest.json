@@ -71,8 +71,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "ec67e35306da4edbe30fc6753e3df56b424df65c249d7625b2cbf142978b0701",
-      "zhHash": "7d0489cb3e7ca1b4ff679ba579abd6e74abc62aa7d87210ee3c2778f8feb1034"
+      "enHash": "5d604a619c2ad24050062e72a7a8fa255f95218ee20adb5a442892a54b0af90a",
+      "zhHash": "50bf59eb2f9dc08697b68a9627da7f541ab2215f244bf5d4cf8014d327351d6b"
     },
     {
       "en": "docs/architecture-health.md",
@@ -83,14 +83,14 @@
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "475a9932b585b30305c657ff6a688a8eed44cc8284bb7f06829c097db4b6c6d6",
-      "zhHash": "de268b3c6136f997e290dae22cfecafda3e20dc3111eb9bb6c1a9eb7054c3267"
+      "enHash": "8037b0aad3e1c1a1772432a4415063d0cfdc1c4331f58cbda142c7230b1888be",
+      "zhHash": "f7c43f9e7c73e26613160fcf0bf0d492352b97dc3a1fd7742173dd0ee8decad4"
     },
     {
       "en": "docs/agent-routing-feasibility.md",
       "zh": "docs/agent-routing-feasibility.zh-CN.md",
-      "enHash": "95d302b21047b1dfc56921b654ebb151d291fc1c07b7529d28b427297c231e20",
-      "zhHash": "212aeb43f018a1137622c19ce67dab8e86411e3fc381456398a45b374bbcee66"
+      "enHash": "33f622f960b23b457214d323f7255406754915b8609b0f30459782996f0af47b",
+      "zhHash": "98700dc2147e522f687ed82ec8c733ddf6c9731a4e06f59fcdea2b85a4579c7d"
     }
   ],
   "bilingual": [

@@ -2,7 +2,7 @@
 
 English | [简体中文](agent-routing-feasibility.zh-CN.md)
 
-Date: 2026-11-09. Related [routing and task dispatch proposal](agent-routing-design.md). Baseline: `0fc159bd8dbbb42bfbcf05ee5f9150dbb9df426b`. Tests reused the existing `deepseek-official / deepseek-flash` connection available on this machine, catalogued by DSH as `DeepSeek-V41-Flash`. Credentials came from the existing environment, with no changes to everyday Viva data or configuration. This does not assert that the model weights run locally.
+Date: 2026-11-09. Related [routing design](agent-routing-design.md). Baseline: `0fc159bd8dbbb42bfbcf05ee5f9150dbb9df426b`. Tests reused the existing `deepseek-official / deepseek-flash` connection available on this machine, catalogued by DSH as `DeepSeek-V41-Flash`. Credentials came from the existing environment, with no changes to everyday Viva data or configuration. This does not assert that the model weights run locally.
 
 **Verdict: the runtime mechanisms are feasible, but the current routing protocol and instructions do not meet implementation acceptance.** Mechanical checks passed 12/12; actual-model formal samples passed 22/27 structured-contract assertions. All five failures retain their original outputs. Correct prose is not sufficient evidence that the backend can reliably continue the workflow.
 
@@ -157,7 +157,7 @@ The real-app set uses its own temporary profile and never reads everyday data. E
 
 ## 10 Layered narrowing
 
-In the supplement, app operations performed by the host on the agent's behalf ran into two problems: a restricted scope treats tools narrowed away as absent, and the main agent cannot see their parameters. Layered narrowing keeps the schedule, memory, MCP and skill tools in the main session's scope, lets the guard allow one call per committed `app_action`, and keeps execution tools out of scope ([proposal section 7](agent-routing-design.md#7-tool-layers-and-runtime-constraints)). The request header and protocol shared by the app and the plugin moved to `src/shared/request-routing`, and the ledger became turn-aware, fixing leave to answer that never ended with its turn. This round's experiment code is commit `121a83d` (PR #125), not merged; the implementation rewrites it following section 13 of the proposal.
+In the supplement, app operations performed by the host on the agent's behalf ran into two problems: a restricted scope treats tools narrowed away as absent, and the main agent cannot see their parameters. Layered narrowing keeps the schedule, memory, MCP and skill tools in the main session's scope, lets the guard allow one call per committed `app_action`, and keeps execution tools out of scope ([routing design section 6](agent-routing-design.md#6-tools-in-the-main-session)). The request header and protocol shared by the app and the plugin moved to `src/shared/request-routing`, and the ledger became turn-aware, fixing leave to answer that never ended with its turn. This round's experiment code is commit `121a83d` (PR #125), not merged; the implementation rewrites it following section 13 of the proposal.
 
 Real app, production persona, plugins and default thinking, fast lane on, five runs each:
 

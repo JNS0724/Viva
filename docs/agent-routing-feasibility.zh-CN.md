@@ -2,7 +2,7 @@
 
 [English](agent-routing-feasibility.md) | 简体中文
 
-日期：2026-11-09。对应[路由与任务调度方案](agent-routing-design.zh-CN.md)。验证基线为 `0fc159bd8dbbb42bfbcf05ee5f9150dbb9df426b`，模型使用本机已有的 `deepseek-official / deepseek-flash` 接入，DSH 目录显示名为 `DeepSeek-V41-Flash`。复用现有环境密钥，不读取或修改日常 Viva 的数据和配置；“本机已有接入”不表示模型权重在本机运行。
+日期：2026-11-09。对应[路由设计](agent-routing-design.zh-CN.md)。验证基线为 `0fc159bd8dbbb42bfbcf05ee5f9150dbb9df426b`，模型使用本机已有的 `deepseek-official / deepseek-flash` 接入，DSH 目录显示名为 `DeepSeek-V41-Flash`。复用现有环境密钥，不读取或修改日常 Viva 的数据和配置；“本机已有接入”不表示模型权重在本机运行。
 
 **结论：运行时机制具备可行性，但当前路由协议与提示尚未达到实施验收要求。** 机制实验 12/12 通过；真实模型正式样本 22/27 通过结构化契约断言。五次未通过均保留原始输出，不能将“模型说得对”直接当作“后端可以可靠继续处理”。
 
@@ -157,7 +157,7 @@ VIVA_ROUTING=1 VIVA_ROUTING_FAST=1 npm run live -- --only route-reply,route-hand
 
 ## 10 分层收窄
 
-补充验证中，应用操作由宿主代为执行时遇到两个问题：受限 scope 把被收窄掉的工具视为不存在，主 agent 也看不到它们的参数。分层收窄把定时、记忆、MCP 与 skill 的工具留在主会话范围内，提交 `app_action` 后由 guard 凭授权放行一次调用，执行类工具仍不在范围内（[方案第 7 节](agent-routing-design.zh-CN.md#7-工具分层与运行时约束)）。同时把宿主与插件共用的请求头和协议移到 `src/shared/request-routing`，账本改为感知轮次，修正了回答许可不随轮次结束的问题。这一轮的试验代码在提交 `121a83d`（PR #125），未合入，正式实现按方案第 13 节重写。
+补充验证中，应用操作由宿主代为执行时遇到两个问题：受限 scope 把被收窄掉的工具视为不存在，主 agent 也看不到它们的参数。分层收窄把定时、记忆、MCP 与 skill 的工具留在主会话范围内，提交 `app_action` 后由 guard 凭授权放行一次调用，执行类工具仍不在范围内（[路由设计第 6 节](agent-routing-design.zh-CN.md#6-主会话的工具)）。同时把宿主与插件共用的请求头和协议移到 `src/shared/request-routing`，账本改为感知轮次，修正了回答许可不随轮次结束的问题。这一轮的试验代码在提交 `121a83d`（PR #125），未合入，正式实现按方案第 13 节重写。
 
 真实应用，生产人设、插件和默认 thinking，开启快速旁路，每项 5 次：
 
