@@ -340,6 +340,13 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
   font: 800 13px/1 var(--font-sans); color: var(--bg); background: var(--accent); box-shadow: 0 0 0 2px var(--bg); z-index: 1;
 }
 .isl-sign[hidden] { display: none; }
+/* Alone at rest, the count of what ended in the background sits on her lower right, inside her round (the window
+   takes clicks only there): a click opens the 后台 list, as from the strip. */
+.isl-corner { position: absolute; right: 0; bottom: 0; z-index: 1; }
+.isl-corner[hidden] { display: none; }
+.isl[data-host="desk"] .isl-corner .isl-bg { padding: 2px 7px; background: var(--island-bg); border-color: var(--line-3); }
+/* The strip beside her is as long as what it says, up to its widest. */
+.isl[data-host="desk"] .isl-peek { width: fit-content; }
 .isl[data-signal="confirm"] .isl-sign, .isl[data-signal="asking"] .isl-sign { background: var(--orange); }
 .isl[data-signal="error"] .isl-sign { background: var(--red); }
 /* The words beside her: the sign before them, the edge in the state's colour. */

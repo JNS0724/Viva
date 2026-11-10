@@ -233,6 +233,7 @@ Drawn by `src/renderer/view/maid.ts`:
   - The portrait's ring: a turning blue arc while working; a solid orange ring with an outward pulse when it needs your approval or answer; a breathing blue ring when done and not yet seen; a solid red ring on an error; a dashed grey ring when not connected, with her in grey; no ring at rest, only the thin outline. Her picture is never scaled or faded, which would blur it.
   - A sign beside the status: "!" to approve, "?" to answer, "✓" done, "×" error, "–" not connected, and a small spinner while working. It goes before the status words, and the strip's edge takes the state's colour.
   - The sign is worn on the portrait's lower right only when she is alone, with no status words beside her; with them, the sign before the words says it, not twice.
+  - At rest she is alone, with no strip: the strip appears only while background tasks are running. Background tasks finished and not yet seen are counted on her lower right, inside her round, and a click there opens the background list. The strip is as long as its content, up to `--desk-peek-width`.
   - With reduced motion the rings rest still. Other cards retain their existing character badges.
 - **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
 - All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc.

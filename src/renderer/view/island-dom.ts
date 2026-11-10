@@ -261,7 +261,9 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   const surface = h('section', { class: 'isl-surface', 'aria-label': t('island-dom.content') })
   const peek = h('div', { class: 'isl-peek' })
   const sign = h('span', { class: 'isl-sign', 'aria-hidden': 'true', hidden: true })
-  const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, sign, peek, surface)
+  /** Her corner, alone at rest: what ended in the background and is not yet seen, counted there rather than in a strip. */
+  const corner = h('span', { class: 'isl-corner', hidden: true })
+  const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, sign, corner, peek, surface)
   const tail = createTailCell(true)
   tail.el.addEventListener('click', () => act({ kind: 'panel', panel: 'background' }))
   const peekOpen = h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) })
@@ -294,7 +296,8 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     const portrait = maidFor(maids, 'island', view.form === 'drop' ? 'listening' : maidMood(view.mood, view.tone), { size: 72, framing: 'whole', moving: !view.still, badge: false })
     if (avatar.firstChild !== portrait) avatar.replaceChildren(portrait)
     surface.hidden = !open
-    peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count && !view.background?.done
+    // At rest the cat is alone: the strip beside her only for what goes on (tasks running); what ended is counted on her.
+    peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count
     sign.textContent = DESK_SIGNS[signal] ?? ''
     sign.hidden = !wearsSign(signal, peek.hidden && !open)
     const next = JSON.stringify([view, open, localeRevision()])
@@ -303,7 +306,10 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     const cell = tail.update(view)
     cell?.setAttribute('aria-expanded', String(open && view.desktopPanel === 'background'))
     peekOpen.replaceChildren(deskHead(view, now))
-    reconcileChildren(peek, [peekOpen, ...(cell ? [cell] : [])])
+    const cornered = Boolean(cell) && peek.hidden && !open && !view.dragging && sign.hidden
+    corner.hidden = !cornered
+    reconcileChildren(corner, cornered && cell ? [cell] : [])
+    reconcileChildren(peek, [peekOpen, ...(cell && !cornered ? [cell] : [])])
     if (!open) { surface.inert = true; return }
     surface.inert = false
     card.name()
