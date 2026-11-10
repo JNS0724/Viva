@@ -308,10 +308,9 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 
 /* ---------- desktop island: where things stand at a glance (view/island-dom.ts deskSignal) ----------
    A ring round the portrait for each state, its shape as well as its colour: turning arc = going on, orange pulse =
-   waits on you, blue breathing = done and not yet seen, red = went wrong, grey dashes = not connected; resting, the cat
-   is smaller and fainter. The same sign goes before the state's words, and on the portrait when it is alone. */
-.isl[data-host="desk"] .isl-anchor > .maid { transition: opacity .15s, transform .15s; }
-.isl[data-host="desk"][data-signal="rest"]:not([data-hover="true"]) .isl-anchor > .maid { opacity: .78; transform: scale(.86); }
+   waits on you, blue breathing = done and not yet seen, red = went wrong, grey dashes = not connected; resting, no ring
+   (her picture is not scaled or faded: either blurs it). The same sign goes before the state's words, and on the
+   portrait when it is alone. */
 .isl[data-host="desk"][data-signal="working"] .isl-anchor > .maid { box-shadow: 0 0 0 calc(var(--desk-ring) - 1px) color-mix(in srgb, var(--accent) 22%, transparent); }
 .isl[data-host="desk"][data-signal="working"] .isl-anchor::before {
   content: ''; position: absolute; left: 50%; top: 50%; width: var(--desk-round); height: var(--desk-round); border-radius: 50%; pointer-events: none;

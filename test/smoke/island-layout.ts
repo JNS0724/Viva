@@ -1,8 +1,5 @@
 import { expect, type Page, type TestInfo } from '@playwright/test'
 
-/** island.css: the cat at rest, smaller (data-signal="rest"). */
-const REST_SCALE = 0.86
-
 /**
  * The desktop island folded, state by state (view/island-dom.ts deskSignal): each its own ring, the sign on the
  * portrait only when it is alone, and the state's sign before its words. Reduced motion, so the rings are at rest.
@@ -71,8 +68,9 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
     expect(new Set(rings).size).toBe(3)
     expect(rings.every(ring => ring !== 'none')).toBe(true)
     expect(by.working.arc).not.toBe('none')
-    expect([by.offline.outline, by.rest.ring]).toEqual(['dashed', by.rest.ring])
-    expect(Number(by.rest.opacity)).toBeLessThan(1)
+    expect(by.offline.outline).toBe('dashed')
+    // At rest she stays sharp: no scaling or fading of her picture.
+    expect(Number(by.rest.opacity)).toBe(1)
   } finally {
     await page.evaluate(() => document.getElementById('desk-signal-gallery')?.remove())
     await page.emulateMedia({ reducedMotion: null })
@@ -248,8 +246,7 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
       } else {
         expect(result.width).toBeCloseTo(result.name === 'working' ? 320 : 440, 0)
       }
-      // Resting as the cat alone with nothing going on, she is drawn smaller and fainter (island.css deskSignal rest).
-      expect(result.portrait).toBeCloseTo(result.name === 'circle' ? 72 * REST_SCALE : 72, 0)
+      expect(result.portrait).toBeCloseTo(72, 0)
       if (result.name === 'long-question') expect(result.bodyScrollable).toBe(true)
       if (result.name === 'files') expect(result.bodyScrollable).toBe(true)
       await page.locator(`#layout-${result.name}`).screenshot({ path: info.outputPath(`island-layout-${result.name}.png`) })
