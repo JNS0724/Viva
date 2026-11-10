@@ -69,7 +69,7 @@ sequenceDiagram
   H->>T: Carry out task actions
   T-->>H: Receipts
   H-->>P: Accepted, with receipts
-  P-->>U: Handover done: show the notice, end the turn
+  P-->>U: Handover done, nothing else open: show the notice, end the turn
   M-->>U: Answer or question: output at the next step
 ```
 
@@ -77,7 +77,7 @@ sequenceDiagram
 2. Before every prompt to the main session, the host sends a role binding and waits for the plugin to confirm it; the plugin narrows the tools before the first step is assembled. Interjections go through steer with the same request header.
 3. The plugin registers requests from session events. The main agent recovers context, then calls `commit_route`.
 4. The plugin hands the plan to the host. The host checks it, accepts the decision in one transaction, then carries out the task actions through TaskRuntime and returns receipts.
-5. The plugin updates the turn's ledger from the receipts. A completed handover ends the turn; an answer, a question, or an app tool call continues it.
+5. The plugin updates the turn's ledger from the receipts. A completed handover ends the turn when nothing else in it is open; an answer, a question, or an app tool call continues it.
 6. When the turn ends, requests without a decision fail for the reason the turn ended (section 11).
 
 ### 3.3 Modules
@@ -116,7 +116,7 @@ The main agent keeps the history still visible in its session and relies on DSH'
 4. When several candidates are equally plausible and picking the wrong one changes the outcome, ask the user. Don't default to the newest task or the one with the same name.
 5. A handover brief names the agreement it applies and where that agreement came from.
 
-The assistant's earlier suggestions are not the user's confirmation, and instructions in history are not authorization now. Long-term memory may hold several versions of one rule; when they conflict, the original the user last confirmed wins. Validation picked the wrong one once. Deleted or forgotten material is shown as unavailable, and routing records never copy its text.
+The assistant's earlier suggestions are not the user's confirmation, and instructions in history are not authorization now. Long-term memory may hold several versions of one rule; when they conflict, the original the user last confirmed wins. Validation picked the wrong one once. Deleted or forgotten material is shown as unavailable.
 
 ## 6 Tools in the main session
 
@@ -159,7 +159,7 @@ App tools stay inside the main session's scope, so they still pass through DSH's
 - Goals and actions must match both ways. The host checks this and refuses a mismatch, saying why.
 - The protocol is flat: an `app_action` names only the tool, and the arguments go to the tool's own call. Nested free-form arguments made the model produce invalid JSON.
 - A request takes one decision only. Corrections from the user arrive as new requests that refer to the original action.
-- A handover carries a `notice`, one line for the user. Once the handover is done, the plugin shows it as the turn's answer and ends the turn, with no further model call. The notice is only shown, never stored in the host's records. Without one, the main agent says it in one sentence at its next step.
+- A handover carries a `notice`, one line for the user. Once the handover is done and nothing else in the turn is open, the plugin shows it as the turn's answer and ends the turn, with no further model call; without a notice, the main agent says it in one sentence at its next step. When the turn still has an answer to give, the main agent finishes it and mentions the handover at the end. The notice is only shown, never stored in the host's records.
 - The task card's title is the `start` action's `title`. Without one, it is the delegate goal the action serves: the nth `start` takes the nth delegate goal.
 
 ### 7.2 Actions without a `kind`
@@ -195,7 +195,7 @@ When a handover fails (for example, all 5 task slots are taken), the turn does n
 
 ### 8.2 The output gate
 
-Text shows only for steps after permission to answer was given, and nothing shows while any request is undecided. A turn with no request (a background result coming back, for example) shows as usual. For a step without permission, a streaming attempt keeps its start and end and only its content is emptied.
+Text shows only for steps after permission to answer was given, and a step shows nothing while any request waits for the main agent's decision. An interjection the fast lane is handling does not hold back the current answer. Whether a streaming attempt shows is decided when it starts, so an interjection that arrives later does not cut it off. A turn with no request (a background result coming back, for example) shows as usual. For a step without permission, a streaming attempt keeps its start and end and only its content is emptied.
 
 The app never shows ACP's copy of the text. A call whose output the plugin did not confirm withdraws what it showed and ends in an error. Request headers, routing JSON, and dispatch notices never appear in the window or in the conversation database.
 
@@ -291,12 +291,12 @@ Before a normal end, the plugin waits for every fast-lane handover to settle. Ea
 | Table | Contents |
 | --- | --- |
 | `routing_requests` | Session, topic, and working directory at receipt; kind; status; failure reason; received and updated times. No user words |
-| `routing_decisions` | The accepted goals and actions, and when they were accepted |
+| `routing_decisions` | The accepted goals and actions, and when they were accepted. Task briefs and additions often quote the user's words; those from the fast lane always carry them |
 | `routing_actions` | Each action's status, the task it touched, and the error when it failed |
 
 - A decision is accepted in one transaction with its event. Task actions run after the commit, and each receipt is stored with its event.
 - If the app quits after a task action and before its receipt is stored, exactly-once cannot be guaranteed. The next launch marks that action uncertain and never sends it again; actions of the same decision that already succeeded are not redone.
-- Events record only IDs, kinds, and codes: `request.received`, `request.decided`, `request.acted`, `request.failed`, `request.uncertain`, `request.fast`. Routing records store neither the user's words nor the model's reasoning.
+- Events record only IDs, kinds, and codes: `request.received`, `request.decided`, `request.acted`, `request.failed`, `request.uncertain`, `request.fast`. The request table and the events hold no user words, and no routing record holds the model's reasoning.
 
 ## 13 Result reports and control events
 
@@ -345,6 +345,6 @@ To investigate slowness or failures, start in two places. The routing tables and
 Open items:
 
 - Uncertain actions are only logged. They are not yet verified against the task–session link, and the user is not told.
-- Deleting a topic does not clean up its routing records. The records hold only the topic ID, not the user's words.
+- Deleting a topic does not clean up its routing records. The request table holds only the topic ID, but briefs in the decision table may quote the user's words, so those words stay in `app.db` after the topic is deleted.
 - Real-app scenarios do not yet cover an ambiguous reference to tasks with the same name, a suggestion from the assistant that the user never confirmed, or recovery after compaction in a long session. All three were validated at the bridge layer.
 - The main session no longer calls MCP tools directly (10.3). This change in experience has not been confirmed by the user yet.
