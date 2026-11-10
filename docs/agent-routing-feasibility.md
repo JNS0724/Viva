@@ -6,11 +6,11 @@ Date: 2026-11-09. Related [routing and task dispatch proposal](agent-routing-des
 
 **Verdict: the runtime mechanisms are feasible, but the current routing protocol and instructions do not meet implementation acceptance.** Mechanical checks passed 12/12; actual-model formal samples passed 22/27 structured-contract assertions. All five failures retain their original outputs. Correct prose is not sufficient evidence that the backend can reliably continue the workflow.
 
-**Supplementary validation (section 9):** rerun in the real app with a switch-guarded prototype, the production persona, plugins and default thinking: handover, addition, stop, interjection, cross-topic recovery, schedule and memory scenarios each passed 5/5, and the first round's clarification failures came mainly from the reduced persona and disabled thinking. Configuration that needs the user's confirmation cannot yet leave the main session, and constraints on binding timing, the output gate and turns ending in errors must be added to the proposal (section 17 of the proposal).
+**Supplementary validation (section 9):** rerun in the real app with a switch-guarded prototype, the production persona, plugins and default thinking: handover, addition, stop, interjection, cross-topic recovery, schedule and memory scenarios each passed 5/5, and the first round's clarification failures came mainly from the reduced persona and disabled thinking. Configuration that needs the user's confirmation cannot yet leave the main session, and constraints on binding timing, the output gate and turns ending in errors must be added to the proposal. **Layered narrowing (section 10):** with app tools kept in the main session's scope and called on a grant, 10 real-app scenarios passed 50/50, MCP setup included. The findings are organized into sections 4 and 7–11 of the proposal.
 
 ## 1 Method and evidence
 
-Sources are the [isolated runner](../test/fixtures/routing-feasibility/run.ts), [probe plugin](../test/fixtures/routing-feasibility/index.ts) and [contract and instructions](../test/fixtures/routing-feasibility/contract.ts). These are not production implementation, are not loaded by the production profile, and the CLI does not match automatic `.test.ts` discovery. [Machine-readable evidence](agent-routing-feasibility-results.json) includes complete results, actions, selected events, source hashes and exploratory failures.
+Sources are the [isolated runner](https://github.com/JNS0724/Viva/blob/16d0c34/test/fixtures/routing-feasibility/run.ts), [probe plugin](https://github.com/JNS0724/Viva/blob/16d0c34/test/fixtures/routing-feasibility/index.ts) and [contract and instructions](https://github.com/JNS0724/Viva/blob/16d0c34/test/fixtures/routing-feasibility/contract.ts). These are not production implementation, are not loaded by the production profile, and the CLI does not match automatic `.test.ts` discovery. [Machine-readable evidence](agent-routing-feasibility-results.json) includes complete results, actions, selected events, source hashes and exploratory failures.
 
 Runs use private temporary directories, fresh DSH homes, workspaces and sessions. All messages, histories and task materials are synthetic. Actual worker sessions call a safe delayed fixed-result tool, with no real market research or user-file writes.
 
@@ -96,6 +96,8 @@ The original checkout contains two unrelated, unregistered `memory-design` draft
 
 ## 8 Reproduction
 
+The probes and the prototype were removed from the repository before implementation; check out commit `16d0c34` to reproduce.
+
 Run from the repository root with the existing credential environment. Each invocation defaults to a fresh private temporary directory and prints report/event locations. Never use the everyday Viva DSH home.
 
 ```sh
@@ -115,11 +117,11 @@ ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron test/fixtures/routing-feasib
 
 The supplement targets the first round's weak points in three layers. Summarized evidence is in the [supplementary results](agent-routing-supplement-results.json).
 
-**Deterministic set.** Real DSH, production plugins and a scriptable fake model, three runs each ([probe](../test/fixtures/routing-feasibility/supplement/run.ts)). Forbidden calls in the same step (before routing, after routing and after a reply) were denied 9/9 and no forbidden body ran. Interjected requests were tracked on their own, repaired only for themselves when omitted, and no text was released while one was pending, 6/6. Duplicate submissions and inconsistent plans were rejected 6/6. Unbound sessions were refused before their first step, 3/3. For visible output, the unchanged production stream passed 0/9 leak checks (control), dropping unauthorized attempts whole passed 3/9, and keeping start and settle with emptied content passed 9/9. The first-round probe narrowed tools in `pre-step`, so the first request still carried all 49 tools; binding at creation left 10.
+**Deterministic set.** Real DSH, production plugins and a scriptable fake model, three runs each ([probe](https://github.com/JNS0724/Viva/blob/16d0c34/test/fixtures/routing-feasibility/supplement/run.ts)). Forbidden calls in the same step (before routing, after routing and after a reply) were denied 9/9 and no forbidden body ran. Interjected requests were tracked on their own, repaired only for themselves when omitted, and no text was released while one was pending, 6/6. Duplicate submissions and inconsistent plans were rejected 6/6. Unbound sessions were refused before their first step, 3/3. For visible output, the unchanged production stream passed 0/9 leak checks (control), dropping unauthorized attempts whole passed 3/9, and keeping start and settle with emptied content passed 9/9. The first-round probe narrowed tools in `pre-step`, so the first request still carried all 49 tools; binding at creation left 10.
 
 **Bridge-level actual-model set.** Production persona, production plugins and default thinking, five runs per cell. With the v2 protocol, ambiguity, an unconfirmed suggestion, retrieval of a corrected standard, recovery after real compaction of a long session (the summary kept the corrected version), task updates, mixed requests, ordinary streaming and interjection each passed 5/5. In an empty workspace, "make a brief" asked for the source material first in 5/5; the production baseline also asked first and delegated 0/5. The first round's v1 protocol under the production configuration passed ambiguity 5/5, the unconfirmed suggestion 5/5 (one check false positive) and retrieval 4/5 (one reasonable follow-up question), so the first round's four clarifications given as replies came mainly from the experimental configuration. For the interjection, the production baseline handed over 0/5 times; all five tried the web inside the main session and wrote a report outline there. Median time to first text was 3.9 seconds, against 1.4 in production.
 
-**Real-app set.** The Electron app with its real renderer, database and TaskRuntime, synthetic meeting notes in the workspace ([scenarios](../test/smoke/live-scenarios-routing.ts)), five runs each:
+**Real-app set.** The Electron app with its real renderer, database and TaskRuntime, synthetic meeting notes in the workspace ([scenarios](https://github.com/JNS0724/Viva/blob/16d0c34/test/smoke/live-scenarios-routing.ts)), five runs each:
 
 | Scenario | Result | Data |
 | --- | --- | --- |
@@ -136,9 +138,9 @@ The supplement targets the first round's weak points in three layers. Summarized
 
 Replaced runs are kept with their reasons: attempts of one run shared the task list and filled the task places (now each attempt has its own material and stops its tasks when it ends), and one run's argument check read the schema wrongly (fixed and rerun).
 
-New findings are written into section 17 of the proposal: binding timing, the output gate, a restricted scope unable to run application tools on the agent's behalf, approvals unable to outlive their turn, invalid JSON tool arguments leaving requests silently unrouted (9 times), telling the user when task places are full, and several versions of one rule in long-term memory, of which the wrong one was picked once.
+New findings are organized into the proposal (sections 7, 8, 10 and 11): binding timing, the output gate, a restricted scope unable to run application tools on the agent's behalf, approvals unable to outlive their turn, invalid JSON tool arguments leaving requests silently unrouted (9 times), telling the user when task places are full, and several versions of one rule in long-term memory, of which the wrong one was picked once.
 
-On the PR revision with the supplement, `npm run typecheck`, `npm test` and `npm run check:i18n` pass.
+The probes and the prototype were removed from the repository before implementation; check out commit `16d0c34` to reproduce. On the PR revision with the supplement, `npm run typecheck`, `npm test` and `npm run check:i18n` pass.
 
 ```sh
 # Deterministic set; no paid model calls
@@ -152,3 +154,21 @@ VIVA_ROUTING=1 VIVA_ROUTING_FAST=1 npm run live -- --only route-reply,route-hand
 ```
 
 The real-app set uses its own temporary profile and never reads everyday data. Every actual-model run incurs usage charges.
+
+## 10 Layered narrowing
+
+In the supplement, app operations performed by the host on the agent's behalf ran into two problems: a restricted scope treats tools narrowed away as absent, and the main agent cannot see their parameters. Layered narrowing keeps the schedule, memory, MCP and skill tools in the main session's scope, lets the guard allow one call per committed `app_action`, and keeps execution tools out of scope ([proposal section 7](agent-routing-design.md#7-tool-layers-and-runtime-constraints)). The request header and protocol shared by the app and the plugin moved to `src/shared/request-routing`, and the ledger became turn-aware, fixing leave to answer that never ended with its turn. This round's experiment code is commit `121a83d` (PR #125), not merged; the implementation rewrites it following section 13 of the proposal.
+
+Real app, production persona, plugins and default thinking, fast lane on, five runs each:
+
+| Scenario | Result | Data |
+| --- | --- | --- |
+| Ordinary answer | 5/5 | First text in 3.1 to 5.0 s |
+| Brief from notes, addition to the task, corrected agreement in a new topic, stopping a task | 5/5 each | Additions always went to the original task |
+| Interjection mid-answer | 5/5 | All handed over by the fast lane; task card after 1.6 to 2.8 s (once 6.4 s) |
+| Interjection correcting the current answer | 5/5 | All went back to the main agent; no task started |
+| Weekly reminder | 5/5 | An `app_action` first, then `schedule_create` proposed the card; the conversation went on while it waited |
+| Remember my manager | 5/5 | Written by `memory_remember`; a new topic answers |
+| Add an MCP server | 5/5 | Option a: the main session called `viva_mcp_add`; the approval card and key window worked and the key was stored only encrypted; 6.8 to 10.3 s per turn |
+
+Across all 50 runs, forbidden calls 0 and routing failures 0 (including requests left by turns ending in errors). Twice the schedule scenario committed two `app_action`s at once; the spare grant was dropped at the end of the turn. After the shared contracts moved to `src/shared`, a confirmation run of the ordinary answer, brief, interjection, reminder and MCP scenarios twice each passed 10/10. The harness removes the temporary profile of a fully passing run, so per-attempt data comes from the summaries it keeps, collected under `layeredNarrowing` in the [results](agent-routing-supplement-results.json).

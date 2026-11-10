@@ -92,11 +92,10 @@ test('in the forked session the agent can still ask and be answered', { timeout:
   assert.equal(forked.ok, true, JSON.stringify(forked))
   assert.equal(forked.info.resumed, true, 'asked in the resumed fork, not in a fresh session opened instead')
 
-  const turn = agent.prompt('明天天气怎么样')
-  const question = await eventually(() => events.find((event) => event.type === 'question'))
-  assert.ok(question, 'the question reaches the app from the forked session')
-  agent.answerQuestion(question.questionId, [{ id: 'city', selected: ['上海'] }])
-  await turn
+  // The main conversation asks in text (clarify); the answer comes as the user's next request.
+  await agent.prompt('明天天气怎么样')
+  assert.ok(replies(events).join('').includes('你想看哪个城市的天气？'), 'the question shows from the forked session')
+  await agent.prompt('上海')
   assert.ok(replies(events).join('').includes('按上海来看'))
 })
 
@@ -105,16 +104,18 @@ test('forked with no point given while a turn is under way, the new session leav
   const agent = bridge()
   await agent.start()
   await agent.prompt('记住这个暗号：蓝色鲸鱼')
-  // A turn waiting on the user's answer is under way: its words are in the log, its end is not.
-  const turn = agent.prompt('明天天气怎么样')
-  const question = await eventually(() => events.find((event) => event.type === 'question'))
+  // A turn waiting on the user is under way (a server to set up, its card not answered): its words are in the log,
+  // its end is not.
+  const turn = agent.prompt('帮我接入演示服务')
+  const card = await eventually(() => events.find((event) => event.type === 'permission'))
+  assert.ok(card, 'the turn waits on its approval card')
 
   const forked = await agent.fork({})
   assert.equal(forked.ok, true, JSON.stringify(forked))
   await agent.prompt('另起一件事')
   const seen = requestFor(llm, '另起一件事')
   assert.ok(seen.includes('蓝色鲸鱼'), 'the turns that ended come along')
-  assert.ok(!seen.includes('明天天气怎么样'), 'the turn under way, not answered yet, is left out')
-  agent.answerQuestion(question.questionId, [{ id: 'city', selected: ['上海'] }])
+  assert.ok(!seen.includes('帮我接入演示服务'), 'the turn under way, not answered yet, is left out')
+  agent.respondPermission(card.requestId, 'reject-once')
   await turn.catch(() => {})
 })

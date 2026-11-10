@@ -1,17 +1,22 @@
 /**
  * A stand-in for the DeepSeek Messages API, for running the real dsh (and the memory plugin) without a key:
  * point `DEEPSEEK_BASE_URL` at `url`. Every request is kept in `requests` so tests can see exactly what the
- * model was given. Its "model" is a few fixed rules on the user's latest words:
+ * model was given. Its "model" is a few fixed rules on the user's latest words.
+ *
+ * Offered commit_route (the main conversation, plugins/routing), it first routes each request the way the rules
+ * below would do it: work goes to a task (start; 「告诉后台的…」 a message after list_background_tasks), the app's
+ * settings are an app_operation followed by their tool, a missing city is a clarify asked in text, anything else a
+ * reply; then the rules below go on with the request's words. Without commit_route (a task) the rules apply as they are:
  *
  * - 「记住：X」 → calls memory_remember with X, and the names from KNOWN_NAMES in X as keywords;
  * - 「查一下 X」 → calls memory_recall with X;
  * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
  * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result,
  *   or, told 「再问我城市」 too, asks which city as for the weather;
- * - 「后台做：X」 → hands X to a background task with start_background_task;
+ * - 「后台做：X」 → routed to a background task, X its brief;
  * - a background task's result (the app's 【后台任务结束】 note) → 「已看过后台结果：T」, T the first task's title;
- * - 「告诉后台的「T」：Z」 → finds task T (list_background_tasks) and says Z to it (message_background_task);
- * - 「删掉 X」 → removes X with the shell;
+ * - 「告诉后台的「T」：Z」 → routed as a message Z to task T, found with list_background_tasks;
+ * - 「删掉 X」 → removes X with the shell (in a task: routed there);
  * - asked by dsh's Auto review about a step → allows it, unless it removes something;
  * - after a tool result → says what the tool did;
  * - 「…到时候帮我…」 → proposes a schedule with schedule_create (FOLLOWUP below), due in a minute so a smoke run
@@ -20,6 +25,7 @@
  * - the memory plugin's background extractor gets the answers of `extract` below.
  */
 import http from 'node:http'
+import { requestsIn, withoutHeaders } from '../../src/shared/request-routing/header.ts'
 
 /** The fake has no language understanding; these are the names it can pick out as keywords. */
 const KNOWN_NAMES = ['张三', '李四', '王五', '周报', '对账系统', '结算口径']
@@ -52,7 +58,9 @@ const CONTEXT_OPEN = '<about-user>'
 const MAIL = [[/^发邮件/, '__send_email'], [/^存草稿/, '__create_draft']]
 
 const partsOf = (message) => (Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }])
-const textParts = (message) => partsOf(message).filter((part) => part.type === 'text').map((part) => part.text)
+const rawTexts = (message) => partsOf(message).filter((part) => part.type === 'text').map((part) => part.text)
+/** The texts of a message, the app's request headers left out: the rules read the user's words. */
+const textParts = (message) => rawTexts(message).map(withoutHeaders)
 
 /** Says what background came with the question: the fixed layer, and how many pushed memories. */
 function backgroundOf(texts) {
@@ -126,21 +134,16 @@ function taskTitled(result, title) {
   }
 }
 
-function afterTool(messages, result) {
+function afterTool(request, messages, result) {
   const use = lastToolUse(messages)
-  if (use?.name === 'start_background_task') return { text: `已经交给后台：${resultText(result)}` }
-  if (use?.name === 'message_background_task') return { text: `已经转告：${resultText(result)}` }
-  const tell = TELL.exec(askedWords(messages))
-  if (use?.name === 'list_background_tasks' && tell) {
-    const taskId = taskTitled(result, tell[1])
-    return taskId ? { tool: { name: 'message_background_task', input: { taskId, text: tell[2] } } } : { text: `没找到「${tell[1]}」：${resultText(result)}` }
-  }
   if (use?.name === 'ask_user_question') {
     const city = cityFrom(result)
     return { text: city ? `好的，按${city}来看：明天多云转晴。` : `没问到城市：${resultText(result)}` }
   }
   // 「…再问我城市」: once the server is dealt with, it asks which city (a question later in the turn).
-  if (use?.name === 'viva_mcp_add' && THEN_ASK.test(askedWords(messages))) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
+  if (use?.name === 'viva_mcp_add' && THEN_ASK.test(askedWords(messages))) {
+    return hasTool(request, 'ask_user_question') ? { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } } : { text: `配置结果：${resultText(result)}。${CITY_QUESTION.question}` }
+  }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
@@ -197,17 +200,85 @@ function review(request) {
   return { text: JSON.stringify(removes ? { risk: 'medium', decision: 'deny', reason: '要删除原有的文件' } : { risk: 'low', decision: 'allow' }) }
 }
 
+const ROUTE = 'commit_route'
+const hasTool = (request, name) => (request.tools ?? []).some((tool) => tool.name === name)
+/** A routing decision; one handing work over says so to the user in its notice, as a main agent there does. */
+const commit = (requestId, goals, actions) => {
+  const handed = actions.find((action) => action.kind === 'start' || action.kind === 'message' || action.kind === 'stop')
+  const notice = handed?.kind === 'start' ? `已经交给后台：${handed.brief}` : handed?.kind === 'message' ? `已经转告：${handed.text}` : handed ? '已经停下那个任务' : undefined
+  return { tool: { name: ROUTE, input: { requestId, ...(notice ? { notice } : {}), goals, actions } } }
+}
+const toolUses = (messages) => messages.flatMap((message) => partsOf(message).filter((part) => part.type === 'tool_use'))
+/** The requests the app put in the conversation, oldest first, each with its words. */
+const requestsOf = (messages) => messages.filter((message) => message.role === 'user').flatMap(rawTexts).flatMap(requestsIn)
+  .map((request) => ({ id: request.id, words: request.words.trim() }))
+const lastRouted = (messages) => toolUses(messages).filter((use) => use.name === ROUTE).at(-1)?.input?.requestId ?? null
+/** The words of the request the last commit_route was for, or null. */
+function committedWords(messages) {
+  const id = lastRouted(messages)
+  return id ? requestsOf(messages).find((request) => request.id === id)?.words ?? null : null
+}
+/** The texts of the user's messages the last routed request came in with (its words, and what dsh and plugins added). */
+function routedTexts(messages) {
+  const id = lastRouted(messages)
+  const at = messages.findIndex((message) => message.role === 'user' && rawTexts(message).some((text) => requestsIn(text).some((request) => request.id === id)))
+  if (at < 0) return []
+  let start = at, end = at
+  while (start > 0 && messages[start - 1].role === 'user') start -= 1
+  while (end + 1 < messages.length && messages[end + 1].role === 'user' && !partsOf(messages[end + 1]).some((part) => part.type === 'tool_result')) end += 1
+  return messages.slice(start, end + 1).flatMap(textParts)
+}
+/** What the assistant last said in text, before this request. */
+const lastSaid = (messages) => messages.filter((message) => message.role === 'assistant').flatMap(textParts).at(-1) ?? ''
+
+/**
+ * The main agent's routing step: the first request not routed yet, routed as the rules would handle it. A message
+ * for a task first looks it up (list_background_tasks, a context tool), then routes with the task's id.
+ */
+function route(request) {
+  if (!hasTool(request, ROUTE)) return null
+  const messages = request.messages
+  const routed = new Set(toolUses(messages).filter((use) => use.name === ROUTE).map((use) => use.input?.requestId))
+  const pending = requestsOf(messages).find((entry) => !routed.has(entry.id))
+  if (!pending) return null
+  const { id, words } = pending
+  const goal = (disposition) => [{ goal: words.slice(0, 200) || '请求', disposition }]
+  const app = (operation, extra = []) => commit(id, [...goal('app_operation'), ...extra.map((action) => ({ goal: action.question, disposition: 'needs_input' }))], [{ kind: 'app_action', operation }, ...extra])
+  const tell = TELL.exec(words)
+  if (tell) {
+    const result = partsOf(messages.at(-1)).find((part) => part.type === 'tool_result')
+    const use = toolUses(messages).at(-1)
+    if (!result || use?.name !== 'list_background_tasks') return { tool: { name: 'list_background_tasks', input: {} } }
+    const taskId = taskTitled(result, tell[1])
+    return taskId ? commit(id, goal('update_task'), [{ kind: 'message', taskId, text: tell[2] }]) : commit(id, goal('answer'), [{ kind: 'reply', scope: '没找到任务' }])
+  }
+  const handOff = HAND_OFF.exec(words)
+  if (handOff) return commit(id, goal('delegate'), [{ kind: 'start', brief: handOff[1] }])
+  if (DELETE.test(words) || MAIL.some(([pattern]) => pattern.test(words))) return commit(id, goal('delegate'), [{ kind: 'start', brief: words }])
+  if (REMEMBER.test(words)) return app('memory_remember')
+  if (CONNECT.test(words)) return app('viva_mcp_add', THEN_ASK.test(words) ? [{ kind: 'clarify', question: CITY_QUESTION.question }] : [])
+  if (FOLLOW.test(words)) return app('schedule_create')
+  if (WEATHER.test(words)) return commit(id, goal('needs_input'), [{ kind: 'clarify', question: CITY_QUESTION.question }])
+  return commit(id, goal('answer'), [{ kind: 'reply', scope: words.slice(0, 200) || '回答' }])
+}
+
 /** @returns {{ tool: { name: string, input: object } } | { text: string }} */
 export function decide(request) {
   if (JSON.stringify(request.messages).includes(REVIEWER) || systemText(request).includes(REVIEWER)) return review(request)
   if (systemText(request).includes(EXTRACTOR)) return extract(request)
   if (systemText(request).includes(SYNTHESIZER)) return synthesize(request)
+  const routing = route(request)
+  if (routing) return routing
   const messages = request.messages
   const last = messages[messages.length - 1]
   const result = partsOf(last).find((part) => part.type === 'tool_result')
-  if (result) return afterTool(messages, result)
-  const texts = trailingUserTexts(messages)
-  const question = questionOf(messages)
+  // Once a request is routed, the rules go on with its words, as if just asked.
+  const routed = result && toolUses(messages).at(-1)?.name === ROUTE
+  if (result && !routed) return afterTool(request, messages, result)
+  const texts = routed ? routedTexts(messages) : trailingUserTexts(messages)
+  const question = (routed ? committedWords(messages) : null) ?? questionOf(messages)
+  // The city, answered in text to the question the main agent asked in text.
+  if (routed && lastSaid(messages).endsWith(CITY_QUESTION.question)) return { text: `好的，按${question}来看：明天多云转晴。` }
   const remember = REMEMBER.exec(question)
   if (remember) {
     const text = remember[1].trim()
@@ -216,10 +287,7 @@ export function decide(request) {
   }
   const taskReport = TASK_REPORT.exec(question)
   if (taskReport) return { text: `已看过后台结果：${taskReport[1]}` }
-  const handOff = HAND_OFF.exec(question)
-  if (handOff) return { tool: { name: 'start_background_task', input: { brief: handOff[1] } } }
-  if (TELL.test(question)) return { tool: { name: 'list_background_tasks', input: {} } }
-  if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
+  if (WEATHER.test(question)) return hasTool(request, 'ask_user_question') ? { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } } : { text: CITY_QUESTION.question }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   if (FOLLOW.test(question)) return { tool: { name: 'schedule_create', input: followupProposal() } }
   const recall = RECALL.exec(question)

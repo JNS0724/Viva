@@ -26,11 +26,18 @@ function contextOf(request: ModelRequest) {
   return parts.find((part) => part.type === 'text' && part.text?.startsWith('<about-user>'))?.text ?? ''
 }
 
+/** Whether the request's last message is one the user's turn begins with (not a tool's result in a later step). */
+const beginsTurn = (request: ModelRequest) => {
+  const last = request.messages[request.messages.length - 1]
+  return !Array.isArray(last.content) || last.content.some((part) => part.type === 'text')
+}
+
 function lastContext(llm: { requests: object[] }) {
-  // Background extraction and synthesis share the endpoint with the foreground conversation.
+  // Background extraction and synthesis share the endpoint with the foreground conversation, and a routed turn takes
+  // several steps: the block goes with the step the turn begins with.
   // The fake endpoint records parsed Messages API requests with this shape.
   const requests = llm.requests as ModelRequest[]
-  const request = requests.findLast(request => JSON.stringify(request.system ?? '').includes('你是用户的个人工作助手'))
+  const request = requests.findLast(request => JSON.stringify(request.system ?? '').includes('你是用户的个人工作助手') && beginsTurn(request))
   assert.ok(request, 'the foreground model request must exist')
   return contextOf(request)
 }
@@ -88,8 +95,8 @@ test('the agent remembers through the plugin tool, with keywords and without ask
   assert.equal(events.some((e) => e.type === 'permission'), false)
   assert.ok(replies(events).join('').includes('好的，我记住了：周报每周五下班前交给张三'))
   assert.deepEqual(db.listMemories().items.map((m) => [m.text, m.source, m.keywords]), [['周报每周五下班前交给张三', 'agent', ['周报', '张三']]])
-  const tool = events.find((e) => e.update?.sessionUpdate === 'tool_call')
-  assert.equal(tool.update.title, 'memory_remember')
+  const tools = events.filter((e) => e.update?.sessionUpdate === 'tool_call').map((e) => e.update.title)
+  assert.deepEqual(tools, ['commit_route', 'memory_remember'], 'routed as an app operation, then its own tool')
 })
 
 test('a resumed session keeps its state across a restart', { timeout: DSH_TIMEOUT_MS }, async (t) => {
@@ -131,7 +138,7 @@ test('a preference the model did not save is picked up in the background after t
 
   await agent.prompt('以后回答我，先给结论再展开')
 
-  assert.equal(events.some((e) => e.update?.sessionUpdate === 'tool_call'), false, 'the main model called no memory tool')
+  assert.equal(events.some((e) => e.update?.sessionUpdate === 'tool_call' && String(e.update.title).startsWith('memory_')), false, 'the main model called no memory tool')
   const saved = await eventually(() => db.listMemories().items.find((m) => m.kind === 'preference'))
   const extraction = (llm.requests as ModelRequest[]).find((request) => JSON.stringify(request.system ?? '').includes('记忆整理员'))
   assert.ok(extraction)
@@ -145,14 +152,17 @@ test('a preference the model did not save is picked up in the background after t
   assert.equal(saved?.source, 'agent')
 })
 
-test('what the user answers to the agent\'s question is kept for next time', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+test('what the user answers to a task\'s question is kept for next time', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { file, events, bridge, defer } = await setup(t)
   const db = openDb(defer, file)
   const agent = bridge()
   await agent.start()
 
-  const turn = agent.prompt('明天天气怎么样')
-  const asked = await eventually(() => events.find((event) => event.type === 'question'))
+  // Question cards are a task's (ask_user_question); the main conversation asks in text.
+  const task = await agent.startTask()
+  assert.ok(task.ok && task.taskId, JSON.stringify(task))
+  const turn = agent.promptTask(task.taskId, '明天天气怎么样')
+  const asked = await eventually(() => events.find((event) => event.type === 'task_question'))
   agent.answerQuestion(asked.questionId, [{ id: 'city', selected: ['上海'] }])
   await turn
 

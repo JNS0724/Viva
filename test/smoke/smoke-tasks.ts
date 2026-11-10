@@ -66,9 +66,9 @@ async function tellAgent(win: SmokeWindow, words: string) {
   await until(win, `${userTexts}.length > ${before} && ${mainIdle}`, `the agent done with 「${words}」`)
 }
 
-/** The agent hands `text` to a background task (start_background_task, the fake model's 「后台做：」). */
+/** The agent routes `text` to a new background task (commit_route start, the fake model's 「后台做：」). */
 const startInBackground = (win: SmokeWindow, text: string) => tellAgent(win, `后台做：${text}`)
-/** The agent finds the task titled `title` and says `words` to it (message_background_task). */
+/** The agent finds the task titled `title` and routes `words` to it (commit_route message). */
 const tellTask = (win: SmokeWindow, title: string, words: string) => tellAgent(win, `告诉后台的「${title}」：${words}`)
 
 /**
@@ -88,8 +88,10 @@ async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect,
     answers: [...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent),
     busy: document.getElementById('send-btn').dataset.busy,
   })`)
-  expect(front.answers.some((text: string) => text.includes('已经交给后台')) && !front.answers.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
-    'the agent should say it handed the work over, the task answering on its own card', front)
+  // A handover ends the turn with its notice as the answer; the task answers on its own card.
+  expect(front.answers.some((text: string) => text.includes('已经交给后台')) && !front.answers.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`))
+    && !front.answers.some((text: string) => /请求 ID|commit_route/.test(text)),
+    'the agent should say it handed the work over, the task answering on its own card, no routing step showing', front)
   // The task's own session begins with its brief: nothing of the conversation comes before it.
   const firstWords = (request: { messages?: Array<{ content?: unknown }> }) => {
     const content = request.messages?.[0]?.content

@@ -30,7 +30,10 @@ test('自动: an ordinary step runs without asking; removing a file the user had
       resolve(card)
     }, 50)
   })
-  const turn = agent.prompt('删掉 notes.txt')
+  // Removing a file is a task's work: the main conversation hands it over.
+  const task = await agent.startTask()
+  assert.ok(task.ok && task.taskId, JSON.stringify(task))
+  const turn = agent.promptTask(task.taskId, '删掉 notes.txt')
   const card = await asked
   const step = events.find((event) => event.update?.sessionUpdate === 'tool_call' && event.update.toolCallId === card.toolCall.toolCallId)
   assert.match(JSON.stringify(step?.update.rawInput), /rm -rf notes\.txt|Remove-Item/, 'the user is asked about the removal')
@@ -44,7 +47,9 @@ test('完全: a removal runs without asking', { timeout: DSH_TIMEOUT_MS }, async
   fs.writeFileSync(path.join(workspace, 'old.txt'), 'x')
   const agent = bridge()
   await agent.start()
-  await agent.prompt('删掉 old.txt')
+  const task = await agent.startTask()
+  assert.ok(task.ok && task.taskId, JSON.stringify(task))
+  await agent.promptTask(task.taskId, '删掉 old.txt')
   assert.equal(permissions(events).length, 0)
   assert.equal(fs.existsSync(path.join(workspace, 'old.txt')), false)
 })

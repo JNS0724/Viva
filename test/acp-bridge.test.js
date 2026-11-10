@@ -5,10 +5,14 @@ import { PassThrough, Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
 import { createAcpBridge, MCP_RETRY_MS } from '../src/backend/acp-bridge.ts'
 import pkg from '../package.json' with { type: 'json' }
+import { testRequests, withPluginSide } from './fixtures/request-routing.ts'
+import { requestsIn, withoutHeaders } from '../src/shared/request-routing/header.ts'
 
 const APP_VERSION = pkg.version
 /** What the app told the fake dsh it is, at the last initialize. */
 let lastClientInfo = null
+/** What the app last prompted the fake dsh with, as sent (its request header included). */
+let lastPrompt = ''
 
 const SESSION = 'session-1'
 const OLDER_SESSION = 'session-0'
@@ -25,7 +29,7 @@ test('a new topic without MCP does not wait for old cleanup; late updates and pe
   let releaseClose, serverConnection, created = 0, cancelled = 0
   const events = [], timings = []
   const closeGate = new Promise(resolve => { releaseClose = resolve })
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: e => events.push(e), onTiming: s => timings.push(s),
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', cwd: '/work', emit: e => events.push(e), onTiming: s => timings.push(s),
     spawnFn: () => fakeDsh(conn => {
       serverConnection = conn
       return { ...scriptedAgent([])(conn),
@@ -51,7 +55,7 @@ test('a new topic without MCP does not wait for old cleanup; late updates and pe
 test('cold MCP topics wait for old resources and reject overlapping switches', { timeout: 5000 }, async t => {
   let created = 0, releaseClose
   const closeGate = new Promise(resolve => { releaseClose = resolve })
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
     mcpServers: () => [{ name: 'exclusive', command: 'exclusive', args: [], env: [] }],
     spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
       async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
@@ -72,7 +76,7 @@ test('a ready spare bypasses a slow old close while preserving MCP status', { ti
   let created = 0, releaseClose, prepared
   const closeGate = new Promise(resolve => { releaseClose = resolve })
   const ready = new Promise(resolve => { prepared = resolve })
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: () => {}, prewarmSessions: true,
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', cwd: '/work', emit: () => {}, prewarmSessions: true,
     mcpServers: () => [{ name: 'safe', command: 'safe', args: [], env: [] }],
     spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
       async newSession() { const sessionId = `topic-${++created}`; if (created === 2) prepared(); return { sessionId, configOptions: MODEL_OPTIONS } },
@@ -97,7 +101,7 @@ test('setting an already selected model does not make a protocol call', async t 
 
 test('a failed old close blocks cold MCP initialization once and can be retried', async t => {
   let closes = 0, created = 0
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
     mcpServers: () => [{ name: 'exclusive', command: 'exclusive', args: [], env: [] }],
     spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
       async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
@@ -115,7 +119,7 @@ test('a failed old close blocks cold MCP initialization once and can be retried'
 test('retrying a failed topic switch does not cancel a background task permission', async t => {
   let conn, closes = 0, created = 0
   const events = []
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', emit: event => events.push(event),
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', cwd: '/work', emit: event => events.push(event),
     mcpServers: () => [{ name: 'safe', command: 'safe', args: [], env: [] }],
     spawnFn: () => fakeDsh(connection => {
       conn = connection
@@ -146,7 +150,7 @@ test('a singleton MCP refusing a speculative second instance does not poison the
   const opened = new Set(), requests = []
   let created = 0, speculativeAttempt
   const attempted = new Promise(resolve => { speculativeAttempt = resolve })
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', prewarmSessions: true, mcpServers: () => [server], emit: () => {},
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', cwd: '/work', prewarmSessions: true, mcpServers: () => [server], emit: () => {},
     spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
       async newSession(params) {
         requests.push(params.mcpServers.map(server => server.name))
@@ -173,7 +177,7 @@ test('a failing MCP configuration cools down across sessions, retries after expi
   t.mock.timers.enable({ apis: ['Date'] })
   let servers = [{ name: 'broken', command: 'missing', args: [], env: [] }]
   let attempts = 0
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', cwd: '/work', mcpServers: () => servers, emit: () => {},
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', cwd: '/work', mcpServers: () => servers, emit: () => {},
     spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
       async newSession(params) {
         if (params.mcpServers.length) { attempts++; throw Error('mcp-client(broken): initial connection failed') }
@@ -202,7 +206,7 @@ function fakeDsh(agentFactory) {
   }
   const stream = ndJsonStream(Writable.toWeb(child.stdout), Readable.toWeb(child.stdin))
   new AgentSideConnection((conn) => agentFactory(conn), stream)
-  return child
+  return withPluginSide(child)
 }
 
 function scriptedAgent(log, { resumable = true } = {}) {
@@ -226,7 +230,8 @@ function scriptedAgent(log, { resumable = true } = {}) {
       return { sessionId: SESSION, configOptions: MODEL_OPTIONS }
     },
     async prompt(params) {
-      log.push(['prompt', params.prompt[0].text])
+      lastPrompt = params.prompt[0].text
+      log.push(['prompt', withoutHeaders(lastPrompt)])
       await conn.sessionUpdate({ sessionId: SESSION, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '想' } } })
       await conn.sessionUpdate({ sessionId: 'other-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ignored' } } })
       const decision = await conn.requestPermission({
@@ -260,7 +265,7 @@ test('acp bridge initializes, opens a session, relays updates and answers permis
   const log = []
   const events = []
   let child = null
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/fake/dsh',
     cwd: '/work',
     env: {},
@@ -292,8 +297,10 @@ test('acp bridge initializes, opens a session, relays updates and answers permis
     ['cancel', SESSION],
   ])
   assert.equal(lastClientInfo?.version, APP_VERSION, 'dsh is told the version the app was built as')
-  assert.deepEqual(events.map((e) => e.update?.sessionUpdate ?? e.type), ['agent_thought_chunk', 'permission', 'agent_message_chunk', 'turn_end'])
-  assert.equal(events[1].toolCall.title, '写入 notes.md')
+  assert.deepEqual(requestsIn(lastPrompt).map((request) => request.words), ['写个笔记'], 'the words go as a request, under its header')
+  // What the turn says reaches the window only through the stream contract (the plugin side here shows nothing).
+  assert.deepEqual(events.map((e) => e.update?.sessionUpdate ?? e.type), ['permission', 'turn_end'])
+  assert.equal(events[0].toolCall.title, '写入 notes.md')
   assert.equal(events.at(-1).stopReason, 'end_turn')
 
   bridge.dispose()
@@ -303,7 +310,7 @@ test('acp bridge initializes, opens a session, relays updates and answers permis
 test('acp bridge reports an unexpected dsh exit with its stderr tail', async () => {
   const events = []
   let child = null
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/fake/dsh',
     cwd: '/work',
     spawnFn: () => {
@@ -326,7 +333,7 @@ test('acp bridge switches the model via session/set_config_option and relays con
   // Arrange
   const log = []
   const events = []
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/fake/dsh',
     cwd: '/work',
     spawnFn: () => fakeDsh(scriptedAgent(log)),
@@ -348,7 +355,7 @@ test('acp bridge switches the model via session/set_config_option and relays con
 
 function bridgeWith(agent) {
   const log = []
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/fake/dsh',
     cwd: '/work',
     spawnFn: () => fakeDsh(agent(log)),
@@ -413,7 +420,7 @@ test('acp bridge explains a launch failure: missing Node.js versus a missing wor
     setImmediate(() => child.emit('error', Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' })))
     return child
   }
-  const launch = (cwd) => createAcpBridge({ dshBin: '/x/bin.js', cwd, spawnFn: failingSpawn, emit: (e) => messages.push(e.message) })
+  const launch = (cwd) => createAcpBridge({ routing: testRequests(), dshBin: '/x/bin.js', cwd, spawnFn: failingSpawn, emit: (e) => messages.push(e.message) })
 
   launch(process.cwd()).start().catch(() => {})
   launch('/definitely/not/here').start().catch(() => {})
@@ -429,7 +436,7 @@ test('acp bridge explains a launch failure: missing Node.js versus a missing wor
 test('what the conversation on screen waits on is there to read while it waits, and gone once answered', async () => {
   const log = []
   const seen = []
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/fake/dsh', cwd: '/work', env: {},
     spawnFn: () => fakeDsh(scriptedAgent(log)),
     emit: (event) => {
@@ -445,4 +452,39 @@ test('what the conversation on screen waits on is there to read while it waits, 
   assert.equal(seen[0].permissions[0].options.length > 0, true, 'with the options it was asked with')
   assert.deepEqual(bridge.sessionWaits(), { permissions: [], questions: [], secrets: [] }, 'answered: no longer waiting')
   bridge.dispose()
+})
+
+test('a session the bridge leaves ends its turn at the host: what it left undecided fails as cancelled', { timeout: 5000 }, async t => {
+  const requests = testRequests()
+  let created = 0
+  const bridge = createAcpBridge({ routing: requests, dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
+      async prompt(params) { lastPrompt = params.prompt[0].text; return { stopReason: 'end_turn' } },
+    })),
+  })
+  t.after(() => { bridge.dispose() })
+  await bridge.start()
+  await bridge.prompt('写个笔记')
+  const [asked] = requestsIn(lastPrompt)
+  assert.equal(requests.store.get(asked.id)?.status, 'received', 'nothing decided it, and no turn end came through')
+  await bridge.newSession()
+  assert.deepEqual([requests.store.get(asked.id)?.status, requests.store.get(asked.id)?.failure], ['failed', 'cancelled'])
+})
+
+test('stopping the turn ends its requests at once: nothing is decided for it while it winds down', { timeout: 5000 }, async t => {
+  const requests = testRequests()
+  const bridge = createAcpBridge({ routing: requests, dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async prompt(params) { lastPrompt = params.prompt[0].text; return { stopReason: 'end_turn' } },
+      async cancel() {},
+    })),
+  })
+  t.after(() => { bridge.dispose() })
+  const { sessionId } = await bridge.start()
+  await bridge.prompt('写个笔记')
+  const [asked] = requestsIn(lastPrompt)
+  await bridge.cancel()
+  assert.deepEqual([requests.store.get(asked.id)?.status, requests.store.get(asked.id)?.failure], ['failed', 'cancelled'])
+  assert.equal((await requests.decide({ requestId: asked.id, sessionId, plan: { goals: [{ goal: '笔记', disposition: 'delegate' }], actions: [{ kind: 'start', brief: '写笔记' }] } })).accepted, false)
 })

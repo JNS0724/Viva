@@ -20,6 +20,7 @@ import { DSH_PROFILE } from '../src/backend/config.ts'
 import { ensureDshProfile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { removeTree } from '../src/backend/remove-tree.ts'
+import { testRequests } from '../test/fixtures/request-routing.ts'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 /** The app's runtime: this script runs on the app's Electron as Node (or DSH_NODE), and so does dsh. */
@@ -89,7 +90,7 @@ async function ask(bridge, events, question) {
 /** Runs one dsh session over the shared memory.db; every permission request is refused. */
 async function runSession({ questions, key, env, dshHome, workspace, memoryFile }) {
   const events = []
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
     nodeBin: RUNTIME.nodeBin,
     cwd: workspace,

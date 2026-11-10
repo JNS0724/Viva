@@ -2,7 +2,7 @@
 
 English | [简体中文](live-check.zh-CN.md)
 
-Unit and smoke tests use fake models. They validate UI and control flow, but only actual-model checks can verify clarification, tool selection, reasoning, and resistance to injected instructions. This suite exercises 23 model-dependent scenarios from [Features](features.md). Run the core set for every beta; run all scenarios for stable releases or major changes. Assert outcomes, files, numbers, cards, and errors rather than exact wording. Each scenario defaults to three runs and must pass all three.
+Unit and smoke tests use fake models. They validate UI and control flow, but only actual-model checks can verify clarification, tool selection, reasoning, and resistance to injected instructions. This suite exercises 29 model-dependent scenarios from [Features](features.md). Run the core set for every beta; run all scenarios for stable releases or major changes. Assert outcomes, files, numbers, cards, and errors rather than exact wording. Each scenario defaults to three runs and must pass all three.
 
 ## Preparation
 
@@ -42,10 +42,7 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | chat | Markdown tables/code render; a follow-up refers to the prior answer | |
 | files-csv | Read workspace CSV and calculate 8024 | |
 | files-write | Create requested workspace file with correct content | ✓ |
-| files-outside-allow | Outside-workspace read asks permission, then retrieves the identifier | ✓ |
-| files-outside-deny | Denial prevents revealing the identifier | |
 | steer | A mid-turn request to switch to English is delivered and honored | ✓ |
-| steer-another | A review interrupted at once by "send me today's brief too": the brief is given and the review still done, without waiting for "continue" | ✓ |
 | ask-question | Weather request asks for location then continues | ✓ |
 | ask-remembered | Known home city prevents repeated location question | |
 | memory-recall | Explicit save needs no approval and is recalled in a new topic | ✓ |
@@ -61,6 +58,16 @@ For a model mistake, rerun `--only <id> --repeat 3`; intermittent recurrence sug
 | errors | Wrong key/unreachable server has readable localized errors; recovery works | ✓ |
 | desk | Desktop-island file question produces a file-aware answer | ✓ |
 | history | Restart resumes the prior secret phrase and search finds it | ✓ |
+| route-reply | An ordinary question is routed, then answered; no forbidden calls; no request header or routing JSON on screen or in the database | ✓ |
+| route-handoff | A brief from workspace meeting notes goes to a background task; the chat frees quickly; brief.md uses the notes | ✓ |
+| route-update | "Add a risks section" right after the task starts goes to that task, no second task; the brief gains the section | |
+| route-interject | "Also put the todos in todo.md" said mid-explanation gets a task card quickly; the explanation still finishes | ✓ |
+| route-interject-correct | "Say it in English" mid-explanation corrects the answer: no task, the rest in English | |
+| route-history | A brief rule set and corrected in another topic is found by "as usual" and followed in the brief | |
+| route-stop | "Stop that translation task" just after it starts stops that task; its card says stopped | |
+| route-schedule | "Remind me every Friday at five…" is routed as an app operation, then its tool proposes the schedule; kept, it is in Activity | |
+| route-memory | "Remember: my manager is…" is routed as an app operation, then remembered; a new topic knows it | |
+| route-mcp | Adding an MCP server in chat is routed as an app operation; approval card and key window as usual; key kept encrypted only | |
 
 `model-openai` defaults to DeepSeek's compatible endpoint; override with `LIVE_OPENAI_URL`, `LIVE_OPENAI_MODEL`, and `LIVE_OPENAI_KEY`. History launches twice.
 

@@ -16,9 +16,7 @@ import { report, run, until, type SmokeHooks, type SmokeWindow } from './smoke-k
  * times (3 by default) and passes only if every attempt does; LIVE_SET=core runs the ones marked core, LIVE_ONLY
  * the ids it lists. Each launch writes smoke/live/report-<phase>.json, which scripts/live.ts puts together.
  */
-export const LIVE_SCENARIOS: readonly LiveScenario[] = [...CHAT_SCENARIOS, ...MEMORY_SCENARIOS, ...SCHEDULE_SCENARIOS, ...TASK_SCENARIOS, ...APP_SCENARIOS]
-  // PROTOTYPE (src/backend/routing-prototype.ts): the routing scenarios exist only for a run with the switch on.
-  .concat(process.env.VIVA_ROUTING === '1' ? ROUTING_SCENARIOS : [])
+export const LIVE_SCENARIOS: readonly LiveScenario[] = [...CHAT_SCENARIOS, ...MEMORY_SCENARIOS, ...SCHEDULE_SCENARIOS, ...TASK_SCENARIOS, ...APP_SCENARIOS, ...ROUTING_SCENARIOS]
 
 const DEFAULT_REPEAT = 3
 const MAX_REPEAT = 10
