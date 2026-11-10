@@ -305,6 +305,69 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .isl-tools-desk { display: flex; flex: none; align-items: center; gap: 2px; }
 .isl-tools-desk[data-place="corner"] { position: absolute; top: var(--desk-hit-pad); right: var(--desk-hit-pad); z-index: 1; }
 .isl-surface:has(> .isl-tools-desk[data-place="corner"]) .isl-entry { padding-right: calc(var(--desk-icon) * 2 + var(--desk-pad)); }
+
+/* ---------- desktop island: where things stand at a glance (view/island-dom.ts deskSignal) ----------
+   A ring round the portrait for each state, its shape as well as its colour: turning arc = going on, orange pulse =
+   waits on you, blue breathing = done and not yet seen, red = went wrong, grey dashes = not connected; resting, no ring
+   (her picture is not scaled or faded: either blurs it). The same sign goes before the state's words, and on the
+   portrait when it is alone. */
+.isl[data-host="desk"][data-signal="working"] .isl-anchor > .maid { box-shadow: 0 0 0 calc(var(--desk-ring) - 1px) color-mix(in srgb, var(--accent) 22%, transparent); }
+.isl[data-host="desk"][data-signal="working"] .isl-anchor::before {
+  content: ''; position: absolute; left: 50%; top: 50%; width: var(--desk-round); height: var(--desk-round); border-radius: 50%; pointer-events: none;
+  background: conic-gradient(var(--accent) 0 100deg, transparent 100deg 360deg);
+  /* Only the arc outside her picture: a mask reads alpha alone, so any opaque colour does. */
+  -webkit-mask: radial-gradient(circle, transparent calc(var(--desk-face-rest) / 2 + 1px), var(--bg) calc(var(--desk-face-rest) / 2 + 1.5px));
+  transform: translate(-50%, -50%); animation: isl-ring-turn 1.4s linear infinite;
+}
+.isl[data-host="desk"][data-signal="confirm"] .isl-anchor > .maid,
+.isl[data-host="desk"][data-signal="asking"] .isl-anchor > .maid { animation: isl-ring-call 1.6s ease-out infinite; box-shadow: 0 0 0 var(--desk-ring) var(--orange); }
+.isl[data-host="desk"][data-signal="done"] .isl-anchor > .maid { animation: isl-ring-breathe 3.6s ease-in-out infinite; box-shadow: 0 0 0 calc(var(--desk-ring) - .5px) var(--accent); }
+.isl[data-host="desk"][data-signal="error"] .isl-anchor > .maid { box-shadow: 0 0 0 var(--desk-ring) var(--red); }
+.isl[data-host="desk"][data-signal="offline"] .isl-anchor > .maid { box-shadow: none; outline: 2px dashed var(--ink-3); outline-offset: 2px; filter: grayscale(.85); opacity: .7; }
+@keyframes isl-ring-turn { to { transform: translate(-50%, -50%) rotate(360deg); } }
+@keyframes isl-ring-call {
+  0%, 100% { box-shadow: 0 0 0 var(--desk-ring) var(--orange), 0 0 0 calc(var(--desk-ring) + 1px) color-mix(in srgb, var(--orange) 40%, transparent); }
+  50% { box-shadow: 0 0 0 var(--desk-ring) var(--orange), 0 0 0 calc(var(--desk-ring) + 8px) color-mix(in srgb, var(--orange) 0%, transparent); }
+}
+@keyframes isl-ring-breathe {
+  0%, 100% { box-shadow: 0 0 0 calc(var(--desk-ring) - 1px) color-mix(in srgb, var(--accent) 45%, transparent); }
+  50% { box-shadow: 0 0 0 calc(var(--desk-ring) - .5px) var(--accent), 0 0 14px 3px color-mix(in srgb, var(--accent) 55%, transparent); }
+}
+/* The sign on the portrait's lower right, worn only with the portrait alone. */
+.isl-sign {
+  position: absolute; left: calc(var(--desk-round) / 2 + var(--desk-face-rest) / 4); top: calc(var(--desk-round) / 2 + var(--desk-face-rest) / 4);
+  display: grid; place-items: center; width: var(--desk-sign); height: var(--desk-sign); border-radius: 50%; pointer-events: none;
+  font: 800 13px/1 var(--font-sans); color: var(--bg); background: var(--accent); box-shadow: 0 0 0 2px var(--bg); z-index: 1;
+}
+.isl-sign[hidden] { display: none; }
+/* Alone at rest, the count of what ended in the background sits on her lower right, inside her round (the window
+   takes clicks only there): a click opens the 后台 list, as from the strip. */
+.isl-corner { position: absolute; right: 0; bottom: 0; z-index: 1; }
+.isl-corner[hidden] { display: none; }
+.isl[data-host="desk"] .isl-corner .isl-bg { padding: 2px 7px; background: var(--island-bg); border-color: var(--line-3); }
+/* The strip beside her is as long as what it says, up to its widest (its max-width, desktop-layout.ts): max-content, as
+   fit-content would measure against her 80px round, which holds it. */
+.isl[data-host="desk"] .isl-peek { width: max-content; }
+.isl[data-signal="confirm"] .isl-sign, .isl[data-signal="asking"] .isl-sign { background: var(--orange); }
+.isl[data-signal="error"] .isl-sign { background: var(--red); }
+/* The words beside her: the sign before them, the edge in the state's colour. */
+.isl[data-host="desk"] .isl-peek .isl-status .isl-dot:not(:empty) { display: grid; place-items: center; width: var(--desk-sign-glyph); height: var(--desk-sign-glyph); background: none; font: 800 12px/1 var(--font-sans); }
+.isl[data-host="desk"][data-signal="working"] .isl-peek .isl-status .isl-dot {
+  width: calc(var(--desk-sign-glyph) - 2px); height: calc(var(--desk-sign-glyph) - 2px); box-sizing: border-box; border-radius: 50%; background: none;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent); animation: spin .9s linear infinite;
+}
+.isl[data-host="desk"][data-signal="confirm"] .isl-peek .isl-dot, .isl[data-host="desk"][data-signal="asking"] .isl-peek .isl-dot { color: var(--orange); }
+.isl[data-host="desk"][data-signal="done"] .isl-peek .isl-dot, .isl[data-host="desk"][data-signal="done"] .isl-peek .isl-label { color: var(--accent); }
+.isl[data-host="desk"][data-signal="error"] .isl-peek .isl-dot { color: var(--red); }
+.isl[data-host="desk"][data-signal="offline"] .isl-peek .isl-dot { color: var(--ink-3); }
+.isl[data-host="desk"][data-signal="offline"] .isl-peek .isl-label { color: var(--ink-2); }
+.isl[data-host="desk"][data-signal="confirm"] .isl-peek, .isl[data-host="desk"][data-signal="asking"] .isl-peek { border-color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, var(--island-bg)); }
+.isl[data-host="desk"][data-signal="done"] .isl-peek { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.isl[data-host="desk"][data-signal="error"] .isl-peek { border-color: color-mix(in srgb, var(--red) 70%, transparent); background: color-mix(in srgb, var(--red) 10%, var(--island-bg)); }
+.isl[data-host="desk"][data-signal="offline"] .isl-peek { border-style: dashed; border-color: var(--ink-3); }
+@media (prefers-reduced-motion: reduce) {
+  .isl[data-host="desk"] .isl-anchor > .maid, .isl[data-host="desk"] .isl-anchor::before, .isl[data-host="desk"] .isl-peek .isl-dot { animation: none; transition: none; }
+}
 .isl[data-interaction="anchored"] .isl-entry { order: 0; padding: var(--desk-gap) var(--desk-pad); margin: 0; }
 .isl[data-interaction="anchored"] .isl-field { min-height: var(--desk-field-max); font-size: 15px; line-height: 1.7; }
 .isl[data-interaction="anchored"] .isl-entry:focus-within { box-shadow: inset 0 0 0 1px var(--line-focus); }

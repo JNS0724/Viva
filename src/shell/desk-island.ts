@@ -116,6 +116,12 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   const retired = new Set<Win>()
   const imports = new Map<string, { sender: WebContents, key: string, window: Win }>()
   let view: DeskView | null = null
+  /**
+   * Its 已完成 card read and closed: the island is at rest at once, rather than folding to 已完成 for the moment the
+   * window takes to say it was seen and only then going to rest (a strip that came and went: a flash).
+   */
+  let readDone = false
+  const current = (): DeskView | null => (readDone && view?.form === 'done' ? { ...view, form: 'idle', tone: 'idle', mood: 'idle', still: false } : view)
   let doneAt = 0
   /** The window was closed to the tray. */
   let away = false
@@ -221,7 +227,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     const anchor = drag?.layout === 'compact' ? { x: DRAG_SIZE.width / 2, y: DRAG_SIZE.height / 2 } : layout?.anchor
     const area = screen.getDisplayNearestPoint({ x: Math.round(bounds.x + (anchor?.x ?? 60)), y: Math.round(bounds.y + (anchor?.y ?? 50)) }).workArea
     shown.webContents.send('island:view', {
-      view, form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached, hover: hovering, layoutVersion,
+      view: current(), form, align: layout?.align ?? 'center', dir: layout?.dir ?? 'down', dragging: Boolean(drag), coach: !coached, hover: hovering, layoutVersion,
       expanded: input && !drag, panel,
       anchor,
       side: layout?.side ?? 'right', panelWidth: layout?.panelWidth ?? 440,
@@ -346,7 +352,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     clearTimeout(timer)
     const held = hovering && form === 'done'
     const sinceDone = held ? 0 : Date.now() - doneAt
-    form = deskForm({ enabled: (enabled && !hidden) || forced, away: away || forced, view, sinceDone, input, summoned })
+    form = deskForm({ enabled: (enabled && !hidden) || forced, away: away || forced, view: current(), sinceDone, input, summoned })
     if (!form) {
       summoned = false
       hide()
@@ -354,7 +360,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     }
     show()
     send()
-    if (view?.form === 'done' && !input && !held && sinceDone < DESK_TIMES.done + DESK_TIMES.mini) timer = setTimeout(refresh, untilNextForm(sinceDone))
+    if (current()?.form === 'done' && !input && !held && sinceDone < DESK_TIMES.done + DESK_TIMES.mini) timer = setTimeout(refresh, untilNextForm(sinceDone))
   }
 
   /**
@@ -378,12 +384,15 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   /** @param {{ sent?: boolean }} [options] sent: what was asked keeps the island up until it is done */
   function closeInput({ sent = false } = {}) {
     if (!input) return
-    const read = panel === 'status' && view?.form === 'done'
+    const read = panel === 'status' && current()?.form === 'done'
     input = false
+    if (read) readDone = true
     summoned = summoned && sent
     const shown = live()
     if (shown) {
-      if (shown.isFocused()) shown.blur()
+      // On macOS blur() takes the window off the screen and puts it back (orderOut, then orderBack): the island
+      // fades out and in, a flash on every fold. Unable to take the keyboard, it gives it up there all the same.
+      if (shown.isFocused() && process.platform !== 'darwin') shown.blur()
       setFocusable(shown, false)
     }
     refresh()
@@ -412,6 +421,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     /** The window's island changed. */
     setView(next: DeskView) {
       if (next.form === 'done' && view?.form !== 'done') doneAt = Date.now()
+      // The window has its say: a new turn done is news again, and one read comes back as at rest.
+      if (next.form !== 'done' || view?.form !== 'done') readDone = false
       view = next
       refresh()
     },
@@ -466,9 +477,10 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     },
     togglePanel() {
       if (input) return closeInput()
-      const next = view?.form === 'waiting' || view?.form === 'asking' ? 'request'
-        : view?.form === 'done' || view?.form === 'error' || view?.form === 'pending' ? 'status'
-        : view?.form !== 'working' && view?.background?.items?.length ? 'background' : 'input'
+      const shown = current()
+      const next = shown?.form === 'waiting' || shown?.form === 'asking' ? 'request'
+        : shown?.form === 'done' || shown?.form === 'error' || shown?.form === 'pending' ? 'status'
+        : shown?.form !== 'working' && shown?.background?.items?.length ? 'background' : 'input'
       return this.openPanel(next)
     },
     inputOpen: () => input,

@@ -97,8 +97,9 @@ function pendingCard(view: IslandShown): DeskCard {
 
 function backgroundCard(view: IslandShown): DeskCard {
   const { count = 0, done = 0 } = view.background ?? {}
-  return card(t('desk-card.background', { count }), {
-    meta: done ? t('island-tasks.completed', { done }) : '',
+  // Only ended ones (opened from the count on her corner): say that, not 「后台 0 件」.
+  return card(count ? t('desk-card.background', { count }) : t('island-tasks.completed', { done }), {
+    meta: count && done ? t('island-tasks.completed', { done }) : '',
     body: [{ kind: 'background' }],
     actions: [{ text: t('desk-card.open.tasks'), role: 'text', act: { kind: 'tasks' }, external: true }],
   })

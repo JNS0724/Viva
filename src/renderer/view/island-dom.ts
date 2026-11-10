@@ -1,7 +1,7 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { localeRevision } from '../../shared/i18n/locale.ts'
 import { formatElapsed } from '../selectors.ts'
-import { maidFor, maidMood } from './maid.ts'
+import { maidFor, maidMood, showMaid } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
@@ -33,7 +33,8 @@ export type DeskLayout = 'rest' | 'capsule' | 'input' | 'content'
 export function deskLayoutFor(view: IslandShown, open: boolean, _tools = false): DeskLayout {
   if (view.dragging) return 'rest'
   if (open) return view.form === 'input' ? 'input' : 'content'
-  return view.form === 'mini' && !view.background?.count && !view.background?.done ? 'rest' : 'capsule'
+  // At rest she is alone unless tasks go on: what ended is counted on her corner, not in a strip (update below).
+  return view.form === 'mini' && !view.background?.count ? 'rest' : 'capsule'
 }
 
 /** The second line of the peek: what the state is about, said once (the label says the state). */
@@ -42,6 +43,24 @@ function peekDetail(view: IslandShown): string | undefined {
   if (view.form === 'asking' && view.question) return view.task ?? view.question.header ?? view.question.text
   return view.action ?? view.task ?? view.detail
 }
+
+/**
+ * How the desktop portrait says where things stand at a glance (ui-guidelines 桌面岛): a ring for each, and for some
+ * a sign, so shape as well as colour tells them apart. `rest`: the cat alone with nothing going on; `plain`: a form
+ * of the island's own (the input, a note), drawn as it always was.
+ */
+export type DeskSignal = 'rest' | 'plain' | 'working' | 'confirm' | 'asking' | 'done' | 'error' | 'offline'
+const SIGNAL_OF_FORM: Readonly<Record<string, DeskSignal>> = { working: 'working', waiting: 'confirm', asking: 'asking', done: 'done', error: 'error', pending: 'offline' }
+/** Resting as the cat alone, the island keeps the tone of what it rests on: a turn done and not yet seen is still that. */
+const SIGNAL_OF_TONE: Readonly<Record<string, DeskSignal>> = { working: 'working', done: 'done', error: 'error', pending: 'offline' }
+export const deskSignal = (view: Pick<IslandShown, 'form' | 'tone'>): DeskSignal =>
+  (view.form === 'mini' ? SIGNAL_OF_TONE[view.tone] ?? 'rest' : SIGNAL_OF_FORM[view.form] ?? 'plain')
+/** The sign before the state's words, and on the portrait when it is alone; working says itself by turning. */
+export const DESK_SIGNS: Readonly<Partial<Record<DeskSignal, string>>> = { confirm: '!', asking: '?', done: '✓', error: '×', offline: '–' }
+/** Signs worn on the portrait: its dashed grey ring already says offline. */
+const WORN_SIGNS: ReadonlySet<DeskSignal> = new Set(['confirm', 'asking', 'done', 'error'])
+/** The sign is worn only with the portrait alone: beside the state's words it would say it twice. */
+export const wearsSign = (signal: DeskSignal, alone: boolean): boolean => alone && WORN_SIGNS.has(signal)
 
 function deskHead(view: IslandShown, now: number) {
   const attachments = view.form === 'input'
@@ -60,7 +79,7 @@ function deskHead(view: IslandShown, now: number) {
   const elapsed = since !== null ? formatElapsed(now - since)
     : view.form === 'done' && !view.task ? formatElapsed(view.elapsedMs ?? 0) : null
   return h('span', { class: 'isl-copy' },
-    h('span', { class: 'isl-status' }, h('span', { class: 'isl-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'isl-status' }, h('span', { class: 'isl-dot', 'aria-hidden': 'true', text: DESK_SIGNS[deskSignal(view)] }),
       h('b', { class: 'isl-label', text: label }), elapsed ? h('span', { class: 'isl-time', 'data-since': since, text: elapsed }) : null),
     detail ? h('span', { class: 'isl-more', text: detail, title: detail }) : null)
 }
@@ -242,7 +261,10 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   const avatar = h('button', { type: 'button', class: 'isl-anchor', 'aria-label': t('desk.interaction.toggle'), onClick: () => act({ kind: 'toggle' }) })
   const surface = h('section', { class: 'isl-surface', 'aria-label': t('island-dom.content') })
   const peek = h('div', { class: 'isl-peek' })
-  const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, peek, surface)
+  const sign = h('span', { class: 'isl-sign', 'aria-hidden': 'true', hidden: true })
+  /** Her corner, alone at rest: what ended in the background and is not yet seen, counted there rather than in a strip. */
+  const corner = h('span', { class: 'isl-corner', hidden: true })
+  const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, sign, corner, peek, surface)
   const tail = createTailCell(true)
   tail.el.addEventListener('click', () => act({ kind: 'panel', panel: 'background' }))
   const peekOpen = h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) })
@@ -267,21 +289,32 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
     const open = Boolean(view.desktopOpen ?? (view.form === 'input' || pinned)) && !view.dragging
     const wide = view.form === 'input'
-    Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open), layout: deskLayoutFor(view, open) })
+    const signal = deskSignal(view)
+    Object.assign(el.dataset, { form: view.form, tone: view.tone, signal, open: String(open), layout: deskLayoutFor(view, open) })
     avatar.setAttribute('aria-expanded', String(open))
     avatar.setAttribute('aria-label', t('desk.interaction.toggle'))
     avatar.title = t('desk.interaction.gesture')
     const portrait = maidFor(maids, 'island', view.form === 'drop' ? 'listening' : maidMood(view.mood, view.tone), { size: 72, framing: 'whole', moving: !view.still, badge: false })
-    if (avatar.firstChild !== portrait) avatar.replaceChildren(portrait)
+    showMaid(avatar, portrait)
     surface.hidden = !open
-    peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count && !view.background?.done
+    // At rest the cat is alone: the strip beside her only for what goes on (tasks running); what ended is counted on her.
+    peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count
+    const alone = peek.hidden && !open && !view.dragging
+    // Alone, a count of tasks ended and not yet seen takes her corner before her sign: it is the way to the 后台
+    // list, and her ring already says the rest (a turn done: still breathing).
+    const counted = alone && Boolean(view.background?.count || view.background?.done || view.background?.alsoWaiting)
+    sign.textContent = DESK_SIGNS[signal] ?? ''
+    sign.hidden = counted || !wearsSign(signal, peek.hidden && !open)
     const next = JSON.stringify([view, open, localeRevision()])
     if (next === signature) return tick(now)
     signature = next
     const cell = tail.update(view)
     cell?.setAttribute('aria-expanded', String(open && view.desktopPanel === 'background'))
     peekOpen.replaceChildren(deskHead(view, now))
-    reconcileChildren(peek, [peekOpen, ...(cell ? [cell] : [])])
+    const cornered = Boolean(cell) && counted
+    corner.hidden = !cornered
+    reconcileChildren(corner, cornered && cell ? [cell] : [])
+    reconcileChildren(peek, [peekOpen, ...(cell && !cornered ? [cell] : [])])
     if (!open) { surface.inert = true; return }
     surface.inert = false
     card.name()

@@ -1,5 +1,132 @@
 import { expect, type Page, type TestInfo } from '@playwright/test'
 
+/**
+ * The desktop island folded, state by state (view/island-dom.ts deskSignal): each its own ring, the sign on the
+ * portrait only when it is alone, and the state's sign before its words. Reduced motion, so the rings are at rest.
+ */
+export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void> {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  try {
+    const { rows: seen, blanks, last } = await page.evaluate(async () => {
+      const { createIsland } = await import(new URL('./view/island-dom.js', location.href).href) as typeof import('../../src/renderer/view/island-dom.ts')
+      const { placeDesktopIsland } = await import(new URL('./view/desktop-layout.js', location.href).href) as typeof import('../../src/renderer/view/desktop-layout.ts')
+      const base = { tone: 'idle', mood: 'idle', label: '', recent: [] }
+      const cases: Array<[string, IslandShown]> = [
+        ['rest', { ...base, form: 'mini' }],
+        ['working', { ...base, form: 'working', tone: 'working', mood: 'thinking', label: '正在处理', action: '读取文件', startedAt: Date.now() - 60_000 }],
+        ['confirm', { ...base, form: 'waiting', tone: 'waiting', mood: 'confirm', label: '需要你确认', permission: { requestId: 'r', title: '运行测试', command: 'npm test', options: [] } }],
+        ['asking', { ...base, form: 'asking', tone: 'waiting', mood: 'ask', label: '需要你回答', question: { questionId: 'q', id: 'c', text: '先看哪部分？', options: [] } }],
+        ['done', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', elapsedMs: 72_000, detail: '周报整理好了' }],
+        ['done-alone', { ...base, form: 'mini', tone: 'done', mood: 'done', label: '已完成' }],
+        ['done-open', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', detail: '周报整理好了', desktopOpen: true, desktopPanel: 'status' }],
+        ['error', { ...base, form: 'error', tone: 'error', mood: 'error', label: '出错了', detail: '连接中断' }],
+        ['error-alone', { ...base, form: 'mini', tone: 'error', mood: 'error', label: '出错了' }],
+        ['offline', { ...base, form: 'pending', tone: 'pending', mood: 'idle', label: '未连接', detail: '需要配置模型' }],
+        ['done-left', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', elapsedMs: 72_000, detail: '周报整理好了' }],
+        ['rest-ended', { ...base, form: 'mini', background: { count: 0, done: 3, waiting: 0, items: [] } }],
+        ['done-alone-ended', { ...base, form: 'mini', tone: 'done', mood: 'done', label: '已完成', background: { count: 0, done: 2, waiting: 0, items: [] } }],
+        ['rest-running', { ...base, form: 'mini', background: { count: 1, done: 3, waiting: 0, items: [{ id: 't', title: '整理周报', status: 'running', now: '读取文件' }] } }],
+      ]
+      const gallery = document.createElement('section')
+      gallery.id = 'desk-signal-gallery'
+      gallery.style.cssText = 'position:fixed;top:60px;left:16px;z-index:100;display:grid;grid-template-columns:repeat(3,380px);gap:6px;background:var(--bg)'
+      document.body.append(gallery)
+      const rows = []
+      for (const [name, view] of cases) {
+        const stage = document.createElement('div')
+        stage.className = 'desk-stage'
+        stage.dataset.dir = 'down'
+        stage.style.cssText = `width:380px;height:${view.desktopOpen ? 260 : 124}px;position:relative;flex:none;background:var(--panel-2);overflow:hidden`
+        const island = createIsland('desk', () => {}, {})
+        island.el.dataset.dir = 'down'
+        island.update({ desktopOpen: false, ...view })
+        stage.append(island.el)
+        gallery.append(stage)
+        const left = name === 'done-left'
+        placeDesktopIsland(island.el, stage, left ? { anchor: { x: 326, y: 56 }, side: 'left', panelWidth: 440 } : { anchor: { x: 54, y: 56 }, side: 'right', panelWidth: 440 })
+        await Promise.all([...island.el.querySelectorAll('img')].map(image => image.decode()))
+        // Placement writes at the next frame (desktop-layout.ts queueLayout): measure after it.
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        const maid = getComputedStyle(island.el.querySelector('.isl-anchor > .maid')!)
+        const sign = island.el.querySelector<HTMLElement>('.isl-sign')!
+        const peek = island.el.querySelector<HTMLElement>('.isl-peek')!
+        rows.push({
+          name, signal: island.el.dataset.signal, ring: maid.boxShadow, outline: maid.outlineStyle, opacity: maid.opacity,
+          arc: getComputedStyle(island.el.querySelector('.isl-anchor')!, '::before').content,
+          sign: sign.hidden ? null : sign.textContent, signShown: !sign.hidden && sign.getBoundingClientRect().width > 0,
+          peek: !peek.hidden, dot: peek.hidden ? null : peek.querySelector('.isl-dot')?.textContent ?? null,
+          peekWidth: peek.hidden ? 0 : peek.getBoundingClientRect().width,
+          peekGap: peek.hidden ? null : (() => {
+            const strip = peek.getBoundingClientRect(), round = island.el.querySelector('.isl-anchor')!.getBoundingClientRect()
+            return strip.left >= round.right ? strip.left - round.right : round.left - strip.right
+          })(),
+          corner: island.el.querySelector<HTMLElement>('.isl-corner:not([hidden])')?.textContent ?? null,
+          cornerInside: (() => {
+            const shown = island.el.querySelector<HTMLElement>('.isl-corner:not([hidden])')?.getBoundingClientRect()
+            const round = island.el.querySelector('.isl-anchor')!.getBoundingClientRect()
+            return !shown || (shown.left >= round.left - 0.5 && shown.right <= round.right + 0.5 && shown.top >= round.top - 0.5 && shown.bottom <= round.bottom + 0.5)
+          })(),
+        })
+      }
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      // Her mood changing (thinking to typing, as a turn goes): the portrait shown is never a picture still decoding,
+      // which would blink her out for a frame (maid.ts showMaid).
+      const swap = createIsland('desk', () => {}, {})
+      gallery.append(swap.el)
+      const working = { ...base, form: 'working', tone: 'working', label: '正在处理', startedAt: Date.now() }
+      swap.update({ ...working, mood: 'thinking', desktopOpen: false })
+      await Promise.all([...swap.el.querySelectorAll('img')].map(image => image.decode()))
+      const blanks = []
+      for (const mood of ['typing', 'thinking', 'done', 'error']) {
+        swap.update({ ...working, mood, desktopOpen: false })
+        const shown = swap.el.querySelector<HTMLImageElement>('.isl-anchor img')
+        if (!shown || !shown.complete || !shown.naturalWidth) blanks.push(mood)
+        await new Promise(resolve => setTimeout(resolve, 120))
+      }
+      // …and once decoded, the last mood is the one shown.
+      const last = swap.el.querySelector<HTMLElement>('.isl-anchor .maid')?.dataset.mood
+      return { rows, blanks, last }
+    })
+    await info.attach('desk-signals', { body: JSON.stringify(seen, null, 2), contentType: 'application/json' })
+    expect(blanks, 'a mood changed never shows a picture still decoding').toEqual([])
+    expect(last, 'and the mood last asked for is shown once decoded').toBe('error')
+    await page.locator('#desk-signal-gallery').screenshot({ path: info.outputPath('desk-signals.png') })
+    const by = Object.fromEntries(seen.map(row => [row.name, row]))
+    expect(seen.map(row => [row.name, row.signal])).toEqual([['rest', 'rest'], ['working', 'working'], ['confirm', 'confirm'], ['asking', 'asking'], ['done', 'done'],
+      ['done-alone', 'done'], ['done-open', 'done'], ['error', 'error'], ['error-alone', 'error'], ['offline', 'offline'],
+      ['done-left', 'done'], ['rest-ended', 'rest'], ['done-alone-ended', 'done'], ['rest-running', 'rest']])
+    // The sign on the portrait only when it is alone; beside the words, the words carry it.
+    expect(seen.map(row => [row.name, row.sign])).toEqual([['rest', null], ['working', null], ['confirm', null], ['asking', null], ['done', null],
+      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null], ['done-left', null], ['rest-ended', null], ['done-alone-ended', null], ['rest-running', null]])
+    // At rest she is alone: no strip for what ended, only its count on her corner, inside her round (the window's
+    // clicks reach only there); the strip comes back only for tasks going on.
+    expect([by['rest-ended'].peek, by['rest-ended'].corner, by['rest-ended'].cornerInside]).toEqual([false, '✓ 3', true])
+    expect([by['rest-running'].peek, by['rest-running'].corner]).toEqual([true, null])
+    // A turn done and tasks ended, both unseen: the count keeps her corner (the way to the 后台 list); the ring says done.
+    expect([by['done-alone-ended'].corner, by['done-alone-ended'].cornerInside, by['done-alone-ended'].ring]).toEqual(['✓ 2', true, by['done-alone'].ring])
+    expect([by.rest.peek, by.rest.corner]).toEqual([false, null])
+    // The strip is as long as what it says, up to 320px, and beside her on either side.
+    expect(by.done.peekWidth).toBeLessThan(300)
+    expect(Math.abs(by['done-left'].peekWidth - by.done.peekWidth)).toBeLessThan(1)
+    expect(seen.filter(row => row.peek).every(row => row.peekWidth <= 320.5)).toBe(true)
+    expect(seen.filter(row => row.peekGap !== null).map(row => [row.name, Math.round(row.peekGap!)])).toEqual(
+      seen.filter(row => row.peekGap !== null).map(row => [row.name, Math.round(seen.find(other => other.name === 'done')!.peekGap!)]))
+    expect([by['done-alone'].signShown, by['error-alone'].signShown]).toEqual([true, true])
+    expect([by.confirm.dot, by.asking.dot, by.done.dot, by.error.dot, by.offline.dot, by.working.dot]).toEqual(['!', '?', '✓', '×', '–', ''])
+    // Each its own ring: not one outline for all.
+    const rings = ['confirm', 'done', 'error'].map(name => by[name].ring)
+    expect(new Set(rings).size).toBe(3)
+    expect(rings.every(ring => ring !== 'none')).toBe(true)
+    expect(by.working.arc).not.toBe('none')
+    expect(by.offline.outline).toBe('dashed')
+    // At rest she stays sharp: no scaling or fading of her picture.
+    expect(Number(by.rest.opacity)).toBe(1)
+  } finally {
+    await page.evaluate(() => document.getElementById('desk-signal-gallery')?.remove())
+    await page.emulateMedia({ reducedMotion: null })
+  }
+}
+
 /** Exercise production DOM and CSS in the existing app, with no additional startup or model turn. */
 export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<void> {
   await page.emulateMedia({ reducedMotion: 'reduce' })

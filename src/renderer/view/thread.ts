@@ -6,7 +6,7 @@ import { optionName } from '../approval.ts'
 import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.ts'
 import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.ts'
 import type { CatMood } from '../selectors.ts'
-import { maidFor, maidMood } from './maid.ts'
+import { maidFor, maidMood, showMaid } from './maid.ts'
 import type { MaidMood, MaidSlots } from './maid.ts'
 import { h, label } from './dom.ts'
 import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown, streamMarkdown, type MarkdownStream } from './markdown.ts'
@@ -69,7 +69,7 @@ function refreshAvatar(view: View, message: ThreadMessage, look: Look) {
   if (!slot) return
   const key = lookKey(message, look)
   if (avatarLooks.get(slot) === key) return
-  reconcileChildren(slot, portrait(message, look))
+  showMaid(slot, portrait(message, look)[0] ?? null)
   avatarLooks.set(slot, key)
 }
 

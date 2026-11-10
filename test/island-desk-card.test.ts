@@ -140,3 +140,8 @@ test('the first-time card shows only on the resting island', () => {
   assert.equal(showsCoach({ ...resting, dropping: true }), false)
   assert.equal(showsCoach({ ...resting, form: 'waiting' }), false)
 })
+
+test('opened from the count of ended tasks alone, the list says how many ended, not that none goes on', () => {
+  const card = deskCard({ ...base, form: 'background', tone: 'idle', label: '空闲', background: { count: 0, done: 3, waiting: 0, items: [] } }, { shortcut: '' })!
+  assert.deepEqual([card.label, card.meta], ['3 件做完了', ''])
+})

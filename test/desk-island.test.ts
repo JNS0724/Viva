@@ -257,7 +257,9 @@ test('the shortcut opens the input, which takes the keyboard until it is closed'
   assert.deepEqual([win.visible, win.focused, win.lastView().form], [true, true, 'input'], 'shown and focused, though switched off')
   desk.setView(view('working'))
   desk.closeInput({ sent: true })
-  assert.deepEqual([win.focusable, win.focused, win.visible, win.lastView().form], [process.platform === 'win32', false, true, 'working'], 'what was asked stays up while it runs')
+  // macOS: no blur(), which there takes the window off the screen and back (a fade on every fold); unable to take the
+  // keyboard, the window gives it up when the user goes on. The fake keeps it focused meanwhile.
+  assert.deepEqual([win.focusable, win.focused, win.visible, win.lastView().form], [process.platform === 'win32', process.platform === 'darwin', true, 'working'], 'what was asked stays up while it runs')
   desk.setView(view('idle'))
   assert.equal(win.visible, false, 'switched off, it goes once that is over')
   desk.destroy()
@@ -687,5 +689,27 @@ test('its 已完成 card read and closed tells the window it was seen; other car
   desk.openInput()
   desk.closeInput()
   assert.equal(read, 1, 'how it went wrong, or the input over a done island, is not the done card')
+  desk.destroy()
+})
+
+test('its 已完成 card read and closed, the island rests at once: never 已完成 again for the moment the window takes', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env, { onDoneRead: () => {} })
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  const shown = () => { const sent = win.lastView() as unknown as { form: string, view: { form: string, tone: string } }; return [sent.form, sent.view.form, sent.view.tone] }
+  desk.setView(view('done', { tone: 'done', mood: 'done' }))
+  desk.togglePanel()
+  desk.togglePanel()
+  assert.deepEqual(shown(), ['mini', 'idle', 'idle'], 'folded straight to rest, not to 已完成 first')
+  desk.setView(view('done', { tone: 'done', mood: 'done', still: true }))
+  assert.deepEqual(shown(), ['mini', 'idle', 'idle'], 'the same turn told again before it is seen: still at rest')
+  desk.togglePanel()
+  assert.equal((win.lastView() as unknown as { panel: string }).panel, 'input', 'at rest a click asks, as it would')
+  desk.closeInput()
+  desk.setView(view('idle'))
+  desk.setView(view('done', { tone: 'done', mood: 'done' }))
+  assert.deepEqual(shown(), ['done', 'done', 'done'], 'the next turn done is news again')
   desk.destroy()
 })
