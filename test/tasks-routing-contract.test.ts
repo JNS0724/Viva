@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { requestsIn, withoutHeaders, withRequestHeader } from '../src/shared/request-routing/header.ts'
 import { parsePlan } from '../src/shared/request-routing/protocol.ts'
 import { asBind, asBound, asDecide, asDecided, asFast } from '../src/shared/request-routing/channel.ts'
-import { fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
+import { fastNotice, fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
 
 test('a request header round-trips, several in one message each keep their own words, and can be left out', () => {
   const text = `【插话】用户又说：\n${withRequestHeader('补一节科技新闻', 'r-1')}\n${withRequestHeader('另外停掉 A 股分析', 'r-2')}`
@@ -58,4 +58,9 @@ test('the fast lane hands over only what is plain, to a task it was shown, as a 
   assert.equal(bare.decision, 'start', 'a short or missing brief is no reason to defer: the words go along')
   if (bare.decision === 'start') assert.match(JSON.stringify(fastPlan('另外整理待办写到 todo.md', bare).actions), /"brief":"另外整理待办写到 todo.md\\n\\n用户原话：/)
   assert.ok('plan' in parsePlan(fastPlan('停掉简报', { decision: 'stop', taskId: 't1' })))
+  assert.match(fastNotice('r-1', start, [{ kind: 'start', ok: true, taskId: 't2' }]), /已开始后台任务 t2.*不要再为它提交 commit_route/)
+  const undone = fastNotice('r-1', start, [{ kind: 'start', ok: false, error: '同时最多 5 个后台任务' }])
+  assert.match(undone, /没有办成：同时最多 5 个后台任务/, 'a failed action is told with its reason')
+  assert.match(undone, /不要再为它提交 commit_route/)
+  assert.doesNotMatch(undone, /已经交给后台/)
 })

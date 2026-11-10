@@ -5,7 +5,7 @@
  *
  *   pending ──commit──▶ answering | asking | acting | handed
  *      │                (answering also when a handover failed and the agent must say so)
- *      ├──fast lane──▶ fast ──▶ handed | pending (deferred, or it failed)
+ *      ├──fast lane──▶ fast ──▶ handed | answering (accepted, an action not done) | pending (deferred, or it failed)
  *      └──reminders used up──▶ left
  */
 export type RequestStatus = 'pending' | 'fast' | 'answering' | 'asking' | 'acting' | 'handed' | 'left'
@@ -42,11 +42,14 @@ export function claimFast(ledger: Ledger, id: string): Ledger | null {
   return ledger.requests[id] ? null : put(ledger, { id, status: 'fast', decidedAt: -1, repairs: 0 })
 }
 
-/** The fast lane's outcome: handed over, or left to the main agent (deferred, or it failed). */
-export function settleFast(ledger: Ledger, id: string, handed: boolean): Ledger {
+/**
+ * The fast lane's outcome: the status its accepted plan gave the request (statusOfPlan, as for the agent's own commit),
+ * or null when it was left to the main agent (deferred, refused, or the lane failed) and is pending again.
+ */
+export function settleFast(ledger: Ledger, id: string, decided: RequestStatus | null): Ledger {
   const entry = ledger.requests[id]
   if (entry?.status !== 'fast') return ledger
-  return put(ledger, handed ? { ...entry, status: 'handed', decidedAt: ledger.step } : { ...entry, status: 'pending' })
+  return put(ledger, decided ? { ...entry, status: decided, decidedAt: ledger.step } : { ...entry, status: 'pending' })
 }
 
 /** Why the main agent may not commit for this request now, or null (the host checks the rest). */

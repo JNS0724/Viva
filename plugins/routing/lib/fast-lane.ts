@@ -5,7 +5,7 @@
  * goes to the host as a plan like any other. Pure here; the call is made by the plugin.
  */
 import { z } from 'zod'
-import type { Plan } from '../../../src/shared/request-routing/protocol.ts'
+import type { Plan, Receipt } from '../../../src/shared/request-routing/protocol.ts'
 
 export const FAST_SYSTEM = [
   '你是 Viva 的快速调度。用户在助手回答途中插了一句话。你只判断这句话能不能不打断当前回答、立即交给后台任务处理。',
@@ -87,8 +87,14 @@ export function fastPlan(words: string, decision: FastHandover): Plan {
   return { goals: [{ goal, disposition: 'stop_task' }], actions: [{ kind: 'stop', taskId: decision.taskId }] }
 }
 
-/** The notice the main agent gets once the fast lane has handled a request, so it neither repeats nor ignores it. */
-export function fastNotice(requestId: string, decision: FastHandover, taskId: string | undefined): string {
+/**
+ * The notice the main agent gets once the host accepted the fast lane's plan, so it neither routes the request again
+ * (the host would refuse) nor leaves it unsaid: done, it is mentioned at the end of the answer; not done, with why.
+ */
+export function fastNotice(requestId: string, decision: FastHandover, receipts: readonly Receipt[]): string {
+  const errors = receipts.flatMap(receipt => receipt.ok ? [] : [receipt.error])
+  if (errors.length) return `【调度已处理】请求 ${requestId}：已提交，但没有办成：${errors.join('；')}。不要再为它提交 commit_route；把当前回答说完，在结尾如实告诉用户这件事没办成、原因和可以怎么做。`
+  const taskId = receipts[0]?.ok ? receipts[0].taskId : undefined
   const what = decision.decision === 'start' ? `已开始后台任务 ${taskId ?? ''}` : decision.decision === 'message' ? `已转告后台任务 ${decision.taskId}` : `已停止后台任务 ${decision.taskId}`
   return `【调度已处理】请求 ${requestId}：${what}。不要再为它提交 commit_route；把当前回答说完，在结尾用一句话告诉用户这件事已经交给后台。`
 }

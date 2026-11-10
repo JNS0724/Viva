@@ -30,8 +30,11 @@ test('the fast lane claims an interjection first; the agent may not commit it me
   assert.equal(claimFast(claimed, 'r-1'), null)
   assert.equal(register(claimed, 'r-1'), claimed, 'seen in the conversation later, it stays the fast lane\'s')
   assert.match(String(decisionProblem(claimed, 'r-1')), /调度处理/)
-  assert.equal(settleFast(claimed, 'r-1', false).requests['r-1']!.status, 'pending')
-  assert.equal(settleFast(claimed, 'r-1', true).requests['r-1']!.status, 'handed')
+  assert.equal(settleFast(claimed, 'r-1', null).requests['r-1']!.status, 'pending')
+  assert.equal(settleFast(claimed, 'r-1', 'handed').requests['r-1']!.status, 'handed')
+  const undone = settleFast(atStep(claimed, 3), 'r-1', statusOfPlan(['start'], true)).requests['r-1']!
+  assert.deepEqual([undone.status, undone.decidedAt], ['answering', 3], 'decided by the host but not done: the agent says so, it does not route it again')
+  assert.equal(decisionProblem(settleFast(claimed, 'r-1', 'answering'), 'r-1'), null, 'the host refuses a second commit; nothing here pretends otherwise')
 })
 
 test('undecided requests are reminded at most twice, then left for the host to fail', () => {

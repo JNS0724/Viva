@@ -19,7 +19,7 @@ import { installAssistantStream } from './lib/assistant-stream.ts'
 import { COMMIT_DESCRIPTION, COMMIT_PARAMETERS, MAX_NOTICE_CHARS } from './lib/commit.ts'
 import { deferCode, FAST_SYSTEM, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecision, type FastHandover, type FastTurn } from './lib/fast-lane.ts'
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
-import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger } from './lib/ledger.ts'
+import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
 
@@ -171,10 +171,10 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     if (!claimed) { report('late', null); return }
     ledgers.set(sessionId, claimed)
     const work = handOver(agent, sessionId, request.id, request.words)
-      .then(({ handed, reason }) => { update(sessionId, l => settleFast(l, request.id, handed)); report(handed ? 'handed' : 'deferred', reason) })
+      .then(({ decided, reason }) => { update(sessionId, l => settleFast(l, request.id, decided)); report(decided ? 'handed' : 'deferred', reason) })
       .catch((error: unknown) => {
         console.error('[routing] the fast lane failed; the main agent routes the request:', error instanceof Error ? error.message : String(error))
-        update(sessionId, l => settleFast(l, request.id, false))
+        update(sessionId, l => settleFast(l, request.id, null))
         report('failed', null)
       })
     const set = fastWork.get(sessionId) ?? new Set<Promise<void>>()
@@ -183,7 +183,8 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     void work.finally(() => set.delete(work))
   }
 
-  async function handOver(agent: Agent, sessionId: string, requestId: string, words: string): Promise<{ handed: boolean, reason: string | null }> {
+  /** The status the host's acceptance gave the request, or null when it is left to the main agent; with why, as a code. */
+  async function handOver(agent: Agent, sessionId: string, requestId: string, words: string): Promise<{ decided: RequestStatus | null, reason: string | null }> {
     const signal = AbortSignal.timeout(FAST_WAIT_MS)
     const listed = fastTasks(await tasks.request({ op: 'list', limit: 30 }, sessionId, signal))
     const recent: FastTurn[] = agent.session.snapshotEvents().filter(event => event.type === 'user/message' || event.type === 'assistant/message').map(event => {
@@ -191,12 +192,14 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
       return { role: event.type === 'user/message' ? 'user' as const : 'assistant' as const, text: withoutHeaders(textOf(data.message?.content ?? data.content)) }
     }).filter(turn => turn.text.trim())
     const decision = parseFastDecision(await complete(ctx, agent, fastInput({ recent, tasks: listed, words }), signal), listed)
-    if (decision.decision === 'defer') return { handed: false, reason: deferCode(decision) }
+    if (decision.decision === 'defer') return { decided: null, reason: deferCode(decision) }
     const decided = await host.decide(sessionId, requestId, fastPlan(words, decision), signal)
-    if (!decided.accepted) return { handed: false, reason: 'refused' }
-    if (!decided.receipts.every(receipt => receipt.ok)) return { handed: false, reason: 'not done' }
-    if (agent.status === 'running') agent.steer(userNote(fastNotice(requestId, decision as FastHandover, decided.receipts[0]?.ok ? decided.receipts[0].taskId : undefined)))
-    return { handed: true, reason: null }
+    if (!decided.accepted) return { decided: null, reason: 'refused' }
+    // Accepted, the request is decided at the host whatever its receipts say: a task action not done (no free slot,
+    // say) is the agent's to tell, as after its own commit, not to route again.
+    const failed = decided.receipts.some(receipt => !receipt.ok)
+    if (agent.status === 'running') agent.steer(userNote(fastNotice(requestId, decision as FastHandover, decided.receipts)))
+    return { decided: statusOfPlan(decided.receipts.map(receipt => receipt.kind), failed), reason: failed ? 'not done' : null }
   }
 }
 
