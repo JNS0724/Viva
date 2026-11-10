@@ -101,6 +101,7 @@ export interface ConversationPayloads {
   waits_restored: Partial<ForegroundWaits> & { at: number }
   turn_end: { stopReason?: string, finalReply?: boolean, at: number }
   done_still: {}
+  done_shown: {}
   done_seen: {}
   error: { message: string }
   memory_context: { injected: readonly MemoryInjection[] }

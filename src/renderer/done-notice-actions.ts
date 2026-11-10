@@ -15,7 +15,7 @@ type Timer = ReturnType<typeof setTimeout>
 
 export function createDoneNotice({ getState, dispatch, looking, setTimer = setTimeout, clearTimer = clearTimeout }: {
   getState: () => Pick<State, 'phase' | 'lastReceipt' | 'doneNotice'>
-  dispatch: (action: { type: 'done_seen' | 'done_still' }) => void
+  dispatch: (action: { type: 'done_seen' | 'done_still' | 'done_shown' }) => void
   /** The window is in front and on screen: the user is on it. */
   looking: () => boolean
   setTimer?: (run: () => void, ms: number) => Timer
@@ -40,7 +40,11 @@ export function createDoneNotice({ getState, dispatch, looking, setTimer = setTi
   function check() {
     const state = getState()
     if (state.phase !== 'idle' || !state.lastReceipt || state.doneNotice === 'seen') return cancel()
-    if (looking()) return after('done_seen', DONE_LOOP_MS)
+    if (looking()) {
+      // Come back to it: held still while away, her pose plays again, the loop the user is shown before it rests.
+      if (state.doneNotice === 'still') dispatch({ type: 'done_shown' })
+      return after('done_seen', DONE_LOOP_MS)
+    }
     if (state.doneNotice === 'fresh') return after('done_still', DONE_LOOP_MS * LOOPS_UNWATCHED)
     cancel()
   }

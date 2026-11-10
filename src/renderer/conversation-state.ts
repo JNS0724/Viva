@@ -201,6 +201,8 @@ export const CONVERSATION_ACTIONS = {
 
   /** Her done pose has played a while with nobody looking: it rests on its still, still 已完成. */
   done_still: (view) => (view.doneNotice === 'fresh' ? { ...view, doneNotice: 'still' } : view),
+  /** Come back to while held still: her pose plays again for the loop shown before it rests. */
+  done_shown: (view) => (view.doneNotice === 'still' ? { ...view, doneNotice: 'fresh' } : view),
   /** The user has looked at what was done (the window, or the desktop island's card): the island goes back to 待命. */
   done_seen: (view) => (view.doneNotice === 'seen' ? view : { ...view, doneNotice: 'seen' }),
 

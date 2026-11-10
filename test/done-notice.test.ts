@@ -61,6 +61,7 @@ test('done with nobody looking: held still after two loops, kept done; seen a lo
   assert.equal(state().doneNotice, 'still', 'not missed: it waits for the user')
   seen.looking = true
   notice.check()
+  assert.deepEqual([state().doneNotice, islandView(state()).still], ['fresh', undefined], 'come back to: her pose plays again')
   t.mock.timers.tick(DONE_LOOP_MS)
   assert.equal(state().doneNotice, 'seen')
 })
