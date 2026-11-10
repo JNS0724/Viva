@@ -56,12 +56,15 @@ const NEXT = {
 export function apply(ctx: Context, config: { prefix: string, suffix?: string }, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') return
 
-  // ── State: which sessions are main, the ledger of each one's turn, the grants its app_actions gave, fast work.
+  // ── State: which sessions are main, the ledger of each one's turn, the grants its app_actions gave, fast work, and
+  // how many turns each has ended (what the fast lane started in one tells only that one).
   const mains = new Set<string>()
   const narrowed = new WeakSet<Agent>()
   const ledgers = new Map<string, Ledger>()
   const grants = new Map<string, readonly Grant[]>()
   const fastWork = new Map<string, Set<Promise<void>>>()
+  const turnsEnded = new Map<string, number>()
+  const turnOf = (id: string) => turnsEnded.get(id) ?? 0
   const ledgerOf = (id: string) => ledgers.get(id) ?? EMPTY_LEDGER
   const update = (id: string, change: (ledger: Ledger) => Ledger) => { const next = change(ledgerOf(id)); ledgers.set(id, next); return next }
 
@@ -106,6 +109,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     if (status !== 'idle' || !mains.has(id)) return
     ledgers.delete(id)
     grants.delete(id)
+    turnsEnded.set(id, turnOf(id) + 1)
   })
 
   // ── Tools: the policy decides every call of the main agent before dsh asks the user to approve it (a call outside
@@ -197,6 +201,9 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
 
   /** The status the host's acceptance gave the request, or null when it is left to the main agent; with why, as a code. */
   async function handOver(agent: Agent, sessionId: string, requestId: string, words: string): Promise<{ decided: RequestStatus | null, reason: string | null }> {
+    // Its notice goes only to the turn it was said in, still running: a turn stopped and another begun is not told.
+    const turn = turnOf(sessionId)
+    const stillOn = () => turnOf(sessionId) === turn && agent.status === 'running'
     const signal = AbortSignal.timeout(FAST_WAIT_MS)
     const listed = fastTasks(await tasks.request({ op: 'list', limit: 30 }, sessionId, signal))
     const recent: FastTurn[] = agent.session.snapshotEvents().filter(event => event.type === 'user/message' || event.type === 'assistant/message').map(event => {
@@ -208,14 +215,14 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     // The deadline is for deciding: a plan sent is the host's, and its answer is waited for as for the agent's own commit.
     const decided = await host.decide(sessionId, requestId, fastPlan(words, decision))
     if (decided.accepted === 'unanswered') {
-      if (agent.status === 'running') agent.steer(userNote(fastNotice(requestId, decision as FastHandover, null)))
+      if (stillOn()) agent.steer(userNote(fastNotice(requestId, decision as FastHandover, null)))
       return { decided: 'answering', reason: 'unanswered' }
     }
     if (!decided.accepted) return { decided: null, reason: 'refused' }
     // Accepted, the request is decided at the host whatever its receipts say: a task action not done (no free slot,
     // say) is the agent's to tell, as after its own commit, not to route again.
     const failed = decided.receipts.some(receipt => !receipt.ok)
-    if (agent.status === 'running') agent.steer(userNote(fastNotice(requestId, decision as FastHandover, decided.receipts)))
+    if (stillOn()) agent.steer(userNote(fastNotice(requestId, decision as FastHandover, decided.receipts)))
     return { decided: statusOfPlan(decided.receipts.map(receipt => receipt.kind), failed), reason: failed ? 'not done' : null }
   }
 }
