@@ -322,7 +322,9 @@ function createDeskCardParts(act: IslandAct, shortcut: string) {
       body.setAttribute('aria-label', t('island-dom.content'))
     },
     draw(card: DeskCard, view: IslandShown, now: number): HTMLElement[] {
-      const next = JSON.stringify([localeRevision(), shortcut, card])
+      // Keyed on what the body and buttons say and do, not on the head: a state line that changes every moment
+      // never rebuilds a button the user is holding down.
+      const next = JSON.stringify([localeRevision(), shortcut, card.body, card.actions])
       if (next !== key) {
         key = next
         parts = card.body.map(part => part.kind === 'background' ? null : cardPart(part, act))

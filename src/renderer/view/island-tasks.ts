@@ -67,7 +67,7 @@ function createItemLine(id: string, act: IslandAct, desk: boolean) {
       : item.now ? t('island-tasks.currently', { now: item.now }) : t('island-tasks.working')
     if (detail.textContent !== doing) detail.textContent = doing
     open.title = t('island-tasks.view.activity')
-    stop.textContent = t('island-tasks.stop')
+    stop.textContent = t(desk ? 'desk.interaction.stop.current' : 'island-tasks.stop')
     const elapsed = runningFor(item.startedAt, now)
     if (time.textContent !== elapsed) time.textContent = elapsed
     // A request owns its option handlers. A different request receives new buttons and ids.

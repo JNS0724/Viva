@@ -461,7 +461,7 @@ export const zhCN = {
   "island-tasks.waiting.for.your.answer": "在等你回答",
   "island-tasks.currently": "在{now}",
   "island-tasks.working": "在做",
-  "island-tasks.stop": "停止",
+  "island-tasks.stop": "停下",
   "island-tasks.view.activity": "查看过程",
   "island-tasks.background": "后台",
   "island-tasks.background.2": "后台 ",
