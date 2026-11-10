@@ -52,6 +52,33 @@ test('a turn\'s end fails what it left undecided, for the reason it ended; a dec
   assert.equal(requests.fail({ requestId: elsewhere, sessionId: 's2', reason: 'undelivered' }), true)
 })
 
+test('a turn that ends while its decision is carried out stops what was not sent yet; each such action fails with why', async () => {
+  const log: string[] = []
+  let release!: () => void
+  const requests = testRequests({ tasks: { ...tasksDoing(log), start: (brief) => new Promise(resolve => { log.push(`start:${brief}`); release = () => resolve({ taskId: 't-new' }) }) } })
+  const id = requests.receive({ ...where, kind: 'prompt' })
+  const plan = { goals: [{ goal: '简报', disposition: 'delegate' }, { goal: '补充', disposition: 'update_task' }],
+    actions: [{ kind: 'start', brief: '做今日简报' }, { kind: 'message', taskId: 't1', text: '加科技新闻' }] }
+  const decided = requests.decide({ requestId: id, sessionId: 's1', plan })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(requests.endTurn({ sessionId: 's2', reason: 'cancelled' }), [], 'another session\'s turn stops nothing here')
+  requests.endTurn({ sessionId: 's1', reason: 'cancelled' })
+  release()
+  const result = await decided
+  assert.ok(result.accepted)
+  assert.deepEqual(result.receipts.map(receipt => [receipt.kind, receipt.ok]), [['start', true], ['message', false]], 'the start already under way finishes')
+  assert.deepEqual(log, ['start:做今日简报'], 'the message is never sent')
+  assert.match(String((result.receipts[1] as { error: string }).error), /本轮已结束/)
+  assert.deepEqual(requests.store.actions(id).map(action => action.status), ['done', 'failed'])
+  const next = requests.receive({ ...where, kind: 'prompt' })
+  const again = requests.decide({ requestId: next, sessionId: 's1', plan })
+  await new Promise(resolve => setImmediate(resolve))
+  release()
+  const later = await again
+  assert.deepEqual(later.accepted ? later.receipts.map(receipt => receipt.ok) : later.reason, [true, true])
+  assert.deepEqual(log.slice(1), ['start:做今日简报', 'message:t1:加科技新闻:/work'], 'a later turn\'s decision is carried out in full')
+})
+
 test('in the app database each change has its event, ids and kinds only; a relaunch fails the undecided and never redoes an action', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'requests-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))

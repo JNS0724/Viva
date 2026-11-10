@@ -33,6 +33,7 @@ export interface RequestTasks {
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+const NOT_SENT = '本轮已结束，这一步没有执行'
 
 export function createRequestRuntime({ store, apply, tasks, now = Date.now, newId = () => `r-${randomUUID()}` }: {
   store: RequestStore
@@ -41,6 +42,13 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
   now?: () => number
   newId?: () => string
 }) {
+  /**
+   * Decisions being carried out, each with its session; and those whose turn ended meanwhile (stopped, say), which
+   * send nothing more: the action under way finishes, the rest fail as not sent.
+   */
+  const carrying = new Map<string, string>()
+  const halted = new Set<string>()
+
   /** A request of the main conversation, as it arrives; its id goes into the header the agent reads it under. */
   function receive({ sessionId, conversationId, cwd, kind }: { sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind }): string {
     const id = newId()
@@ -81,18 +89,24 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
     const { plan } = parsed
     const accepted = apply('request.decided', { requestId, actions: plan.actions.map(action => action.kind) }, () => store.decide(requestId, plan, now())).value
     if (!accepted) return { accepted: false, reason: refusal(store.get(requestId), requestId, sessionId) ?? `请求 ${requestId} 不能再提交` }
-    const receipts: Receipt[] = []
-    for (const [idx, action] of plan.actions.entries()) {
-      if (!isTaskAction(action)) { receipts.push({ kind: action.kind, ok: true }); continue }
-      const receipt = await perform(request, action)
-      receipts.push(receipt)
-      try {
-        apply('request.acted', { requestId, idx, kind: action.kind, ok: receipt.ok }, () => store.settle(requestId, idx, receipt, now()))
-      } catch (error) {
-        console.error('[requests] could not keep what became of an action; it stays unsettled:', errorText(error))
+    carrying.set(requestId, sessionId)
+    try {
+      const receipts: Receipt[] = []
+      for (const [idx, action] of plan.actions.entries()) {
+        if (!isTaskAction(action)) { receipts.push({ kind: action.kind, ok: true }); continue }
+        const receipt: Receipt = halted.has(requestId) ? { kind: action.kind, ok: false, error: NOT_SENT } : await perform(request, action)
+        receipts.push(receipt)
+        try {
+          apply('request.acted', { requestId, idx, kind: action.kind, ok: receipt.ok }, () => store.settle(requestId, idx, receipt, now()))
+        } catch (error) {
+          console.error('[requests] could not keep what became of an action; it stays unsettled:', errorText(error))
+        }
       }
+      return { accepted: true, receipts }
+    } finally {
+      carrying.delete(requestId)
+      halted.delete(requestId)
     }
-    return { accepted: true, receipts }
   }
 
   /** A request that got no decision; false when it was decided or ended already, or is not this session's. */
@@ -103,9 +117,10 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
 
   /**
    * A turn of the main conversation ended: what it left undecided fails, for the reason the turn ended, and is said
-   * back; nothing is decided after its turn.
+   * back; nothing is decided after its turn, and a decision still being carried out sends nothing more.
    */
   function endTurn({ sessionId, reason }: { sessionId: string, reason: Exclude<RequestFailure, 'undelivered' | 'interrupted'> }): string[] {
+    for (const [requestId, owner] of carrying) if (owner === sessionId) halted.add(requestId)
     return store.undecided(sessionId).filter(requestId => apply('request.failed', { requestId, reason }, () => store.fail(requestId, reason, now())).value)
   }
 
