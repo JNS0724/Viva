@@ -117,7 +117,8 @@ export function renderMarkdown(text: string, { openLink, image = null }: { openL
 }
 
 /** A top-level block of an answer: the token marked made of it, and the nodes built for it. */
-type BuiltBlock = Readonly<{ token: Token, nodes: readonly ChildNode[] }>
+type BuiltInline = Readonly<{ token: Token, nodes: readonly ChildNode[] }>
+type BuiltBlock = BuiltInline & Readonly<{ inline?: readonly BuiltInline[] }>
 /**
  * An answer still being typed out, kept between frames (renderer/view/thread.ts): its element, the text drawn, its
  * blocks, and the links it defines (`[x]: url`, which change how any block refers to them).
@@ -146,19 +147,59 @@ function sameToken(a: unknown, b: unknown): boolean {
 
 /** A fenced or indented code block (marked's token union has a generic member, so the type alone does not narrow it). */
 const isCode = (token: Token): token is Tokens.Code => token.type === 'code'
+const isParagraph = (token: Token): token is Tokens.Paragraph => token.type === 'paragraph'
+
+/** Keep a growing plain-text run attached, including any selection within its existing characters. */
+function grownText(before: BuiltInline | undefined, token: Token | undefined): BuiltInline | null {
+  const old = before?.token
+  const node = before?.nodes[0]
+  if (!before || !old || !token || old.type !== 'text' || token.type !== 'text' || old.tokens || token.tokens
+    || before.nodes.length !== 1 || node?.nodeType !== Node.TEXT_NODE || !token.text.startsWith(old.text)) return null
+  const text = node as Text
+  text.appendData(token.text.slice(old.text.length))
+  return { token, nodes: before.nodes }
+}
+
+/** Full lexing decides the inline tokens; only the changed suffix of a paragraph needs new nodes. */
+function paragraph(token: Tokens.Paragraph, ctx: Context, before?: BuiltBlock): BuiltBlock {
+  const el = before ? before.nodes[0] as HTMLElement : h('p')
+  const previous = before?.inline ?? []
+  const tokens = token.tokens ?? []
+  let same = 0
+  while (same < previous.length && same < tokens.length && sameToken(previous[same].token, tokens[same])) same++
+  const parts = previous.slice(0, same)
+  const grown = grownText(previous[same], tokens[same])
+  if (grown) {
+    parts.push(grown)
+    same++
+  }
+  for (const part of previous.slice(same)) {
+    for (const node of part.nodes) node.remove()
+  }
+  // The streaming caret is owned by thread.ts and stays after the paragraph's text.
+  const caret = el.querySelector('.caret')
+  for (const next of tokens.slice(same)) {
+    const holder = h('span', null, inline([next], ctx))
+    const nodes = [...holder.childNodes]
+    for (const node of nodes) el.insertBefore(node, caret)
+    parts.push({ token: next, nodes })
+  }
+  return { token, nodes: before?.nodes ?? [el], inline: parts }
+}
 
 function built(token: Token, ctx: Context): BuiltBlock {
+  if (isParagraph(token)) return paragraph(token, ctx)
   const holder = h('div', null, block(token, ctx, { tight: false }))
   return { token, nodes: [...holder.childNodes] }
 }
 
 /**
- * The last block, when it is the code block drawn there last frame grown longer: its new text goes in as a text node
- * of its own, before the caret (a long listing is neither built nor laid out again; drawn whole once the answer ends,
- * it is one text node again). Null for anything else.
+ * Reuse a changing final paragraph's inline prefix, or append to a growing code block before its caret. A long
+ * listing keeps its prior nodes during streaming, then is rendered as one text node when the answer ends.
  */
-function grown(before: BuiltBlock | undefined, token: Token): BuiltBlock | null {
+function grown(before: BuiltBlock | undefined, token: Token, ctx: Context): BuiltBlock | null {
   const old = before?.token
+  if (before?.inline && old && isParagraph(old) && isParagraph(token)) return paragraph(token, ctx, before)
   if (!before || !old || !isCode(old) || !isCode(token) || (old.lang ?? '') !== (token.lang ?? '') || !token.text.startsWith(old.text)) return null
   const code = (before.nodes[0] as Element | undefined)?.querySelector('code')
   if (!code) return null
@@ -170,9 +211,9 @@ function grown(before: BuiltBlock | undefined, token: Token): BuiltBlock | null 
 /**
  * The answer so far, drawn from where it was last frame. marked lexes the whole text each frame, so what is drawn is
  * what drawing the whole text draws; the frames only share nodes: from the start, a block whose token is the same in
- * every field keeps its nodes, and everything from the first one that differs is built again, except a code block at
- * the end that only grew (grown). When the links the answer defines change, nothing is kept. If marked's blocks do not
- * add up to the text, it is drawn whole.
+ * every field keeps its nodes. At the changing tail, paragraphs keep equal inline prefixes and code blocks append
+ * their added text (grown). Other changed blocks are built again. When the links the answer defines change, nothing
+ * is kept. If marked's blocks do not add up to the text, it is drawn whole.
  * @param previous last frame's, of the same answer in the same view
  */
 export function streamMarkdown(previous: MarkdownStream | null, input: string, ctx: Context): MarkdownStream {
@@ -190,7 +231,7 @@ export function streamMarkdown(previous: MarkdownStream | null, input: string, c
   while (same < before.length && same < read.tokens.length && sameToken(before[same].token, read.tokens[same])) same += 1
   const blocks = read.tokens.map((token, i) => {
     if (i < same) return before[i]
-    return (i === read.tokens.length - 1 && i === same ? grown(before[i], token) : null) ?? built(token, ctx)
+    return (i === read.tokens.length - 1 && i === same ? grown(before[i], token, ctx) : null) ?? built(token, ctx)
   })
   const wanted = new Set(blocks.flatMap((block) => block.nodes))
   for (const node of [...el.childNodes]) if (!wanted.has(node)) node.remove()
