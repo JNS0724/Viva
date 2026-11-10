@@ -188,7 +188,7 @@ When goals and actions do not match, the host fills them in as follows:
 | Another action's fields written into an action, such as a `message`'s `taskId` and `text`, or a `stop`'s `taskId`, inside a `start` | Splits those fields off into the missing action |
 | A `reply` with no answer goal | Adds an answer goal |
 
-The host never makes up a task action. When a handover, an update or a stop has no action and no fields to split off, the plan is still refused, because neither a task ID nor a brief can be guessed. Fields are split off only to fill in the missing kind, and never when they belong to the action that carries them, so a `message`'s `taskId` is not taken for a `stop`.
+The host never makes up a task action. When a handover, an update or a stop has no action and no fields to split off, the plan is still refused, because neither a task ID nor a brief can be guessed. Fields are split off only to fill in the missing kind, and only when the extra fields are exactly that kind's: a `taskId` with a `text` becomes a `message`, never a `stop`, so a task the user wanted to tell something is not stopped, whatever order the goals come in.
 
 The tool's parameters require only `requestId` and `actions`, and leave objects open. DSH checks tool parameters before it calls the plugin: with `kind` or goals required, or with closed objects, plans with an omission or an extra field would never reach the host. The host drops extra fields. DSH still refuses a field set to `null`: allowing it would need a `oneOf` in the parameters, which changes the schema the model saw while the wording was tuned, and `null` is rare.
 

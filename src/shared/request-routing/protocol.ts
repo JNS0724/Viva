@@ -97,14 +97,19 @@ const goalsOf = (actions: readonly unknown[]): Loose[] => actions.filter(isLoose
 
 /**
  * The fields of a missing kind, written onto an action of another kind (a start carrying a message's task and text),
- * taken off it as an action of their own; null when no action carries them all, or the one that does has them as its
- * own.
+ * taken off it as an action of their own. Only when the fields that are not the carrier's own are exactly that kind's:
+ * a task and a text are a message and never a stop, whatever order the goals come in, so a task the user wanted told
+ * something is not stopped. Null when no action carries them so.
  */
 function splitOff(actions: readonly unknown[], kind: Action['kind']): unknown[] | null {
   const { needs, may } = FIELDS_OF[kind]
-  const at = actions.findIndex(action => isLoose(action) && isKind(action.kind) && action.kind !== kind
-    && needs.every(field => filled(action[field]))
-    && !needs.some(field => FIELDS_OF[action.kind as Action['kind']].needs.includes(field) || FIELDS_OF[action.kind as Action['kind']].may.includes(field)))
+  const stray = (action: Loose & { kind: Action['kind'] }) => [...NAMING_FIELDS]
+    .filter(field => filled(action[field]) && !FIELDS_OF[action.kind].needs.includes(field) && !FIELDS_OF[action.kind].may.includes(field))
+  const at = actions.findIndex(action => {
+    if (!isLoose(action) || !isKind(action.kind) || action.kind === kind) return false
+    const extra = stray(action as Loose & { kind: Action['kind'] })
+    return needs.every(field => extra.includes(field)) && extra.every(field => needs.includes(field) || may.includes(field))
+  })
   if (at < 0) return null
   const carrier = actions[at] as Loose
   const moved = [...needs, ...may].filter(field => carrier[field] !== undefined)

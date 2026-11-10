@@ -80,6 +80,15 @@ test('a plan whose meaning is plain is mended, not sent back; a task action is n
     [[{ ...start, text: '加一条 AI 新闻' }], 'nor is a task guessed for text alone'],
   ] as const) assert.match(String((parsePlan({ goals: update, actions }) as { problem: string }).problem), /没有对应的 message 动作：补一个单独的 message（taskId、text）/, why)
   assert.ok('problem' in parsePlan({ goals: [{ goal: '解释', disposition: 'answer' }], actions: [{ kind: 'reply', scope: '解释' }, start] }), 'a start nobody listed is refused')
+  const stopAndUpdate = [{ goal: '停掉行情分析', disposition: 'stop_task' }, { goal: '简报加港股', disposition: 'update_task' }, { goal: '调研', disposition: 'delegate' }]
+  const carried = [{ ...start, taskId: 'task-brief', text: '加港股' }, { ...start, brief: '再调研一项', taskId: 'task-market' }]
+  for (const goals of [stopAndUpdate, [...stopAndUpdate].reverse()]) {
+    assert.deepEqual(planOf({ goals, actions: carried }).actions.filter(action => action.kind !== 'start'),
+      [{ kind: 'message', taskId: 'task-brief', text: '加港股' }, { kind: 'stop', taskId: 'task-market' }],
+      'a task with a text is told it, never stopped, whatever order the goals come in')
+  }
+  assert.ok('problem' in parsePlan({ goals: [{ goal: '调研', disposition: 'delegate' }, { goal: '停掉简报', disposition: 'stop_task' }], actions: [{ ...start, taskId: 'task-brief', text: '加港股' }] }),
+    'a task and a text on a start are not taken for a stop')
   const message = { kind: 'message', taskId: 'task-brief', text: '加港股' }
   assert.ok('problem' in parsePlan({ goals: [{ goal: '简报加港股', disposition: 'update_task' }, { goal: '停掉简报', disposition: 'stop_task' }], actions: [message] }),
     'a message\'s own task is not taken for a stop')
