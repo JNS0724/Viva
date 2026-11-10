@@ -271,7 +271,7 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     avatar.setAttribute('aria-expanded', String(open))
     avatar.setAttribute('aria-label', t('desk.interaction.toggle'))
     avatar.title = t('desk.interaction.gesture')
-    const portrait = maidFor(maids, 'island', view.form === 'drop' ? 'listening' : maidMood(view.mood, view.tone), { size: 72, framing: 'whole', moving: true, badge: false })
+    const portrait = maidFor(maids, 'island', view.form === 'drop' ? 'listening' : maidMood(view.mood, view.tone), { size: 72, framing: 'whole', moving: !view.still, badge: false })
     if (avatar.firstChild !== portrait) avatar.replaceChildren(portrait)
     surface.hidden = !open
     peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count && !view.background?.done

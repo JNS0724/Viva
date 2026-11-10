@@ -339,6 +339,8 @@ function attachDeskIsland(window: BrowserWindow) {
     mainWindow: window,
     enabled: deskAllowed && shellPreferences.deskIsland,
     onOwnership: owner => ownDraft(owner),
+    // Its 已完成 card read: the window's island goes back to 待命 too (done-notice-actions.ts).
+    onDoneRead: () => { if (!window.isDestroyed()) window.webContents.send('island:action', { kind: 'seen' }) },
     places: { get: () => shellPreferences.deskPlaces, set: (places) => { setShellPreference('deskPlaces', places).catch(logged('places')) } },
     coach: { get: () => shellPreferences.deskCoached, set: () => { setShellPreference('deskCoached', true).catch(logged('coached')) } },
   })

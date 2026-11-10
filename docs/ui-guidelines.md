@@ -217,7 +217,7 @@ The two sets together have a 4 MiB runtime budget, with a 512 KiB animation limi
 | `ask` | Half-body hand to earcup; portrait headset | Yes | Orange | The assistant is asking you |
 | `listening` | The asking pictures | Yes | Blue | Files are held over the desktop island; nothing waits on you, so blue and no badge |
 | `confirm` | Half-body clipboard; portrait palm-up gesture | Yes | Orange | Approval cards, the desktop island |
-| `done` | Half-body raises the check card and gives a thumbs-up; portrait thumbs-up | Yes | Blue | A turn finished, something is ready |
+| `done` | Half-body raises the check card and gives a thumbs-up; portrait thumbs-up | Yes | Blue | A turn finished, something is ready, not yet seen. Once seen it goes back to idle: with the window in front when it ends, after one loop of the pose; otherwise one loop after the window comes back to the front, or when the desktop island's result card is opened and closed. With nobody looking, the pose stops on its still after two loops and stays done |
 | `error` | Half-body wrench; worried portrait | Yes | Red | An answer failed |
 | `offline` | Half-body unplugged connector; half-lidded portrait | Yes | Gray | No model connected yet, connecting |
 | `sleeping` | Half-body pillow; portrait breathing with closed eyes | Yes | Quiet | Not used at present |

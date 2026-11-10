@@ -665,3 +665,27 @@ test('native hit regions preserve the transparent gap between the portrait and i
   }
   desk.destroy()
 })
+
+test('its 已完成 card read and closed tells the window it was seen; other cards, or done never opened, do not', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  let read = 0
+  const desk = deskIsland(env, { onDoneRead: () => { read += 1 } })
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  desk.setView(view('done'))
+  desk.closeInput()
+  assert.equal(read, 0, 'nothing open: nothing read')
+  desk.togglePanel()
+  assert.equal(read, 0, 'open, being read')
+  desk.togglePanel()
+  assert.equal(read, 1, 'closed: read')
+  desk.setView(view('error'))
+  desk.togglePanel()
+  desk.closeInput()
+  desk.setView(view('done'))
+  desk.openInput()
+  desk.closeInput()
+  assert.equal(read, 1, 'how it went wrong, or the input over a done island, is not the done card')
+  desk.destroy()
+})

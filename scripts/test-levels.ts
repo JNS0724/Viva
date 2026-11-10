@@ -32,6 +32,7 @@ export const testLevels = {
     'csv',
     'desk-island',
     'desk-place',
+    'done-notice',
     'dsh-launch',
     'dsh-lifecycle',
     'dsh-log',

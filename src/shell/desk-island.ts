@@ -98,11 +98,13 @@ function openWindow({ BrowserWindow, preload, page }: { BrowserWindow: typeof Wi
  * deps.places: where the island was dragged to (preferences.json deskPlaces); coach: whether the user has
  * seen what the island can do (preferences.json deskCoached)
  */
-export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN as { get: () => boolean, set: () => void }, onOwnership = (_owner: 'main' | 'desk') => {} }: {
+export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWindow, enabled: initiallyEnabled, places: placeStore, coach = SEEN as { get: () => boolean, set: () => void }, onOwnership = (_owner: 'main' | 'desk') => {}, onDoneRead = () => {} }: {
   BrowserWindow: typeof Win, screen: Pick<Screen, 'getAllDisplays' | 'getDisplayMatching' | 'getCursorScreenPoint' | 'getDisplayNearestPoint'>,
   preload: string, page: string, mainWindow: Pick<Win, 'getBounds'>, enabled: boolean,
   places: { get: () => unknown, set: (places: ReturnType<typeof readPlaces>) => void }, coach?: { get: () => boolean, set: () => void },
   onOwnership?: (owner: 'main' | 'desk') => void,
+  /** Its card on 已完成 was opened and is now closed: what was done has been read (the window's done notice). */
+  onDoneRead?: () => void,
 }) {
   let enabled = initiallyEnabled
   let coached = coach.get()
@@ -376,6 +378,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   /** @param {{ sent?: boolean }} [options] sent: what was asked keeps the island up until it is done */
   function closeInput({ sent = false } = {}) {
     if (!input) return
+    const read = panel === 'status' && view?.form === 'done'
     input = false
     summoned = summoned && sent
     const shown = live()
@@ -384,6 +387,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       setFocusable(shown, false)
     }
     refresh()
+    if (read) onDoneRead()
   }
 
   /**
