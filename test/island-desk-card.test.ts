@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deskCard, nextRequest, requestFor, showsCoach } from '../src/renderer/island-desk-card.ts'
+import { deskCard, escapeAction, nextRequest, requestFor, showsCoach } from '../src/renderer/island-desk-card.ts'
 
 /** What each desktop card says and offers (island-desk-card.ts), with no DOM: every word once, every action once. */
 
@@ -120,6 +120,15 @@ test('a task\'s request keeps its own head and face whatever the conversation on
   const asks = { ...task, permission: undefined, question: { ...question.question, questionId: 'q9' } }
   const asked = requestFor({ ...permission, task: undefined, mood: 'confirm', background: { count: 1, waiting: 1, done: 0, items: [asks] } }, 'q9')!
   assert.deepEqual([asked.form, asked.label, asked.mood], ['asking', '需要你回答', 'ask'])
+})
+
+test('Esc does what × does: the first-time card counts as seen, anything else folds', () => {
+  const coach = { ...base, form: 'coach', tone: 'done', label: 'Viva 在这儿' }
+  assert.deepEqual(escapeAction(coach), { kind: 'coached' }, 'the main process does not know it is open, so dismiss would do nothing')
+  assert.deepEqual(escapeAction(coach), deskCard(coach, { shortcut: '' })!.close)
+  for (const view of [permission, question, done, { ...base, form: 'input', tone: 'done', label: '问 Viva' }]) {
+    assert.deepEqual(escapeAction(view), { kind: 'dismiss' }, view.form)
+  }
 })
 
 test('the first-time card shows only on the resting island', () => {

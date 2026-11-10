@@ -112,7 +112,7 @@ function coachCard(view: IslandShown, shortcut: string): DeskCard {
     { key: t('desk-card.coach.drop.key'), text: t('island-dom.drop.files.onto.me.for.help') },
     { key: t('desk-card.coach.hold.key'), text: t('desk-card.coach.move') },
   ]
-  return card(view.label, { close: seen, body: [{ kind: 'tips', items }], actions: [{ text: t('island-dom.got.it'), role: 'blue', act: seen }] })
+  return card(view.label, { close: escapeAction(view), body: [{ kind: 'tips', items }], actions: [{ text: t('island-dom.got.it'), role: 'blue', act: seen }] })
 }
 
 /** @returns the card for a form, or null for the input and files dragged over, which the input draws itself */
@@ -130,6 +130,12 @@ export function deskCard(view: IslandShown, { shortcut }: { shortcut: string }):
     default: return card(view.label, { openIcon: true })
   }
 }
+
+/**
+ * What Esc does on the island as shown: the same as its ×. The first-time card is opened by the page alone, so the
+ * main process would ignore a dismiss; closing it counts it as seen.
+ */
+export const escapeAction = (view: IslandShown): DeskAction => (view.form === 'coach' ? { kind: 'coached' } : { ...DISMISS })
 
 const requestIdOf = (view: IslandShown): string | null => view.permission?.requestId ?? view.question?.questionId ?? null
 

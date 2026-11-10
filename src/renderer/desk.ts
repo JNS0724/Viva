@@ -6,7 +6,7 @@ import { createIsland } from './view/island-dom.ts'
 import { createIslandInput } from './view/island-input.ts'
 import { placeDesktopIsland } from './view/desktop-layout.ts'
 import { createComposerDraftActions } from './composer-draft-actions.ts'
-import { nextRequest, requestFor, showsCoach } from './island-desk-card.ts'
+import { escapeAction, nextRequest, requestFor, showsCoach } from './island-desk-card.ts'
 import type { DraftContent } from '../shared/composer-draft.ts'
 
 /**
@@ -354,7 +354,7 @@ document.addEventListener('keydown', (event) => {
     if (press && dragged) {
       cancelAnimationFrame(frame); press.canceled = true
       api.act({ kind: 'drag', phase: 'cancel' })
-    } else api.act({ kind: 'dismiss' })
+    } else api.act(escapeAction(shownView()))
   }
   if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) { event.preventDefault(); api.act({ kind: 'menu' }) }
 })
