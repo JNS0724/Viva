@@ -32,7 +32,8 @@ const ON_THE_CARD: ReadonlySet<MaidMood> = new Set(['confirm', 'ask'])
  * Whether a message is the answer of the turn in progress or just finished, and what Viva is doing; and, in a
  * view that redraws as an answer is typed out, where each answer being typed was drawn last frame.
  */
-type Look = { latest: boolean, mood: CatMood | 'idle', maids?: MaidSlots, streams?: Map<string, MarkdownStream> }
+/** `still`: done with nobody looking, her pose held (done-notice-actions.ts), as on the island. */
+type Look = { latest: boolean, mood: CatMood | 'idle', still?: boolean, maids?: MaidSlots, streams?: Map<string, MarkdownStream> }
 const containerMaids = new WeakMap<HTMLElement, MaidSlots>()
 /** Per view, the answers being typed out (markdown.ts streamMarkdown): each frame draws only what changed. */
 const containerStreams = new WeakMap<HTMLElement, Map<string, MarkdownStream>>()
@@ -48,10 +49,10 @@ function portrait(message: ThreadMessage, look: Look): HTMLElement[] {
   if (!look.latest) return []
   const mood = avatarMood(message, look)
   if (ON_THE_CARD.has(mood)) return []
-  return [maidFor(look.maids ?? new Map(), message.id, mood, { size: AVATAR_PX, framing: 'face', moving: true })]
+  return [maidFor(look.maids ?? new Map(), message.id, mood, { size: AVATAR_PX, framing: 'face', moving: !(look.still && mood === 'done') })]
 }
 
-const lookKey = (message: ThreadMessage, look: Look) => (look.latest ? avatarMood(message, look) : 'none')
+const lookKey = (message: ThreadMessage, look: Look) => (look.latest ? `${avatarMood(message, look)}${look.still ? '|still' : ''}` : 'none')
 
 function avatar(message: ThreadMessage, look: Look) {
   const slot = h('span', { class: 'maid-avatar', 'aria-hidden': 'true' }, ...portrait(message, look))
@@ -467,11 +468,12 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
+  const still = mood === 'done' && state.doneNotice === 'still'
   const start = threadStart(state)
   // Only what is drawn is built: the messages before `start` are neither drawn nor kept.
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
-    const look = { latest: message.id === latestAnswer, mood, maids, streams }
+    const look = { latest: message.id === latestAnswer, mood, still, maids, streams }
     // Whether it is the latest answer is an input: once it is not, it is built again, and folds if tall (message-fold.ts).
     const view = part(`message:${message.id}`, [...messageInputs(message, traceReady), look.latest], () => messageView(message, handlers, traceReady, look),
       view => localizeAssistant(view, message), (before, after, view) => typeOn(message, handlers, look, before, after, view))
