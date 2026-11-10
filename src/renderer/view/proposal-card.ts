@@ -148,11 +148,15 @@ function editForm(card: ProposalCard, handlers: Handlers, now: number) {
 type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
 /**
  * A card drawn again (the language changed; it was sent, or refused): what was typed in the one it replaces, and the
- * field the user was in, carried over (AGENTS.md: a form rebuilt keeps its input). Returns the new card.
+ * field the user was in with its caret, carried over (AGENTS.md: a form rebuilt keeps its input). Returns the new card.
  */
 export function keepTyped(before: unknown, after: HTMLElement): HTMLElement {
   if (!(before instanceof Element)) return after
-  const active = before.contains(document.activeElement) ? (document.activeElement as Field).name : null
+  const focused = before.contains(document.activeElement) ? document.activeElement as Field : null
+  const active = focused?.name ?? null
+  // Where the caret was, for a field that has one (a date or a time has none: null).
+  const typing = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null
+  const caret = typing && typeof typing.selectionStart === 'number' ? { start: typing.selectionStart, end: typing.selectionEnd ?? typing.selectionStart } : null
   for (const field of after.querySelectorAll<Field>('[name]')) {
     const typed = before.querySelector<Field>(`[name="${CSS.escape(field.name)}"]`)
     if (!typed) continue
@@ -160,7 +164,11 @@ export function keepTyped(before: unknown, after: HTMLElement): HTMLElement {
     else field.value = typed.value
   }
   // In the page only once the thread is drawn.
-  if (active) queueMicrotask(() => after.querySelector<Field>(`[name="${CSS.escape(active)}"]`)?.focus())
+  if (active) queueMicrotask(() => {
+    const field = after.querySelector<Field>(`[name="${CSS.escape(active)}"]`)
+    field?.focus()
+    if (caret && (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)) field.setSelectionRange(caret.start, caret.end)
+  })
   return after
 }
 

@@ -104,10 +104,12 @@ const FORM_REDRAWN = `(async () => {
     field('title').value = ''
     field('repeat').value = 'daily'
     field('prompt').focus()
+    field('prompt').setSelectionRange(4, 6)
     const refused = { ...card, error: '请填写名称', draft: { ...draftOf(proposal, Date.now()), title: '', repeat: 'daily' } }
     renderThread(container, { ...said, proposals: [refused] }, handlers, Date.now())
     await Promise.resolve()
     return { prompt: field('prompt').value, repeat: field('repeat').value, focused: document.activeElement === field('prompt'),
+      caret: [field('prompt').selectionStart, field('prompt').selectionEnd],
       repeats: [...field('repeat').options].map((option) => option.value) }
   } finally { container.remove() }
 })()`
@@ -115,10 +117,10 @@ const FORM_REDRAWN = `(async () => {
 /** @returns failures */
 export async function checkSchedules(win: SmokeWindow, outDir: string): Promise<string[]> {
   const failures: string[] = []
-  const redrawn = await run(win, FORM_REDRAWN) as { prompt: string, repeat: string, focused: boolean, repeats: string[] }
+  const redrawn = await run(win, FORM_REDRAWN) as { prompt: string, repeat: string, focused: boolean, caret: number[], repeats: string[] }
   report(`schedule form redrawn: ${JSON.stringify(redrawn)}`)
-  if (redrawn.prompt !== '提醒喝水，顺便站起来走走' || redrawn.repeat !== 'daily' || !redrawn.focused || !redrawn.repeats.includes('cron')) {
-    failures.push(`a form drawn again should keep what was typed, the field in use, and 自定义: ${JSON.stringify(redrawn)}`)
+  if (redrawn.prompt !== '提醒喝水，顺便站起来走走' || redrawn.repeat !== 'daily' || !redrawn.focused || redrawn.caret.join() !== '4,6' || !redrawn.repeats.includes('cron')) {
+    failures.push(`a form drawn again should keep what was typed, the field in use and its caret, and 自定义: ${JSON.stringify(redrawn)}`)
   }
   const place = await run(win, CARD_PLACE) as { card: boolean, afterAnswer: boolean, beforeNext: boolean }
   report(`schedule card place: ${JSON.stringify(place)}`)
