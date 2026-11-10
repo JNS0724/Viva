@@ -288,7 +288,7 @@ The main agent looks tasks up with `viva-tasks`' `list_background_tasks` and `ge
 | `stop(taskId)` | Stops its turn; the task stays and can be messaged later |
 | `message(taskId, text)` | A running task gets the words in its turn; one that finished, stopped or failed gets them as its next question; one left unfinished when Viva last quit (interrupted) is taken up again first, by id, with ACP's `session/resume` |
 
-- A brief stands on its own: the goal, the background it needs, file paths, error messages, constraints and the output language. The card shows the brief as the task's first message, and the title is its first line.
+- A brief stands on its own: the goal, the background it needs, file paths, error messages, constraints and the output language. The card shows the brief as the task's first message; its title is the decision's task name, or else the goal it serves.
 - At most 5 run at once; asking a task again or taking one up counts too. When full, the receipt says so and the main agent tells the user; there is no queue. Only tasks of the request's working folder can be stopped or messaged. A task's session cannot start, stop or message other tasks, and its queries see only itself.
 - Once a handover is done, the decision's `notice` (which task, doing what) is shown as the turn's answer and the turn ends; nothing waits or polls, the result comes back on its own. What a task hands back is data, not instructions. For anything sent outside, get evidence that can be checked (a URL, an id, a path) and check it before telling the user.
 - An action whose receipt was not kept before Viva quit is marked uncertain at the next launch and never done again.

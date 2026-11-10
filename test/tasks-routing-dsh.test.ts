@@ -55,7 +55,7 @@ test('a task is not narrowed and never sees commit_route; it works under the pro
 /** The app's task runtime as the decisions use it, starting every task as `t-1` and keeping the briefs. */
 function startingTasks(briefs: string[]) {
   const never = async () => { throw new Error('not asked') }
-  return { start: async (brief: string) => { briefs.push(brief); return { taskId: 't-1' } }, message: never, stop: never }
+  return { start: async ({ brief }: { brief: string }) => { briefs.push(brief); return { taskId: 't-1' } }, message: never, stop: never }
 }
 
 test('a handover ends its turn with its notice as the answer: shown, kept as the turn\'s final reply, one model call', { timeout: DSH_TIMEOUT_MS }, async (t) => {

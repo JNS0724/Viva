@@ -80,7 +80,7 @@ test('real DSH: the main agent routes work to a task, and the app is the one tha
   const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
   const started: string[] = []
   const requests = testRequests({ tasks: {
-    start: async (brief) => { started.push(brief); return { taskId: 't1' } },
+    start: async ({ brief }) => { started.push(brief); return { taskId: 't1' } },
     message: async () => { throw new Error('not asked') },
     stop: async () => { throw new Error('not asked') },
   } })

@@ -15,7 +15,7 @@ const where = { sessionId: 's1', conversationId: 'c1', cwd: '/work' }
 
 function tasksDoing(log: string[]): RequestTasks {
   return {
-    start: async (brief, place) => { log.push(`start:${brief}:${place.conversationId}`); return { taskId: 't-new' } },
+    start: async ({ title, brief }, place) => { log.push(`start:${title}|${brief}:${place.conversationId}`); return { taskId: 't-new' } },
     message: async (taskId, text, cwd) => { log.push(`message:${taskId}:${text}:${cwd}`); return {} },
     stop: async (taskId) => { log.push(`stop:${taskId}`); throw new Error('任务不存在') },
   }
@@ -33,7 +33,11 @@ test('a request is decided once, by its own session, through the protocol; task 
   assert.deepEqual(await requests.decide({ requestId: id, sessionId: 's1', plan }), { accepted: true, receipts: [
     { kind: 'start', ok: true, taskId: 't-new' }, { kind: 'message', ok: true, taskId: 't1' }, { kind: 'stop', ok: false, error: '任务不存在' },
   ] })
-  assert.deepEqual(log, ['start:做今日简报:c1', 'message:t1:加科技新闻:/work', 'stop:t2'], 'in order, in the request\'s conversation and folder')
+  assert.deepEqual(log, ['start:简报|做今日简报:c1', 'message:t1:加科技新闻:/work', 'stop:t2'], 'in order, in the request\'s conversation and folder; a start without a title is named by its goal')
+  const titled = requests.receive({ ...where, kind: 'prompt' })
+  await requests.decide({ requestId: titled, sessionId: 's1', plan: { goals: [{ goal: '整理今天的国际大事', disposition: 'delegate' }, { goal: '天气', disposition: 'delegate' }],
+    actions: [{ kind: 'start', title: '国际大事', brief: '检索国际新闻' }, { kind: 'start', brief: '查深圳天气' }] } })
+  assert.deepEqual(log.slice(3), ['start:国际大事|检索国际新闻:c1', 'start:天气|查深圳天气:c1'], 'its own title when it has one; else the goal it serves, in order')
   assert.deepEqual(requests.store.actions(id).map(action => [action.kind, action.status, action.taskId]), [['start', 'done', 't-new'], ['message', 'done', 't1'], ['stop', 'failed', null]])
   assert.match(String((await requests.decide({ requestId: id, sessionId: 's1', plan: reply }) as { reason: string }).reason), /已经提交过/)
 })
@@ -55,7 +59,7 @@ test('a turn\'s end fails what it left undecided, for the reason it ended; a dec
 test('a turn that ends while its decision is carried out stops what was not sent yet; each such action fails with why', async () => {
   const log: string[] = []
   let release!: () => void
-  const requests = testRequests({ tasks: { ...tasksDoing(log), start: (brief) => new Promise(resolve => { log.push(`start:${brief}`); release = () => resolve({ taskId: 't-new' }) }) } })
+  const requests = testRequests({ tasks: { ...tasksDoing(log), start: ({ brief }) => new Promise(resolve => { log.push(`start:${brief}`); release = () => resolve({ taskId: 't-new' }) }) } })
   const id = requests.receive({ ...where, kind: 'prompt' })
   const plan = { goals: [{ goal: '简报', disposition: 'delegate' }, { goal: '补充', disposition: 'update_task' }],
     actions: [{ kind: 'start', brief: '做今日简报' }, { kind: 'message', taskId: 't1', text: '加科技新闻' }] }

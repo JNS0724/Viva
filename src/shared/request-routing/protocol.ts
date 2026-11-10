@@ -22,10 +22,12 @@ const ACTION_OF = { answer: 'reply', delegate: 'start', update_task: 'message', 
 const MAX_SCOPE_CHARS = 500
 const MAX_BRIEF_CHARS = MAX_MESSAGE_CHARS
 const MAX_TASK_ID_CHARS = 200
+/** A task's name, its card's title; a longer one is cut, not refused. */
+export const MAX_TITLE_CHARS = 40
 const text = (max: number) => z.string().trim().min(1).max(max)
 const actionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('reply'), scope: text(MAX_SCOPE_CHARS) }),
-  z.object({ kind: z.literal('start'), brief: text(MAX_BRIEF_CHARS) }),
+  z.object({ kind: z.literal('start'), title: z.string().trim().transform(title => title.slice(0, MAX_TITLE_CHARS) || undefined).optional(), brief: text(MAX_BRIEF_CHARS) }),
   z.object({ kind: z.literal('message'), taskId: text(MAX_TASK_ID_CHARS), text: text(MAX_BRIEF_CHARS) }),
   z.object({ kind: z.literal('stop'), taskId: text(MAX_TASK_ID_CHARS) }),
   z.object({ kind: z.literal('clarify'), question: text(MAX_SCOPE_CHARS) }),
@@ -51,9 +53,36 @@ function planProblem(plan: Plan): string | null {
   return extra ? `动作 ${extra} 没有对应的目标` : null
 }
 
+/** The fields that name each kind of action: those it needs, and those it may have besides. */
+const FIELDS_OF: Readonly<Record<Action['kind'], { needs: readonly string[], may: readonly string[] }>> = {
+  reply: { needs: ['scope'], may: [] },
+  start: { needs: ['brief'], may: ['title'] },
+  message: { needs: ['taskId', 'text'], may: [] },
+  stop: { needs: ['taskId'], may: [] },
+  clarify: { needs: ['question'], may: [] },
+  app_action: { needs: ['operation'], may: [] },
+}
+const NAMING_FIELDS = new Set(Object.values(FIELDS_OF).flatMap(({ needs, may }) => [...needs, ...may]))
+
+/**
+ * An action the model wrote without its kind, taken for the one kind its fields name (a brief and nothing else of
+ * another kind's is a start): leaving it out is no reason to write a long brief again. Fields naming no kind, or more
+ * than one, stay as they are, for the schema to refuse; a kind given is never second-guessed.
+ */
+function withKind(action: unknown): unknown {
+  if (!action || typeof action !== 'object' || Array.isArray(action) || (action as { kind?: unknown }).kind !== undefined) return action
+  const present = Object.entries(action).filter(([key, value]) => NAMING_FIELDS.has(key) && value !== undefined && value !== null && value !== '').map(([key]) => key)
+  const kinds = (Object.keys(FIELDS_OF) as Array<Action['kind']>).filter(kind => {
+    const { needs, may } = FIELDS_OF[kind]
+    return needs.every(field => present.includes(field)) && present.every(field => needs.includes(field) || may.includes(field))
+  })
+  return kinds.length === 1 ? { ...action, kind: kinds[0] } : action
+}
+
 /** What the model passed, as a plan, or the problem to say back. */
 export function parsePlan(raw: unknown): { plan: Plan } | { problem: string } {
-  const parsed = planSchema.safeParse(raw)
+  const given = raw && typeof raw === 'object' ? raw as { actions?: unknown } : null
+  const parsed = planSchema.safeParse(given && Array.isArray(given.actions) ? { ...given, actions: given.actions.map(withKind) } : raw)
   if (!parsed.success) return { problem: '路由不合法：' + parsed.error.issues.map(issue => `${issue.path.join('.')} ${issue.message}`).join('; ') }
   const problem = planProblem(parsed.data)
   return problem ? { problem } : { plan: parsed.data }
