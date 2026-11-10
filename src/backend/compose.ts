@@ -855,7 +855,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       onError: (err) => console.error('[schedules]', err instanceof Error ? err.message : String(err)),
     })
     ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
-    ipcMain.handle('schedules:accept', (_event, proposalId) => requireSchedules().accept(String(proposalId)))
+    ipcMain.handle('schedules:accept', (_event, proposalId, edits) => requireSchedules().accept(String(proposalId), edits ?? undefined))
     ipcMain.handle('schedules:decline', (_event, proposalId) => { requireSchedules().decline(String(proposalId)) })
     // 动态's 接下来: pause, resume and delete by hand too (the conversation does the rest).
     ipcMain.handle('schedules:pause', (_event, id, paused) => requireSchedules().update(String(id), { paused: Boolean(paused) }))

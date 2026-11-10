@@ -16,15 +16,83 @@ const clickText = (scope: string, text: string) =>
   `[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.textContent === ${JSON.stringify(text)}).click()`
 const row = (status: string) => `[...document.querySelectorAll('${PAGE} .fu-row[data-status="${status}"]')].find((el) => el.textContent.includes(${JSON.stringify(FOLLOWUP.title)}))`
 
+interface FormSeen { title: string, prompt: string, repeat: string, time: string, shown: string[], weekly: string[] }
+/** The form's values, and which rows show (by data-for); then, 每周 picked, which show for it. */
+const READ_FORM = `(() => {
+  const form = ${q(`${CARD} .fu-form`)}
+  const value = (name) => form.querySelector('[name^="proposal-' + name + '-"]').value
+  const shown = () => [...form.querySelectorAll('[data-for]')].filter((el) => getComputedStyle(el).display !== 'none').map((el) => el.dataset.for)
+  const seen = { title: value('title'), prompt: value('prompt'), repeat: value('repeat'), time: value('time'), shown: shown() }
+  const repeat = form.querySelector('[name^="proposal-repeat-"]')
+  repeat.value = 'weekly'
+  const weekly = shown()
+  repeat.value = seen.repeat
+  return { ...seen, weekly }
+})()`
+
+/**
+ * 修改 on the card: the proposal as a form, in plain fields (no cron to edit), the rows for the repeat picked; 取消
+ * puts the card back as it was. Nothing is changed here: the run below is timed by the proposal as it came.
+ * @returns failures
+ */
+async function checkEditForm(win: SmokeWindow, outDir: string): Promise<string[]> {
+  await run(win, clickText(CARD, '修改'))
+  await until(win, q(`${CARD} .fu-form`), '修改 opens the form')
+  const seen = await run(win, READ_FORM) as FormSeen
+  report(`schedule form: ${JSON.stringify(seen)}`)
+  const failures: string[] = []
+  if (seen.title !== FOLLOWUP.title || seen.prompt !== FOLLOWUP.prompt || seen.repeat !== 'at' || !/^\d\d:\d\d$/.test(seen.time)) {
+    failures.push(`the form should hold the proposal, once, at its time: ${JSON.stringify(seen)}`)
+  }
+  if (seen.shown.join('|') !== 'at|at daily weekly monthly') failures.push(`a once schedule should show its date and time only: ${JSON.stringify(seen.shown)}`)
+  if (seen.weekly.join('|') !== 'weekly|at daily weekly monthly') failures.push(`每周 should show the weekdays and time: ${JSON.stringify(seen.weekly)}`)
+  await capture(win, outDir, 'schedule-edit')
+  await run(win, `(() => { const repeat = ${q(`${CARD} [name^="proposal-repeat-"]`)}; repeat.value = 'weekly'; ${q(CARD)}.scrollIntoView({ block: 'end' }) })()`)
+  await wait(UI_WAIT_MS)
+  await capture(win, outDir, 'schedule-edit-weekly')
+  await run(win, clickText(CARD, '取消'))
+  await until(win, `!${q(`${CARD} .fu-form`)} && Boolean(${q(`${CARD} .confirm-title`)})`, '取消 puts the card back')
+  return failures
+}
+
+/**
+ * The renderer's own nodes: a card proposed in the first turn stays under that turn's answer once the conversation
+ * has gone on, before what the user said next (proposal-state.ts proposalHost), not under everything.
+ */
+const CARD_PLACE = `(async () => {
+  const { initialState, reduce } = await import('./state.js')
+  const { renderThread } = await import('./view/thread.js')
+  const container = document.createElement('div')
+  container.style.cssText = 'position:fixed;left:-10000px;top:0;width:760px'
+  document.body.append(container)
+  const handlers = new Proxy({}, { get: () => () => {} })
+  const said = (role, text) => ({ role, text })
+  let state = reduce(initialState, { type: 'history_loaded', conversationId: 'card-place', savedAt: 1,
+    messages: [said('user', '第一个问题'), said('assistant', '第一个回答'), said('user', '第二个问题'), said('assistant', '第二个回答')] })
+  const proposal = { proposalId: 'place', title: '周报', prompt: '起草周报', firstAt: new Date(Date.now() + 3600000).toISOString(), rule: { kind: 'at' } }
+  state = { ...state, proposals: [{ id: 'place', proposal, status: 'open', after: 1 }] }
+  try {
+    renderThread(container, state, handlers, Date.now())
+    const card = container.querySelector('.fu-card'), texts = [...container.querySelectorAll('.msg-user, .msg-agent')]
+    const before = (a, b) => Boolean(a && b && a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    const answer = texts.find((el) => el.textContent.includes('第一个回答')), next = texts.find((el) => el.textContent.includes('第二个问题'))
+    return { card: Boolean(card), afterAnswer: before(answer, card), beforeNext: before(card, next) }
+  } finally { container.remove() }
+})()`
+
 /** @returns failures */
 export async function checkSchedules(win: SmokeWindow, outDir: string): Promise<string[]> {
   const failures: string[] = []
+  const place = await run(win, CARD_PLACE) as { card: boolean, afterAnswer: boolean, beforeNext: boolean }
+  report(`schedule card place: ${JSON.stringify(place)}`)
+  if (!place.card || !place.afterAnswer || !place.beforeNext) failures.push(`a card should stay under its turn's answer, before the next question: ${JSON.stringify(place)}`)
   await submit(win, '周五下班前要交周报，到时候帮我弄一下')
   await finishTurn(win)
   await until(win, q(`${CARD}[aria-label="要我定时做吗？"]`), 'the proposal card under the conversation')
   await run(win, `${q(CARD)}.scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'schedule-card')
+  failures.push(...await checkEditForm(win, outDir))
   await run(win, clickText(CARD, '定时'))
   await until(win, q(`${CARD}.fu-done`), 'kept: the card says when it runs')
 

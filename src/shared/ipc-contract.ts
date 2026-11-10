@@ -145,7 +145,8 @@ export const IPC_ARGS = Object.freeze({
   'plugins:set-source': z.tuple([z.string().max(2048).nullable(), z.string().max(4096).optional()]),
 
   'schedules:list': read(none),
-  'schedules:accept': z.tuple([id]),
+  /** A proposal's id, and what the user changed on its card (left out: as proposed). */
+  'schedules:accept': z.tuple([id, record.optional()]),
   'schedules:decline': z.tuple([id]),
   'schedules:pause': z.tuple([id, z.boolean()]),
   'schedules:delete': z.tuple([id]),

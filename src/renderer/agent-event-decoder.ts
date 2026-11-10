@@ -129,15 +129,20 @@ const memoryInjection = (value: unknown): MemoryInjection | null => {
   const pushed = item.pushed === undefined ? [] : list(item.pushed, value => { const row = objectOf(value), names = texts(row?.names); return row && names && string(row.text) ? { names, text: row.text } : null })
   return pushed ? { at: item.at, fixed: item.fixed, pushed } : null
 }
+/** A rule's time zone, kept when it is one: the card's form edits in it (proposal-draft.ts). */
+const zoned = (input: ObjectValue) => (string(input.time_zone) && input.time_zone ? { time_zone: input.time_zone } : {})
 function scheduleRule(value: unknown): ScheduleRuleView | null {
   const rule = objectOf(value)
-  if (rule?.kind === 'at') return { kind: 'at' }
-  if (rule?.kind === 'daily') { const daily = objectOf(rule.daily); return daily && string(daily.time) ? { kind: 'daily', daily: { time: daily.time } } : null }
+  if (rule?.kind === 'at') {
+    const at = objectOf(rule.at)
+    return at && string(at.date) && string(at.time) ? { kind: 'at', at: { date: at.date, time: at.time, ...zoned(at) } } : { kind: 'at' }
+  }
+  if (rule?.kind === 'daily') { const daily = objectOf(rule.daily); return daily && string(daily.time) ? { kind: 'daily', daily: { time: daily.time, ...zoned(daily) } } : null }
   if (rule?.kind === 'weekly') {
     const weekly = objectOf(rule.weekly), weekdays = list(weekly?.weekdays, value => natural(value) && value <= 7 ? value : null)
-    return weekly && string(weekly.time) && weekdays ? { kind: 'weekly', weekly: { time: weekly.time, weekdays } } : null
+    return weekly && string(weekly.time) && weekdays ? { kind: 'weekly', weekly: { time: weekly.time, weekdays, ...zoned(weekly) } } : null
   }
-  if (rule?.kind === 'cron') { const cron = objectOf(rule.cron); return cron && string(cron.expression) ? { kind: 'cron', cron: { expression: cron.expression } } : null }
+  if (rule?.kind === 'cron') { const cron = objectOf(rule.cron); return cron && string(cron.expression) ? { kind: 'cron', cron: { expression: cron.expression, ...zoned(cron) } } : null }
   return null
 }
 function eventOf(item: ObjectValue): AgentEvent | null {

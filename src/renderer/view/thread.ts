@@ -20,6 +20,8 @@ import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './ta
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
 import { proposalCard } from './proposal-card.ts'
+import { proposalHost } from '../proposal-state.ts'
+import type { ProposalCard } from '../proposal-types.ts'
 import { userError } from '../user-error.ts'
 
 const AVATAR_PX = 48
@@ -497,8 +499,13 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   // those of messages not drawn are not drawn either.
   const recordsAfter = (after: number) => recordsAt(state, after)
     .map((record) => part(`record:${record.reportId}`, [record], () => reportRecord(record, handlers)))
+  // A schedule's card goes at the end of the turn it came in (proposal-state.ts proposalHost); one of a message not
+  // drawn, at the top of what is.
+  const hosts = (state.proposals as ProposalCard[]).map((card) => ({ card, at: proposalHost(state.messages, card.after ?? state.messages.length) }))
+  const proposalsAfter = (test: (at: number) => boolean) => hosts.filter(({ at }) => test(at))
+    .map(({ card }) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now)))
   const views = messageEntries(state, plain, handlers, start).slice(start).map((entries, i) => {
-    const hosted = [...hostedBy(start + i), ...recordsAfter(start + i + 1)]
+    const hosted = [...hostedBy(start + i), ...recordsAfter(start + i + 1), ...proposalsAfter((at) => at === start + i)]
     return hosted.length ? [...entries, ...hosted] : entries
   })
   const divided = note && state.restored.count >= start
@@ -510,9 +517,8 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     ...earlierCards,
     ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),
     ...recordsAfter(start),
+    ...proposalsAfter((at) => at < start),
     ...divided.flat().filter(isContent),
-    // The schedules the model proposed in this conversation, each to be decided on (view/proposal-card.ts).
-    ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
     state.question ? part('question', [state.question], () => questionCard(state.question!, handlers)) : '',
     state.secret ? secretCard(state.secret, handlers) : '',

@@ -77,3 +77,15 @@ test('a yes whose save fails leaves the card to be answered again', () => {
   assert.equal(schedules.accept('p1').title, '周报', 'the proposal still there, kept the second time')
   assert.throws(() => schedules.accept('p1'), 'and then gone')
 })
+
+test('changed on the card before yes: kept as changed, checked as the model\'s own are; a time gone by is said in words', () => {
+  const { schedules } = setup()
+  schedules.act({ op: 'schedule_create', title: '周报', prompt: '按模板起草周报', rule: weekly }, 'c1', '/work')
+  assert.throws(() => schedules.accept('p1', { title: '  ', prompt: 'x', rule: weekly }), /标题/, 'no name: refused before dsh')
+  assert.throws(() => schedules.accept('p1', { title: '月报', prompt: 'x', rule: { kind: 'at', at: { date: '2020-01-01', time: '09:00:00', time_zone: 'Asia/Shanghai' } } }),
+    { message: '这个时间已经过了，换一个以后的时间。' })
+  assert.throws(() => schedules.accept('p1', { title: '月报', prompt: 'x', rule: { kind: 'daily', daily: { time: '25:00:00', time_zone: 'Asia/Shanghai' } } }),
+    { message: '时间没有填对，请检查一下。' })
+  const kept = schedules.accept('p1', { title: ' 月报 ', prompt: '起草月报', rule: { kind: 'cron', cron: { expression: '0 9 1 * *', time_zone: 'Asia/Shanghai' } } })
+  assert.deepEqual([kept.title, kept.prompt, kept.kind, kept.nextAt], ['月报', '起草月报', 'cron', '2026-12-01T01:00:00.000Z'], 'still there after the refusals, kept as changed')
+})
