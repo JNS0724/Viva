@@ -133,11 +133,16 @@ export function showMaid(slot: Element, next: HTMLElement | null): void {
   coming.set(slot, next)
   const image = next?.querySelector('img')
   const place = () => {
-    if (coming.get(slot) !== next) return
     coming.delete(slot)
     if (next) slot.replaceChildren(next)
     else slot.replaceChildren()
   }
   if (!next || !slot.firstElementChild || !image || (image.complete && image.naturalWidth > 0)) return place()
-  image.decode().then(place, place)
+  const later = () => {
+    // Meanwhile a later call may have its say, the slot may have left the page (a row drawn again), or her portrait
+    // been put in another slot (the row drawn again reuses it): none of these is this call's to take.
+    if (coming.get(slot) !== next || !slot.isConnected || (next.parentElement && next.parentElement !== slot)) return
+    place()
+  }
+  image.decode().then(later, later)
 }
