@@ -2,7 +2,7 @@
 
 English | [简体中文](system-design.zh-CN.md)
 
-> This describes the architecture on main as of PR #101 (`fe65612`, 2026-11-06). The split's plan and phase-by-phase notes are in the git history (`docs/backend-split-design.md`, removed after this document replaced it); the module-by-module cleanup that followed is recorded in the [architecture cleanup](architecture-health.md).
+> This describes the architecture on main as of PR #132 (`82a5bf3`, 2026-11-10). The split's plan and phase-by-phase notes are in the git history (`docs/backend-split-design.md`, removed after this document replaced it); the module-by-module cleanup that followed is recorded in the [architecture cleanup](architecture-health.md).
 
 ## 1. Overview
 
@@ -36,7 +36,7 @@ flowchart TB
     b4["<b>dsh and ACP</b><br/>dsh-lifecycle starts and restarts dsh<br/>acp-bridge, acp-operations, acp-task-sessions"]
   end
   subgraph dsh["dsh process (child of the backend)"]
-    d1["<b>Viva's own plugins</b><br/>12 viva-* plugins, by contract<br/>memory and trace keep their own files"]
+    d1["<b>Viva's own plugins</b><br/>11 viva-* plugins, by contract<br/>memory and trace keep their own files"]
     d2["<b>User plugins</b><br/>installed by the plugin manager<br/>switched on and off while running"]
     d3["<b>Tools and sandbox</b><br/>dsh's level and sandbox<br/>the user's approval when needed"]
   end
@@ -49,7 +49,7 @@ flowchart TB
 - **Pages** (`src/renderer`): the main window and the desk island, sandboxed, with no Node. They only display and interact; their state is pushed by the backend.
 - **Shell** (`src/shell`, the Electron main process): the app lifecycle, window, tray, desk island, shortcut, notifications, dialogs and the system keychain. It checks the pages' calls and forwards them to the backend, and does what the backend asks of the desktop.
 - **Backend** (`src/backend`, a child process running Electron as Node): everything except the desktop. That is the event core, all features and stores (history, tasks, schedules and 动态, memory, settings, models, plugin management), and the modules that run dsh: `dsh-lifecycle.ts` starts and restarts it, `acp-bridge.ts` holds its process, MCP and the session on screen, `acp-operations.ts` the prompts under way and `acp-task-sessions.ts` the tasks' sessions. `compose.ts` creates, wires and closes these modules; it still coordinates some features itself (settings, MCP changes, schedules and 动态). It does not import `electron` at run time; it reaches the desktop only through `HostCapabilities` (`src/backend/host.ts`).
-- **dsh** (a child of the backend): the agent that runs the conversation, loading Viva's 12 own plugins and the plugins the user installed.
+- **dsh** (a child of the backend): the agent that runs the conversation, loading Viva's 11 own plugins and the plugins the user installed.
 
 The point of this split is that nothing in the backend is tied to the desktop. Moving it to the cloud later means replacing only the transport and authentication between the two ends (§10).
 
@@ -112,7 +112,7 @@ The backend's own data is in one `app.db`. Data written by plugins inside dsh's 
 
 | File | Contents | Written by | Events |
 | --- | --- | --- | --- |
-| `app.db` | `app_events`, `meta`; schedules (`schedules`, the runs not finished `schedule_runs`) and 动态's items (`feed_items`); history (`conversations`, `messages` with its full-text index, `stars`); background tasks kept for the next launch (`background_tasks`); what is still to be done outside (`effects`, §12.3) | Backend | In the same transaction as the write |
+| `app.db` | `app_events`, `meta`; schedules (`schedules`, the runs not finished `schedule_runs`) and 动态's items (`feed_items`); history (`conversations`, `messages` with its full-text index, `stars`); background tasks kept for the next launch (`background_tasks`); what is still to be done outside (`effects`, §11.4); result records in conversations (`report_records`, §11.5); the main conversation's requests, decisions, and actions (`routing_requests`, `routing_decisions`, `routing_actions`, see section 12 of the [routing design](agent-routing-design.md)) | Backend | In the same transaction as the write |
 | `memory.db` | Profile, memories, synthesized profile, the context sent with each turn | The memory plugin (dsh's process) and the backend | The user's edits right after they are written; what the model saved, as `memory.learned` after the turn |
 | `trace.db` | Each turn's tool calls and thinking | The trace plugin (dsh's process) | None |
 | `settings.json`, `models.json`, `mcp-servers.json`, `preferences.json` | Key, model providers, MCP servers, preferences | Backend | None |
@@ -186,6 +186,7 @@ Each layer gets only what it needs, and outside input is checked both where it e
 | Event table | Events record ids, numbers and text lengths; command arguments are always recorded by shape only, so an API key never reaches `app.db` | `test/commands.test.ts`, the memory smoke group (no key in `app.db` or its log file) |
 | dsh's environment | dsh's environment drops every `DSH_*`, `DEEPSEEK_*`, `ELECTRON_*` and `VIVA_*` variable before the app's own values are set | `src/backend/dsh-runtime.ts` |
 | Workspace files | Pages can only see files inside the workspace; `../`, absolute paths and links pointing outside it are refused | `src/backend/workspace-files.ts` |
+| Main session tools | The main session gets only the routing, context, and app-settings tools; every call is checked again by layer before DSH asks the user for approval; an app change needs an `app_action` accepted in this turn, and each grant allows one call | `plugins/routing/lib/policy.ts`, `test/tasks-routing-dsh.test.ts` |
 
 A known gap: plugins the user installs run inside dsh's process with the user's file permissions. The sandbox covers tool calls, not the plugins themselves, so installing a plugin means trusting it.
 
@@ -214,7 +215,7 @@ Both the backend and dsh are restarted when they exit unexpectedly, after 1, 3, 
 
 - Starts asked for together share one connection. Stopping revokes that generation's events and start result at once; a stop between creating and connecting means it never connects.
 - Changing the key or the models waits until the old instance is really gone before making a new one. A start that fails cleans up its instance; a disposal that fails blocks the replacement.
-- An instance going away ends the foreground turn it was running and clears busy and waiting, a restart the user caused in Settings included. A key change settles the old topic before making a new one, without relying on events from the instance going away, which are already filtered out.
+- An instance going away ends the foreground turn it was running and clears busy and waiting, a restart the user caused in Settings included; that turn's routing requests end with it (section 11 of the [routing design](agent-routing-design.md)). A key change settles the old topic before making a new one, without relying on events from the instance going away, which are already filtered out.
 - An unexpected exit restarts with the backoff above and takes the conversation up again; the exit of an old generation never causes another restart. Quitting cancels a restart waiting to happen and refuses further starts.
 - Shutting down waits at most 5 seconds. Running out of time only ends the wait: a later start still waits for the real disposal.
 
@@ -235,7 +236,7 @@ Folders match processes. Dependencies may point from the shell to the backend, n
 | `src/shared` | Code both processes and the pages use: the IPC contract, i18n, image ids, the restart backoff | No Node, so pages can run it |
 | `src/shared/node` | Code both processes share that needs Node; today only the app's root folders | Left out of the pages' tsconfig |
 | `src/renderer`, `src/preload` | Pages and preload scripts | What the backend pushes enters through one place: `agent-event-decoder.ts` turns it into a closed `AgentEvent` union and refuses frames it does not know. Actions are a closed union too. State in `*-state.ts` (pure), IPC in `*-actions.ts`, DOM built with `h()`, never `innerHTML` |
-| `plugins/*` | Viva's 12 own dsh plugins | Talk to the app by their contracts |
+| `plugins/*` | Viva's 11 own dsh plugins | Talk to the app by their contracts |
 
 The tests that keep these boundaries:
 
@@ -284,7 +285,7 @@ The main agent looks tasks up with `viva-tasks`' `list_background_tasks` and `ge
 
 | Action | What it does |
 | --- | --- |
-| `start(brief)` | Opens a fresh dsh session in the main conversation's working folder; the brief is its first message |
+| `start(title, brief)` | Opens a fresh dsh session in the working folder of the request's conversation; the brief is its first message and `title` the card's title; if another conversation is on screen by then, nothing is opened and the receipt records the failure |
 | `stop(taskId)` | Stops its turn; the task stays and can be messaged later |
 | `message(taskId, text)` | A running task gets the words in its turn; one that finished, stopped or failed gets them as its next question; one left unfinished when Viva last quit (interrupted) is taken up again first, by id, with ACP's `session/resume` |
 
@@ -370,7 +371,7 @@ What the app brings on its own goes one way, whatever brings it (agreed with the
 - **Source configuration.** Per source: on or off, what it may read, its rules, at most how many judgements an hour. It is the user's consent, kept with it and checked again before each run.
 - **Once, and reliably.** One key makes one item at most; the judgement, the item and its notification are kept in one change; a failed step is retried, not dropped. Reuses the effects queue (§11.4) rather than a second retry system.
 - **Untrusted content.** Mail and web pages may carry instructions. The judgement has no tools and its output is text into 动态; only the user's 在对话里继续 brings it into a conversation that can act, and there it stays marked as outside material. No tools limits side effects; it does not make the model immune to what it reads.
-- **From dsh.** Times use `dsh-schedule`'s records and occurrence functions (once, daily, weekly, cron, with its time zone and DST rules), so a schedule's record is dsh's. `dsh-schedule`'s and `dsh-webhook`'s runtimes are not used now: they need dsh's Web host plane (Viva runs dsh over ACP), their action is a prompt into a session with tools, and they may deliver one occurrence twice. A schedule's run is read-only by Viva's permission plugin (an unattended session), not only by its prompt.
+- **From dsh.** Times use `dsh-schedule`'s records and occurrence functions (once, daily, weekly, cron, with its time zone and DST rules), so a schedule's record is dsh's. `dsh-schedule`'s and `dsh-webhook`'s runtimes are not used now: they need dsh's Web host plane (Viva runs dsh over ACP), their action is a prompt into a session with tools, and they may deliver one occurrence twice. A schedule runs in a session the app marks unattended, at the user's permission level, and anything that needs confirmation is refused (see "One kind of scheduled thing" below).
 - The first source is the schedule; mail and web adapters come later, with their rules, model judgement and budgets.
 
 Where the user sees them (agreed with the owner, 2026-11-06). 后台 and 动态 are two things kept apart, with no handoff between them:
@@ -380,12 +381,12 @@ Where the user sees them (agreed with the owner, 2026-11-06). 后台 and 动态 
 - Delivered as: F1a-1 the 动态 page and its way in (done, #93); the schedule source (done, #94). Moving 后台 out of the hub (F1a-2) is not done for now: 后台 is unrelated to 动态 and works where it is (the owner, 2026-11-06).
 - **One kind of scheduled thing (the owner, 2026-11-06): a time and a prompt.** The model writes the prompt from the conversation and proposes it on a card (when, and what it will do); the user's yes keeps it. Times are once, daily, weekly or cron, as `dsh-schedule`'s records. When it is due, the prompt runs in a fresh session of its own, in the working folder the schedule was made in, that the app marks unattended, at the level the user picked; what that level would ask the user is refused, since nobody is there to answer (`acp-bridge.ts` cancels an unattended session's approval requests). The session is not one of 后台's tasks: its events go to the run alone (`unattended-runs.ts`), and it is closed once its turn ends. What is due is taken from the schedules and kept as a run in one transaction, so a run not finished runs again at the next launch; a failed run is tried again later, three times in all, then becomes an item saying so; a run whose schedule was paused or deleted before it started is let go; an answer whose item could not be kept is kept on a later try, after a growing wait, without asking the model again (`schedule-runs.ts`). Its final answer becomes a 动态 item, keyed by the occurrence so never two, its notification queued in the same change (the effects queue). A reminder is the same: its prompt asks for a reminder. Once per occurrence, missed ones run at launch, pause, resume and delete in 接下来. Gone with this: the follow-ups' two times (reminder, preparation), preparation windows and their presets, yielding while the user is busy, the daily call cap, the 今天 summary and gap notices, and `followup-notifier.ts`, `prepare-scheduler.ts`, `prepare-schedule.ts`, `notice-plan.ts` and the preparation settings; follow-ups kept from before are dropped (no compatibility at this stage).
 - **Natural language first (the owner, 2026-11-06).** Schedules are made, changed, paused and deleted by talking: the model has tools shaped as `dsh-schedule`'s (`schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete`), and creating one still needs the user's yes on its card. The page shows; its buttons are only shortcuts for what can be said.
-- The schedule source landed in #94, in five steps: `feed_items` and its store; schedules' table, card and timer; a due run running unattended and read-only, its answer an item and a notification; 动态 listing items and schedules; the old follow-up machinery removed.
+- The schedule source landed in #94, in five steps: `feed_items` and its store; schedules' table, card and timer; a due run running in an unattended session, its answer an item and a notification; 动态 listing items and schedules; the old follow-up machinery removed.
 
 It replaced the follow-ups' reminders (`followup-notifier.ts`) and background preparation (`prepare-scheduler.ts`, `prepare-schedule.ts`); the follow-ups' watched file had gone before it (#92). Results show in 动态 and reach a conversation only when the user continues them there; they are not reported as a background task's result.
 
 ### 12.3 Order of work
 
-1. Done: the follow-ups' watched file removed; the 动态 page and its way in; schedules made by talking, run read-only when due, their results in 动态; the follow-ups removed (§12.2). Mail and web sources come later.
+1. Done: the follow-ups' watched file removed; the 动态 page and its way in; schedules made by talking, run in an unattended session when due, their results in 动态; the follow-ups removed (§12.2). Mail and web sources come later.
 
 Done before this: one writer of a task's end; TaskRuntime; the effects queue and reports; the record in the conversation; the window's order, the snapshots that make tasks, one conversation reducer; run admission; lifecycle from snapshots and the first-load handoff; a same-generation reconnect that misses no push (§12.1).
