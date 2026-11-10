@@ -453,3 +453,21 @@ test('what the conversation on screen waits on is there to read while it waits, 
   assert.deepEqual(bridge.sessionWaits(), { permissions: [], questions: [], secrets: [] }, 'answered: no longer waiting')
   bridge.dispose()
 })
+
+test('a session the bridge leaves ends its turn at the host: what it left undecided fails as cancelled', { timeout: 5000 }, async t => {
+  const requests = testRequests()
+  let created = 0
+  const bridge = createAcpBridge({ routing: requests, dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async newSession() { return { sessionId: `topic-${++created}`, configOptions: MODEL_OPTIONS } },
+      async prompt(params) { lastPrompt = params.prompt[0].text; return { stopReason: 'end_turn' } },
+    })),
+  })
+  t.after(() => { bridge.dispose() })
+  await bridge.start()
+  await bridge.prompt('写个笔记')
+  const [asked] = requestsIn(lastPrompt)
+  assert.equal(requests.store.get(asked.id)?.status, 'received', 'nothing decided it, and no turn end came through')
+  await bridge.newSession()
+  assert.deepEqual([requests.store.get(asked.id)?.status, requests.store.get(asked.id)?.failure], ['failed', 'cancelled'])
+})

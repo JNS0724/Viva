@@ -242,6 +242,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         emitToRenderer({ type: 'turn_end', stopReason: 'cancelled', context: sessions.context() })
         reportTurnMemories()
       }
+      // Its requests too: the retired generation's turn_end never reaches endRequests.
+      const left = sessions.context().sessionId
+      if (left) endRequests({ type: 'turn_end', stopReason: 'cancelled' }, left)
     },
     onCrash: ({ message }, delay) => {
       turn = { active: false, startedAt: 0 }
@@ -401,7 +404,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
       taskRead: (request, sessionId) => requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
       taskAct: (request, sessionId) => actOnSchedule(request, sessionId),
-      routing: { receive: (request) => requests.receive(request), decide: (decision) => requests.decide(decision), fail: (failure) => requests.fail(failure), noteFast: (outcome) => requests.noteFast(outcome) },
+      routing: { receive: (request) => requests.receive(request), decide: (decision) => requests.decide(decision), fail: (failure) => requests.fail(failure), noteFast: (outcome) => requests.noteFast(outcome), endTurn: (turn) => requests.endTurn(turn) },
       conversationContext: sessionId => {
         const context = sessions.context()
         return context.sessionId === sessionId ? context : { conversationId: null, sessionId }
@@ -449,8 +452,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * A turn of the main conversation ended, or ended in an error: the requests it left undecided fail, and the user is
    * told, unless they stopped it themselves.
    */
-  function endRequests(event: Record<string, unknown>) {
-    const sessionId = dsh.current?.currentSession()
+  function endRequests(event: Record<string, unknown>, sessionId = dsh.current?.currentSession()) {
     if (!sessionId) return
     const reason = event.type === 'error' ? 'turn_error' : event.stopReason === 'cancelled' ? 'cancelled' : 'unrouted'
     try {

@@ -12,7 +12,7 @@ import type { RequestRuntime } from './request-runtime.ts'
 const BIND_WAIT_MS = 3_000
 
 /** The request runtime as the bridge uses it: each request taken as it is sent, each decision and fast-lane outcome passed on. */
-export type RoutingHandlers = Pick<RequestRuntime, 'receive' | 'decide' | 'fail' | 'noteFast'>
+export type RoutingHandlers = Pick<RequestRuntime, 'receive' | 'decide' | 'fail' | 'noteFast' | 'endTurn'>
 
 export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: {
   send: (message: object) => void

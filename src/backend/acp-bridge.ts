@@ -468,6 +468,10 @@ export function createAcpBridge({
 
   function retire(id: string, measure: ReturnType<typeof sessionTiming>) {
     if (closing.has(id)) return
+    // Its turn, if one runs, ends here: what it said reaches nothing from now on, its turn_end included. What it left
+    // undecided fails, and a decision still being carried out sends nothing more (request-runtime.ts).
+    try { routing.endTurn({ sessionId: id, reason: 'cancelled' }) }
+    catch (err) { console.error('[acp-bridge] could not end the requests of a session left:', describeError(err)) }
     const cleanup = (async () => {
       if (operations.has(id)) {
         try { if (!operations.cancelPreparing(id, () => {})) await measure('session.cancel', () => live().cancel({ sessionId: id })) }
