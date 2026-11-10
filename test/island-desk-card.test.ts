@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deskCard, nextRequest, showsCoach } from '../src/renderer/island-desk-card.ts'
+import { deskCard, nextRequest, requestFor, showsCoach } from '../src/renderer/island-desk-card.ts'
 
 /** What each desktop card says and offers (island-desk-card.ts), with no DOM: every word once, every action once. */
 
@@ -110,6 +110,16 @@ test('a request handled elsewhere gives way to the next one waiting, or to none'
   assert.equal(nextRequest(permission, 'p1'), null, 'still there: nothing to move to')
   assert.equal(nextRequest(view, 'p1')?.question?.questionId, 'q9')
   assert.equal(nextRequest({ ...base, form: 'idle', tone: 'idle', label: '空闲' }, 'p1'), undefined)
+})
+
+test('a task\'s request keeps its own head and face whatever the conversation on screen asks meanwhile', () => {
+  const task = { id: 't', title: '检查依赖', status: 'waiting', permission: permission.permission }
+  const view = { ...question, mood: 'ask', background: { count: 1, waiting: 1, done: 0, items: [task] } }
+  const card = requestFor(view, 'p1')!
+  assert.deepEqual([card.form, card.label, card.mood, card.task], ['waiting', '需要你确认', 'confirm', '检查依赖'])
+  const asks = { ...task, permission: undefined, question: { ...question.question, questionId: 'q9' } }
+  const asked = requestFor({ ...permission, task: undefined, mood: 'confirm', background: { count: 1, waiting: 1, done: 0, items: [asks] } }, 'q9')!
+  assert.deepEqual([asked.form, asked.label, asked.mood], ['asking', '需要你回答', 'ask'])
 })
 
 test('the first-time card shows only on the resting island', () => {

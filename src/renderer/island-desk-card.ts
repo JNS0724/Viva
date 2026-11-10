@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { formatElapsed } from './selectors.ts'
+import { PROMPT_HEADS, formatElapsed } from './selectors.ts'
 
 /**
  * What a card of the desktop island says and offers (view/island-dom.ts draws it), as plain data. A card says each
@@ -133,11 +133,14 @@ export function deskCard(view: IslandShown, { shortcut }: { shortcut: string }):
 
 const requestIdOf = (view: IslandShown): string | null => view.permission?.requestId ?? view.question?.questionId ?? null
 
-/** Every request the island could show: the conversation's own, then each task's that waits on the user. */
+/**
+ * Every request the island could show: the conversation's own, then each task's that waits on the user. A task's
+ * request has its own head and face, as island-view.ts gives it, never those of what the conversation shows meanwhile.
+ */
 function requestsOf(view: IslandShown): IslandShown[] {
   const tasks = (view.background?.items ?? []).filter((item: IslandShown) => item.permission || item.question).map((item: IslandShown) => item.permission
-    ? { ...view, form: 'waiting', tone: 'waiting', task: item.title, permission: item.permission, question: null }
-    : { ...view, form: 'asking', tone: 'waiting', task: item.title, permission: null, question: item.question })
+    ? { ...view, form: 'waiting', tone: 'waiting', mood: 'confirm', label: PROMPT_HEADS.permission, task: item.title, permission: item.permission, question: null }
+    : { ...view, form: 'asking', tone: 'waiting', mood: 'ask', label: PROMPT_HEADS.question, task: item.title, permission: null, question: item.question })
   return [...(requestIdOf(view) ? [view] : []), ...tasks]
 }
 
