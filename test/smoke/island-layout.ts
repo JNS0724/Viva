@@ -1,5 +1,84 @@
 import { expect, type Page, type TestInfo } from '@playwright/test'
 
+/** island.css: the cat at rest, smaller (data-signal="rest"). */
+const REST_SCALE = 0.86
+
+/**
+ * The desktop island folded, state by state (view/island-dom.ts deskSignal): each its own ring, the sign on the
+ * portrait only when it is alone, and the state's sign before its words. Reduced motion, so the rings are at rest.
+ */
+export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void> {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  try {
+    const seen = await page.evaluate(async () => {
+      const { createIsland } = await import(new URL('./view/island-dom.js', location.href).href) as typeof import('../../src/renderer/view/island-dom.ts')
+      const { placeDesktopIsland } = await import(new URL('./view/desktop-layout.js', location.href).href) as typeof import('../../src/renderer/view/desktop-layout.ts')
+      const base = { tone: 'idle', mood: 'idle', label: '', recent: [] }
+      const cases: Array<[string, IslandShown]> = [
+        ['rest', { ...base, form: 'mini' }],
+        ['working', { ...base, form: 'working', tone: 'working', mood: 'thinking', label: '正在处理', action: '读取文件', startedAt: Date.now() - 60_000 }],
+        ['confirm', { ...base, form: 'waiting', tone: 'waiting', mood: 'confirm', label: '需要你确认', permission: { requestId: 'r', title: '运行测试', command: 'npm test', options: [] } }],
+        ['asking', { ...base, form: 'asking', tone: 'waiting', mood: 'ask', label: '需要你回答', question: { questionId: 'q', id: 'c', text: '先看哪部分？', options: [] } }],
+        ['done', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', elapsedMs: 72_000, detail: '周报整理好了' }],
+        ['done-alone', { ...base, form: 'mini', tone: 'done', mood: 'done', label: '已完成' }],
+        ['done-open', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', detail: '周报整理好了', desktopOpen: true, desktopPanel: 'status' }],
+        ['error', { ...base, form: 'error', tone: 'error', mood: 'error', label: '出错了', detail: '连接中断' }],
+        ['error-alone', { ...base, form: 'mini', tone: 'error', mood: 'error', label: '出错了' }],
+        ['offline', { ...base, form: 'pending', tone: 'pending', mood: 'idle', label: '未连接', detail: '需要配置模型' }],
+      ]
+      const gallery = document.createElement('section')
+      gallery.id = 'desk-signal-gallery'
+      gallery.style.cssText = 'position:fixed;top:60px;left:16px;z-index:100;display:grid;grid-template-columns:repeat(2,380px);gap:6px;background:var(--bg)'
+      document.body.append(gallery)
+      const rows = []
+      for (const [name, view] of cases) {
+        const stage = document.createElement('div')
+        stage.className = 'desk-stage'
+        stage.dataset.dir = 'down'
+        stage.style.cssText = `width:380px;height:${view.desktopOpen ? 260 : 124}px;position:relative;flex:none;background:var(--panel-2);overflow:hidden`
+        const island = createIsland('desk', () => {}, {})
+        island.el.dataset.dir = 'down'
+        island.update({ desktopOpen: false, ...view })
+        stage.append(island.el)
+        gallery.append(stage)
+        placeDesktopIsland(island.el, stage, { anchor: { x: 54, y: 56 }, side: 'right', panelWidth: 440 })
+        await Promise.all([...island.el.querySelectorAll('img')].map(image => image.decode()))
+        const maid = getComputedStyle(island.el.querySelector('.isl-anchor > .maid')!)
+        const sign = island.el.querySelector<HTMLElement>('.isl-sign')!
+        const peek = island.el.querySelector<HTMLElement>('.isl-peek')!
+        rows.push({
+          name, signal: island.el.dataset.signal, ring: maid.boxShadow, outline: maid.outlineStyle, opacity: maid.opacity,
+          arc: getComputedStyle(island.el.querySelector('.isl-anchor')!, '::before').content,
+          sign: sign.hidden ? null : sign.textContent, signShown: !sign.hidden && sign.getBoundingClientRect().width > 0,
+          peek: !peek.hidden, dot: peek.hidden ? null : peek.querySelector('.isl-dot')?.textContent ?? null,
+        })
+      }
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      return rows
+    })
+    await info.attach('desk-signals', { body: JSON.stringify(seen, null, 2), contentType: 'application/json' })
+    await page.locator('#desk-signal-gallery').screenshot({ path: info.outputPath('desk-signals.png') })
+    const by = Object.fromEntries(seen.map(row => [row.name, row]))
+    expect(seen.map(row => [row.name, row.signal])).toEqual([['rest', 'rest'], ['working', 'working'], ['confirm', 'confirm'], ['asking', 'asking'], ['done', 'done'],
+      ['done-alone', 'done'], ['done-open', 'done'], ['error', 'error'], ['error-alone', 'error'], ['offline', 'offline']])
+    // The sign on the portrait only when it is alone; beside the words, the words carry it.
+    expect(seen.map(row => [row.name, row.sign])).toEqual([['rest', null], ['working', null], ['confirm', null], ['asking', null], ['done', null],
+      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null]])
+    expect([by['done-alone'].signShown, by['error-alone'].signShown]).toEqual([true, true])
+    expect([by.confirm.dot, by.asking.dot, by.done.dot, by.error.dot, by.offline.dot, by.working.dot]).toEqual(['!', '?', '✓', '×', '–', ''])
+    // Each its own ring: not one outline for all.
+    const rings = ['confirm', 'done', 'error'].map(name => by[name].ring)
+    expect(new Set(rings).size).toBe(3)
+    expect(rings.every(ring => ring !== 'none')).toBe(true)
+    expect(by.working.arc).not.toBe('none')
+    expect([by.offline.outline, by.rest.ring]).toEqual(['dashed', by.rest.ring])
+    expect(Number(by.rest.opacity)).toBeLessThan(1)
+  } finally {
+    await page.evaluate(() => document.getElementById('desk-signal-gallery')?.remove())
+    await page.emulateMedia({ reducedMotion: null })
+  }
+}
+
 /** Exercise production DOM and CSS in the existing app, with no additional startup or model turn. */
 export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<void> {
   await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -169,7 +248,8 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
       } else {
         expect(result.width).toBeCloseTo(result.name === 'working' ? 320 : 440, 0)
       }
-      expect(result.portrait).toBeCloseTo(72, 0)
+      // Resting as the cat alone with nothing going on, she is drawn smaller and fainter (island.css deskSignal rest).
+      expect(result.portrait).toBeCloseTo(result.name === 'circle' ? 72 * REST_SCALE : 72, 0)
       if (result.name === 'long-question') expect(result.bodyScrollable).toBe(true)
       if (result.name === 'files') expect(result.bodyScrollable).toBe(true)
       await page.locator(`#layout-${result.name}`).screenshot({ path: info.outputPath(`island-layout-${result.name}.png`) })

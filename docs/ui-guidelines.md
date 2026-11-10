@@ -197,7 +197,7 @@ Motion:
 
 - Hover, opacity and small moves: 0.1–0.15s. Color, border and shadow: 0.3s.
 - The title-bar island resizes with `cubic-bezier(.3, 1.3, .5, 1)` over 0.5s. The desktop portrait has no geometry transition; neighbouring content switches directly, with immediate layout changes while dragging.
-- Looping animation only means "in progress" or "waiting on you": pulse dots, spinners, breathing, the typing caret, her animations. Where she may move is set in [Her character](#her-character).
+- Looping animation only means "in progress", "waiting on you" or "a result not yet seen": spinners, pulse dots, breathing, the typing caret, her animations. Each has its own rhythm: a turning spinner is in progress; a quicker outward pulse waits on you; the slowest breathing in place, brightening and dimming, is a result not yet seen, and stops once seen. Where she may move is set in [Her character](#her-character).
 - `prefers-reduced-motion: reduce` turns off all animation and transitions globally. A new looping animation still gets its own reduce rule, with a still state where one is needed (for example, breathing rests at `opacity: .8`).
 
 ## Her character
@@ -217,7 +217,7 @@ The two sets together have a 4 MiB runtime budget, with a 512 KiB animation limi
 | `ask` | Half-body hand to earcup; portrait headset | Yes | Orange | The assistant is asking you |
 | `listening` | The asking pictures | Yes | Blue | Files are held over the desktop island; nothing waits on you, so blue and no badge |
 | `confirm` | Half-body clipboard; portrait palm-up gesture | Yes | Orange | Approval cards, the desktop island |
-| `done` | Half-body raises the check card and gives a thumbs-up; portrait thumbs-up | Yes | Blue | A turn finished, something is ready, not yet seen. Once seen it goes back to idle: with the window in front when it ends, after one loop of the pose; otherwise one loop after the window comes back to the front, or when the desktop island's result card is opened and closed. With nobody looking, the pose stops on its still after two loops and stays done |
+| `done` | Half-body raises the check card and gives a thumbs-up; portrait thumbs-up | Yes | Blue | A turn finished, something is ready, not yet seen. Once seen it goes back to idle: with the window in front when it ends, after one loop of the pose; otherwise one loop after the window comes back to the front, or when the desktop island's result card is opened and closed. With nobody looking, the pose stops on its still after two loops and stays done; on the desktop island her ring breathes until it is seen |
 | `error` | Half-body wrench; worried portrait | Yes | Red | An answer failed |
 | `offline` | Half-body unplugged connector; half-lidded portrait | Yes | Gray | No model connected yet, connecting |
 | `sleeping` | Half-body pillow; portrait breathing with closed eyes | Yes | Quiet | Not used at present |
@@ -229,7 +229,11 @@ Drawn by `src/renderer/view/maid.ts`:
 - **Framing:** `whole` shows the half-body picture at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 48px in conversation. Both sets display their complete canvas.
 - **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Feed lists and details remain still. Reduced motion selects the matching still.
 - **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
-- **On the desktop island** she moves both folded and open. Updates within the same layout and mood retain the image node. Text and a dot convey status, with one thin portrait outline. Other cards retain their existing character badges.
+- **On the desktop island** she moves both folded and open. Updates within the same layout and mood retain the image node. Status is told by the shape of a ring as well as by text and colour (`view/island-dom.ts` `deskSignal`):
+  - The portrait's ring: a turning blue arc while working; a solid orange ring with an outward pulse when it needs your approval or answer; a breathing blue ring when done and not yet seen; a solid red ring on an error; a dashed grey ring when not connected, with her in grey; no ring at rest, where she is a little smaller and fainter.
+  - A sign beside the status: "!" to approve, "?" to answer, "✓" done, "×" error, "–" not connected, and a small spinner while working. It goes before the status words, and the strip's edge takes the state's colour.
+  - The sign is worn on the portrait's lower right only when she is alone, with no status words beside her; with them, the sign before the words says it, not twice.
+  - With reduced motion the rings rest still. Other cards retain their existing character badges.
 - **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
 - All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc.
 - After changing assets, check the home page, conversation, approval cards, 动态's details and desktop island, and switch through several states in a row.

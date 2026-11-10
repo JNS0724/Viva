@@ -2,7 +2,7 @@ import { test, expect } from './fixtures.ts'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { checkIslandLayouts } from './island-layout.ts'
+import { checkDeskSignals, checkIslandLayouts } from './island-layout.ts'
 import { checkDesktopHost } from './desktop-host.ts'
 import { checkStreamingDrawer } from './drawer-interaction.ts'
 import { checkStreamingNavigation } from './ui-retention.ts'
@@ -192,6 +192,7 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.locator('#settings-root')).toBeVisible()
   await checkIslandLayouts(page, info)
+  await checkDeskSignals(page, info)
   const desk = session.hooks.desk()
   await desk.force(true)
   try {

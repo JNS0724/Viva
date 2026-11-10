@@ -40,6 +40,8 @@
   --desk-pad: 16px; --desk-gap: 10px; --desk-control: 32px; --desk-radius: 22px; --desk-files-max: 128px; --desk-field-max: 72px;
   --desk-neighbor-gap: 12px; --desk-hit-pad: 4px; --desk-peek-width: 320px; --desk-surface-head: 44px;
   --desk-icon: 28px; --desk-button: 34px; --desk-strip: 40px; --desk-key: 56px;
+  /* The portrait's state ring and the sign it may wear (view/island-dom.ts deskSignal). */
+  --desk-ring: 3px; --desk-sign: 22px; --desk-sign-glyph: 14px;
   --titlebar-gutter: 12px;
   /* the 动态 button (about 96px) and 2 title bar buttons (36px), with 6px gaps */
   --titlebar-actions: 180px;

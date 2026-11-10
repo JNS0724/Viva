@@ -45,3 +45,16 @@ test('desktop layout separates the resting portrait, status, input and content',
   assert.equal(deskLayoutFor({ ...input, images: [{ id: 'image', size: 1 }] }, true, false), 'input')
   assert.equal(deskLayoutFor({ ...mini, form: 'drop' }, true, false), 'content')
 })
+
+test('the desktop portrait says the state by ring and sign; resting as the cat alone it keeps what it rests on', async () => {
+  const { deskSignal, DESK_SIGNS, wearsSign } = await import('../src/renderer/view/island-dom.ts')
+  const signal = (form: string, tone = 'idle') => deskSignal({ form, tone })
+  assert.deepEqual(['working', 'waiting', 'asking', 'done', 'error', 'pending'].map((form) => signal(form)),
+    ['working', 'confirm', 'asking', 'done', 'error', 'offline'])
+  assert.deepEqual([signal('mini'), signal('mini', 'done'), signal('mini', 'working'), signal('mini', 'error')], ['rest', 'done', 'working', 'error'],
+    'a turn done and not yet seen is still that once the island folds to the cat')
+  assert.deepEqual(['input', 'coach', 'resolved', 'drop', 'background'].map((form) => signal(form, 'done')), Array(5).fill('plain'), 'the island\'s own forms are drawn as before')
+  assert.deepEqual([DESK_SIGNS.confirm, DESK_SIGNS.asking, DESK_SIGNS.done, DESK_SIGNS.error, DESK_SIGNS.working], ['!', '?', '✓', '×', undefined])
+  assert.deepEqual([wearsSign('done', true), wearsSign('done', false), wearsSign('offline', true), wearsSign('working', true), wearsSign('rest', true)],
+    [true, false, false, false, false], 'worn only with the portrait alone, and not where the ring says it already')
+})

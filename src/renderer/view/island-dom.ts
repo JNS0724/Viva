@@ -43,6 +43,24 @@ function peekDetail(view: IslandShown): string | undefined {
   return view.action ?? view.task ?? view.detail
 }
 
+/**
+ * How the desktop portrait says where things stand at a glance (ui-guidelines 桌面岛): a ring for each, and for some
+ * a sign, so shape as well as colour tells them apart. `rest`: the cat alone with nothing going on; `plain`: a form
+ * of the island's own (the input, a note), drawn as it always was.
+ */
+export type DeskSignal = 'rest' | 'plain' | 'working' | 'confirm' | 'asking' | 'done' | 'error' | 'offline'
+const SIGNAL_OF_FORM: Readonly<Record<string, DeskSignal>> = { working: 'working', waiting: 'confirm', asking: 'asking', done: 'done', error: 'error', pending: 'offline' }
+/** Resting as the cat alone, the island keeps the tone of what it rests on: a turn done and not yet seen is still that. */
+const SIGNAL_OF_TONE: Readonly<Record<string, DeskSignal>> = { working: 'working', done: 'done', error: 'error', pending: 'offline' }
+export const deskSignal = (view: Pick<IslandShown, 'form' | 'tone'>): DeskSignal =>
+  (view.form === 'mini' ? SIGNAL_OF_TONE[view.tone] ?? 'rest' : SIGNAL_OF_FORM[view.form] ?? 'plain')
+/** The sign before the state's words, and on the portrait when it is alone; working says itself by turning. */
+export const DESK_SIGNS: Readonly<Partial<Record<DeskSignal, string>>> = { confirm: '!', asking: '?', done: '✓', error: '×', offline: '–' }
+/** Signs worn on the portrait: its dashed grey ring already says offline. */
+const WORN_SIGNS: ReadonlySet<DeskSignal> = new Set(['confirm', 'asking', 'done', 'error'])
+/** The sign is worn only with the portrait alone: beside the state's words it would say it twice. */
+export const wearsSign = (signal: DeskSignal, alone: boolean): boolean => alone && WORN_SIGNS.has(signal)
+
 function deskHead(view: IslandShown, now: number) {
   const attachments = view.form === 'input'
   let label = view.label
@@ -60,7 +78,7 @@ function deskHead(view: IslandShown, now: number) {
   const elapsed = since !== null ? formatElapsed(now - since)
     : view.form === 'done' && !view.task ? formatElapsed(view.elapsedMs ?? 0) : null
   return h('span', { class: 'isl-copy' },
-    h('span', { class: 'isl-status' }, h('span', { class: 'isl-dot', 'aria-hidden': 'true' }),
+    h('span', { class: 'isl-status' }, h('span', { class: 'isl-dot', 'aria-hidden': 'true', text: DESK_SIGNS[deskSignal(view)] }),
       h('b', { class: 'isl-label', text: label }), elapsed ? h('span', { class: 'isl-time', 'data-since': since, text: elapsed }) : null),
     detail ? h('span', { class: 'isl-more', text: detail, title: detail }) : null)
 }
@@ -242,7 +260,8 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   const avatar = h('button', { type: 'button', class: 'isl-anchor', 'aria-label': t('desk.interaction.toggle'), onClick: () => act({ kind: 'toggle' }) })
   const surface = h('section', { class: 'isl-surface', 'aria-label': t('island-dom.content') })
   const peek = h('div', { class: 'isl-peek' })
-  const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, peek, surface)
+  const sign = h('span', { class: 'isl-sign', 'aria-hidden': 'true', hidden: true })
+  const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, sign, peek, surface)
   const tail = createTailCell(true)
   tail.el.addEventListener('click', () => act({ kind: 'panel', panel: 'background' }))
   const peekOpen = h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) })
@@ -267,7 +286,8 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
     const open = Boolean(view.desktopOpen ?? (view.form === 'input' || pinned)) && !view.dragging
     const wide = view.form === 'input'
-    Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open), layout: deskLayoutFor(view, open) })
+    const signal = deskSignal(view)
+    Object.assign(el.dataset, { form: view.form, tone: view.tone, signal, open: String(open), layout: deskLayoutFor(view, open) })
     avatar.setAttribute('aria-expanded', String(open))
     avatar.setAttribute('aria-label', t('desk.interaction.toggle'))
     avatar.title = t('desk.interaction.gesture')
@@ -275,6 +295,8 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     if (avatar.firstChild !== portrait) avatar.replaceChildren(portrait)
     surface.hidden = !open
     peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count && !view.background?.done
+    sign.textContent = DESK_SIGNS[signal] ?? ''
+    sign.hidden = !wearsSign(signal, peek.hidden && !open)
     const next = JSON.stringify([view, open, localeRevision()])
     if (next === signature) return tick(now)
     signature = next
