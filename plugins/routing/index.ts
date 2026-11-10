@@ -157,7 +157,9 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     const id = String(agent.session.id)
     if (!mains.has(id)) return
     const pendingFast = fastWork.get(id)
-    if (pendingFast?.size) await Promise.race([Promise.allSettled([...pendingFast]), new Promise(resolve => setTimeout(resolve, FAST_WAIT_MS))])
+    // Each is bounded on its own (its deadline to decide, then the host's to answer a plan sent), so the turn waits for
+    // all of them: one that outlived its turn would come back to an idle agent, its outcome told to nobody.
+    if (pendingFast?.size) await Promise.allSettled([...pendingFast])
     const plan = repairs(ledgerOf(id), MAX_REPAIRS)
     ledgers.set(id, plan.ledger)
     if (plan.retry.length) agent.steer(userNote(`【路由补交】以下请求还没有提交 commit_route：${plan.retry.join('、')}。先逐个提交有效路由再结束；不得直接用正文代替。`))
