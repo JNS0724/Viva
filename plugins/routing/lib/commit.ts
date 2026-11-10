@@ -29,7 +29,9 @@ export const COMMIT_PARAMETERS = {
     goal: { type: 'string' as const, required: true as const }, disposition: { type: 'string' as const, required: true as const, enum: [...DISPOSITIONS] },
   } } },
   actions: { type: 'array' as const, required: true as const, items: { type: 'object' as const, additionalProperties: false, properties: {
-    kind: { type: 'string' as const, required: true as const, enum: ['reply', 'start', 'message', 'stop', 'clarify', 'app_action'] },
+    // Not required here: dsh checks these before the plugin sees the call, and a kind left out would cost the model a
+    // whole brief written again. The host names it from the action's fields, and refuses what names none (parsePlan).
+    kind: { type: 'string' as const, enum: ['reply', 'start', 'message', 'stop', 'clarify', 'app_action'], description: '动作种类' },
     scope: text('reply：本次回答的范围'),
     title: text('start：简短任务名（十来个字，任务卡片的标题）'),
     brief: text('start：自成一体的完整委托'),
