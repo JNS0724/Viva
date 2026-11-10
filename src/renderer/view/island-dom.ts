@@ -299,15 +299,19 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     surface.hidden = !open
     // At rest the cat is alone: the strip beside her only for what goes on (tasks running); what ended is counted on her.
     peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count
+    const alone = peek.hidden && !open && !view.dragging
+    // Alone, a count of tasks ended and not yet seen takes her corner before her sign: it is the way to the 后台
+    // list, and her ring already says the rest (a turn done: still breathing).
+    const counted = alone && Boolean(view.background?.count || view.background?.done || view.background?.alsoWaiting)
     sign.textContent = DESK_SIGNS[signal] ?? ''
-    sign.hidden = !wearsSign(signal, peek.hidden && !open)
+    sign.hidden = counted || !wearsSign(signal, peek.hidden && !open)
     const next = JSON.stringify([view, open, localeRevision()])
     if (next === signature) return tick(now)
     signature = next
     const cell = tail.update(view)
     cell?.setAttribute('aria-expanded', String(open && view.desktopPanel === 'background'))
     peekOpen.replaceChildren(deskHead(view, now))
-    const cornered = Boolean(cell) && peek.hidden && !open && !view.dragging && sign.hidden
+    const cornered = Boolean(cell) && counted
     corner.hidden = !cornered
     reconcileChildren(corner, cornered && cell ? [cell] : [])
     reconcileChildren(peek, [peekOpen, ...(cell && !cornered ? [cell] : [])])

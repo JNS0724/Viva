@@ -24,6 +24,7 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
         ['offline', { ...base, form: 'pending', tone: 'pending', mood: 'idle', label: '未连接', detail: '需要配置模型' }],
         ['done-left', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', elapsedMs: 72_000, detail: '周报整理好了' }],
         ['rest-ended', { ...base, form: 'mini', background: { count: 0, done: 3, waiting: 0, items: [] } }],
+        ['done-alone-ended', { ...base, form: 'mini', tone: 'done', mood: 'done', label: '已完成', background: { count: 0, done: 2, waiting: 0, items: [] } }],
         ['rest-running', { ...base, form: 'mini', background: { count: 1, done: 3, waiting: 0, items: [{ id: 't', title: '整理周报', status: 'running', now: '读取文件' }] } }],
       ]
       const gallery = document.createElement('section')
@@ -93,14 +94,16 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
     const by = Object.fromEntries(seen.map(row => [row.name, row]))
     expect(seen.map(row => [row.name, row.signal])).toEqual([['rest', 'rest'], ['working', 'working'], ['confirm', 'confirm'], ['asking', 'asking'], ['done', 'done'],
       ['done-alone', 'done'], ['done-open', 'done'], ['error', 'error'], ['error-alone', 'error'], ['offline', 'offline'],
-      ['done-left', 'done'], ['rest-ended', 'rest'], ['rest-running', 'rest']])
+      ['done-left', 'done'], ['rest-ended', 'rest'], ['done-alone-ended', 'done'], ['rest-running', 'rest']])
     // The sign on the portrait only when it is alone; beside the words, the words carry it.
     expect(seen.map(row => [row.name, row.sign])).toEqual([['rest', null], ['working', null], ['confirm', null], ['asking', null], ['done', null],
-      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null], ['done-left', null], ['rest-ended', null], ['rest-running', null]])
+      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null], ['done-left', null], ['rest-ended', null], ['done-alone-ended', null], ['rest-running', null]])
     // At rest she is alone: no strip for what ended, only its count on her corner, inside her round (the window's
     // clicks reach only there); the strip comes back only for tasks going on.
     expect([by['rest-ended'].peek, by['rest-ended'].corner, by['rest-ended'].cornerInside]).toEqual([false, '✓ 3', true])
     expect([by['rest-running'].peek, by['rest-running'].corner]).toEqual([true, null])
+    // A turn done and tasks ended, both unseen: the count keeps her corner (the way to the 后台 list); the ring says done.
+    expect([by['done-alone-ended'].corner, by['done-alone-ended'].cornerInside, by['done-alone-ended'].ring]).toEqual(['✓ 2', true, by['done-alone'].ring])
     expect([by.rest.peek, by.rest.corner]).toEqual([false, null])
     // The strip is as long as what it says, up to 320px, and beside her on either side.
     expect(by.done.peekWidth).toBeLessThan(300)
