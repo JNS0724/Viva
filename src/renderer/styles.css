@@ -38,7 +38,8 @@
   --desk-capsule-width: 440px; --desk-capsule-height: 72px; --desk-input-width: 520px; --desk-input-height: 112px;
   --desk-card-width: 440px; --desk-card-max: 320px; --desk-card-head: 70px; --desk-card-footer: 60px;
   --desk-pad: 16px; --desk-gap: 10px; --desk-control: 32px; --desk-radius: 22px; --desk-files-max: 128px; --desk-field-max: 72px;
-  --desk-neighbor-gap: 12px; --desk-hit-pad: 4px; --desk-peek-width: 320px; --desk-surface-head: 62px;
+  --desk-neighbor-gap: 12px; --desk-hit-pad: 4px; --desk-peek-width: 320px; --desk-surface-head: 44px;
+  --desk-icon: 28px; --desk-button: 34px; --desk-strip: 40px; --desk-key: 56px;
   --titlebar-gutter: 12px;
   /* the 动态 button (about 96px) and 2 title bar buttons (36px), with 6px gaps */
   --titlebar-actions: 180px;

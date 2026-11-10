@@ -20,6 +20,9 @@ test('before the agent is connected the island says so, with no panel content', 
   assert.deepEqual(islandView(initialState), { form: 'pending', tone: 'pending', mood: 'idle', label: '连接中', recent: [] })
   const setup = run([{ type: 'ready', info: { mode: 'setup', problem: 'no-key', cwd: '/w', model: '' } }])
   assert.equal(islandView(setup).label, '未连接')
+  assert.equal(islandView(setup).detail, '需要配置模型', 'what is missing, for the desktop card')
+  const noDsh = run([{ type: 'ready', info: { mode: 'setup', problem: 'no-dsh', cwd: '/w', model: '' } }])
+  assert.equal(islandView(noDsh).detail, '未安装 DSH')
 })
 
 test('idle shows the model; working shows what runs now, since when, how many steps and the latest steps', () => {
@@ -82,6 +85,10 @@ test('done keeps how long it took and the start of the answer; stopped and faile
   assert.equal(done.tone, 'done')
   assert.equal(done.elapsedMs, 21_000)
   assert.equal(done.detail, '天气')
+  assert.equal(done.summary, '天气 上海明天多云，18–24°C。', 'the desktop card reads more of the answer than the head')
+
+  const limited = islandView(run([...asked, { type: 'turn_end', stopReason: 'max_tokens', at: T0 + 1000 }]))
+  assert.deepEqual([limited.form, limited.label, limited.incomplete], ['error', '未完成', true])
 
   const stopped = islandView(run([...asked, { type: 'turn_end', stopReason: 'cancelled', at: T0 + 1000 }]))
   assert.equal(stopped.form, 'idle')
@@ -89,6 +96,7 @@ test('done keeps how long it took and the start of the answer; stopped and faile
 
   const failed = islandView(run([...asked, { type: 'error', message: 'dsh 已退出' }]))
   assert.deepEqual([failed.form, failed.tone, failed.mood, failed.detail], ['error', 'error', 'error', 'dsh 已退出'])
+  assert.equal(failed.incomplete, undefined, 'a failure has no reply to open')
 })
 
 test('the answer preview is its first line of text, without Markdown marks, kept short', () => {

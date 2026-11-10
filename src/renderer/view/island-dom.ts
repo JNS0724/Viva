@@ -7,6 +7,9 @@ import { h } from './dom.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
 import type { createIslandInput } from './island-input.ts'
 import { createBackgroundSection, createTailCell, taskTag } from './island-tasks.ts'
+import { deskCard } from '../island-desk-card.ts'
+import type { DeskAction, DeskCard } from '../island-desk-card.ts'
+import { cardButton, cardPart, iconButton, nameIcon } from './island-card.ts'
 
 /** Shared task/request content with separate title-bar and desktop hosts. The desktop keeps a 72px
  * portrait in one 80px target, with explicit expansion of its neighbouring surface. Views wire actions;
@@ -33,29 +36,34 @@ export function deskLayoutFor(view: IslandShown, open: boolean, _tools = false):
   return view.form === 'mini' && !view.background?.count && !view.background?.done ? 'rest' : 'capsule'
 }
 
+/** The second line of the peek: what the state is about, said once (the label says the state). */
+function peekDetail(view: IslandShown): string | undefined {
+  if (view.form === 'waiting' && view.permission) return [view.permission.title, view.task && t('desk-card.from.task', { task: view.task })].filter(Boolean).join(' · ')
+  if (view.form === 'asking' && view.question) return view.task ?? view.question.header ?? view.question.text
+  return view.action ?? view.task ?? view.detail
+}
+
 function deskHead(view: IslandShown, now: number) {
   const attachments = view.form === 'input'
   let label = view.label
-  let detail = view.action ?? view.task ?? view.question?.header ?? view.detail
+  let detail = peekDetail(view)
   if (attachments || view.form === 'drop') {
     label = t('desk.give.to.viva')
     if (attachments) detail = t('island-input.attachments', { count: view.files.length + (view.images?.length ?? 0) })
   } else if (view.form === 'mini') {
-    label = t('desk.ask.viva')
-    detail = t('island-dom.ask.viva.or.drop.files.here')
+    // Resting with tasks in the background: say that they go on, and what the first one does.
+    const running = view.background?.count ? view.background.items[0] : null
+    label = t(running ? 'island-view.background.working' : 'desk.ask.viva')
+    detail = running ? running.now ?? running.title : undefined
   }
-  const elapsed = view.form === 'working' ? elapsedSince(view, now)
+  const since = view.form === 'working' ? view.startedAt ?? now : null
+  const elapsed = since !== null ? formatElapsed(now - since)
     : view.form === 'done' && !view.task ? formatElapsed(view.elapsedMs ?? 0) : null
   return h('span', { class: 'isl-copy' },
     h('span', { class: 'isl-status' }, h('span', { class: 'isl-dot', 'aria-hidden': 'true' }),
-      h('b', { class: 'isl-label', text: label }), elapsed ? h('span', { class: 'isl-time', text: elapsed }) : null),
+      h('b', { class: 'isl-label', text: label }), elapsed ? h('span', { class: 'isl-time', 'data-since': since, text: elapsed }) : null),
     detail ? h('span', { class: 'isl-more', text: detail, title: detail }) : null)
 }
-
-const desktopPanel = (body: View[], actions: View[]) => [
-  h('div', { class: 'isl-body', tabindex: '0', 'aria-label': t('island-dom.content') }, ...body),
-  h('div', { class: 'isl-footer' }, ...actions),
-]
 
 /** Requests jump to their card in the title bar; on the desktop they wait for explicit expansion. */
 const NEEDS_USER = new Set(['waiting', 'asking'])
@@ -104,43 +112,6 @@ const button = (text: string, cls: string, onClick: () => void) => h('button', {
 /** Buttons by role (prompt-card.js), as on the thread's card: the main one filled, the others outlined, the least a link. */
 const ROLE: Readonly<Record<string, string>> & { text: string, secondary: string } = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
 
-/** What it is to allow: its title and, for a command, the command itself on one line. */
-function permissionPanel(view: IslandShown, act: IslandAct) {
-  const { permission } = view
-  return desktopPanel([
-    taskTag(view),
-    h('div', { class: 'isl-title', text: permission.title }),
-    permission.command ? h('pre', { class: 'isl-detail', text: permission.command, title: permission.command }) : null,
-  ], [
-    permission.options.map((option: { optionId: string, name: string, role: string }) => button(option.name, ROLE[option.role],
-      () => act({ kind: 'permission', requestId: permission.requestId, optionId: option.optionId }))),
-    button(t("island-dom.view.details"), `${ROLE.text} isl-push`, () => act({ kind: 'open' })),
-  ])
-}
-
-function questionPanel(view: IslandShown, act: IslandAct) {
-  const { question } = view
-  return desktopPanel([
-    question.header ? h('span', { class: 'isl-tag', text: question.header }) : null,
-    h('div', { class: 'isl-title', text: question.text }),
-    question.options.length ? h('p', { class: 'isl-choice-hint', text: t('desk.interaction.immediate.answer') }) : null,
-    h('div', { class: 'isl-choices' },
-      question.options.map((label: string) => h('button', { type: 'button', class: 'isl-btn isl-btn-secondary', onClick: () => act({ kind: 'answer', questionId: question.questionId, id: question.id, label }) },
-        h('span', { text: label }), h('span', { class: 'isl-choice-action', text: t('desk.interaction.answer') })))),
-  ], [
-    button(t('desk.interaction.other.answer'), question.options.length ? ROLE.text : ROLE.secondary, () => act({ kind: 'open' })),
-    question.skippable ? button(t("island-dom.skip"), `${ROLE.text} isl-push`, () => act({ kind: 'skip', questionId: question.questionId })) : null,
-  ])
-}
-
-/** The first time the cat rests on the desktop: what it can do, which nothing on it shows otherwise. */
-function coachPanel(act: IslandAct, shortcut: string) {
-  const tips = [t("island-dom.click.me.or.press.in.any.app", { shortcut: shortcut }), t("island-dom.drop.files.onto.me.for.help"), t("island-dom.drag.to.move.right.click.for.more")]
-  return desktopPanel([
-    h('ul', { class: 'isl-tips' }, tips.map((text) => h('li', { text }))),
-  ], [button(t("island-dom.got.it"), 'isl-btn-blue', () => act({ kind: 'coached' }))])
-}
-
 /**
  * Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the
  * steps and the tasks in the background.
@@ -150,41 +121,16 @@ function hasPanel(view: IslandShown) {
   return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || tasks)
 }
 
-/** Each region owns its nodes: summaries may change while a request or an action stays valid. */
-function createPanelParts(host: Host, act: IslandAct, shortcut: string) {
+/** The title bar's panel. Each region owns its nodes: summaries may change while an action stays valid. */
+function createPanelParts(act: IslandAct) {
   const background = createBackgroundSection(act)
   const steps = h('ol', { class: 'isl-steps' })
   const stop = button('', 'isl-btn-line', () => act({ kind: 'cancel' }))
   const trace = button('', ROLE.text, () => act({ kind: 'trace' }))
   const actions = h('div', { class: 'isl-actions' })
-  const body = h('div', { class: 'isl-body', tabindex: '0' })
-  const tasks = button('', `${ROLE.text} isl-push`, () => act({ kind: 'tasks' }))
-  const footer = h('div', { class: 'isl-footer' }, tasks)
-  let requestKey = '', request: View[] = [], stepsKey = ''
+  let stepsKey = ''
   return (view: IslandShown, now: number): View[] => {
-    if (host === 'desk' && ['waiting', 'asking', 'coach', 'resolved', 'done', 'error', 'pending'].includes(view.form)) {
-      const content = view.form === 'waiting' ? [view.task, view.permission]
-        : view.form === 'asking' ? view.question : view.form === 'coach' ? null : view.detail || view.label
-      const key = JSON.stringify([localeRevision(), view.form, content])
-      if (key !== requestKey) {
-        requestKey = key
-        if (view.form === 'waiting') request = permissionPanel(view, act)
-        else if (view.form === 'asking') request = questionPanel(view, act)
-        else if (view.form === 'coach') request = coachPanel(act, shortcut)
-        else request = desktopPanel([h('div', { class: 'isl-title', text: view.detail || view.label })], [
-          button(t('desk.interaction.open'), 'isl-btn-blue', () => act({ kind: 'open' })),
-          button(t('desk.interaction.continue'), ROLE.text, () => act({ kind: 'input' })),
-        ])
-      }
-      return request
-    }
     const section = background.update(view, now)
-    if (host === 'desk') {
-      body.setAttribute('aria-label', t('island-dom.content'))
-      tasks.textContent = t('island-dom.view.full.activity')
-      reconcileChildren(body, section ? [section] : [])
-      return [body, footer]
-    }
     const nextSteps = JSON.stringify(view.recent)
     if (nextSteps !== stepsKey) {
       stepsKey = nextSteps
@@ -229,7 +175,7 @@ function createBarIsland(act: IslandAct) {
   const panel = h('div', { class: 'isl-panel' })
   const clip = h('div', { class: 'isl-clip' }, row, panel)
   const el = h('div', { class: 'isl', 'data-host': 'bar' }, clip, face)
-  const parts = createPanelParts('bar', act, '')
+  const parts = createPanelParts(act)
   const tail = createTailCell()
   const inner = h('div', { class: 'isl-in' })
   let signature = { panel: '', row: '' }
@@ -297,21 +243,27 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   const surface = h('section', { class: 'isl-surface', 'aria-label': t('island-dom.content') })
   const peek = h('div', { class: 'isl-peek' })
   const el = h('div', { class: 'isl', 'data-host': 'desk', 'data-interaction': 'anchored' }, avatar, peek, surface)
-  const parts = createPanelParts('desk', act, shortcut)
   const tail = createTailCell(true)
   tail.el.addEventListener('click', () => act({ kind: 'panel', panel: 'background' }))
   const peekOpen = h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) })
-  const label = h('b', { class: 'isl-label' }), target = h('span', { class: 'isl-more' })
-  const copy = h('div', { class: 'isl-copy' }, label)
-  const openWindow = button('', ROLE.text, () => act({ kind: 'open' }))
-  const collapse = button('', ROLE.text, () => act({ kind: 'dismiss' }))
-  const header = h('header', { class: 'isl-surface-head' }, copy, openWindow, collapse)
-  const noticeLabel = h('span'), noticeButton = button('', ROLE.text, () => act({ kind: 'panel', panel: 'request' }))
-  const notice = h('div', { class: 'isl-notice', role: 'status' }, noticeLabel, noticeButton)
-  const runningLabel = h('span'), runningStop = button('', ROLE.secondary, () => act({ kind: 'cancel' }))
-  const running = h('div', { class: 'isl-running' }, runningLabel, runningStop)
+  const card = createDeskCardParts(act, shortcut)
+  const strips = createInputStrips(act, card.tools)
   let inputKey = '', inputParts: View[] = []
   let signature = ''
+  /** The clocks shown (the peek's, the working strip's) tick every second without a redraw. */
+  const tick = (now: number) => {
+    for (const clock of el.querySelectorAll<HTMLElement>('[data-since]')) clock.textContent = formatElapsed(now - Number(clock.dataset.since))
+  }
+  /** The input and files dragged over it: no head, the field first; ↗ and × sit on the strip above it, or in the corner. */
+  function inputSurface(view: IslandShown, now: number): HTMLElement[] {
+    if (!input) return []
+    const key = JSON.stringify([localeRevision(), view.form, view.count, view.files, view.images, view.busy, view.error, view.steering, view.targetLabel])
+    if (key !== inputKey) { inputKey = key; inputParts = input.panel(view) }
+    const parts = inputParts.filter((node): node is HTMLElement => node instanceof HTMLElement)
+    if (view.form === 'drop') return parts
+    card.closeWith({ kind: 'dismiss' })
+    return [...strips.update(view, now), input.entry, ...parts]
+  }
   function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
     const open = Boolean(view.desktopOpen ?? (view.form === 'input' || pinned)) && !view.dragging
     const wide = view.form === 'input'
@@ -324,11 +276,7 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     surface.hidden = !open
     peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count && !view.background?.done
     const next = JSON.stringify([view, open, localeRevision()])
-    if (next === signature) {
-      const clock = peek.querySelector('.isl-time')
-      if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
-      return
-    }
+    if (next === signature) return tick(now)
     signature = next
     const cell = tail.update(view)
     cell?.setAttribute('aria-expanded', String(open && view.desktopPanel === 'background'))
@@ -336,34 +284,98 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     reconcileChildren(peek, [peekOpen, ...(cell ? [cell] : [])])
     if (!open) { surface.inert = true; return }
     surface.inert = false
-    const title = view.desktopPanel === 'background' ? t('tasks-page.background.tasks')
-      : wide ? t(view.steering ? 'desk.interaction.supplement' : 'desk.ask.viva') : view.label
-    if (label.textContent !== title) label.textContent = title
-    if (target.textContent !== (view.targetLabel ?? '')) target.textContent = view.targetLabel ?? ''
-    target.title = view.targetLabel ?? ''
-    reconcileChildren(copy, view.targetLabel ? [label, target] : [label])
-    openWindow.textContent = t('desk.interaction.open')
-    collapse.textContent = t('desk.interaction.collapse')
-    noticeLabel.textContent = view.waitingNotice?.label ?? ''
-    noticeButton.textContent = t('desk.interaction.view')
-    runningLabel.textContent = t('desk.interaction.running')
-    runningStop.textContent = t('desk.interaction.stop.current')
-    let content: View[]
-    if ((wide || view.form === 'drop') && input) {
-      const key = JSON.stringify([localeRevision(), view.form, view.count, view.files, view.images, view.busy, view.error, view.steering])
-      if (key !== inputKey) { inputKey = key; inputParts = input.panel(view) }
-      content = inputParts
-    } else content = parts(view, now)
+    card.name()
+    // The 后台 list is the panel the user opened, whatever the conversation's own form is meanwhile.
+    const cardView = view.desktopPanel === 'background' ? { ...view, form: 'background' } : view
+    const shown = wide || view.form === 'drop' ? null : deskCard(cardView, { shortcut })
+    const content = shown ? card.draw(shown, view, now) : inputSurface(view, now)
     if (wide && input) input.sync(view)
     // Detaching a focused textarea ends native IME composition, even if its value and caret are restored.
-    reconcileChildren(surface, [
-      header,
-      ...[view.waitingNotice ? notice : null, wide && view.steering ? running : null, wide && input ? input.entry : null]
-        .filter((node): node is NonNullable<typeof node> => Boolean(node)),
-      ...content.filter((node): node is HTMLElement => node instanceof HTMLElement),
-    ])
+    reconcileChildren(surface, content)
   }
   return { el, update, setPointer(on: boolean) { el.dataset.hover = String(on) } }
+}
+
+/**
+ * A card's head (state dot, state, a few words, ↗ and ×), body and buttons (island-desk-card.ts). Its nodes are kept
+ * while the card says the same, so a button held down when the view changes is the one let go.
+ */
+function createDeskCardParts(act: IslandAct, shortcut: string) {
+  let close: DeskAction = { kind: 'dismiss' }
+  const open = iconButton('external', () => act({ kind: 'open' }))
+  const fold = iconButton('close', () => act(close))
+  const tools = h('span', { class: 'isl-tools-desk' })
+  const dot = h('span', { class: 'isl-dot', 'aria-hidden': 'true' })
+  const label = h('b', { class: 'isl-label' }), meta = h('span', { class: 'isl-more' })
+  const header = h('header', { class: 'isl-surface-head' })
+  const body = h('div', { class: 'isl-body', tabindex: '0' })
+  const footer = h('div', { class: 'isl-footer' })
+  const background = createBackgroundSection(act, { desk: true })
+  let key = '', parts: Array<HTMLElement | null> = [], buttons: HTMLElement[] = []
+  return {
+    tools,
+    closeWith(next: DeskAction) { close = next; reconcileChildren(tools, [open, fold]) },
+    /** Names the icons and the body in the language now shown. */
+    name() {
+      nameIcon(open, t('desk.interaction.open'))
+      nameIcon(fold, t('desk-card.close'))
+      body.setAttribute('aria-label', t('island-dom.content'))
+    },
+    draw(card: DeskCard, view: IslandShown, now: number): HTMLElement[] {
+      const next = JSON.stringify([localeRevision(), shortcut, card])
+      if (next !== key) {
+        key = next
+        parts = card.body.map(part => part.kind === 'background' ? null : cardPart(part, act))
+        buttons = card.actions.map(button => cardButton(button, act))
+      }
+      close = card.close
+      if (label.textContent !== card.label) label.textContent = card.label
+      if (meta.textContent !== card.meta) { meta.textContent = card.meta; meta.title = card.meta }
+      reconcileChildren(header, [dot, label, meta, ...(card.openIcon ? [open] : []), fold])
+      const section = card.body.some(part => part.kind === 'background') ? background.update(view, now) : null
+      const content = parts.map(part => part ?? section).filter((part): part is HTMLElement => Boolean(part))
+      reconcileChildren(body, content)
+      reconcileChildren(footer, buttons)
+      return [header, ...(content.length ? [body] : []), ...(buttons.length ? [footer] : [])]
+    },
+  }
+}
+
+/**
+ * Above the input: what waits on the user (orange), or what the agent does now while the input adds to it. The
+ * first strip carries ↗ and ×; with none, they sit in the field's corner.
+ */
+function createInputStrips(act: IslandAct, tools: HTMLElement) {
+  const noticeLabel = h('span', { class: 'isl-strip-text' }), noticeButton = button('', ROLE.text, () => act({ kind: 'panel', panel: 'request' }))
+  const notice = h('div', { class: 'isl-notice', role: 'status' }, noticeLabel, noticeButton)
+  const pulse = h('span', { class: 'isl-pulse', 'aria-hidden': 'true' })
+  const runningLabel = h('span', { class: 'isl-strip-text' }), runningTime = h('span', { class: 'isl-time' })
+  const runningStop = button('', ROLE.text, () => act({ kind: 'cancel' }))
+  const running = h('div', { class: 'isl-running' }, pulse, runningLabel, runningTime, runningStop)
+  return {
+    update(view: IslandShown, now: number): HTMLElement[] {
+      const waiting = view.waitingNotice
+      const what = waiting?.permission?.title ?? waiting?.question?.text
+      noticeLabel.textContent = waiting ? (what ? t('desk-card.notice', { label: waiting.label, what }) : waiting.label) : ''
+      noticeLabel.title = noticeLabel.textContent
+      noticeButton.textContent = t('desk.interaction.view')
+      runningLabel.textContent = view.action || t('desk.interaction.running')
+      runningLabel.title = runningLabel.textContent
+      if (view.startedAt) {
+        runningTime.dataset.since = String(view.startedAt)
+        runningTime.textContent = formatElapsed(now - view.startedAt)
+      } else {
+        delete runningTime.dataset.since
+        runningTime.textContent = ''
+      }
+      runningStop.textContent = t('desk.interaction.stop.current')
+      const shown = [waiting ? notice : null, view.steering ? running : null].filter((strip): strip is HTMLDivElement => Boolean(strip))
+      reconcileChildren(notice, [noticeLabel, noticeButton, ...(shown[0] === notice ? [tools] : [])])
+      reconcileChildren(running, [pulse, runningLabel, runningTime, runningStop, ...(shown[0] === running ? [tools] : [])])
+      tools.dataset.place = shown.length ? 'strip' : 'corner'
+      return shown.length ? shown : [tools]
+    },
+  }
 }
 
 export function createIsland(host: Host, act: IslandAct, { input = null as ReturnType<typeof createIslandInput> | null, shortcut = '' } = {}) {

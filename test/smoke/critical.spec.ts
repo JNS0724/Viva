@@ -165,7 +165,7 @@ test('desktop drafts retain text, real images and files through collapse and win
         bytes.set(png)
         data.items.add(new File([bytes], `large-${size}.png`, { type: 'image/png' }))
       }
-      const open = [...document.querySelectorAll<HTMLButtonElement>('.isl-surface-head button')].find(button => button.textContent === '打开 Viva')!
+      const open = document.querySelector<HTMLButtonElement>('.isl-surface button[aria-label="打开 Viva"]')!
       document.querySelector('.isl-field')!.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
       setTimeout(() => open.click(), 0)
     })

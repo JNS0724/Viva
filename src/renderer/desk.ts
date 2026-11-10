@@ -6,6 +6,7 @@ import { createIsland } from './view/island-dom.ts'
 import { createIslandInput } from './view/island-input.ts'
 import { placeDesktopIsland } from './view/desktop-layout.ts'
 import { createComposerDraftActions } from './composer-draft-actions.ts'
+import { nextRequest, requestFor, showsCoach } from './island-desk-card.ts'
 import type { DraftContent } from '../shared/composer-draft.ts'
 
 /**
@@ -121,7 +122,7 @@ function busyOf(view: { form: string }) {
 }
 
 /** What the island shows now, from what the main process said and what happens on this page. */
-function shownView() {
+function shownView(): IslandShown {
   const view = payload?.view ?? IDLE_VIEW
   const context = { desktopOpen: Boolean(payload?.expanded) || Boolean(dropping), desktopPanel: payload?.panel, targetLabel: view.target?.label }
   if (dropping) return { ...context, desktopOpen: true, form: 'drop', tone: 'done', mood: 'idle', label: t("desk.give.to.viva"), recent: [], count: dropping }
@@ -129,18 +130,44 @@ function shownView() {
   if (payload?.dragging) return { ...view, ...context, desktopOpen: false, form: 'mini', dragging: true, background: null }
   if (payload?.expanded && payload.panel === 'input') {
     return { ...context, form: 'input', tone: 'done', mood: view.mood, label: t("desk.ask.viva"), recent: [], busy: busyOf(view), steering: view.target?.working ?? view.form === 'working',
+      action: view.action, startedAt: view.startedAt,
       waitingNotice: view.form === 'waiting' || view.form === 'asking' ? view : null, files, images, error, sending }
   }
   if (payload?.expanded && payload.panel === 'background') return { ...view, ...context, form: 'background' }
-  if (payload?.expanded && payload.panel === 'request' && activeRequest) {
-    const id = requestId(activeRequest)
-    const candidates = [view, ...(view.background?.items ?? []).map((item: IslandShown) => item.permission ? { ...view, form: 'waiting', permission: item.permission, question: null } : { ...view, form: 'asking', permission: null, question: item.question })]
-    const current = candidates.find(candidate => requestId(candidate) === id)
-    return current ? { ...current, ...context } : { ...context, ...IDLE_VIEW, form: 'resolved', label: t('desk.interaction.resolved') }
+  if (payload?.expanded && payload.panel === 'request') {
+    const current = activeRequest && requestFor(view, requestId(activeRequest))
+    // Answered with none left: the card folds (takeView asked the main process to close it) to a short note.
+    return current ? { ...current, ...context } : resolvedNote(view, context)
   }
-  return { ...view, ...context, ...(payload?.form === 'mini' && !['waiting', 'asking'].includes(view.form) ? { form: 'mini' } : {}) }
+  const waits = NEEDS_USER.has(view.form)
+  if (!waits && Date.now() < resolvedUntil) return resolvedNote(view, context)
+  if (!waits && showsCoach({ ...payload, dropping: Boolean(dropping) })) {
+    return { ...context, ...IDLE_VIEW, desktopOpen: true, form: 'coach', tone: 'done', mood: view.mood, label: t('desk.viva.is.here') }
+  }
+  return { ...view, ...context, ...(payload?.form === 'mini' && !waits ? { form: 'mini' } : {}) }
 }
 const requestId = (view: IslandShown) => view.permission?.requestId ?? view.question?.questionId ?? null
+/** Forms in which the island shows what waits on the user. */
+const NEEDS_USER = new Set(['waiting', 'asking'])
+/** How long the peek says a request was handled, once its card has folded. */
+const RESOLVED_NOTE_MS = 2_000
+let resolvedUntil = 0
+const resolvedNote = (view: IslandShown, context: object) => ({ ...context, ...IDLE_VIEW, desktopOpen: false, form: 'resolved', tone: 'done',
+  label: t('desk.interaction.resolved'), background: view.background ?? null })
+
+/**
+ * The request card follows what it shows: once answered (here or in the window) it moves to the next request that
+ * waits, or, with none left, asks the main process to fold it and says for a moment that it was handled.
+ */
+function followRequest(next: Payload) {
+  if (!next.expanded || next.panel !== 'request' || !activeRequest || !next.view) return
+  const following = nextRequest(next.view, requestId(activeRequest))
+  if (following === null) return
+  if (following) { activeRequest = following; return }
+  activeRequest = null
+  resolvedUntil = Date.now() + RESOLVED_NOTE_MS
+  api.act({ kind: 'dismiss' })
+}
 
 /** The 后台 list, opened by a click on the count at the island's tail; it closes when no task is left. */
 
@@ -175,6 +202,7 @@ let readyVersion = -1
 const takeView = (next: Payload) => {
   if (next.expanded && next.panel === 'request' && (!payload?.expanded || payload.panel !== 'request')) activeRequest = next.view ?? null
   payload = next
+  followRequest(next)
   if (next.view?.target?.key) draftActions?.expect(next.view.target.key)
   Object.assign(stage.dataset, { align: next.align, dir: next.dir, dragging: String(Boolean(next.dragging)) })
   island.el.dataset.dir = next.dir

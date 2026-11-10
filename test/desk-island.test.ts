@@ -431,6 +431,25 @@ test('the first time the cat rests on the desktop it says what it can do, until 
   dragged.destroy()
 })
 
+test('a click on the cat opens what its state needs: the request, how it ended, what is missing, or the input', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  desk.setView(view('idle'))
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  const opened = (form: string) => {
+    desk.setView(view(form))
+    desk.togglePanel()
+    const { panel } = win.lastView() as unknown as { panel: string }
+    desk.closeInput()
+    return panel
+  }
+  assert.deepEqual(['waiting', 'asking', 'done', 'error', 'pending', 'idle'].map(opened),
+    ['request', 'request', 'status', 'status', 'status', 'input'], 'not connected, the card says what is missing rather than a field that cannot be typed in')
+  desk.destroy()
+})
+
 test('the right-click menu: ask, open, stop only while working, put back, hide for now or for good', () => {
   const calls: string[] = []
   const make = (working: boolean) => deskMenuTemplate({

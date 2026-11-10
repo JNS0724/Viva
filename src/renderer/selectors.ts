@@ -235,6 +235,9 @@ export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'mes
 /** What waits on the user is headed alike wherever it shows: the thread's card, the island, the status (prompt-card.js). */
 export let PROMPT_HEADS = Object.freeze({ permission: t("selectors.needs.your.approval"), question: t("selectors.needs.your.answer"), secret: t("selectors.needs.your.input") })
 
+/** What keeps the agent from connecting, in a few words (the status island, the desktop card). */
+export const setupProblem = (info: Pick<AgentInfo, 'problem'>): string => (info.problem === 'no-dsh' ? t("selectors.dsh.not.installed") : t("selectors.set.up.a.model"))
+
 /** Copy and tone for the avatar/status island. */
 export function statusView(state: State, now = Date.now()): { tone: string, label: string, event: string } {
   if (state.phase === 'waiting') return { tone: 'waiting', label: PROMPT_HEADS.permission, event: truncate(state.permission?.title, EVENT_LIMIT) }
@@ -242,7 +245,7 @@ export function statusView(state: State, now = Date.now()): { tone: string, labe
   if (state.phase === 'working') return { tone: 'working', label: t("island-view.working"), event: workingEvent(state, now) }
   if (state.phase === 'error') return { tone: 'error', label: t("island-view.error"), event: truncate(state.error, EVENT_LIMIT) }
   if (state.info.mode === 'connecting') return { tone: 'pending', label: t("island-view.connecting"), event: 'DEEPSEEK HARNESS' }
-  if (state.info.mode === 'setup') return { tone: 'pending', label: t("island-view.not.connected"), event: state.info.problem === 'no-dsh' ? t("selectors.dsh.not.installed") : t("selectors.set.up.a.model") }
+  if (state.info.mode === 'setup') return { tone: 'pending', label: t("island-view.not.connected"), event: setupProblem(state.info) }
   if (state.lastReceipt) {
     const problem = turnProblem(state.lastReceipt.stopReason)
     if (problem) return { tone: 'error', label: t('island-view.incomplete'), event: problem }
