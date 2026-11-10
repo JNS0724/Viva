@@ -107,6 +107,7 @@ export const testLevels = {
     'plugins-state',
     'preferences',
     'prompt-card',
+    'proposal-draft',
     'proposal-state',
     'question-desk',
     'questions',

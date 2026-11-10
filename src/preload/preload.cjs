@@ -142,7 +142,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   getPluginSource: () => ipcRenderer.invoke('plugins:source'),
   setPluginSource: (registry, token) => ipcRenderer.invoke('plugins:set-source', registry, token),
   listSchedules: () => ipcRenderer.invoke('schedules:list'),
-  acceptSchedule: (proposalId) => ipcRenderer.invoke('schedules:accept', proposalId),
+  acceptSchedule: (proposalId, edits) => (edits ? ipcRenderer.invoke('schedules:accept', proposalId, edits) : ipcRenderer.invoke('schedules:accept', proposalId)),
   declineSchedule: (proposalId) => ipcRenderer.invoke('schedules:decline', proposalId),
   pauseSchedule: (id, paused) => ipcRenderer.invoke('schedules:pause', id, paused),
   deleteSchedule: (id) => ipcRenderer.invoke('schedules:delete', id),

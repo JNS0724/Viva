@@ -2,7 +2,7 @@ import type { ConversationPayloads } from './conversation-types.ts'
 import type { KeptTask } from '../shared/ipc-results.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
-import type { ProposalCard } from './proposal-types.ts'
+import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
 import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from './capability-types.ts'
 
 type Info = AgentInfo
@@ -140,9 +140,10 @@ export interface ActionPayloads extends ConversationPayloads {
   import_failed: { flow: number, message: string | null }
   import_close: {}
   schedule_proposed: { proposal: ProposalCard['proposal'] }
-  proposal_busy: { id: string }
-  proposal_settled: { id: string, status: ProposalCard['status'], accepted?: ProposalCard['accepted'] }
-  proposal_failed: { id: string, message: string }
+  proposal_editing: { id: string, editing: boolean }
+  proposal_busy: { id: string, draft?: ProposalDraft }
+  proposal_settled: { id: string, status: ProposalCard['status'], accepted?: ProposalCard['accepted'], proposal?: ProposalCard['proposal'] }
+  proposal_failed: { id: string, message: string, draft?: ProposalDraft }
   resume_ask: { stage: string, segmentId: string, cwd?: string | null }
   resume_dismiss: {}
   review_loading: {}

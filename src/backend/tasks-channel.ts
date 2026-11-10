@@ -35,12 +35,19 @@ function ruleOf(value: unknown): Record<string, unknown> {
   return { kind: rule.kind, [String(rule.kind)]: rule[String(rule.kind)] }
 }
 
+/**
+ * A schedule's name, what it does and its rule, checked: as the model proposes one, and as the user changed it on the
+ * proposal's card before saying yes (schedules.ts accept).
+ */
+export function parseScheduleWords(value: unknown): { title: string, prompt: string, rule: Record<string, unknown> } {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  if (!isText(raw.title, MAX_TITLE_CHARS) || !isText(raw.prompt, MAX_MESSAGE_CHARS)) throw new Error(t('main.tasks-channel.invalid.schedule'))
+  return { title: raw.title.trim(), prompt: raw.prompt.trim(), rule: ruleOf(raw.rule) }
+}
+
 function parseScheduleAction(raw: Record<string, unknown>): ScheduleAction {
   if (raw.op === 'schedule_list') return { op: 'schedule_list' }
-  if (raw.op === 'schedule_create') {
-    if (!isText(raw.title, MAX_TITLE_CHARS) || !isText(raw.prompt, MAX_MESSAGE_CHARS)) throw new Error(t('main.tasks-channel.invalid.schedule'))
-    return { op: 'schedule_create', title: raw.title.trim(), prompt: raw.prompt.trim(), rule: ruleOf(raw.rule) }
-  }
+  if (raw.op === 'schedule_create') return { op: 'schedule_create', ...parseScheduleWords(raw) }
   if (!isText(raw.id, MAX_ID_CHARS)) throw new Error(t('main.tasks-channel.invalid.schedule'))
   if (raw.op === 'schedule_delete') return { op: 'schedule_delete', id: raw.id }
   const changes = {
