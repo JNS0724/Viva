@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryDb } from '../plugins/memory/lib/store.ts'
-import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
+import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins, ROUTING_PERSONA } from '../src/backend/app-plugins.ts'
 import { ROOT } from './fixtures/dsh-harness.js'
 
 /** The app's plugin list: what it puts in the profile, and what it leaves out and why. */
@@ -31,10 +31,9 @@ test('the plugins shipped with the app all pass, each with its data file under u
   assert.deepEqual(plugins.map((plugin) => [plugin.name, plugin.config]), [
     ['viva-tasks', {}],
     ['viva-history', {}],
-    ['viva-stream', {}],
+    ['viva-routing', { ...ROUTING_PERSONA }],
     ['viva-memory', { file: path.join('/data', 'memory.db') }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
-    ['viva-policy', {}],
     ['viva-questions', {}],
     ['viva-config', {}],
     ['viva-steer', {}],
@@ -48,15 +47,23 @@ test('the plugins shipped with the app all pass, each with its data file under u
   const permission = auto.plugins.find((plugin) => plugin.name === 'viva-permission')!
   assert.deepEqual(permission.config, { preset: 'auto' })
   assert.deepEqual(permission.stock!.map((entry) => entry.name), ['@deepseek-ai/dsh-experimental-auto-review'])
+  // Tasks and schedules' runs do the work under the profile's persona.
   assert.match(PERSONA.prefix, /个人工作助手/)
   assert.match(PERSONA.prefix, /ask_user_question/, 'the model is told when to ask instead of guessing')
   assert.match(PERSONA.prefix, /memory_remember/, 'and to keep what the user told it')
-  assert.match(PERSONA.prefix, /必须先用 list_background_tasks/)
-  assert.match(PERSONA.prefix, /它们为空不能证明 Viva 没有后台任务/)
-  assert.match(PERSONA.prefix, /后台任务都归你管，不论它是在哪个话题里开的/, 'the main conversation owns every task')
-  assert.match(PERSONA.prefix, /不论你此刻在聊什么，都要把结果反馈给用户/)
-  assert.match(PERSONA.prefix, /不能回答没有任务/)
+  assert.doesNotMatch(PERSONA.prefix, /commit_route|【插话】|后台任务都归你管/, 'routing, interjections and reports are the main conversation\'s')
   assert.doesNotMatch(PERSONA.prefix, /coding agent/)
+  // The main conversation routes each request (viva-routing gives it this persona instead).
+  assert.match(ROUTING_PERSONA.prefix, /个人工作助手/)
+  assert.match(ROUTING_PERSONA.prefix, /必须调用一次 commit_route/)
+  assert.match(ROUTING_PERSONA.prefix, /【插话】/)
+  assert.match(ROUTING_PERSONA.prefix, /必须先用 list_background_tasks/)
+  assert.match(ROUTING_PERSONA.prefix, /它们为空不能证明 Viva 没有后台任务/)
+  assert.match(ROUTING_PERSONA.prefix, /后台任务都归你管，不论它是在哪个话题里开的/, 'the main conversation owns every task')
+  assert.match(ROUTING_PERSONA.prefix, /不论你此刻在聊什么，都要把结果反馈给用户/)
+  assert.match(ROUTING_PERSONA.prefix, /不能回答没有任务/)
+  assert.doesNotMatch(ROUTING_PERSONA.prefix, /ask_user_question|start_background_task/, 'it asks through clarify, hands work over through commit_route')
+  assert.equal(ROUTING_PERSONA.suffix, PERSONA.suffix)
 })
 
 test('a plugin with another contract version, another dsh, or no manifest is left out with the reason', (t) => {

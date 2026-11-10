@@ -26,6 +26,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { z as zod } from 'zod'
+import { withoutHeaders } from '../../src/shared/request-routing/header.ts'
 import { dateLine } from './lib/context.ts'
 import { extractTurn } from './lib/extract.ts'
 import { contextForTurn } from './lib/inject.ts'
@@ -82,10 +83,13 @@ function turnEvents(agent: Agent, turn: number): LoggedEvent[] {
   return events.reverse()
 }
 
-/** What the user typed this turn: entered messages from the session log, then the proposed ones. */
+/**
+ * What the user typed this turn: entered messages from the session log, then the proposed ones; the main
+ * conversation's request headers (src/shared/request-routing/header.ts) are the app's, not the user's words.
+ */
 function userWords(agent: Agent, turn: number, proposed: readonly Message[]) {
   const entered = turnEvents(agent, turn).filter((event) => event.type === 'user/message').map((event) => event.data)
-  return [...entered, ...proposed].filter(isFromUser).map(textOf).join('\n')
+  return [...entered, ...proposed].filter(isFromUser).map((message) => withoutHeaders(textOf(message))).join('\n')
 }
 
 const ASK_TOOL = 'ask_user_question'

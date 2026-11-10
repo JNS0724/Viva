@@ -15,8 +15,7 @@ import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { openMemoryDb } from '../../plugins/memory/lib/store.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { registerLanguageIpc } from './language-ipc.ts'
-import { APP_PLUGINS, DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
-import { fastLaneEnabled, routingEnabled, routingPersona, routingPlugins } from './routing-prototype.ts'
+import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
 import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
 import { DSH_PROFILE, resolveConfig } from './config.ts'
 import { createAcpBridge, switchingMessage } from './acp-bridge.ts'
@@ -42,7 +41,9 @@ import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts
 import { createReportRecords } from './report-records.ts'
 import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
-import type { ScheduleAction, TaskAction } from './tasks-channel.ts'
+import type { ScheduleAction } from './tasks-channel.ts'
+import { createRequestStore } from './request-store.ts'
+import { createRequestRuntime, type RequestRuntime } from './request-runtime.ts'
 import { createTaskStore } from './task-store.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
@@ -144,6 +145,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let taskStore: ReturnType<typeof createTaskStore> | null = null
   /** The background tasks, their one writer (task-runtime.ts); set once the history is open. */
   let taskRuntime: TaskRuntime | null = null
+  /** The main conversation's requests and their decisions (request-runtime.ts); set once the history is open. */
+  let requests!: RequestRuntime
   /** 动态's items (feed-store.ts): what schedules brought; set once the personal stores are open. */
   let feed: FeedStore | null = null
   let schedules: Schedules | null = null
@@ -306,14 +309,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     // With a company registry plugins cannot be kept to, dsh gets a pnpm that installs nothing (pnpm-launcher.ts).
     const refuse = () => { pnpmCommand = refusingLauncher({ dir: path.join(userData, 'bin'), message: t('main.plugin-source.unpinned') }) }
     try {
-      // PROTOTYPE: VIVA_ROUTING=1 swaps viva-stream for the gated viva-routing and adds its persona rules (routing-prototype.ts).
-      const routing = routingEnabled()
-      const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(), plugins: routing ? routingPlugins(APP_PLUGINS, fastLaneEnabled()) : APP_PLUGINS })
+      const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow() })
       pluginProblems = problems
       problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
       const dir = ensureDshProfile({
-        dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: routing ? routingPersona(PERSONA) : PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
+        dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
       })
       const found = registry ? scopesOf(dir, pnpmCommand) : []
       if (found) scopes = found
@@ -389,7 +390,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   function createBridge(config: Config, cwd: string, lifetime: DshLifetime) {
     return createAcpBridge({
       prewarmSessions: true,
-      routeRequests: routingEnabled(),
       dshBin: config.dshBin,
       nodeBin: config.nodeBin,
       ...prepareProfile(config),
@@ -400,7 +400,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       historySearch: (query, range) => (historyDb ? historyRecall(historyDb).search(query, range) : []),
       historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
       taskRead: (request, sessionId) => requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
-      taskAct: (request, sessionId) => actOnTask(request, sessionId),
+      taskAct: (request, sessionId) => actOnSchedule(request, sessionId),
+      routing: { receive: (request) => requests.receive(request), decide: (decision) => requests.decide(decision), fail: (failure) => requests.fail(failure), noteFast: (outcome) => requests.noteFast(outcome) },
       conversationContext: sessionId => {
         const context = sessions.context()
         return context.sessionId === sessionId ? context : { conversationId: null, sessionId }
@@ -429,6 +430,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
         emitToRenderer(event)
+        if (event.type === 'turn_end' || event.type === 'error') endRequests(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended' })
         if (event.type === 'error') reportTurnMemories()
         return undefined
@@ -437,22 +439,26 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     })
   }
 
-  /**
-   * The agent of the conversation on screen starting, stopping or messaging a task (viva-tasks). A task's own session
-   * may not; and only a task the conversation could list (its working folder) can be stopped or messaged.
-   */
-  async function actOnTask(request: TaskAction, sessionId: string) {
+  /** The agent of the conversation on screen changing schedules (viva-tasks); a task's own session may not. */
+  async function actOnSchedule(request: ScheduleAction, sessionId: string) {
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
-    if (request.op.startsWith('schedule_')) {
-      if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-      return schedules.act(request as ScheduleAction, sessions.current().id, workDirNow() ?? '')
+    return requireSchedules().act(request, sessions.current().id, workDirNow() ?? '')
+  }
+
+  /**
+   * A turn of the main conversation ended, or ended in an error: the requests it left undecided fail, and the user is
+   * told, unless they stopped it themselves.
+   */
+  function endRequests(event: Record<string, unknown>) {
+    const sessionId = dsh.current?.currentSession()
+    if (!sessionId) return
+    const reason = event.type === 'error' ? 'turn_error' : event.stopReason === 'cancelled' ? 'cancelled' : 'unrouted'
+    try {
+      const failed = requests.endTurn({ sessionId, reason })
+      if (failed.length && reason !== 'cancelled') emitToRenderer({ type: 'error', message: t('main.requests.not.routed'), context: sessions.context() })
+    } catch (err) {
+      console.error('[requests] could not end the turn\'s requests:', err instanceof Error ? err.message : String(err))
     }
-    const tasks = requireTasks().agent
-    if (request.op !== 'start' && request.op !== 'stop' && request.op !== 'message') throw new Error(t('main.task-registry.unknown.task.query.operation'))
-    if (request.op === 'start') return tasks.start(request.brief)
-    tasks.query({ op: 'get', taskId: request.taskId }, { cwd: workDirNow() ?? '' })
-    if (request.op === 'stop') return tasks.stop(request.taskId)
-    return tasks.message(request.taskId, request.text)
   }
 
   function requireSchedules(): Schedules {
@@ -499,7 +505,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const context = sessions.context()
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task', context })
-      agent.prompt(note).catch((err: Error) => {
+      agent.prompt(note, [], { request: false }).catch((err: Error) => {
         if (dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
         emitToRenderer({ type: 'error', message: err.message, context })
@@ -923,6 +929,21 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
+    // The main conversation's requests: each decision's task actions go to the task runtime; only tasks of the
+    // request's working folder are stopped or messaged.
+    const tasks = taskRuntime.agent
+    const visible = (taskId: string, cwd: string | null) => { tasks.query({ op: 'get', taskId }, { cwd: cwd ?? '' }) }
+    requests = createRequestRuntime({
+      store: createRequestStore({ db: appDb.db }),
+      apply: applyChange,
+      tasks: {
+        start: (brief) => tasks.start(brief),
+        message: async (taskId, text, cwd) => { visible(taskId, cwd); return tasks.message(taskId, text) },
+        stop: async (taskId, cwd) => { visible(taskId, cwd); return tasks.stop(taskId) },
+      },
+    })
+    const recovered = requests.recover()
+    if (recovered.uncertain) console.error(`[requests] ${recovered.uncertain} task action(s) were left without a receipt when Viva stopped; they are not done again`)
   }
 
   /** Opens the stores and registers the backend's channels, before the window loads. */

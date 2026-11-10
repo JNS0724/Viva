@@ -5,26 +5,26 @@
     {
       "en": "README.md",
       "zh": "README.zh-CN.md",
-      "enHash": "8b39a6362bd2a60f5525e875414e978e369e6b37d4fe64d9a3c066dd83440f4e",
-      "zhHash": "b67962f61267778239cb9757efc7670b089e2db461a49c9bcae683a04545789b"
+      "enHash": "b6b6756c7205960bdc79438c5a3d46bb1b572dfff74beb5c8e42bb7aa54ca2cf",
+      "zhHash": "9da2c293b880a5a951839ac1f6ff5bcc7dc97917ede346b151d18257d5a842ef"
     },
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "c403df83ac25de3c01755254605682179102a828df695953cd669e4aed93785a",
-      "zhHash": "a71646dd14896ffd7ff0a26bc01890c125e30930cec554a5bb80f9a6516a1daf"
+      "enHash": "f5cc48d7a888d8b538339074c39eb1be98d553493e5e8aff223bf8ab2a6d676d",
+      "zhHash": "ece34300b8474b2ce842c02ee954f25c408eafc78e29d3bb2c34d2158fee863d"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "25e8a20483dcc5145cad7040797903a9a1735795c7f462ea1bf9a302ea97faad",
-      "zhHash": "bd59a20406feeb5e8dc69ad005a01de10f45adf784af3e865b74cbd90d589325"
+      "enHash": "0ceb15d15c8cac5acd95c9f8b2b794c2d67b01140cdd9a1a95be7b368dae13de",
+      "zhHash": "5f1739430111095bb4bd4b95e46fbd2aec169f6c24774081e59dd26f566dd38b"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
-      "enHash": "e546d416009631789e0c2c79c46a47662a6beab3ec780d10f300686ee6f9b8f5",
-      "zhHash": "954f24cd0b6a4d111282fca07b876ba4671f0ddcafdccccc918c124cbfd3a1eb"
+      "enHash": "e55c6d40fa5261567f3426bf72371239df84f1c1b0d7370c1c36bd3522fd48c5",
+      "zhHash": "03303e1ad21979c77d1293274e27600b98acbdacdb12dc8757a3204b215a45e7"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -71,8 +71,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "a33539e3c532213af74dd3f91441f1a84052716ae2e0806dda10d60bb795c9b1",
-      "zhHash": "cef25e9af41463310f9d120cfa3ad25d1dcc52d3dc85b24e1c4b4ce5e26c08ae"
+      "enHash": "3636015bd67daad8183545bf236b7efe1ee64c328971be6c01b571dab5c967e7",
+      "zhHash": "18655581f1707f8454e41654ab68f4e49f8b3b5411c77a4e45b3b27790130efa"
     },
     {
       "en": "docs/architecture-health.md",
@@ -83,14 +83,14 @@
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "afc12a355ca65b1d41d7bd2a5d445e0193ef3b6754b282d1c4bb0b79d0ca98d7",
-      "zhHash": "ff3e270dfe180620a749740439ad3d39373b089f775eacd086d5a9bcdca119ad"
+      "enHash": "50dc19ff4a1ae4188f2601cfc870e47fbe75385761d002bbc5f8288bf25d69a8",
+      "zhHash": "b0819d887da824e7446819c0d69b5b24029ece3797d4214b5751d21a0518fbb4"
     },
     {
       "en": "docs/agent-routing-feasibility.md",
       "zh": "docs/agent-routing-feasibility.zh-CN.md",
-      "enHash": "e597695cc4eb3d8b5678d7ff9f66fe3cc41a2b6ae9a883e3f81fe282459d3bcb",
-      "zhHash": "cacf1f1ab014fe8cda9ccde9b0e7679a536ae36be539ffb9db5e929d244cf526"
+      "enHash": "95d302b21047b1dfc56921b654ebb151d291fc1c07b7529d28b427297c231e20",
+      "zhHash": "212aeb43f018a1137622c19ce67dab8e86411e3fc381456398a45b374bbcee66"
     }
   ],
   "bilingual": [

@@ -12,13 +12,15 @@ const committedOutput = (value: unknown): value is CommittedOutput => {
   })
 }
 
-/** Source selection belongs to a prompt operation, never a reusable session flag. */
-export function createAssistantStream({ send, emit, timeoutMs = 1000, allowAcpFallback = true }: {
+/**
+ * The app's side of the stream contract (plugins/routing/lib/assistant-stream.ts): what a prompt operation shows
+ * comes only from the plugin, which decides what may be shown (the main agent's routing steps are not). ACP's copy of
+ * the text is never replayed; an operation whose output the plugin did not confirm ends in an error.
+ */
+export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
   timeoutMs?: number,
-  /** Disable raw ACP replay when only the native channel can authorize visible output. */
-  allowAcpFallback?: boolean,
 }) {
   let ready = false
   const instance = randomUUID()
@@ -27,13 +29,13 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000, allowAcpFa
     id: string, sessionId: string, live: boolean
     active: Set<string>, keys: Set<string>
     settled: Map<string, Array<{ type: string, text?: string }>>
-    fallback: any[], closed: Map<string, Set<number>>
+    closed: Map<string, Set<number>>
     finalReply?: boolean, committed?: CommittedOutput[]
     resolve?: (live: boolean) => void, flushed?: (ok: boolean) => void
   }
   const operations = new Map<string, Operation>()
   const begin = async (sessionId: string) => {
-    const operation: Operation = { id: `${instance}:${++sequence}`, sessionId, live: false, finalReply: false, active: new Set(), keys: new Set(), settled: new Map(), fallback: [], closed: new Map() }
+    const operation: Operation = { id: `${instance}:${++sequence}`, sessionId, live: false, finalReply: false, active: new Set(), keys: new Set(), settled: new Map(), closed: new Map() }
     operations.set(sessionId, operation)
     if (ready) {
       operation.live = await new Promise<boolean>(resolve => {
@@ -90,19 +92,12 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000, allowAcpFa
     suppress: (sessionId: string, update: any) => {
       const operation = operations.get(sessionId)
       if (!operation) return false
-      const textUpdate = ['agent_message_chunk', 'agent_thought_chunk'].includes(update?.sessionUpdate)
-      if (textUpdate && !allowAcpFallback) return true
-      if (update?.sessionUpdate === 'tool_call') operation.finalReply = false
-      if (update?.sessionUpdate === 'agent_thought_chunk') operation.finalReply ??= false
-      if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text' && update.content.text.trim()) operation.finalReply = true
-      if (!operation.live || !textUpdate) return false
-      operation.fallback.push(update)
-      return true
+      return ['agent_message_chunk', 'agent_thought_chunk'].includes(update?.sessionUpdate)
     },
     async complete(operation: Operation) {
       if (operations.get(operation.sessionId) !== operation) return
       if (operation.live) {
-        const flushed = await new Promise<boolean>(resolve => {
+        await new Promise<boolean>(resolve => {
           const timer = setTimeout(() => { operation.flushed = undefined; resolve(false) }, timeoutMs)
           operation.flushed = ok => { clearTimeout(timer); operation.flushed = undefined; resolve(ok) }
           send({ type: 'assistant_stream_flush', version: 1, operation: operation.id })
@@ -127,25 +122,9 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000, allowAcpFa
           finish(operation)
           return operation.finalReply
         }
-        // A flush only acknowledges transport. Earlier settled thoughts cannot prove the final answer arrived.
-        const missingContent = [['agent_message_chunk', 'text'], ['agent_thought_chunk', 'reasoning']].some(([kind, type]) => {
-          const expected = operation.fallback
-            .filter(update => update.sessionUpdate === kind && update.content?.type === 'text')
-            .map(update => update.content.text).join('')
-          const actual = [...operation.keys]
-            .flatMap(key => operation.settled.get(key) ?? [])
-            .filter(block => block.type === type).map(block => block.text ?? '').join('')
-          return expected.length > 0 && expected !== actual
-        })
-        if (allowAcpFallback && (!flushed || operation.active.size || missingContent || (!operation.keys.size && operation.fallback.length))) {
-          for (const key of operation.keys) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
-          operation.active.clear()
-          for (const update of operation.fallback) emit(operation.sessionId, update)
-        }
       }
       finish(operation)
-      if (!allowAcpFallback) throw new Error(t('main.assistant-stream.output.not.confirmed'))
-      return operation.finalReply
+      throw new Error(t('main.assistant-stream.output.not.confirmed'))
     },
     close() { ready = false; for (const operation of [...operations.values()]) finish(operation) },
   }

@@ -7,6 +7,7 @@ import { createAcpBridge, failingMcpServer } from '../src/backend/acp-bridge.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { createPersonal } from '../src/backend/personal.ts'
 import { scratch } from './fixtures/scratch.js'
+import { testRequests } from './fixtures/request-routing.ts'
 
 /** The user's MCP servers through the real bridge and the fake dsh, and what the app reports after a turn. */
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -26,7 +27,7 @@ function setup(t, { now } = {}) {
 
 /** The fake dsh runs in `cwd`: it is stopped, and waited for, before the directory goes. */
 function fakeBridge({ defer }, { mcpServers, cwd }) {
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: FAKE_DSH,
     nodeBin: 'node',
     cwd,

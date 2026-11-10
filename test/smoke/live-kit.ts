@@ -232,14 +232,6 @@ export function writeWorkspace(ctx: LiveContext, rel: string, content: string): 
   return file
 }
 
-/** Writes a file outside the workspace, in this attempt's folder, and returns its full path. */
-export function writeOutside(ctx: LiveContext, name: string, content: string): string {
-  const file = path.join(ctx.outDir, 'outside', name)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, content)
-  return file
-}
-
 /** Digits as written in an answer: thousands separators and spaces dropped. */
 export const digitsOf = (text: string) => text.replace(/(?<=\d)[,，\s](?=\d)/g, '')
 

@@ -1,13 +1,14 @@
 /**
- * Live scenarios for the routing PROTOTYPE (docs/agent-routing-design.md, VIVA_ROUTING=1): the app as users get it,
- * with the main agent routing every request and tasks doing the work through the real TaskRuntime. Materials are
- * meeting notes in the workspace; what is asked is what a user asks of them. Each attempt reads the routing
- * plugin's evidence (plugins/routing) for what the main agent decided, and the workspace for what tasks produced.
- * Registered by live.ts only when VIVA_ROUTING=1.
+ * Live scenarios for request routing (docs/agent-routing-design.md §13.1): the app as users get it, the main agent
+ * routing every request and tasks doing the work through the real TaskRuntime. Materials are meeting notes in the
+ * workspace; what is asked is what a user asks of them. Each attempt reads what was decided from the app's own
+ * records (app.db's routing tables, request-store.ts) and what the main agent called from its trace (trace.db), and
+ * what tasks produced from the workspace.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { MAIN_SCOPE } from '../../plugins/routing/lib/policy.ts'
 import { ask, clip, escape, fileHolds, forgetMemories, fresh, latinShare, LIVE_TURN_MS, MEMORY_SETTLE_MS, memoriesWith, settle, writeWorkspace, type LiveContext, type LiveScenario } from './live-kit.ts'
 import { run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
 
@@ -16,22 +17,62 @@ const POLL_MS = 500
 const CARDS = `[...document.querySelectorAll('#thread .task-card')]`
 const AGENT_TEXT = `[...document.querySelectorAll('#thread .msg-agent .msg-text')].map((el) => el.textContent).join('\\n')`
 
-type Evidence = Record<string, unknown> & { type: string, at: number }
-/** What the routing plugin recorded since `since`. */
-function evidenceSince(ctx: LiveContext, since: number): Evidence[] {
-  const file = path.join(ctx.userData, 'routing-evidence.jsonl')
-  if (!fs.existsSync(file)) return []
-  return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Evidence).filter((e) => e.at >= since)
+type Action = Record<string, unknown> & { kind: string, status: string, taskId: string | null }
+type Routed = { requestId: string, sessionId: string, kind: string, status: string, failure: string | null, actions: Action[] }
+
+/** The requests received since `since`, each with its decision's actions and what became of them. */
+function routedSince(ctx: LiveContext, since: number): Routed[] {
+  const db = new DatabaseSync(path.join(ctx.userData, 'app.db'), { readOnly: true })
+  try {
+    const rows = db.prepare(`SELECT r.id, r.session_id, r.kind, r.status, r.failure, d.plan FROM routing_requests r
+      LEFT JOIN routing_decisions d ON d.request_id = r.id WHERE r.received_at >= ? ORDER BY r.received_at`).all(since) as Array<Record<string, string | null>>
+    const settled = db.prepare('SELECT idx, status, task_id FROM routing_actions WHERE request_id = ? ORDER BY idx')
+    return rows.map((row) => {
+      const planned = (row.plan ? JSON.parse(row.plan).actions : []) as Array<Record<string, unknown> & { kind: string }>
+      const done = settled.all(String(row.id)) as Array<{ status: string, task_id: string | null }>
+      return {
+        requestId: String(row.id), sessionId: String(row.session_id), kind: String(row.kind), status: String(row.status), failure: row.failure,
+        actions: planned.map((action, idx) => ({ ...action, status: done[idx]?.status ?? 'done', taskId: done[idx]?.task_id ?? (typeof action.taskId === 'string' ? action.taskId : null) })),
+      }
+    })
+  } finally { db.close() }
 }
-const committed = (evidence: Evidence[]) => evidence.filter((e) => e.type === 'route_committed' || e.type === 'fast_committed')
-const actionsOf = (evidence: Evidence[]) => committed(evidence).flatMap((e) => (e.actions as Array<Record<string, unknown>> | undefined) ?? (e.decision ? [{ kind: (e.decision as { decision: string }).decision, ...(e.decision as object) }] : []))
-const summary = (evidence: Evidence[]) => ({
-  decisions: committed(evidence).map((e) => `${e.type === 'fast_committed' ? 'fast:' : ''}${actionsOf([e]).map((a) => a.kind).join('+')}`),
-  denied: evidence.filter((e) => e.type === 'guard_denied').map((e) => e.tool),
-  tools: evidence.filter((e) => e.type === 'tool_call').map((e) => e.tool),
-  failed: evidence.filter((e) => e.type === 'route_failed' || e.type === 'fast_failed').length,
-  deferred: evidence.filter((e) => e.type === 'fast_deferred').map((e) => e.reason),
-})
+
+/** The main conversation's tool calls since `since`, from the trace (the trace plugin records each turn's steps). */
+function mainToolsSince(ctx: LiveContext, routed: readonly Routed[], since: number): string[] {
+  const sessions = [...new Set(routed.map((request) => request.sessionId))]
+  const file = path.join(ctx.userData, 'trace.db')
+  if (!sessions.length || !fs.existsSync(file)) return []
+  const db = new DatabaseSync(file, { readOnly: true })
+  try {
+    return (db.prepare(`SELECT name FROM steps WHERE kind = 'tool' AND at >= ? AND session_id IN (${sessions.map(() => '?').join(', ')}) ORDER BY at`)
+      .all(since, ...sessions) as Array<{ name: string }>).map((row) => row.name)
+  } finally { db.close() }
+}
+
+/** What the fast lane made of interjections since `since` (request.fast events: outcome, reason code, milliseconds). */
+function fastSince(ctx: LiveContext, since: number): Array<{ outcome: string, reason: string | null, ms: number }> {
+  const db = new DatabaseSync(path.join(ctx.userData, 'app.db'), { readOnly: true })
+  try {
+    return (db.prepare(`SELECT data FROM app_events WHERE kind = 'request.fast' AND at >= ? ORDER BY seq`).all(since) as Array<{ data: string }>)
+      .map((row) => JSON.parse(row.data))
+  } finally { db.close() }
+}
+
+const actionsOf = (routed: readonly Routed[]) => routed.flatMap((request) => request.actions)
+function summary(ctx: LiveContext, since: number) {
+  const routed = routedSince(ctx, since)
+  const tools = mainToolsSince(ctx, routed, since)
+  return {
+    routed,
+    decisions: routed.map((request) => (request.status === 'decided' ? request.actions.map((action) => action.kind).join('+') : `${request.status}:${request.failure}`)),
+    tools,
+    /** Calls the main agent made outside its layers (each refused before it ran). */
+    forbidden: tools.filter((tool) => !MAIN_SCOPE.includes(tool)),
+    failed: routed.filter((request) => request.status === 'failed').length,
+  }
+}
+const brief = (numbers: ReturnType<typeof summary>) => ({ decisions: numbers.decisions, tools: numbers.tools, forbidden: numbers.forbidden, failed: numbers.failed })
 /** Writes the attempt's numbers beside its screenshots, for the report. */
 const keep = (ctx: LiveContext, name: string, value: unknown) => fs.writeFileSync(path.join(ctx.outDir, `${name}.json`), JSON.stringify(value, null, 2))
 
@@ -80,10 +121,41 @@ const cardStatus = (ctx: LiveContext, id: string): Promise<string | null> => run
 
 const handoffAsk = (ctx: LiveContext) => `把 ${dirOf(ctx)} 文件夹里这几份会议纪要整理成今天的工作简报，写到 ${dirOf(ctx)}/brief.md：先写最重要的三件事，再按负责人列出待办和截止时间。`
 
+const routeReply: LiveScenario = {
+  id: 'route-reply',
+  title: '普通问答：先路由再流式回答，首字时间可测，库里和界面上没有路由的痕迹',
+  feature: '后台任务',
+  core: true,
+  async run(ctx) {
+    const { win, expect } = ctx
+    await fresh(win)
+    const asked = await run(win, `document.querySelectorAll('#thread .msg-agent').length`)
+    const since = Date.now()
+    await submit(win, '用两三句话说说什么是灰度发布。')
+    await until(win, `(() => { const all = [...document.querySelectorAll('#thread .msg-agent .msg-text')]; return all.length > ${asked} && (all.at(-1).textContent.trim().length > 0) })()`, 'the first words of the answer', LIVE_TURN_MS)
+    const firstText = Date.now() - since
+    await settle(win)
+    const shown: string = await run(win, AGENT_TEXT)
+    const numbers = summary(ctx, since)
+    expect(actionsOf(numbers.routed).some((a) => a.kind === 'reply'), 'it should be routed as a reply', brief(numbers))
+    expect(numbers.forbidden.length === 0, 'the main agent should not reach for tools it lacks', brief(numbers))
+    expect(/灰度/.test(shown), 'the answer should be shown', clip(shown, 200))
+    const db = new DatabaseSync(path.join(ctx.userData, 'app.db'), { readOnly: true })
+    try {
+      const leaked = db.prepare(`SELECT role, substr(text, 1, 80) AS text FROM messages WHERE text LIKE '%【请求 ID%' OR text LIKE '%commit_route%' OR text LIKE '%"accepted":true%' OR text LIKE '%【调度已处理】%'`).all()
+      expect(leaked.length === 0, 'stored messages should carry no routing marks', leaked)
+    } finally { db.close() }
+    expect(!/【请求 ID|commit_route|"accepted"/.test(shown), 'the screen should carry no routing marks', clip(shown, 200))
+    keep(ctx, 'numbers', { firstTextMs: firstText, ...brief(numbers) })
+    await ctx.shot('route-reply')
+  },
+}
+
 const routeHandoff: LiveScenario = {
   id: 'route-handoff',
   title: '整理工作区里的会议纪要做简报：主动交给任务，对话很快空出来，brief.md 用到了纪要内容',
-  feature: '路由原型',
+  feature: '后台任务',
+  core: true,
   async run(ctx) {
     const { win, expect, code } = ctx
     writeNotes(ctx)
@@ -91,14 +163,19 @@ const routeHandoff: LiveScenario = {
     const since = Date.now(), before = await cardCount(ctx)
     const out = await ask(win, handoffAsk(ctx), { permission: 'allow' })
     const card = await newCard(ctx, before, 10_000)
-    const evidence = evidenceSince(ctx, since)
-    expect(actionsOf(evidence).some((a) => a.kind === 'start'), 'the work should be handed to a task', summary(evidence))
+    const numbers = summary(ctx, since)
+    expect(actionsOf(numbers.routed).some((a) => a.kind === 'start' && a.status === 'done'), 'the work should be handed to a task', brief(numbers))
     expect(card !== null, 'a task card should show in the conversation', { answer: clip(out.answer) })
-    expect(!evidence.some((e) => e.type === 'guard_denied'), 'the main agent should not reach for tools it lacks', summary(evidence))
-    const brief = await fileFromTask(ctx, `${dirOf(ctx)}/brief.md`, (text) => text.includes(code))
-    expect(Boolean(brief?.includes(`${code}-A`) || brief?.includes(`${code}-B`)), 'the brief should be built from the notes', clip(brief ?? '(no brief.md)', 400))
-    expect(Boolean(brief && /李想/.test(brief) && /王敏/.test(brief)), 'the brief should list todos by owner', clip(brief ?? '', 400))
-    keep(ctx, 'numbers', { freeAfterMs: out.ms, ...summary(evidence) })
+    expect(numbers.forbidden.length === 0, 'the main agent should not reach for tools it lacks', brief(numbers))
+    // The handover is said in one line (its notice), the turn's answer: no "no final reply" in the window.
+    const thread: string = await run(win, `document.getElementById('thread')?.textContent ?? ''`)
+    expect(out.answer.trim().length > 0 && !/没有生成最终回复|本轮没有文字回复/.test(thread), 'the handover should be said as the turn\'s answer', clip(out.answer, 200))
+    const title: string = await run(win, `${CARDS}.at(-1)?.querySelector('.task-name')?.textContent ?? ''`)
+    expect(title.length > 1 && !/用户原话|请求 ID/.test(title), 'the task card should be titled by a short task name', title)
+    const written = await fileFromTask(ctx, `${dirOf(ctx)}/brief.md`, (text) => text.includes(code))
+    expect(Boolean(written?.includes(`${code}-A`) || written?.includes(`${code}-B`)), 'the brief should be built from the notes', clip(written ?? '(no brief.md)', 400))
+    expect(Boolean(written && /李想/.test(written) && /王敏/.test(written)), 'the brief should list todos by owner', clip(written ?? '', 400))
+    keep(ctx, 'numbers', { freeAfterMs: out.ms, ...brief(numbers) })
     await ctx.shot('route-handoff')
   },
 }
@@ -106,7 +183,7 @@ const routeHandoff: LiveScenario = {
 const routeUpdate: LiveScenario = {
   id: 'route-update',
   title: '任务刚开始就补一句「再加一节风险」：转给原任务，不另开新任务，简报里有风险一节',
-  feature: '路由原型',
+  feature: '后台任务',
   async run(ctx) {
     const { win, expect } = ctx
     writeNotes(ctx)
@@ -118,24 +195,26 @@ const routeUpdate: LiveScenario = {
     if (!card) return
     const since = Date.now()
     await ask(win, '简报最后再加一节「本周风险」，把连接池压测和对账接口超时写进去。', { permission: 'allow' })
-    const evidence = evidenceSince(ctx, since)
-    const actions = actionsOf(evidence)
-    expect(actions.some((a) => a.kind === 'message' && a.taskId === card.id), 'the addition should go to the task already working on the brief', { card: card.id, ...summary(evidence) })
-    expect(!actions.some((a) => a.kind === 'start'), 'no second task should be started for an addition', summary(evidence))
-    const brief = await fileFromTask(ctx, `${dirOf(ctx)}/brief.md`, (text) => /风险/.test(text) && /连接池/.test(text))
-    expect(Boolean(brief && /风险/.test(brief) && /连接池/.test(brief)), 'the brief should end up with the risks section', clip(brief ?? '(no brief.md)', 400))
-    keep(ctx, 'numbers', { taskStatusAtUpdate: await cardStatus(ctx, card.id), ...summary(evidence) })
+    const numbers = summary(ctx, since)
+    const actions = actionsOf(numbers.routed)
+    expect(actions.some((a) => a.kind === 'message' && a.taskId === card.id), 'the addition should go to the task already working on the brief', { card: card.id, ...brief(numbers) })
+    expect(!actions.some((a) => a.kind === 'start'), 'no second task should be started for an addition', brief(numbers))
+    const written = await fileFromTask(ctx, `${dirOf(ctx)}/brief.md`, (text) => /风险/.test(text) && /连接池/.test(text))
+    expect(Boolean(written && /风险/.test(written) && /连接池/.test(written)), 'the brief should end up with the risks section', clip(written ?? '(no brief.md)', 400))
+    keep(ctx, 'numbers', { taskStatusAtUpdate: await cardStatus(ctx, card.id), ...brief(numbers) })
     await ctx.shot('route-update')
   },
 }
 
 const LONG_ASK = '详细讲讲小团队做代码评审有哪些好做法，分五点，每点三四句话。'
 const interjectWords = (ctx: LiveContext) => `另外把 ${dirOf(ctx)} 里所有待办整理成一张表，写到 ${dirOf(ctx)}/todo.md。`
+const answerUnderWay = `document.getElementById('send-btn').dataset.busy === 'true' && ([...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent.length ?? 0) > 40`
 
 const routeInterject: LiveScenario = {
   id: 'route-interject',
   title: '讲解说到一半插一句「另外整理待办写到 todo.md」：很快有任务卡片，讲解照常讲完，todo.md 写出来',
-  feature: '路由原型',
+  feature: '工作中插话',
+  core: true,
   async run(ctx) {
     const { win, expect } = ctx
     writeNotes(ctx)
@@ -143,20 +222,44 @@ const routeInterject: LiveScenario = {
     const before = await cardCount(ctx)
     await submit(win, LONG_ASK)
     // Said once the answer is visibly under way, as a user reading it would.
-    await until(win, `document.getElementById('send-btn').dataset.busy === 'true' && ([...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent.length ?? 0) > 40`, 'the answer under way', LIVE_TURN_MS)
+    await until(win, answerUnderWay, 'the answer under way', LIVE_TURN_MS)
     const said = Date.now()
     await submit(win, interjectWords(ctx))
     const card = await newCard(ctx, before, LIVE_TURN_MS)
     const answerAtCard: number = await run(win, `[...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent.length ?? 0`)
     await settle(win, { permission: 'allow' })
     const answer: string = await run(win, AGENT_TEXT)
-    const evidence = evidenceSince(ctx, said - 1)
-    expect(card !== null, 'the interjected work should get a task card', summary(evidence))
+    const numbers = summary(ctx, said - 1)
+    expect(card !== null, 'the interjected work should get a task card', brief(numbers))
+    expect(numbers.routed.some((r) => r.kind === 'interjection' && r.actions.some((a) => a.kind === 'start')), 'the interjection should be routed to a task of its own', brief(numbers))
     expect((answer.match(/评审|审查|review/gi) ?? []).length >= 3 && answer.length > 400, 'the explanation should still be given in full', clip(answer, 300))
     const todo = await fileFromTask(ctx, `${dirOf(ctx)}/todo.md`, (text) => /李想/.test(text))
     expect(Boolean(todo && /李想/.test(todo) && /王敏/.test(todo)), 'todo.md should list the todos from the notes', clip(todo ?? '(no todo.md)', 300))
-    keep(ctx, 'numbers', { cardAfterMs: card ? card.at - said : null, answerCharsWhenCardShowed: answerAtCard, fastLane: process.env.VIVA_ROUTING_FAST === '1', ...summary(evidence) })
+    keep(ctx, 'numbers', { cardAfterMs: card ? card.at - said : null, answerCharsWhenCardShowed: answerAtCard, fast: fastSince(ctx, said - 1), ...brief(numbers) })
     await ctx.shot('route-interject')
+  },
+}
+
+const routeInterjectCorrect: LiveScenario = {
+  id: 'route-interject-correct',
+  title: '讲解说到一半说「用英文讲吧」：这是纠正当前回答，不开任务，后面改用英文',
+  feature: '工作中插话',
+  async run(ctx) {
+    const { win, expect } = ctx
+    await fresh(win)
+    const before = await cardCount(ctx)
+    await submit(win, LONG_ASK)
+    await until(win, answerUnderWay, 'the answer under way', LIVE_TURN_MS)
+    const said = Date.now()
+    await submit(win, '用英文讲吧。')
+    await settle(win)
+    const numbers = summary(ctx, said - 1)
+    const last: string = await run(win, `[...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
+    expect(await cardCount(ctx) === before, 'a correction to the answer should start no task', brief(numbers))
+    expect(!actionsOf(numbers.routed).some((a) => a.kind === 'start' || a.kind === 'message' || a.kind === 'stop'), 'nothing should be handed over for a correction', brief(numbers))
+    expect(latinShare(last) > 0.5, 'the answer should go on in English', clip(last, 300))
+    keep(ctx, 'numbers', brief(numbers))
+    await ctx.shot('route-interject-correct')
   },
 }
 
@@ -172,42 +275,19 @@ async function historyAttempt(ctx: LiveContext) {
   const name = `brief-${tag}.md`
   await ask(win, `按老规矩，把 ${dirOf(ctx)} 里的纪要整理成今天的简报，写到 ${dirOf(ctx)}/${name}。`, { permission: 'allow' })
   await newCard(ctx, before, 10_000)
-  const evidence = evidenceSince(ctx, since)
-  const briefs = actionsOf(evidence).map((a) => String(a.brief ?? '')).join('\n')
-  expect(briefs.includes(code), 'the brief handed over should carry the corrected rule', { brief: clip(briefs, 400), ...summary(evidence) })
+  const numbers = summary(ctx, since)
+  const briefs = actionsOf(numbers.routed).map((a) => String(a.brief ?? '')).join('\n')
+  expect(briefs.includes(code), 'the brief handed over should carry the corrected rule', { brief: clip(briefs, 400), ...brief(numbers) })
   const file = await fileFromTask(ctx, `${dirOf(ctx)}/${name}`, (text) => text.includes(code))
   expect(Boolean(file?.includes(code)), 'the written brief should follow the corrected rule', clip(file ?? `(no ${name})`, 300))
-  keep(ctx, 'numbers', { recoveredWith: summary(evidence).tools.filter((t) => t === 'search_conversations' || t === 'read_conversation' || t === 'memory_recall'), ...summary(evidence) })
+  keep(ctx, 'numbers', { recoveredWith: numbers.tools.filter((t) => t === 'search_conversations' || t === 'read_conversation' || t === 'memory_recall'), ...brief(numbers) })
   await ctx.shot('route-history')
-}
-
-const routeInterjectCorrect: LiveScenario = {
-  id: 'route-interject-correct',
-  title: '讲解说到一半说「用英文讲吧」：这是纠正当前回答，不开任务，后面改用英文',
-  feature: '路由原型',
-  async run(ctx) {
-    const { win, expect } = ctx
-    await fresh(win)
-    const before = await cardCount(ctx)
-    await submit(win, LONG_ASK)
-    await until(win, `document.getElementById('send-btn').dataset.busy === 'true' && ([...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent.length ?? 0) > 40`, 'the answer under way', LIVE_TURN_MS)
-    const said = Date.now()
-    await submit(win, '用英文讲吧。')
-    await settle(win)
-    const evidence = evidenceSince(ctx, said - 1)
-    const last: string = await run(win, `[...document.querySelectorAll('#thread .msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
-    expect(await cardCount(ctx) === before, 'a correction to the answer should start no task', summary(evidence))
-    expect(!evidence.some((e) => e.type === 'fast_committed'), 'the fast lane should leave a correction to the main agent', summary(evidence))
-    expect(latinShare(last) > 0.5, 'the answer should go on in English', clip(last, 300))
-    keep(ctx, 'numbers', summary(evidence))
-    await ctx.shot('route-interject-correct')
-  },
 }
 
 const routeHistory: LiveScenario = {
   id: 'route-history',
   title: '另一个话题里定过、又改过简报规矩；新话题说「按老规矩」：找回改过的那版，写进简报',
-  feature: '路由原型',
+  feature: '历史对话',
   async run(ctx) {
     try { await historyAttempt(ctx) } finally {
       // The rules this attempt set may also be kept as memories; the next attempt sets its own.
@@ -220,7 +300,7 @@ const routeHistory: LiveScenario = {
 const routeStop: LiveScenario = {
   id: 'route-stop',
   title: '长任务刚开始就说「先停掉刚才那个翻译任务」：停的是那个任务，卡片显示已停止',
-  feature: '路由原型',
+  feature: '后台任务',
   async run(ctx) {
     const { win, expect } = ctx
     writeNotes(ctx)
@@ -232,62 +312,41 @@ const routeStop: LiveScenario = {
     if (!card) return
     const since = Date.now()
     await ask(win, '先停掉刚才那个翻译任务。')
-    const evidence = evidenceSince(ctx, since)
-    expect(actionsOf(evidence).some((a) => a.kind === 'stop' && a.taskId === card.id), 'the stop should name that task', { card: card.id, ...summary(evidence) })
+    const numbers = summary(ctx, since)
+    expect(actionsOf(numbers.routed).some((a) => a.kind === 'stop' && a.taskId === card.id), 'the stop should name that task', { card: card.id, ...brief(numbers) })
     const status = await until(win, `(() => { const s = ${CARDS}.find((c) => c.dataset.task === ${JSON.stringify(card.id)})?.dataset.status; return s && s !== 'running' && s !== 'waiting' ? s : null })()`, 'the task no longer running', 60_000).catch(() => null)
     expect(status === 'stopped', 'the card should say the task was stopped', { status })
-    keep(ctx, 'numbers', { status, ...summary(evidence) })
+    keep(ctx, 'numbers', { status, ...brief(numbers) })
     await ctx.shot('route-stop')
   },
 }
 
-const routeReply: LiveScenario = {
-  id: 'route-reply',
-  title: '普通问答：先路由再流式回答，首字时间可测，库里和界面上没有路由的痕迹',
-  feature: '路由原型',
-  async run(ctx) {
-    const { win, expect } = ctx
-    await fresh(win)
-    const asked = await run(win, `document.querySelectorAll('#thread .msg-agent').length`)
-    const since = Date.now()
-    await submit(win, '用两三句话说说什么是灰度发布。')
-    await until(win, `(() => { const all = [...document.querySelectorAll('#thread .msg-agent .msg-text')]; return all.length > ${asked} && (all.at(-1).textContent.trim().length > 0) })()`, 'the first words of the answer', LIVE_TURN_MS)
-    const firstText = Date.now() - since
-    await settle(win)
-    const shown: string = await run(win, AGENT_TEXT)
-    const evidence = evidenceSince(ctx, since)
-    expect(actionsOf(evidence).some((a) => a.kind === 'reply'), 'it should be routed as a reply', summary(evidence))
-    expect(/灰度/.test(shown), 'the answer should be shown', clip(shown, 200))
-    const db = new DatabaseSync(path.join(ctx.userData, 'app.db'), { readOnly: true })
-    try {
-      const leaked = db.prepare(`SELECT role, substr(text, 1, 80) AS text FROM messages WHERE text LIKE '%【请求 ID%' OR text LIKE '%commit_route%' OR text LIKE '%"accepted":true%' OR text LIKE '%【调度已处理】%'`).all()
-      expect(leaked.length === 0, 'stored messages should carry no routing marks', leaked)
-    } finally { db.close() }
-    expect(!/【请求 ID|commit_route|"accepted"/.test(shown), 'the screen should carry no routing marks', clip(shown, 200))
-    keep(ctx, 'numbers', { firstTextMs: firstText, ...summary(evidence) })
-    await ctx.shot('route-reply')
-  },
-}
-
 const SCHEDULE_CARD = `[...document.querySelectorAll('#thread .fu-card[aria-label="要我定时做吗？"]')].at(-1)`
-const PERMISSION = `[...document.querySelectorAll('.confirm:not(.ask):not(.fu-card)')].find((el) => !el.closest('#tasks-page'))`
+
+/** An app change (plugins/routing/lib/policy.ts): routed as an app_action, then done by the main agent's own call of its tool. */
+const appChange = (numbers: ReturnType<typeof summary>, tool: string) => ({
+  routed: actionsOf(numbers.routed).some((a) => a.kind === 'app_action' && a.operation === tool),
+  called: numbers.tools.includes(tool),
+})
+
+/** A different project each attempt, as a user with several would name it; a schedule left by one is not the next's. */
+const PROJECTS = ['北辰', '启明', '远帆', '青禾', '长庚', '星河', '云杉', '澄湖', '暮山', '晴川']
 
 const routeSchedule: LiveScenario = {
   id: 'route-schedule',
-  title: '「每周五下午五点提醒我写周报」：定时卡片出来，对话不被卡住，卡片没点也能接着问，点了之后在动态里',
-  feature: '路由原型',
+  title: '「每周五下午五点提醒我写某项目周报」：经授权调用定时工具，卡片出来，没点也能接着问，点了之后在动态里',
+  feature: '定时任务',
   async run(ctx) {
-    const { win, expect, tag } = ctx
+    const { win, expect } = ctx
+    const project = PROJECTS[(ctx.attempt - 1) % PROJECTS.length]
     await fresh(win)
-    const name = `周报-${tag}`
     const since = Date.now()
-    const out = await ask(win, `每周五下午五点提醒我写${name}。`)
-    const proposed = evidenceSince(ctx, since).filter((e) => e.type === 'app_action_done' && e.operation === 'schedule_create')
-    expect(proposed.some((e) => e.ok === true), 'the schedule proposal should be made', proposed)
+    const out = await ask(win, `每周五下午五点提醒我写${project}项目的周报。`)
     const card: string | null = await until(win, `${SCHEDULE_CARD}?.textContent ?? null`, 'the schedule card', 30_000).catch(() => null)
-    const evidence = evidenceSince(ctx, since)
-    expect(actionsOf(evidence).some((a) => a.kind === 'app_action' && a.operation === 'schedule_create'), 'the schedule should be asked for as an app operation', summary(evidence))
-    expect(card !== null && card.includes(name), 'the schedule card should show, naming it', clip(card ?? out.answer, 300))
+    const numbers = summary(ctx, since)
+    const change = appChange(numbers, 'schedule_create')
+    expect(change.routed && change.called, 'the schedule should be routed as an app operation, then proposed by its own tool', { ...change, ...brief(numbers) })
+    expect(card !== null && card.includes(project), 'the schedule card should show, naming the project', clip(card ?? out.answer, 300))
     if (!card) return
     // The card still waiting, the conversation goes on.
     const next = await ask(win, '顺便问下，周报一般写哪几块？一句话回答。')
@@ -298,8 +357,8 @@ const routeSchedule: LiveScenario = {
     await until(win, `!document.getElementById('feed-page').hidden`, 'the 动态 page')
     await wait(UI_WAIT_MS)
     const rows: string[] = await run(win, `[...document.querySelectorAll('#feed-page .fu-row[data-status="active"]')].map((row) => row.textContent)`)
-    expect(rows.some((row) => row.includes(name)), 'kept, the schedule should be in 接下来', rows)
-    keep(ctx, 'numbers', { turnMs: out.ms, followUpMs: next.ms, ...summary(evidence) })
+    expect(rows.some((row) => row.includes(project)), 'kept, the schedule should be in 接下来', rows)
+    keep(ctx, 'numbers', { turnMs: out.ms, followUpMs: next.ms, ...change, ...brief(numbers) })
     await ctx.shot('route-schedule')
     await escape(win)
   },
@@ -310,28 +369,26 @@ const BOSSES = ['顾远航', '沈清和', '陆知遥', '许一诺', '孟川岳',
 
 const routeMemory: LiveScenario = {
   id: 'route-memory',
-  title: '「记住：我的直属上级是某某」：作为应用操作存进记忆，新话题里问得出来',
-  feature: '路由原型',
+  title: '「记住：我的直属上级是某某」：经授权调用记忆工具存下，新话题里问得出来',
+  feature: '记忆',
   async run(ctx) {
-    const { win, expect, tag } = ctx
+    const { win, expect } = ctx
     const boss = BOSSES[(ctx.attempt - 1) % BOSSES.length]
     try {
       await fresh(win)
       const since = Date.now()
       await ask(win, `记住：我的直属上级是 ${boss}。`)
-      const evidence = evidenceSince(ctx, since)
-      expect(actionsOf(evidence).some((a) => a.kind === 'app_action' && a.operation === 'memory_remember'), 'remembering should be an app operation', summary(evidence))
-      // Kept by the operation itself, not only by the memory plugin's pass after the turn.
-      expect(evidence.some((e) => e.type === 'app_action_done' && e.operation === 'memory_remember' && e.ok === true), 'the memory operation should succeed', evidence.filter((e) => e.type === 'app_action_done'))
-      await wait(MEMORY_SETTLE_MS)
+      const numbers = summary(ctx, since)
+      const change = appChange(numbers, 'memory_remember')
+      expect(change.routed && change.called, 'remembering should be routed as an app operation, then done by its own tool', { ...change, ...brief(numbers) })
       expect((await memoriesWith(win, boss)).length > 0, 'the fact should be kept in memory')
       await fresh(win)
       const out = await ask(win, '我的直属上级是谁？只回答名字。')
       expect(out.answer.includes(boss), 'a new topic should know it', clip(out.answer))
-      keep(ctx, 'numbers', summary(evidenceSince(ctx, since)))
+      keep(ctx, 'numbers', { ...change, ...brief(summary(ctx, since)) })
       await ctx.shot('route-memory')
     } finally {
-      // After the memory plugin's pass, which may keep the fact a second time.
+      // After the memory plugin's own pass, which may keep the fact a second time.
       await wait(MEMORY_SETTLE_MS)
       await forgetMemories(win, boss)
     }
@@ -340,58 +397,31 @@ const routeMemory: LiveScenario = {
 
 const routeMcp: LiveScenario = {
   id: 'route-mcp',
-  title: '对话里接入 MCP：主会话不等审批就结束；审批卡和密钥窗口照常出现，确认后服务器存好',
-  feature: '路由原型',
+  title: '对话里接入 MCP：经授权调用接入工具，审批卡和密钥窗口照常，确认后服务器存好、密钥只加密保存',
+  feature: '在对话里配置 MCP 和 skill',
   async run(ctx) {
     const { win, expect, tag } = ctx
     const name = `mail-${tag}`, secret = `live-secret-${tag}`
     const server = path.join(ctx.hooks.fixtures, 'mail-mcp.js')
     await fresh(win)
     const since = Date.now()
-    const out = await ask(win, `帮我接入一个本地 MCP 服务器：名字叫 ${name}，命令是 node，参数只有一个：${server}。它需要一个密钥，环境变量名叫 MAIL_TOKEN。`)
-    const turnEnded = Date.now()
-    // After the turn: the approval on the executor task's card, then the key, as the owner does them.
+    const out = await ask(win, `帮我接入一个本地 MCP 服务器：名字叫 ${name}，命令是 node，参数只有一个：${server}。它需要一个密钥，环境变量名叫 MAIL_TOKEN。`, { permission: 'allow', secret })
+    const numbers = summary(ctx, since)
+    const change = appChange(numbers, 'viva_mcp_add')
     const stored = path.join(ctx.userData, 'mcp-servers.json')
-    const deadline = Date.now() + 180_000
-    const seen = { taskWaited: false, approval: '', secret: false, where: '' }
-    while (Date.now() < deadline && !fileHolds(stored, name)) {
-      const waiting: string | null = await run(win, `${CARDS}.find((card) => card.dataset.status === 'waiting')?.dataset.task ?? null`)
-      if (waiting) {
-        seen.taskWaited = true
-        await run(win, `${CARDS}.find((card) => card.dataset.task === ${JSON.stringify(waiting)})?.click()`)
-        await wait(800)
-        const card: string | null = await run(win, `document.querySelector('#tasks-page .confirm')?.textContent ?? null`)
-        if (card) { seen.approval ||= card; await run(win, `document.querySelector('#tasks-page .confirm .btn-primary')?.click()`); await wait(UI_WAIT_MS) }
-      }
-      const main: string | null = await run(win, `${PERMISSION}?.textContent ?? null`)
-      if (main) { seen.approval ||= main; seen.where = 'conversation'; await run(win, `(${PERMISSION}).querySelector('.btn-primary').click()`); await wait(UI_WAIT_MS) }
-      if (await run(win, `Boolean(document.querySelector('.secret'))`)) {
-        seen.where ||= await run(win, `document.querySelector('.secret').closest('#tasks-page') ? 'task page' : 'conversation'`)
-        await run(win, `(() => { const card = document.querySelector('.secret'); card.querySelectorAll('input').forEach((input) => { input.value = ${JSON.stringify(secret)} }); card.requestSubmit() })()`)
-        seen.secret = true
-        await wait(UI_WAIT_MS)
-      }
-      await escape(win)
-      await wait(POLL_MS * 2)
-    }
-    const evidence = evidenceSince(ctx, since)
-    expect(actionsOf(evidence).some((a) => a.kind === 'app_action' && a.operation === 'viva_mcp_add'), 'adding the server should be an app operation', summary(evidence))
-    expect(seen.approval.includes(name), 'the approval card should come, naming the server', seen)
-    expect(out.ms < 60_000 && !out.waiting, 'the conversation should not wait on the approval', { turnMs: out.ms })
-    expect(seen.secret, 'the key window should come', seen)
-    expect(fileHolds(stored, name) && !fileHolds(stored, secret), 'the server should be kept, its key only encrypted', { done: evidence.filter((e) => e.type === 'app_action_done') })
-    keep(ctx, 'numbers', { turnMs: out.ms, ...seen, done: evidence.filter((e) => e.type === 'app_action_done').map((e) => ({ ok: e.ok, ms: e.ms, text: clip(String(e.text), 120) })), ...summary(evidence) })
+    expect(change.routed && change.called, 'adding the server should be routed as an app operation, then done by its own tool', { ...change, ...brief(numbers) })
+    expect(out.cards.some((title) => title.includes(name)), 'the approval card should come, naming the server', out.cards)
+    expect(out.secrets.includes('MAIL_TOKEN'), 'the key should be asked for in the window, by its name', out.secrets)
+    expect(fileHolds(stored, name) && !fileHolds(stored, secret), 'the server should be kept, its key only encrypted', { stored: fs.existsSync(stored) })
+    expect(!fileHolds(path.join(ctx.userData, 'app.db'), secret), 'the key should never be in the app database')
+    keep(ctx, 'numbers', { turnMs: out.ms, cards: out.cards, secrets: out.secrets, ...change, ...brief(numbers) })
     await ctx.shot('route-mcp')
   },
 }
 
-/** The tasks an attempt started, from the plugin's receipts: stopped when it ends, so they hold none of the five places. */
+/** The tasks an attempt started, from the app's receipts: stopped when it ends, so they hold none of the five places. */
 async function stopStarted(ctx: LiveContext, since: number) {
-  const ids = new Set<string>()
-  for (const e of evidenceSince(ctx, since)) {
-    const receipts = e.type === 'route_committed' ? ((e.receipts as Array<{ receipt?: { taskId?: string } }> | undefined) ?? []).map((r) => r.receipt) : e.type === 'fast_committed' ? [e.receipt as { taskId?: string }] : []
-    for (const receipt of receipts) if (receipt?.taskId) ids.add(receipt.taskId)
-  }
+  const ids = new Set(actionsOf(routedSince(ctx, since)).filter((a) => a.kind === 'start' && a.taskId).map((a) => String(a.taskId)))
   for (const id of ids) await run(ctx.win, `window.agent.stopTask(${JSON.stringify(id)}).then(() => true, () => false)`)
 }
 const isolated = (scenario: LiveScenario): LiveScenario => ({

@@ -2,8 +2,6 @@ import path from 'node:path'
 
 const STANDARD = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'HOMEDRIVE', 'HOMEPATH', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'USER', 'USERNAME', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CI', 'TERM', 'COLORTERM', 'OS', 'PROCESSOR_ARCHITECTURE', '__CF_USER_TEXT_ENCODING'])
 
-const ROUTING_SWITCHES = ['VIVA_ROUTING', 'VIVA_ROUTING_FAST']
-
 /** Start from a small OS environment, never the developer's credentials or runtime hooks. */
 export function applicationEnvironment(base: NodeJS.ProcessEnv, options: { workspace: string, projectRoot: string, bridge: 'real' | 'fake', apiKey?: string, importHome: string }): Record<string, string> {
   const result: Record<string, string> = {}
@@ -15,7 +13,5 @@ export function applicationEnvironment(base: NodeJS.ProcessEnv, options: { works
   result.AGENT_CWD = options.workspace
   result.DSH_HOME = options.importHome
   if (options.bridge === 'fake') result.DSH_BIN = path.join(options.projectRoot, 'test', 'fixtures', 'fake-dsh.js')
-  // PROTOTYPE switches (src/backend/routing-prototype.ts), passed on only when the run sets them.
-  for (const key of ROUTING_SWITCHES) if (base[key] === '1') result[key] = '1'
   return result
 }

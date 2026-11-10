@@ -12,9 +12,9 @@ import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk, interjection } from './steer-channel.ts'
-import { createRoutingDesk, newRequestId, withRequestHeader } from './routing-prototype.ts'
+import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
+import { withRequestHeader } from '../shared/request-routing/header.ts'
 import { createForkDesk } from './fork-channel.ts'
-import { createReadOnlyDesk } from './read-only-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
 import { createPluginsDesk, type PluginsOp, type PluginsResult } from './plugins-channel.ts'
@@ -91,7 +91,7 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
-  launch = null as object | null, routeRequests = false,
+  launch = null as object | null, routing,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -111,8 +111,11 @@ export function createAcpBridge({
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
   conversationContext?: (sessionId: string) => ConversationContext | null,
-  /** PROTOTYPE (routing-prototype.ts): bind the main session's role and mark each request for the viva-routing plugin. */
-  routeRequests?: boolean,
+  /**
+   * The request runtime (request-runtime.ts): the user's words to the main conversation are each a request, taken
+   * here as they are sent; the routing plugin's decisions and failures go to it (routing-channel.ts).
+   */
+  routing: RoutingHandlers,
 }) {
   const broker = createPermissionBroker()
   let mcp: { active: string[], dropped: Array<{ name: string, reason: string }> } = { active: [], dropped: [] }
@@ -150,16 +153,19 @@ export function createAcpBridge({
   const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
-  // Sessions nobody watches (a schedule's run): read-only tools, nothing asked of the user (viva-permission).
-  const readOnlyDesk = createReadOnlyDesk({ send: toPlugins })
   // The plugins page, through dsh's plugin manager (viva-plugins).
   const pluginsDesk = createPluginsDesk({ send: toPlugins })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || taskSessions.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || taskSessions.has(id) })
-  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update), allowAcpFallback: !routeRequests })
-  const routing = routeRequests ? createRoutingDesk({ send: toPlugins }) : null
-  /** With routing on, the words as the main agent reads them: under a request header of their own. */
-  const asRequest = (words: string) => routing ? withRequestHeader(words, newRequestId()) : words
+  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
+  // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
+  const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })
+  /** The user's words as the main agent reads them: under the header of the request they are taken as. */
+  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection') => {
+    const context = contextFor(session)
+    const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind })
+    return { requestId, text: withRequestHeader(words, requestId) }
+  }
   const operations = createAcpOperations({
     connection: live, streams,
     cancelPermissions: id => broker.cancelAll(id),
@@ -219,12 +225,11 @@ export function createAcpBridge({
       config?.receive(message)
       steering.receive(message)
       forking.receive(message)
-      readOnlyDesk.receive(message)
       tasksDesk.receive(message)
       historyDesk.receive(message)
       pluginsDesk.receive(message)
       streams.receive(message)
-      routing?.receive(message)
+      routingDesk.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
@@ -235,7 +240,7 @@ export function createAcpBridge({
       operations.dispose()
       taskSessions.dispose()
       pluginsDesk.close()
-      readOnlyDesk.closeAll()
+      routingDesk.close()
       if (disposed) return
       disposed = true
       const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
@@ -313,11 +318,11 @@ export function createAcpBridge({
     },
     foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
     operations, permissions: broker, questions,
-    steer: (id, text) => steering.steer(text, id), markReadOnly: readOnlyDesk.mark,
+    steer: (id, text) => steering.steer(text, id),
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
-  const { resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
+  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
 
   async function openSession(beforeOpen?: () => Promise<unknown>) {
     const measure = sessionTiming(onTiming)
@@ -414,10 +419,12 @@ export function createAcpBridge({
   }
 
   /**
-   * Its end is the main conversation's, or (once the turn went to the background) its task's.
+   * Its end is the main conversation's, or (once the turn went to the background) its task's. The session is bound as
+   * the main conversation before the prompt goes (routing-channel.ts).
    * @param images pictures pasted with it, base64
+   * @param request whether these are the user's words, a request of their own; a task's result coming back is not
    */
-  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = []) {
+  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { request = true }: { request?: boolean } = {}) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
     if (isSwitching()) throw new Error(switchingMessage())
     if (images.length && !seesImages) {
@@ -426,17 +433,14 @@ export function createAcpBridge({
     }
     const asked = sessionId
     const origin = contextFor(asked), context = origin ? { ...origin } : null
-    const words = routing ? asRequest(text) : text
+    const words = request && asked ? asRequest(text, asked, 'prompt').text : text
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
       ...(words ? [{ type: 'text' as const, text: words }] : []),
     ]
     await operations.run({
       sessionId: asked, prompt: blocks, context,
-      // Register ownership before waiting. A cancelled or retired preparation cannot start a late prompt.
-      prepare: routing && asked ? async () => {
-        if (!(await routing.bind(asked))) console.error('[routing] main role not confirmed before the prompt')
-      } : undefined,
+      prepare: asked ? () => routingDesk.bind(asked) : undefined,
       onEnd: (response, finalReply) => {
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
         else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason,
@@ -564,8 +568,18 @@ export function createAcpBridge({
    * caller asks it as a new question), else when it could not be sent (steer-channel.js NO_PLUGIN, or the
    * plugin's reasons).
    */
-  /** The user's words into the running turn of the conversation on screen, marked as said mid-turn. */
-  const steer = (text: string) => steering.steer(interjection(asRequest(text)))
+  /**
+   * The user's words into the running turn of the conversation on screen, marked as said mid-turn, a request of their
+   * own; one that reached no turn fails, since the window asks the words anew.
+   */
+  async function steer(text: string) {
+    if (!sessionId) return steering.steer(interjection(text))
+    const asked = sessionId
+    const request = asRequest(text, asked, 'interjection')
+    const result = await steering.steer(interjection(request.text))
+    if (!result.ok) routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
+    return result
+  }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
   const deliverReport = (session: string, reportId: string, token: string, text: string) => steering.report(session, reportId, token, text)
   /** How a background task's result stands in `session`: read, pending, or nowhere. */
@@ -611,8 +625,8 @@ export function createAcpBridge({
     taskSessions.dispose()
     broker.cancelAll()
     steering.closeAll()
+    routingDesk.close()
     pluginsDesk.close()
-    readOnlyDesk.closeAll()
     if (!child || !isRunning(child)) return Promise.resolve()
     const target = child
     const exited = new Promise((resolve) => target.once('exit', resolve))
@@ -636,5 +650,5 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid }
+  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid }
 }

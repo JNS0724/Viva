@@ -56,7 +56,8 @@ test('an OpenAI-compatible provider sits beside DeepSeek and answers once picked
   await agent.prompt('你好')
   assert.deepEqual(events.filter((event: { type: string }) => event.type === 'error'), [])
   assert.equal(replies(events).join(''), OPENAI_REPLY)
+  const call = ['/v1/chat/completions', `Bearer ${GATEWAY_KEY}`, 'oa-model']
   assert.deepEqual(openai.requests.map(({ path, authorization, body }) => [path, authorization, (body as { model?: string }).model]),
-    [['/v1/chat/completions', `Bearer ${GATEWAY_KEY}`, 'oa-model']])
+    [call, call], 'the route, then the answer')
   assert.equal(llm.requests.length, before, 'nothing went to DeepSeek')
 })

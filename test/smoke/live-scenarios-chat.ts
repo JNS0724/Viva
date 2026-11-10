@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { ask, clip, digitsOf, forgetMemories, fresh, latinShare, MEMORY_SETTLE_MS, settle, writeOutside, writeWorkspace, type LiveScenario } from './live-kit.ts'
+import { ask, clip, digitsOf, forgetMemories, fresh, latinShare, MEMORY_SETTLE_MS, settle, writeWorkspace, type LiveScenario } from './live-kit.ts'
 import { run, submit, until, wait } from './smoke-kit.ts'
 
 /**
@@ -75,37 +75,6 @@ const filesWrite: LiveScenario = {
 }
 
 /** Asks for a code in a file outside the workspace; reading it there needs the user's yes. */
-async function readOutside(ctx: Parameters<LiveScenario['run']>[0], permission: 'allow' | 'deny') {
-  const file = writeOutside(ctx, `外部-${ctx.tag}.txt`, `合同编号：${ctx.code}\n`)
-  await fresh(ctx.win)
-  return ask(ctx.win, `读一下这个文件：${file}，告诉我里面的合同编号。`, { permission })
-}
-
-const filesOutsideAllow: LiveScenario = {
-  id: 'files-outside-allow',
-  title: '读工作区外的文件先问；允许后读到内容',
-  feature: '文件',
-  core: true,
-  async run(ctx) {
-    const out = await readOutside(ctx, 'allow')
-    ctx.expect(out.cards.length > 0, 'reading outside the workspace should ask first', out.cards)
-    ctx.expect(out.answer.includes(ctx.code), 'allowed, the answer should carry the code from the file', clip(out.answer))
-    await ctx.shot('files-outside-allow')
-  },
-}
-
-const filesOutsideDeny: LiveScenario = {
-  id: 'files-outside-deny',
-  title: '读工作区外的文件先问；拒绝后读不到内容',
-  feature: '文件',
-  async run(ctx) {
-    const out = await readOutside(ctx, 'deny')
-    ctx.expect(out.cards.length > 0, 'reading outside the workspace should ask first', out.cards)
-    ctx.expect(!out.answer.includes(ctx.code), 'turned down, the answer should not carry the code from the file', clip(out.answer))
-    await ctx.shot('files-outside-deny')
-  },
-}
-
 const LONG_ASK = '写一篇大约 600 字的中文短文，介绍城市里的咖啡文化，分成 4 段。不要用任何工具，直接写。'
 const STEER = '改一下：全文改成用英文写。'
 
@@ -135,46 +104,6 @@ const steer: LiveScenario = {
 }
 
 /** A small project with the usual signs of decay, for a review that takes a while. */
-const REVIEW_REPO: Readonly<Record<string, string>> = {
-  'shop/README.md': '# shop\n\n订单、库存和通知三个模块。\n',
-  'shop/src/orders.js': "import { stock } from './inventory.js'\nimport { send } from './notify.js'\nexport const orders = []\nexport function place(item, n) {\n  if (stock[item] < n) return false\n  stock[item] -= n\n  orders.push({ item, n })\n  send('order ' + item)\n  return true\n}\n",
-  'shop/src/inventory.js': "import { orders } from './orders.js'\nexport const stock = { apple: 3, pear: 0 }\n// TODO: 和 orders 互相引用，先这样\nexport function restock(item, n) { stock[item] = (stock[item] ?? 0) + n; return orders.length }\n",
-  'shop/src/notify.js': "export function send(text) { console.log('[notify]', text) }\nexport function sendAgain(text) { console.log('[notify]', text) }\n",
-}
-const REVIEW_ASK = '看一下工作区里的 shop 代码仓，深度评审一下当前的代码架构，重点审视腐化程度。'
-const REVIEW_STEER = '再发个今日简报给我'
-
-const steerAnother: LiveScenario = {
-  id: 'steer-another',
-  title: '评审代码仓刚开始就插一句「再发个今日简报给我」，简报给了，评审也没丢下',
-  feature: '工作中插话',
-  core: true,
-  async run(ctx) {
-    const { win, expect } = ctx
-    for (const [rel, content] of Object.entries(REVIEW_REPO)) writeWorkspace(ctx, rel, content)
-    await fresh(win)
-    await submit(win, REVIEW_ASK)
-    await until(win, `document.getElementById('send-btn').dataset.busy === 'true'`, 'the review starting', 15_000)
-    // Said a moment in, as the owner did: before the review has got anywhere.
-    await wait(1_500)
-    await submit(win, REVIEW_STEER)
-    // It went in as an interjection into the running turn, not as a question after it.
-    const steered = await until(win, `(() => {
-      const last = [...document.querySelectorAll('#thread .msg-user')].at(-1)
-      const note = last?.nextElementSibling?.textContent ?? ''
-      return last?.textContent.includes(${JSON.stringify(REVIEW_STEER)}) && note ? { note } : null
-    })()`, 'the brief asked for while the review works', 15_000)
-    expect(steered.note.includes('工作中插话') && !steered.note.includes('没有送到'), 'the words should reach the running turn as an interjection', steered)
-    await settle(win)
-    const said: string = await run(win, `[...document.querySelectorAll('#thread .msg-agent')].map((el) => el.textContent).join('\\n')`)
-    expect(/简报/.test(said), 'the brief asked for mid-turn should be given', clip(said, 300))
-    const reviewed = (said.match(/耦合|循环|依赖|腐化|重复|分层|边界/g) ?? []).length
-    expect(reviewed >= 3, 'the review should still be done, not put off until asked again', clip(said, 600))
-    expect(!/你说一声|说一声我就|要不要我继续|需要我继续/.test(said), 'the review should not wait for a 继续', clip(said, 600))
-    await ctx.shot('steer-another')
-  },
-}
-
 const CITIES = ['上海', '北京', '杭州', '广州', '深圳']
 
 const askQuestion: LiveScenario = {
@@ -187,9 +116,12 @@ const askQuestion: LiveScenario = {
     // An earlier attempt may have left the city it was told: start without one.
     for (const city of CITIES) await forgetMemories(win, city)
     await fresh(win)
-    const out = await ask(win, '明天天气怎么样？', { answer: '*' })
-    expect(out.questions.length > 0, 'the agent should ask where before answering', { answer: clip(out.answer) })
-    expect(!out.waiting && out.answer.length > 0, 'answered, the agent should go on', clip(out.answer))
+    // The main conversation asks in its answer (commit_route's clarify); the city comes as the user's next message.
+    const out = await ask(win, '明天天气怎么样？')
+    expect(/哪|城市|地点|位置/.test(out.answer) && /[？?]/.test(out.answer), 'the agent should ask where before answering', { answer: clip(out.answer) })
+    const city = CITIES[(ctx.attempt - 1) % CITIES.length]
+    const next = await ask(win, city)
+    expect(!next.waiting && next.answer.includes(city), 'answered, the agent should go on', clip(next.answer))
     await ctx.shot('ask-question')
     // Whatever it kept of the answer goes, so the next attempt is asked again.
     await wait(MEMORY_SETTLE_MS)
@@ -209,7 +141,7 @@ const askRemembered: LiveScenario = {
     try {
       await fresh(win)
       const out = await ask(win, '明天出门要不要带伞？', { answer: '杭州' })
-      expect(out.questions.length === 0, 'with the city remembered the agent should not ask', out.questions)
+      expect(!/哪个城市|在哪|什么城市/.test(out.answer), 'with the city remembered the agent should not ask', clip(out.answer))
       expect(out.answer.includes('杭州'), 'the answer should be about the remembered city', clip(out.answer))
       await ctx.shot('ask-remembered')
     } finally {
@@ -218,4 +150,4 @@ const askRemembered: LiveScenario = {
   },
 }
 
-export const CHAT_SCENARIOS: readonly LiveScenario[] = [chat, filesCsv, filesWrite, filesOutsideAllow, filesOutsideDeny, steer, steerAnother, askQuestion, askRemembered]
+export const CHAT_SCENARIOS: readonly LiveScenario[] = [chat, filesCsv, filesWrite, steer, askQuestion, askRemembered]

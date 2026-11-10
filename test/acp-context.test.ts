@@ -11,6 +11,7 @@ import { openHistoryDb } from '../src/backend/history-db.ts'
 import { createConversationIngress } from '../src/renderer/conversation-ingress.ts'
 import { createEventActions, type EventEnvelope } from '../src/renderer/agent-event-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
+import { testRequests, withPluginSide } from './fixtures/request-routing.ts'
 
 function deferred() {
   let resolve!: () => void
@@ -31,7 +32,7 @@ test('a routing bind arriving after its session retires cannot prompt the closed
     closeSession: params => { calls.push(`close:${params.sessionId}`); retired.resolve(); return {} },
     prompt: params => { calls.push(`prompt:${params.sessionId}`); return { stopReason: 'end_turn' } },
   } satisfies Agent), ndJsonStream(Writable.toWeb(output), Readable.toWeb(input) as ReadableStream<Uint8Array>))
-  const bridge = createAcpBridge({ dshBin: '/fixture/dsh', profile: 'viva', cwd: process.cwd(), env: {}, routeRequests: true,
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fixture/dsh', profile: 'viva', cwd: process.cwd(), env: {},
     spawnFn: (() => child as unknown as ChildProcess) as typeof spawn, emit: () => {} })
   try {
     await bridge.start()
@@ -39,7 +40,7 @@ test('a routing bind arriving after its session retires cannot prompt the closed
     await entered.promise
     await bridge.newSession()
     await retired.promise
-    child.emit('message', { type: 'routing_bound', version: 1, id: binding!.id, ok: true })
+    child.emit('message', { type: 'routing_bound', version: 1, id: binding!.id })
     await pending
     assert.ok(calls.includes('close:session-1'))
     assert.equal(calls.some(call => call.startsWith('prompt:')), false)
@@ -52,7 +53,7 @@ for (const failure of [false, true]) test(`foreground ${failure ? 'error' : 'com
   let context = old
   let remote!: AgentSideConnection
   const input = new PassThrough(), output = new PassThrough()
-  const child = Object.assign(new EventEmitter(), { stdin: input, stdout: output, stderr: new PassThrough(), exitCode: null as number | null, signalCode: null, kill: () => true })
+  const child = withPluginSide(Object.assign(new EventEmitter(), { stdin: input, stdout: output, stderr: new PassThrough(), exitCode: null as number | null, signalCode: null, kill: () => true }), { says: 'original answer' })
   const events: Array<{ type: string, [field: string]: unknown }> = []
   const stream = ndJsonStream(Writable.toWeb(output), Readable.toWeb(input) as ReadableStream<Uint8Array>)
   new AgentSideConnection(client => {
@@ -68,7 +69,7 @@ for (const failure of [false, true]) test(`foreground ${failure ? 'error' : 'com
       },
     } satisfies Agent
   }, stream)
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/fixture/dsh', profile: 'viva', cwd: process.cwd(), env: {},
     // Only the stdio/EventEmitter subset of a child process is exercised by this protocol fixture.
     spawnFn: (() => child as unknown as ChildProcess) as typeof spawn,
@@ -98,7 +99,7 @@ for (const failure of [false, true]) test(`foreground ${failure ? 'error' : 'com
 test('a cold MCP reattachment publishes the reconciled context before its next foreground answer', async t => {
   const db = openHistoryDb({ file: ':memory:' }); t.after(() => db.close())
   const input = new PassThrough(), output = new PassThrough()
-  const child = Object.assign(new EventEmitter(), { stdin: input, stdout: output, stderr: new PassThrough(), exitCode: null as number | null, signalCode: null, kill: () => true })
+  const child = withPluginSide(Object.assign(new EventEmitter(), { stdin: input, stdout: output, stderr: new PassThrough(), exitCode: null as number | null, signalCode: null, kill: () => true }), { says: 'answer after reload' })
   let serial = 0
   new AgentSideConnection(client => ({
     initialize: () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }),
@@ -114,7 +115,7 @@ test('a cold MCP reattachment publishes the reconciled context before its next f
     current: () => ({ pending: false, context: { conversationId: state.conversationId ?? state.info.conversationId ?? null, sessionId: state.info.sessionId ?? null } }),
     deliver: event => { const action = map(event); if (action) state = reduce(state, action) },
   })
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/fixture/dsh', profile: 'viva', cwd: process.cwd(), env: {},
     spawnFn: (() => child as unknown as ChildProcess) as typeof spawn,
     conversationContext: id => { const context = sessions.context(); return context.sessionId === id ? context : { conversationId: null, sessionId: id } },

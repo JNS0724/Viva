@@ -21,10 +21,10 @@ function setup(t: TestContext) {
   }
   const memory: Plugin = { name: 'viva-memory', dir: pluginDir('memory'), config: { file: path.join(dir, "it's here", 'memory.db'), extract: false } }
   const trace: Plugin = { name: 'viva-trace', dir: pluginDir('trace'), config: { file: path.join(dir, 'trace.db') } }
-  const policy: Plugin = { name: 'viva-policy', dir: pluginDir('policy') }
+  const history: Plugin = { name: 'viva-history', dir: pluginDir('history') }
   const dshHome = path.join(dir, 'dsh-home')
-  const options = { dshHome, profile: 'viva', plugins: [memory, trace, policy], persona: { prefix: "你是 '助手'", suffix: '工作目录 {{cwd}}' } }
-  return { dir, dshHome, memory, trace, policy, options }
+  const options = { dshHome, profile: 'viva', plugins: [memory, trace, history], persona: { prefix: "你是 '助手'", suffix: '工作目录 {{cwd}}' } }
+  return { dir, dshHome, memory, trace, history, options }
 }
 
 const read = (dir: string, file: string) => fs.readFileSync(path.join(dir, file), 'utf8')
@@ -38,7 +38,7 @@ test('a plugin is entered by its TypeScript source where it has one, by the buil
 })
 
 test('the app\'s layer holds the persona and each plugin by file URL with its config; the user\'s layer starts empty', (t) => {
-  const { dshHome, memory, trace, policy, options } = setup(t)
+  const { dshHome, memory, trace, history, options } = setup(t)
   const dir = ensureDshProfile(options)
 
   const manifest = JSON.parse(read(dir, 'package.json'))
@@ -48,9 +48,9 @@ test('the app\'s layer holds the persona and each plugin by file URL with its co
   const layer = fs.readFileSync(vivaLayerFile(dshHome), 'utf8')
   assert.ok(layer.startsWith(VIVA_LAYER_MARK))
   assert.match(layer, /- id: system-prompt\n {2}config:\n {4}personaPrefix: '你是 ''助手'''\n {4}personaSuffix: '工作目录 \{\{cwd\}\}'\n/)
-  for (const plugin of [memory, trace, policy]) assert.ok(layer.includes(`    - id: ${plugin.name}\n      name: '${fileUrl(plugin).replaceAll("'", "''")}'\n`), plugin.name)
+  for (const plugin of [memory, trace, history]) assert.ok(layer.includes(`    - id: ${plugin.name}\n      name: '${fileUrl(plugin).replaceAll("'", "''")}'\n`), plugin.name)
   assert.match(layer, /\n {8}file: '.*it''s here.*memory\.db'\n {8}extract: false\n/)
-  assert.ok(!layer.includes(`name: '${fileUrl(policy)}'\n      config`), 'no config, no config block')
+  assert.ok(!layer.includes(`name: '${fileUrl(history)}'\n      config`), 'no config, no config block')
   assert.match(layer, /- id: hmr\n {2}name: '@deepseek-ai\/dsh-hmr'\n {2}disabled: false\n/, 'plugins switch while dsh runs')
   assert.match(layer, /- id: tool-plugin-manager\n {2}disabled: false\n/)
   assert.ok(layer.endsWith(SAFETY_ROWS))
@@ -102,10 +102,10 @@ test('an unreadable manifest stops with its path instead of being overwritten', 
 
 test('a plugin\'s stock dsh entries are switched on with it, and only with it', () => {
   const questions = { name: 'viva-questions', dir: '/app/plugins/questions', config: {}, stock: [{ id: 'tool-ask-user', name: '@deepseek-ai/dsh-tool-ask-user' }] }
-  const policy = { name: 'viva-policy', dir: '/app/plugins/policy', config: {} }
+  const history = { name: 'viva-history', dir: '/app/plugins/history', config: {} }
 
-  assert.match(patchFor({ plugins: [policy, questions] }), /- id: viva-questions\n {6}name: '[^']+'\n {4}- id: tool-ask-user\n {6}name: '@deepseek-ai\/dsh-tool-ask-user'\n/)
-  assert.doesNotMatch(patchFor({ plugins: [policy] }), /tool-ask-user/)
+  assert.match(patchFor({ plugins: [history, questions] }), /- id: viva-questions\n {6}name: '[^']+'\n {4}- id: tool-ask-user\n {6}name: '@deepseek-ai\/dsh-tool-ask-user'\n/)
+  assert.doesNotMatch(patchFor({ plugins: [history] }), /tool-ask-user/)
 })
 
 /** A row of dsh-base's insert list, its lines after `- id:` brought to the app layer's indent. */

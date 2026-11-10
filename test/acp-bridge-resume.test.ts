@@ -6,6 +6,7 @@ import { AgentSideConnection, ndJsonStream, RequestError } from '@agentclientpro
 import { createAcpBridge, switchingMessage } from '../src/backend/acp-bridge.ts'
 import { ResumeError } from '../src/backend/resume-failure.ts'
 import { setLocale } from '../src/shared/i18n/locale.ts'
+import { testRequests } from './fixtures/request-routing.ts'
 
 test('a bridge loaded before language initialization rejects switching prompts in the active language', async () => {
   let release!: () => void
@@ -67,7 +68,7 @@ function bridgeWith({ failClose = false, slow = null as Promise<void> | null } =
     async authenticate() { return {} },
     async prompt(params: { sessionId: string }) { log.push(['prompt', params.sessionId]); return { stopReason: 'end_turn' } },
   }
-  const bridge = createAcpBridge({ dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', spawnFn: (() => fakeDsh(agent)) as never, emit: () => {} })
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', spawnFn: (() => fakeDsh(agent)) as never, emit: () => {} })
   return { log, bridge }
 }
 

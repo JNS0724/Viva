@@ -5,54 +5,12 @@ import { initialState, reduce } from '../src/renderer/state.ts'
 import type { ConversationUpdate } from '../src/renderer/conversation-types.ts'
 import { EventEmitter } from 'node:events'
 import type { Context } from '@deepseek-ai/cordis'
-import { apply } from '../plugins/stream/index.ts'
 import { decodeUpdate } from '../src/renderer/agent-event-decoder.ts'
 import { historyMessages } from '../src/renderer/selectors.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { DatabaseSync } from 'node:sqlite'
 import { createTaskRegistry } from '../src/backend/task-registry.ts'
-import { installGatedStream } from '../plugins/routing/lib/stream.ts'
-
-test('completion recovers canonical ACP output when a settled live channel omits the final answer', async () => {
-  for (const missing of ['attempt', 'settlement', 'text-block', 'none']) {
-    const updates: ConversationUpdate[] = []
-    const stream = createAssistantStream({
-      send: message => {
-        const command = message as { type: string, operation: string }
-        if (command.type === 'assistant_stream_bind') stream.receive({ type: 'assistant_stream_bound', version: 1, operation: command.operation })
-        if (command.type === 'assistant_stream_flush') stream.receive({ type: 'assistant_stream_flushed', version: 1, operation: command.operation })
-      },
-      emit: (_sessionId, update: ConversationUpdate) => updates.push(update),
-    })
-    stream.receive({ type: 'assistant_stream_ready', version: 1 })
-    const operation = await stream.begin('session')
-    const frame = (key: string, kind: string, blocks?: Array<{ type: string, text: string }>) => stream.receive({
-      type: 'assistant_stream', version: 1, sessionId: 'session', operation: operation.id, key, kind, blocks,
-    })
-    frame('preparation', 'start')
-    frame('preparation', 'settle', [{ type: 'text', text: 'I will check.' }, { type: 'reasoning', text: 'Thinking.' }])
-    stream.suppress('session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I will check.' } })
-    stream.suppress('session', { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Thinking.' } })
-    if (missing !== 'attempt') {
-      frame('answer', 'start')
-      const blocks = missing === 'settlement' ? [] : [{ type: 'reasoning', text: 'Final thought.' }]
-      if (missing === 'none') blocks.push({ type: 'text', text: 'Complete final answer.' })
-      frame('answer', 'settle', blocks)
-    }
-    stream.suppress('session', { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Final thought.' } })
-    stream.suppress('session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Complete final ' } })
-    stream.suppress('session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer.' } })
-    await stream.complete(operation)
-
-    let state = reduce(initialState, { type: 'user_prompt', text: 'Question', at: 0 })
-    for (const update of updates) state = reduce(state, { type: 'acp_update', update, at: 1 })
-    state = reduce(state, { type: 'turn_end', stopReason: 'end_turn', at: 2 })
-    assert.equal(state.messages.filter(message => message.role === 'assistant').map(message => message.text).join(''), 'I will check.Complete final answer.', missing)
-    assert.equal(state.thoughts.map(thought => thought.text).join(''), 'Thinking.Final thought.', missing)
-    assert.equal(state.phase, 'idle')
-    assert.equal(updates.some(update => update.sessionUpdate === 'agent_message_chunk'), missing !== 'none', 'healthy native output keeps its identities without replaying ACP')
-  }
-})
+import { installAssistantStream } from '../plugins/routing/lib/assistant-stream.ts'
 
 test('the committed session recovers a final answer missing from both delivery channels without duplicating earlier messages', async () => {
   const events: Array<{ seq: number, type: string, data: { turn: number, step: number, message: { content: Array<{ type: string, text?: string, arguments?: string }> } } }> = []
@@ -62,7 +20,7 @@ test('the committed session recovers a final answer missing from both delivery c
   const updates: ConversationUpdate[] = []
   const port = Object.assign(new EventEmitter(), { connected: true, send: (message: object) => stream.receive(message) })
   const stream = createAssistantStream({ send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update) })
-  apply(ctx as unknown as Context, {}, port as unknown as NodeJS.Process)
+  installAssistantStream(ctx as unknown as Context, port as unknown as NodeJS.Process, () => true)
   const operation = await stream.begin('session')
   const emit = (frame: object) => ctx.emit('agent/assistant-stream', { agent, frame: { attemptId: 'intro', turn: 1, step: 1, ...frame } })
   const commit = (content: typeof events[number]['data']['message']['content'], step: number) => {
@@ -86,20 +44,6 @@ test('the committed session recovers a final answer missing from both delivery c
   assert.doesNotMatch(JSON.stringify(updates), /private-tool-input/)
   const next = await stream.begin('session')
   assert.equal(await stream.complete(next), false, 'a new operation cannot borrow the previous answer')
-})
-
-test('canonical ACP tracks whether text follows the last tool even when the live channel is unavailable', async () => {
-  const stream = createAssistantStream({ send: () => {}, emit: () => {} })
-  const empty = await stream.begin('session')
-  assert.equal(await stream.complete(empty), false, 'an empty ACP turn has no final reply')
-  const operation = await stream.begin('session')
-  assert.equal(stream.suppress('session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I will inspect.' } }), false)
-  stream.suppress('session', { sessionUpdate: 'tool_call' })
-  stream.suppress('session', { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Checking.' } })
-  assert.equal(await stream.complete(operation), false)
-  const next = await stream.begin('session')
-  stream.suppress('session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Final analysis.' } })
-  assert.equal(await stream.complete(next), true)
 })
 
 test('recovering earlier and middle messages preserves final order, saved identities, stars, report anchors and task previews', async () => {
@@ -212,8 +156,8 @@ test('routing recovery respects each attempt gate while recovering an allowed fi
       // Drop all native frames. The committed flush must still apply the routing gate.
       if (message.type !== 'assistant_stream') stream.receive(message)
     } })
-    const stream = createAssistantStream({ send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update), allowAcpFallback: false })
-    installGatedStream(ctx as unknown as Context, (_session, step) => allowFinal && step === 2, port as unknown as NodeJS.Process)
+    const stream = createAssistantStream({ send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update) })
+    installAssistantStream(ctx as unknown as Context, port as unknown as NodeJS.Process, (_session, step) => allowFinal && step === 2)
     const operation = await stream.begin('session')
     for (const [step, text] of [[1, 'Hidden planning text'], [2, 'Allowed final reply']] as const) {
       const frame = { attemptId: `attempt-${step}`, turn: 1, step }
@@ -241,9 +185,9 @@ test('routing keeps ACP behind its gate when ready, bind or flush confirmation i
     const port = Object.assign(new EventEmitter(), { connected: true, send: (message: { type: string }) => {
       if (message.type !== `assistant_stream_${failure}`) stream.receive(message)
     } })
-    const stream = createAssistantStream({ timeoutMs: 5, allowAcpFallback: false,
+    const stream = createAssistantStream({ timeoutMs: 5,
       send: message => { port.emit('message', message) }, emit: (_id, update: ConversationUpdate) => updates.push(update) })
-    installGatedStream(ctx as unknown as Context, () => allowed, port as unknown as NodeJS.Process)
+    installAssistantStream(ctx as unknown as Context, port as unknown as NodeJS.Process, () => allowed)
     const operation = await stream.begin('session')
     const frame = { attemptId: 'attempt', turn: 1, step: 1 }
     ctx.emit('agent/assistant-stream', { agent, frame: { ...frame, type: 'start' } })

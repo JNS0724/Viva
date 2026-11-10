@@ -12,7 +12,7 @@ const choices = (options: readonly SessionConfigOption[] | null | undefined): re
 const resultOf = (result: Acquired): Started => result.ok ? { ok: true, taskId: result.taskId } : result
 
 /** Native attachment/request identities only. TaskRuntime owns admission, application runs, status and storage. */
-export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, markReadOnly, emit, describeError, goneMessage, stoppedMessage }: {
+export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, emit, describeError, goneMessage, stoppedMessage }: {
   connection: () => Pick<ClientSideConnection, 'setSessionConfigOption' | 'closeSession'>
   acquire: { resume: (id: string, cwd: string) => Promise<ResumeSessionResponse>, fresh: (cwd: string) => Promise<NewSessionResponse> }
   foreground: () => { sessionId: string | null, cwd: string, config: readonly SessionConfigOption[] | null }
@@ -21,7 +21,6 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
   permissions: { pendingFor: (id: string) => readonly unknown[], waitingSessions: () => Set<string> }
   questions: { declineTask: (id: string) => void, pendingOf: (id: string) => readonly unknown[] }
   steer: (id: string, text: string) => Promise<SteerResult>
-  markReadOnly: (id: string) => Promise<boolean>
   emit: (event: { type: string, [field: string]: unknown }) => void
   describeError: (error: unknown) => string, goneMessage: () => string, stoppedMessage: () => string
 }) {
@@ -119,20 +118,16 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
       questions.declineTask(id)
     })
   }
-  async function startReadOnlyTask({ cwd }: { cwd: string }): Promise<Started> {
+  /** A session nobody watches (a schedule's run): what it would ask the user is refused (acp-bridge.ts), not waited for. */
+  async function startUnattendedTask({ cwd }: { cwd: string }): Promise<Started> {
     const started = await start({ cwd })
     if (!started.ok) return started
     const { taskId, attachment } = started
     if (!current(taskId, attachment)) return { ok: false, reason: 'unavailable' }
     attachment.unattended = true
-    try {
-      if (await markReadOnly(taskId) && current(taskId, attachment)) return { ok: true, taskId }
-    } catch (error) {
-      if (!disposed) console.error('[acp-bridge] could not mark a read-only task:', describeError(error))
-    }
-    await release(taskId, attachment)
-    return { ok: false, reason: 'unavailable' }
+    return { ok: true, taskId }
   }
+
   async function promptTask(taskId: string, text: string) {
     if (disposed) return
     const attachment = sessions.get(taskId)
@@ -144,7 +139,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     })
   }
   return {
-    has, startReadOnlyTask, promptTask, cancelTask, closeTask,
+    has, startUnattendedTask, promptTask, cancelTask, closeTask,
     resumeTask: async (request: Parameters<typeof resume>[0]): Promise<Started> => resultOf(await resume(request)),
     startTask: async (): Promise<Started> => resultOf(await start()),
     taskOf: (id: string) => has(id) ? id : null,

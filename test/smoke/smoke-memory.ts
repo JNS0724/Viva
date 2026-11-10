@@ -45,36 +45,27 @@ async function configSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
 }
 
 /**
- * 「明天天气怎么样」: the fake model asks which city (ask_user_question). The card offers the options, a click
- * answers, the answer joins the thread under the question, and the background pass keeps the city.
+ * 「明天天气怎么样」: the main conversation asks which city in text (commit_route's clarify; question cards are a
+ * task's). The user answers with the next message, a request of its own, and the agent goes on with it. No routing
+ * step, header or JSON shows in the thread.
  */
 async function questionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await submit(win, '明天天气怎么样')
-  const card = await until(win, `(() => {
-    const card = document.querySelector('.ask')
-    return card && { question: card.querySelector('.ask-question')?.textContent, options: [...card.querySelectorAll('.ask-option')].map((el) => el.textContent) }
-  })()`, 'the question card')
-  expect(card.question === '你想看哪个城市的天气？' && card.options.join() === '上海,北京', 'the card should show the question and its options', card)
-  const island = await run(win, `(() => { const el = document.querySelector('#island .isl'); return { form: el?.dataset.form, text: el?.textContent ?? '' } })()`)
-  expect(island.form === 'asking' && island.text.includes('需要你处理'), 'the island should say the user is needed', island)
-  await capture(win, outDir, 'question')
-  await run(win, `[...document.querySelectorAll('.ask-option')].find((el) => el.textContent === '上海').click()`)
   await finishTurn(win)
   await wait(UI_WAIT_MS)
-  const thread = await run(win, `({
-    asked: [...document.querySelectorAll('.msg-answer .msg-asked')].at(-1)?.textContent ?? '',
-    // The answer's own text: not the question above it, nor the star a message gets once drawn (view/star-buttons).
-    answer: [...([...document.querySelectorAll('.msg-answer')].at(-1)?.childNodes ?? [])]
-      .filter((node) => !node.classList?.contains('msg-asked') && !node.classList?.contains('star-btn'))
-      .map((node) => node.textContent).join('').trim(),
-    reply: [...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? '',
-    card: Boolean(document.querySelector('.ask')),
-  })`)
-  expect(thread.asked === '你想看哪个城市的天气？' && thread.answer === '上海' && !thread.card, 'the answer should join the thread under the question', thread)
-  expect(thread.reply.startsWith('好的，按上海来看'), 'the agent should go on with the answer', thread.reply)
+  const lastReply = `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`
+  const asked = await run(win, lastReply)
+  expect(asked === '你想看哪个城市的天气？', 'the agent should ask which city, in its answer', asked)
+  expect(!(await run(win, `Boolean(document.querySelector('.ask'))`)), 'the main conversation shows no question card')
+  await capture(win, outDir, 'question')
+  await submit(win, '上海')
+  await finishTurn(win)
+  await wait(UI_WAIT_MS)
+  const reply = await run(win, lastReply)
+  expect(reply.startsWith('好的，按上海来看'), 'the agent should go on with the answer', reply)
+  const thread = await run(win, `document.getElementById('thread')?.textContent ?? ''`)
+  expect(!/请求 ID|commit_route|用户原话/.test(thread), 'no routing trace should show in the thread', thread.slice(0, 200))
   await capture(win, outDir, 'question-answered')
-  const kept = await until(win, `window.agent.listMemories('上海').then((list) => list.items.find((m) => m.text.includes('上海'))?.text ?? null)`, 'the city being remembered')
-  expect(kept === '用户在上海', 'the answer should be remembered for next time', kept)
 }
 
 async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
