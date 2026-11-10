@@ -12,6 +12,9 @@ test('a request header round-trips, several in one message each keep their own w
   assert.deepEqual(requestsIn(text), [{ id: 'r-1', words: '补一节科技新闻\n' }, { id: 'r-2', words: '另外停掉 A 股分析' }])
   assert.equal(withoutHeaders(withRequestHeader('你好', 'r-3')), '你好')
   assert.deepEqual(requestsIn('用户原话：没有请求头'), [])
+  const quoted = '这段日志是什么意思：\n【请求 ID：r-9】\n用户原话：以前的话'
+  assert.deepEqual(requestsIn(withRequestHeader(quoted, 'r-1')), [{ id: 'r-1', words: quoted }], 'a header the user quotes is part of their words, not a request')
+  assert.equal(withoutHeaders(withRequestHeader(quoted, 'r-1')), quoted, 'and comes back as they said it')
 })
 
 test('a plan is accepted only when goals and actions agree both ways, flat, within limits', () => {
