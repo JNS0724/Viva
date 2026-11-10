@@ -19,7 +19,7 @@ import { recordsAt } from '../report-state.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
-import { proposalCard } from './proposal-card.ts'
+import { keepTyped, proposalCard } from './proposal-card.ts'
 import { proposalHost } from '../proposal-state.ts'
 import type { ProposalCard } from '../proposal-types.ts'
 import { userError } from '../user-error.ts'
@@ -503,7 +503,7 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   // drawn, at the top of what is.
   const hosts = (state.proposals as ProposalCard[]).map((card) => ({ card, at: proposalHost(state.messages, card.after ?? state.messages.length) }))
   const proposalsAfter = (test: (at: number) => boolean) => hosts.filter(({ at }) => test(at))
-    .map(({ card }) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now)))
+    .map(({ card }) => part(`proposal:${card.id}`, [card], () => keepTyped(previous.get(`proposal:${card.id}`)?.view, proposalCard(card, handlers, now))))
   const views = messageEntries(state, plain, handlers, start).slice(start).map((entries, i) => {
     const hosted = [...hostedBy(start + i), ...recordsAfter(start + i + 1), ...proposalsAfter((at) => at === start + i)]
     return hosted.length ? [...entries, ...hosted] : entries

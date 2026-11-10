@@ -75,8 +75,11 @@ const REPEAT_LABEL: Record<RepeatKind, () => string> = {
   at: () => t('schedule.repeat.at'), daily: () => t('schedule.repeat.daily'), weekly: () => t('schedule.repeat.weekly'),
   monthly: () => t('schedule.repeat.monthly'), cron: () => t('schedule.repeat.cron'),
 }
-/** The repeats the form offers; 自定义 only for a cron the others cannot say, which it keeps as written. */
-const repeatsFor = (draft: ProposalDraft): RepeatKind[] => (draft.expression && draft.repeat === 'cron'
+/**
+ * The repeats the form offers; 自定义 only for a proposal whose cron the others cannot say, which it keeps as written:
+ * by the proposal, not the repeat picked, so it is still there to go back to after a slip is said.
+ */
+const repeatsFor = (proposal: ProposalCard['proposal']): RepeatKind[] => (proposal.rule.kind === 'cron' && !cronShape(proposal.rule.cron.expression)
   ? ['at', 'daily', 'weekly', 'monthly', 'cron'] : ['at', 'daily', 'weekly', 'monthly'])
 
 /** The form's fields, named by card so two open forms never share a value (dom.ts keepingInput). */
@@ -115,7 +118,7 @@ function editForm(card: ProposalCard, handlers: Handlers, now: number) {
   const disabled = !!card.busy
   const input = (field: string, attrs: Record<string, unknown>) => h('input', { class: 'field', name: fieldName(card.id, field), disabled, ...attrs })
   const repeat = h('select', { class: 'field', name: fieldName(card.id, 'repeat'), disabled },
-    ...repeatsFor(base).map((kind) => h('option', { value: kind, text: REPEAT_LABEL[kind](), selected: kind === base.repeat })))
+    ...repeatsFor(card.proposal).map((kind) => h('option', { value: kind, text: REPEAT_LABEL[kind](), selected: kind === base.repeat })))
   const form = h('form', {
     // Checked by the repeat picked (proposal-draft.ts editsOf): the browser's own checks would hold back 定时 for a
     // field hidden with another repeat.
@@ -140,6 +143,25 @@ function editForm(card: ProposalCard, handlers: Handlers, now: number) {
     h('button', { class: BUTTON.secondary, type: 'button', text: t('schedule.card.cancel'), disabled, onClick: () => handlers.editProposal(card.id, false) }),
     h('span', { class: 'confirm-hint', text: t('schedule.card.hint') })))
   return form
+}
+
+type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+/**
+ * A card drawn again (the language changed; it was sent, or refused): what was typed in the one it replaces, and the
+ * field the user was in, carried over (AGENTS.md: a form rebuilt keeps its input). Returns the new card.
+ */
+export function keepTyped(before: unknown, after: HTMLElement): HTMLElement {
+  if (!(before instanceof Element)) return after
+  const active = before.contains(document.activeElement) ? (document.activeElement as Field).name : null
+  for (const field of after.querySelectorAll<Field>('[name]')) {
+    const typed = before.querySelector<Field>(`[name="${CSS.escape(field.name)}"]`)
+    if (!typed) continue
+    if (field instanceof HTMLInputElement && field.type === 'checkbox') field.checked = (typed as HTMLInputElement).checked
+    else field.value = typed.value
+  }
+  // In the page only once the thread is drawn.
+  if (active) queueMicrotask(() => after.querySelector<Field>(`[name="${CSS.escape(active)}"]`)?.focus())
+  return after
 }
 
 /** 要我定时做吗？ in the conversation: when it runs and what it will do; kept only on 定时, changed first on 修改. */

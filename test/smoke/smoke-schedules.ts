@@ -81,9 +81,45 @@ const CARD_PLACE = `(async () => {
   } finally { container.remove() }
 })()`
 
+/**
+ * The renderer's own nodes: a form drawn again (refused, or the language changed) keeps what was typed and the field
+ * the user was in; a cron the form cannot say keeps 自定义 among the repeats after another is picked and refused.
+ */
+const FORM_REDRAWN = `(async () => {
+  const { initialState, reduce } = await import('./state.js')
+  const { renderThread } = await import('./view/thread.js')
+  const { draftOf } = await import('./proposal-draft.js')
+  const container = document.createElement('div')
+  container.style.cssText = 'position:fixed;left:-10000px;top:0;width:760px'
+  document.body.append(container)
+  const handlers = new Proxy({}, { get: () => () => {} })
+  const said = reduce(initialState, { type: 'history_loaded', conversationId: 'form-redrawn', savedAt: 1,
+    messages: [{ role: 'user', text: '每半小时提醒我喝水' }, { role: 'assistant', text: '好的。' }] })
+  const proposal = { proposalId: 'k', title: '喝水', prompt: '提醒喝水', firstAt: new Date(Date.now() + 1800000).toISOString(), rule: { kind: 'cron', cron: { expression: '*/30 * * * *' } } }
+  const card = { id: 'k', proposal, status: 'open', after: 1, editing: true }
+  const field = (name) => container.querySelector('[name="proposal-' + name + '-k"]')
+  try {
+    renderThread(container, { ...said, proposals: [card] }, handlers, Date.now())
+    field('prompt').value = '提醒喝水，顺便站起来走走'
+    field('title').value = ''
+    field('repeat').value = 'daily'
+    field('prompt').focus()
+    const refused = { ...card, error: '请填写名称', draft: { ...draftOf(proposal, Date.now()), title: '', repeat: 'daily' } }
+    renderThread(container, { ...said, proposals: [refused] }, handlers, Date.now())
+    await Promise.resolve()
+    return { prompt: field('prompt').value, repeat: field('repeat').value, focused: document.activeElement === field('prompt'),
+      repeats: [...field('repeat').options].map((option) => option.value) }
+  } finally { container.remove() }
+})()`
+
 /** @returns failures */
 export async function checkSchedules(win: SmokeWindow, outDir: string): Promise<string[]> {
   const failures: string[] = []
+  const redrawn = await run(win, FORM_REDRAWN) as { prompt: string, repeat: string, focused: boolean, repeats: string[] }
+  report(`schedule form redrawn: ${JSON.stringify(redrawn)}`)
+  if (redrawn.prompt !== '提醒喝水，顺便站起来走走' || redrawn.repeat !== 'daily' || !redrawn.focused || !redrawn.repeats.includes('cron')) {
+    failures.push(`a form drawn again should keep what was typed, the field in use, and 自定义: ${JSON.stringify(redrawn)}`)
+  }
   const place = await run(win, CARD_PLACE) as { card: boolean, afterAnswer: boolean, beforeNext: boolean }
   report(`schedule card place: ${JSON.stringify(place)}`)
   if (!place.card || !place.afterAnswer || !place.beforeNext) failures.push(`a card should stay under its turn's answer, before the next question: ${JSON.stringify(place)}`)
