@@ -26,6 +26,7 @@ export interface ConversationTool {
   locations?: readonly { path: string, line?: number | null }[]
   at?: number
 }
+export type DoneNotice = 'fresh' | 'still' | 'seen'
 export interface MemoryInjection { at: number, fixed?: string | null, pushed?: readonly { names: string[], text: string }[] }
 interface TraceBase { ref: string, at: number }
 export type ConversationTrace = TraceBase & (
@@ -50,6 +51,11 @@ export interface ConversationState {
   secret: AskedSecret | null
   turn: { startedAt: number, tools: number, thoughts: number, by?: string, messageCount?: number } | null
   lastReceipt: TurnReceipt | null
+  /**
+   * Whether the last turn's 已完成 is still news (done-notice-actions.ts): fresh as it ends, still once her done pose
+   * has played a while unwatched, seen once the user has looked (then the island and she are at rest, 待命).
+   */
+  doneNotice: DoneNotice
   /** Runtime timing of the last completed turn, used to distinguish pending background results from older tasks. */
   completedTurn: { startedAt: number, endedAt: number } | null
   error: string | null
@@ -94,6 +100,9 @@ export interface ConversationPayloads {
   secret_closed: { requestId: string }
   waits_restored: Partial<ForegroundWaits> & { at: number }
   turn_end: { stopReason?: string, finalReply?: boolean, at: number }
+  done_still: {}
+  done_shown: {}
+  done_seen: {}
   error: { message: string }
   memory_context: { injected: readonly MemoryInjection[] }
   report_delivered: { conversationId: string | null, sessionId: string | null, reportId: string, text: string, at: number }

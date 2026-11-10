@@ -15,6 +15,7 @@ import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
 import { createProposalActions } from './proposal-actions.ts'
+import { createDoneNotice } from './done-notice-actions.ts'
 import { createFeedActions } from './feed-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
@@ -146,12 +147,15 @@ function dispatch(action: Action) {
   }
   startReveal()
   publishIsland()
+  doneNotice?.check()
   afterRender?.()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
   agentEvents?.stateChanged()
 }
 
 let publishedIsland = ''
+/** Made with the other actions below; dispatch may run before them. */
+let doneNotice: ReturnType<typeof createDoneNotice> | undefined
 let composerDraft: ReturnType<typeof createComposerDraftActions> | undefined
 let composerFiles: DraftFile[] = []
 let composerError: string | null = null
@@ -200,6 +204,8 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   settings: () => handlers.openSettings(),
   /** A notification of something new, or the tray's count: the 动态 page (system-design §12.2). */
   feed: () => handlers.openFeed(),
+  /** The desktop island's card on 已完成, read and closed (desk-island.ts): looked at. */
+  seen: () => doneNotice?.seen(),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
@@ -450,6 +456,11 @@ function fillComposer(text: string) {
   dom.input.focus()
 }
 const proposalActions = createProposalActions({ api, getState: () => state, dispatch, errorMessage })
+/** 已完成 until looked at (done-notice-actions.ts): the window in front and on screen is the user on it. */
+doneNotice = createDoneNotice({
+  getState: () => state, dispatch,
+  looking: () => document.visibilityState === 'visible' && document.hasFocus(),
+})
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
@@ -928,6 +939,9 @@ async function boot() {
     return
   }
   api.onIslandAction?.((action) => handlers.islandAction(action))
+  // Coming to the window, or leaving it, changes what 已完成 waits for (done-notice-actions.ts).
+  for (const type of ['focus', 'blur']) window.addEventListener(type, () => doneNotice?.check())
+  document.addEventListener('visibilitychange', () => doneNotice?.check())
   api.onFocusComposer?.(() => dom.input.focus())
   api.onEvent(value => agentEvents!.receive(value))
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), feedActions.loadFeed()])

@@ -18,6 +18,7 @@ import { runShowcase } from './smoke-showcase.ts'
 import { checkComposition } from './smoke-composition.ts'
 import { checkInputBoundaries } from './smoke-input-boundaries.ts'
 import { checkMessageFold } from './smoke-message-fold.ts'
+import { checkDoneFace } from './smoke-done-notice.ts'
 import { checkStreamMarkdown } from './smoke-streaming.ts'
 import { checkMarkdownLists } from './smoke-markdown-lists.ts'
 import { checkStarLayouts } from './smoke-star-layout.ts'
@@ -530,6 +531,7 @@ export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePha
       problems.push(...await checkComposition(win))
       problems.push(...await checkInputBoundaries(win))
       problems.push(...await checkMessageFold(win))
+      problems.push(...await checkDoneFace(win))
       problems.push(...await checkStreamMarkdown(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))

@@ -222,14 +222,17 @@ function workingEvent(state: State, now: number) {
  * up a ! or ? sign while it waits on the user, pleased once a turn is done, worried after an error. */
 export type CatMood = 'idle' | 'thinking' | 'typing' | 'confirm' | 'ask' | 'done' | 'error'
 
-export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'messages' | 'lastReceipt'>): CatMood {
+/** A turn done well, its 已完成 not yet looked at (conversation-types.ts doneNotice): once seen, she is at rest. */
+export const isDoneNews = (state: Pick<State, 'lastReceipt' | 'doneNotice'>): boolean =>
+  !!state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled' && !turnProblem(state.lastReceipt.stopReason) && state.doneNotice !== 'seen'
+
+export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'messages' | 'lastReceipt' | 'doneNotice'>): CatMood {
   if (state.phase === 'waiting') return 'confirm'
   if (state.phase === 'asking') return 'ask'
   if (state.phase === 'error') return 'error'
   if (state.phase === 'working') return latestActiveTool(state) || state.messages.at(-1)?.open ? 'typing' : 'thinking'
   if (turnProblem(state.lastReceipt?.stopReason)) return 'error'
-  if (state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled') return 'done'
-  return 'idle'
+  return isDoneNews(state) ? 'done' : 'idle'
 }
 
 /** What waits on the user is headed alike wherever it shows: the thread's card, the island, the status (prompt-card.js). */
@@ -246,7 +249,9 @@ export function statusView(state: State, now = Date.now()): { tone: string, labe
   if (state.phase === 'error') return { tone: 'error', label: t("island-view.error"), event: truncate(state.error, EVENT_LIMIT) }
   if (state.info.mode === 'connecting') return { tone: 'pending', label: t("island-view.connecting"), event: 'DEEPSEEK HARNESS' }
   if (state.info.mode === 'setup') return { tone: 'pending', label: t("island-view.not.connected"), event: setupProblem(state.info) }
-  if (state.lastReceipt) {
+  // A turn done well and looked at says no more (done-notice-actions.ts); one stopped or gone wrong still says so.
+  const seenDone = state.lastReceipt?.stopReason !== 'cancelled' && !turnProblem(state.lastReceipt?.stopReason) && state.doneNotice === 'seen'
+  if (state.lastReceipt && !seenDone) {
     const problem = turnProblem(state.lastReceipt.stopReason)
     if (problem) return { tone: 'error', label: t('island-view.incomplete'), event: problem }
     const stopped = state.lastReceipt.stopReason === 'cancelled'

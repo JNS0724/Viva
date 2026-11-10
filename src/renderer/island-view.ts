@@ -31,6 +31,8 @@ type IslandBackground = { count: number, waiting: number, done: number, items: I
 export type IslandView = {
   form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
   detail?: string, action?: string | null, startedAt?: number | null, steps?: number, elapsedMs?: number,
+  /** Done, and her pose has played a while unwatched: she holds it, still (conversation-types.ts doneNotice). */
+  still?: boolean,
   /** Done: the answer's first lines as plain text, for the desktop card's body. */
   summary?: string,
   /** An error that ended a turn with a reply kept in part (turn-outcome.ts), rather than a failure. */
@@ -93,6 +95,8 @@ function questionView(question: { questionId: string, questions: readonly Questi
 
 const lastAnswerText = (state: State): string => state.messages.findLast((item: ThreadMessage) => item.role === 'assistant')?.text ?? ''
 
+const idleView = (state: State, base: IslandBase): IslandView => ({ ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' })
+
 function afterTurn(state: State, base: IslandBase, background: IslandBackground | null): IslandView {
   const receipt = state.lastReceipt!
   if (receipt.stopReason === 'cancelled') return { ...base, form: 'idle', tone: 'idle', label: t("island-view.stopped"), detail: state.info.model || '' }
@@ -108,8 +112,11 @@ function afterTurn(state: State, base: IslandBase, background: IslandBackground 
   }
   const problem = turnProblem(receipt.stopReason)
   if (problem) return { ...base, mood: 'error', form: 'error', tone: 'error', label: t('island-view.incomplete'), detail: problem, incomplete: true }
+  // Looked at already: nothing new to say, so the island is at rest (待命), as before the turn.
+  if (state.doneNotice === 'seen') return idleView(state, base)
   const answer = lastAnswerText(state)
-  return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: answerPreview(answer), summary: answerSummary(answer) }
+  return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: answerPreview(answer), summary: answerSummary(answer),
+    ...(state.doneNotice === 'still' ? { still: true } : {}) }
 }
 
 /**
@@ -176,5 +183,5 @@ function mainView(state: State, background: IslandBackground | null): IslandView
   if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.connecting") }
   if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected"), detail: setupProblem(state.info) }
   if (state.lastReceipt) return afterTurn(state, base, background)
-  return { ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' }
+  return idleView(state, base)
 }

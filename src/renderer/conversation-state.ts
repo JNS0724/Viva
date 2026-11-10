@@ -15,7 +15,7 @@ import { closeLast, closeStreams } from './streams.ts'
  */
 export const initialConversation: Readonly<ConversationState> = Object.freeze({
   phase: 'idle', messages: [], thoughts: [], tools: {}, timeline: [], permission: null, question: null,
-  secret: null, turn: null, lastReceipt: null, completedTurn: null, error: null, usage: null,
+  secret: null, turn: null, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null, usage: null,
 })
 
 const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput'] as const
@@ -192,12 +192,19 @@ export const CONVERSATION_ACTIONS = {
       && (!last || (last.role === 'assistant' && isSilentReply(last.text)))
     const reason = stopReason === 'end_turn' && finalReply === false && !silentTask ? 'no_response' : stopReason
     const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason: reason }
-    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt,
+    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt, doneNotice: 'fresh' as const,
       completedTurn: { startedAt: turn.startedAt, endedAt: at } }
     // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
     if (silentTask) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }
     return { ...ended, messages: attachReceipt(closed.messages, receipt) }
   },
+
+  /** Her done pose has played a while with nobody looking: it rests on its still, still 已完成. */
+  done_still: (view) => (view.doneNotice === 'fresh' ? { ...view, doneNotice: 'still' } : view),
+  /** Come back to while held still: her pose plays again for the loop shown before it rests. */
+  done_shown: (view) => (view.doneNotice === 'still' ? { ...view, doneNotice: 'fresh' } : view),
+  /** The user has looked at what was done (the window, or the desktop island's card): the island goes back to 待命. */
+  done_seen: (view) => (view.doneNotice === 'seen' ? view : { ...view, doneNotice: 'seen' }),
 
   error: (view, { message }) => ({
     ...closeStreams(view),
