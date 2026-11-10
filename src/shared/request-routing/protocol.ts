@@ -47,7 +47,10 @@ export const isTaskAction = (action: Action): action is TaskAction => action.kin
 function planProblem(plan: Plan): string | null {
   const kinds = new Set<string>(plan.actions.map(action => action.kind))
   const missing = plan.goals.find(goal => !kinds.has(ACTION_OF[goal.disposition]))
-  if (missing) return `目标「${missing.goal}」标为 ${missing.disposition}，但没有对应的 ${ACTION_OF[missing.disposition]} 动作`
+  if (missing) {
+    const kind = ACTION_OF[missing.disposition]
+    return `目标「${missing.goal}」标为 ${missing.disposition}，但没有对应的 ${kind} 动作：补一个单独的 ${kind}（${FIELDS_OF[kind].needs.join('、')}）再提交`
+  }
   const wanted = new Set<string>(plan.goals.map(goal => ACTION_OF[goal.disposition]))
   const extra = [...kinds].find(kind => !wanted.has(kind))
   return extra ? `动作 ${extra} 没有对应的目标` : null
@@ -79,10 +82,75 @@ function withKind(action: unknown): unknown {
   return kinds.length === 1 ? { ...action, kind: kinds[0] } : action
 }
 
+type Loose = Record<string, unknown>
+const isLoose = (value: unknown): value is Loose => !!value && typeof value === 'object' && !Array.isArray(value)
+const filled = (value: unknown): value is string => typeof value === 'string' && value.trim() !== ''
+const isKind = (value: unknown): value is Action['kind'] => typeof value === 'string' && Object.hasOwn(FIELDS_OF, value)
+const isDisposition = (value: unknown): value is Disposition => typeof value === 'string' && Object.hasOwn(ACTION_OF, value)
+const ROUTE_OF = Object.fromEntries(Object.entries(ACTION_OF).map(([route, kind]) => [kind, route])) as Record<Action['kind'], Disposition>
+/** The fields whose words say what an action is about, in the order taken as its goal. */
+const ABOUT_FIELDS = ['title', 'scope', 'question', 'text', 'operation'] as const
+
+/** Goals for actions written with none: each action is its own goal. */
+const goalsOf = (actions: readonly unknown[]): Loose[] => actions.filter(isLoose).filter(action => isKind(action.kind))
+  .map(action => ({ goal: (ABOUT_FIELDS.map(field => action[field]).find(filled) ?? String(action.kind)).trim().slice(0, MAX_SCOPE_CHARS), disposition: ROUTE_OF[action.kind as Action['kind']] }))
+
+/**
+ * The fields of a missing kind, written onto an action of another kind (a start carrying a message's task and text),
+ * taken off it as an action of their own. Only when the fields that are not the carrier's own are exactly that kind's:
+ * a task and a text are a message and never a stop, whatever order the goals come in, so a task the user wanted told
+ * something is not stopped. Null when no action carries them so.
+ */
+function splitOff(actions: readonly unknown[], kind: Action['kind']): unknown[] | null {
+  const { needs, may } = FIELDS_OF[kind]
+  const stray = (action: Loose & { kind: Action['kind'] }) => [...NAMING_FIELDS]
+    .filter(field => filled(action[field]) && !FIELDS_OF[action.kind].needs.includes(field) && !FIELDS_OF[action.kind].may.includes(field))
+  const at = actions.findIndex(action => {
+    if (!isLoose(action) || !isKind(action.kind) || action.kind === kind) return false
+    const extra = stray(action as Loose & { kind: Action['kind'] })
+    return needs.every(field => extra.includes(field)) && extra.every(field => needs.includes(field) || may.includes(field))
+  })
+  if (at < 0) return null
+  const carrier = actions[at] as Loose
+  const moved = [...needs, ...may].filter(field => carrier[field] !== undefined)
+  const kept = Object.fromEntries(Object.entries(carrier).filter(([field]) => !moved.includes(field)))
+  const own = Object.fromEntries(moved.map(field => [field, carrier[field]]))
+  return [...actions.slice(0, at), kept, { kind, ...own }, ...actions.slice(at + 1)]
+}
+
+/**
+ * The slips the host mends without guessing, so a plan whose meaning is plain is not sent back to be written again
+ * (docs/agent-routing-design.md §7.2): goals left out are the actions' own; an answer with no reply gets one for its
+ * goal; any other goal with no action of its kind takes that kind's fields off another action; a reply with no goal is
+ * listed as an answer. A task action is never made up: a delegate, update or stop with nothing to carry it out is
+ * refused as before.
+ */
+function mend(given: Loose & { actions: unknown[] }): Loose {
+  let actions: unknown[] = given.actions.map(withKind)
+  const goals = given.goals === undefined ? goalsOf(actions) : given.goals
+  if (!Array.isArray(goals)) return { ...given, actions }
+  for (const goal of goals) {
+    if (!isLoose(goal) || !isDisposition(goal.disposition)) continue
+    const kind = ACTION_OF[goal.disposition]
+    if (actions.some(action => isLoose(action) && action.kind === kind)) continue
+    // A reply is the answer goal's own: a scope found on another action names that action's subject more often than
+    // what is to be answered, and is dropped with the rest of its stray fields.
+    if (kind === 'reply') {
+      if (filled(goal.goal)) actions = [...actions, { kind: 'reply', scope: goal.goal }]
+      continue
+    }
+    const split = splitOff(actions, kind)
+    if (split) actions = split
+  }
+  const answered = goals.some(goal => isLoose(goal) && goal.disposition === 'answer')
+  const replies = actions.filter(isLoose).filter(action => action.kind === 'reply' && filled(action.scope))
+  const listed = answered || !replies.length ? goals : [...goals, { goal: replies[0].scope, disposition: 'answer' }]
+  return { ...given, goals: listed, actions }
+}
+
 /** What the model passed, as a plan, or the problem to say back. */
 export function parsePlan(raw: unknown): { plan: Plan } | { problem: string } {
-  const given = raw && typeof raw === 'object' ? raw as { actions?: unknown } : null
-  const parsed = planSchema.safeParse(given && Array.isArray(given.actions) ? { ...given, actions: given.actions.map(withKind) } : raw)
+  const parsed = planSchema.safeParse(isLoose(raw) && Array.isArray(raw.actions) ? mend({ ...raw, actions: raw.actions }) : raw)
   if (!parsed.success) return { problem: '路由不合法：' + parsed.error.issues.map(issue => `${issue.path.join('.')} ${issue.message}`).join('; ') }
   const problem = planProblem(parsed.data)
   return problem ? { problem } : { plan: parsed.data }
