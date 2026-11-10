@@ -53,6 +53,38 @@ test('an action without its kind is taken for the one kind its fields name; one 
   assert.deepEqual(grantsOf({ goals: [], actions: [{ operation: 'memory_remember' }] }), [], 'nothing from a plan the host would refuse')
 })
 
+test('a plan whose meaning is plain is mended, not sent back; a task action is never made up', () => {
+  const planOf = (raw: unknown) => { const parsed = parsePlan(raw); assert.ok('plan' in parsed, JSON.stringify(parsed)); return parsed.plan }
+  const delegateAndAnswer = [{ goal: '整理今天的国际大事', disposition: 'delegate' }, { goal: '解释 G20 是什么', disposition: 'answer' }]
+  const start = { kind: 'start', title: '今日国际大事', brief: '联网整理今天的国际大事' }
+
+  assert.deepEqual(planOf({ goals: delegateAndAnswer, actions: [start] }).actions, [start, { kind: 'reply', scope: '解释 G20 是什么' }],
+    'an answer listed with no reply is answered: without one the handover would end the turn and the question go unanswered')
+  assert.deepEqual(planOf({ goals: delegateAndAnswer, actions: [{ ...start, scope: '今日国际大事' }] }).actions, [start, { kind: 'reply', scope: '解释 G20 是什么' }],
+    'a scope on the start names the start\'s subject, seen in the live replay: the reply answers the goal, and the stray scope is dropped')
+  const update = [{ goal: '调研 RAG 评测', disposition: 'delegate' }, { goal: '简报加 AI 新闻', disposition: 'update_task' }]
+  assert.deepEqual(planOf({ goals: update, actions: [{ ...start, taskId: 'task-brief', text: '加一条 AI 新闻' }] }).actions,
+    [start, { kind: 'message', taskId: 'task-brief', text: '加一条 AI 新闻' }], 'and so does a message\'s task and text')
+  const withStop = [...delegateAndAnswer, { goal: '停掉行情分析', disposition: 'stop_task' }]
+  assert.deepEqual(planOf({ goals: withStop, actions: [{ kind: 'reply', scope: '解释 G20' }, { ...start, taskId: 'task-market' }] }).actions,
+    [{ kind: 'reply', scope: '解释 G20' }, start, { kind: 'stop', taskId: 'task-market' }])
+
+  assert.deepEqual(planOf({ actions: [{ kind: 'app_action', operation: 'memory_remember' }, start] }).goals,
+    [{ goal: 'memory_remember', disposition: 'app_operation' }, { goal: '今日国际大事', disposition: 'delegate' }], 'goals left out are the actions\' own')
+  assert.equal(planOf({ actions: [{ kind: 'message', taskId: 'task-brief', text: '加'.repeat(800) }] }).goals[0]!.goal.length, 500, 'a goal taken from a long text fits a goal')
+  assert.deepEqual(planOf({ goals: [{ goal: '查天气', disposition: 'delegate' }], actions: [start, { kind: 'reply', scope: '确认已记住' }] }).goals,
+    [{ goal: '查天气', disposition: 'delegate' }, { goal: '确认已记住', disposition: 'answer' }], 'a reply nobody listed is listed as an answer')
+
+  for (const [actions, why] of [
+    [[start], 'an update with no task named anywhere is refused'],
+    [[{ ...start, text: '加一条 AI 新闻' }], 'nor is a task guessed for text alone'],
+  ] as const) assert.match(String((parsePlan({ goals: update, actions }) as { problem: string }).problem), /没有对应的 message 动作：补一个单独的 message（taskId、text）/, why)
+  assert.ok('problem' in parsePlan({ goals: [{ goal: '解释', disposition: 'answer' }], actions: [{ kind: 'reply', scope: '解释' }, start] }), 'a start nobody listed is refused')
+  const message = { kind: 'message', taskId: 'task-brief', text: '加港股' }
+  assert.ok('problem' in parsePlan({ goals: [{ goal: '简报加港股', disposition: 'update_task' }, { goal: '停掉简报', disposition: 'stop_task' }], actions: [message] }),
+    'a message\'s own task is not taken for a stop')
+})
+
 test('the routing channel takes only well-formed messages of its version', () => {
   assert.deepEqual(asBind({ type: 'routing_bind', version: 1, id: 'b', sessionId: 's', extra: 1 }), { type: 'routing_bind', version: 1, id: 'b', sessionId: 's' })
   assert.equal(asBind({ type: 'routing_bind', version: 2, id: 'b', sessionId: 's' }), null)

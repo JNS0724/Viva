@@ -156,13 +156,15 @@ App tools stay inside the main session's scope, so they still pass through DSH's
 | needs_input | `clarify` | The question | Ask at the next step, then wait for the answer after the turn |
 | app_operation | `app_action` | The app tool's name | The main agent calls that tool at the next step |
 
-- Goals and actions must match both ways. The host checks this and refuses a mismatch, saying why.
+- Goals and actions must match both ways. The host first fills in omissions whose meaning is certain (7.2). If they still do not match, it refuses the plan and says which action is missing and which fields it needs.
 - The protocol is flat: an `app_action` names only the tool, and the arguments go to the tool's own call. Nested free-form arguments made the model produce invalid JSON.
 - A request takes one decision only. Corrections from the user arrive as new requests that refer to the original action.
 - A handover carries a `notice`, one line for the user. Once the handover is done and nothing else in the turn is open, the plugin shows it as the turn's answer and ends the turn, with no further model call; without a notice, the main agent says it in one sentence at its next step. When the turn still has an answer to give, the main agent finishes it and mentions the handover at the end. The notice is only shown, never stored in the host's records.
 - The task card's title is the `start` action's `title`. Without one, it is the delegate goal the action serves: the nth `start` takes the nth delegate goal.
 
-### 7.2 Actions without a `kind`
+### 7.2 Omissions the host fills in
+
+A few omissions are common in the model's plans, and their meaning is certain. The host fills them in and accepts the plan, so the model does not rewrite all of it.
 
 When an action leaves out its `kind`, the host infers it from the fields it carries:
 
@@ -177,9 +179,20 @@ When an action leaves out its `kind`, the host infers it from the fields it carr
 
 Fields that match no kind, or more than one, are still refused. An action with a `kind` is taken as written.
 
-For this to work, the tool's parameters only restrict the values of `kind` and do not require it. DSH checks tool parameters before it calls the plugin, so a required `kind` left out would never reach the host.
+When goals and actions do not match, the host fills them in as follows:
 
-Why: in the trial, the model left out `"kind": "start"` in two handovers. After the refusal it rewrote a brief of several hundred characters from scratch, which cost about 13 and 5 seconds. The fields already said which kind of action it was.
+| Omission | What the host does |
+| --- | --- |
+| No goals at all | Each action counts as one goal |
+| An answer goal with no `reply` | Adds a `reply` whose scope is the goal's text. A stray `scope` on another action is not used: it usually names that action's subject |
+| Another action's fields written into an action, such as a `message`'s `taskId` and `text`, or a `stop`'s `taskId`, inside a `start` | Splits those fields off into the missing action |
+| A `reply` with no answer goal | Adds an answer goal |
+
+The host never makes up a task action. When a handover, an update or a stop has no action and no fields to split off, the plan is still refused, because neither a task ID nor a brief can be guessed. Fields are split off only to fill in the missing kind, and never when they belong to the action that carries them, so a `message`'s `taskId` is not taken for a `stop`.
+
+The tool's parameters require only `requestId` and `actions`, and leave objects open. DSH checks tool parameters before it calls the plugin: with `kind` or goals required, or with closed objects, plans with an omission or an extra field would never reach the host. The host drops extra fields. DSH still refuses a field set to `null`: allowing it would need a `oneOf` in the parameters, which changes the schema the model saw while the wording was tuned, and `null` is rare.
+
+Why: in the trial, the model left out `"kind": "start"` in two handovers. After the refusal it rewrote a brief of several hundred characters from scratch, which cost about 13 and 5 seconds. Another time the user asked for a handover and an answer in one sentence; the model listed the answer among the goals but wrote only a `start` among the actions. Replaying the main agent's request on a real model (section 15) showed these omissions are most common in requests with several goals. Rewording the tool description makes them rarer but does not remove them.
 
 ### 7.3 Submissions without an answer
 
@@ -315,6 +328,8 @@ Stopping the current reply affects only the main agent's current call. Stopping 
 | Always handle interjections after the main agent's current step | Task cards took 10.5 to 18 seconds; the fast lane handles the clear cases |
 | Interrupt the current answer and start a new turn | DSH can only cancel a whole turn, and output from the next turn never reaches the window |
 | Refuse an action without a `kind` and let the model resubmit | Each time cost 5 to 13 seconds (7.2) |
+| Refuse every omission, and reword the tool description to make them rarer | After rewording, requests with several goals still left out a `reply` or a `message` (7.2, section 15) |
+| One list instead of goals and actions, each item holding a goal, its disposition and that disposition's fields | Writing the same thing twice does invite mismatches, but with one list the host cannot see a goal the model drops: the replay showed an answer dropped whole while the `notice` said it was done. Kept apart, the goals are the checklist the host verifies against |
 | Put the fast lane's task name and brief in one field | The model sometimes wrote only the name and the request went back (9.4); they are now two fields, and the user's words go along separately |
 
 ## 15 Validation
@@ -327,6 +342,7 @@ Real-app scenarios live in [`test/smoke/live-scenarios-routing.ts`](../test/smok
 | Supplementary | Deterministic tests, the bridge layer with the production configuration, the real app | Parallel out-of-scope calls, interjection bookkeeping, the gate, and binding all passed; the first round's clarification failures disappeared with the production configuration; constraints found on binding timing, the gate, app operations and approval, and invalid JSON (report section 9) |
 | Layered narrowing | Real app, 10 scenarios, 5 runs each | 50/50; 0 out-of-scope calls and 0 routing failures; 15/15 app operations completed by the original tools under grants; adding an MCP server took 6.8 to 10.3 seconds per turn (report section 10) |
 | After implementation | Real app, the three core scenarios (answer, handover, interjection), 3 runs each | 9/9 before #131 merged; 9/9 after #132 merged, every handover accepted on its first submission |
+| Tool definition tuning | The main agent's real request to the model (system prompt, all 25 tools, context) recorded, only `commit_route`'s definition swapped, and replayed on DeepSeek V4.1 Flash. 15 synthetic scenarios, with one goal and with several, half of them after 10 earlier turns; judged by DSH's parameter check and the host's parsing | Accepted on the first submission: 126/135 before, 134/134 after (plus 1 network drop). Before, the refusals were mostly a `reply`, `message` or `stop` left out of a request with several goals, or their fields written into the `start`; a few were extra fields that DSH refused |
 
 To investigate slowness or failures, start in two places. The routing tables and the `request.*` events in `app.db` hold each request's receipt, decision, and action times and its failure reason. `trace.db` holds every tool call the main agent made, with its arguments.
 
@@ -340,7 +356,7 @@ To investigate slowness or failures, start in two places. The routing tables and
 | Several versions of one rule in long-term memory | Validation picked the wrong one once | The original the user last confirmed wins (section 5) |
 | Several identical `app_action`s in one submission | Seen in 2 of 5 schedule runs | The protocol description was rewritten; extra grants are dropped when the turn ends |
 | Cost of the fast lane | One more model call per interjection | Triggered only by interjections |
-| Inferring `kind` loosens the check | Actions without a `kind` can be accepted | Inferred only when the fields match exactly one kind; an explicit `kind` is never changed; protocol tests cover every kind |
+| Filling in omissions loosens the check | Plans with omissions can be accepted | Only omissions with a certain meaning are filled in: a `kind` is inferred only when the fields match exactly one, fields are split off only to fill in a missing action, and no task action is made up; protocol tests and DSH-level tests cover each case |
 
 Open items:
 

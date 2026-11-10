@@ -111,6 +111,50 @@ test('a start written without its kind gets through dsh to the host, which takes
   assert.equal(mainRequests(llm.requests as ModelRequest[]).length, 1, 'no step to write the brief again')
 })
 
+test('a handover and an answer committed with only the start: the task starts and the turn goes on to answer, no second commit', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const briefs: string[] = []
+  const { events, llm, bridge } = await startHarness(t, {
+    tasks: startingTasks(briefs),
+    decideFirst: (request: ModelRequest) => {
+      if (!toolsOf(request).includes('commit_route')) return null
+      if (JSON.stringify(request.messages).includes('"name":"commit_route"')) return { text: 'G20 是二十国集团，由主要经济体组成。' }
+      const id = /【请求 ID：([\w-]+)】/.exec(JSON.stringify(request.messages))?.[1]
+      // What the trial and the live replay saw: the answer listed among the goals, its reply left out of the actions.
+      return { tool: { name: 'commit_route', input: { requestId: id, notice: '已经交给后台整理今天的国际大事',
+        goals: [{ goal: '整理今天的国际大事', disposition: 'delegate' }, { goal: '解释 G20 是什么', disposition: 'answer' }],
+        actions: [{ kind: 'start', title: '今日国际大事', brief: '联网整理今天的国际大事' }] } } }
+    },
+  })
+  const agent = bridge()
+  await agent.start()
+  await agent.prompt('帮我整理一下今天的国际大事，顺便说一下 G20 是什么')
+
+  const main = mainRequests(llm.requests as ModelRequest[])
+  assert.deepEqual(briefs, ['联网整理今天的国际大事'], 'started from the first commit')
+  assert.equal(main.length, 2, 'one step to answer, none to commit again')
+  assert.match(JSON.stringify(lastResult(main[1]!)), /\\"kind\\":\\"reply\\"/, 'the host carried out the reply it added')
+  assert.ok((replies(events) as string[]).some(reply => reply.includes('G20 是二十国集团')), 'and the question is answered')
+})
+
+test('a plan with its goals left out and fields dsh does not declare reaches the host in one step', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const briefs: string[] = []
+  const { llm, bridge } = await startHarness(t, {
+    tasks: startingTasks(briefs),
+    decideFirst: (request: ModelRequest) => {
+      if (!toolsOf(request).includes('commit_route') || JSON.stringify(request.messages).includes('"name":"commit_route"')) return null
+      const id = /【请求 ID：([\w-]+)】/.exec(JSON.stringify(request.messages))?.[1]
+      return { tool: { name: 'commit_route', input: { requestId: id, notice: '已经交给后台：查国际大事',
+        actions: [{ kind: 'start', title: '国际大事', brief: '联网检索今天的国际新闻', brief_note: '控制在 500 字以内' }] } } }
+    },
+  })
+  const agent = bridge()
+  await agent.start()
+  await agent.prompt('今天有什国际大事')
+
+  assert.deepEqual(briefs, ['联网检索今天的国际新闻'])
+  assert.equal(mainRequests(llm.requests as ModelRequest[]).length, 1, 'dsh let it through, so nothing is written again')
+})
+
 test('a tool outside the main agent\'s layers is refused at the first step, and the request is still routed', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   let tried = false
   const { events, llm, workspace, bridge } = await startHarness(t, {
