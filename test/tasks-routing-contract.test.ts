@@ -5,6 +5,7 @@ import { parsePlan } from '../src/shared/request-routing/protocol.ts'
 import { asBind, asBound, asDecide, asDecided, asFast } from '../src/shared/request-routing/channel.ts'
 import { fastNotice, fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
 import { createHostChannel } from '../plugins/routing/lib/host.ts'
+import { grantsOf } from '../plugins/routing/lib/policy.ts'
 import { EventEmitter } from 'node:events'
 
 test('a request header round-trips, several in one message each keep their own words, and can be left out', () => {
@@ -46,6 +47,10 @@ test('an action without its kind is taken for the one kind its fields name; one 
     assert.ok('problem' in parsePlan({ goals, actions: [fields] }), JSON.stringify(fields))
   }
   assert.ok('problem' in parsePlan({ goals, actions: [{ kind: 'reply', brief: 'x' }] }), 'a kind given is never second-guessed')
+  const remember = { goals: [{ goal: '记住', disposition: 'app_operation' }, { goal: '提醒', disposition: 'app_operation' }],
+    actions: [{ operation: 'memory_remember' }, { kind: 'app_action', operation: 'schedule_create' }] }
+  assert.deepEqual(grantsOf(remember), ['memory_remember', 'schedule_create'], 'what the host took for an app action is granted as one, kind written or not')
+  assert.deepEqual(grantsOf({ goals: [], actions: [{ operation: 'memory_remember' }] }), [], 'nothing from a plan the host would refuse')
 })
 
 test('the routing channel takes only well-formed messages of its version', () => {
