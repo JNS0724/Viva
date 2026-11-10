@@ -20,7 +20,7 @@ import { COMMIT_DESCRIPTION, COMMIT_PARAMETERS, MAX_NOTICE_CHARS } from './lib/c
 import { deferCode, FAST_SYSTEM, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecision, type FastHandover, type FastTurn } from './lib/fast-lane.ts'
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
-import { admit, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
+import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
 
 export const name = 'viva-routing'
@@ -140,8 +140,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
       }
       if (!decided.accepted) throw new Error(decided.reason)
       const kinds = decided.receipts.map(receipt => receipt.kind)
-      const operations = (args.actions as Array<{ kind?: string, operation?: Grant }>).filter(action => action.kind === 'app_action' && action.operation).map(action => action.operation as Grant)
-      grants.set(id, [...(grants.get(id) ?? []), ...operations])
+      grants.set(id, [...(grants.get(id) ?? []), ...grantsOf(plan)])
       const failed = decided.receipts.some(receipt => !receipt.ok)
       const planned = statusOfPlan(kinds, failed)
       // A handover that ends the turn is said by its notice, shown as the turn's answer (without one, the agent says it

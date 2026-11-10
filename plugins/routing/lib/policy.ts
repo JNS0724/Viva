@@ -11,7 +11,7 @@
  *   execution   everything else (shell, files, web, sub-agents, MCP servers' tools): out of scope; such work goes to
  *               a task through commit_route
  */
-import { APP_OPERATIONS, type AppOperation } from '../../../src/shared/request-routing/protocol.ts'
+import { APP_OPERATIONS, parsePlan, type AppOperation } from '../../../src/shared/request-routing/protocol.ts'
 
 export const ROUTE_TOOL = 'commit_route'
 export const CONTEXT_TOOLS = Object.freeze(['search_conversations', 'read_conversation', 'memory_recall', 'list_background_tasks', 'get_background_task', 'read', 'glob', 'grep', 'read_image'] as const)
@@ -33,6 +33,15 @@ export const MAIN_SCOPE: readonly string[] = Object.freeze([...LAYERS.keys()])
 
 /** Leave for one call of an app tool, given by an accepted app_action. */
 export type Grant = AppOperation
+
+/**
+ * The app operations an accepted plan allows, read as the host read it (parsePlan, which also names an action whose
+ * kind was left out): one grant per app_action, for one call of its tool.
+ */
+export function grantsOf(plan: unknown): Grant[] {
+  const parsed = parsePlan(plan)
+  return 'plan' in parsed ? parsed.plan.actions.flatMap(action => action.kind === 'app_action' ? [action.operation] : []) : []
+}
 
 /**
  * The guard's decision on one call of the main agent, and the grants left after it: a grant is used up by the call

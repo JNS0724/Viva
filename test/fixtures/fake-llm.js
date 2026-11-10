@@ -253,8 +253,9 @@ function route(request) {
     return taskId ? commit(id, goal('update_task'), [{ kind: 'message', taskId, text: tell[2] }]) : commit(id, goal('answer'), [{ kind: 'reply', scope: '没找到任务' }])
   }
   const handOff = HAND_OFF.exec(words)
-  if (handOff) return commit(id, goal('delegate'), [{ kind: 'start', brief: handOff[1] }])
-  if (DELETE.test(words) || MAIL.some(([pattern]) => pattern.test(words))) return commit(id, goal('delegate'), [{ kind: 'start', brief: words }])
+  // A task name of its own, as the tool asks of the model: the card is titled by it.
+  if (handOff) return commit(id, goal('delegate'), [{ kind: 'start', title: handOff[1], brief: handOff[1] }])
+  if (DELETE.test(words) || MAIL.some(([pattern]) => pattern.test(words))) return commit(id, goal('delegate'), [{ kind: 'start', title: words.split('\n')[0], brief: words }])
   if (REMEMBER.test(words)) return app('memory_remember')
   if (CONNECT.test(words)) return app('viva_mcp_add', THEN_ASK.test(words) ? [{ kind: 'clarify', question: CITY_QUESTION.question }] : [])
   if (FOLLOW.test(words)) return app('schedule_create')

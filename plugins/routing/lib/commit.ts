@@ -12,7 +12,7 @@ export const COMMIT_DESCRIPTION = [
   '提交后在下一步直接调用同名工具并按它的参数填写；每个 app_action 只能调用一次该工具，同一个工具要调用几次就提交几个 app_action，需要确认的由卡片确认。',
   'actions 必须与 goals 一一对应：answer→reply，delegate→start，update_task→message，stop_task→stop，needs_input→clarify，app_operation→app_action。',
   '需要用户回答才能继续时，必须提交 clarify 并把问题写进 question；不要用 reply 把问题写在正文里。',
-  '找回旧标准、读历史只是准备步骤，不是目标；用户要求的交付仍要 delegate。start 的 brief 第一行只写一个简短的任务名（十来个字，任务卡片的标题就是它），从第二行起写自成一体的委托：用户原话、目标、找到的约定及来源、文件和输出要求。',
+  '找回旧标准、读历史只是准备步骤，不是目标；用户要求的交付仍要 delegate。start 的 title 写一个简短的任务名（十来个字，任务卡片的标题就是它），brief 写自成一体的委托：用户原话、目标、找到的约定及来源、文件和输出要求。',
   'reply、clarify、app_action 被接受后在下一步回答、提问或调用工具；交给任务（start、message、stop）时在 notice 里写一句直接给用户看的话，',
   '说明交给了哪个任务、去做什么（用用户的语言，不写请求 ID），交接办成后界面就显示这句话并结束本轮，任务卡片随之出现。',
 ].join('')
@@ -29,9 +29,12 @@ export const COMMIT_PARAMETERS = {
     goal: { type: 'string' as const, required: true as const }, disposition: { type: 'string' as const, required: true as const, enum: [...DISPOSITIONS] },
   } } },
   actions: { type: 'array' as const, required: true as const, items: { type: 'object' as const, additionalProperties: false, properties: {
-    kind: { type: 'string' as const, required: true as const, enum: ['reply', 'start', 'message', 'stop', 'clarify', 'app_action'] },
+    // Not required here: dsh checks these before the plugin sees the call, and a kind left out would cost the model a
+    // whole brief written again. The host names it from the action's fields, and refuses what names none (parsePlan).
+    kind: { type: 'string' as const, enum: ['reply', 'start', 'message', 'stop', 'clarify', 'app_action'], description: '动作种类' },
     scope: text('reply：本次回答的范围'),
-    brief: text('start：第一行是简短任务名（卡片标题），第二行起是自成一体的完整委托'),
+    title: text('start：简短任务名（十来个字，任务卡片的标题）'),
+    brief: text('start：自成一体的完整委托'),
     taskId: text('message/stop：后台任务 ID（先用 list_background_tasks 查）'),
     text: text('message：给任务的补充或修改'),
     question: text('clarify：问用户的问题'),

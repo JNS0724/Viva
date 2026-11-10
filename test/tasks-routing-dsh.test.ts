@@ -55,7 +55,7 @@ test('a task is not narrowed and never sees commit_route; it works under the pro
 /** The app's task runtime as the decisions use it, starting every task as `t-1` and keeping the briefs. */
 function startingTasks(briefs: string[]) {
   const never = async () => { throw new Error('not asked') }
-  return { start: async (brief: string) => { briefs.push(brief); return { taskId: 't-1' } }, message: never, stop: never }
+  return { start: async ({ brief }: { brief: string }) => { briefs.push(brief); return { taskId: 't-1' } }, message: never, stop: never }
 }
 
 test('a handover ends its turn with its notice as the answer: shown, kept as the turn\'s final reply, one model call', { timeout: DSH_TIMEOUT_MS }, async (t) => {
@@ -90,6 +90,25 @@ test('a handover without a notice lets the agent say it at its next step', { tim
   assert.equal(mainRequests(llm.requests as ModelRequest[]).length, 2, 'one more step, to say it')
   assert.equal(replies(events).length, 1)
   assert.equal((events.find(event => event.type === 'turn_end') as { finalReply?: boolean } | undefined)?.finalReply, true)
+})
+
+test('a start written without its kind gets through dsh to the host, which takes it for one: no second attempt', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+  const briefs: string[] = []
+  const { events, llm, bridge } = await startHarness(t, {
+    tasks: startingTasks(briefs),
+    decideFirst: (request: ModelRequest) => {
+      if (!toolsOf(request).includes('commit_route') || JSON.stringify(request.messages).includes('"name":"commit_route"')) return null
+      const id = /【请求 ID：([\w-]+)】/.exec(JSON.stringify(request.messages))?.[1]
+      return { tool: { name: 'commit_route', input: { requestId: id, notice: '已经交给后台：查国际大事', goals: [{ goal: '整理今天的国际大事', disposition: 'delegate' }], actions: [{ brief: '联网检索今天的国际新闻' }] } } }
+    },
+  })
+  const agent = bridge()
+  await agent.start()
+  await agent.prompt('今天有什国际大事')
+
+  assert.deepEqual(briefs, ['联网检索今天的国际新闻'], 'started from the first commit')
+  assert.deepEqual(replies(events), ['已经交给后台：查国际大事'])
+  assert.equal(mainRequests(llm.requests as ModelRequest[]).length, 1, 'no step to write the brief again')
 })
 
 test('a tool outside the main agent\'s layers is refused at the first step, and the request is still routed', { timeout: DSH_TIMEOUT_MS }, async (t) => {

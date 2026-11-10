@@ -27,7 +27,7 @@ export interface RequestPlace { conversationId: string | null, cwd: string | nul
  * of the request's working folder are touched.
  */
 export interface RequestTasks {
-  start: (brief: string, place: RequestPlace) => Promise<{ taskId: string }>
+  start: (task: { title: string, brief: string }, place: RequestPlace) => Promise<{ taskId: string }>
   message: (taskId: string, text: string, cwd: string | null) => Promise<unknown>
   stop: (taskId: string, cwd: string | null) => Promise<unknown>
 }
@@ -64,9 +64,9 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
     return null
   }
 
-  async function perform(request: StoredRequest, action: TaskAction): Promise<Receipt> {
+  async function perform(request: StoredRequest, action: TaskAction, title: string): Promise<Receipt> {
     try {
-      if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start(action.brief, { conversationId: request.conversationId, cwd: request.cwd })).taskId }
+      if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start({ title, brief: action.brief }, { conversationId: request.conversationId, cwd: request.cwd })).taskId }
       if (action.kind === 'message') await tasks.message(action.taskId, action.text, request.cwd)
       else await tasks.stop(action.taskId, request.cwd)
       return { kind: action.kind, ok: true, taskId: action.taskId }
@@ -90,11 +90,16 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
     const accepted = apply('request.decided', { requestId, actions: plan.actions.map(action => action.kind) }, () => store.decide(requestId, plan, now())).value
     if (!accepted) return { accepted: false, reason: refusal(store.get(requestId), requestId, sessionId) ?? `请求 ${requestId} 不能再提交` }
     carrying.set(requestId, sessionId)
+    // A start is named by its own title, or else by a goal it serves: the n-th start, the n-th goal delegated.
+    const delegated = plan.goals.filter(goal => goal.disposition === 'delegate').map(goal => goal.goal)
+    let starts = 0
     try {
       const receipts: Receipt[] = []
       for (const [idx, action] of plan.actions.entries()) {
         if (!isTaskAction(action)) { receipts.push({ kind: action.kind, ok: true }); continue }
-        const receipt: Receipt = halted.has(requestId) ? { kind: action.kind, ok: false, error: NOT_SENT } : await perform(request, action)
+        const goal = action.kind === 'start' ? delegated[starts++] : undefined
+        const title = action.kind === 'start' ? (action.title ?? goal ?? '') : ''
+        const receipt: Receipt = halted.has(requestId) ? { kind: action.kind, ok: false, error: NOT_SENT } : await perform(request, action, title)
         receipts.push(receipt)
         try {
           apply('request.acted', { requestId, idx, kind: action.kind, ok: receipt.ok }, () => store.settle(requestId, idx, receipt, now()))

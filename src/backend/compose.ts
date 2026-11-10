@@ -942,7 +942,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       store: createRequestStore({ db: appDb.db }),
       apply: applyChange,
       tasks: {
-        start: async (brief, place) => { onScreen(place.conversationId); return tasks.start(brief) },
+        start: async ({ title, brief }, place) => { onScreen(place.conversationId); return tasks.start(brief, title) },
         message: async (taskId, text, cwd) => { visible(taskId, cwd); return tasks.message(taskId, text) },
         stop: async (taskId, cwd) => { visible(taskId, cwd); return tasks.stop(taskId) },
       },

@@ -5,6 +5,7 @@ import { parsePlan } from '../src/shared/request-routing/protocol.ts'
 import { asBind, asBound, asDecide, asDecided, asFast } from '../src/shared/request-routing/channel.ts'
 import { fastNotice, fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
 import { createHostChannel } from '../plugins/routing/lib/host.ts'
+import { grantsOf } from '../plugins/routing/lib/policy.ts'
 import { EventEmitter } from 'node:events'
 
 test('a request header round-trips, several in one message each keep their own words, and can be left out', () => {
@@ -29,6 +30,27 @@ test('a plan is accepted only when goals and actions agree both ways, flat, with
     { goals: [{ goal: 'x', disposition: 'app_operation' }], actions: [{ kind: 'app_action', operation: 'bash' }] }]) {
     assert.ok('problem' in parsePlan(bad), JSON.stringify(bad))
   }
+})
+
+test('an action without its kind is taken for the one kind its fields name; one they do not name is still refused', () => {
+  const goals = [{ goal: '整理今天的国际大事', disposition: 'delegate' }]
+  assert.deepEqual(parsePlan({ goals, actions: [{ brief: '联网检索今天的国际新闻' }] }), { plan: { goals, actions: [{ kind: 'start', brief: '联网检索今天的国际新闻' }] } },
+    'a kind left out is no reason to write the whole brief again')
+  const disposition = { reply: 'answer', start: 'delegate', message: 'update_task', stop: 'stop_task', clarify: 'needs_input', app_action: 'app_operation' }
+  const named: Array<[Record<string, string>, keyof typeof disposition]> = [[{ scope: '解释' }, 'reply'], [{ title: '简报', brief: '做简报' }, 'start'],
+    [{ taskId: 't1', text: '加科技新闻' }, 'message'], [{ taskId: 't1' }, 'stop'], [{ question: '哪一份？' }, 'clarify'], [{ operation: 'schedule_create' }, 'app_action']]
+  for (const [fields, kind] of named) {
+    const parsed = parsePlan({ goals: [{ goal: 'x', disposition: disposition[kind] }], actions: [fields] })
+    assert.equal('plan' in parsed && parsed.plan.actions[0]!.kind, kind, JSON.stringify(fields))
+  }
+  for (const fields of [{ brief: 'x', scope: 'y' }, { title: '只有标题' }, {}, { taskId: 't1', question: '?' }]) {
+    assert.ok('problem' in parsePlan({ goals, actions: [fields] }), JSON.stringify(fields))
+  }
+  assert.ok('problem' in parsePlan({ goals, actions: [{ kind: 'reply', brief: 'x' }] }), 'a kind given is never second-guessed')
+  const remember = { goals: [{ goal: '记住', disposition: 'app_operation' }, { goal: '提醒', disposition: 'app_operation' }],
+    actions: [{ operation: 'memory_remember' }, { kind: 'app_action', operation: 'schedule_create' }] }
+  assert.deepEqual(grantsOf(remember), ['memory_remember', 'schedule_create'], 'what the host took for an app action is granted as one, kind written or not')
+  assert.deepEqual(grantsOf({ goals: [], actions: [{ operation: 'memory_remember' }] }), [], 'nothing from a plan the host would refuse')
 })
 
 test('the routing channel takes only well-formed messages of its version', () => {
@@ -58,10 +80,10 @@ test('the fast lane hands over only what is plain, to a task it was shown, as a 
   const plan = fastPlan('另外做一份 A 股分析，写到 a-share.md', start)
   assert.ok('plan' in parsePlan(plan))
   assert.match(JSON.stringify(plan.actions), /用户原话：另外做一份 A 股分析，写到 a-share.md/, 'the words go along as said, whatever the quick call wrote')
-  assert.match(JSON.stringify(plan.actions), /"brief":"A 股收盘分析\\n/, 'its title first: the card\'s name')
+  assert.deepEqual([plan.actions[0]!.kind, 'title' in plan.actions[0]! && plan.actions[0].title], ['start', 'A 股收盘分析'], 'its title: the card\'s name')
   const bare = parseFastDecision('{"decision":"start","brief":""}', tasks)
   assert.equal(bare.decision, 'start', 'a short or missing brief is no reason to defer: the words go along')
-  if (bare.decision === 'start') assert.match(JSON.stringify(fastPlan('另外整理待办写到 todo.md', bare).actions), /"brief":"另外整理待办写到 todo.md\\n\\n用户原话：/)
+  if (bare.decision === 'start') assert.deepEqual(fastPlan('另外整理待办写到 todo.md', bare).actions, [{ kind: 'start', title: '另外整理待办写到 todo.md', brief: '用户原话：另外整理待办写到 todo.md' }])
   assert.ok('plan' in parsePlan(fastPlan('停掉简报', { decision: 'stop', taskId: 't1' })))
   assert.match(fastNotice('r-1', start, [{ kind: 'start', ok: true, taskId: 't2' }]), /已开始后台任务 t2.*不要再为它提交 commit_route/)
   const undone = fastNotice('r-1', start, [{ kind: 'start', ok: false, error: '同时最多 5 个后台任务' }])
