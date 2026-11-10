@@ -1,7 +1,7 @@
 import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
-import { catMood, currentAction, traceTail, truncate } from './selectors.ts'
+import { catMood, currentAction, setupProblem, traceTail, truncate } from './selectors.ts'
 import { liveTasks, unseenEnded } from './tasks-state.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 
@@ -15,6 +15,8 @@ import { turnProblem } from '../shared/turn-outcome.ts'
 const RECENT_STEPS = 4
 const DETAIL_LIMIT = 60
 const PREVIEW_LIMIT = 40
+/** The desktop card reads the answer at more length than the head's one line (island-desk-card.ts). */
+const SUMMARY_LIMIT = 120
 
 type IslandForm = 'pending' | 'idle' | 'working' | 'waiting' | 'asking' | 'done' | 'error'
 type IslandStep = { title: string, tone: string }
@@ -29,6 +31,10 @@ type IslandBackground = { count: number, waiting: number, done: number, items: I
 export type IslandView = {
   form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
   detail?: string, action?: string | null, startedAt?: number | null, steps?: number, elapsedMs?: number,
+  /** Done: the answer's first lines as plain text, for the desktop card's body. */
+  summary?: string,
+  /** An error that ended a turn with a reply kept in part (turn-outcome.ts), rather than a failure. */
+  incomplete?: boolean,
   /** The task it speaks for, when a task (not the conversation) has the island. */
   task?: string,
   permission?: IslandPermission,
@@ -40,14 +46,21 @@ type IslandBase = Pick<IslandView, 'mood' | 'recent'>
 
 const recentSteps = (state: State): IslandStep[] => traceTail(state, RECENT_STEPS).map(({ title, tone }: IslandStep) => ({ title, tone }))
 
+/** A line of Markdown as plain text: no heading, quote or list mark, no emphasis. */
+const plainLine = (line: string) => line.trim()
+  .replace(/^(#{1,6}\s+|>\s*|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/, '')
+  .replace(/[*_`~]/g, '')
+  .trim()
+const answerLines = (text: unknown) => String(text ?? '').split('\n').map(plainLine).filter(Boolean)
+
 /** The first line of an answer as plain text: what the island shows of it once the turn is done. */
 export function answerPreview(text: unknown) {
-  const line = String(text ?? '').split('\n').map((item) => item.trim()).find(Boolean) ?? ''
-  const plain = line
-    .replace(/^(#{1,6}\s+|>\s*|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/, '')
-    .replace(/[*_`~]/g, '')
-    .trim()
-  return truncate(plain, PREVIEW_LIMIT)
+  return truncate(answerLines(text)[0] ?? '', PREVIEW_LIMIT)
+}
+
+/** The answer's opening lines on one line as plain text: what the desktop card shows of it. */
+export function answerSummary(text: unknown) {
+  return truncate(answerLines(text).join(' '), SUMMARY_LIMIT)
 }
 
 /** The approval as the thread's card has it (prompt-card.js), with its command on one line instead of all its arguments. */
@@ -78,10 +91,7 @@ function questionView(question: { questionId: string, questions: readonly Questi
   }
 }
 
-function lastAnswer(state: State) {
-  const message = state.messages.findLast((item: ThreadMessage) => item.role === 'assistant')
-  return message ? answerPreview(message.text) : ''
-}
+const lastAnswerText = (state: State): string => state.messages.findLast((item: ThreadMessage) => item.role === 'assistant')?.text ?? ''
 
 function afterTurn(state: State, base: IslandBase, background: IslandBackground | null): IslandView {
   const receipt = state.lastReceipt!
@@ -97,8 +107,9 @@ function afterTurn(state: State, base: IslandBase, background: IslandBackground 
       action: running?.now ?? running?.title ?? null, startedAt: running?.startedAt ?? completed?.startedAt ?? null, steps: 0 }
   }
   const problem = turnProblem(receipt.stopReason)
-  if (problem) return { ...base, mood: 'error', form: 'error', tone: 'error', label: t('island-view.incomplete'), detail: problem }
-  return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: lastAnswer(state) }
+  if (problem) return { ...base, mood: 'error', form: 'error', tone: 'error', label: t('island-view.incomplete'), detail: problem, incomplete: true }
+  const answer = lastAnswerText(state)
+  return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: answerPreview(answer), summary: answerSummary(answer) }
 }
 
 /**
@@ -163,7 +174,7 @@ function mainView(state: State, background: IslandBackground | null): IslandView
   }
   if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: t("island-view.error"), detail: truncate(state.error, DETAIL_LIMIT) }
   if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.connecting") }
-  if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected") }
+  if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected"), detail: setupProblem(state.info) }
   if (state.lastReceipt) return afterTurn(state, base, background)
   return { ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' }
 }

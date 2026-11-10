@@ -51,22 +51,23 @@ const runningFor = (startedAt: number | undefined, now: number) => {
   return minutes < 1 ? t("island-tasks.just.started") : t("island-tasks.minutes", { minutes: minutes })
 }
 
-function createItemLine(id: string, act: IslandAct) {
+/** desk: on the desktop card, a task is named as it is (no #) and stopping it is a quiet text button. */
+function createItemLine(id: string, act: IslandAct, desk: boolean) {
   const title = h('b'), detail = h('span'), time = h('span', { class: 'isl-bg-time' })
   const open = h('button', { type: 'button', class: 'isl-bg-mid', onClick: () => act({ kind: 'task', taskId: id }) }, title, detail)
-  const stop = h('button', { type: 'button', class: 'isl-mini', onClick: () => act({ kind: 'stop-task', taskId: id }) })
+  const stop = h('button', { type: 'button', class: desk ? 'isl-mini isl-mini-text' : 'isl-mini', onClick: () => act({ kind: 'stop-task', taskId: id }) })
   const el = h('li', { class: 'isl-bg-item' }, open)
   let signature = '', actions: HTMLElement[] = []
   function update(item: IslandTask, now: number) {
     el.dataset.status = item.status
-    const name = `#${item.title}`
+    const name = desk ? item.title : `#${item.title}`
     if (title.textContent !== name) title.textContent = name
     const asks = item.permission
     const doing = asks ? t('island-tasks.wants.to', { title: asks.title }) : item.status === 'waiting' ? t('island-tasks.waiting.for.your.answer')
       : item.now ? t('island-tasks.currently', { now: item.now }) : t('island-tasks.working')
     if (detail.textContent !== doing) detail.textContent = doing
     open.title = t('island-tasks.view.activity')
-    stop.textContent = t('island-tasks.stop')
+    stop.textContent = t(desk ? 'desk.interaction.stop.current' : 'island-tasks.stop')
     const elapsed = runningFor(item.startedAt, now)
     if (time.textContent !== elapsed) time.textContent = elapsed
     // A request owns its option handlers. A different request receives new buttons and ids.
@@ -83,12 +84,15 @@ function createItemLine(id: string, act: IslandAct) {
   return { el, update }
 }
 
-/** Opened: a section under the conversation's steps, one line a task, and how many are done. */
-export function createBackgroundSection(act: IslandAct) {
+/**
+ * Opened: a section under the conversation's steps, one line a task, and how many are done.
+ * desk: the desktop card says how many in its head (island-desk-card.ts), so the section has no heading of its own.
+ */
+export function createBackgroundSection(act: IslandAct, { desk = false } = {}) {
   const label = h('span'), count = h('b'), done = h('span')
   const head = h('div', { class: 'isl-sect' }, label, count)
   const list = h('ol')
-  const el = h('section', { class: 'isl-bg-list' }, head, list)
+  const el = h('section', { class: 'isl-bg-list' }, ...(desk ? [] : [head]), list)
   const rows = new Map<string, ReturnType<typeof createItemLine>>()
   function update(view: IslandShown, now: number): HTMLElement | null {
     const items: readonly IslandTask[] = view.background?.items ?? []
@@ -102,7 +106,7 @@ export function createBackgroundSection(act: IslandAct) {
     reconcileChildren(head, view.background.done ? [label, count, done] : [label, count])
     reconcileChildren(list, items.map(item => {
       let row = rows.get(item.id)
-      if (!row) { row = createItemLine(item.id, act); rows.set(item.id, row) }
+      if (!row) { row = createItemLine(item.id, act, desk); rows.set(item.id, row) }
       row.update(item, now)
       return row.el
     }))

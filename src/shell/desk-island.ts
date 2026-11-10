@@ -463,7 +463,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     togglePanel() {
       if (input) return closeInput()
       const next = view?.form === 'waiting' || view?.form === 'asking' ? 'request'
-        : view?.form === 'done' || view?.form === 'error' ? 'status'
+        : view?.form === 'done' || view?.form === 'error' || view?.form === 'pending' ? 'status'
         : view?.form !== 'working' && view?.background?.items?.length ? 'background' : 'input'
       return this.openPanel(next)
     },

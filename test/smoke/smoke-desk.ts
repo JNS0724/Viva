@@ -49,7 +49,7 @@ const ASKED_IN_THREAD = `(() => {
 /** While the agent is on the turn the input takes words for that turn. */
 const STEERING = `(() => {
   const field = document.querySelector('.isl')?.dataset.form === 'input' && document.querySelector('.isl-field')
-  return field && !field.disabled && field.placeholder.includes('当前任务') && field.placeholder
+  return field && !field.disabled && field.placeholder.includes('下一步会读到') && field.placeholder
 })()`
 
 const STEERED_IN_THREAD = `(() => {
