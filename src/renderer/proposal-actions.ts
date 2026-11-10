@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { editsOf, withEdits } from './proposal-draft.ts'
+import { draftOf, editsOf, withEdits } from './proposal-draft.ts'
 import type { ProposalCard } from './proposal-state.ts'
 import type { ProposalDraft, ScheduleEdits } from './proposal-types.ts'
 
@@ -27,8 +27,10 @@ export function createProposalActions({ api, getState, dispatch, errorMessage }:
 
   /** 定时 on the form: what it says, checked here first so a slip is said before anything is sent. */
   function acceptEdited(id: string, draft: ProposalDraft) {
-    if (!isOpen(cardOf(id))) return
-    const made = editsOf(draft)
+    const card = cardOf(id)
+    if (!isOpen(card)) return
+    // The form as it opened: a time left as it was keeps the proposal's own rule (proposal-draft.ts editsOf).
+    const made = editsOf(draft, draftOf(card.proposal, Date.now()))
     if ('problem' in made) {
       dispatch({ type: 'proposal_failed', id, message: t(made.problem), draft })
       return

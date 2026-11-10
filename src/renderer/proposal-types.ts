@@ -23,8 +23,11 @@ type EditedRule =
   | { kind: 'daily', daily: { time: string, time_zone: string } }
   | { kind: 'weekly', weekly: { time: string, weekdays: readonly number[], time_zone: string } }
   | { kind: 'cron', cron: { expression: string, time_zone: string } }
-/** The proposal as the user keeps it, sent with 定时 (schedules.ts accept); the rule in dsh-schedule's input. */
-export type ScheduleEdits = { title: string, prompt: string, rule: EditedRule }
+/**
+ * The proposal as the user keeps it, sent with 定时 (schedules.ts accept); the rule in dsh-schedule's input, left out
+ * when its time was not touched, so the proposal's own is kept to the second.
+ */
+export type ScheduleEdits = { title: string, prompt: string, rule?: EditedRule }
 
 export interface ProposalCard {
   id: string, proposal: ScheduleProposal, status: 'open' | 'accepted' | 'declined'

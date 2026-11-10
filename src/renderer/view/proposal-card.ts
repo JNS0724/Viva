@@ -117,7 +117,9 @@ function editForm(card: ProposalCard, handlers: Handlers, now: number) {
   const repeat = h('select', { class: 'field', name: fieldName(card.id, 'repeat'), disabled },
     ...repeatsFor(base).map((kind) => h('option', { value: kind, text: REPEAT_LABEL[kind](), selected: kind === base.repeat })))
   const form = h('form', {
-    class: 'fu-form', 'aria-label': t('schedule.card.edit'),
+    // Checked by the repeat picked (proposal-draft.ts editsOf): the browser's own checks would hold back 定时 for a
+    // field hidden with another repeat.
+    class: 'fu-form', 'aria-label': t('schedule.card.edit'), novalidate: true,
     onSubmit: (event: Event) => {
       event.preventDefault()
       handlers.acceptProposal(card.id, readDraft(form as HTMLFormElement, card.id, base))

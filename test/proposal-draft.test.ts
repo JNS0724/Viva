@@ -63,3 +63,15 @@ test('what a form lacks is said before anything is sent', () => {
   assert.equal(problem({ repeat: 'cron', expression: ' ' }), 'schedule.edit.cron.missing')
   assert.equal(problem({}), null)
 })
+
+test('a time left as it opened sends no rule, so the proposal keeps its own to the second; one changed sends its rule', () => {
+  const original = draftOf(proposalOf({ kind: 'weekly', weekly: { time: '09:00:30', weekdays: [5, 1], time_zone: ZONE } }), NOW)
+  const renamed = editsOf({ ...original, title: '周会' }, original)
+  assert.deepEqual(renamed, { edits: { title: '周会', prompt: '起草周报' } })
+  assert.deepEqual(editsOf({ ...original, weekdays: [1, 5] }, original), { edits: { title: '周报', prompt: '起草周报' } }, 'the same days in another order')
+  assert.deepEqual(editsOf({ ...original, date: '2027-01-01', day: 3 }, original), { edits: { title: '周报', prompt: '起草周报' } }, 'fields its repeat does not use')
+  const moved = editsOf({ ...original, time: '10:00' }, original)
+  assert.deepEqual('edits' in moved && moved.edits.rule, { kind: 'weekly', weekly: { time: '10:00:00', weekdays: [1, 5], time_zone: ZONE } })
+  const daily = editsOf({ ...original, repeat: 'daily' }, original)
+  assert.equal('edits' in daily && daily.edits.rule?.kind, 'daily', 'another repeat is a change')
+})

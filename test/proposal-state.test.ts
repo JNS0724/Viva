@@ -87,3 +87,12 @@ test('a refused save keeps the form and what was typed in it; 取消 lets it go'
   actions.editProposal('p1', false)
   assert.deepEqual([state().proposals[0].editing, state().proposals[0].draft, state().proposals[0].error], [false, null, null])
 })
+
+test('修改 of the name only: no rule sent, the card keeps the proposal\'s own time', async () => {
+  const sent: unknown[] = []
+  const { actions, state } = setup({ acceptSchedule: async (id, edits) => { sent.push(edits); return { title: '月报', nextAt: proposal.firstAt } } })
+  actions.editProposal('p1', true)
+  await actions.acceptProposal('p1', { ...draftOf(proposal, Date.now()), title: '月报' })
+  assert.deepEqual(sent, [{ title: '月报', prompt: '起草周报' }])
+  assert.deepEqual([state().proposals[0].proposal.title, state().proposals[0].proposal.rule], ['月报', proposal.rule])
+})

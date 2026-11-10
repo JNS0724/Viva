@@ -89,3 +89,11 @@ test('changed on the card before yes: kept as changed, checked as the model\'s o
   const kept = schedules.accept('p1', { title: ' 月报 ', prompt: '起草月报', rule: { kind: 'cron', cron: { expression: '0 9 1 * *', time_zone: 'Asia/Shanghai' } } })
   assert.deepEqual([kept.title, kept.prompt, kept.kind, kept.nextAt], ['月报', '起草月报', 'cron', '2026-12-01T01:00:00.000Z'], 'still there after the refusals, kept as changed')
 })
+
+test('changed on the card with its time untouched: the proposal\'s own rule is kept, to the second', () => {
+  const { schedules } = setup()
+  const soon = { kind: 'at', at: '2026-11-06T10:00:30+08:00' }
+  schedules.act({ op: 'schedule_create', title: '提醒', prompt: '交报销单', rule: soon }, null, '/work')
+  const kept = schedules.accept('p1', { title: '报销', prompt: '交报销单' })
+  assert.deepEqual([kept.title, kept.nextAt], ['报销', '2026-11-06T02:00:30.000Z'], 'due within the minute, not refused as past')
+})

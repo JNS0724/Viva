@@ -123,15 +123,31 @@ function ruleOf(draft: ProposalDraft): ScheduleEdits['rule'] | DraftProblem {
   return { kind: 'cron', cron: { expression: `${minute} ${hour} ${draft.day} * *`, time_zone } }
 }
 
-/** What 定时 sends for a draft, or the problem to show on the card. */
-export function editsOf(draft: ProposalDraft): { edits: ScheduleEdits } | { problem: DraftProblem } {
+/** The fields that say when, for each repeat: the rest of a draft is carried along for a switch, not part of it. */
+const TIMING: Readonly<Record<RepeatKind, readonly (keyof ProposalDraft)[]>> = {
+  at: ['date', 'time'], daily: ['time'], weekly: ['time', 'weekdays'], monthly: ['time', 'day'], cron: ['expression'],
+}
+const timingValue = (draft: ProposalDraft, field: keyof ProposalDraft) =>
+  JSON.stringify(field === 'weekdays' ? [...new Set(draft.weekdays)].sort((a, b) => a - b) : draft[field])
+/** Whether two drafts say the same when: the same repeat, at the same time, on the same days. */
+export const sameTiming = (a: ProposalDraft, b: ProposalDraft): boolean =>
+  a.repeat === b.repeat && TIMING[a.repeat].every((field) => timingValue(a, field) === timingValue(b, field))
+
+/**
+ * What 定时 sends for a draft, or the problem to show on the card. Its time as the proposal had it (`original`, the
+ * form as it opened) sends no rule: the form says minutes, and the proposal's own may hold seconds a rewrite would
+ * drop, running it early or, for one due within the minute, refusing it as past.
+ */
+export function editsOf(draft: ProposalDraft, original?: ProposalDraft): { edits: ScheduleEdits } | { problem: DraftProblem } {
   const title = draft.title.trim(), prompt = draft.prompt.trim()
   if (!title) return { problem: 'schedule.edit.title.missing' }
   if (title.length > MAX_TITLE_CHARS) return { problem: 'schedule.edit.title.long' }
   if (!prompt) return { problem: 'schedule.edit.prompt.missing' }
+  if (original && sameTiming(draft, original)) return { edits: { title, prompt } }
   const rule = ruleOf(draft)
   return typeof rule === 'string' ? { problem: rule } : { edits: { title, prompt, rule } }
 }
 
 /** The proposal as kept with its edits: what the decided card shows. */
-export const withEdits = (proposal: ScheduleProposal, edits: ScheduleEdits): ScheduleProposal => ({ ...proposal, ...edits })
+export const withEdits = (proposal: ScheduleProposal, { title, prompt, rule }: ScheduleEdits): ScheduleProposal =>
+  ({ ...proposal, title, prompt, ...(rule ? { rule } : {}) })

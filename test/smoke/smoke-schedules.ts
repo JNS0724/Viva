@@ -16,13 +16,13 @@ const clickText = (scope: string, text: string) =>
   `[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.textContent === ${JSON.stringify(text)}).click()`
 const row = (status: string) => `[...document.querySelectorAll('${PAGE} .fu-row[data-status="${status}"]')].find((el) => el.textContent.includes(${JSON.stringify(FOLLOWUP.title)}))`
 
-interface FormSeen { title: string, prompt: string, repeat: string, time: string, shown: string[], weekly: string[] }
+interface FormSeen { title: string, prompt: string, repeat: string, time: string, shown: string[], weekly: string[], novalidate: boolean }
 /** The form's values, and which rows show (by data-for); then, 每周 picked, which show for it. */
 const READ_FORM = `(() => {
   const form = ${q(`${CARD} .fu-form`)}
   const value = (name) => form.querySelector('[name^="proposal-' + name + '-"]').value
   const shown = () => [...form.querySelectorAll('[data-for]')].filter((el) => getComputedStyle(el).display !== 'none').map((el) => el.dataset.for)
-  const seen = { title: value('title'), prompt: value('prompt'), repeat: value('repeat'), time: value('time'), shown: shown() }
+  const seen = { title: value('title'), prompt: value('prompt'), repeat: value('repeat'), time: value('time'), shown: shown(), novalidate: form.noValidate }
   const repeat = form.querySelector('[name^="proposal-repeat-"]')
   repeat.value = 'weekly'
   const weekly = shown()
@@ -44,6 +44,7 @@ async function checkEditForm(win: SmokeWindow, outDir: string): Promise<string[]
   if (seen.title !== FOLLOWUP.title || seen.prompt !== FOLLOWUP.prompt || seen.repeat !== 'at' || !/^\d\d:\d\d$/.test(seen.time)) {
     failures.push(`the form should hold the proposal, once, at its time: ${JSON.stringify(seen)}`)
   }
+  if (!seen.novalidate) failures.push('the form should check by its repeat, not hold 定时 back for a hidden field')
   if (seen.shown.join('|') !== 'at|at daily weekly monthly') failures.push(`a once schedule should show its date and time only: ${JSON.stringify(seen.shown)}`)
   if (seen.weekly.join('|') !== 'weekly|at daily weekly monthly') failures.push(`每周 should show the weekdays and time: ${JSON.stringify(seen.weekly)}`)
   await capture(win, outDir, 'schedule-edit')

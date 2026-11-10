@@ -56,13 +56,15 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   }
 
   /**
-   * The user's yes on a card: the schedule kept, as proposed or as the user changed it there (`edits`: its name,
-   * what it does and its rule, all three, checked as the model's own are).
+   * The user's yes on a card: the schedule kept, as proposed or as the user changed it there (`edits`: its name and
+   * what it does, and its rule unless its time was not touched; checked as the model's own are).
    */
   function accept(proposalId: string, edits?: unknown): ScheduleView {
     const proposal = proposals.get(proposalId)
     if (!proposal) throw new Error(t('main.schedules.proposal.gone'))
-    const edited = edits === undefined ? null : parseScheduleWords(edits)
+    // A rule left out: the time was not touched on the card, and the proposal's own stays, to the second.
+    const kept = edits !== null && typeof edits === 'object' && (edits as Record<string, unknown>).rule === undefined
+    const edited = edits === undefined ? null : parseScheduleWords(kept ? { ...edits, rule: proposal.rule } : edits)
     const words = edited ? { ...edited, rule: edited.rule as unknown as ScheduleRule } : proposal
     // Let go only once kept: a save that fails leaves the card to be answered again.
     let schedule: Schedule
