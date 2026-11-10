@@ -7,7 +7,7 @@ import { expect, type Page, type TestInfo } from '@playwright/test'
 export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void> {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   try {
-    const seen = await page.evaluate(async () => {
+    const { rows: seen, blanks } = await page.evaluate(async () => {
       const { createIsland } = await import(new URL('./view/island-dom.js', location.href).href) as typeof import('../../src/renderer/view/island-dom.ts')
       const { placeDesktopIsland } = await import(new URL('./view/desktop-layout.js', location.href).href) as typeof import('../../src/renderer/view/desktop-layout.ts')
       const base = { tone: 'idle', mood: 'idle', label: '', recent: [] }
@@ -60,9 +60,23 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
         })
       }
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-      return rows
+      // Her mood changing (thinking to typing, as a turn goes): the portrait shown is never a picture still decoding,
+      // which would blink her out for a frame (maid.ts showMaid).
+      const swap = createIsland('desk', () => {}, {})
+      const working = { ...base, form: 'working', tone: 'working', label: '正在处理', startedAt: Date.now() }
+      swap.update({ ...working, mood: 'thinking', desktopOpen: false })
+      await Promise.all([...swap.el.querySelectorAll('img')].map(image => image.decode()))
+      const blanks = []
+      for (const mood of ['typing', 'thinking', 'done', 'error']) {
+        swap.update({ ...working, mood, desktopOpen: false })
+        const shown = swap.el.querySelector<HTMLImageElement>('.isl-anchor img')
+        if (!shown || !shown.complete || !shown.naturalWidth) blanks.push(mood)
+        await new Promise(resolve => setTimeout(resolve, 120))
+      }
+      return { rows, blanks }
     })
     await info.attach('desk-signals', { body: JSON.stringify(seen, null, 2), contentType: 'application/json' })
+    expect(blanks, 'a mood changed never shows a picture still decoding').toEqual([])
     await page.locator('#desk-signal-gallery').screenshot({ path: info.outputPath('desk-signals.png') })
     const by = Object.fromEntries(seen.map(row => [row.name, row]))
     expect(seen.map(row => [row.name, row.signal])).toEqual([['rest', 'rest'], ['working', 'working'], ['confirm', 'confirm'], ['asking', 'asking'], ['done', 'done'],

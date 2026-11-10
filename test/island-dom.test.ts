@@ -38,6 +38,7 @@ test('desktop layout separates the resting portrait, status, input and content',
   assert.equal(deskLayoutFor(mini, false, true), 'rest', 'hover never changes the layout')
   assert.equal(deskLayoutFor({ ...mini, dragging: true }, false, false), 'rest')
   assert.equal(deskLayoutFor({ ...mini, background: { count: 2 } }, false, false), 'capsule')
+  assert.equal(deskLayoutFor({ ...mini, background: { count: 0, done: 3 } }, false, false), 'rest', 'only ended: counted on her corner, no strip')
   assert.equal(deskLayoutFor(asking, true, false), 'content')
   const input = { ...mini, form: 'input', files: [], images: [] }
   assert.equal(deskLayoutFor(input, true, false), 'input')

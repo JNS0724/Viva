@@ -236,7 +236,7 @@ Drawn by `src/renderer/view/maid.ts`:
   - At rest she is alone, with no strip: the strip appears only while background tasks are running. Background tasks finished and not yet seen are counted on her lower right, inside her round, and a click there opens the background list. The strip is as long as its content, up to `--desk-peek-width`.
   - With reduced motion the rings rest still. Other cards retain their existing character badges.
 - **On the home page** her disc has an extra faint saucer rim. This is the one bold touch in the whole interface; nothing else gets one.
-- All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc.
+- All stills are preloaded the first time she's drawn, so changing state never flashes an empty disc. A new picture replaces the old one only once it is decoded (`view/maid.ts` `showMaid`), so a change of mood never blanks her for a frame or two.
 - After changing assets, check the home page, conversation, approval cards, 动态's details and desktop island, and switch through several states in a row.
 
 ## Accessibility and keyboard

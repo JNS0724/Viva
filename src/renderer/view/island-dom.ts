@@ -1,7 +1,7 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { localeRevision } from '../../shared/i18n/locale.ts'
 import { formatElapsed } from '../selectors.ts'
-import { maidFor, maidMood } from './maid.ts'
+import { maidFor, maidMood, showMaid } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
@@ -33,7 +33,8 @@ export type DeskLayout = 'rest' | 'capsule' | 'input' | 'content'
 export function deskLayoutFor(view: IslandShown, open: boolean, _tools = false): DeskLayout {
   if (view.dragging) return 'rest'
   if (open) return view.form === 'input' ? 'input' : 'content'
-  return view.form === 'mini' && !view.background?.count && !view.background?.done ? 'rest' : 'capsule'
+  // At rest she is alone unless tasks go on: what ended is counted on her corner, not in a strip (update below).
+  return view.form === 'mini' && !view.background?.count ? 'rest' : 'capsule'
 }
 
 /** The second line of the peek: what the state is about, said once (the label says the state). */
@@ -294,7 +295,7 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     avatar.setAttribute('aria-label', t('desk.interaction.toggle'))
     avatar.title = t('desk.interaction.gesture')
     const portrait = maidFor(maids, 'island', view.form === 'drop' ? 'listening' : maidMood(view.mood, view.tone), { size: 72, framing: 'whole', moving: !view.still, badge: false })
-    if (avatar.firstChild !== portrait) avatar.replaceChildren(portrait)
+    showMaid(avatar, portrait)
     surface.hidden = !open
     // At rest the cat is alone: the strip beside her only for what goes on (tasks running); what ended is counted on her.
     peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count

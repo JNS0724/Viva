@@ -13,12 +13,17 @@ const DONE_FACE = `(async () => {
   const handlers = new Proxy({}, { get: () => () => {} })
   const said = reduce(initialState, { type: 'history_loaded', conversationId: 'done-face', savedAt: 1,
     messages: [{ role: 'user', text: '整理一下周报' }, { role: 'assistant', text: '周报整理好了。' }] })
-  const face = (doneNotice) => {
-    renderThread(container, { ...said, lastReceipt: { ms: 1000, tools: 0, thoughts: 0, stopReason: 'end_turn' }, doneNotice }, handlers, Date.now())
+  const read = () => {
     const maid = container.querySelector('.maid-avatar .maid')
     return maid ? maid.dataset.mood + (maid.querySelector('img').src.includes('-motion') ? ' moving' : ' still') : 'none'
   }
-  try { return { fresh: face('fresh'), still: face('still'), seen: face('seen') } } finally { container.remove() }
+  // A new picture takes her place once decoded (maid.ts showMaid): wait for it, up to a second.
+  const face = async (doneNotice, expected) => {
+    renderThread(container, { ...said, lastReceipt: { ms: 1000, tools: 0, thoughts: 0, stopReason: 'end_turn' }, doneNotice }, handlers, Date.now())
+    for (let i = 0; i < 20 && read() !== expected; i++) await new Promise((resolve) => setTimeout(resolve, 50))
+    return read()
+  }
+  try { return { fresh: await face('fresh', 'done moving'), still: await face('still', 'done still'), seen: await face('seen', 'idle moving') } } finally { container.remove() }
 })()`
 
 /** @returns failures */

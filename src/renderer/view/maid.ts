@@ -119,3 +119,25 @@ export function maidFor(cache: MaidSlots, slot: string, mood: MaidMood, options:
   cache.set(slot, { key, el })
   return el
 }
+
+/** The portrait each slot is to show next, while its picture decodes. */
+const coming = new WeakMap<Element, HTMLElement | null>()
+
+/**
+ * Puts `next` (or nothing) in `slot`, keeping the portrait already there until the new picture is decoded: a new
+ * <img> shows nothing for a frame or two while it decodes, and a mood that changes (thinking, typing, done) would
+ * blink her out. An empty slot takes it at once; a later call wins over one still waiting.
+ */
+export function showMaid(slot: Element, next: HTMLElement | null): void {
+  if (slot.firstElementChild === next && slot.childElementCount === (next ? 1 : 0)) { coming.delete(slot); return }
+  coming.set(slot, next)
+  const image = next?.querySelector('img')
+  const place = () => {
+    if (coming.get(slot) !== next) return
+    coming.delete(slot)
+    if (next) slot.replaceChildren(next)
+    else slot.replaceChildren()
+  }
+  if (!next || !slot.firstElementChild || !image || (image.complete && image.naturalWidth > 0)) return place()
+  image.decode().then(place, place)
+}
