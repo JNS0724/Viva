@@ -457,6 +457,7 @@ export function createAcpBridge({
   async function cancel() {
     broker.cancelAll(sessionId)
     if (!connection || !sessionId) return
+    endRequestsOf(sessionId)
     const context = operations.context(sessionId)
     if (operations.cancelPreparing(sessionId, () => emit({ type: 'turn_end', stopReason: 'cancelled', ...scoped(context) }))) return
     try {
@@ -466,12 +467,19 @@ export function createAcpBridge({
     }
   }
 
+  /**
+   * A main session's turn stopped (the user's Stop) or left: what it left undecided fails as cancelled, and a decision
+   * still being carried out sends nothing more (request-runtime.ts), at once rather than once the turn winds down.
+   */
+  function endRequestsOf(id: string) {
+    try { routing.endTurn({ sessionId: id, reason: 'cancelled' }) }
+    catch (err) { console.error('[acp-bridge] could not end the requests of a stopped session:', describeError(err)) }
+  }
+
   function retire(id: string, measure: ReturnType<typeof sessionTiming>) {
     if (closing.has(id)) return
-    // Its turn, if one runs, ends here: what it said reaches nothing from now on, its turn_end included. What it left
-    // undecided fails, and a decision still being carried out sends nothing more (request-runtime.ts).
-    try { routing.endTurn({ sessionId: id, reason: 'cancelled' }) }
-    catch (err) { console.error('[acp-bridge] could not end the requests of a session left:', describeError(err)) }
+    // Its turn, if one runs, ends here: what it said reaches nothing from now on, its turn_end included.
+    endRequestsOf(id)
     const cleanup = (async () => {
       if (operations.has(id)) {
         try { if (!operations.cancelPreparing(id, () => {})) await measure('session.cancel', () => live().cancel({ sessionId: id })) }

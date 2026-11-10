@@ -471,3 +471,20 @@ test('a session the bridge leaves ends its turn at the host: what it left undeci
   await bridge.newSession()
   assert.deepEqual([requests.store.get(asked.id)?.status, requests.store.get(asked.id)?.failure], ['failed', 'cancelled'])
 })
+
+test('stopping the turn ends its requests at once: nothing is decided for it while it winds down', { timeout: 5000 }, async t => {
+  const requests = testRequests()
+  const bridge = createAcpBridge({ routing: requests, dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
+    spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
+      async prompt(params) { lastPrompt = params.prompt[0].text; return { stopReason: 'end_turn' } },
+      async cancel() {},
+    })),
+  })
+  t.after(() => { bridge.dispose() })
+  const { sessionId } = await bridge.start()
+  await bridge.prompt('写个笔记')
+  const [asked] = requestsIn(lastPrompt)
+  await bridge.cancel()
+  assert.deepEqual([requests.store.get(asked.id)?.status, requests.store.get(asked.id)?.failure], ['failed', 'cancelled'])
+  assert.equal((await requests.decide({ requestId: asked.id, sessionId, plan: { goals: [{ goal: '笔记', disposition: 'delegate' }], actions: [{ kind: 'start', brief: '写笔记' }] } })).accepted, false)
+})

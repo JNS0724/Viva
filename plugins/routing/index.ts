@@ -34,6 +34,8 @@ const FAST_MAX_TOKENS = 1500
 const TASK_LIST_WAIT_MS = 5_000
 
 const textOf = (content: unknown) => (Array.isArray(content) ? content as Array<{ type?: string, text?: string }> : []).filter(part => part.type === 'text').map(part => part.text ?? '').join('')
+/** Settles when the signal aborts. */
+const once = (signal: AbortSignal) => new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
 /**
  * A note to the main agent (a reminder, the fast lane's notice): a user message that says it comes from this plugin,
  * so nothing reads it as the user's words (the memory plugin's extractor, the history). dsh's types list only its own
@@ -153,13 +155,15 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   })
 
   // ── End of a turn: nothing undecided is passed over while reminders are left; the fast lane is waited for.
-  ctx.on('agent/turn-stopping', async ({ agent }) => {
+  ctx.on('agent/turn-stopping', async ({ agent, signal }) => {
     const id = String(agent.session.id)
     if (!mains.has(id)) return
     const pendingFast = fastWork.get(id)
     // Each is bounded on its own (its deadline to decide, then the host's to answer a plan sent), so the turn waits for
-    // all of them: one that outlived its turn would come back to an idle agent, its outcome told to nobody.
-    if (pendingFast?.size) await Promise.allSettled([...pendingFast])
+    // all of them: one that outlived its turn would come back to an idle agent, its outcome told to nobody. A stopped
+    // turn waits for nothing and is reminded of nothing: the host has ended its requests (acp-bridge.ts cancel).
+    if (pendingFast?.size && !signal.aborted) await Promise.race([Promise.allSettled([...pendingFast]), once(signal)])
+    if (signal.aborted) return
     const plan = repairs(ledgerOf(id), MAX_REPAIRS)
     ledgers.set(id, plan.ledger)
     if (plan.retry.length) agent.steer(userNote(`【路由补交】以下请求还没有提交 commit_route：${plan.retry.join('、')}。先逐个提交有效路由再结束；不得直接用正文代替。`))
