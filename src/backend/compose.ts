@@ -929,15 +929,18 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
-    // The main conversation's requests: each decision's task actions go to the task runtime; only tasks of the
-    // request's working folder are stopped or messaged.
+    // The main conversation's requests: each decision's task actions go to the task runtime. A task starts from the
+    // conversation on screen (task-runtime.ts), so only while that is still the request's: a decision outliving its
+    // turn (stopped meanwhile) must not start its remaining work in another conversation. Only tasks of the request's
+    // working folder are stopped or messaged.
     const tasks = taskRuntime.agent
     const visible = (taskId: string, cwd: string | null) => { tasks.query({ op: 'get', taskId }, { cwd: cwd ?? '' }) }
+    const onScreen = (conversationId: string | null) => { if (sessions.current().id !== conversationId) throw new Error(t('main.requests.start.elsewhere')) }
     requests = createRequestRuntime({
       store: createRequestStore({ db: appDb.db }),
       apply: applyChange,
       tasks: {
-        start: (brief) => tasks.start(brief),
+        start: async (brief, place) => { onScreen(place.conversationId); return tasks.start(brief) },
         message: async (taskId, text, cwd) => { visible(taskId, cwd); return tasks.message(taskId, text) },
         stop: async (taskId, cwd) => { visible(taskId, cwd); return tasks.stop(taskId) },
       },

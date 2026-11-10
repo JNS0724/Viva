@@ -3,6 +3,7 @@ export const zhCN = {
   "main.assistant-stream.output.not.confirmed": "结果确认通道不可用。已有内容已保留，可发送“继续”核对本轮结果。",
   "main.history-schema.invalid.message.key": "消息标识不正确",
   "main.requests.not.routed": "助手这次没能处理这条消息，请再发一次。",
+  "main.requests.start.elsewhere": "这条消息所在的对话已经不在前台，后台任务没有开始。",
   "main.routing-channel.not.bound": "助手还没准备好接收请求，请稍后再试。",
   "main.routing-channel.not.taken": "应用没能记下这次决定。",
   "turn.output.limit": "已达到本轮输出上限，回复可能不完整。已有内容已保留，可发送“继续”接着处理。",

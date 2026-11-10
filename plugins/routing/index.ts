@@ -48,6 +48,7 @@ const NEXT = {
   continuing: '已交接，界面会显示任务卡片；继续把仍在进行的回答说完，在结尾用一句话提一下这件事已经交给后台，只说一次。',
   handed: '已交接，界面已显示你的 notice 和任务卡片；结束本轮，不要等待任务结果。',
   tell: '已交接；请在下一步用一句话告诉用户交给了哪个任务、去做什么，然后结束，不要等待任务结果。',
+  unanswered: '提交已发出，但应用没有确认结果，可能已经办了：不要再为它提交 commit_route；请在下一步告诉用户这件事已提交、结果待确认，可以稍后在后台任务里查看。',
 } as const
 
 export function apply(ctx: Context, config: { prefix: string, suffix?: string }, port: NodeJS.Process = process) {
@@ -126,6 +127,11 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
       if (problem) throw new Error(problem)
       const plan = { goals: args.goals, actions: args.actions }
       const decided = await host.decide(id, requestId, plan, exec.signal)
+      // Sent and not answered: the host may have taken it, so it is not routed again; the agent says it is unconfirmed.
+      if (decided.accepted === 'unanswered') {
+        update(id, l => decide(l, requestId, 'answering'))
+        return { text: JSON.stringify({ accepted: 'unknown', requestId, reason: decided.reason, next: NEXT.unanswered }) }
+      }
       if (!decided.accepted) throw new Error(decided.reason)
       const kinds = decided.receipts.map(receipt => receipt.kind)
       const operations = (args.actions as Array<{ kind?: string, operation?: Grant }>).filter(action => action.kind === 'app_action' && action.operation).map(action => action.operation as Grant)
@@ -193,7 +199,12 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     }).filter(turn => turn.text.trim())
     const decision = parseFastDecision(await complete(ctx, agent, fastInput({ recent, tasks: listed, words }), signal), listed)
     if (decision.decision === 'defer') return { decided: null, reason: deferCode(decision) }
-    const decided = await host.decide(sessionId, requestId, fastPlan(words, decision), signal)
+    // The deadline is for deciding: a plan sent is the host's, and its answer is waited for as for the agent's own commit.
+    const decided = await host.decide(sessionId, requestId, fastPlan(words, decision))
+    if (decided.accepted === 'unanswered') {
+      if (agent.status === 'running') agent.steer(userNote(fastNotice(requestId, decision as FastHandover, null)))
+      return { decided: 'answering', reason: 'unanswered' }
+    }
     if (!decided.accepted) return { decided: null, reason: 'refused' }
     // Accepted, the request is decided at the host whatever its receipts say: a task action not done (no free slot,
     // say) is the agent's to tell, as after its own commit, not to route again.

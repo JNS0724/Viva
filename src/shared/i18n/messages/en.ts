@@ -2,6 +2,7 @@ export const en = {
   "main.assistant-stream.output.not.confirmed": "The output channel could not confirm this turn. Existing content is kept. Send “Continue” to check the result.",
   "main.history-schema.invalid.message.key": "Invalid message identity",
   "main.requests.not.routed": "The assistant didn’t get to handle this message. Send it again.",
+  "main.requests.start.elsewhere": "The conversation this message came from is no longer open, so the background task wasn’t started.",
   "main.routing-channel.not.bound": "The assistant isn’t ready to take requests yet. Try again in a moment.",
   "main.routing-channel.not.taken": "The app couldn’t record this decision.",
   "turn.output.limit": "This turn reached its output limit and the reply may be incomplete. Existing content is kept. Send “Continue” to carry on.",

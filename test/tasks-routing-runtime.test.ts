@@ -15,7 +15,7 @@ const where = { sessionId: 's1', conversationId: 'c1', cwd: '/work' }
 
 function tasksDoing(log: string[]): RequestTasks {
   return {
-    start: async (brief) => { log.push(`start:${brief}`); return { taskId: 't-new' } },
+    start: async (brief, place) => { log.push(`start:${brief}:${place.conversationId}`); return { taskId: 't-new' } },
     message: async (taskId, text, cwd) => { log.push(`message:${taskId}:${text}:${cwd}`); return {} },
     stop: async (taskId) => { log.push(`stop:${taskId}`); throw new Error('任务不存在') },
   }
@@ -33,7 +33,7 @@ test('a request is decided once, by its own session, through the protocol; task 
   assert.deepEqual(await requests.decide({ requestId: id, sessionId: 's1', plan }), { accepted: true, receipts: [
     { kind: 'start', ok: true, taskId: 't-new' }, { kind: 'message', ok: true, taskId: 't1' }, { kind: 'stop', ok: false, error: '任务不存在' },
   ] })
-  assert.deepEqual(log, ['start:做今日简报', 'message:t1:加科技新闻:/work', 'stop:t2'], 'in order, within the request\'s folder')
+  assert.deepEqual(log, ['start:做今日简报:c1', 'message:t1:加科技新闻:/work', 'stop:t2'], 'in order, in the request\'s conversation and folder')
   assert.deepEqual(requests.store.actions(id).map(action => [action.kind, action.status, action.taskId]), [['start', 'done', 't-new'], ['message', 'done', 't1'], ['stop', 'failed', null]])
   assert.match(String((await requests.decide({ requestId: id, sessionId: 's1', plan: reply }) as { reason: string }).reason), /已经提交过/)
 })

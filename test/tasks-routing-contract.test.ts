@@ -4,6 +4,8 @@ import { requestsIn, withoutHeaders, withRequestHeader } from '../src/shared/req
 import { parsePlan } from '../src/shared/request-routing/protocol.ts'
 import { asBind, asBound, asDecide, asDecided, asFast } from '../src/shared/request-routing/channel.ts'
 import { fastNotice, fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
+import { createHostChannel } from '../plugins/routing/lib/host.ts'
+import { EventEmitter } from 'node:events'
 
 test('a request header round-trips, several in one message each keep their own words, and can be left out', () => {
   const text = `【插话】用户又说：\n${withRequestHeader('补一节科技新闻', 'r-1')}\n${withRequestHeader('另外停掉 A 股分析', 'r-2')}`
@@ -63,4 +65,21 @@ test('the fast lane hands over only what is plain, to a task it was shown, as a 
   assert.match(undone, /没有办成：同时最多 5 个后台任务/, 'a failed action is told with its reason')
   assert.match(undone, /不要再为它提交 commit_route/)
   assert.doesNotMatch(undone, /已经交给后台/)
+  assert.match(fastNotice('r-1', start, null), /没有收到确认.*不要再为它提交 commit_route.*结果待确认/, 'sent without an answer: maybe done, not routed again')
+})
+
+test('a decision sent and not answered is not taken as refused: the host may have taken it', async () => {
+  const port = Object.assign(new EventEmitter(), { connected: true, sent: [] as unknown[], send(message: unknown) { this.sent.push(message); return true } })
+  const host = createHostChannel(port as unknown as NodeJS.Process, { onBind: () => {} })
+  const stopped = new AbortController()
+  const pending = host.decide('s1', 'r-1', {}, stopped.signal)
+  stopped.abort()
+  assert.equal((await pending).accepted, 'unanswered', 'the turn stopped while the app was still at it')
+  const answered = host.decide('s1', 'r-2', {})
+  const id = (port.sent.at(-1) as { id: string }).id
+  port.emit('message', { type: 'routing_decided', version: 1, id, accepted: false, reason: '不行' })
+  assert.deepEqual(await answered, { type: 'routing_decided', version: 1, id, accepted: false, reason: '不行' }, 'a refusal is the host\'s own')
+  const closing = host.decide('s1', 'r-3', {})
+  host.close()
+  assert.equal((await closing).accepted, 'unanswered', 'the app went away')
 })

@@ -8,8 +8,15 @@ import { asBind, asDecided, type Decided, type FastOutcome } from '../../../src/
 /** Starting a task can take a while (dsh opens its session and connects the user's MCP servers). */
 const DECIDE_WAIT_MS = 60_000
 
+/**
+ * A decision sent that got no answer: it did not come in time, the turn stopped, or the app went away. The host may
+ * have taken it all the same (it keeps a decision before carrying out its actions), so this is no refusal: the request
+ * is not routed again, and what became of it is the host's record.
+ */
+export interface Unanswered { accepted: 'unanswered', reason: string }
+
 export function createHostChannel(port: NodeJS.Process, { onBind }: { onBind: (sessionId: string) => void }) {
-  const waiting = new Map<string, (decided: Decided) => void>()
+  const waiting = new Map<string, (decided: Decided | Unanswered) => void>()
   const send = (message: object) => { if (port.connected) port.send!(message, () => {}) }
 
   const receive = (message: unknown) => {
@@ -24,13 +31,13 @@ export function createHostChannel(port: NodeJS.Process, { onBind }: { onBind: (s
   }
   port.on('message', receive)
 
-  /** The host's answer to a decision; refused when it does not come in time or the turn is stopped meanwhile. */
-  function decide(sessionId: string, requestId: string, plan: unknown, signal?: AbortSignal): Promise<Decided> {
+  /** The host's answer to a decision, or unanswered when none comes in time, the turn is stopped, or the app goes. */
+  function decide(sessionId: string, requestId: string, plan: unknown, signal?: AbortSignal): Promise<Decided | Unanswered> {
     const id = randomUUID()
     return new Promise((resolve) => {
-      const done = (decided: Decided) => { clearTimeout(timer); signal?.removeEventListener('abort', abort); waiting.delete(id); resolve(decided) }
-      const abort = () => done({ accepted: false, reason: '本轮已停止' })
-      const timer = setTimeout(() => done({ accepted: false, reason: '应用没有及时答复这次提交' }), DECIDE_WAIT_MS)
+      const done = (decided: Decided | Unanswered) => { clearTimeout(timer); signal?.removeEventListener('abort', abort); waiting.delete(id); resolve(decided) }
+      const abort = () => done({ accepted: 'unanswered', reason: '本轮已停止' })
+      const timer = setTimeout(() => done({ accepted: 'unanswered', reason: '应用没有及时答复这次提交' }), DECIDE_WAIT_MS)
       waiting.set(id, done)
       signal?.addEventListener('abort', abort, { once: true })
       send({ type: 'routing_decide', version: 1, id, sessionId, requestId, plan })
@@ -44,7 +51,7 @@ export function createHostChannel(port: NodeJS.Process, { onBind }: { onBind: (s
 
   function close() {
     port.off('message', receive)
-    for (const done of [...waiting.values()]) done({ accepted: false, reason: '与应用的连接已断开' })
+    for (const done of [...waiting.values()]) done({ accepted: 'unanswered', reason: '与应用的连接已断开' })
   }
 
   return { decide, reportFast, close }

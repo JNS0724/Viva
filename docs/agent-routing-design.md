@@ -164,7 +164,7 @@ App tools stay in the main session's scope, so they keep DSH's argument check, a
 | needs_input | `clarify` | Question and options | Ask at the next step, then wait for the answer after the turn |
 | app_operation | `app_action` | The app tool's name | The main agent calls that tool at the next step |
 
-A handover also carries a `notice`, one line for the user: once the handover is done, the plugin shows it as the turn's answer and ends the turn, with no further model call; it is only shown, never part of the host's decision record. Without one, the main agent says it at its next step. Goals and actions must agree both ways; the host checks and rejects a mismatch with its reason. The protocol stays flat: an `app_action` names only the tool, and the arguments go to the tool's own call; nested free-form arguments made the model produce invalid JSON. A request takes one decision only; the user's corrections arrive as new requests referring to the original action.
+A handover also carries a `notice`, one line for the user: once the handover is done, the plugin shows it as the turn's answer and ends the turn, with no further model call; it is only shown, never part of the host's decision record. Without one, the main agent says it at its next step. Goals and actions must agree both ways; the host checks and rejects a mismatch with its reason. The protocol stays flat: an `app_action` names only the tool, and the arguments go to the tool's own call; nested free-form arguments made the model produce invalid JSON. A request takes one decision only; the user's corrections arrive as new requests referring to the original action. A submission that gets no answer (a timeout, the turn stopped, the app gone) is not taken as a refusal: the host may have accepted it, so it is not submitted again, and the main agent tells the user it was submitted and is not yet confirmed; the host's record is what counts.
 
 ### 8.2 Answers and questions
 
@@ -198,7 +198,7 @@ Withdrawing unread additions, rolling back task changes and task snapshots are o
 
 ### 10.1 Handover
 
-TaskRuntime is the only writer of tasks. A task starts from the conversation on screen, which during a turn is the request's own (switching topics is refused while a turn runs); only tasks of the request's working folder can be stopped or messaged. A brief is self-contained: the user's words, the goal, the agreements found and their sources, files and output requirements; a summary of old background never replaces the original reference.
+TaskRuntime is the only writer of tasks. A task starts from the conversation on screen, which during a turn is the request's own (switching topics is refused while a turn runs); when a decision is still being carried out after its turn stopped and another conversation is on screen, its remaining starts are not made and their receipts record the failure; only tasks of the request's working folder can be stopped or messaged. A brief is self-contained: the user's words, the goal, the agreements found and their sources, files and output requirements; a summary of old background never replaces the original reference.
 
 ### 10.2 Places
 

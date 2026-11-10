@@ -89,9 +89,11 @@ export function fastPlan(words: string, decision: FastHandover): Plan {
 
 /**
  * The notice the main agent gets once the host accepted the fast lane's plan, so it neither routes the request again
- * (the host would refuse) nor leaves it unsaid: done, it is mentioned at the end of the answer; not done, with why.
+ * (the host would refuse) nor leaves it unsaid: done, it is mentioned at the end of the answer; not done, with why;
+ * sent without an answer (null), as submitted and not yet confirmed.
  */
-export function fastNotice(requestId: string, decision: FastHandover, receipts: readonly Receipt[]): string {
+export function fastNotice(requestId: string, decision: FastHandover, receipts: readonly Receipt[] | null): string {
+  if (!receipts) return `【调度已处理】请求 ${requestId}：已提交给应用，但没有收到确认，可能已经办了。不要再为它提交 commit_route；把当前回答说完，在结尾告诉用户这件事已提交、结果待确认，可以稍后在后台任务里查看。`
   const errors = receipts.flatMap(receipt => receipt.ok ? [] : [receipt.error])
   if (errors.length) return `【调度已处理】请求 ${requestId}：已提交，但没有办成：${errors.join('；')}。不要再为它提交 commit_route；把当前回答说完，在结尾如实告诉用户这件事没办成、原因和可以怎么做。`
   const taskId = receipts[0]?.ok ? receipts[0].taskId : undefined

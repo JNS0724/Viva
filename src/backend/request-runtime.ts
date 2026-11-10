@@ -19,9 +19,15 @@ import type { RequestKind, RequestStore, StoredRequest } from './request-store.t
  */
 export type RequestFailure = 'unrouted' | 'turn_error' | 'cancelled' | 'undelivered' | 'interrupted'
 
-/** The task runtime as the decisions use it (compose.ts): only tasks of the request's working folder are touched. */
+/** Where a request was said: its conversation and working folder, as kept when it arrived. */
+export interface RequestPlace { conversationId: string | null, cwd: string | null }
+
+/**
+ * The task runtime as the decisions use it (compose.ts): a task starts from the request's conversation, and only tasks
+ * of the request's working folder are touched.
+ */
 export interface RequestTasks {
-  start: (brief: string) => Promise<{ taskId: string }>
+  start: (brief: string, place: RequestPlace) => Promise<{ taskId: string }>
   message: (taskId: string, text: string, cwd: string | null) => Promise<unknown>
   stop: (taskId: string, cwd: string | null) => Promise<unknown>
 }
@@ -52,7 +58,7 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
 
   async function perform(request: StoredRequest, action: TaskAction): Promise<Receipt> {
     try {
-      if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start(action.brief)).taskId }
+      if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start(action.brief, { conversationId: request.conversationId, cwd: request.cwd })).taskId }
       if (action.kind === 'message') await tasks.message(action.taskId, action.text, request.cwd)
       else await tasks.stop(action.taskId, request.cwd)
       return { kind: action.kind, ok: true, taskId: action.taskId }
