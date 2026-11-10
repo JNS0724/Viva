@@ -22,6 +22,7 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
         ['error', { ...base, form: 'error', tone: 'error', mood: 'error', label: '出错了', detail: '连接中断' }],
         ['error-alone', { ...base, form: 'mini', tone: 'error', mood: 'error', label: '出错了' }],
         ['offline', { ...base, form: 'pending', tone: 'pending', mood: 'idle', label: '未连接', detail: '需要配置模型' }],
+        ['done-left', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', elapsedMs: 72_000, detail: '周报整理好了' }],
         ['rest-ended', { ...base, form: 'mini', background: { count: 0, done: 3, waiting: 0, items: [] } }],
         ['rest-running', { ...base, form: 'mini', background: { count: 1, done: 3, waiting: 0, items: [{ id: 't', title: '整理周报', status: 'running', now: '读取文件' }] } }],
       ]
@@ -40,8 +41,11 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
         island.update({ desktopOpen: false, ...view })
         stage.append(island.el)
         gallery.append(stage)
-        placeDesktopIsland(island.el, stage, { anchor: { x: 54, y: 56 }, side: 'right', panelWidth: 440 })
+        const left = name === 'done-left'
+        placeDesktopIsland(island.el, stage, left ? { anchor: { x: 326, y: 56 }, side: 'left', panelWidth: 440 } : { anchor: { x: 54, y: 56 }, side: 'right', panelWidth: 440 })
         await Promise.all([...island.el.querySelectorAll('img')].map(image => image.decode()))
+        // Placement writes at the next frame (desktop-layout.ts queueLayout): measure after it.
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
         const maid = getComputedStyle(island.el.querySelector('.isl-anchor > .maid')!)
         const sign = island.el.querySelector<HTMLElement>('.isl-sign')!
         const peek = island.el.querySelector<HTMLElement>('.isl-peek')!
@@ -51,6 +55,10 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
           sign: sign.hidden ? null : sign.textContent, signShown: !sign.hidden && sign.getBoundingClientRect().width > 0,
           peek: !peek.hidden, dot: peek.hidden ? null : peek.querySelector('.isl-dot')?.textContent ?? null,
           peekWidth: peek.hidden ? 0 : peek.getBoundingClientRect().width,
+          peekGap: peek.hidden ? null : (() => {
+            const strip = peek.getBoundingClientRect(), round = island.el.querySelector('.isl-anchor')!.getBoundingClientRect()
+            return strip.left >= round.right ? strip.left - round.right : round.left - strip.right
+          })(),
           corner: island.el.querySelector<HTMLElement>('.isl-corner:not([hidden])')?.textContent ?? null,
           cornerInside: (() => {
             const shown = island.el.querySelector<HTMLElement>('.isl-corner:not([hidden])')?.getBoundingClientRect()
@@ -81,18 +89,21 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
     const by = Object.fromEntries(seen.map(row => [row.name, row]))
     expect(seen.map(row => [row.name, row.signal])).toEqual([['rest', 'rest'], ['working', 'working'], ['confirm', 'confirm'], ['asking', 'asking'], ['done', 'done'],
       ['done-alone', 'done'], ['done-open', 'done'], ['error', 'error'], ['error-alone', 'error'], ['offline', 'offline'],
-      ['rest-ended', 'rest'], ['rest-running', 'rest']])
+      ['done-left', 'done'], ['rest-ended', 'rest'], ['rest-running', 'rest']])
     // The sign on the portrait only when it is alone; beside the words, the words carry it.
     expect(seen.map(row => [row.name, row.sign])).toEqual([['rest', null], ['working', null], ['confirm', null], ['asking', null], ['done', null],
-      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null], ['rest-ended', null], ['rest-running', null]])
+      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null], ['done-left', null], ['rest-ended', null], ['rest-running', null]])
     // At rest she is alone: no strip for what ended, only its count on her corner, inside her round (the window's
     // clicks reach only there); the strip comes back only for tasks going on.
     expect([by['rest-ended'].peek, by['rest-ended'].corner, by['rest-ended'].cornerInside]).toEqual([false, '✓ 3', true])
     expect([by['rest-running'].peek, by['rest-running'].corner]).toEqual([true, null])
     expect([by.rest.peek, by.rest.corner]).toEqual([false, null])
-    // The strip is as long as what it says.
-    expect(by.done.peekWidth).toBeLessThan(by.working.peekWidth + 1)
-    expect(by['rest-running'].peekWidth).toBeLessThanOrEqual(320.5)
+    // The strip is as long as what it says, up to 320px, and beside her on either side.
+    expect(by.done.peekWidth).toBeLessThan(300)
+    expect(Math.abs(by['done-left'].peekWidth - by.done.peekWidth)).toBeLessThan(1)
+    expect(seen.filter(row => row.peek).every(row => row.peekWidth <= 320.5)).toBe(true)
+    expect(seen.filter(row => row.peekGap !== null).map(row => [row.name, Math.round(row.peekGap!)])).toEqual(
+      seen.filter(row => row.peekGap !== null).map(row => [row.name, Math.round(seen.find(other => other.name === 'done')!.peekGap!)]))
     expect([by['done-alone'].signShown, by['error-alone'].signShown]).toEqual([true, true])
     expect([by.confirm.dot, by.asking.dot, by.done.dot, by.error.dot, by.offline.dot, by.working.dot]).toEqual(['!', '?', '✓', '×', '–', ''])
     // Each its own ring: not one outline for all.

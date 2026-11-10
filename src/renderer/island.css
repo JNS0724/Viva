@@ -345,8 +345,9 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .isl-corner { position: absolute; right: 0; bottom: 0; z-index: 1; }
 .isl-corner[hidden] { display: none; }
 .isl[data-host="desk"] .isl-corner .isl-bg { padding: 2px 7px; background: var(--island-bg); border-color: var(--line-3); }
-/* The strip beside her is as long as what it says, up to its widest. */
-.isl[data-host="desk"] .isl-peek { width: fit-content; }
+/* The strip beside her is as long as what it says, up to its widest (its max-width, desktop-layout.ts): max-content, as
+   fit-content would measure against her 80px round, which holds it. */
+.isl[data-host="desk"] .isl-peek { width: max-content; }
 .isl[data-signal="confirm"] .isl-sign, .isl[data-signal="asking"] .isl-sign { background: var(--orange); }
 .isl[data-signal="error"] .isl-sign { background: var(--red); }
 /* The words beside her: the sign before them, the edge in the state's colour. */

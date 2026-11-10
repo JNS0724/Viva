@@ -15,9 +15,13 @@ export function placeDesktopIsland(el: HTMLElement, stage: HTMLElement, placemen
     const surfaceTop = top(surface.offsetHeight), peekTop = top(peek.offsetHeight)
     return () => {
       el.style.left = `${anchor.x - 40}px`; el.style.top = `${anchor.y - 40}px`
-      surface.style.width = `${width}px`; peek.style.width = `${Math.min(320, width)}px`
+      surface.style.width = `${width}px`
       surface.style.left = `${side === 'left' ? -12 - width : 92}px`
-      peek.style.left = `${side === 'left' ? -12 - Math.min(320, width) : 92}px`
+      // The strip is as long as what it says, up to its widest; on her left it ends beside her, however long.
+      peek.style.width = ''
+      peek.style.maxWidth = `${Math.min(320, width)}px`
+      peek.style.left = side === 'left' ? 'auto' : '92px'
+      peek.style.right = side === 'left' ? '92px' : 'auto'
       surface.style.top = `${surfaceTop}px`; peek.style.top = `${peekTop}px`
       queueLayout(el, () => { painted() })
     }
