@@ -22,6 +22,7 @@ import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
+import { stepNote, withIncoming } from './lib/recent-tasks.ts'
 
 export const name = 'viva-routing'
 export const inject = ['agents', 'tools', 'llm']
@@ -64,6 +65,8 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   const grants = new Map<string, readonly Grant[]>()
   const fastWork = new Map<string, Set<Promise<void>>>()
   const turnsEnded = new Map<string, number>()
+  /** The requests of each main session's turn that have had their note of recent tasks (lib/recent-tasks.ts). */
+  const noted = new Map<string, ReadonlySet<string>>()
   const turnOf = (id: string) => turnsEnded.get(id) ?? 0
   const ledgerOf = (id: string) => ledgers.get(id) ?? EMPTY_LEDGER
   const update = (id: string, change: (ledger: Ledger) => Ledger) => { const next = change(ledgerOf(id)); ledgers.set(id, next); return next }
@@ -101,14 +104,28 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   ctx.on('agent/pre-step', async (payload, next) => {
     const id = String(payload.agent.session.id)
     if (mains.has(id)) update(id, ledger => atStep(ledger, payload.step))
-    return next()
+    const decision = await next()
+    if (!mains.has(id) || decision.kind === 'reject' || payload.signal.aborted) return decision
+    // Requests coming into this step (the turn's first, or words said while it runs): the tasks whose results came back a
+    // short while ago go with them, once each (lib/recent-tasks.ts).
+    const incoming = decision.messages.map(message => textOf(message.content))
+    const proposed = incoming.flatMap(text => requestsIn(text).map(request => request.id))
+    const step = stepNote(() => withIncoming(userTexts(payload.agent), incoming), [...Object.keys(ledgerOf(id).requests), ...proposed], noted.get(id) ?? new Set())
+    noted.set(id, step.noted)
+    return step.note ? { ...decision, messages: [...decision.messages, userNote(step.note)] } : decision
   })
+
+  /** What the conversation's user messages say, oldest first: requests, results coming back, the plugins' notes. */
+  const userTexts = (agent: Agent) => agent.session.snapshotEvents()
+    .filter(event => event.type === 'user/message')
+    .map(event => textOf((event.data as { content?: unknown }).content))
   // The app fails what a turn leaves undecided (request-runtime.ts endTurn); leave unused by the turn goes with it.
   ctx.on('agent/status', ({ agent, status }) => {
     const id = String(agent.session.id)
     if (status !== 'idle' || !mains.has(id)) return
     ledgers.delete(id)
     grants.delete(id)
+    noted.delete(id)
     turnsEnded.set(id, turnOf(id) + 1)
   })
 

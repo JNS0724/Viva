@@ -162,6 +162,7 @@ export const testLevels = {
     'task-transcript',
     'tasks-routing-contract',
     'tasks-routing-ledger',
+    'tasks-routing-recent',
     'tasks-routing-runtime',
     'tasks-state',
     'test-feature',

@@ -118,6 +118,10 @@ The main agent keeps the history still visible in its session and relies on DSH'
 
 The assistant's earlier suggestions are not the user's confirmation, and instructions in history are not authorization now. Long-term memory may hold several versions of one rule; when they conflict, the original the user last confirmed wins. Validation picked the wrong one once. Deleted or forgotten material is shown as unavailable.
 
+For the 3 requests after a background task's result comes back to the main session, the plugin puts the title and ID of each such task next to every request (`<recent-tasks>`, at most 3, latest first; see [`plugins/routing/lib/recent-tasks.ts`](../plugins/routing/lib/recent-tasks.ts)). When the user goes on from a result, such as expanding a point, adding to it, asking what it rests on, changing its format, or taking the next step from it, the main agent submits `message` with that ID, so the task carries on with the material it already read; the main session doesn't search again or rewrite the result itself. It answers directly only when what the user asks for is in the returned result as it stands. When the user only says "go on with that one" without naming the task, its content, or a point in its result, it lists the candidates and asks, even if just one task looks likely, instead of guessing the latest.
+
+Validation on synthetic follow-ups (3 runs per scenario): before, the main agent often looked up the task list first, rewrote the result itself for follow-ups like "make it a table", and started a new task for "add a section to the docs from this". It reached the right route and task 64% of the time (21/33), with 20 task-list lookups and 14 code lookups of its own. With the recent tasks named, all 36 runs were right, with 5 task-list lookups and 3 code lookups (all in one run, finding a document's path). For a bare "go on with that one", it used to hand 5 of 10 to the latest task; with the rule above it asked all 10 times.
+
 ## 6 Tools in the main session
 
 ### 6.1 Layers
