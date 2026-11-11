@@ -178,9 +178,9 @@ function headAction(view: IslandShown, unfolds: boolean): { kind: string } | nul
  */
 export function islandSignatures(view: IslandShown, open: boolean, showTools: boolean) {
   const panel = JSON.stringify([view, open])
-  const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
+  const { count = 0, alsoWaiting = 0 } = view.background ?? {}
   const row = JSON.stringify([view.form, view.tone, view.label, view.action, view.detail, view.task,
-    view.startedAt, view.steps, view.elapsedMs, hasPanel(view), Boolean(view.background), count, done, alsoWaiting, open, showTools])
+    view.startedAt, view.steps, view.elapsedMs, hasPanel(view), Boolean(view.background), count, alsoWaiting, open, showTools])
   return { panel, row }
 }
 
@@ -297,12 +297,13 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     const portrait = maidFor(maids, 'island', view.form === 'drop' ? 'listening' : maidMood(view.mood, view.tone), { size: 72, framing: 'whole', moving: !view.still, badge: false })
     showMaid(avatar, portrait)
     surface.hidden = !open
-    // At rest the cat is alone: the strip beside her only for what goes on (tasks running); what ended is counted on her.
+    // At rest the cat is alone: the strip beside her only for what goes on (tasks running). What ended is not the
+    // island's: the conversation tells it.
     peek.hidden = open || view.dragging || view.form === 'mini' && !view.background?.count
     const alone = peek.hidden && !open && !view.dragging
-    // Alone, a count of tasks ended and not yet seen takes her corner before her sign: it is the way to the 后台
-    // list, and her ring already says the rest (a turn done: still breathing).
-    const counted = alone && Boolean(view.background?.count || view.background?.done || view.background?.alsoWaiting)
+    // Alone with tasks going on (the strip folded away while dragged), their count takes her corner before her sign:
+    // it is the way to the 后台 list, and her ring already says the rest.
+    const counted = alone && Boolean(view.background?.count || view.background?.alsoWaiting)
     sign.textContent = DESK_SIGNS[signal] ?? ''
     sign.hidden = counted || !wearsSign(signal, peek.hidden && !open)
     const next = JSON.stringify([view, open, localeRevision()])

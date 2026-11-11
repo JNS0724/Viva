@@ -2,7 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
 import { catMood, currentAction, setupProblem, traceTail, truncate } from './selectors.ts'
-import { liveTasks, unseenEnded } from './tasks-state.ts'
+import { liveTasks } from './tasks-state.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 
 /**
@@ -27,7 +27,7 @@ type IslandTask = {
   id: string, title: string, status: string, now?: string | null, startedAt?: number,
   permission?: IslandPermission, question?: IslandQuestion,
 }
-type IslandBackground = { count: number, waiting: number, done: number, items: IslandTask[], alsoWaiting?: number }
+type IslandBackground = { count: number, waiting: number, items: IslandTask[], alsoWaiting?: number }
 export type IslandView = {
   form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
   detail?: string, action?: string | null, startedAt?: number | null, steps?: number, elapsedMs?: number,
@@ -120,13 +120,13 @@ function afterTurn(state: State, base: IslandBase, background: IslandBackground 
 }
 
 /**
- * Tasks in the background (tasks-state.js), those that wait on the user first: how many go on, how many ended
- * (still there until closed, so the 后台 page stays a click away), and a line each for when the island opens.
- * null with none, so the island is as it always was.
+ * Tasks going on in the background (tasks-state.js), those that wait on the user first: how many, and a line each for
+ * when the island opens. Ended ones are not the island's: the conversation tells their results (report-state.ts), and
+ * the 后台 page lists them. null with none going on, so the island is as it always was.
  */
 function backgroundOf(state: State): IslandBackground | null {
   const live: BackgroundTask[] = liveTasks(state)
-  if (!state.tasks.list.length) return null
+  if (!live.length) return null
   const items: IslandTask[] = live
     .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
     .map((task) => ({
@@ -134,9 +134,7 @@ function backgroundOf(state: State): IslandBackground | null {
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),
       ...(task.question ? { question: questionView(task.question) } : {}),
     }))
-  // Ended and not yet seen: once opened on the 后台 page, no longer counted.
-  const done = unseenEnded(state).length
-  return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, done, items }
+  return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, items }
 }
 
 export function islandView(state: State): IslandView {

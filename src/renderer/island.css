@@ -115,7 +115,6 @@
 .isl-bg { cursor: pointer; }
 .isl-bg:hover b { text-decoration: underline; }
 /* All ended: quieter; tasks waiting beside what the island shows: the one colour that asks for the user. */
-.isl-bg-done b { color: var(--ink-2); }
 .isl-bg-waits b, .isl-bg-waits span { color: var(--orange); }
 /* At work in the background: a small turning ring before how many (the same sign as a task's own, view/task-card). */
 .isl-bg-ring {

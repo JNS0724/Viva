@@ -77,8 +77,8 @@ test('not connected offers the settings; connecting offers nothing to do', () =>
 })
 
 test('the background list counts its tasks in the head, not again in its body', () => {
-  const card = deskCard({ ...base, form: 'background', tone: 'working', label: '工作中', background: { count: 3, done: 1, waiting: 0, items: [] } }, { shortcut: '' })!
-  assert.deepEqual([card.label, card.meta], ['后台 3 件', '1 件做完了'])
+  const card = deskCard({ ...base, form: 'background', tone: 'working', label: '工作中', background: { count: 3, waiting: 0, items: [] } }, { shortcut: '' })!
+  assert.deepEqual([card.label, card.meta], ['后台 3 件', ''], 'those going on only: ended ones are the conversation\'s to tell')
   assert.deepEqual(card.body, [{ kind: 'background' }])
   assert.deepEqual(card.actions.map(button => [button.text, button.act.kind]), [['打开后台页', 'tasks']])
 })
@@ -106,7 +106,7 @@ test('forms the input draws itself have no card', () => {
 
 test('a request handled elsewhere gives way to the next one waiting, or to none', () => {
   const task = { id: 't', title: '检查依赖', status: 'waiting', question: { questionId: 'q9', id: 'x', text: '继续吗？', options: ['是'] } }
-  const view = { ...base, form: 'idle', tone: 'idle', label: '空闲', background: { count: 1, waiting: 1, done: 0, items: [task] } }
+  const view = { ...base, form: 'idle', tone: 'idle', label: '空闲', background: { count: 1, waiting: 1, items: [task] } }
   assert.equal(nextRequest(permission, 'p1'), null, 'still there: nothing to move to')
   assert.equal(nextRequest(view, 'p1')?.question?.questionId, 'q9')
   assert.equal(nextRequest({ ...base, form: 'idle', tone: 'idle', label: '空闲' }, 'p1'), undefined)
@@ -114,11 +114,11 @@ test('a request handled elsewhere gives way to the next one waiting, or to none'
 
 test('a task\'s request keeps its own head and face whatever the conversation on screen asks meanwhile', () => {
   const task = { id: 't', title: '检查依赖', status: 'waiting', permission: permission.permission }
-  const view = { ...question, mood: 'ask', background: { count: 1, waiting: 1, done: 0, items: [task] } }
+  const view = { ...question, mood: 'ask', background: { count: 1, waiting: 1, items: [task] } }
   const card = requestFor(view, 'p1')!
   assert.deepEqual([card.form, card.label, card.mood, card.task], ['waiting', '需要你确认', 'confirm', '检查依赖'])
   const asks = { ...task, permission: undefined, question: { ...question.question, questionId: 'q9' } }
-  const asked = requestFor({ ...permission, task: undefined, mood: 'confirm', background: { count: 1, waiting: 1, done: 0, items: [asks] } }, 'q9')!
+  const asked = requestFor({ ...permission, task: undefined, mood: 'confirm', background: { count: 1, waiting: 1, items: [asks] } }, 'q9')!
   assert.deepEqual([asked.form, asked.label, asked.mood], ['asking', '需要你回答', 'ask'])
 })
 
@@ -141,7 +141,3 @@ test('the first-time card shows only on the resting island', () => {
   assert.equal(showsCoach({ ...resting, form: 'waiting' }), false)
 })
 
-test('opened from the count of ended tasks alone, the list says how many ended, not that none goes on', () => {
-  const card = deskCard({ ...base, form: 'background', tone: 'idle', label: '空闲', background: { count: 0, done: 3, waiting: 0, items: [] } }, { shortcut: '' })!
-  assert.deepEqual([card.label, card.meta], ['3 件做完了', ''])
-})

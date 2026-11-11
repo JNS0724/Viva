@@ -7,35 +7,33 @@ import { reconcileChildren } from './reconcile.ts'
 type IslandTask = NonNullable<IslandView['background']>['items'][number]
 
 /**
- * Tasks in the background on the island (island-view.js background): the island stays one, with the
- * conversation on screen in front. At its tail, a cell says how many go on in the background (a turning ring)
- * or ended unseen (✓); opened, it lists them, those that wait on the user first, to be allowed right there.
+ * Tasks going on in the background on the island (island-view.js background): the island stays one, with the
+ * conversation on screen in front. At its tail, a cell says how many go on in the background (a turning ring);
+ * opened, it lists them, those that wait on the user first, to be allowed right there. Ended ones are not here:
+ * the conversation tells their results.
  */
 /**
  * The cell at the island's tail, the way to the 后台 page, in a sign and a number: when the island shows what
  * the conversation waits on and tasks wait too, that they do (+N 等你, the one with words: it needs the user);
- * else, some at work, a turning ring and how many (◌ N); else ended ones not yet seen, ✓ N (seen, they are
- * not counted, so the cell goes once all are).
+ * else, some at work, a turning ring and how many (◌ N).
  * @returns nothing with no task and no follow-up to speak of
  */
 export function createTailCell(interactive = false) {
   const el = h(interactive ? 'button' : 'span', interactive ? { type: 'button' } : {})
   let signature = ''
   function update(view: IslandShown): HTMLElement | null {
-    const { count = 0, done = 0, alsoWaiting = 0 } = view.background ?? {}
-    if (!count && !done && !alsoWaiting) return null
-    const next = JSON.stringify([count, done, alsoWaiting, localeRevision()])
+    const { count = 0, alsoWaiting = 0 } = view.background ?? {}
+    if (!count && !alsoWaiting) return null
+    const next = JSON.stringify([count, alsoWaiting, localeRevision()])
     if (next === signature) return el
     signature = next
-    const label = alsoWaiting ? t('island-tasks.more.waiting.for.you', { alsoWaiting })
-      : count ? t('background.running.count', { p0: count }) : t('background.completed.count', { p0: done })
+    const label = alsoWaiting ? t('island-tasks.more.waiting.for.you', { alsoWaiting }) : t('background.running.count', { p0: count })
     el.title = label
     el.setAttribute('aria-label', label)
-    el.className = `isl-bg ${alsoWaiting ? 'isl-bg-waits' : count ? 'isl-bg-live' : 'isl-bg-done'}`
+    el.className = `isl-bg ${alsoWaiting ? 'isl-bg-waits' : 'isl-bg-live'}`
     el.replaceChildren(...(alsoWaiting
       ? [h('b', { text: `+${alsoWaiting}` }), h('span', { text: t('island-tasks.waiting.for.you') })]
-      : count ? [h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) })]
-        : [h('b', { text: `✓ ${done}` })]))
+      : [h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' }), h('b', { text: String(count) })]))
     return el
   }
   return { el, update }
@@ -85,11 +83,11 @@ function createItemLine(id: string, act: IslandAct, desk: boolean) {
 }
 
 /**
- * Opened: a section under the conversation's steps, one line a task, and how many are done.
+ * Opened: a section under the conversation's steps, one line a task going on.
  * desk: the desktop card says how many in its head (island-desk-card.ts), so the section has no heading of its own.
  */
 export function createBackgroundSection(act: IslandAct, { desk = false } = {}) {
-  const label = h('span'), count = h('b'), done = h('span')
+  const label = h('span'), count = h('b')
   const head = h('div', { class: 'isl-sect' }, label, count)
   const list = h('ol')
   const el = h('section', { class: 'isl-bg-list' }, ...(desk ? [] : [head]), list)
@@ -102,8 +100,6 @@ export function createBackgroundSection(act: IslandAct, { desk = false } = {}) {
     el.setAttribute('aria-label', t('island-tasks.background'))
     label.textContent = t('island-tasks.background.2')
     count.textContent = String(items.length)
-    done.textContent = t('island-tasks.done.2', { done: view.background.done ?? 0 })
-    reconcileChildren(head, view.background.done ? [label, count, done] : [label, count])
     reconcileChildren(list, items.map(item => {
       let row = rows.get(item.id)
       if (!row) { row = createItemLine(item.id, act, desk); rows.set(item.id, row) }

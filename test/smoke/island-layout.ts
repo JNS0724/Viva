@@ -23,9 +23,7 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
         ['error-alone', { ...base, form: 'mini', tone: 'error', mood: 'error', label: '出错了' }],
         ['offline', { ...base, form: 'pending', tone: 'pending', mood: 'idle', label: '未连接', detail: '需要配置模型' }],
         ['done-left', { ...base, form: 'done', tone: 'done', mood: 'done', label: '已完成', elapsedMs: 72_000, detail: '周报整理好了' }],
-        ['rest-ended', { ...base, form: 'mini', background: { count: 0, done: 3, waiting: 0, items: [] } }],
-        ['done-alone-ended', { ...base, form: 'mini', tone: 'done', mood: 'done', label: '已完成', background: { count: 0, done: 2, waiting: 0, items: [] } }],
-        ['rest-running', { ...base, form: 'mini', background: { count: 1, done: 3, waiting: 0, items: [{ id: 't', title: '整理周报', status: 'running', now: '读取文件' }] } }],
+        ['rest-running', { ...base, form: 'mini', background: { count: 1, waiting: 0, items: [{ id: 't', title: '整理周报', status: 'running', now: '读取文件' }] } }],
       ]
       const gallery = document.createElement('section')
       gallery.id = 'desk-signal-gallery'
@@ -61,11 +59,6 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
             return strip.left >= round.right ? strip.left - round.right : round.left - strip.right
           })(),
           corner: island.el.querySelector<HTMLElement>('.isl-corner:not([hidden])')?.textContent ?? null,
-          cornerInside: (() => {
-            const shown = island.el.querySelector<HTMLElement>('.isl-corner:not([hidden])')?.getBoundingClientRect()
-            const round = island.el.querySelector('.isl-anchor')!.getBoundingClientRect()
-            return !shown || (shown.left >= round.left - 0.5 && shown.right <= round.right + 0.5 && shown.top >= round.top - 0.5 && shown.bottom <= round.bottom + 0.5)
-          })(),
         })
       }
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
@@ -94,16 +87,12 @@ export async function checkDeskSignals(page: Page, info: TestInfo): Promise<void
     const by = Object.fromEntries(seen.map(row => [row.name, row]))
     expect(seen.map(row => [row.name, row.signal])).toEqual([['rest', 'rest'], ['working', 'working'], ['confirm', 'confirm'], ['asking', 'asking'], ['done', 'done'],
       ['done-alone', 'done'], ['done-open', 'done'], ['error', 'error'], ['error-alone', 'error'], ['offline', 'offline'],
-      ['done-left', 'done'], ['rest-ended', 'rest'], ['done-alone-ended', 'done'], ['rest-running', 'rest']])
+      ['done-left', 'done'], ['rest-running', 'rest']])
     // The sign on the portrait only when it is alone; beside the words, the words carry it.
     expect(seen.map(row => [row.name, row.sign])).toEqual([['rest', null], ['working', null], ['confirm', null], ['asking', null], ['done', null],
-      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null], ['done-left', null], ['rest-ended', null], ['done-alone-ended', null], ['rest-running', null]])
-    // At rest she is alone: no strip for what ended, only its count on her corner, inside her round (the window's
-    // clicks reach only there); the strip comes back only for tasks going on.
-    expect([by['rest-ended'].peek, by['rest-ended'].corner, by['rest-ended'].cornerInside]).toEqual([false, '✓ 3', true])
+      ['done-alone', '✓'], ['done-open', null], ['error', null], ['error-alone', '×'], ['offline', null], ['done-left', null], ['rest-running', null]])
+    // At rest she is alone: the strip comes back only for tasks going on (ended ones are the conversation's to tell).
     expect([by['rest-running'].peek, by['rest-running'].corner]).toEqual([true, null])
-    // A turn done and tasks ended, both unseen: the count keeps her corner (the way to the 后台 list); the ring says done.
-    expect([by['done-alone-ended'].corner, by['done-alone-ended'].cornerInside, by['done-alone-ended'].ring]).toEqual(['✓ 2', true, by['done-alone'].ring])
     expect([by.rest.peek, by.rest.corner]).toEqual([false, null])
     // The strip is as long as what it says, up to 320px, and beside her on either side.
     expect(by.done.peekWidth).toBeLessThan(300)
@@ -145,7 +134,7 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
         { name: 'circle', view: { ...base, form: 'mini' } },
         { name: 'working', view: { ...base, form: 'working', tone: 'working', mood: 'thinking', label: '正在处理',
           action: '核对桌面岛长标题、后台计数及停止按钮同时存在时的完整状态文字', startedAt: Date.now() - 83_000,
-          background: { count: 3, done: 0, items: [] } } },
+          background: { count: 3, items: [] } } },
         { name: 'permission', view: { ...base, form: 'waiting', tone: 'waiting', mood: 'confirm', label: '需要你确认',
           permission: { requestId: 'layout-permission', title: '运行项目的本地测试', command: 'npm run typecheck && npm test',
             options: [{ optionId: 'allow', name: '允许这次', role: 'primary' }, { optionId: 'deny', name: '拒绝', role: 'secondary' }] } } },
@@ -169,7 +158,7 @@ export async function checkIslandLayouts(page: Page, info: TestInfo): Promise<vo
         { name: 'input-error', view: { ...base, form: 'input', files: [], images: [], error: '连接失败，草稿已保留。'.repeat(40) }, draft: '失败后保留的输入' },
         { name: 'up-question', view: question, up: true },
         { name: 'background', pinned: true, view: { ...base, form: 'working', tone: 'working', label: '正在处理',
-          background: { count: 2, done: 0, items: [
+          background: { count: 2, items: [
             { id: 'one', title: '检查头像', status: 'running', startedAt: Date.now() - 90_000 },
             { id: 'two', title: '核对输入样式', status: 'running', startedAt: Date.now() - 60_000 },
           ] } } },

@@ -18,7 +18,7 @@
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
       "enHash": "186a4f222795db7805e90afdb82706c1f86fb8359234c661155ca73b8c394a2e",
-      "zhHash": "3c26b642f6dfb5314320ad5d69a6ac0f5cf5bde6f398214ae94db7ce47c80f85"
+      "zhHash": "2a7e9b4a42ceea1dce0101bcd39f55e8269bb1516b58b2b7166d6ea92b5877ce"
     },
     {
       "en": "docs/live-check.md",
@@ -65,14 +65,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "c698252a06e25ab83b7d2f1f8f372a9365cad4a724a27f9a22cae8086830fbee",
-      "zhHash": "c369e9652c4685cd73abd0126826b89784a39bb06728ae1c741bc56ee6e94e7a"
+      "enHash": "7bb1ce73d35c652c964b4cd26cf69f02f40aa975679db9c8d0e336e913898a7f",
+      "zhHash": "df169084311e585613abddce08dde6d9c6a1a7450d360710dc69e734c200bde1"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "5d604a619c2ad24050062e72a7a8fa255f95218ee20adb5a442892a54b0af90a",
-      "zhHash": "50bf59eb2f9dc08697b68a9627da7f541ab2215f244bf5d4cf8014d327351d6b"
+      "enHash": "88e8216a421bb86a32d1515b9bec7574ccb2e50f272d5547d260432df81de107",
+      "zhHash": "732c44791e55414cf7320f2bcd98dc55bf3a78196027348884c11f230c20448d"
     },
     {
       "en": "docs/architecture-health.md",

@@ -885,6 +885,8 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 }
 .tp-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-meta { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* An ended task not told of yet, its line marked 未读 (view/tasks-page.ts). */
+.tp-row[data-unread="true"] .tp-meta { color: var(--accent); }
 .tp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tp-empty { align-items: center; justify-content: center; padding: 40px; }
 .tp-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 14px 28px; border-bottom: 1px solid var(--line); }

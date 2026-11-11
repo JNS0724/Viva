@@ -117,7 +117,7 @@ test('tasks in the background: a count at the tail, and one line each when the i
   const view = islandView(run(started))
   assert.equal(view.form, 'idle', 'the island still says what the conversation on screen does')
   assert.deepEqual(view.background, {
-    count: 1, waiting: 0, done: 0,
+    count: 1, waiting: 0,
     items: [{ id: 's1', title: '明天上海天气', status: 'running', now: '运行 git log', startedAt: T0 }],
   })
   assert.equal(islandView(run([live])).background, undefined, 'with none, nothing changes')
@@ -133,12 +133,11 @@ test('a task waiting on the user takes the whole island, named, and is first in 
   assert.deepEqual([mainAsks.permission.requestId, mainAsks.task], ['p1', undefined], 'the conversation on screen comes first')
 })
 
-test('a task that ends is counted at the tail; the island still says what the conversation on screen does', () => {
+test('a task that ends leaves the island: the conversation tells its result, the 后台 page lists it', () => {
   const ended = run([...started, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: T0 + 9000 }])
   const view = islandView(ended)
   assert.equal(view.form, 'idle')
-  assert.deepEqual([view.background.count, view.background.done], [0, 1], 'counted among those done, so the 后台 page is a click away')
-  assert.equal(islandView(reduce(ended, { type: 'task_closed', taskId: 's1' })).background, undefined, 'closed, nothing is left')
+  assert.equal(view.background, undefined, 'nothing going on, nothing in the background to show')
 })
 
 test('when the conversation on screen and a task both wait, the tail says the task waits too', () => {
