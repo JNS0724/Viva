@@ -22,6 +22,7 @@ import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
+import { recentNote, recentTasks } from './lib/recent-tasks.ts'
 
 export const name = 'viva-routing'
 export const inject = ['agents', 'tools', 'llm']
@@ -101,8 +102,26 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   ctx.on('agent/pre-step', async (payload, next) => {
     const id = String(payload.agent.session.id)
     if (mains.has(id)) update(id, ledger => atStep(ledger, payload.step))
-    return next()
+    const decision = await next()
+    if (!mains.has(id) || payload.step !== 1 || decision.kind === 'reject' || payload.signal.aborted) return decision
+    // A request's turn: the tasks whose results came back a short while ago go with it (lib/recent-tasks.ts).
+    const note = recentNote(recentFor(payload.agent, id, decision.messages.map(message => textOf(message.content))))
+    return note ? { ...decision, messages: [...decision.messages, userNote(note)] } : decision
   })
+
+  /**
+   * The tasks to name next to the turn's requests, from the conversation before them; none for a turn without a request
+   * (a result coming back). The turn's own messages may be in the log already or still about to go in (`proposed`).
+   */
+  function recentFor(agent: Agent, id: string, proposed: readonly string[]) {
+    const current = new Set([...Object.keys(ledgerOf(id).requests), ...proposed.flatMap(text => requestsIn(text).map(request => request.id))])
+    if (!current.size) return []
+    const said = agent.session.snapshotEvents()
+      .filter(event => event.type === 'user/message')
+      .map(event => textOf((event.data as { content?: unknown }).content))
+      .filter(text => !requestsIn(text).some(request => current.has(request.id)))
+    return recentTasks(said)
+  }
   // The app fails what a turn leaves undecided (request-runtime.ts endTurn); leave unused by the turn goes with it.
   ctx.on('agent/status', ({ agent, status }) => {
     const id = String(agent.session.id)
