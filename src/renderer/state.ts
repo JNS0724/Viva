@@ -8,7 +8,7 @@ import { FILES_ACTIONS, initialFiles } from './files-state.ts'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.ts'
 import { REVIEW_ACTIONS, initialReview } from './review-state.ts'
 import { RESUME_ACTIONS, initialResume } from './resume-state.ts'
-import { closeHub, initialHub, oneHubPage } from './hub-state.ts'
+import { closeHub, hubPage, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
 import { initialPlugins, PLUGIN_ACTIONS } from './plugins-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
@@ -300,8 +300,11 @@ const ACTION_HANDLERS: ActionHandlers = {
 
 export function reduce(state: State, action: Action): State {
   const next = reduceOnce(state, action)
-  // Results drawn in the conversation on screen (come in, or loaded with it) tell their tasks (tasks-state.ts).
-  return next.records !== state.records || next.tasks.list !== state.tasks.list ? toldByRecords(next) : next
+  // Results drawn in the conversation tell their tasks (tasks-state.ts) once the conversation is in view: not while a
+  // hub page covers it, and again on coming back to it.
+  const inView = hubPage(next) === null
+  const changed = next.records !== state.records || next.tasks.list !== state.tasks.list || hubPage(state) !== null
+  return inView && changed ? toldByRecords(next) : next
 }
 
 function reduceOnce(state: State, action: Action): State {

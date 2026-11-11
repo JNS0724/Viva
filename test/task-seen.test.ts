@@ -134,3 +134,11 @@ test('the 后台 page marks only the recent unread: one ended long ago is just l
   const seen = reduce(state, { type: 'tasks_page_open', taskId: 'a' })
   assert.equal(isRecentUnread(seen, task('a'), endedAt), false, 'opened: read')
 })
+
+test('a result come in while a page covers the conversation is unread until the conversation is back in view', () => {
+  const covered = run([{ type: 'tasks_page_open', taskId: 'c' }, delivered('a', '列一下这周要交的东西')], twoEnded())
+  assert.equal(ids(unseenEnded(covered)).includes('a'), true, 'drawn there, not seen')
+
+  const back = reduce(covered, { type: 'tasks_page_close' })
+  assert.equal(ids(unseenEnded(back)).includes('a'), false, 'back in view: told')
+})
