@@ -1,7 +1,7 @@
 import { getLocale } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
-import { pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
+import { isRecentUnread, pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread, type ThreadView } from './thread.ts'
@@ -86,7 +86,10 @@ function createTaskSidebar(handlers: Handlers) {
         else row.el.removeAttribute('aria-current')
         if (row.name.textContent !== task.title) row.name.textContent = task.title
         row.mark.dataset.status = task.status
-        const text = standing(task, now)
+        // Ended a short while ago and not told of yet: marked, until opened here or its result comes into the conversation.
+        const unread = isRecentUnread(state, task, now)
+        row.el.dataset.unread = String(unread)
+        const text = unread ? `${standing(task, now)} · ${t('tasks-page.unread')}` : standing(task, now)
         if (row.standing.data !== text) row.standing.data = text
         children.push(row.el)
       }

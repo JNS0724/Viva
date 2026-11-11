@@ -148,7 +148,7 @@ async function checkRequestRegions(session: SmokeApplication, info: TestInfo): P
             recent: [{ title: '读取文件', tone: 'live' }],
             permission: { requestId: 'request-1', title: '执行校验', command: 'npm test', options: [{ optionId: 'allow', name: '允许', role: 'primary' }] },
             question: { questionId: 'question-1', id: 'part', text: '先检查哪一项？', options: ['外观', '交互'], skippable: true },
-            background: { count: 2, done: 0, items: [
+            background: { count: 2, items: [
               { id: 'first', title: '第一个任务', status: 'running', now: '读取文件' },
               { id: 'second', title: '第二个任务', status: 'running', now: '检查代码' },
             ] },

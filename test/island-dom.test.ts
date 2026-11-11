@@ -23,7 +23,7 @@ test('a new question or the island folding redraws the panel', () => {
 
 test('background activity and recent steps do not invalidate the title-bar head', () => {
   const view = { ...asking, form: 'working', recent: [{ title: 'First step', tone: 'live' }],
-    background: { count: 1, done: 0, items: [{ id: 'task', title: 'Task', status: 'running', now: 'Read' }] } }
+    background: { count: 1, items: [{ id: 'task', title: 'Task', status: 'running', now: 'Read' }] } }
   const changed = { ...view, recent: [{ title: 'Second step', tone: 'live' }],
     background: { ...view.background, items: [{ ...view.background.items[0], now: 'Write' }] } }
   assert.equal(islandSignatures(view, true, false).row, islandSignatures(changed, true, false).row)
@@ -38,7 +38,6 @@ test('desktop layout separates the resting portrait, status, input and content',
   assert.equal(deskLayoutFor(mini, false, true), 'rest', 'hover never changes the layout')
   assert.equal(deskLayoutFor({ ...mini, dragging: true }, false, false), 'rest')
   assert.equal(deskLayoutFor({ ...mini, background: { count: 2 } }, false, false), 'capsule')
-  assert.equal(deskLayoutFor({ ...mini, background: { count: 0, done: 3 } }, false, false), 'rest', 'only ended: counted on her corner, no strip')
   assert.equal(deskLayoutFor(asking, true, false), 'content')
   const input = { ...mini, form: 'input', files: [], images: [] }
   assert.equal(deskLayoutFor(input, true, false), 'input')

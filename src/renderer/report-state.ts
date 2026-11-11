@@ -1,5 +1,7 @@
 import type { ActionHandlers } from './action-types.ts'
+import { reportRecordOf } from '../shared/task-report.ts'
 import { closeStreams } from './streams.ts'
+import { markTold } from './tasks-state.ts'
 
 /**
  * Background tasks' results the model read, as the records the conversation on screen draws (system-design §11.5
@@ -51,6 +53,9 @@ export const REPORT_ACTIONS= {
     if (!isRecordFor(state, conversationId, sessionId) || state.records.some((record) => record.reportId === reportId)) return state
     const closed = closeStreams(state)
     const record = recordOf({ reportId, at, text, after: closed.messages.length })
-    return record ? { ...closed, records: [...closed.records, record] } : state
+    if (!record) return state
+    // Its tasks' results are now in front of the user, told by this turn: not counted as unseen any more.
+    const told = reportRecordOf(text)?.tasks.map((task) => task.taskId) ?? []
+    return markTold({ ...closed, records: [...closed.records, record] }, told)
   },
 } satisfies ActionHandlers

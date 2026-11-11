@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from './fixtures/task-window.ts'
-import { shownOnPage, unseenEnded } from '../src/renderer/tasks-state.ts'
+import { isRecentUnread, RECENT_UNREAD_MS, shownOnPage, unseenEnded } from '../src/renderer/tasks-state.ts'
 import { islandView } from '../src/renderer/island-view.ts'
+import { noteFor } from '../src/backend/task-reports.ts'
 
 /** An ended task, once seen on the 后台 page, is no longer reminded of at the island's tail. */
 
@@ -23,17 +24,16 @@ function twoEnded(): State {
 }
 const ids = (tasks: ReadonlyArray<{ id: string }>) => tasks.map((task) => task.id)
 
-test('ended tasks are reminded of until seen; one at work never counts as ended', () => {
+test('ended tasks are unread until seen; the island shows only the one at work', () => {
   const state = twoEnded()
   assert.deepEqual(ids(unseenEnded(state)), ['a', 'b'])
-  assert.equal(islandView(state).background?.done, 2)
   assert.equal(islandView(state).background?.count, 1, 'the one at work')
+  assert.deepEqual(islandView(state).background?.items.map((item) => item.id), ['c'], 'ended ones are the conversation\'s to tell')
 })
 
 test('opened on the 后台 page, an ended task is seen: no longer counted', () => {
   const seen = reduce(twoEnded(), { type: 'tasks_page_open', taskId: 'b' })
   assert.deepEqual(ids(unseenEnded(seen)), ['a'])
-  assert.equal(islandView(seen).background?.done, 1)
   const both = reduce(seen, { type: 'tasks_page_select', taskId: 'a' })
   assert.deepEqual(ids(unseenEnded(both)), [])
 })
@@ -81,4 +81,43 @@ test('seen by the last launch, a task is not reminded of again; what was kept th
   assert.deepEqual(ids(unseenEnded(restored)), ['b'])
   // @ts-expect-error Invalid persisted collection is ignored defensively.
   assert.deepEqual(reduce(restored, { type: 'tasks_seen_restored', ids: 'not a list' }).tasks.seen, ['a'])
+})
+
+/** The note a task's result comes back in, as the conversation records it (task-reports.ts noteFor). */
+const note = (...tasks: Array<[string, string]>) => noteFor(tasks.map(([taskId, title]) => ({ taskId, title, status: 'done', host: null, output: '做完了' })))
+const delivered = (text: string, conversationId = 'c1'): FixtureAction => ({ type: 'report_delivered', conversationId, sessionId: null, reportId: `report-${conversationId}`, text, at: 8 })
+
+test('a result come into the conversation on screen tells its tasks: no longer unread', () => {
+  const told = reduce(twoEnded(), delivered(note(['a', '列一下这周要交的东西'], ['b', '核对这个月的发票'])))
+
+  assert.equal(told.records.length, 1, 'drawn in the conversation')
+  assert.deepEqual(ids(unseenEnded(told)), [])
+})
+
+test('a result for a conversation not on screen tells nothing: its task is still unread', () => {
+  const elsewhere = reduce(twoEnded(), delivered(note(['a', '列一下这周要交的东西']), 'c-other'))
+
+  assert.deepEqual(ids(unseenEnded(elsewhere)), ['a', 'b'])
+})
+
+test('a task told of, asked again and ended again, is unread again until its new result is told', () => {
+  const told = reduce(twoEnded(), delivered(note(['a', '列一下这周要交的东西'])))
+  const again = run([
+    { type: 'task_asked', taskId: 'a', text: '再补一条', at: 10 },
+    { type: 'task_end', taskId: 'a', stopReason: 'end_turn', at: 11 },
+  ], told)
+
+  assert.equal(ids(unseenEnded(again)).includes('a'), true)
+})
+
+test('the 后台 page marks only the recent unread: one ended long ago is just listed', () => {
+  const state = twoEnded()
+  const task = (id: string) => state.tasks.list.find((entry) => entry.id === id)!
+  const endedAt = task('a').endedAt!
+
+  assert.equal(isRecentUnread(state, task('a'), endedAt + RECENT_UNREAD_MS), true, 'within the window')
+  assert.equal(isRecentUnread(state, task('a'), endedAt + RECENT_UNREAD_MS + 1), false, 'past it')
+  assert.equal(isRecentUnread(state, task('c'), endedAt), false, 'one at work is never unread')
+  const seen = reduce(state, { type: 'tasks_page_open', taskId: 'a' })
+  assert.equal(isRecentUnread(seen, task('a'), endedAt), false, 'opened: read')
 })

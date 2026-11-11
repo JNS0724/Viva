@@ -82,17 +82,35 @@ function settled(task: BackgroundTask): BackgroundTask {
 
 export const liveTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => LIVE.has(task.status))
 
-/** Ended tasks the user has not seen yet: what the island's ✓ counts. */
-export const unseenEnded = (state: State): BackgroundTask[] =>
-  state.tasks.list.filter((task) => task.endedAt !== null && !LIVE.has(task.status) && task.status !== 'interrupted' && !state.tasks.seen.includes(task.id))
+/** Whether a task ended and the user has not been told of it yet: neither opened on the 后台 page nor its result told. */
+export const isUnseen = (state: Pick<State, 'tasks'>, task: BackgroundTask): boolean =>
+  task.endedAt !== null && !LIVE.has(task.status) && task.status !== 'interrupted' && !state.tasks.seen.includes(task.id)
+
+/** Ended tasks the user has not been told of yet. */
+export const unseenEnded = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => isUnseen(state, task))
+
+/** How long an ended task not told of stays marked 未读 on the 后台 page; older ones are just listed among the ended. */
+export const RECENT_UNREAD_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Marked 未读 on the 后台 page: ended a short while ago and not told of yet. The background stays quiet otherwise: the
+ * conversation tells each result, and most tasks are never looked at here (ui-guidelines: focus on the conversation).
+ */
+export const isRecentUnread = (state: Pick<State, 'tasks'>, task: BackgroundTask, now: number): boolean =>
+  isUnseen(state, task) && now - (task.endedAt ?? 0) <= RECENT_UNREAD_MS
 
 /** An ended task opened on the 后台 page has been seen: no more reminders of it. */
 function markSeen(state: State, taskId: string | null): State {
   const task = state.tasks.list.find((entry) => entry.id === taskId)
-  if (!task || task.endedAt === null || LIVE.has(task.status) || task.status === 'interrupted') return state
-  if (state.tasks.seen.includes(task.id)) return state
+  if (!task || !isUnseen(state, task)) return state
   return { ...state, tasks: { ...state.tasks, seen: [...state.tasks.seen, task.id] } }
 }
+
+/**
+ * Ended tasks the user has been told of where they are (their result came into the conversation on screen,
+ * report-state.ts): that turn's 已完成 says it, so they are not reminded of again (ui-guidelines: one reminder each).
+ */
+export const markTold = (state: State, taskIds: readonly string[]): State => taskIds.reduce<State>((told, id) => markSeen(told, id), state)
 
 export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 
