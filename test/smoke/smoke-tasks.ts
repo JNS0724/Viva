@@ -106,14 +106,15 @@ async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect,
 }
 
 /**
- * The count at the island's tail opens the 后台 page: the task's whole conversation and what to do with it;
- * ← 返回 / Esc closes it. The drawer has no tabs of tasks any more.
+ * An ended task's line in the conversation opens the 后台 page (the island counts only tasks going on): the task's
+ * whole conversation and what to do with it; ← 返回 / Esc closes it. The drawer has no tabs of tasks any more.
  */
 async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  await run(win, `document.querySelector('#island .isl-bg').click()`)
+  expect(await run(win, `document.querySelector('#island .isl-bg') === null`), 'with none going on, the island should count no task')
+  await run(win, `(${cardOf(OTHER_ASK)}).click()`)
   const page = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title && seen })()`, 'the 后台 page')
   expect(page.title === `#${OTHER_ASK}` && page.rows.includes(OTHER_ASK) && page.act === '关掉这件' && page.said.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
-    'the tail should open the 后台 page, the task shown whole', page)
+    'its line should open the 后台 page, the task shown whole', page)
   await capture(win, outDir, 'tasks-page')
   // Its list folds to a narrow strip (« at its head) and unfolds from there (»); the task shown stays.
   await run(win, `document.querySelector('#tasks-page .tp-side .tp-fold').click()`)
@@ -200,7 +201,7 @@ async function reportSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `(${cardOf(BIG_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-report')
-  // The island's tail (✓ N 做完了) stays inside it, a long task name giving way (…) instead.
+  // The island's tail, if any (it counts tasks going on), stays inside it, a long task name giving way (…) instead.
   const tail = await run(win, `(() => {
     const island = document.querySelector('#island .isl')?.getBoundingClientRect()
     const cell = document.querySelector('#island .isl-bg')?.getBoundingClientRect()
