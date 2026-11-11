@@ -196,7 +196,7 @@ test('a request the agent leaves without a route is reminded twice, shows nothin
   assert.deepEqual([requests.store.get(failed)?.status, requests.store.get(failed)?.failure], ['failed', 'unrouted'])
 })
 
-test('a request right after a task\'s result has that task named next to it; the result\'s own turn and requests long after do not', { timeout: DSH_TIMEOUT_MS }, async (t) => {
+test('a request right after a task\'s result has that task named next to it; the result\'s own turn and requests past the first three do not', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { llm, bridge } = await startHarness(t)
   const agent = bridge()
   await agent.start()
@@ -211,8 +211,9 @@ test('a request right after a task\'s result has that task named next to it; the
     return JSON.stringify(request.messages.slice(at))
   }
   assert.match(turnOf('第二点展开讲讲'), /「桌面岛说明」（t-island），上一轮刚送达/)
-  assert.match(turnOf('问题三'), /（t-island），3 轮前送达/)
-  assert.doesNotMatch(turnOf('接着刚才那个做'), /刚结束的后台任务/, 'past the window')
+  assert.match(turnOf('问题二'), /（t-island），2 轮前送达/, 'the third request after it')
+  assert.doesNotMatch(turnOf('问题三'), /刚结束的后台任务/, 'past the window')
+  assert.doesNotMatch(turnOf('接着刚才那个做'), /刚结束的后台任务/)
   const reportTurn = (llm.requests as ModelRequest[]).find(item => JSON.stringify(item.messages).includes('t-island'))!
   assert.doesNotMatch(JSON.stringify(reportTurn.messages), /<recent-tasks>/, 'a result coming back is no request')
 })

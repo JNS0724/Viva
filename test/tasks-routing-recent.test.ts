@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_RECENT_TASKS, RECENT_REQUESTS, recentNote, recentTasks } from '../plugins/routing/lib/recent-tasks.ts'
+import { MAX_RECENT_TASKS, RECENT_REQUESTS, recentNote, recentTasks, stepNote } from '../plugins/routing/lib/recent-tasks.ts'
 import { withRequestHeader } from '../src/shared/request-routing/header.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
 
@@ -16,8 +16,8 @@ test('a result that just came back names its task, with nothing in between', () 
 test('each request after a result counts, and past the window its task is no longer named', () => {
   const after = (n: number) => [report(['task-island', '桌面岛说明']), ...Array.from({ length: n }, (_, i) => asked(`问题 ${i}`, `r-${i}`))]
 
-  assert.equal(recentTasks(after(RECENT_REQUESTS))[0]?.ago, RECENT_REQUESTS)
-  assert.deepEqual(recentTasks(after(RECENT_REQUESTS + 1)), [])
+  assert.equal(recentTasks(after(RECENT_REQUESTS - 1))[0]?.ago, RECENT_REQUESTS - 1, 'the last request in the window')
+  assert.deepEqual(recentTasks(after(RECENT_REQUESTS)), [], 'the one after it')
 })
 
 test('the latest result comes first, and a task reported again counts from its latest result', () => {
@@ -55,4 +55,36 @@ test('the note names each task by title and id, and is empty when there are none
   assert.match(note, /「桌面岛说明」（task-island），上一轮刚送达/)
   assert.match(note, /「报销规则」（task-expense），2 轮前送达/)
   assert.equal(recentNote([]), '')
+})
+
+test('a turn\'s request gets its note at the step it comes in, once', () => {
+  const logged = [report(['task-island', '桌面岛说明']), asked('第二点展开', 'r-1')]
+
+  const first = stepNote(() => logged, ['r-1'], new Set())
+  assert.match(first.note, /（task-island），上一轮刚送达/)
+  assert.deepEqual([...first.noted], ['r-1'])
+
+  let read = false
+  const again = stepNote(() => { read = true; return logged }, ['r-1'], first.noted)
+  assert.equal(again.note, '', 'not again at a later step')
+  assert.equal(read, false, 'the conversation is not read when there is nothing to note')
+})
+
+test('words said while a turn runs come in at a later step and get their own note, counting the turn\'s first request', () => {
+  const logged = [report(['task-island', '桌面岛说明']), asked('第二点展开', 'r-1'), asked('第三点也展开', 'r-2')]
+
+  const step = stepNote(() => logged, ['r-1', 'r-2'], new Set(['r-1']))
+
+  assert.match(step.note, /（task-island），1 轮前送达/)
+  assert.deepEqual([...step.noted].sort(), ['r-1', 'r-2'])
+})
+
+test('a result that came back during the turn is named to the words said after it', () => {
+  const logged = [asked('写个说明', 'r-1'), report(['task-island', '桌面岛说明']), asked('第二点展开', 'r-2')]
+
+  assert.match(stepNote(() => logged, ['r-1', 'r-2'], new Set(['r-1'])).note, /上一轮刚送达/)
+})
+
+test('a turn without a request (a result coming back) gets no note', () => {
+  assert.deepEqual(stepNote(() => [report(['task-island', '桌面岛说明'])], [], new Set()), { note: '', noted: new Set() })
 })
