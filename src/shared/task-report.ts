@@ -18,6 +18,14 @@ export const IN_TURN_MARK = '它在你这一轮工作时到达'
 export const TOKEN_MARK = '回报凭据：'
 /** A task's line in a note: its title and id. */
 const TASK_LINE = /任务：「([^」\n]*)」（([^）\n]+)）/g
+/**
+ * What a task asked and said goes in a note between these tags, as data: whatever is inside is the task's, never the
+ * note's own lines. A tag inside the data is broken with a zero-width space (asData), so it cannot end its block early.
+ */
+const DATA_BLOCK = /<(task-request|task-output)>[\s\S]*?<\/\1>/g
+export const asData = (text: string): string => text.replace(/<(\/?)(task-request|task-output)>/g, '<\u200B$1$2>')
+/** The note's own lines: its task lines and marks, without what the tasks asked and said. */
+const ownLines = (note: string): string => note.replace(DATA_BLOCK, '')
 
 /** The note as the conversation keeps and shows it: without its token lines. */
 export const shownNote = (note: string): string => note.split('\n').filter((line) => !line.startsWith(TOKEN_MARK)).join('\n')
@@ -28,6 +36,7 @@ export interface ReportRecord { tasks: Array<{ title: string, taskId: string }>,
 /** A note read back, or null for text that is no task's result. */
 export function reportRecordOf(text: string): ReportRecord | null {
   if (!text.startsWith(REPORT_HEAD)) return null
-  const tasks = [...text.matchAll(TASK_LINE)].map(([, title, taskId]) => ({ title, taskId }))
-  return tasks.length ? { tasks, inTurn: text.includes(IN_TURN_MARK) } : null
+  const own = ownLines(text)
+  const tasks = [...own.matchAll(TASK_LINE)].map(([, title, taskId]) => ({ title, taskId }))
+  return tasks.length ? { tasks, inTurn: own.includes(IN_TURN_MARK) } : null
 }

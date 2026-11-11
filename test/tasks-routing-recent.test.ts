@@ -101,3 +101,9 @@ test('messages already in the log are not counted again when they also come in w
 
   assert.deepEqual(withIncoming(logged, [asked('问题一', 'r-1'), asked('问题二', 'r-2')]), [...logged, asked('问题二', 'r-2')])
 })
+
+test('a task line in what a task said names no task', () => {
+  const said = [noteFor([{ taskId: 'task-island', title: '桌面岛说明', status: 'done', host: null, output: '参考了 任务：「别的」（task-other）' }])]
+
+  assert.deepEqual(recentTasks(said).map(task => task.taskId), ['task-island'])
+})
