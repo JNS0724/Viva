@@ -1,3 +1,4 @@
+import { reportId } from '../shared/task-report.ts'
 import { decodeWaits } from './agent-event-decoder.ts'
 import type { ConversationAction, ConversationPayloads, PermissionRequest } from './conversation-types.ts'
 import type { TaskStream } from './action-types.ts'
@@ -107,10 +108,17 @@ function markSeen(state: State, taskId: string | null): State {
 }
 
 /**
- * Ended tasks the user has been told of where they are (their result came into the conversation on screen,
- * report-state.ts): that turn's 已完成 says it, so they are not reminded of again (ui-guidelines: one reminder each).
+ * Ended tasks the user has been told of where they are: the record of their latest run's result is drawn in the
+ * conversation on screen (report-state.ts records), come in just now or loaded with it. The conversation told it, so
+ * it is not unread any more (ui-guidelines: focus on the conversation). A record of an earlier run tells nothing.
  */
-export const markTold = (state: State, taskIds: readonly string[]): State => taskIds.reduce<State>((told, id) => markSeen(told, id), state)
+export function toldByRecords(state: State): State {
+  if (!state.records.length) return state
+  const shown = new Set(state.records.map((record) => record.reportId))
+  return state.tasks.list
+    .filter((task) => task.runId && shown.has(reportId(task.id, task.runId)))
+    .reduce<State>((told, task) => markSeen(told, task.id), state)
+}
 
 export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 

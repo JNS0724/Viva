@@ -83,31 +83,44 @@ test('seen by the last launch, a task is not reminded of again; what was kept th
   assert.deepEqual(reduce(restored, { type: 'tasks_seen_restored', ids: 'not a list' }).tasks.seen, ['a'])
 })
 
-/** The note a task's result comes back in, as the conversation records it (task-reports.ts noteFor). */
-const note = (...tasks: Array<[string, string]>) => noteFor(tasks.map(([taskId, title]) => ({ taskId, title, status: 'done', host: null, output: '做完了' })))
-const delivered = (text: string, conversationId = 'c1'): FixtureAction => ({ type: 'report_delivered', conversationId, sessionId: null, reportId: `report-${conversationId}`, text, at: 8 })
+/** The record of a task run's result, as the backend keeps it (report-records.ts): one per run, keyed task:run. */
+const note = (taskId: string, title: string) => noteFor([{ taskId, title, status: 'done', host: null, output: '做完了' }])
+const delivered = (taskId: string, title: string, { conversationId = 'c1', run = 'run-1' } = {}): FixtureAction =>
+  ({ type: 'report_delivered', conversationId, sessionId: null, reportId: `${taskId}:${run}`, text: note(taskId, title), at: 8 })
 
-test('a result come into the conversation on screen tells its tasks: no longer unread', () => {
-  const told = reduce(twoEnded(), delivered(note(['a', '列一下这周要交的东西'], ['b', '核对这个月的发票'])))
+test('a result come into the conversation on screen tells its task: no longer unread', () => {
+  const told = run([delivered('a', '列一下这周要交的东西'), delivered('b', '核对这个月的发票')], twoEnded())
 
-  assert.equal(told.records.length, 1, 'drawn in the conversation')
+  assert.equal(told.records.length, 2, 'drawn in the conversation')
   assert.deepEqual(ids(unseenEnded(told)), [])
 })
 
 test('a result for a conversation not on screen tells nothing: its task is still unread', () => {
-  const elsewhere = reduce(twoEnded(), delivered(note(['a', '列一下这周要交的东西']), 'c-other'))
+  const elsewhere = reduce(twoEnded(), delivered('a', '列一下这周要交的东西', { conversationId: 'c-other' }))
 
   assert.deepEqual(ids(unseenEnded(elsewhere)), ['a', 'b'])
 })
 
-test('a task told of, asked again and ended again, is unread again until its new result is told', () => {
-  const told = reduce(twoEnded(), delivered(note(['a', '列一下这周要交的东西'])))
+test('a conversation opened with a result in it tells that task, as its result is drawn there now', () => {
+  const record = { reportId: 'a:run-1', at: 8, text: note('a', '列一下这周要交的东西'), after: 1 }
+  // Another conversation opened: the window starts it empty (a switch), then loads what was kept of it.
+  const switched = { ...twoEnded(), conversationId: null, messages: [], records: [] }
+  const opened = reduce(switched, { type: 'history_loaded', conversationId: 'c2', messages: [{ role: 'assistant', text: '好的' }], records: [record], savedAt: 9 })
+
+  assert.deepEqual(ids(unseenEnded(opened)), ['b'])
+})
+
+test('a task told of, asked again and ended again, is unread again: the record of its earlier run tells nothing', () => {
+  const told = reduce(twoEnded(), delivered('a', '列一下这周要交的东西'))
   const again = run([
     { type: 'task_asked', taskId: 'a', text: '再补一条', at: 10 },
     { type: 'task_end', taskId: 'a', stopReason: 'end_turn', at: 11 },
   ], told)
 
+  assert.equal(again.records.some((record) => record.reportId === 'a:run-1'), true, 'the earlier record is still drawn')
   assert.equal(ids(unseenEnded(again)).includes('a'), true)
+  const newRun = again.tasks.list.find((task) => task.id === 'a')!.runId
+  assert.equal(ids(unseenEnded(reduce(again, delivered('a', '列一下这周要交的东西', { run: newRun })))).includes('a'), false, 'its new result tells it')
 })
 
 test('the 后台 page marks only the recent unread: one ended long ago is just listed', () => {

@@ -16,6 +16,9 @@ export const REPORT_HEAD = '【后台任务结束】'
 export const IN_TURN_MARK = '它在你这一轮工作时到达'
 /** The line that carries a report's token (plugins/steer/lib/reports.ts): a secret the window never shows. */
 export const TOKEN_MARK = '回报凭据：'
+/** The report of one run of a task (backend/task-reports.ts, effects key) and the record kept of it (report-records.ts). */
+export const reportId = (taskId: string, runId: string): string => `${taskId}:${runId}`
+
 /** A task's line in a note: its title and id. */
 const TASK_LINE = /任务：「([^」\n]*)」（([^）\n]+)）/g
 /**

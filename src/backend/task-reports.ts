@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { asData, IN_TURN_MARK, REPORT_HEAD, shownNote, TOKEN_MARK } from '../shared/task-report.ts'
+import { asData, IN_TURN_MARK, REPORT_HEAD, reportId, shownNote, TOKEN_MARK } from '../shared/task-report.ts'
 import type { Effect, Outcome, Runner } from './effects.ts'
 import type { ReportState } from './steer-channel.ts'
 
@@ -40,7 +40,7 @@ const when = (at: number) => new Date(at).toLocaleString('zh-CN', { hour12: fals
 export const GATHER_MS = 300
 /** The effect kind (effects.ts) and its key: one report per run's end. */
 export const REPORT = 'report'
-export const reportId = (taskId: string, runId: string): string => `${taskId}:${runId}`
+export { reportId } from '../shared/task-report.ts'
 /** The start every report key of one task shares, whichever run. */
 export const reportsOf = (taskId: string): string => `${taskId}:`
 

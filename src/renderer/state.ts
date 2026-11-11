@@ -12,7 +12,7 @@ import { closeHub, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
 import { initialPlugins, PLUGIN_ACTIONS } from './plugins-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
-import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
+import { initialTasks, routeToTask, taskActions, toldByRecords } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
 import { WAITS_ACTIONS } from './waits-state.ts'
 import { PROPOSAL_ACTIONS } from './proposal-state.ts'
@@ -299,6 +299,12 @@ const ACTION_HANDLERS: ActionHandlers = {
 } satisfies ActionHandlers
 
 export function reduce(state: State, action: Action): State {
+  const next = reduceOnce(state, action)
+  // Results drawn in the conversation on screen (come in, or loaded with it) tell their tasks (tasks-state.ts).
+  return next.records !== state.records || next.tasks.list !== state.tasks.list ? toldByRecords(next) : next
+}
+
+function reduceOnce(state: State, action: Action): State {
   const routed = routeToTask(state, action)
   if (routed) return routed
   const next = Object.hasOwn(ACTION_HANDLERS, action.type) ? handleAction(state, action, ACTION_HANDLERS)
