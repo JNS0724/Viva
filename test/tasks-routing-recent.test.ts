@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_RECENT_TASKS, RECENT_REQUESTS, recentNote, recentTasks, stepNote } from '../plugins/routing/lib/recent-tasks.ts'
+import { MAX_RECENT_TASKS, RECENT_REQUESTS, recentNote, recentTasks, stepNote, withIncoming } from '../plugins/routing/lib/recent-tasks.ts'
 import { withRequestHeader } from '../src/shared/request-routing/header.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
 
@@ -87,4 +87,17 @@ test('a result that came back during the turn is named to the words said after i
 
 test('a turn without a request (a result coming back) gets no note', () => {
   assert.deepEqual(stepNote(() => [report(['task-island', '桌面岛说明'])], [], new Set()), { note: '', noted: new Set() })
+})
+
+test('a result and the words after it arriving together, before either is logged, name that task', () => {
+  const logged = [asked('写个说明', 'r-1')]
+  const incoming = [report(['task-island', '桌面岛说明']), asked('第二点展开', 'r-2')]
+
+  assert.match(stepNote(() => withIncoming(logged, incoming), ['r-1', 'r-2'], new Set(['r-1'])).note, /（task-island），上一轮刚送达/)
+})
+
+test('messages already in the log are not counted again when they also come in with the step', () => {
+  const logged = [report(['task-island', '桌面岛说明']), asked('问题一', 'r-1')]
+
+  assert.deepEqual(withIncoming(logged, [asked('问题一', 'r-1'), asked('问题二', 'r-2')]), [...logged, asked('问题二', 'r-2')])
 })

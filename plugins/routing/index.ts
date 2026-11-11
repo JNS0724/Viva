@@ -22,7 +22,7 @@ import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
-import { stepNote } from './lib/recent-tasks.ts'
+import { stepNote, withIncoming } from './lib/recent-tasks.ts'
 
 export const name = 'viva-routing'
 export const inject = ['agents', 'tools', 'llm']
@@ -108,8 +108,9 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     if (!mains.has(id) || decision.kind === 'reject' || payload.signal.aborted) return decision
     // Requests coming into this step (the turn's first, or words said while it runs): the tasks whose results came back a
     // short while ago go with them, once each (lib/recent-tasks.ts).
-    const proposed = decision.messages.flatMap(message => requestsIn(textOf(message.content)).map(request => request.id))
-    const step = stepNote(() => userTexts(payload.agent), [...Object.keys(ledgerOf(id).requests), ...proposed], noted.get(id) ?? new Set())
+    const incoming = decision.messages.map(message => textOf(message.content))
+    const proposed = incoming.flatMap(text => requestsIn(text).map(request => request.id))
+    const step = stepNote(() => withIncoming(userTexts(payload.agent), incoming), [...Object.keys(ledgerOf(id).requests), ...proposed], noted.get(id) ?? new Set())
     noted.set(id, step.noted)
     return step.note ? { ...decision, messages: [...decision.messages, userNote(step.note)] } : decision
   })

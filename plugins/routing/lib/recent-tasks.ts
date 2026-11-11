@@ -57,3 +57,12 @@ export function stepNote(logged: () => readonly string[], current: readonly stri
   const said = logged().filter(text => !requestsIn(text).some(request => fresh.has(request.id)))
   return { note: recentNote(recentTasks(said)), noted: new Set([...noted, ...fresh]) }
 }
+
+/**
+ * The conversation as a step's note reads it: what is in the log, then what comes in with the step (a result and the
+ * words said after it may arrive together, before either is logged), each message once.
+ */
+export function withIncoming(logged: readonly string[], incoming: readonly string[]): string[] {
+  const known = new Set(logged)
+  return [...logged, ...incoming.filter(text => !known.has(text))]
+}
