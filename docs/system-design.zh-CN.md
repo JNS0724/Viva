@@ -162,7 +162,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 **升级 dsh 时要复查。**
 
-- `viva-routing` 依赖 dsh 的内部事件，不是通用的 ACP 扩展。dsh 固定在 `0.2.0-rc.2`，它的 ACP 适配器只转发完整的块。升级后用真实 dsh 和延迟 SSE 重跑 `test/stream-runtime.test.js`：第一段文字要先于回答完成到达，取消要保留已提交的部分；再跑 `test/tasks-routing-dsh.test.ts`：第一步组装前已经收窄。流式通道中途失败时，撤回这次调用的临时内容，这次调用以错误结束；ACP 的文字从不直接显示，否则路由步骤的文字会漏出来。
+- `viva-routing` 依赖 dsh 的内部事件，不是通用的 ACP 扩展。dsh 固定在 `0.2.2-rc.2`，它的 ACP 适配器只转发完整的块。升级后用真实 dsh 和延迟 SSE 重跑 `test/stream-runtime.test.js`：第一段文字要先于回答完成到达，取消要保留已提交的部分；再跑 `test/tasks-routing-dsh.test.ts`：第一步组装前已经收窄。流式通道中途失败时，撤回这次调用的临时内容，这次调用以错误结束；ACP 的文字从不直接显示，否则路由步骤的文字会漏出来。
 - rc.2 没有插件自定义通知的接口，所以一轮结束后 app 每 2 秒查一次 `memory.db`，持续 30 秒。dsh 提供 ACP 扩展通知后可以去掉轮询。
 
 **几项定下来的取舍。**
@@ -341,9 +341,9 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 子 agent 适合那种会撑满上下文、但这一轮就需要结果的子工作（读一批文档交回结论、同时查几件事）。要跑很久、该让用户看见、或之后可能还要追问的工作，交给 Viva 的任务。在 `viva.patch.yml` 里：
 
-- `subagent` 和 `subagent_fork` 保留，关掉后台模式（`enableRunInBackground: false`），结果作为工具结果在同一轮回来；`maxDepth: 1`：子 agent 自己是第 1 层，不能再往下委派。
-- 子 agent 只拿到用于查找的只读工具，按允许名单：`toolFilter.allow` 是 `read`、`glob`、`grep`、`read_image`、`web_search`、`web_fetch`、`memory_recall`、`search_conversations`、`read_conversation`、`todo_write`。
-- `send_message`、`list_agents` 和 `interrupt_agent` 关掉。人设说明主对话会等子 agent 的结果，也说明子 agent 和 Viva 任务怎样分工。
+- `subagent` 和 `subagent_fork` 保留，`maxDepth: 1`：子 agent 自己是第 1 层，不能再往下委派。结果在同一次回复里回到对话（`test/tasks-plugin.test.ts` 用真实 dsh 检查）；dsh 0.2.1 去掉了后台模式的开关。
+- 子 agent 只拿到用于查找的只读工具，按允许名单：`read`、`glob`、`grep`、`read_image`、`web_search`、`web_fetch`、`memory_recall`、`search_conversations`、`read_conversation`、`todo_write`（`src/shared/subagent-tools.ts`）。dsh 0.2.1 去掉了 `tool-subagent` 的 `toolFilter`，所以由 `viva-routing` 在每个会话 `origin: 'subagent'` 的 agent 创建时收窄。
+- 控制工具（`send_message`、`interrupt_agent`、`wait_agent`）关掉。人设说明主对话会等子 agent 的结果，也说明子 agent 和 Viva 任务怎样分工。
 - 有了允许名单，`subagent_fork` 的工具表和父会话不同，可能不再命中 KV 缓存；没有用真实的 DeepSeek API 测过。
 
 ### 11.8 没有从 Super-agent 采纳的部分

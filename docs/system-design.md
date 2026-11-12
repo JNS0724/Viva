@@ -162,7 +162,7 @@ Plugins and the app talk over the IPC channel opened when dsh starts; each contr
 
 **Recheck when upgrading dsh.**
 
-- `viva-routing` depends on dsh's internal events, not a general ACP extension. dsh is pinned to `0.2.0-rc.2`, whose ACP adapter forwards only whole blocks. After an upgrade, rerun `test/stream-runtime.test.js` with real dsh and delayed SSE: the first text must arrive before the answer completes, and cancelling must keep the committed part. Then rerun `test/tasks-routing-dsh.test.ts`: the main session must be narrowed before its first step is assembled. If the streaming channel fails mid-call, that call's provisional content is withdrawn and the call ends in an error; ACP's text is never shown directly, or the routing steps' text would leak.
+- `viva-routing` depends on dsh's internal events, not a general ACP extension. dsh is pinned to `0.2.2-rc.2`, whose ACP adapter forwards only whole blocks. After an upgrade, rerun `test/stream-runtime.test.js` with real dsh and delayed SSE: the first text must arrive before the answer completes, and cancelling must keep the committed part. Then rerun `test/tasks-routing-dsh.test.ts`: the main session must be narrowed before its first step is assembled. If the streaming channel fails mid-call, that call's provisional content is withdrawn and the call ends in an error; ACP's text is never shown directly, or the routing steps' text would leak.
 - rc.2 has no plugin API for custom notifications, so after a turn the app reads `memory.db` every 2 seconds for 30 seconds. Once dsh offers ACP extension notifications, the polling can go.
 
 **Settled choices.**
@@ -341,9 +341,9 @@ The main conversation owns every background task, whatever topic is on screen, a
 
 Sub-agents suit sub-work that would flood the context but whose result this turn needs (reading a batch of documents and handing back a conclusion, looking several things up in parallel). Work that runs long, should be visible to the user, or may be asked about later goes to Viva tasks. In `viva.patch.yml`:
 
-- `subagent` and `subagent_fork` stay, with the background mode off (`enableRunInBackground: false`), so the result comes back as a tool result in the same turn; `maxDepth: 1`: the sub-agent itself is depth 1 and cannot delegate further.
-- A sub-agent gets only read-only tools for looking things up, by allow list: `toolFilter.allow` is `read`, `glob`, `grep`, `read_image`, `web_search`, `web_fetch`, `memory_recall`, `search_conversations`, `read_conversation`, `todo_write`.
-- `send_message`, `list_agents` and `interrupt_agent` are turned off. The persona says the main conversation waits for a sub-agent's result, and how sub-agents and Viva tasks divide the work.
+- `subagent` and `subagent_fork` stay with `maxDepth: 1`: the sub-agent itself is depth 1 and cannot delegate further. Its result comes back to the conversation within the same reply (`test/tasks-plugin.test.ts` checks this on real dsh); dsh 0.2.1 removed the background switches.
+- A sub-agent gets only read-only tools for looking things up, by allow list: `read`, `glob`, `grep`, `read_image`, `web_search`, `web_fetch`, `memory_recall`, `search_conversations`, `read_conversation`, `todo_write` (`src/shared/subagent-tools.ts`). dsh 0.2.1 took `toolFilter` off `tool-subagent`, so `viva-routing` narrows each agent whose session has `origin: 'subagent'` when it is created.
+- The control tools (`send_message`, `interrupt_agent`, `wait_agent`) are turned off. The persona says the main conversation waits for a sub-agent's result, and how sub-agents and Viva tasks divide the work.
 - With the allow list, `subagent_fork`'s tool table differs from its parent's and may no longer hit the KV cache; not measured against the real DeepSeek API.
 
 ### 11.8 Not taken from Super-agent

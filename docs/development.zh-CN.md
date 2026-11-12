@@ -162,7 +162,7 @@ npm run showcase    # 需要 ffmpeg
 - 聊天内容以明文保存在本机（key 是加密的）。
 - 旧对话的「过程」依赖 dsh 私有的 v4 日志格式，dsh 升级后可能读不出来；读不出时只是不显示过程，对话本身不受影响。
 - 测试必须用 Electron 自带的 Node：系统 Node 24.14 的 zstd 只能解开多帧文件的第一帧，而 dsh 的日志正是多帧的。
-- 记忆插件依赖 dsh 的插件接口，插件声明的 dsh 版本是精确的 `0.2.0-rc.2`，升级 dsh 时要同步更新 `plugins/memory/package.json`，否则 dsh 会拒绝加载插件（对话不受影响，只是没有记忆）。
+- 记忆插件依赖 dsh 的插件接口，插件声明的 dsh 版本是精确的 `0.2.2-rc.2`（cordis ~4.1.0、schemastery ~3.19.0、zod 4.6.6 与 dsh 一致），升级 dsh 时要同步更新各插件的 `package.json`，并从旧版本起读 `node_modules/@deepseek-ai/dsh/docs/upgrade-guide/` 里的各版本说明，否则 dsh 会拒绝加载插件（对话不受影响，只是没有记忆）。
 - 对话压缩后重新带上画像的逻辑有单元测试，但还没在真实 dsh 里触发过压缩来验证。
 - Windows 已在真实的 Windows 11（x64，4K 屏）上用 `scripts\verify-windows.ps1` 跑通全部测试和当时四个阶段的 smoke，包括真实 dsh 加记忆、过程记录和工具策略插件（profile 写入、插件加载）；系统窗口按钮本身由系统绘制，页面截图拍不到，需要人工看一眼。真实模型在 Windows 上的对话还没验证（需要 key）。
 - 字体从 Google Fonts 加载，离线时回退到系统字体。

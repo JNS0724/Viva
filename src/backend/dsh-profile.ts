@@ -38,7 +38,8 @@ type ProfilePlugin = { name: string, dir: string, config?: Readonly<Record<strin
 /**
  * dsh-base's rows the app relies on for safety, restated whole (as dsh-base writes them, test/dsh-profile.test.js
  * keeps them in step) so a bundle or the user's layer cannot loosen them: the sandbox mode, when to ask, and the
- * permission presets. Patches by id keep the lower layer's `disabled`, so it is stated too.
+ * permission presets. Patches by id keep the lower layer's `disabled`, so it is stated too. Also read-before-write
+ * (fs-observation-policy): on in dsh 0.2.0, off by default since 0.2.2; kept on so the upgrade loosens nothing.
  */
 export const SAFETY_ROWS = `- id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
@@ -65,6 +66,9 @@ export const SAFETY_ROWS = `- id: sandbox-policy
       danger-full-access:
         sandbox: danger-full-access
         approval: never
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+  disabled: false
 `
 
 /**
@@ -82,22 +86,20 @@ function pluginManagerLines(pnpmCommand: string | null, registry: string | null)
   ]
 }
 /**
- * dsh's sub-agents, used within a turn only (system-design §11.7): in the foreground, so the main conversation waits
- * for the result in the same turn; with read-only tools for looking things up, by allow list, so tools dsh or a
- * plugin adds later are not given to them; and unable to delegate further. Work that runs long, should be seen by
- * the user or asked about later goes to Viva's background tasks instead. The follow-up tools (send_message,
- * interrupt_agent, list_agents) serve background children only, so they are off.
+ * dsh's sub-agents, used within a turn only (system-design §11.7), unable to delegate further. Their read-only tools are
+ * set by viva-routing when each is created (shared/subagent-tools.ts): dsh 0.2.1 took `toolFilter` off tool-subagent.
+ * Work that runs long, should be seen by the user or asked about later goes to Viva's background tasks instead. The
+ * control tools (send_message, interrupt_agent, wait_agent) serve children the model follows up on, so they are off.
  */
-export const SUBAGENT_TOOLS = Object.freeze(['read', 'glob', 'grep', 'read_image', 'web_search', 'web_fetch', 'memory_recall', 'search_conversations', 'read_conversation', 'todo_write'])
+export { SUBAGENT_TOOLS } from '../shared/subagent-tools.ts'
 function subagentLines() {
-  const shared = { enableRunInBackground: false, backgroundMode: 'one-shot', toolFilter: { allow: SUBAGENT_TOOLS }, maxDepth: 1 }
+  const shared = { maxDepth: 1 }
   return [
     '- id: tool-subagent', "  name: '@deepseek-ai/dsh-tool-subagent'", '  disabled: false',
     `  config: ${JSON.stringify({ provider: 'spawn', toolName: 'subagent', ...shared })}`,
     '- id: tool-subagent-fork', "  name: '@deepseek-ai/dsh-tool-subagent'", '  disabled: false',
     `  config: ${JSON.stringify({ provider: 'fork', toolName: 'subagent_fork', ...shared })}`,
     '- id: tool-subagent-control', '  disabled: true',
-    '- id: tool-subagent-list-agents', '  disabled: true',
   ]
 }
 

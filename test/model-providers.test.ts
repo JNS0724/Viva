@@ -77,14 +77,14 @@ test('keys are stored encrypted, shown by their last characters, and handed to d
   assert.deepEqual(providerEnv(store.list()), { [keyEnvName(added.id)]: SAMPLE_KEY })
   assert.deepEqual(piAiProviders(store.list()), {
     'custom-00000001': {
-      displayName: '公司网关', api: 'openai-completions', baseURL: 'https://llm.example.com/v1', apiKeyEnv: 'VIVA_MODEL_KEY_00000001',
+      displayName: '公司网关', api: 'openai-completions', baseURL: 'https://llm.example.com/v1', defaultContextWindow: 262144, defaultMaxTokens: 32768, apiKeyEnv: 'VIVA_MODEL_KEY_00000001',
       models: [
         { id: 'glm-5.2', name: 'glm-5.2', contextWindow: 131072, maxTokens: 8192, input: ['text', 'image'] },
         { id: 'qwen3.8-flash', name: 'qwen3.8-flash' },
         { id: 'kimi-k2.6', name: 'kimi-k2.6' },
       ],
     },
-    'custom-00000002': { displayName: 'Ollama', api: 'openai-completions', baseURL: 'http://127.0.0.1:11434/v1', models: [{ id: 'qwen3:8b', name: 'qwen3:8b' }] },
+    'custom-00000002': { displayName: 'Ollama', api: 'openai-completions', baseURL: 'http://127.0.0.1:11434/v1', defaultContextWindow: 262144, defaultMaxTokens: 32768, models: [{ id: 'qwen3:8b', name: 'qwen3:8b' }] },
   })
 })
 

@@ -88,7 +88,9 @@ const PARTS = Object.freeze({
 } as const)
 
 type Part = keyof typeof PARTS
-const personaOf = (parts: readonly Part[]) => Object.freeze({ prefix: parts.flatMap(part => PARTS[part]).join(''), suffix: '你的工作目录是 {{cwd}}。' })
+// No suffix: dsh no longer has a {{cwd}} variable, and its working-directory service puts the directory in each step's
+// runtime context (dsh-system-prompt README, 0.2.1).
+const personaOf = (parts: readonly Part[]) => Object.freeze({ prefix: parts.flatMap(part => PARTS[part]).join(''), suffix: '' })
 
 /** The profile's persona: background tasks and schedules' runs do the work. */
 export const PERSONA = personaOf(['identity', 'recall', 'ask', 'remember', 'config', 'schedule', 'taskQuery', 'subagent', 'taskTruth', 'history'])

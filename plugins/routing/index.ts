@@ -22,6 +22,7 @@ import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
+import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
 
 export const name = 'viva-routing'
@@ -80,7 +81,12 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     agent.ctx.tools.register(routeTool())
     agent.ctx.plugin(persona, { prefix: config.prefix, suffix: config.suffix ?? '' })
   }
-  ctx.on('agent/created', ({ agent }) => { narrow(agent); return undefined })
+  // A sub-agent gets read-only lookups only (shared/subagent-tools.ts): dsh 0.2.1 no longer filters its tools itself.
+  const narrowSubagent = (agent: Agent) => {
+    if (agent.session.header.origin !== 'subagent') return
+    agent.ctx.tools.restrict({ allow: SUBAGENT_TOOLS.filter(tool => ctx.tools.get(tool)) })
+  }
+  ctx.on('agent/created', ({ agent }) => { narrow(agent); narrowSubagent(agent); return undefined })
   const host = createHostChannel(port, { onBind: (sessionId) => {
     mains.add(sessionId)
     const agent = ctx.agents.get(SessionId(sessionId))
@@ -245,7 +251,8 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
 
 /** One text-only call on the main agent's own route, without thinking, as the memory plugin's background pass does. */
 async function complete(ctx: Context, agent: Agent, input: string, signal: AbortSignal): Promise<string> {
-  const { provider, model } = agent.options
+  // The route in use now: since dsh 0.2.1 agent.options is only the fallback once the user switched models.
+  const { provider, model } = agent.model.current() ?? agent.options
   if (!provider || !model) throw new Error('the agent has no model route to reuse')
   const assembler = new BlockAssembler()
   const stream = ctx.llm.stream({

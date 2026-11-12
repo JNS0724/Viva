@@ -227,6 +227,7 @@ test('the model is told it is a personal work assistant, not the coding agent of
 
   const request = JSON.stringify(llm.requests[0])
   assert.match(request, /你是用户的个人工作助手/)
-  assert.match(request, /你的工作目录是 /)
+  // The working directory comes in dsh's runtime context now (it has no {{cwd}} for the persona any more).
+  assert.match(request, /Current working directory: /)
   assert.doesNotMatch(request, /coding agent/)
 })

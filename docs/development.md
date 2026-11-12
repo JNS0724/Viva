@@ -143,7 +143,7 @@ npm run showcase (requires ffmpeg) uses real dsh with showcase-llm.js and smoke-
 - Conversation content is plaintext locally; keys are encrypted.
 - Old traces depend on private v4 dsh logs. Failures omit activity without losing conversation text.
 - Tests use Electron’s Node: the recorded system Node 24.14 zstd behavior read only the first frame of dsh’s multi-frame logs.
-- Plugins pin exact dsh 0.2.0-rc.2; upgrades require compatible manifests and regression tests.
+- Plugins pin exact dsh 0.2.2-rc.2 (and cordis ~4.1.0, schemastery ~3.19.0, zod 4.6.6 as dsh does); upgrades require compatible manifests and regression tests. Read the version folders under `node_modules/@deepseek-ai/dsh/docs/upgrade-guide/` from the old version on.
 - Memory reinjection after compaction has unit coverage, but the original notes had not triggered compaction in real dsh.
 - Earlier Windows 11 x64/4K tests verified the then-current four smoke phases and plugins. OS-drawn window buttons need manual inspection; those dated results do not establish current real-model or release readiness.
 - Google Fonts require network; offline mode falls back to system fonts.
