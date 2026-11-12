@@ -1,6 +1,6 @@
 import { activeHours } from './habits.ts'
-import { EXTRA_COMMAND_DIRS, resolveCommand, toAcpServers } from './mcp-config.ts'
-import type { AcpServer } from './mcp-config.ts'
+import { EXTRA_COMMAND_DIRS, resolveCommand, toManagerServers } from './mcp-config.ts'
+import type { McpServerEntry } from '../shared/mcp-channel.ts'
 
 type MemoryDb = ReturnType<typeof import('../../plugins/memory/lib/store.ts').openMemoryDb>
 type HistoryDb = ReturnType<typeof import('./history-db.ts').openHistoryDb>
@@ -21,9 +21,10 @@ export function createPersonal({ memoryDb, historyDb, mcpStore, now = Date.now }
   let reportedUntil = now()
   let lastInjection = memoryDb.lastInjectionId()
 
-  function mcpServers(): AcpServer[] {
+  /** The servers for viva-mcp (dsh's MCP manager); one whose command cannot be found is left out and said so. */
+  function mcpServers(): McpServerEntry[] {
     const resolve = (command: string) => resolveCommand(command, { extraDirs: EXTRA_COMMAND_DIRS })
-    const { servers, missing: notFound } = toAcpServers(mcpStore.list(), { resolve })
+    const { servers, missing: notFound } = toManagerServers(mcpStore.list(), { resolve })
     missing = notFound
     return servers
   }
@@ -53,11 +54,13 @@ export function createPersonal({ memoryDb, historyDb, mcpStore, now = Date.now }
   }
 
   /**
-   * Which servers are attached to the session and which were left out, for the settings page. Memory
-   * counts as working when the plugin started inside the dsh launched at `launchedAt`.
+   * How the servers stand for the settings page (viva-mcp, mcp-desk.ts): connected, still trying, or stopped trying,
+   * with those whose command was not found among the last. Memory counts as working when the plugin started inside
+   * the dsh launched at `launchedAt`.
    */
   const mcpStatus = (info: any, launchedAt: number) => ({
     active: info?.mcp?.active ?? [],
+    connecting: info?.mcp?.connecting ?? [],
     memory: launchedAt > 0 && memoryDb.pluginStartedAt() >= launchedAt,
     dropped: [...(info?.mcp?.dropped ?? []), ...missing],
   })

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, SUBAGENT_TOOLS, VIVA_LAYER_MARK, vivaLayerFile } from '../src/backend/dsh-profile.ts'
+import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, SUBAGENT_TOOLS, VIVA_LAYER_MARK, vivaLayerFile, WEB_SEARCH_OFF } from '../src/backend/dsh-profile.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 const DSH_BASE_PATCH = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-base', 'cordis.patch.yml')
@@ -124,24 +124,34 @@ function baseRow(text: string, id: string): string {
 test('the safety rows the app restates are dsh-base\'s, word for word, with disabled stated', () => {
   const base = fs.readFileSync(DSH_BASE_PATCH, 'utf8')
   const restated = SAFETY_ROWS.trimEnd().split(/\n(?=- id: )/)
-  assert.deepEqual(restated.map((row) => row.split('\n')[0]), ['- id: sandbox-policy', '- id: approval', '- id: permission'])
+  assert.deepEqual(restated.map((row) => row.split('\n')[0]), ['- id: sandbox-policy', '- id: approval', '- id: permission', '- id: fs-observation-policy'])
   for (const row of restated) {
     const id = row.split('\n')[0].slice('- id: '.length)
-    assert.equal(row.replace('\n  disabled: false', ''), baseRow(base, id), `${id} drifted from dsh-base: copy it again`)
+    // Read-before-write is off in dsh-base since 0.2.2; the app keeps it on, its row otherwise dsh-base's.
+    const asBase = id === 'fs-observation-policy' ? row.replace('\n  disabled: false', '\n  disabled: true') : row.replace('\n  disabled: false', '')
+    assert.equal(asBase, baseRow(base, id), `${id} drifted from dsh-base: copy it again`)
   }
 })
 
-test('the app\'s layer keeps dsh\'s sub-agents within a turn: foreground, read-only by allow list, no further delegation', () => {
+test('the app\'s layer keeps dsh\'s sub-agents from delegating further; their read-only tools are viva-routing\'s to set', () => {
   const patch = patchFor({ plugins: [] })
   for (const [id, toolName] of [['tool-subagent', 'subagent'], ['tool-subagent-fork', 'subagent_fork']]) {
     const line = patch.split('\n').find((row) => row.startsWith('  config: ') && row.includes(`"toolName":"${toolName}"`))
     assert.ok(patch.includes(`- id: ${id}\n`) && line, `${id} is restated`)
     const config = JSON.parse(line.slice('  config: '.length))
-    assert.deepEqual([config.enableRunInBackground, config.backgroundMode, config.maxDepth], [false, 'one-shot', 1])
-    assert.deepEqual(config.toolFilter, { allow: [...SUBAGENT_TOOLS] })
+    // dsh 0.2.1 took toolFilter, persona and the background switches off tool-subagent; one left would fail its load.
+    assert.deepEqual(Object.keys(config).sort(), ['maxDepth', 'provider', 'toolName'])
+    assert.equal(config.maxDepth, 1)
   }
   // todo_write keeps the sub-agent's own checklist; nothing else it gets changes anything.
   assert.ok(!SUBAGENT_TOOLS.filter((name) => name !== 'todo_write').some((name) => /write|edit|bash|pwsh|mcp|plugin|remember|forget|subagent/.test(name)))
   assert.match(patch, /- id: tool-subagent-control\n {2}disabled: true\n/)
-  assert.match(patch, /- id: tool-subagent-list-agents\n {2}disabled: true\n/)
+  assert.doesNotMatch(patch, /tool-subagent-list-agents/, 'gone from dsh since 0.2.1')
+})
+
+test('联网搜索 off restates dsh-base\'s tool-web row with only search off; on, the row is left to dsh-base', () => {
+  const base = fs.readFileSync(DSH_BASE_PATCH, 'utf8')
+  assert.equal(WEB_SEARCH_OFF.join('\n').replace('\n    search: false', ''), baseRow(base, 'tool-web'), 'tool-web drifted from dsh-base: copy it again')
+  assert.ok(patchFor({ plugins: [], webSearch: false }).includes(`${WEB_SEARCH_OFF.join('\n')}\n`))
+  assert.doesNotMatch(patchFor({ plugins: [] }), /- id: tool-web\n/)
 })

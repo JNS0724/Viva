@@ -26,6 +26,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { z as zod } from 'zod'
+import type { Session } from '@deepseek-ai/dsh-session'
 import { withoutHeaders } from '../../src/shared/request-routing/header.ts'
 import { dateLine } from './lib/context.ts'
 import { extractTurn } from './lib/extract.ts'
@@ -41,13 +42,9 @@ export const inject = ['agents', 'tools', 'sessionProjections', 'llm']
 export const Config = z.object({ file: z.string(), extract: z.boolean(), synthesize: z.boolean() })
 
 const PROJECTION = 'vivaMemory'
+/** The memory plugin's session projection: how many times dsh compacted the session. */
+type Compactions = { compactions: number }
 
-declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap {
-    /** How many times dsh has compacted the session: the fixed layer goes out again after each. */
-    vivaMemory: { compactions: number }
-  }
-}
 /** The work after a turn (extraction, then maybe a synthesis) gives up after this. */
 const AFTER_TURN_TIMEOUT_MS = 120_000
 const EXTRACT_MAX_TOKENS = 800
@@ -161,7 +158,8 @@ function registerTools(ctx: Context, db: MemoryDb) {
 async function complete(ctx: Context, agent: Agent, { system, input, signal, maxTokens }: {
   system: string, input: string, signal: AbortSignal, maxTokens: number,
 }): Promise<string> {
-  const { provider, model } = agent.options
+  // The route in use now: since dsh 0.2.1 agent.options is only the fallback once the user switched models.
+  const { provider, model } = agent.model.current() ?? agent.options
   if (!provider || !model) throw new Error('the agent has no model route to reuse')
   const assembler = new BlockAssembler()
   const stream = ctx.llm.stream({
@@ -222,13 +220,17 @@ export function apply(ctx: Context, config: { file: string, extract?: boolean, s
   const enabled = { extract: config.extract !== false, synthesize: config.synthesize !== false }
   const noteTurn = enabled.extract || enabled.synthesize ? registerAfterTurn(ctx, db, enabled) : () => {}
 
-  ctx.sessionProjections.register({
+  /** How many times dsh has compacted a session: the fixed layer goes out again after each. Ready once awaited. */
+  const stateSchema: zod.ZodType<Compactions> = zod.object({ compactions: zod.number() })
+  const compactions: Promise<{ stateOf: (session: Session) => Compactions | undefined }> = ctx.sessionProjections.register<typeof PROJECTION, Compactions>({
     key: PROJECTION,
     stateVersion: 1,
-    stateSchema: zod.object({ compactions: zod.number() }),
-    init: () => ({ compactions: 0 }),
-    apply: (state, event) => (event.type === 'compaction/end' ? { compactions: state.compactions + 1 } : state),
+    stateSchema,
+    init: (): Compactions => ({ compactions: 0 }),
+    apply: (state: Compactions, event: { type: string }): Compactions => (event.type === 'compaction/end' ? { compactions: state.compactions + 1 } : state),
   })
+  // A failed registration surfaces where it is read (in the step's try); not as an unhandled rejection before.
+  compactions.catch(() => {})
 
   ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
     const decision = await next()
@@ -243,7 +245,7 @@ export function apply(ctx: Context, config: { file: string, extract?: boolean, s
         sessionId,
         turn,
         question,
-        epoch: ctx.sessionProjections.stateOf(agent.session, PROJECTION)?.compactions ?? 0,
+        epoch: (await compactions).stateOf(agent.session)?.compactions ?? 0,
       })
       if (!text) return decision
       const message = createUserMessage({

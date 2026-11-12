@@ -88,7 +88,9 @@ const PARTS = Object.freeze({
 } as const)
 
 type Part = keyof typeof PARTS
-const personaOf = (parts: readonly Part[]) => Object.freeze({ prefix: parts.flatMap(part => PARTS[part]).join(''), suffix: '你的工作目录是 {{cwd}}。' })
+// No suffix: dsh no longer has a {{cwd}} variable, and its working-directory service puts the directory in each step's
+// runtime context (dsh-system-prompt README, 0.2.1).
+const personaOf = (parts: readonly Part[]) => Object.freeze({ prefix: parts.flatMap(part => PARTS[part]).join(''), suffix: '' })
 
 /** The profile's persona: background tasks and schedules' runs do the work. */
 export const PERSONA = personaOf(['identity', 'recall', 'ask', 'remember', 'config', 'schedule', 'taskQuery', 'subagent', 'taskTruth', 'history'])
@@ -96,7 +98,7 @@ export const PERSONA = personaOf(['identity', 'recall', 'ask', 'remember', 'conf
 export const ROUTING_PERSONA = personaOf(['identity', 'route', 'recall', 'history', 'routeAnswer', 'routeTasks', 'routeApp', 'remember', 'config', 'schedule', 'ownership', 'reports', 'taskQuery', 'taskTruth'])
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1, mcp: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
@@ -135,6 +137,8 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-steer', dir: 'plugins/steer', contract: 'steer', config: () => ({}) },
   { name: 'viva-fork', dir: 'plugins/fork', contract: 'fork', config: () => ({}) },
   { name: 'viva-plugins', dir: 'plugins/plugins', contract: 'plugins', config: () => ({}) },
+  // The user's MCP servers, connected once for the whole dsh by its manager (plugins/mcp); the manager's row with it.
+  { name: 'viva-mcp', dir: 'plugins/mcp', contract: 'mcp', config: () => ({}), stock: [{ id: 'mcp-manager', name: '@deepseek-ai/dsh-mcp-manager' }] },
   {
     name: 'viva-permission', dir: 'plugins/permission', contract: 'permission',
     config: ({ permission }) => ({ preset: permission ?? DEFAULT_PERMISSION }),

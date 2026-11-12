@@ -9,6 +9,6 @@ export interface AgentInfo {
   modelValue?: string, effort?: string
   models?: readonly { value: string, name: string, group?: string }[]
   efforts?: readonly { value: string, name: string }[]
-  mcp?: { active: readonly string[], dropped: readonly { name: string, reason: string }[] }
+  mcp?: { active: readonly string[], connecting?: readonly { name: string, reason: string }[], dropped: readonly { name: string, reason: string }[] }
 }
 export interface SteerResult { ok: boolean, reason?: string }

@@ -40,6 +40,8 @@ export interface ServerView {
 /** What the agent loaded this time: servers connected or dropped, the memory plugin, the app's own plugins left out. */
 export interface ExtensionStatus {
   active: readonly string[]
+  /** Trying to connect: the first time, or again after a failure (with it). dsh's MCP manager keeps at it. */
+  connecting?: ReadonlyArray<{ name: string, reason: string }>
   dropped: ReadonlyArray<{ name: string, reason: string }>
   memory?: boolean
   plugins?: ReadonlyArray<{ contract: string, problem?: string }>

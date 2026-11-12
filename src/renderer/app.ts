@@ -631,6 +631,20 @@ const handlers = {
     }
     return undefined
   },
+  /** 联网搜索 switched: dsh starts again with or without web_search, keeping the conversation on screen. */
+  async setWebSearch(on: boolean) {
+    if (state.switching || state.newTopicPending || state.settings.webSearchBusy) return
+    dispatch({ type: 'settings_loaded', view: { webSearchBusy: true } })
+    try {
+      const { settings } = await api.setWebSearch(on)
+      dispatch({ type: 'settings_loaded', view: { ...settings, webSearchBusy: false } })
+      historyActions.showToast(t(settings.webSearch ? 'settings.web.search.on' : 'settings.web.search.off'))
+    } catch (err) {
+      dispatch({ type: 'settings_loaded', view: { webSearchBusy: false } })
+      historyActions.showToast(errorMessage(err))
+    }
+    return undefined
+  },
   async openSettings() {
     dispatch({ type: 'settings_open' })
     modelActions.loadModels()
@@ -910,9 +924,16 @@ function labelShortcuts() {
   dom.hubSearchKey.textContent = platform === 'darwin' ? '⌘F' : 'Ctrl+F'
 }
 
-/** An MCP server that would not start is left out; say so once per connection instead of failing. */
-function reportMcpProblems(info: AgentInfo | undefined) {
-  const dropped: ReadonlyArray<{ name: string }> = info?.mcp?.dropped ?? []
+/** Servers already said to have stopped trying, this launch of dsh: each is said once, when it stops. */
+const mcpProblemsSaid = new Set<string>()
+/**
+ * An MCP server that stopped trying to connect (dsh's MCP manager gave up on it, in the background): say so once,
+ * with a way to 能力 · MCP and its 重试. A new dsh tries every server again, so it may be said again then.
+ */
+function reportMcpProblems(info: AgentInfo | undefined, { fresh = false } = {}) {
+  if (fresh) mcpProblemsSaid.clear()
+  const dropped: ReadonlyArray<{ name: string }> = (info?.mcp?.dropped ?? []).filter((item) => !mcpProblemsSaid.has(item.name))
+  for (const item of dropped) mcpProblemsSaid.add(item.name)
   if (dropped.length === 0) return
   const names = dropped.map((item) => (item.name === 'memory' ? t("app.memory.tools") : `「${item.name}」`)).join('、')
   historyActions.showToast(t("app.could.not.connect.and.were.skipped.for", { names: names }), { action: { label: t("app.view"), kind: 'open-settings' }, ms: 8000 })
@@ -922,7 +943,7 @@ function reportMcpProblems(info: AgentInfo | undefined) {
 agentEvents = createAgentEvents({
   getState: () => state, dispatch, holdTask: taskActions.hold,
   afterTurn: sendAfterTurn, clearAfterTurn: conversationActions.clearAfterTurn,
-  ready: reportMcpProblems, refreshWorkDir: workDirActions.refresh,
+  ready: (info) => reportMcpProblems(info, { fresh: true }), mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo), refreshWorkDir: workDirActions.refresh,
   refreshFiles: filesActions.filesAfterTurn,
   memoryChanged: memoryActions.onMemoryChanged, filesChanged: filesActions.onFilesChanged,
   refreshFeed: feedActions.loadFeed,

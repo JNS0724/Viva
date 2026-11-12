@@ -1,8 +1,7 @@
 import { t } from '../shared/i18n/translate.ts'
-import { isBusy } from './state.ts'
 
 /** What to tell the user after a change to the servers, from what the main process reports back. */
-const appliedNotice = (done: string) => (view: { info?: unknown }) => (view.info ? t("extension-actions.active.in.this.conversation", { done: done }) : t("extension-actions.takes.effect.on.the.next.connection", { done: done }))
+const appliedNotice = (done: string) => () => t('extension-actions.applied.live', { done })
 
 /** The edit form as the main process takes it (extensions-ipc.ts formChanges). */
 type ServerForm = { name: string, type: string, command: string, args: string, url: string, keys: Array<{ name: string, value: string }> }
@@ -30,12 +29,6 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
     }
   }
 
-  /** Changing servers reattaches the session, which would cancel a running task. */
-  function guardMcp() {
-    if (!isBusy(getState())) return true
-    dispatch({ type: 'extensions_failed', message: t("extension-actions.stop.the.current.task.before.changing.mcp") })
-    return false
-  }
 
   return {
     async loadExtensions() {
@@ -46,7 +39,11 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
       }
     },
     removeServer(name: string) {
-      if (guardMcp()) change(() => api.removeMcpServer(name), appliedNotice(t("extension-actions.deleted")))
+      change(() => api.removeMcpServer(name), appliedNotice(t("extension-actions.deleted")))
+    },
+    /** 重试: dsh's MCP manager starts a server that stopped trying again. */
+    restartServer(name: string) {
+      change(() => api.restartMcpServer(name), () => t('extension-actions.restarted', { name }))
     },
     removeSkill: (skill: { id: string, name: string }) => change(() => api.removeSkill(skill.id), () => t("extension-actions.moved.to.trash", { name: skill.name })),
     /** Its folder in the system's file manager. */
@@ -57,7 +54,7 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
     /** from: 'default' (dsh's home), 'last' (the folder used last time) or 'choose' (the folder dialog). */
     importDsh(from: 'default' | 'last' | 'choose') {
       dispatch({ type: 'extensions_import_menu', open: false })
-      if (guardMcp()) change(() => api.importDsh(from), () => null, { importNote: true })
+      change(() => api.importDsh(from), () => null, { importNote: true })
     },
 
     editServer: (server: NonNullable<import('./action-types.ts').ActionPayloads['extensions_edit']['server']>) => dispatch({ type: 'extensions_edit', server }),
@@ -66,7 +63,7 @@ export function createExtensionActions({ api, getState, dispatch, errorMessage }
     addEditKey: () => dispatch({ type: 'extensions_edit_key_add' }),
     removeEditKey: (id: number) => dispatch({ type: 'extensions_edit_key_remove', id }),
     saveServer(name: string, form: ServerForm) {
-      if (guardMcp()) change(() => api.updateMcpServer(name, form), appliedNotice(t("extension-actions.saved")))
+      change(() => api.updateMcpServer(name, form), appliedNotice(t("extension-actions.saved")))
     },
   }
 }

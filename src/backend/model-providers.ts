@@ -155,6 +155,9 @@ export function piAiProviders(providers: readonly Provider[]): Record<string, ob
     displayName: provider.name,
     api: provider.api,
     baseURL: provider.baseURL,
+    // What a model left unsized gets: dsh 0.2.1 raised its own fallback to 1M / 128k; these are what the form shows.
+    defaultContextWindow: MODEL_DEFAULTS.contextWindow,
+    defaultMaxTokens: MODEL_DEFAULTS.maxTokens,
     ...(provider.key ? { apiKeyEnv: keyEnvName(provider.id) } : {}),
     models: provider.models.map(({ id, contextWindow, maxTokens, image }) => ({
       id, name: id, ...(contextWindow ? { contextWindow } : {}), ...(maxTokens ? { maxTokens } : {}), ...(image ? { input: ['text', 'image'] } : {}),

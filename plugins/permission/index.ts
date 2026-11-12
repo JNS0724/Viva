@@ -26,6 +26,8 @@ export function apply(ctx: Context, config: { preset: string }) {
       ctx.logger?.warn?.(`viva-permission: could not set ${config.preset}: ${err.message}`)
     }
   }
-  ctx.on('session/created', pin)
+  // On the agent, not the session: since dsh 0.2.1 a session takes no writes while it is being created, and dsh pins
+  // its own default in agent/created first (session-store-writes).
+  ctx.on('agent/created', ({ agent }) => { pin(agent.session); return undefined })
   for (const session of ctx.sessions.list()) pin(session)
 }

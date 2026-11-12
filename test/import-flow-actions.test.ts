@@ -54,7 +54,7 @@ test('MCP: the same flow with its own calls; the servers come back, the agent\'s
   assert.deepEqual([now.importFlow.open, (now.extensions.servers as Array<{ name: string }>).map((server) => server.name), now.info.mode, now.capabilities.selected], [false, ['github'], 'live', 'github'])
 })
 
-test('MCP while the agent works: refused with why, nothing asked', async () => {
+test('MCP while the agent works: imported all the same, no session is reopened for it (viva-mcp takes it live)', async () => {
   let imports = 0
   const working = { ...initialState, phase: 'working' } as State
   const { actions, state } = setup({
@@ -64,7 +64,7 @@ test('MCP while the agent works: refused with why, nothing asked', async () => {
   await actions.openImport('mcp')
   await actions.scanImportSource('cursor')
   await actions.importPicked()
-  assert.deepEqual([imports, Boolean(state().importFlow.error)], [0, true])
+  assert.deepEqual([imports, Boolean(state().importFlow.error)], [1, false])
 })
 
 test('the folder dialog cancelled says nothing; a scan or import that fails says why and stays', async () => {

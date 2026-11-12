@@ -45,6 +45,7 @@ export const IPC_ARGS = Object.freeze({
   'settings:save-key': z.tuple([id]),
   'settings:clear-key': none,
   'settings:set-desk-island': z.tuple([z.boolean()]),
+  'settings:set-web-search': z.tuple([z.boolean()]),
   'settings:set-permission': z.tuple([id]),
   'settings:set-open-at-login': z.tuple([z.boolean()]),
   'settings:reset-desk-place': none,
@@ -122,6 +123,7 @@ export const IPC_ARGS = Object.freeze({
 
   'ext:get': read(none),
   'ext:remove-mcp': z.tuple([id]),
+  'ext:restart-mcp': z.tuple([id]),
   'ext:update-mcp': z.tuple([id, record]),
   'ext:import-dsh': z.tuple([z.enum(['default', 'last', 'choose'])]),
   'ext:remove-skill': z.tuple([id]),
