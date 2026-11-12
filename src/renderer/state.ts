@@ -99,6 +99,9 @@ export const initialState = Object.freeze({
     imagesBusy: false,
     /** What the assistant may do without asking (view/permission-picker.js), its menu, and a switch under way. */
     permission: 'workspace-write',
+    /** 联网搜索 as it is now (compose.ts webSearchNow), and a switch under way (dsh restarts). */
+    webSearch: true,
+    webSearchBusy: false,
     permissionMenu: false,
     permissionBusy: false,
   },

@@ -120,6 +120,12 @@ Supported dsh `llm-pi-ai` protocols are OpenAI Chat Completions, OpenAI Response
 
 Viva configures the existing plugin rather than implementing adapters. Provider routes use `custom-xxxxxxxx` ids. Keys are encrypted in `models.json` and supplied to dsh as `VIVA_MODEL_KEY_XXXXXXXX`; profile files contain variable names only. DeepSeek becomes optional; without its key, both DeepSeek plugins are disabled and its menu entries disappear. `lastModel` is restored through ACP provider/model settings on restart and new conversations; missing models fall back to DeepSeek or the first custom provider. Providers can be added, edited and removed; a key left blank while editing keeps the saved one, unless the address moves to another host: the saved key is never sent to a new host (nor by Fetch available models), so it must be entered again. A change restarts dsh and resumes the current session without clearing history; changes are blocked during work.
 
+### Web search
+
+Web search in Settings decides whether the assistant has `web_search`. Since dsh 0.2.2 it goes through the DeepSeek Search API, which receives the query (and the first 128 characters of the user's latest message) at the DeepSeek route's address. The default, Auto, turns it off when `DEEPSEEK_BASE_URL` is set (an intranet gateway) and on otherwise; switching it by hand keeps the choice. Off, Viva's layer restates dsh-base's `tool-web` row with `search: false` (`dsh-profile.ts` `WEB_SEARCH_OFF`); `web_fetch` is unaffected, and dsh restarts on the conversation on screen.
+
+Since dsh 0.2.1 `web_fetch` no longer refuses local and intranet addresses: background tasks and sub-agents can open intranet pages (the main conversation does not have the tool). Requests carry no cookies or sign-in credentials, follow the system's proxy settings and DNS, and ask for no approval.
+
 <a id="助手反问"></a>
 ## Clarifying questions
 

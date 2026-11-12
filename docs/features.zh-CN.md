@@ -132,6 +132,12 @@
 - **默认模型**：记住上次在菜单里选的模型（`models.json` 的 `lastModel`），写进 profile 里 `acp` 一项的 `provider` / `model`，新对话和重启后都从它开始；同一次运行里新建对话也会切到它。上次选的模型不在了，就回到 DeepSeek，没有 DeepSeek 就用第一个添加的模型。
 - **修改**：提供方可以添加、编辑和删除；编辑时 key 留空就保留原来的 key，但接口地址换到另一个主机时要重新填写，已存的 key 不会发到新主机（获取可用模型也一样）。改动后 dsh 会重启并接回当前对话，对话不会清空；任务进行中不能修改。
 
+### 联网搜索
+
+「设置」里的「联网搜索」决定助手能不能用 `web_search`：dsh 0.2.2 起它走 DeepSeek Search API，会把问题（和用户最近一句话的前 128 个字）发到 DeepSeek，地址跟随 DeepSeek 模型的地址。默认「自动」：设了 `DEEPSEEK_BASE_URL`（内网网关）时关闭，否则打开；手动开关后按你选的。关掉时 Viva 在自己的配置层里把 dsh-base 的 `tool-web` 一行写成 `search: false`（`dsh-profile.ts` `WEB_SEARCH_OFF`），`web_fetch` 不受影响，改动后 dsh 重启并接回当前对话。
+
+`web_fetch` 从 dsh 0.2.1 起不再拦截本机和内网地址：后台任务和子 agent 可以直接打开内网页面（主对话没有这个工具）。请求不带 cookie 或登录凭据，走系统的代理设置和 DNS；不需要审批。
+
 ## 助手反问
 
 回答取决于用户没说的关键信息（地点、时间范围、对象、账号……）、而记忆里也查不到时，助手先问再做，不拿时区或 IP 这类弱线索去猜。规则写在人设里（`src/backend/app-plugins.ts` 的 `PERSONA`）。

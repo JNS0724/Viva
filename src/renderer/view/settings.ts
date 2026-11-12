@@ -82,6 +82,22 @@ function shortcutLine(settings: Settings) {
     : h('span', { class: 'help form-error', text: t("settings.the.shortcut.is.used.by.another.app", { value1: shortcutKeys() }) })
 }
 
+/**
+ * 联网搜索: the assistant's web search (dsh's DeepSeek Search API, which gets the question). Off by default where the
+ * DeepSeek route goes to an intranet gateway; switching restarts the assistant, the conversation kept.
+ */
+function webSearchSection(settings: Settings, handlers: Handlers) {
+  return h('section', { class: 'ext', 'aria-label': t('settings.web.search') },
+    h('label', { class: 'pref-row' },
+      h('span', { class: 'pref-copy' },
+        h('span', { class: 'profile-heading', text: t('settings.web.search') }),
+        h('span', { class: 'help', text: t('settings.web.search.help') })),
+      h('input', {
+        type: 'checkbox', class: 'switch', name: 'web-search', checked: settings.webSearch !== false, disabled: Boolean(settings.webSearchBusy),
+        'aria-label': t('settings.web.search'), onChange: (event: Event) => handlers.setWebSearch((event.target as HTMLInputElement).checked),
+      })))
+}
+
 /** The desktop island can be turned off (it is on by default) and put back at the top centre. */
 function deskSection(settings: Settings, handlers: Handlers) {
   return h('section', { class: 'ext', 'aria-label': t("settings.desktop.island") },
@@ -165,6 +181,7 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       }),
       modelsSection(models, handlers),
       deskSection(settings, handlers),
+      webSearchSection(settings, handlers),
       imagesSection(settings, handlers),
       h('section', { class: 'ext', 'aria-label': t("handoff.privacy.title") },
         h('span', { class: 'profile-heading', text: t("handoff.privacy.title") }),

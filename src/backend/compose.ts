@@ -316,6 +316,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
       const dir = ensureDshProfile({
         dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
+        webSearch: webSearchNow(),
       })
       const found = registry ? scopesOf(dir, pnpmCommand) : []
       if (found) scopes = found
@@ -592,6 +593,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       shortcut: shellSettings.shortcut,
       images: imageStore.usage(),
       permission: permissionNow(),
+      webSearch: webSearchNow(),
       openAtLogin: { on: preferences.get().openAtLogin, available: canOpenAtLogin() && shellSettings.openAtLogin.available },
     }
   }
@@ -607,6 +609,23 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * Another permission level: dsh starts again with it (viva-permission applies it to every session), on the
    * conversation on screen. Not while a turn runs, which the restart would cut short.
    */
+  /**
+   * 联网搜索 as it is now: as set, or, left to 自动, off when the DeepSeek route has its own endpoint (an intranet
+   * gateway, where dsh's DeepSeek Search API is not reachable) and on otherwise.
+   */
+  function webSearchNow(): boolean {
+    const set = preferences.get().webSearch
+    return set === 'on' ? true : set === 'off' ? false : !process.env.DEEPSEEK_BASE_URL
+  }
+
+  /** 联网搜索 switched: dsh starts again without (or with) web_search, on the conversation on screen. Not mid-turn. */
+  async function setWebSearch(on: unknown) {
+    if (typeof on !== 'boolean') throw new Error('invalid web search setting')
+    if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before"))
+    preferences.set('webSearch', on ? 'on' : 'off')
+    return { settings: settingsView(), info: await restartKeepingConversation() }
+  }
+
   async function setPermission(level: string) {
     if (!PERMISSION_LEVELS.includes(level)) throw new Error(`invalid permission level: ${level}`)
     if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before"))
@@ -718,6 +737,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       return { settings: settingsView(), info: await restartWithNewConversation() }
     })
     ipcMain.handle('settings:set-permission', (_event, level) => setPermission(level))
+    ipcMain.handle('settings:set-web-search', (_event, on) => setWebSearch(on))
     ipcMain.handle('settings:set-open-at-login', (_event, on) => {
       setOpenAtLogin(on)
       return settingsView()

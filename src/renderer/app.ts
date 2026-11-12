@@ -631,6 +631,20 @@ const handlers = {
     }
     return undefined
   },
+  /** 联网搜索 switched: dsh starts again with or without web_search, keeping the conversation on screen. */
+  async setWebSearch(on: boolean) {
+    if (state.switching || state.newTopicPending || state.settings.webSearchBusy) return
+    dispatch({ type: 'settings_loaded', view: { webSearchBusy: true } })
+    try {
+      const { settings } = await api.setWebSearch(on)
+      dispatch({ type: 'settings_loaded', view: { ...settings, webSearchBusy: false } })
+      historyActions.showToast(t(settings.webSearch ? 'settings.web.search.on' : 'settings.web.search.off'))
+    } catch (err) {
+      dispatch({ type: 'settings_loaded', view: { webSearchBusy: false } })
+      historyActions.showToast(errorMessage(err))
+    }
+    return undefined
+  },
   async openSettings() {
     dispatch({ type: 'settings_open' })
     modelActions.loadModels()

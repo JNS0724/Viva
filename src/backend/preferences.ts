@@ -27,6 +27,8 @@ export interface Preferences {
   permission: string
   dshImportDir: string
   openAtLogin: boolean
+  /** 联网搜索: 'auto' (off behind a custom DeepSeek endpoint, compose.ts webSearchNow), 'on' or 'off'. */
+  webSearch: string
 }
 
 const DEFAULTS: Readonly<Preferences> = Object.freeze({
@@ -39,6 +41,7 @@ const DEFAULTS: Readonly<Preferences> = Object.freeze({
   permission: 'workspace-write',
   dshImportDir: '',
   openAtLogin: false,
+  webSearch: 'auto',
 })
 
 export function createPreferences({ file, onError = () => {} }: { file: string, onError?: (err: Error) => void }) {

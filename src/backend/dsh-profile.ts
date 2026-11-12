@@ -119,6 +119,13 @@ function configLines(config: ProfilePlugin['config'], indent: string) {
   return [`${indent}config:`, ...entries.map(([key, value]) => `${indent}  ${key}: ${yamlValue(value)}`)]
 }
 
+/**
+ * dsh-base's tool-web row with web_search off (联网搜索 off). dsh 0.2.2 searches through the DeepSeek Search API, at the
+ * DeepSeek route's origin plus /v1/tools: unreachable or not served behind an intranet gateway. Patches by id replace
+ * the whole row, so its other values are restated as dsh-base has them.
+ */
+export const WEB_SEARCH_OFF: readonly string[] = Object.freeze(['- id: tool-web', "  name: '@deepseek-ai/dsh-tool-web'", '  config:', '    search: false', '    fetch: true', '    searchTimeoutMs: 60000'])
+
 /** Stock entries the DeepSeek route needs; without a DeepSeek key they are switched off so it is not offered. */
 const DEEPSEEK_ENTRIES = Object.freeze(['llm-deepseek', 'llm-deepseek-account'])
 
@@ -144,11 +151,14 @@ function modelLines({ providers, deepseek, defaultModel }: ProfileModels) {
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
  * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
-export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null, registry = null }: {
+export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null, registry = null, webSearch = true }: {
   plugins: readonly ProfilePlugin[], persona?: Persona | null, models?: ProfileModels | null, imagesDir?: string | null, pnpmCommand?: string | null,
   registry?: string | null,
+  /** 联网搜索 (settings): off takes web_search away from the model; web_fetch stays. */
+  webSearch?: boolean,
 }) {
   const lines = [VIVA_LAYER_MARK]
+  if (!webSearch) lines.push(...WEB_SEARCH_OFF)
   if (persona) {
     lines.push('- id: system-prompt', '  config:', `    personaPrefix: ${yamlString(persona.prefix)}`, `    personaSuffix: ${yamlString(persona.suffix)}`)
   }
@@ -216,9 +226,9 @@ function ensureUserLayer(file: string) {
 }
 
 /** @returns the profile directory */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand, registry = null }: {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand, registry = null, webSearch = true }: {
   dshHome: string, profile: string, plugins: readonly ProfilePlugin[],
-  persona?: Persona, models?: ProfileModels, imagesDir?: string, pnpmCommand?: string | null,
+  persona?: Persona, models?: ProfileModels, imagesDir?: string, pnpmCommand?: string | null, webSearch?: boolean,
   /** The company's plugin source (plugin-source.ts); its token goes to pnpm at launch, never into a file here. */
   registry?: string | null,
 }): string {
@@ -231,6 +241,6 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
   ensureUserLayer(path.join(dir, 'cordis.patch.yml'))
-  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry }))
+  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry, webSearch }))
   return dir
 }

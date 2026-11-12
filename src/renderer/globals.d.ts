@@ -166,6 +166,7 @@ interface AgentApi extends DraftApi {
   saveApiKey: Invoke<'settings:save-key'>
   clearApiKey: Invoke<'settings:clear-key'>
   setDeskIsland: Invoke<'settings:set-desk-island'>
+  setWebSearch: Invoke<'settings:set-web-search'>
   setOpenAtLogin: Invoke<'settings:set-open-at-login'>
   resetDeskPlace: Invoke<'settings:reset-desk-place'>
   getModels: Invoke<'models:get'>

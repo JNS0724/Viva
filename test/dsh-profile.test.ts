@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, SUBAGENT_TOOLS, VIVA_LAYER_MARK, vivaLayerFile } from '../src/backend/dsh-profile.ts'
+import { ensureDshProfile, patchFor, pluginEntry, SAFETY_ROWS, SUBAGENT_TOOLS, VIVA_LAYER_MARK, vivaLayerFile, WEB_SEARCH_OFF } from '../src/backend/dsh-profile.ts'
 
 const ROOT = path.join(import.meta.dirname, '..')
 const DSH_BASE_PATCH = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-base', 'cordis.patch.yml')
@@ -147,4 +147,11 @@ test('the app\'s layer keeps dsh\'s sub-agents from delegating further; their re
   assert.ok(!SUBAGENT_TOOLS.filter((name) => name !== 'todo_write').some((name) => /write|edit|bash|pwsh|mcp|plugin|remember|forget|subagent/.test(name)))
   assert.match(patch, /- id: tool-subagent-control\n {2}disabled: true\n/)
   assert.doesNotMatch(patch, /tool-subagent-list-agents/, 'gone from dsh since 0.2.1')
+})
+
+test('联网搜索 off restates dsh-base\'s tool-web row with only search off; on, the row is left to dsh-base', () => {
+  const base = fs.readFileSync(DSH_BASE_PATCH, 'utf8')
+  assert.equal(WEB_SEARCH_OFF.join('\n').replace('\n    search: false', ''), baseRow(base, 'tool-web'), 'tool-web drifted from dsh-base: copy it again')
+  assert.ok(patchFor({ plugins: [], webSearch: false }).includes(`${WEB_SEARCH_OFF.join('\n')}\n`))
+  assert.doesNotMatch(patchFor({ plugins: [] }), /- id: tool-web\n/)
 })
