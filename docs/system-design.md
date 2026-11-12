@@ -36,7 +36,7 @@ flowchart TB
     b4["<b>dsh and ACP</b><br/>dsh-lifecycle starts and restarts dsh<br/>acp-bridge, acp-operations, acp-task-sessions"]
   end
   subgraph dsh["dsh process (child of the backend)"]
-    d1["<b>Viva's own plugins</b><br/>11 viva-* plugins, by contract<br/>memory and trace keep their own files"]
+    d1["<b>Viva's own plugins</b><br/>12 viva-* plugins, by contract<br/>memory and trace keep their own files"]
     d2["<b>User plugins</b><br/>installed by the plugin manager<br/>switched on and off while running"]
     d3["<b>Tools and sandbox</b><br/>dsh's level and sandbox<br/>the user's approval when needed"]
   end
@@ -49,7 +49,7 @@ flowchart TB
 - **Pages** (`src/renderer`): the main window and the desk island, sandboxed, with no Node. They only display and interact; their state is pushed by the backend.
 - **Shell** (`src/shell`, the Electron main process): the app lifecycle, window, tray, desk island, shortcut, notifications, dialogs and the system keychain. It checks the pages' calls and forwards them to the backend, and does what the backend asks of the desktop.
 - **Backend** (`src/backend`, a child process running Electron as Node): everything except the desktop. That is the event core, all features and stores (history, tasks, schedules and 动态, memory, settings, models, plugin management), and the modules that run dsh: `dsh-lifecycle.ts` starts and restarts it, `acp-bridge.ts` holds its process, MCP and the session on screen, `acp-operations.ts` the prompts under way and `acp-task-sessions.ts` the tasks' sessions. `compose.ts` creates, wires and closes these modules; it still coordinates some features itself (settings, MCP changes, schedules and 动态). It does not import `electron` at run time; it reaches the desktop only through `HostCapabilities` (`src/backend/host.ts`).
-- **dsh** (a child of the backend): the agent that runs the conversation, loading Viva's 11 own plugins and the plugins the user installed.
+- **dsh** (a child of the backend): the agent that runs the conversation, loading Viva's 12 own plugins and the plugins the user installed.
 
 The point of this split is that nothing in the backend is tied to the desktop. Moving it to the cloud later means replacing only the transport and authentication between the two ends (§10).
 
@@ -130,7 +130,7 @@ Viva does not modify dsh; it customizes it only through plugins and configuratio
 
 **Entry.** dsh starts through the app's own entry, `src/backend/dsh-entry.ts`, which calls `runCli`, the function dsh exports for its installer (`@deepseek-ai/dsh/lib/bin.js`). Before dsh boots, the backend sends a `viva_launch` message over the IPC channel (`src/backend/dsh-launch.ts`). It carries the pnpm the plugin manager uses, the arguments it goes with (each scope pnpm knows sent to the company registry) and the environment variables only that pnpm gets (dsh's `packageManager`). The company plugin source's token travels this way and stays out of dsh's environment, because other programs of the same user can read that environment and the agent's commands inherit it. If the entry does not get the message within 10 seconds, it starts dsh as dsh would on its own. With `DSH_BIN` set, that program runs directly, without this entry.
 
-**Viva's own plugins.** 11 `viva-*` plugins ship with the app (listed in `src/backend/app-plugins.ts`). Each declares a versioned contract, and the app checks the versions at start:
+**Viva's own plugins.** 12 `viva-*` plugins ship with the app (listed in `src/backend/app-plugins.ts`). Each declares a versioned contract, and the app checks the versions at start:
 
 | Contract | What the plugin does |
 | --- | --- |
@@ -145,6 +145,7 @@ Viva does not modify dsh; it customizes it only through plugins and configuratio
 | `config` | Lets the model add MCP servers and create or install skills in the conversation, with the user's approval |
 | `permission` | The permission level the user picked (full, automatic, workspace edits, read-only), applied to every session dsh opens; what each level allows is wholly dsh's sandbox and approval presets, with no rules of the app's on top |
 | `plugins` | The entry to dsh's plugin manager, used by Capabilities → Plugins |
+| `mcp` | `viva-mcp`: the user's MCP servers go to dsh's MCP manager (`dsh-mcp-manager`), connected once for the whole dsh and shared by every session instead of once per session. The app sends the whole set over IPC when the plugin starts and on every change (`mcp-desk.ts`), secrets in memory only; the plugin registers each and reports how they stand, which Capabilities → MCP shows with Retry |
 
 Plugins and the app talk over the IPC channel opened when dsh starts; each contract has its own message format (for example `plugins/tasks/lib/channel.ts`).
 
@@ -156,9 +157,9 @@ Plugins and the app talk over the IPC channel opened when dsh starts; each contr
 
 **Contract checks.** `APP_PLUGINS` lists each plugin's name, folder, contract and configuration; a plugin declares its contract in `package.json`, for example `"viva": { "contract": { "memory": 1 } }`. Before launch, `resolvePlugins` checks that the plugin exists, its `package.json` reads, the name matches, and the contract and dsh versions match exactly. A plugin that fails is left out of the profile, with the reason shown on the Capabilities page. Plugin databases record `meta.contract_version`; data written by a newer contract is refused rather than misread.
 
-**The dsh interfaces each plugin uses.** `memory`: agent/pre-step, sessionProjections, tools.register, agent/turn-stopping, llm.stream; `trace`: agent/turn-stopping, session.eventAt; `stream` (`viva-routing`): agent/created, agent.ctx.tools.restrict, agent.ctx.plugin (dsh-persona), tools/pre-execute (before approval), tools.register, agent/pre-step, agent/turn-stopping, agent/status, agent/assistant-stream, session/event, agent/disposed, llm.stream; `plugins`: ctx.pluginManager. Plugin failures degrade: failed injection omits memories, failed recording omits the activity, and the conversation goes on.
+**The dsh interfaces each plugin uses.** `memory`: agent/pre-step, sessionProjections, tools.register, agent/turn-stopping, llm.stream; `trace`: agent/turn-stopping, session.eventAt; `stream` (`viva-routing`): agent/created, agent.ctx.tools.restrict, agent.ctx.plugin (dsh-persona), tools/pre-execute (before approval), tools.register, agent/pre-step, agent/turn-stopping, agent/status, agent/assistant-stream, session/event, agent/disposed, llm.stream; `plugins`: ctx.pluginManager; `mcp`: ctx.mcpManager (register, list, restart), mcp-manager/status. Plugin failures degrade: failed injection omits memories, failed recording omits the activity, and the conversation goes on.
 
-**Session preparation.** A new topic shows an empty input at once; typing is allowed while it prepares, sending waits. At most one independent empty session is prepared ahead, with its own MCP processes, and it expires after 120 seconds unused. When a singleton MCP server refuses a second connection, that spare is discarded without changing the official MCP status. Sessions never share MCP clients, and cold MCP creation waits for the old session's resources to close. Timing: set `VIVA_SESSION_TIMING=1` for the backend and `localStorage.setItem('viva:session-timing', '1')` for the page; only stages, durations and outcomes are recorded, never prompts or MCP configuration.
+**Session preparation.** A new topic shows an empty input at once; typing is allowed while it prepares, sending waits. At most one independent empty session is prepared ahead, and it expires after 120 seconds unused. Sessions have no MCP servers of their own: `viva-mcp` gives the user's servers to dsh's MCP manager, which connects them once for the whole dsh and shares them with every session (a singleton server runs one process). Connecting happens in the background, up to 30 seconds per attempt, with automatic reconnects on backoff; a server that hangs or fails only lacks its own tools for a while and never holds up a session, so it no longer slows commit_route handing work to a background task. Timing: set `VIVA_SESSION_TIMING=1` for the backend and `localStorage.setItem('viva:session-timing', '1')` for the page; only stages, durations and outcomes are recorded, never prompts or MCP configuration.
 
 **Recheck when upgrading dsh.**
 
@@ -236,7 +237,7 @@ Folders match processes. Dependencies may point from the shell to the backend, n
 | `src/shared` | Code both processes and the pages use: the IPC contract, i18n, image ids, the restart backoff | No Node, so pages can run it |
 | `src/shared/node` | Code both processes share that needs Node; today only the app's root folders | Left out of the pages' tsconfig |
 | `src/renderer`, `src/preload` | Pages and preload scripts | What the backend pushes enters through one place: `agent-event-decoder.ts` turns it into a closed `AgentEvent` union and refuses frames it does not know. Actions are a closed union too. State in `*-state.ts` (pure), IPC in `*-actions.ts`, DOM built with `h()`, never `innerHTML` |
-| `plugins/*` | Viva's 11 own dsh plugins | Talk to the app by their contracts |
+| `plugins/*` | Viva's 12 own dsh plugins | Talk to the app by their contracts |
 
 The tests that keep these boundaries:
 

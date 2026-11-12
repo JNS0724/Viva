@@ -19,6 +19,17 @@ function list<T>(value: unknown, read: (value: unknown) => T | null): T[] | null
 }
 const texts = (value: unknown) => list(value, item => string(item) ? item : null)
 const choice = (value: unknown) => { const item = objectOf(value); return item && string(item.value) && string(item.name) && optional(item.group, string) ? { value: item.value, name: item.name, ...(item.group === undefined ? {} : { group: item.group }) } : null }
+/** How the MCP servers stand (viva-mcp): connected, still trying, stopped trying. */
+function decodeMcp(value: unknown): NonNullable<AgentInfo['mcp']> | null {
+  const mcp = objectOf(value)
+  if (!mcp) return null
+  const named = (row: unknown) => { const item = objectOf(row); return item && string(item.name) && string(item.reason) ? { name: item.name, reason: item.reason } : null }
+  const dropped = mcp.dropped === undefined ? [] : list(mcp.dropped, named)
+  const connecting = mcp.connecting === undefined ? [] : list(mcp.connecting, named)
+  const active = mcp.active === undefined ? [] : texts(mcp.active)
+  return active && dropped && connecting ? { active, connecting, dropped } : null
+}
+
 export function decodeInfo(value: unknown): AgentInfo | null {
   const item = objectOf(value)
   if (!item || !string(item.mode) || !string(item.model) || !string(item.cwd)) return null
@@ -28,10 +39,8 @@ export function decodeInfo(value: unknown): AgentInfo | null {
   const models = item.models === undefined ? undefined : list(item.models, choice)
   const efforts = item.efforts === undefined ? undefined : list(item.efforts, choice)
   if (models === null || efforts === null) return null
-  const mcp = objectOf(item.mcp)
-  const dropped = mcp?.dropped === undefined ? [] : list(mcp.dropped, value => { const row = objectOf(value); return row && string(row.name) && string(row.reason) ? { name: row.name, reason: row.reason } : null })
-  const active = mcp?.active === undefined ? [] : texts(mcp.active)
-  if (item.mcp !== undefined && (!mcp || !active || !dropped)) return null
+  const mcp = item.mcp === undefined ? undefined : decodeMcp(item.mcp)
+  if (mcp === null) return null
   return { mode: item.mode, model: item.model, cwd: item.cwd,
     ...(item.sessionId === undefined ? {} : { sessionId: item.sessionId }),
     ...(item.conversationId === undefined ? {} : { conversationId: item.conversationId }),
@@ -40,7 +49,7 @@ export function decodeInfo(value: unknown): AgentInfo | null {
     ...(item.modelValue === undefined ? {} : { modelValue: item.modelValue }),
     ...(item.effort === undefined ? {} : { effort: item.effort }),
     ...(item.remembersHistory === undefined ? {} : { remembersHistory: item.remembersHistory }),
-    ...(models ? { models } : {}), ...(efforts ? { efforts } : {}), ...(mcp && active && dropped ? { mcp: { active, dropped } } : {}) }
+    ...(models ? { models } : {}), ...(efforts ? { efforts } : {}), ...(mcp ? { mcp } : {}) }
 
 }
 export function decodeQuestions(value: unknown): QuestionItem[] | null {
@@ -152,6 +161,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
     if (!info || (item.context !== undefined && !context)) return null
     return type === 'config' ? { type, info, ...(context ? { context } : {}) } : { type, info }
   }
+  if (type === 'mcp_status') { const mcp = decodeMcp(item.mcp); return mcp ? { type, mcp } : null }
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
   if (type === 'memory_changed') {
     const memories = item.memories === undefined ? undefined : texts(item.memories), invalidated = item.invalidated === undefined ? undefined : texts(item.invalidated)
@@ -192,7 +202,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

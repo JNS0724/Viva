@@ -1,0 +1,15 @@
+{
+  "name": "viva-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Viva's MCP servers, registered once with dsh's MCP manager rather than with every session (mcp contract)",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js", "./package.json": "./package.json" },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-mcp-manager": "0.2.2-rc.2",
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "viva": { "contract": { "mcp": 1 } }
+}

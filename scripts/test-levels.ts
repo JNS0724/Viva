@@ -91,6 +91,7 @@ export const testLevels = {
     'memory-synthesis',
     'memory-trace',
     'memory',
+    'mcp-manager',
     'model-actions',
     'model-providers',
     'models-ipc',

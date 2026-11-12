@@ -228,6 +228,7 @@ interface AgentApi extends DraftApi {
   watchFile: Invoke<'files:watch'>
   getExtensions: Invoke<'ext:get'>
   removeMcpServer: Invoke<'ext:remove-mcp'>
+  restartMcpServer: Invoke<'ext:restart-mcp'>
   updateMcpServer: Invoke<'ext:update-mcp'>
   importDsh: Invoke<'ext:import-dsh'>
   removeSkill: Invoke<'ext:remove-skill'>

@@ -8,6 +8,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'ready': return { type: 'ready', info: event.info }
       case 'workdir': return { type: 'workdir_switched', info: event.info }
       case 'config': return { type: 'config_applied', info: event.info }
+      case 'mcp_status': return { type: 'config_applied', info: { mcp: event.mcp } }
       case 'update': return { type: 'acp_update', update: event.update, at }
       case 'turn_started': return { type: 'agent_turn_started', by: event.by ?? null, at }
       case 'permission': return event.taskId !== undefined

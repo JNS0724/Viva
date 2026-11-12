@@ -136,8 +136,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let imageStore!: ReturnType<typeof createImageStore>
   /** The user's MCP servers, encrypted where they hold keys (mcp-config.ts). */
   let mcpStore!: ReturnType<typeof createMcpConfigStore>
-  /** An MCP server was added or removed from the conversation: reattach the session once the turn is over. */
-  let mcpReloadDue = false
   let memoryDb!: ReturnType<typeof openMemoryDb>
   /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
   let traceDb: ReturnType<typeof openTraceDb> | null = null
@@ -376,17 +374,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return createConfigActions({
       store: mcpStore,
       roots: () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd }),
-      onMcpChange: () => { mcpReloadDue = true }, importDsh,
+      // viva-mcp takes the change at once, even mid-turn: no session is reopened for it.
+      onMcpChange: () => { void applyMcpChange() }, importDsh,
       rememberDshDir: (dir) => preferences.set('dshImportDir', dir), trash: (file) => host.shell.trash(file),
     })
-  }
-
-  function reloadMcpAfterTurn() {
-    mcpReloadDue = false
-    applyMcpChange()
-      .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
-      // A task's result held back while the session was reattached comes back now.
-      .finally(wakeEffects)
   }
 
   /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
@@ -425,6 +416,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
             console.error('[reports]', err instanceof Error ? err.message : String(err))
             return wakeEffects()
           }
+        }
+        // How the MCP servers stand (viva-mcp): kept with the agent's info, for the settings page and the window.
+        if (event.type === 'mcp_status') {
+          lastInfo = { ...lastInfo, mcp: event.mcp as AgentInfo['mcp'] }
+          emitToRenderer({ type: 'mcp_status', mcp: event.mcp })
+          return undefined
         }
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams. Each
         // reaches the window from the task runtime, in order with the task's snapshots (task-runtime.ts), not from here.
@@ -697,7 +694,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       // A turn of the user's just ended: memories saved in it are reported.
       'agent.turn_ended': () => {
         reportTurnMemories()
-        if (mcpReloadDue) reloadMcpAfterTurn()
         // A task that ended while this turn ran comes back now that the conversation is free.
         wakeEffects()
       },
@@ -749,14 +745,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   const chooseDshDir = () => host.dialogs.chooseFolder({ title: t("main.main.choose.the.dsh.folder.usually.named.dsh"), defaultPath: os.homedir(), showHidden: true })
 
   /** Reattaches the session with the current MCP servers; not while a turn runs (it would be cancelled). */
+  /**
+   * The MCP servers changed: viva-mcp (dsh's MCP manager) takes the new set at once and connects it in the background;
+   * no session is reopened, so this works mid-turn too. How the servers stand comes back as `mcp_status`.
+   */
   async function applyMcpChange() {
-    if (!dsh.current || turn.active) return null
-    return sessions.withSelection(async selection => {
-      const info = await selection.reloadAgent()
-      // Publish the new runtime identity before the transition releases waiting reports.
-      emitToRenderer({ type: 'config', info })
-      return info
-    })
+    dsh.current?.applyMcp()
+    return null
   }
 
   /** 动态 changed: the window shows it, the tray counts what is new. */
@@ -803,6 +798,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       roots,
       mcpStatus: () => ({ ...personal.mcpStatus(lastInfo, launchedAt), plugins: pluginProblems }),
       applyMcp: applyMcpChange,
+      restartMcp: (name) => dsh.current?.restartMcp(name),
       trash: (file) => host.shell.trash(file),
       reveal: (file) => host.shell.showItemInFolder(file),
       dshDirs: () => ({ defaultDir: userDshHome(), lastDir: preferences.get().dshImportDir }),

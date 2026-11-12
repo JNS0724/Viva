@@ -68,7 +68,7 @@
 
 - **先确认**：模型用 `viva-config` 插件（`plugins/config`）的工具配置：`viva_mcp_add` / `viva_mcp_update` / `viva_mcp_remove` / `viva_mcp_list` / `viva_mcp_import`，`viva_skill_create` / `viva_skill_install` / `viva_skill_remove` / `viva_skill_list`。会改动配置的那几个，先弹出审批卡片（「接入 MCP 服务器「github」」，下面是要运行的命令和参数），你允许后才执行；从 dsh 导入例外，见下。
 - **密钥不进对话**：服务要令牌时，模型只写名字（比如 `GITHUB_TOKEN`），窗口里弹出一张输入卡片让你填写。填的值直接交给主进程，用系统钥匙串加密存进 `mcp-servers.json`，不经过 dsh，也不会出现在聊天记录或「过程」里；「过程」只记下「请你填写密钥」和「你填写了密钥」。
-- **谁来做**：插件只把请求交给应用（IPC，`config@1`，见 `plugins/config/lib/channel.js`）；应用在 `src/backend/config-channel.ts` 里逐项校验，再用和原来设置表单相同的代码写入。MCP 的改动在这一轮结束后重新接到会话上；skill 放进去就生效。新建的 skill 名字遵守 dsh 的规则（小写字母、数字和连字符），中文说明写在 description 里。
+- **谁来做**：插件只把请求交给应用（IPC，`config@1`，见 `plugins/config/lib/channel.js`）；应用在 `src/backend/config-channel.ts` 里逐项校验，再用和原来设置表单相同的代码写入。MCP 的改动立即交给 dsh 的 MCP 管理器（`viva-mcp`），在后台连接，不重开会话，任务进行中也能改；skill 放进去就生效。新建的 skill 名字遵守 dsh 的规则（小写字母、数字和连字符），中文说明写在 description 里。
 - **人设**里写明：要接入服务或保存做法时用这些工具，绝不在对话里向用户要密钥的值。
 
 ### 从 dsh 导入、原地编辑
@@ -78,7 +78,8 @@
 - **密钥**：直接写在配置里的照搬；写成 `!!js process.env.X`（或 `` `Bearer ${process.env.X}` `` 这类模板）的，按 dsh 的顺序找：你终端的环境（从登录 shell 读一次，因为从程序坞打开的应用拿不到）、应用自己的环境、dsh 文件夹里的 `.env`。其他 `!!js` 写法一律不执行。找不到的不打断导入：服务器照样加上，在列表里标「缺少密钥：X」，点「编辑」补上就行。
 - **重名**：名字已经有的跳过（不区分大小写），结果里说明。
 - **从其他客户端导入**：「能力 · MCP」里点「从其他客户端导入」，列出这台电脑上 Claude Desktop、Claude Code（`~/.claude.json`）、Cursor（`~/.cursor/mcp.json`）、Codex（`~/.codex/config.toml`，或 `CODEX_HOME` 指定的目录）里配好的服务器，逐个按 Viva 保存时的规则检查：`${VAR}` 写法的密钥从登录 shell 取值，取不到就按名字记成「缺少密钥」；SSE 连接方式、找不到的命令，以及在命令、参数或地址里引用变量的（那里的值不会加密）不能导入并写明原因；命令按登录 shell 找到的完整路径保存；名字里有 Viva 不支持的字符的会改名；Viva 已有同名的改名为 `名字-2` 且默认不勾。导入只写进 Viva 的配置（密钥加密），原来的配置文件只读（`src/backend/mcp-import.ts`）。Codex 的 TOML 由 `smol-toml` 读取（`src/backend/codex-mcp.ts`）：`env_vars`、`env_http_headers`、`bearer_token_env_var` 指定的变量当作密钥，从登录 shell 取值；在 Codex 里关着的默认不勾；只接受 Viva 能照搬或可以放心略去的设置（超时、`required`），用了其他设置的（`cwd`、`http_headers_helper`、`enabled_tools`/`disabled_tools`、不是 `local` 的 `environment_id`、远程环境的变量，以及还不认识的设置）不能导入并写明是哪一项，不会悄悄丢掉；Codex 不展开 `${…}`，所以写在普通值里的 `${…}` 也不导入，免得意思变了。
-- **原地编辑**：点「编辑」在原位置展开表单，命令、参数、地址都已填好；已保存的密钥只显示名字，留空就保持不变，填了才替换，也可以新增或删除。保存后会话自动重新接一次。对话里用 `viva_mcp_update`（先审批，新密钥同样在窗口里填）。
+- **原地编辑**：点「编辑」在原位置展开表单，命令、参数、地址都已填好；已保存的密钥只显示名字，留空就保持不变，填了才替换，也可以新增或删除。保存后立即生效，服务器在后台重新连接。对话里用 `viva_mcp_update`（先审批，新密钥同样在窗口里填）。
+- **连接状态**：服务器由 dsh 的 MCP 管理器在后台连接，整个 dsh 只连一次、所有会话共用；卡住或坏掉的服务器不会拖慢新对话和后台任务的启动。「能力 · MCP」里每个服务器显示「已连接」「正在连接…」「正在重连：原因」或「未连接：原因」；不再重试的服务器有「重试」按钮，第一次失败时窗口提示一次。
 
 ## 插件
 

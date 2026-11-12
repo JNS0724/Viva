@@ -36,7 +36,7 @@ flowchart TB
     b4["<b>dsh 与 ACP</b><br/>dsh-lifecycle 启动和重启 dsh<br/>acp-bridge、acp-operations、acp-task-sessions"]
   end
   subgraph dsh["dsh 进程（后端的子进程）"]
-    d1["<b>Viva 自带插件</b><br/>11 个 viva-*，按约定通信<br/>记忆、过程写自己的文件"]
+    d1["<b>Viva 自带插件</b><br/>12 个 viva-*，按约定通信<br/>记忆、过程写自己的文件"]
     d2["<b>用户插件</b><br/>经插件管理器安装<br/>运行中即可启停"]
     d3["<b>工具与沙箱</b><br/>dsh 的档位与沙箱<br/>需要时经用户授权"]
   end
@@ -49,7 +49,7 @@ flowchart TB
 - **页面**（`src/renderer`）：主窗口和桌面岛，跑在沙箱里，没有 Node。只负责显示和交互，状态由后端推送。
 - **外壳**（`src/shell`，Electron 主进程）：应用的生命周期、窗口、托盘、桌面岛、快捷键、通知、对话框和系统钥匙串。它把页面的调用校验后转给后端，并执行后端要桌面做的事。
 - **后端**（`src/backend`，Electron 以 Node 身份运行的子进程）：除桌面以外的一切。包括事件内核、所有业务和存储（历史、任务、定时与动态、记忆、设置、模型、插件管理），以及管 dsh 的几个模块：`dsh-lifecycle.ts` 启动和重启它，`acp-bridge.ts` 管进程、MCP 和屏幕上的会话，`acp-operations.ts` 管进行中的 prompt，`acp-task-sessions.ts` 管任务的会话。这些模块的创建、连线和关闭由 `compose.ts` 负责；它自己仍协调一部分功能（设置、MCP 变更、定时与动态）。它运行时不导入 `electron`，桌面能力只通过 `HostCapabilities`（`src/backend/host.ts`）拿到。
-- **dsh**（后端的子进程）：真正跑对话的 agent，加载 11 个 Viva 自带插件和用户装的插件。
+- **dsh**（后端的子进程）：真正跑对话的 agent，加载 12 个 Viva 自带插件和用户装的插件。
 
 这样划分的好处是，后端没有任何按桌面写死的代码。以后把它搬到云上，只需要换掉两端之间的传输和鉴权，见第 10 节。
 
@@ -130,7 +130,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 **启动入口。** dsh 由应用自己的入口 `src/backend/dsh-entry.ts` 启动，它调用 dsh 导出给安装方的 `runCli`（`@deepseek-ai/dsh/lib/bin.js`）。启动前，后端经 IPC 通道发一条 `viva_launch`（`src/backend/dsh-launch.ts`），内容是插件管理器用的 pnpm、它带的参数（把 pnpm 知道的每个 scope 都指到公司源）和只给这个 pnpm 的环境变量（dsh 的 `packageManager`）。公司插件源的令牌就走这条路，不放进 dsh 的环境变量：同一用户的其他程序能读到 dsh 的环境，代理执行的命令也会继承它。入口 10 秒内没收到这条消息，就按 dsh 自己的方式启动。设置了 `DSH_BIN` 时直接运行它，不经这个入口。
 
-**自带插件。** 11 个 `viva-*` 插件随应用发布（清单在 `src/backend/app-plugins.ts`）。每个插件声明一个带版本的约定，应用启动时检查版本对不对：
+**自带插件。** 12 个 `viva-*` 插件随应用发布（清单在 `src/backend/app-plugins.ts`）。每个插件声明一个带版本的约定，应用启动时检查版本对不对：
 
 | 约定 | 插件做什么 |
 | --- | --- |
@@ -145,6 +145,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | `config` | 模型在对话里接入 MCP 服务器、新建或安装 skill，经用户批准 |
 | `permission` | 用户选的权限档位（完全、自动、工作区修改、仅可查看），用到 dsh 打开的每个会话；各档位允许什么完全由 dsh 的沙箱和审批预设决定，应用不另加规则 |
 | `plugins` | dsh 插件管理器的入口，供「能力 · 插件」使用 |
+| `mcp` | `viva-mcp`：用户的 MCP 服务器交给 dsh 的 MCP 管理器（`dsh-mcp-manager`），整个 dsh 只连一次、各会话共用，而不是每个会话各连一遍。应用在插件启动时和每次改动时把整组服务器经 IPC 发过去（`mcp-desk.ts`），密钥只在内存里；插件逐个注册，状态变化报回应用，「能力 · MCP」显示并能「重试」 |
 
 插件和应用之间走 dsh 启动时打开的 IPC 通道，每个约定各有自己的消息格式（如 `plugins/tasks/lib/channel.ts`）。
 
@@ -156,9 +157,9 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 **约定检查。** `APP_PLUGINS` 列出每个插件的名字、目录、约定和配置；插件在 `package.json` 里声明约定，如 `"viva": { "contract": { "memory": 1 } }`。启动前 `resolvePlugins` 检查插件存在、`package.json` 可读、名字一致、约定版本和 dsh 版本完全匹配；不通过的插件不写进 profile，原因显示在「能力」页。插件的数据库记录 `meta.contract_version`，更新版本写的数据直接拒绝，不会误读。
 
-**各插件用到的 dsh 接口。** `memory`：agent/pre-step、sessionProjections、tools.register、agent/turn-stopping、llm.stream；`trace`：agent/turn-stopping、session.eventAt；`stream`（`viva-routing`）：agent/created、agent.ctx.tools.restrict、agent.ctx.plugin（dsh-persona）、tools/pre-execute（在审批之前）、tools.register、agent/pre-step、agent/turn-stopping、agent/status、agent/assistant-stream、session/event、agent/disposed、llm.stream；`plugins`：ctx.pluginManager。插件出错只降级：注入失败就不带记忆，记录过程失败就没有“过程”，对话照常。
+**各插件用到的 dsh 接口。** `memory`：agent/pre-step、sessionProjections、tools.register、agent/turn-stopping、llm.stream；`trace`：agent/turn-stopping、session.eventAt；`stream`（`viva-routing`）：agent/created、agent.ctx.tools.restrict、agent.ctx.plugin（dsh-persona）、tools/pre-execute（在审批之前）、tools.register、agent/pre-step、agent/turn-stopping、agent/status、agent/assistant-stream、session/event、agent/disposed、llm.stream；`plugins`：ctx.pluginManager；`mcp`：ctx.mcpManager（register、list、restart）、mcp-manager/status。插件出错只降级：注入失败就不带记忆，记录过程失败就没有“过程”，对话照常。
 
-**会话准备。** 新话题先显示空输入框，准备期间可以打字，发送要等准备好。最多提前准备一个独立的空会话，带自己的 MCP 进程，120 秒没用就作废。单例 MCP 服务器拒绝第二个连接时，丢掉这个预备会话，不影响正式的 MCP 状态。会话之间不共享 MCP 客户端；旧会话的资源关完，才创建新的冷启动 MCP。计时：后端设 `VIVA_SESSION_TIMING=1`，页面设 `localStorage.setItem('viva:session-timing', '1')`，只记阶段、耗时和结果，不记提示词和 MCP 配置。
+**会话准备。** 新话题先显示空输入框，准备期间可以打字，发送要等准备好。最多提前准备一个独立的空会话，120 秒没用就作废。会话不带自己的 MCP 服务器：用户的服务器由 `viva-mcp` 交给 dsh 的 MCP 管理器，整个 dsh 只连一次、各会话共用（单例服务器也只起一个进程）。连接在后台进行，每次尝试最多 30 秒，失败按退避自动重连；一个服务器卡住或坏掉只会让它自己的工具暂时没有，不会拖住会话的创建，也就不会拖慢 commit_route 交给后台任务。计时：后端设 `VIVA_SESSION_TIMING=1`，页面设 `localStorage.setItem('viva:session-timing', '1')`，只记阶段、耗时和结果，不记提示词和 MCP 配置。
 
 **升级 dsh 时要复查。**
 
@@ -236,7 +237,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | `src/shared` | 两个进程和页面都用的代码：IPC 契约、i18n、图片 id、重启退避 | 不用 Node，页面也能跑 |
 | `src/shared/node` | 两个进程共用、要用 Node 的代码，现在只有应用根目录的计算 | 页面的 tsconfig 不包含它 |
 | `src/renderer`、`src/preload` | 页面和预加载脚本 | 后端推来的东西只从一处进：`agent-event-decoder.ts` 把它解成封闭的 `AgentEvent` 联合，不认识的帧直接拒掉；action 也是封闭联合。状态在 `*-state.ts`（纯函数），IPC 在 `*-actions.ts`，DOM 用 `h()` 搭，不写 `innerHTML` |
-| `plugins/*` | 11 个自带 dsh 插件 | 按各自的约定和应用通信 |
+| `plugins/*` | 12 个自带 dsh 插件 | 按各自的约定和应用通信 |
 
 守住这些边界的测试：
 

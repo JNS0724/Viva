@@ -9,6 +9,8 @@ type Payload<K extends keyof ConversationPayloads> = Omit<ConversationPayloads[K
 export type AgentEvent =
   | { type: 'ready' | 'workdir', info: AgentInfo }
   | { type: 'config', info: AgentInfo, context?: ConversationContext }
+  /** How the MCP servers stand, as viva-mcp says it changed: only the agent info's `mcp`. */
+  | { type: 'mcp_status', mcp: NonNullable<AgentInfo['mcp']> }
   | ({ type: 'update' } & Scoped & Payload<'acp_update'>)
   | ({ type: 'turn_started', by?: string | null } & Scoped)
   | ({ type: 'turn_end' } & Scoped & Payload<'turn_end'>)

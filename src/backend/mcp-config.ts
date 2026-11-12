@@ -1,3 +1,4 @@
+import type { McpServerEntry } from '../shared/mcp-channel.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -208,6 +209,26 @@ export function toAcpServers(configs: readonly ServerConfig[], { resolve = resol
       return []
     }
     return [{ name: config.name, command, args: config.args, env: toPairs(config.env) }]
+  })
+  return { servers, missing }
+}
+
+/**
+ * The servers as dsh's MCP manager takes them (viva-mcp, shared/mcp-channel.ts): sent to the plugin, registered for
+ * the whole dsh. A stdio server whose command cannot be found is left out and reported, as for ACP.
+ */
+export function toManagerServers(configs: readonly ServerConfig[], { resolve = resolveCommand }: { resolve?: (command: string) => string | null } = {}): {
+  servers: McpServerEntry[], missing: Array<{ name: string, reason: string }>,
+} {
+  const missing: Array<{ name: string, reason: string }> = []
+  const servers = configs.flatMap((config): McpServerEntry[] => {
+    if (config.type === 'http') return [{ name: config.name, entry: { transport: 'streamable-http', url: config.url, headers: { ...config.headers } } }]
+    const command = resolve(config.command)
+    if (!command) {
+      missing.push({ name: config.name, reason: t("main.mcp-config.command.not.found", { command: config.command }) })
+      return []
+    }
+    return [{ name: config.name, entry: { transport: 'stdio', command, args: [...config.args], env: { ...config.env } } }]
   })
   return { servers, missing }
 }
