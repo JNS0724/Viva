@@ -5,7 +5,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { apply, stateOf } from '../plugins/mcp/index.ts'
 import { appToMcpOf, mcpToAppOf, type McpServerEntry } from '../src/shared/mcp-channel.ts'
 import { createMcpDesk, statusOf } from '../src/backend/mcp-desk.ts'
-import { toManagerServers, type ServerConfig } from '../src/backend/mcp-config.ts'
+import { placeholderIn, toManagerServers, validateServer, type ServerConfig } from '../src/backend/mcp-config.ts'
+import { t } from '../src/shared/i18n/translate.ts'
 import { serverStanding, statusOf as liveStatus } from '../src/renderer/capabilities-state.ts'
 
 /** The user's MCP servers through viva-mcp and dsh's MCP manager (plugins/mcp, mcp-desk.ts), in place of each session's own. */
@@ -26,8 +27,9 @@ test('the channel takes only well-formed messages, each way', () => {
   assert.equal(mcpToAppOf({ type: 'mcp_status', version: 1, servers: [{ name: 'mail', state: 'asleep' }] }), null)
 })
 
+const config = (over: Partial<ServerConfig>): ServerConfig => ({ name: 'x', type: 'stdio', command: 'x', args: [], url: '', env: {}, headers: {}, missing: [], ...over })
+
 test('the configured servers become manager entries; a command not found is left out and said so', () => {
-  const config = (over: Partial<ServerConfig>): ServerConfig => ({ name: 'x', type: 'stdio', command: 'x', args: [], url: '', env: {}, headers: {}, missing: [], ...over })
   const { servers, missing } = toManagerServers([
     config({ name: 'mail', command: 'mail-mcp', args: ['--x'], env: { MAIL_KEY: 'k' } }),
     config({ name: 'docs', type: 'http', url: 'https://mcp.example/mcp', headers: { Authorization: 'Bearer t' } }),
@@ -37,7 +39,21 @@ test('the configured servers become manager entries; a command not found is left
   assert.deepEqual(missing.map((item) => item.name), ['gone'])
 })
 
-test('the app side: servers go when the plugin starts and on a change, restarts go by name, how they stand comes back grouped', () => {
+test('a ${…} the manager would read as a credential template is refused when saved; one saved before is left out and said so', () => {
+  const where = (over: Partial<ServerConfig>) => placeholderIn(config(over))
+  assert.equal(where({ args: ['--x'], env: { MAIL_KEY: 'k$1{}' } }), null, 'a $ or braces alone are fine')
+  assert.equal(where({ command: '/bin/${TOOL}' }), t('main.config-channel.launch.command'))
+  assert.equal(where({ args: ['-c', 'echo ${HOME}'] }), t('main.mcp-config.arguments'))
+  assert.equal(where({ type: 'http', url: 'https://mcp.example/${PATH}' }), t('main.mcp-config.server.address'))
+  assert.equal(where({ env: { OK: 'k', TOKEN: '${credential:TOKEN}' } }), t('main.mcp-config.field.named', { what: t('main.mcp-config.environment.variables'), name: 'TOKEN' }))
+  assert.equal(where({ type: 'http', headers: { Authorization: 'Bearer ${TOKEN:-x}' } }), t('main.mcp-config.field.named', { what: t('main.mcp-config.headers'), name: 'Authorization' }))
+  assert.throws(() => validateServer(config({ name: 'shell', args: ['-c', 'echo ${HOME}'] }), []), (err: Error) => err.message === t('main.mcp-config.no.placeholder', { what: t('main.mcp-config.arguments'), placeholder: '${…}' }))
+  const { servers, missing } = toManagerServers([config({ name: 'mail', command: 'mail-mcp' }), config({ name: 'shell', command: 'sh', args: ['-c', 'echo ${HOME}'] })], { resolve: (command) => `/bin/${command}` })
+  assert.deepEqual(servers.map((server) => server.name), ['mail'])
+  assert.deepEqual(missing, [{ name: 'shell', reason: t('main.mcp-config.no.placeholder', { what: t('main.mcp-config.arguments'), placeholder: '${…}' }) }])
+})
+
+test('the app side: servers go when the plugin starts and on a change, a retry sends them again and restarts by name, how they stand comes back grouped', () => {
   const sent: object[] = []
   const heard: object[] = []
   let servers = [MAIL]
@@ -46,7 +62,9 @@ test('the app side: servers go when the plugin starts and on a change, restarts 
   servers = [MAIL, DOCS]
   desk.push()
   desk.restart('mail')
-  assert.deepEqual(sent, [{ type: 'mcp_servers', version: 1, servers: [MAIL] }, { type: 'mcp_servers', version: 1, servers: [MAIL, DOCS] }, { type: 'mcp_restart', version: 1, name: 'mail' }])
+  const full = { type: 'mcp_servers', version: 1, servers: [MAIL, DOCS] }
+  assert.deepEqual(sent, [{ type: 'mcp_servers', version: 1, servers: [MAIL] }, full, full, { type: 'mcp_restart', version: 1, name: 'mail' }],
+    'a retry sends the servers again first: one whose command was not found before is registered once it is')
   desk.receive({ type: 'mcp_status', version: 1, servers: [
     { name: 'mail', state: 'connected', error: '', tools: 2 }, { name: 'docs', state: 'connecting', error: '', tools: 0 },
     { name: 'old', state: 'failed', error: 'gave up', tools: 0 }, { name: 'off', state: 'off', error: '', tools: 0 },

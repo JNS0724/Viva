@@ -21,6 +21,25 @@ const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const HEADER_NAME_PATTERN = /^[A-Za-z0-9-]{1,128}$/
 export const SERVER_TYPES: readonly string[] = Object.freeze(['stdio', 'http'])
+/**
+ * Any `${…}`. dsh's MCP manager reads every such occurrence in a server's command, arguments, address, environment
+ * and headers as a `${credential:REF}` template and has no way to write one literally, so Viva takes none.
+ */
+const PLACEHOLDER = /\$\{[^}]*\}/
+
+/** Where a server's settings hold a `${…}`, as the page names it; null when nowhere. */
+export function placeholderIn(config: Pick<ServerConfig, 'command' | 'args' | 'url' | 'env' | 'headers'>): string | null {
+  const named = (what: string, pairs: Record<string, string>) => {
+    const found = Object.entries(pairs).find(([, value]) => PLACEHOLDER.test(value))
+    return found ? t("main.mcp-config.field.named", { what, name: found[0] }) : null
+  }
+  if (PLACEHOLDER.test(config.command)) return t("main.config-channel.launch.command")
+  if (config.args.some((arg) => PLACEHOLDER.test(arg))) return t("main.mcp-config.arguments")
+  if (PLACEHOLDER.test(config.url)) return t("main.mcp-config.server.address")
+  return named(t("main.mcp-config.environment.variables"), config.env) ?? named(t("main.mcp-config.headers"), config.headers)
+}
+
+const placeholderProblem = (where: string) => t("main.mcp-config.no.placeholder", { what: where, placeholder: '${…}' })
 
 /**
  * A server as the main process holds it: its secrets (env, headers) decrypted. `missing` names keys it needs but
@@ -96,6 +115,8 @@ export function validateServer(config: ServerConfig, takenNames: readonly string
   if (takenNames.some((taken) => taken.toLowerCase() === name.toLowerCase())) throw new Error(t("main.mcp-config.a.server.named.already.exists", { name: name }))
   if (!SERVER_TYPES.includes(config.type)) throw new Error(t("main.mcp-config.choose.a.connection.type"))
   const missing = [...new Set(config.missing ?? [])]
+  const placeholder = placeholderIn(config)
+  if (placeholder) throw new Error(placeholderProblem(placeholder))
   if (config.type === 'http') {
     const url = parseUrl(config.url)
     checkKeys(config.headers, missing, 'http')
@@ -222,6 +243,12 @@ export function toManagerServers(configs: readonly ServerConfig[], { resolve = r
 } {
   const missing: Array<{ name: string, reason: string }> = []
   const servers = configs.flatMap((config): McpServerEntry[] => {
+    // Saved before Viva refused these: the manager would read the text as a credential template.
+    const placeholder = placeholderIn(config)
+    if (placeholder) {
+      missing.push({ name: config.name, reason: placeholderProblem(placeholder) })
+      return []
+    }
     if (config.type === 'http') return [{ name: config.name, entry: { transport: 'streamable-http', url: config.url, headers: { ...config.headers } } }]
     const command = resolve(config.command)
     if (!command) {

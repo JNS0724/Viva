@@ -48,8 +48,14 @@ export function createMcpDesk({ send, servers, onStatus }: {
     receive,
     /** The servers changed: the plugin takes the new set at once; sessions are not touched. */
     push,
-    /** 重试: the manager starts the server again, with a fresh retry budget. */
-    restart: (name: string) => send({ type: 'mcp_restart', version: 1, name }),
+    /**
+     * 重试: the servers are sent again first (a command installed since is found now, and the plugin registers it),
+     * then the manager starts this one again with a fresh retry budget.
+     */
+    restart: (name: string) => {
+      push()
+      send({ type: 'mcp_restart', version: 1, name })
+    },
     status: () => status,
   }
 }

@@ -84,10 +84,10 @@ function renderSettingsIfChanged(container: HTMLElement, state: State, handlers:
   renderSettings(container, state.settings, state.models, handlers)
 }
 let renderedCapabilities: unknown[] = []
-/** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins and on itself. */
+/** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins, how the servers stand now, and on itself. */
 function renderCapabilitiesIfChanged(dom: Dom, state: State, handlers: Handlers) {
   const connected = state.info.mode === 'live'
-  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, state.importFlow, connected]
+  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, state.importFlow, connected, state.info.mcp]
   if (inputs.every((value, i) => value === renderedCapabilities[i])) return
   renderedCapabilities = inputs
   const problems = capabilityProblems(state)
