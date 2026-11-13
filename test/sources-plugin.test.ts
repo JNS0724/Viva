@@ -8,7 +8,7 @@ import { judgePrompt, parseJudgement, parseMapping } from '../plugins/sources/li
 import { previewSource } from '../plugins/sources/lib/preview.ts'
 import { backoffMinutes, createRunner } from '../plugins/sources/lib/runner.ts'
 import { decodeResult, fill, guessDecode, messagesOf, normalizeKey } from '../plugins/sources/lib/spec.ts'
-import { MAX_ITEMS_PER_CHECK, type SourceSpec } from '../src/shared/sources-channel.ts'
+import { MAX_ITEMS_PER_CHECK, MAX_KEY, MAX_SEEN, sourcesToAppOf, type SourceSpec } from '../src/shared/sources-channel.ts'
 
 /** viva-sources (plugins/sources): reading a result, the two model calls, the timer, the preview, the plugin's tools. Synthetic data only. */
 
@@ -44,6 +44,11 @@ test('messages are found by the confirmed paths, with stable keys and only http(
   assert.match(lenient.messages[0].key, /^h:[0-9a-f]{32}$/, 'and one without a key is known by its title and time')
   assert.equal(normalizeKey(undefined, '周五评审改到 15:00', '2026-11-12T08:00:00Z'), lenient.messages[0].key)
   assert.equal(normalizeKey(' <A1@example.test> ', 't', ''), 'A1@example.test')
+  const long = 'x'.repeat(MAX_KEY)
+  assert.equal(normalizeKey(long, 't', ''), long, 'a key that fits is kept whole')
+  const [one, two] = [normalizeKey(`${long}-1`, 't', ''), normalizeKey(`${long}-2`, 't', '')]
+  assert.notEqual(one, two, 'two long ids that share a beginning stay apart')
+  assert.ok(one.length <= MAX_KEY && one.startsWith('k:'))
   assert.deepEqual(fill({ since: '{last}', q: { from: 'x', after: ['{last}'] }, n: 3 }, '2026-11-12T00:00:00.000Z'),
     { since: '2026-11-12T00:00:00.000Z', q: { from: 'x', after: ['2026-11-12T00:00:00.000Z'] }, n: 3 })
 })
@@ -134,6 +139,17 @@ test('more new messages than a check judges are taken as seen without a reminder
   await runner.check('src-1')
   assert.equal(reports[0].items.length, MAX_ITEMS_PER_CHECK)
   assert.deepEqual(reports[0].seen, ['m30', 'm31', 'm32'])
+})
+
+test('a check that finds more than the channel carries still reports, and leaves the rest for a later check', async () => {
+  const inbox = Array.from({ length: MAX_ITEMS_PER_CHECK + MAX_SEEN + 5 }, (_, i) => ({ id: `m${i}`, subject: `消息 ${i}`, preview: '', date: '', url: '' }))
+  const { runner, reports, judged } = runnerSetup({ inbox })
+  runner.set([{ ...SPEC, seen: [] }])
+  await runner.check('src-1')
+  assert.equal(reports[0].seen.length, MAX_SEEN)
+  assert.notEqual(sourcesToAppOf(reports[0]), null, 'the app takes the report')
+  await runner.check('src-1')
+  assert.deepEqual(judged.at(-1), Array.from({ length: 5 }, (_, i) => `m${MAX_ITEMS_PER_CHECK + MAX_SEEN + i}`), 'the rest are judged next time')
 })
 
 test('a failing check is tried again later and later, and a source paused or gone stops', async () => {

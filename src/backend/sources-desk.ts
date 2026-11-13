@@ -47,8 +47,12 @@ export const viewOf = (source: StoredSource, status: SourceStatus): SourceView =
   status,
 })
 
-/** Third-party text as plain text in 动态's Markdown: nothing in it becomes a link, a picture or a heading. */
-export const plainMarkdown = (text: string) => text.replace(/([\\`*_{}[\]()#+\-.!|<>~])/g, '\\$1')
+/**
+ * Third-party text as plain text in 动态's Markdown: every ASCII punctuation mark escaped (CommonMark lets each be,
+ * and view/markdown.ts shows an escape as its character), so nothing in it becomes a link, an address or a heading,
+ * and no line is indented into code.
+ */
+export const plainMarkdown = (text: string) => text.replace(/^[ \t]+/gm, '').replace(/([!-/:-@[-`{-~])/g, '\\$1')
 
 /** An http(s) address as a Markdown link target, or null. */
 function linkTarget(link: string): string | null {

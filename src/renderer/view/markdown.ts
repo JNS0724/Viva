@@ -63,7 +63,9 @@ function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
         return fallback
       }
       case 'text': return token.tokens ? inline(token.tokens, ctx) : token.text
-      // escape, html and anything newer: what was written, as text
+      // A backslash escape (`\*`) is the character it escapes.
+      case 'escape': return token.text
+      // html and anything newer: what was written, as text
       default: return token.raw
     }
   })

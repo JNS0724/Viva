@@ -3,7 +3,7 @@
  * are in it (one model call without tools, checked against the real result), and how the messages there now would be
  * judged. Nothing is saved: the draft waits for the user's 开启 (viva_source_add).
  */
-import { DEFAULT_EVERY_MINUTES, MAX_ITEMS_PER_CHECK, MAX_NAME, type Json, type SourceDraft } from '../../../src/shared/sources-channel.ts'
+import { DEFAULT_EVERY_MINUTES, MAX_ITEMS_PER_CHECK, MAX_NAME, MAX_SEEN, type Json, type SourceDraft } from '../../../src/shared/sources-channel.ts'
 import type { CallResult } from './runner.ts'
 import { mappingPrompt, parseMapping, type Decision, type Prompt } from './prompts.ts'
 import { decodeResult, fill, guessDecode, messagesOf, type Message } from './spec.ts'
@@ -50,7 +50,7 @@ export async function previewSource({ request, tool, args, call, complete, judge
   return {
     ok: true,
     draft,
-    seen: found.messages.map((message) => message.key),
+    seen: [...new Set(found.messages.map((message) => message.key))].slice(0, MAX_SEEN),
     judged: shown.map((message) => ({ message, decision: decisions.get(message.key) ?? { push: false, reason: '' } })),
     total: found.messages.length,
   }

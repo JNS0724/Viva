@@ -4,7 +4,7 @@
  * confirmed tool, finds the messages it has not seen, has them judged, and reports them all; what it reports is
  * remembered as seen, so nothing is judged or pushed twice.
  */
-import { MAX_ITEMS_PER_CHECK, type CheckedItem, type Json, type SourceSpec } from '../../../src/shared/sources-channel.ts'
+import { MAX_ITEMS_PER_CHECK, MAX_SEEN, type CheckedItem, type Json, type SourceSpec } from '../../../src/shared/sources-channel.ts'
 import type { Decision } from './prompts.ts'
 import { decodeResult, fill, messagesOf, type Message } from './spec.ts'
 
@@ -113,9 +113,11 @@ export function createRunner({
       if (!found.ok) return fail(state, startedAt, found.problem)
       const fresh = [...new Map(found.messages.filter((message) => !state.seen.has(message.key)).map((message) => [message.key, message])).values()]
       const judged = fresh.slice(0, MAX_ITEMS_PER_CHECK)
-      const passed = fresh.slice(MAX_ITEMS_PER_CHECK).map((message) => message.key)
+      // As many more as the channel carries are taken as seen; past that they wait for a later check.
+      const passed = fresh.slice(MAX_ITEMS_PER_CHECK, MAX_ITEMS_PER_CHECK + MAX_SEEN).map((message) => message.key)
       const decisions = judged.length ? await judge(spec, judged, signal) : new Map<string, Decision>()
-      for (const message of fresh) state.seen.add(message.key)
+      for (const message of judged) state.seen.add(message.key)
+      for (const key of passed) state.seen.add(key)
       state.failures = 0
       state.spec = { ...state.spec, lastCheckedAt: startedAt }
       const nextAt = now() + spec.everyMinutes * MINUTE

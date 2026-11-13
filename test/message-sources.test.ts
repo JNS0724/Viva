@@ -7,6 +7,7 @@ import { appToSourcesOf, draftOf, MAX_SEEN, MAX_SOURCES, sourcesToAppOf, type Ch
 import { createSourceStore, mergeSeen } from '../src/backend/message-sources.ts'
 import { createSourcesDesk, plainMarkdown, sourceItemBody } from '../src/backend/sources-desk.ts'
 import { t } from '../src/shared/i18n/translate.ts'
+import { Lexer, type Token } from 'marked'
 
 /** 消息源 on the app's side: the channel to viva-sources, the store, and the desk that answers and delivers. Synthetic data only. */
 
@@ -100,10 +101,25 @@ test('seen keys keep the newest, each once', () => {
 })
 
 test('a pushed message reads as plain text, with why and a link to the original only when it is http(s)', () => {
-  assert.equal(plainMarkdown('[点我](javascript:x) **粗** #标题'), '\\[点我\\]\\(javascript:x\\) \\*\\*粗\\*\\* \\#标题')
+  assert.equal(plainMarkdown('[点我](javascript:x) **粗** #标题'), '\\[点我\\]\\(javascript\\:x\\) \\*\\*粗\\*\\* \\#标题')
   const body = sourceItemBody({ body: '会议室换到 B2', reason: '涉及时间安排', link: 'https://mail.example.test/m(1)' })
   assert.equal(body, `会议室换到 B2\n\n${t('main.sources.why', { reason: '涉及时间安排' })}\n\n[${t('main.sources.open.original')}](https://mail.example.test/m%281%29)`)
   assert.equal(sourceItemBody({ body: 'x', reason: '', link: 'javascript:alert(1)' }), 'x')
+})
+
+test('a pushed message\'s text reads back as written: no address in it turns into a link, nothing into code', () => {
+  const text = '见 https://example.com/path?a=1&b=_x_ 或 www.example.com，联系 a@b.example.test\n    缩进行 1. 不是列表 <b>x</b> \\ 完'
+  const tokens = new Lexer({ gfm: true }).lex(plainMarkdown(text))
+  const kinds = new Set<string>()
+  const shown = (list: readonly Token[]): string => list.map((token) => {
+    kinds.add(token.type)
+    if (token.type === 'escape') return token.text
+    if ('tokens' in token && token.tokens) return shown(token.tokens)
+    return token.type === 'space' ? '' : ('text' in token ? String(token.text) : token.raw)
+  }).join('')
+  const read = shown(tokens)
+  assert.deepEqual([...kinds].filter((kind) => !['paragraph', 'text', 'escape', 'br'].includes(kind)), [])
+  assert.equal(read.replace(/\s+/g, ' '), text.replace(/^[ \t]+/gm, '').replace(/\s+/g, ' '))
 })
 
 function deskSetup() {

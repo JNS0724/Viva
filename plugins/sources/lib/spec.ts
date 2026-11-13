@@ -57,12 +57,12 @@ const textOf = (value: unknown): string => {
 }
 
 /**
- * A key as remembered: trimmed, without the angle brackets mail ids come in, at most MAX_KEY; a message without one
- * is known by its title and time.
+ * A key as remembered: trimmed, without the angle brackets mail ids come in; one longer than MAX_KEY by its hash, so
+ * two that share a beginning stay apart. A message without one is known by its title and time.
  */
 export function normalizeKey(raw: unknown, title: string, time: string): string {
   const text = textOf(raw).trim().replace(/^<(.*)>$/, '$1').trim()
-  if (text) return text.slice(0, MAX_KEY)
+  if (text) return text.length <= MAX_KEY ? text : `k:${crypto.createHash('sha256').update(text).digest('hex')}`
   return `h:${crypto.createHash('sha256').update(`${title}\n${time}`).digest('hex').slice(0, 32)}`
 }
 
