@@ -24,7 +24,7 @@ import {
 import { candidacy } from './lib/candidates.ts'
 import { previewSource, previewText } from './lib/preview.ts'
 import { judgePrompt, parseJudgement, type Prompt } from './lib/prompts.ts'
-import { createRunner, type CallResult } from './lib/runner.ts'
+import { SourceFailure, createRunner, type CallResult } from './lib/runner.ts'
 import type { Message } from './lib/spec.ts'
 
 export const name = 'viva-sources'
@@ -92,16 +92,16 @@ async function callTool(ctx: Context, tool: string, args: Record<string, Json>, 
     signal: signal ?? new AbortController().signal,
   })
   const result = batch.results[0]?.result
-  if (!result) return { ok: false, error: '工具没有返回结果' }
+  if (!result) return { ok: false, error: { code: 'no-result', detail: '' } }
   if (!result.isError) return { ok: true, value: result.value }
-  if (result.error.info?.code === 'UNKNOWN_TOOL') return { ok: false, error: `找不到工具 ${tool}（可能已卸载，或只在对话里可用）` }
-  return { ok: false, error: (result.error.message || JSON.stringify(result.error)).slice(0, 500) }
+  if (result.error.info?.code === 'UNKNOWN_TOOL') return { ok: false, error: { code: 'unknown-tool', detail: tool } }
+  return { ok: false, error: { code: 'tool', detail: (result.error.message || JSON.stringify(result.error)).slice(0, 500) } }
 }
 
 async function judgeWith(ctx: Context, route: Route, judge: string, messages: readonly Message[], signal?: AbortSignal, sessionId?: SessionId) {
   const text = await complete(ctx, route, judgePrompt(judge, messages), { maxTokens: JUDGE_MAX_TOKENS, purpose: 'viva-sources-judge', signal, sessionId })
   const decisions = parseJudgement(text, messages.map((message) => message.key))
-  if (!decisions) throw new Error('判断模型没有给出能用的结果')
+  if (!decisions) throw new SourceFailure({ code: 'no-judgement', detail: '' })
   return decisions
 }
 

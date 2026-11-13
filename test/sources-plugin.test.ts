@@ -8,7 +8,7 @@ import { judgePrompt, parseJudgement, parseMapping } from '../plugins/sources/li
 import { previewSource } from '../plugins/sources/lib/preview.ts'
 import { WAKE_TICK_MS, backoffMinutes, createRunner } from '../plugins/sources/lib/runner.ts'
 import { decodeResult, fill, guessDecode, messagesOf, normalizeKey } from '../plugins/sources/lib/spec.ts'
-import { MAX_ITEMS_PER_CHECK, MAX_KEY, MAX_SEEN, sourcesToAppOf, type SourceSpec } from '../src/shared/sources-channel.ts'
+import { MAX_ITEMS_PER_CHECK, MAX_KEY, MAX_SEEN, sourcesToAppOf, type SourceError, type SourceSpec } from '../src/shared/sources-channel.ts'
 
 /** viva-sources (plugins/sources): reading a result, the two model calls, the timer, the preview, the plugin's tools. Synthetic data only. */
 
@@ -36,7 +36,7 @@ test('messages are found by the confirmed paths, with stable keys and only http(
     ['a1@example.test', '周五评审改到 15:00', 'https://mail.example.test/a1'],
     ['n7@example.test', '本周技术周刊', ''],
   ])
-  assert.deepEqual(messagesOf({ items: '$.messages', map: MAP }, { results: MAIL }), { ok: false, problem: '$.messages 不是一个列表' })
+  assert.deepEqual(messagesOf({ items: '$.messages', map: MAP }, { results: MAIL }), { ok: false, problem: { code: 'not-a-list', detail: '$.messages' } })
   assert.equal(messagesOf({ items: '$', map: { ...MAP, key: '$.messageId' } }, MAIL, { strict: true }).ok, false, 'confirming, a key path that finds nothing is refused')
   const lenient = messagesOf({ items: '$', map: { ...MAP, key: '$.messageId' } }, [...MAIL, { preview: 'no subject' }])
   assert.ok(lenient.ok)
@@ -81,7 +81,7 @@ const SPEC: SourceSpec = {
   judge: '重要的', everyMinutes: 15, model: { provider: 'deepseek', model: 'deepseek-chat' }, paused: false, createdAt: 0, lastCheckedAt: null,
 }
 
-function runnerSetup({ inbox = MAIL as unknown[], failCall = '' } = {}) {
+function runnerSetup({ inbox = MAIL as unknown[], failCall = null as SourceError | null } = {}) {
   let clock = 1_000_000
   const timers: Array<{ run: () => void, at: number, live: boolean }> = []
   const reports: any[] = []
@@ -91,7 +91,7 @@ function runnerSetup({ inbox = MAIL as unknown[], failCall = '' } = {}) {
   const runner = createRunner({
     call: async (tool, args) => {
       calls.push({ tool, args })
-      return failCall ? { ok: false, error: failCall } : { ok: true, value: jsonText({ results: box }) }
+      return failCall ? { ok: false as const, error: failCall } : { ok: true as const, value: jsonText({ results: box }) }
     },
     judge: async (_spec, messages) => {
       judged.push(messages.map((message) => message.key))
@@ -159,24 +159,27 @@ test('a timer looks at the clock every minute, so a check due while the computer
   assert.equal(calls.length, 2, 'awake and overdue: checked at once')
 })
 
-test('a check that finds more than the channel carries still reports, and leaves the rest for a later check', async () => {
-  const inbox = Array.from({ length: MAX_ITEMS_PER_CHECK + MAX_SEEN + 5 }, (_, i) => ({ id: `m${i}`, subject: `消息 ${i}`, preview: '', date: '', url: '' }))
-  const { runner, reports, judged } = runnerSetup({ inbox })
+test('a tool that lists more than the app remembers fails the check, so old messages never come back as new', async () => {
+  const listing = (length: number) => Array.from({ length }, (_, i) => ({ id: `m${i}`, subject: `消息 ${i}`, preview: '', date: '', url: '' }))
+  const { runner, reports, judged } = runnerSetup({ inbox: listing(MAX_SEEN + 1) })
   runner.set([{ ...SPEC, seen: [] }])
   await runner.check('src-1')
-  assert.equal(reports[0].seen.length, MAX_SEEN)
-  assert.notEqual(sourcesToAppOf(reports[0]), null, 'the app takes the report')
-  await runner.check('src-1')
-  assert.deepEqual(judged.at(-1), Array.from({ length: 5 }, (_, i) => `m${MAX_ITEMS_PER_CHECK + MAX_SEEN + i}`), 'the rest are judged next time')
+  assert.deepEqual(reports[0].error, { code: 'too-many', detail: String(MAX_SEEN + 1) })
+  assert.equal(judged.length, 0)
+  const full = runnerSetup({ inbox: listing(MAX_SEEN) })
+  full.runner.set([{ ...SPEC, seen: [] }])
+  await full.runner.check('src-1')
+  assert.equal(full.reports[0].seen.length, MAX_SEEN - MAX_ITEMS_PER_CHECK)
+  assert.notEqual(sourcesToAppOf(full.reports[0]), null, 'a listing that fits reaches the app whole')
 })
 
 test('a failing check is tried again later and later, and a source paused or gone stops', async () => {
   assert.deepEqual([1, 2, 3, 4].map((failures) => backoffMinutes(15, failures)), [30, 60, 60, 60])
   assert.equal(backoffMinutes(120, 3), 120, 'never sooner than its own pace')
-  const { runner, reports, live } = runnerSetup({ failCall: '找不到工具 mcp__labmail__search_unread' })
+  const { runner, reports, live } = runnerSetup({ failCall: { code: 'unknown-tool', detail: 'mcp__labmail__search_unread' } })
   runner.set([{ ...SPEC, seen: [] }])
   await runner.check('src-1')
-  assert.deepEqual(reports[0], { type: 'source_checked', version: 1, sourceId: 'src-1', at: 1_000_000, nextAt: 1_000_000 + 30 * 60_000, ok: false, error: '找不到工具 mcp__labmail__search_unread' })
+  assert.deepEqual(reports[0], { type: 'source_checked', version: 1, sourceId: 'src-1', at: 1_000_000, nextAt: 1_000_000 + 30 * 60_000, ok: false, error: { code: 'unknown-tool', detail: 'mcp__labmail__search_unread' } })
   await runner.check('src-1')
   assert.equal(reports[1].nextAt, 1_000_000 + 60 * 60_000)
   runner.set([{ ...SPEC, paused: true, seen: [] }])
@@ -216,8 +219,10 @@ test('a preview reads the tool once, checks the mapping against what came back, 
   assert.ok(!wrong.ok && wrong.text.includes('$.messageId'))
   const empty = await previewSource({ ...base, call: async () => ({ ok: true, value: jsonText({ results: [] }) }), complete: async () => mapping })
   assert.ok(!empty.ok && empty.text.includes('没有消息'))
-  const failed = await previewSource({ ...base, call: async () => ({ ok: false, error: 'no route' }), complete: async () => mapping })
+  const failed = await previewSource({ ...base, call: async () => ({ ok: false, error: { code: 'tool', detail: 'no route' } }), complete: async () => mapping })
   assert.deepEqual(failed, { ok: false, text: '试读失败：no route' })
+  const flood = await previewSource({ ...base, call: async () => ({ ok: true, value: jsonText({ results: Array.from({ length: MAX_SEEN + 1 }, (_, i) => ({ ...MAIL[0], id: `m${i}` })) }) }), complete: async () => mapping })
+  assert.ok(!flood.ok && flood.text.includes('上限'), 'a baseline too long to remember is refused, not cut')
 })
 
 /** A text-only stream as dsh's LLM service gives it. */

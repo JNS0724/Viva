@@ -4,7 +4,7 @@
  * confirmed tool, finds the messages it has not seen, has them judged, and reports them all; what it reports is
  * remembered as seen, so nothing is judged or pushed twice.
  */
-import { MAX_ITEMS_PER_CHECK, MAX_SEEN, type CheckedItem, type Json, type SourceSpec } from '../../../src/shared/sources-channel.ts'
+import { MAX_ITEMS_PER_CHECK, type CheckedItem, type Json, type SourceError, type SourceSpec } from '../../../src/shared/sources-channel.ts'
 import type { Decision } from './prompts.ts'
 import { decodeResult, fill, messagesOf, type Message } from './spec.ts'
 
@@ -18,7 +18,16 @@ const CHECK_TIMEOUT_MS = 2 * MINUTE
 /** The longest a timer waits before looking at the clock again (see wake). */
 export const WAKE_TICK_MS = MINUTE
 
-export type CallResult = { ok: true, value: unknown } | { ok: false, error: string }
+export type CallResult = { ok: true, value: unknown } | { ok: false, error: SourceError }
+
+/** A failure with its code, thrown from a step (the judging) that cannot return one. */
+export class SourceFailure extends Error {
+  readonly error: SourceError
+  constructor(error: SourceError) {
+    super(`${error.code}${error.detail ? `: ${error.detail}` : ''}`)
+    this.error = error
+  }
+}
 
 export interface RunnerDeps {
   /** The source's tool, called without an agent. */
@@ -98,10 +107,10 @@ export function createRunner({
     schedule(state)
   }
 
-  function fail(state: Running, startedAt: number, error: string) {
+  function fail(state: Running, startedAt: number, error: SourceError) {
     state.failures += 1
     const nextAt = now() + backoffMinutes(state.spec.everyMinutes, state.failures) * MINUTE
-    log(`source "${state.spec.name}" check failed: ${error}`)
+    log(`source "${state.spec.name}" check failed: ${error.code}${error.detail ? ` ${error.detail}` : ''}`)
     finish(state, { type: 'source_checked', version: 1, sourceId: state.spec.id, at: startedAt, nextAt, ok: false, error })
   }
 
@@ -128,18 +137,19 @@ export function createRunner({
       if (!found.ok) return fail(state, startedAt, found.problem)
       const fresh = [...new Map(found.messages.filter((message) => !state.seen.has(message.key)).map((message) => [message.key, message])).values()]
       const judged = fresh.slice(0, MAX_ITEMS_PER_CHECK)
-      // As many more as the channel carries are taken as seen; past that they wait for a later check.
-      const passed = fresh.slice(MAX_ITEMS_PER_CHECK, MAX_ITEMS_PER_CHECK + MAX_SEEN).map((message) => message.key)
+      // The rest are taken as seen (a listing is at most MAX_SEEN, so they fit in what the app keeps).
+      const passed = fresh.slice(MAX_ITEMS_PER_CHECK).map((message) => message.key)
       const decisions = judged.length ? await judge(spec, judged, signal) : new Map<string, Decision>()
-      for (const message of judged) state.seen.add(message.key)
-      for (const key of passed) state.seen.add(key)
+      for (const message of fresh) state.seen.add(message.key)
       state.failures = 0
       state.spec = { ...state.spec, lastCheckedAt: startedAt }
       const nextAt = now() + spec.everyMinutes * MINUTE
       return finish(state, { type: 'source_checked', version: 1, sourceId: spec.id, at: startedAt, nextAt, ok: true, items: judgedItems(judged, decisions), seen: passed })
     } catch (err) {
       if (controller.signal.aborted) return undefined
-      return fail(state, startedAt, err instanceof Error ? err.message : String(err))
+      if (err instanceof SourceFailure) return fail(state, startedAt, err.error)
+      if (signal.aborted) return fail(state, startedAt, { code: 'timeout', detail: '' })
+      return fail(state, startedAt, { code: 'failed', detail: err instanceof Error ? err.message : String(err) })
     } finally {
       state.busy = false
       state.controller = null

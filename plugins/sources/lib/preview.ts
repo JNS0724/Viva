@@ -3,7 +3,7 @@
  * are in it (one model call without tools, checked against the real result), and how the messages there now would be
  * judged. Nothing is saved: the draft waits for the user's 开启 (viva_source_add).
  */
-import { DEFAULT_EVERY_MINUTES, MAX_ITEMS_PER_CHECK, MAX_NAME, MAX_SEEN, type Json, type SourceDraft } from '../../../src/shared/sources-channel.ts'
+import { DEFAULT_EVERY_MINUTES, MAX_ITEMS_PER_CHECK, MAX_NAME, MAX_SEEN, type Json, type SourceDraft, type SourceError } from '../../../src/shared/sources-channel.ts'
 import type { CallResult } from './runner.ts'
 import { mappingPrompt, parseMapping, type Decision, type Prompt } from './prompts.ts'
 import { decodeResult, fill, guessDecode, messagesOf, type Message } from './spec.ts'
@@ -20,6 +20,20 @@ export type Preview =
   | { ok: true, draft: SourceDraft, seen: string[], judged: Judged, total: number }
   | { ok: false, text: string }
 
+/** A failure as the model is told it (the window says it through main.sources.error.*). */
+export function problemText({ code, detail }: SourceError): string {
+  switch (code) {
+    case 'no-result': return '工具没有返回结果'
+    case 'unknown-tool': return `找不到工具 ${detail}（可能已卸载，或只在对话里可用）`
+    case 'not-a-list': return `${detail} 不是一个列表`
+    case 'missing-field': return `有的消息在 ${detail} 找不到值`
+    case 'too-many': return `一次列出了 ${detail} 条，超过 ${MAX_SEEN} 条的上限，换个只读一段时间内消息的参数`
+    case 'no-judgement': return '判断模型没有给出能用的结果'
+    case 'timeout': return '超时了'
+    default: return detail
+  }
+}
+
 export async function previewSource({ request, tool, args, call, complete, judge, route, now = Date.now }: {
   request: string
   tool: { name: string, description: string, parameters: unknown }
@@ -32,14 +46,14 @@ export async function previewSource({ request, tool, args, call, complete, judge
   now?: () => number
 }): Promise<Preview> {
   const result = await call(tool.name, fill(args, new Date(now() - PREVIEW_LOOKBACK_MS).toISOString()))
-  if (!result.ok) return { ok: false, text: `试读失败：${result.error}` }
+  if (!result.ok) return { ok: false, text: `试读失败：${problemText(result.error)}` }
   const decode = guessDecode(result.value)
   if (!decode) return { ok: false, text: '这个工具返回的是写给人看的文字，不是结构化数据，第一版还不能把它当消息源。可以换一个返回 JSON 的工具。' }
   const sample = decodeResult(decode, result.value)
   const mapping = parseMapping(await complete(mappingPrompt({ request, tool, sample })), tool.name.slice(0, MAX_NAME))
   if (!mapping.ok) return { ok: false, text: `没能从试读结果里找到消息：${mapping.problem}` }
   const found = messagesOf({ items: mapping.items, map: mapping.map }, sample, { strict: true })
-  if (!found.ok) return { ok: false, text: `字段对不上试读结果：${found.problem}。可以换个参数或换个工具再试。` }
+  if (!found.ok) return { ok: false, text: `试读结果用不了：${problemText(found.problem)}。可以换个参数或换个工具再试。` }
   if (!found.messages.length) return { ok: false, text: '试读成功，但现在没有消息，没法确认字段。等有消息时再试一次。' }
   const draft: SourceDraft = {
     name: mapping.name, tool: tool.name, args, decode, items: mapping.items, map: mapping.map, judge: mapping.judge,
@@ -50,7 +64,7 @@ export async function previewSource({ request, tool, args, call, complete, judge
   return {
     ok: true,
     draft,
-    seen: [...new Set(found.messages.map((message) => message.key))].slice(0, MAX_SEEN),
+    seen: [...new Set(found.messages.map((message) => message.key))],
     judged: shown.map((message) => ({ message, decision: decisions.get(message.key) ?? { push: false, reason: '' } })),
     total: found.messages.length,
   }

@@ -3,7 +3,7 @@
  * user confirmed, each with a stable key. Everything here is pure.
  */
 import crypto from 'node:crypto'
-import { MAX_BODY, MAX_KEY, MAX_TITLE, type Decode, type Json, type SourceMap } from '../../../src/shared/sources-channel.ts'
+import { MAX_BODY, MAX_KEY, MAX_SEEN, MAX_TITLE, type Decode, type Json, type SourceError, type SourceMap } from '../../../src/shared/sources-channel.ts'
 
 /** One message as 动态 and the judging model see it. */
 export interface Message { key: string, title: string, body: string, link: string, time: string }
@@ -71,21 +71,24 @@ const linkOf = (value: unknown): string => {
   return /^https?:\/\//i.test(text) ? text : ''
 }
 
-export type Found = { ok: true, messages: Message[] } | { ok: false, problem: string }
+export type Found = { ok: true, messages: Message[] } | { ok: false, problem: SourceError }
 
 /**
  * The messages in a decoded result. Strict (a source being confirmed): every message must have its key and title
  * where the paths say. Otherwise a message without a title is left out and one without a key is known by its text.
+ * A list longer than MAX_SEEN is refused: what a source lists must fit in the keys it remembers, or old messages
+ * would come back as new.
  */
 export function messagesOf(spec: { items: string, map: SourceMap }, decoded: unknown, { strict = false } = {}): Found {
   const list = at(decoded, spec.items)
-  if (!Array.isArray(list)) return { ok: false, problem: `${spec.items} 不是一个列表` }
+  if (!Array.isArray(list)) return { ok: false, problem: { code: 'not-a-list', detail: spec.items } }
+  if (list.length > MAX_SEEN) return { ok: false, problem: { code: 'too-many', detail: String(list.length) } }
   const messages: Message[] = []
   for (const item of list) {
     const title = textOf(at(item, spec.map.title)).trim().slice(0, MAX_TITLE)
     const rawKey = at(item, spec.map.key)
     if (strict && (!title || textOf(rawKey).trim() === '')) {
-      return { ok: false, problem: `有的消息在 ${title ? spec.map.key : spec.map.title} 找不到值` }
+      return { ok: false, problem: { code: 'missing-field', detail: title ? spec.map.key : spec.map.title } }
     }
     if (!title) continue
     const time = spec.map.time ? textOf(at(item, spec.map.time)).trim() : ''

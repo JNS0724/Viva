@@ -14,6 +14,14 @@ export type Json = string | number | boolean | null | Json[] | { [key: string]: 
 /** How a tool's result becomes data: the value as it is (a dsh plugin's tool), MCP's structuredContent, or MCP text holding JSON. */
 export type Decode = 'value' | 'structured' | 'json-text'
 
+/**
+ * Why a check failed, as a code the app says in the window's language (main.sources.error.*), with the detail that
+ * is not words of ours: the tool's own message, a path, a name, a count.
+ */
+export const SOURCE_ERRORS = ['no-result', 'unknown-tool', 'tool', 'not-a-list', 'missing-field', 'too-many', 'no-judgement', 'timeout', 'failed'] as const
+export type SourceErrorCode = typeof SOURCE_ERRORS[number]
+export interface SourceError { code: SourceErrorCode, detail: string }
+
 /** Where each part of one message is, as `$.a.b` paths from the message; key and title always. */
 export interface SourceMap { key: string, title: string, body: string | null, link: string | null, time: string | null }
 
@@ -55,7 +63,7 @@ export type SourcesToApp =
   | { type: 'source_request', version: 1, id: string, op: 'add', draft: SourceDraft, seen: string[] }
   | { type: 'source_request', version: 1, id: string, op: 'remove', sourceId: string }
   | { type: 'source_checked', version: 1, sourceId: string, at: number, nextAt: number, ok: true, items: CheckedItem[], seen: string[] }
-  | { type: 'source_checked', version: 1, sourceId: string, at: number, nextAt: number, ok: false, error: string }
+  | { type: 'source_checked', version: 1, sourceId: string, at: number, nextAt: number, ok: false, error: SourceError }
 
 export const MIN_EVERY_MINUTES = 5
 export const MAX_EVERY_MINUTES = 240
@@ -63,7 +71,7 @@ export const DEFAULT_EVERY_MINUTES = 15
 export const MAX_SOURCES = 20
 /** Keys remembered per source, newest kept: enough to know any message a tool still lists. */
 export const MAX_SEEN = 1000
-/** Messages one check reports at most; more are taken as seen without a reminder. */
+/** Messages one check reports at most; more are taken as seen without a reminder. A tool that lists more than MAX_SEEN at once fails the check (too-many): what it lists must fit in what is remembered. */
 export const MAX_ITEMS_PER_CHECK = 30
 export const MAX_KEY = 200
 export const MAX_NAME = 40
@@ -82,6 +90,10 @@ const DECODES: ReadonlySet<string> = new Set(['value', 'structured', 'json-text'
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 const text = (value: unknown, max: number): string | null => (typeof value === 'string' && value.length <= max ? value : null)
 const shortText = (value: unknown, max: number) => (typeof value === 'string' ? value.slice(0, max) : '')
+const sourceErrorOf = (value: unknown): SourceError | null =>
+  (record(value) && (SOURCE_ERRORS as readonly unknown[]).includes(value.code)
+    ? { code: value.code as SourceErrorCode, detail: shortText(value.detail, MAX_TEXT) }
+    : null)
 const time = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null)
 
 /** A path into a message or a result: `$` or `$.a.b`. */
@@ -181,7 +193,10 @@ export function sourcesToAppOf(message: unknown): SourcesToApp | null {
   const nextAt = time(message.nextAt)
   if (at === null || nextAt === null) return null
   const base = { type: 'source_checked', version: 1, sourceId: message.sourceId, at, nextAt } as const
-  if (message.ok === false) return { ...base, ok: false, error: shortText(message.error, MAX_TEXT) }
+  if (message.ok === false) {
+    const error = sourceErrorOf(message.error)
+    return error ? { ...base, ok: false, error } : null
+  }
   if (message.ok !== true || !Array.isArray(message.items) || message.items.length > MAX_ITEMS_PER_CHECK) return null
   const items: CheckedItem[] = []
   for (const raw of message.items) {

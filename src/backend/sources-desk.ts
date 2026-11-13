@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { sourcesToAppOf, type CheckedItem } from '../shared/sources-channel.ts'
+import { sourcesToAppOf, type CheckedItem, type SourceError } from '../shared/sources-channel.ts'
 import type { SourceStore, StoredSource } from './message-sources.ts'
 
 /**
@@ -46,6 +46,9 @@ export const viewOf = (source: StoredSource, status: SourceStatus): SourceView =
   lastCheckedAt: source.lastCheckedAt,
   status,
 })
+
+/** Why a check failed, in the window's language. */
+export const sourceErrorText = ({ code, detail }: SourceError) => t(`main.sources.error.${code}`, { detail })
 
 /**
  * Third-party text as plain text in 动态's Markdown: every ASCII punctuation mark escaped (CommonMark lets each be,
@@ -125,7 +128,7 @@ export function createSourcesDesk({ send, store, deliver, onChange, now = Date.n
     const source = sources?.list().find((item) => item.id === message.sourceId)
     if (!sources || !source) return undefined
     if (!message.ok) {
-      statuses.set(source.id, { ...statusOf(source.id), checkedAt: now(), nextAt: message.nextAt, error: message.error || t('main.sources.check.failed') })
+      statuses.set(source.id, { ...statusOf(source.id), checkedAt: now(), nextAt: message.nextAt, error: sourceErrorText(message.error) })
       return onChange()
     }
     // Remembered before delivering. If it cannot be (a full disk, a locked file), the reminders still go to 动态, which

@@ -48,8 +48,10 @@ test('the channel takes only well-formed messages, each way', () => {
     { type: 'source_request', version: 1, id: 'r2', op: 'remove', sourceId: 'src-1' })
   const checked = { type: 'source_checked', version: 1, sourceId: 'src-1', at: 10, nextAt: 20, ok: true, items: [{ key: 'k', title: ' 周五评审 ', body: 'b', link: '', push: true, reason: '时间' }], seen: [] }
   assert.deepEqual(sourcesToAppOf(checked), { ...checked, items: [{ key: 'k', title: '周五评审', body: 'b', link: '', push: true, reason: '时间' }] })
-  assert.deepEqual(sourcesToAppOf({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 10, nextAt: 20, ok: false, error: 'x'.repeat(5000) }),
-    { type: 'source_checked', version: 1, sourceId: 'src-1', at: 10, nextAt: 20, ok: false, error: 'x'.repeat(4000) })
+  assert.deepEqual(sourcesToAppOf({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 10, nextAt: 20, ok: false, error: { code: 'tool', detail: 'x'.repeat(5000) } }),
+    { type: 'source_checked', version: 1, sourceId: 'src-1', at: 10, nextAt: 20, ok: false, error: { code: 'tool', detail: 'x'.repeat(4000) } })
+  assert.equal(sourcesToAppOf({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 10, nextAt: 20, ok: false, error: '找不到工具' }), null, 'a failure is a code, not words')
+  assert.equal(sourcesToAppOf({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 10, nextAt: 20, ok: false, error: { code: 'nope', detail: '' } }), null)
   for (const bad of [
     null,
     { type: 'sources_ready', version: 2 },
@@ -167,8 +169,10 @@ test('a check that went through remembers every key, delivers only what is pushe
   assert.equal(store.list()[0].lastCheckedAt, 4000)
   assert.deepEqual(delivered, [{ source: 'src-1', items: [items[0]] }])
   assert.deepEqual(desk.views()[0].status, { checkedAt: 5000, nextAt: 9000, fresh: 2, pushed: 1, error: '' })
-  desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 6000, nextAt: 12000, ok: false, error: '找不到工具' })
-  assert.deepEqual(desk.views()[0].status, { checkedAt: 5000, nextAt: 12000, fresh: 2, pushed: 1, error: '找不到工具' })
+  desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 6000, nextAt: 12000, ok: false, error: { code: 'unknown-tool', detail: 'mcp__mail__search' } })
+  const said = t('main.sources.error.unknown-tool', { detail: 'mcp__mail__search' })
+  assert.ok(said.includes('mcp__mail__search') && !said.includes('{detail}'))
+  assert.deepEqual(desk.views()[0].status, { checkedAt: 5000, nextAt: 12000, fresh: 2, pushed: 1, error: said }, 'said in the window\'s language')
   assert.equal(store.list()[0].lastCheckedAt, 4000, 'a failed check does not move the time new messages are read from')
   desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-404', at: 1, nextAt: 2, ok: true, items, seen: [] })
   assert.equal(delivered.length, 1, 'a check of a source no longer kept is dropped')
