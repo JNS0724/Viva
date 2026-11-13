@@ -6,7 +6,7 @@ import { apply } from '../plugins/sources/index.ts'
 import { candidacy } from '../plugins/sources/lib/candidates.ts'
 import { judgePrompt, parseJudgement, parseMapping } from '../plugins/sources/lib/prompts.ts'
 import { previewSource } from '../plugins/sources/lib/preview.ts'
-import { backoffMinutes, createRunner } from '../plugins/sources/lib/runner.ts'
+import { WAKE_TICK_MS, backoffMinutes, createRunner } from '../plugins/sources/lib/runner.ts'
 import { decodeResult, fill, guessDecode, messagesOf, normalizeKey } from '../plugins/sources/lib/spec.ts'
 import { MAX_ITEMS_PER_CHECK, MAX_KEY, MAX_SEEN, sourcesToAppOf, type SourceSpec } from '../src/shared/sources-channel.ts'
 
@@ -139,6 +139,24 @@ test('more new messages than a check judges are taken as seen without a reminder
   await runner.check('src-1')
   assert.equal(reports[0].items.length, MAX_ITEMS_PER_CHECK)
   assert.deepEqual(reports[0].seen, ['m30', 'm31', 'm32'])
+})
+
+test('a timer looks at the clock every minute, so a check due while the computer slept is made soon after it wakes', async () => {
+  const { runner, calls, live, advance } = runnerSetup()
+  runner.set([{ ...SPEC, seen: [] }])
+  await runner.check('src-1')
+  const [first] = live()
+  assert.equal(first.at, 1_000_000 + WAKE_TICK_MS, 'the next check is 15 minutes off, the timer a minute')
+  advance(WAKE_TICK_MS)
+  first.run()
+  assert.equal(calls.length, 1, 'not due yet: no check')
+  const again = live().at(-1)!
+  assert.notEqual(again, first, 'and it looks again')
+  assert.equal(again.at, 1_000_000 + 2 * WAKE_TICK_MS)
+  advance(4 * 60 * 60_000) // asleep: the timer did not run meanwhile
+  again.run()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls.length, 2, 'awake and overdue: checked at once')
 })
 
 test('a check that finds more than the channel carries still reports, and leaves the rest for a later check', async () => {

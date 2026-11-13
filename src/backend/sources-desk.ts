@@ -128,8 +128,14 @@ export function createSourcesDesk({ send, store, deliver, onChange, now = Date.n
       statuses.set(source.id, { ...statusOf(source.id), checkedAt: now(), nextAt: message.nextAt, error: message.error || t('main.sources.check.failed') })
       return onChange()
     }
-    // Remembered before delivering: a message pushed is never pushed twice, even if the window is not told.
-    const kept = sources.recordCheck(source.id, message.at, [...message.seen, ...message.items.map((item) => item.key)])
+    // Remembered before delivering. If it cannot be (a full disk, a locked file), the reminders still go to 动态, which
+    // keeps one item per source and key: the next check may judge them again, but nothing is pushed twice.
+    let kept: StoredSource | null = source
+    try {
+      kept = sources.recordCheck(source.id, message.at, [...message.seen, ...message.items.map((item) => item.key)])
+    } catch (err) {
+      console.error('[sources] could not remember a check:', err instanceof Error ? err.message : String(err))
+    }
     const pushed = message.items.filter((item) => item.push)
     statuses.set(source.id, { checkedAt: now(), nextAt: message.nextAt, fresh: message.items.length, pushed: pushed.length, error: '' })
     if (kept && pushed.length) {

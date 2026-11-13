@@ -174,6 +174,23 @@ test('a check that went through remembers every key, delivers only what is pushe
   assert.equal(delivered.length, 1, 'a check of a source no longer kept is dropped')
 })
 
+test('a check that cannot be remembered (a full disk) still delivers its reminders, and the app keeps running', (t) => {
+  const { delivered, store } = deskSetup()
+  store.add(DRAFT, [])
+  const errors = t.mock.method(console, 'error', () => {})
+  const desk = createSourcesDesk({
+    send: () => {},
+    store: () => ({ ...store, recordCheck: () => { throw new Error('ENOSPC') } }),
+    deliver: (source, items) => delivered.push({ source: source.id, items }),
+    onChange: () => {},
+    now: () => 5000,
+  })
+  const items = [{ key: 'a1@example.test', title: '周五评审改到 15:00', body: '', link: '', push: true, reason: '时间' }]
+  assert.doesNotThrow(() => desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 4000, nextAt: 9000, ok: true, items, seen: [] }))
+  assert.deepEqual(delivered, [{ source: 'src-1', items }])
+  assert.equal(errors.mock.callCount(), 1)
+})
+
 test('pause and delete from the window reach the plugin; the view leaves out seen keys and the model', () => {
   const { sent, desk, store, changes } = deskSetup()
   store.add(DRAFT, ['old'])

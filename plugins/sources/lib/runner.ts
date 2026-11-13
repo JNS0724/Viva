@@ -15,6 +15,8 @@ const MAX_BACKOFF_MINUTES = 60
 const START_SPREAD_MS = 25_000
 const START_DELAY_MS = 5_000
 const CHECK_TIMEOUT_MS = 2 * MINUTE
+/** The longest a timer waits before looking at the clock again (see wake). */
+export const WAKE_TICK_MS = MINUTE
 
 export type CallResult = { ok: true, value: unknown } | { ok: false, error: string }
 
@@ -74,7 +76,20 @@ export function createRunner({
       ? now() + backoffMinutes(everyMinutes, state.failures) * MINUTE
       : (lastCheckedAt ?? createdAt) + everyMinutes * MINUTE
     const wait = Math.max(due - now(), state.failures ? 0 : startDelayMs + Math.floor(random() * startSpreadMs))
-    state.timer = setTimer(() => { state.timer = null; void check(state) }, wait)
+    wake(state, now() + wait)
+  }
+
+  /**
+   * Check at `at` by the wall clock. The timer waits at most WAKE_TICK_MS at a time: on macOS a timer does not run on
+   * while the computer sleeps, so a check due during the night is made within a minute of waking, not hours later.
+   */
+  function wake(state: Running, at: number) {
+    state.timer = setTimer(() => {
+      state.timer = null
+      if (disposed || state.spec.paused) return
+      if (now() >= at) void check(state)
+      else wake(state, at)
+    }, Math.min(Math.max(at - now(), 0), WAKE_TICK_MS))
   }
 
   function finish(state: Running, message: object) {
