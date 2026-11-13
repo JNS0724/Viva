@@ -96,6 +96,15 @@ const sourceErrorOf = (value: unknown): SourceError | null =>
     : null)
 const time = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null)
 
+/**
+ * The newest MAX_SEEN of what was seen before and now, each once, oldest first; a key seen again is newest again, so
+ * whatever a source still lists is kept. The app's store and the plugin's runner both keep their keys this way.
+ */
+export function mergeSeen(before: readonly string[], now: readonly string[]): string[] {
+  const fresh = new Set(now)
+  return [...before.filter((key) => !fresh.has(key)), ...fresh].slice(-MAX_SEEN)
+}
+
 /** A path into a message or a result: `$` or `$.a.b`. */
 export const isPath = (value: unknown): value is string => typeof value === 'string' && value.length <= MAX_PATH && PATH.test(value)
 const pathOrNull = (value: unknown): string | null | undefined => (value === null ? null : isPath(value) ? value : undefined)

@@ -1,7 +1,9 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import { t } from '../shared/i18n/translate.ts'
-import { MAX_SEEN, MAX_SOURCES, specOf, type SourceDraft, type SourceSpec } from '../shared/sources-channel.ts'
+import { MAX_SEEN, MAX_SOURCES, mergeSeen, specOf, type SourceDraft, type SourceSpec } from '../shared/sources-channel.ts'
+
+export { mergeSeen }
 
 /**
  * The user's 消息源 (docs/system-design.md §12.2, shared/sources-channel.ts), kept in message-sources.json beside
@@ -21,13 +23,6 @@ export interface SourceStore {
   setPaused(id: string, paused: boolean): StoredSource | null
   /** A check went through: when it started, and the keys it saw. */
   recordCheck(id: string, at: number, keys: readonly string[]): StoredSource | null
-}
-
-/** The newest `MAX_SEEN` of what was seen before and now, each once, oldest first. */
-export function mergeSeen(before: readonly string[], now: readonly string[]): string[] {
-  const fresh = [...new Set(now)]
-  const kept = before.filter((key) => !fresh.includes(key))
-  return [...kept, ...fresh].slice(-MAX_SEEN)
 }
 
 export function createSourceStore({ file, onError = () => {}, now = Date.now, newId = () => `src-${crypto.randomBytes(4).toString('hex')}` }: {

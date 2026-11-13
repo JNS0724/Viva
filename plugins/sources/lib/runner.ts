@@ -4,7 +4,7 @@
  * confirmed tool, finds the messages it has not seen, has them judged, and reports them all; what it reports is
  * remembered as seen, so nothing is judged or pushed twice.
  */
-import { MAX_ITEMS_PER_CHECK, type CheckedItem, type Json, type SourceError, type SourceSpec } from '../../../src/shared/sources-channel.ts'
+import { MAX_ITEMS_PER_CHECK, mergeSeen, type CheckedItem, type Json, type SourceError, type SourceSpec } from '../../../src/shared/sources-channel.ts'
 import type { Decision } from './prompts.ts'
 import { decodeResult, fill, messagesOf, type Message } from './spec.ts'
 
@@ -102,7 +102,7 @@ export function createRunner({
   }
 
   function finish(state: Running, message: object) {
-    if (sources.get(state.spec.id) !== state || disposed) return
+    if (sources.get(state.spec.id) !== state || disposed || state.spec.paused) return
     report(message)
     schedule(state)
   }
@@ -132,15 +132,21 @@ export function createRunner({
     try {
       const last = new Date(spec.lastCheckedAt ?? spec.createdAt).toISOString()
       const result = await call(spec.tool, fill(spec.args, last), signal)
+      // Paused or gone meanwhile (a tool may not heed the signal): nothing more.
+      if (controller.signal.aborted) return undefined
       if (!result.ok) return fail(state, startedAt, result.error)
       const found = messagesOf(spec, decodeResult(spec.decode, result.value))
       if (!found.ok) return fail(state, startedAt, found.problem)
       const fresh = [...new Map(found.messages.filter((message) => !state.seen.has(message.key)).map((message) => [message.key, message])).values()]
       const judged = fresh.slice(0, MAX_ITEMS_PER_CHECK)
-      // The rest are taken as seen (a listing is at most MAX_SEEN, so they fit in what the app keeps).
-      const passed = fresh.slice(MAX_ITEMS_PER_CHECK).map((message) => message.key)
       const decisions = judged.length ? await judge(spec, judged, signal) : new Map<string, Decision>()
-      for (const message of fresh) state.seen.add(message.key)
+      if (controller.signal.aborted) return undefined
+      // Every key listed now is seen (the rest of what is new without a reminder) and newest again, so what the tool
+      // still lists is never pushed out by what it no longer does. A listing is at most MAX_SEEN, so it all fits.
+      const listed = [...new Set(found.messages.map((message) => message.key))]
+      const judgedKeys = new Set(judged.map((message) => message.key))
+      const passed = listed.filter((key) => !judgedKeys.has(key))
+      state.seen = new Set(mergeSeen([...state.seen], listed))
       state.failures = 0
       state.spec = { ...state.spec, lastCheckedAt: startedAt }
       const nextAt = now() + spec.everyMinutes * MINUTE
@@ -157,9 +163,11 @@ export function createRunner({
   }
 
   function update(held: Running, spec: SourceSpec, seen: readonly string[]) {
-    for (const key of seen) held.seen.add(key)
+    held.seen = new Set(mergeSeen([...held.seen], seen))
     const lastCheckedAt = Math.max(held.spec.lastCheckedAt ?? 0, spec.lastCheckedAt ?? 0) || null
     held.spec = { ...spec, lastCheckedAt }
+    // Paused: a check under way stops where it is, before any more model work or a reminder.
+    if (spec.paused) stop(held)
     const fingerprint = fingerprintOf(spec)
     if (held.fingerprint === fingerprint && (held.timer !== null || held.busy)) return
     held.fingerprint = fingerprint

@@ -6,9 +6,9 @@ import { apply } from '../plugins/sources/index.ts'
 import { candidacy } from '../plugins/sources/lib/candidates.ts'
 import { judgePrompt, parseJudgement, parseMapping } from '../plugins/sources/lib/prompts.ts'
 import { previewSource } from '../plugins/sources/lib/preview.ts'
-import { WAKE_TICK_MS, backoffMinutes, createRunner } from '../plugins/sources/lib/runner.ts'
+import { WAKE_TICK_MS, backoffMinutes, createRunner, type CallResult } from '../plugins/sources/lib/runner.ts'
 import { decodeResult, fill, guessDecode, messagesOf, normalizeKey } from '../plugins/sources/lib/spec.ts'
-import { MAX_ITEMS_PER_CHECK, MAX_KEY, MAX_SEEN, sourcesToAppOf, type SourceError, type SourceSpec } from '../src/shared/sources-channel.ts'
+import { MAX_ITEMS_PER_CHECK, MAX_KEY, MAX_SEEN, mergeSeen, sourcesToAppOf, type SourceError, type SourceSpec } from '../src/shared/sources-channel.ts'
 
 /** viva-sources (plugins/sources): reading a result, the two model calls, the timer, the preview, the plugin's tools. Synthetic data only. */
 
@@ -171,6 +171,43 @@ test('a tool that lists more than the app remembers fails the check, so old mess
   await full.runner.check('src-1')
   assert.equal(full.reports[0].seen.length, MAX_SEEN - MAX_ITEMS_PER_CHECK)
   assert.notEqual(sourcesToAppOf(full.reports[0]), null, 'a listing that fits reaches the app whole')
+})
+
+test('what a tool still lists stays seen, and what it no longer lists is let go, so the keys stay bounded', async () => {
+  const listing = (prefix: string, length = MAX_SEEN) => Array.from({ length }, (_, i) => ({ id: `${prefix}${i}`, subject: `消息 ${prefix}${i}`, preview: '', date: '', url: '' }))
+  const before = listing('a').map((message) => message.id)
+  const { runner, reports, judged, setInbox } = runnerSetup({ inbox: [{ id: 'new', subject: '新消息', preview: '', date: '', url: '' }, ...listing('a', MAX_SEEN - 1)] })
+  runner.set([{ ...SPEC, seen: before }])
+  await runner.check('src-1')
+  assert.deepEqual(judged, [['new']])
+  const kept = mergeSeen(before, [...reports[0].seen, ...reports[0].items.map((item: { key: string }) => item.key)])
+  assert.equal(kept.length, MAX_SEEN)
+  assert.ok(kept.includes('a0') && kept.includes('new') && !kept.includes(`a${MAX_SEEN - 1}`), 'the one no longer listed goes, not one still listed')
+  setInbox(listing('b'))
+  await runner.check('src-1')
+  setInbox(listing('a', 1))
+  await runner.check('src-1')
+  assert.deepEqual(judged.at(-1), ['a0'], 'the runner holds no more than MAX_SEEN keys either')
+})
+
+test('pausing a source while it is being checked stops the check before judging or a reminder', async () => {
+  let release: (value: CallResult) => void = () => {}
+  const reports: object[] = []
+  let judges = 0
+  const runner = createRunner({
+    call: () => new Promise<CallResult>((resolve) => { release = resolve }),
+    judge: async () => { judges++; return new Map() },
+    report: (message) => reports.push(message),
+    setTimer: () => ({}),
+    clearTimer: () => {},
+  })
+  runner.set([{ ...SPEC, seen: [] }])
+  const checking = runner.check('src-1')
+  runner.set([{ ...SPEC, paused: true, seen: [] }])
+  release({ ok: true, value: jsonText({ results: MAIL }) })
+  await checking
+  assert.equal(judges, 0)
+  assert.deepEqual(reports, [])
 })
 
 test('a failing check is tried again later and later, and a source paused or gone stops', async () => {
