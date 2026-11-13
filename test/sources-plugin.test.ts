@@ -25,6 +25,7 @@ test('a result reads as MCP structured content, MCP text holding JSON, or a plug
   assert.equal(guessDecode({ messages: MAIL }), 'value')
   assert.equal(guessDecode({ content: [{ type: 'text', text: '1. [08:00] Alice\n   Subject: 周五评审' }] }), null)
   assert.equal(guessDecode('plain'), null)
+  assert.equal(guessDecode({ content: [{ id: 'm1', title: '新工单' }] }), 'value', 'a plugin\'s own content list is not an MCP result')
   assert.deepEqual(decodeResult('json-text', jsonText({ results: MAIL })), { results: MAIL })
   assert.deepEqual(decodeResult('structured', { structuredContent: { messages: MAIL } }), { messages: MAIL })
 })
@@ -228,6 +229,17 @@ test('a source paused and turned back on while it was being checked keeps checki
   await checking
   assert.equal(timers.filter((timer) => timer.live).length, 1, 'its next check is on the clock')
   runner.dispose()
+})
+
+test('the next check a report names is the one on the clock, however long the check took', async () => {
+  const { runner, reports, live, advance } = runnerSetup()
+  runner.set([{ ...SPEC, seen: [] }])
+  const checking = runner.check('src-1')
+  advance(90_000)
+  await checking
+  const due = 1_000_000 + 15 * 60_000
+  assert.equal(reports[0].nextAt, due)
+  assert.equal(live().at(-1)!.at, 1_000_000 + 90_000 + WAKE_TICK_MS, 'the timer looks again in a minute, toward that deadline')
 })
 
 test('a failing check is tried again later and later, and a source paused or gone stops', async () => {

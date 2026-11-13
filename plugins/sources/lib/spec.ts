@@ -27,13 +27,18 @@ function parsedJson(text: string | null): unknown {
   }
 }
 
+/** MCP's result shape: content blocks, each with its type. A plugin's own `{ content: [...] }` is a value. */
+const isMcpResult = (value: unknown): boolean =>
+  record(value) && Array.isArray(value.content) && value.content.length > 0
+  && value.content.every((block) => record(block) && typeof block.type === 'string')
+
 /**
  * How a result is best read: MCP's structuredContent, MCP text that is JSON, or a plugin's value as it is. Null for
  * text that is not JSON (a digest written for people): the first version does not read those.
  */
 export function guessDecode(value: unknown): Decode | null {
   if (record(value) && record(value.structuredContent)) return 'structured'
-  if (record(value) && Array.isArray(value.content)) return parsedJson(textBlock(value)) === undefined ? null : 'json-text'
+  if (isMcpResult(value)) return parsedJson(textBlock(value)) === undefined ? null : 'json-text'
   return value !== null && typeof value === 'object' ? 'value' : null
 }
 

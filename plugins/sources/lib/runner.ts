@@ -76,16 +76,19 @@ export function createRunner({
     state.controller?.abort()
   }
 
-  function schedule(state: Running) {
+  /** Puts the source's next check on the clock; when that is, or null for none. */
+  function schedule(state: Running): number | null {
     if (state.timer !== null) clearTimer(state.timer)
     state.timer = null
-    if (disposed || state.spec.paused) return
+    if (disposed || state.spec.paused) return null
     const { everyMinutes, lastCheckedAt, createdAt } = state.spec
     const due = state.failures
       ? now() + backoffMinutes(everyMinutes, state.failures) * MINUTE
       : (lastCheckedAt ?? createdAt) + everyMinutes * MINUTE
     const wait = Math.max(due - now(), state.failures ? 0 : startDelayMs + Math.floor(random() * startSpreadMs))
-    wake(state, now() + wait)
+    const at = now() + wait
+    wake(state, at)
+    return at
   }
 
   /**
@@ -101,17 +104,16 @@ export function createRunner({
     }, Math.min(Math.max(at - now(), 0), WAKE_TICK_MS))
   }
 
-  function finish(state: Running, message: object) {
+  /** Schedules the next check and reports this one with when that is: one deadline, as the timer has it. */
+  function finish(state: Running, message: (nextAt: number) => object) {
     if (sources.get(state.spec.id) !== state || disposed || state.spec.paused) return
-    report(message)
-    schedule(state)
+    report(message(schedule(state) ?? now()))
   }
 
   function fail(state: Running, startedAt: number, error: SourceError) {
     state.failures += 1
-    const nextAt = now() + backoffMinutes(state.spec.everyMinutes, state.failures) * MINUTE
     log(`source "${state.spec.name}" check failed: ${error.code}${error.detail ? ` ${error.detail}` : ''}`)
-    finish(state, { type: 'source_checked', version: 1, sourceId: state.spec.id, at: startedAt, nextAt, ok: false, error })
+    finish(state, (nextAt) => ({ type: 'source_checked', version: 1, sourceId: state.spec.id, at: startedAt, nextAt, ok: false, error }))
   }
 
   function judgedItems(judged: readonly Message[], decisions: Map<string, Decision>): CheckedItem[] {
@@ -149,8 +151,7 @@ export function createRunner({
       state.seen = new Set(mergeSeen([...state.seen], listed))
       state.failures = 0
       state.spec = { ...state.spec, lastCheckedAt: startedAt }
-      const nextAt = now() + spec.everyMinutes * MINUTE
-      return finish(state, { type: 'source_checked', version: 1, sourceId: spec.id, at: startedAt, nextAt, ok: true, items: judgedItems(judged, decisions), seen: passed })
+      return finish(state, (nextAt) => ({ type: 'source_checked', version: 1, sourceId: spec.id, at: startedAt, nextAt, ok: true, items: judgedItems(judged, decisions), seen: passed }))
     } catch (err) {
       if (controller.signal.aborted) return undefined
       if (err instanceof SourceFailure) return fail(state, startedAt, err.error)
