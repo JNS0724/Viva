@@ -8,6 +8,7 @@ import { createSourceStore, mergeSeen } from '../src/backend/message-sources.ts'
 import { createSourcesDesk, plainMarkdown, sourceItemBody } from '../src/backend/sources-desk.ts'
 import { t } from '../src/shared/i18n/translate.ts'
 import { Lexer, type Token } from 'marked'
+import { getLocale, setLocale } from '../src/shared/i18n/locale.ts'
 
 /** 消息源 on the app's side: the channel to viva-sources, the store, and the desk that answers and delivers. Synthetic data only. */
 
@@ -193,6 +194,18 @@ test('a check that cannot be remembered (a full disk) still delivers its reminde
   assert.doesNotThrow(() => desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 4000, nextAt: 9000, ok: true, items, seen: [] }))
   assert.deepEqual(delivered, [{ source: 'src-1', items }])
   assert.equal(errors.mock.callCount(), 1)
+})
+
+test('why a check failed is said in the language the window has now', (t) => {
+  const { desk, store } = deskSetup()
+  store.add(DRAFT, [])
+  const was = getLocale()
+  t.after(() => setLocale(was))
+  setLocale('zh-CN')
+  desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 1, nextAt: 2, ok: false, error: { code: 'timeout', detail: '' } })
+  assert.equal(desk.views()[0].status.error, '检查超时了。')
+  setLocale('en')
+  assert.equal(desk.views()[0].status.error, 'The check timed out.')
 })
 
 test('pause and delete from the window reach the plugin; the view leaves out seen keys and the model', () => {

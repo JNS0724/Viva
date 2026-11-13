@@ -159,6 +159,8 @@ export function createRunner({
     } finally {
       state.busy = false
       state.controller = null
+      // A check cancelled by a pause that was undone meanwhile leaves the source on with no timer: give it one.
+      if (!disposed && sources.get(state.spec.id) === state && !state.spec.paused && state.timer === null) schedule(state)
     }
   }
 

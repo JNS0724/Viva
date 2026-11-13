@@ -210,6 +210,26 @@ test('pausing a source while it is being checked stops the check before judging 
   assert.deepEqual(reports, [])
 })
 
+test('a source paused and turned back on while it was being checked keeps checking', async () => {
+  let release: (value: CallResult) => void = () => {}
+  const timers: Array<{ live: boolean }> = []
+  const runner = createRunner({
+    call: () => new Promise<CallResult>((resolve) => { release = resolve }),
+    judge: async () => new Map(),
+    report: () => {},
+    setTimer: () => { const timer = { live: true }; timers.push(timer); return timer },
+    clearTimer: (timer) => { (timer as { live: boolean }).live = false },
+  })
+  runner.set([{ ...SPEC, seen: [] }])
+  const checking = runner.check('src-1')
+  runner.set([{ ...SPEC, paused: true, seen: [] }])
+  runner.set([{ ...SPEC, seen: [] }])
+  release({ ok: true, value: jsonText({ results: MAIL }) })
+  await checking
+  assert.equal(timers.filter((timer) => timer.live).length, 1, 'its next check is on the clock')
+  runner.dispose()
+})
+
 test('a failing check is tried again later and later, and a source paused or gone stops', async () => {
   assert.deepEqual([1, 2, 3, 4].map((failures) => backoffMinutes(15, failures)), [30, 60, 60, 60])
   assert.equal(backoffMinutes(120, 3), 120, 'never sooner than its own pace')

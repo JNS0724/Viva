@@ -87,10 +87,13 @@ export function createSourcesDesk({ send, store, deliver, onChange, now = Date.n
   onChange: () => void
   now?: () => number
 }) {
-  const statuses = new Map<string, SourceStatus>()
+  // The error is kept as its code and said when the window reads it, so a change of language reaches it too.
+  type Held = Omit<SourceStatus, 'error'> & { error: SourceError | null }
+  const statuses = new Map<string, Held>()
   const push = () => send({ type: 'sources_set', version: 1, sources: store()?.list() ?? [] })
   const reply = (id: string, ok: boolean, text: string) => send({ type: 'source_reply', version: 1, id, ok, text })
-  const statusOf = (id: string) => statuses.get(id) ?? NO_SOURCE_STATUS
+  const statusOf = (id: string): Held => statuses.get(id) ?? { ...NO_SOURCE_STATUS, error: null }
+  const shown = (held: Held): SourceStatus => ({ ...held, error: held.error ? sourceErrorText(held.error) : '' })
 
   function changed() {
     push()
@@ -128,7 +131,7 @@ export function createSourcesDesk({ send, store, deliver, onChange, now = Date.n
     const source = sources?.list().find((item) => item.id === message.sourceId)
     if (!sources || !source) return undefined
     if (!message.ok) {
-      statuses.set(source.id, { ...statusOf(source.id), checkedAt: now(), nextAt: message.nextAt, error: sourceErrorText(message.error) })
+      statuses.set(source.id, { ...statusOf(source.id), checkedAt: now(), nextAt: message.nextAt, error: message.error })
       return onChange()
     }
     // Remembered before delivering. If it cannot be (a full disk, a locked file), the reminders still go to 动态, which
@@ -140,7 +143,7 @@ export function createSourcesDesk({ send, store, deliver, onChange, now = Date.n
       console.error('[sources] could not remember a check:', err instanceof Error ? err.message : String(err))
     }
     const pushed = message.items.filter((item) => item.push)
-    statuses.set(source.id, { checkedAt: now(), nextAt: message.nextAt, fresh: message.items.length, pushed: pushed.length, error: '' })
+    statuses.set(source.id, { checkedAt: now(), nextAt: message.nextAt, fresh: message.items.length, pushed: pushed.length, error: null })
     if (kept && pushed.length) {
       try {
         deliver(kept, pushed)
@@ -168,6 +171,6 @@ export function createSourcesDesk({ send, store, deliver, onChange, now = Date.n
       remove(sources, id)
       changed()
     },
-    views: (): SourceView[] => (store()?.list() ?? []).map((source) => viewOf(source, statusOf(source.id))),
+    views: (): SourceView[] => (store()?.list() ?? []).map((source) => viewOf(source, shown(statusOf(source.id)))),
   }
 }

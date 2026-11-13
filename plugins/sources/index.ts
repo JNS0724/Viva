@@ -18,7 +18,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { BlockAssembler, createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
-  appToSourcesOf, MAX_EVERY_MINUTES, MAX_NAME, MIN_EVERY_MINUTES,
+  appToSourcesOf, draftOf, MAX_EVERY_MINUTES, MAX_NAME, MIN_EVERY_MINUTES,
   type Json, type SourceDraft, type SourceSpec,
 } from '../../src/shared/sources-channel.ts'
 import { candidacy } from './lib/candidates.ts'
@@ -84,6 +84,9 @@ function routeOf(agent: Agent | undefined): Route | null {
   const current = agent ? agent.model.current() ?? agent.options : null
   return current?.provider && current.model ? { provider: current.provider, model: current.model } : null
 }
+
+/** A draft the app would not take (draftOf in src/shared/sources-channel.ts), said to the model. */
+const OVER_LIMITS = '这个设置超出了消息源的限制（参数太长、路径或名字不合规），换一组更简单的参数再预览。'
 
 /** One tool called the way a source calls it: no agent, no turn, so only unconditional, global registrations. */
 async function callTool(ctx: Context, tool: string, args: Record<string, Json>, signal?: AbortSignal): Promise<CallResult> {
@@ -241,6 +244,7 @@ export function apply(ctx: Context, config: { startDelayMs?: number, startSpread
         route,
       })
       if (!preview.ok) return { text: preview.text }
+      if (!draftOf(preview.draft)) return { text: OVER_LIMITS }
       heldDraft(null)
       if (drafts.size >= MAX_DRAFTS) drafts.delete(drafts.keys().next().value!)
       const id = `d${crypto.randomBytes(4).toString('hex')}`
@@ -264,7 +268,9 @@ export function apply(ctx: Context, config: { startDelayMs?: number, startSpread
       const every = args.every_minutes ?? held.draft.everyMinutes
       if (!Number.isInteger(every) || every < MIN_EVERY_MINUTES || every > MAX_EVERY_MINUTES) return { text: `every_minutes 要在 ${MIN_EVERY_MINUTES} 到 ${MAX_EVERY_MINUTES} 之间。` }
       const label = args.name?.trim() ? args.name.trim().slice(0, MAX_NAME) : held.draft.name
-      const text = await requests.ask({ type: 'source_request', op: 'add', draft: { ...held.draft, name: label, everyMinutes: every }, seen: held.seen }, exec?.signal)
+      const draft = draftOf({ ...held.draft, name: label, everyMinutes: every })
+      if (!draft) return { text: OVER_LIMITS }
+      const text = await requests.ask({ type: 'source_request', op: 'add', draft, seen: held.seen }, exec?.signal)
       drafts.delete(args.draft)
       return { text: `${text}。之后的新消息经判断后会出现在动态里；在能力 · 消息源里可以暂停或删除。` }
     },
