@@ -80,7 +80,7 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
-  launch = null as object | null, routing,
+  launch = null as object | null, routing, onPluginMessage = null as ((message: unknown) => void) | null,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -105,6 +105,8 @@ export function createAcpBridge({
    * here as they are sent; the routing plugin's decisions and failures go to it (routing-channel.ts).
    */
   routing: RoutingHandlers,
+  /** Every message the app's plugins send, for a desk the app keeps across restarts (sources-desk.ts). */
+  onPluginMessage?: ((message: unknown) => void) | null,
 }) {
   const broker = createPermissionBroker()
   let child: ChildProcess | null = null
@@ -220,6 +222,7 @@ export function createAcpBridge({
       streams.receive(message)
       routingDesk.receive(message)
       mcpDesk.receive(message)
+      onPluginMessage?.(message)
     })
     proc.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
@@ -615,5 +618,5 @@ export function createAcpBridge({
   /** 重试 on a server that stopped trying. */
   const restartMcp = (name: string) => mcpDesk.restart(name)
 
-  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid }
+  return { applyMcp, restartMcp, sendToPlugins: toPlugins, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid }
 }

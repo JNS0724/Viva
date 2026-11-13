@@ -168,7 +168,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
     return memories !== null && invalidated !== null ? { type, memories, invalidated } : null
   }
   if (type === 'files_changed') return string(item.path) ? { type, path: item.path } : null
-  if (type === 'feed_changed' || type === 'schedules_changed') return { type }
+  if (type === 'feed_changed' || type === 'schedules_changed' || type === 'sources_changed') return { type }
   if (type === 'task_snapshot') { const parsed = snapshot(item.snapshot); return parsed ? { type, snapshot: parsed } : null }
   const task = string(item.taskId) && string(item.runId) && natural(item.taskSeq) ? { taskId: item.taskId, runId: item.runId, taskSeq: item.taskSeq } : null
   if (type === 'permission') {
@@ -202,7 +202,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, sources_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

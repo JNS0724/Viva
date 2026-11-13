@@ -40,6 +40,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-fork', {}],
     ['viva-plugins', {}],
     ['viva-mcp', {}],
+    ['viva-sources', {}],
     ['viva-permission', { preset: 'workspace-write' }],
   ])
   assert.deepEqual(plugins.find((plugin) => plugin.name === 'viva-questions')!.stock!.map((entry) => entry.name), ['@deepseek-ai/dsh-tool-ask-user'])

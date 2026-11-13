@@ -5,7 +5,23 @@
  */
 
 /** The page's tabs (capabilities-state.ts CAPABILITY_TABS). */
-export type CapabilityTab = 'skills' | 'mcp' | 'plugins'
+export type CapabilityTab = 'skills' | 'mcp' | 'plugins' | 'sources'
+
+/** How a message source stands since the app started (sources-desk.ts SourceStatus). */
+export interface SourceStatus { checkedAt: number | null, nextAt: number | null, fresh: number, pushed: number, error: string }
+
+/** A message source (sources-desk.ts SourceView): what it reads and how often, and how it stands. */
+export interface SourceView {
+  id: string
+  name: string
+  tool: string
+  judge: string
+  everyMinutes: number
+  paused: boolean
+  createdAt: number
+  lastCheckedAt: number | null
+  status: SourceStatus
+}
 
 /** Why dsh skips a skill (skill-spec.ts SkillIssue). */
 export type SkillIssueCode = 'frontmatter' | 'fields' | 'name-format' | 'invocation'

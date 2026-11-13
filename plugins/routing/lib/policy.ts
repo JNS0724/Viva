@@ -15,7 +15,7 @@ import { APP_OPERATIONS, parsePlan, type AppOperation } from '../../../src/share
 
 export const ROUTE_TOOL = 'commit_route'
 export const CONTEXT_TOOLS = Object.freeze(['search_conversations', 'read_conversation', 'memory_recall', 'list_background_tasks', 'get_background_task', 'read', 'glob', 'grep', 'read_image'] as const)
-export const APP_QUERY_TOOLS = Object.freeze(['schedule_list', 'viva_mcp_list', 'viva_skill_list'] as const)
+export const APP_QUERY_TOOLS = Object.freeze(['schedule_list', 'viva_mcp_list', 'viva_skill_list', 'viva_source_list', 'viva_source_candidates'] as const)
 
 export type ToolLayer = 'route' | 'context' | 'app-query' | 'app-change' | 'execution'
 

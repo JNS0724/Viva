@@ -148,6 +148,9 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   declineSchedule: (proposalId) => ipcRenderer.invoke('schedules:decline', proposalId),
   pauseSchedule: (id, paused) => ipcRenderer.invoke('schedules:pause', id, paused),
   deleteSchedule: (id) => ipcRenderer.invoke('schedules:delete', id),
+  listSources: () => ipcRenderer.invoke('sources:list'),
+  pauseSource: (id, paused) => ipcRenderer.invoke('sources:pause', id, paused),
+  deleteSource: (id) => ipcRenderer.invoke('sources:delete', id),
   listFeed: () => ipcRenderer.invoke('feed:list'),
   markFeedSeen: (id) => ipcRenderer.invoke('feed:seen', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */

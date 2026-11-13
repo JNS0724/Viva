@@ -26,7 +26,7 @@ export const DSH_TIMEOUT_MS = 60_000
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {{ memoryFile?: string, mcpServers?: object[], prewarmSessions?: boolean, allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object, imagesDir?: string, permission?: string, decideFirst?: ((request: never) => object | null) | null, tasks?: import('../../src/backend/request-runtime.ts').RequestTasks }} [options]
+ * @param {{ memoryFile?: string, mcpServers?: object[], prewarmSessions?: boolean, allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object, imagesDir?: string, permission?: string, decideFirst?: ((request: never) => object | null) | null, tasks?: import('../../src/backend/request-runtime.ts').RequestTasks, pluginConfig?: Record<string, object>, onPluginMessage?: (message: unknown) => void }} [options]
  *   memoryFile: where the memory plugin's store goes; mcpServers: declared on every session;
  *   allow: answer every approval request with "allow once" (otherwise they stay pending);
  *   imagesDir: Viva's pictures folder (dsh-profile.js), given the temporary directory; permission: the level picked (viva-permission);
@@ -36,7 +36,7 @@ export const DSH_TIMEOUT_MS = 60_000
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  * `requests` is the app's request runtime every bridge of the harness routes through (request-runtime.ts).
  */
-export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks } = {}) {
+export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks, pluginConfig = {}, onPluginMessage = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
@@ -45,7 +45,9 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
   const { plugins, problems } = resolvePlugins({ codeRoot: ROOT, userData, dshVersion: installedDshVersion(ROOT), permission })
   assert.deepEqual(problems, [], 'every app plugin passes the compatibility check')
   const file = memoryFile ?? path.join(userData, 'memory.db')
+  // pluginConfig: a plugin's config, by name, over the app's (viva-sources' start delay, in its runtime test).
   const withFile = plugins.map((plugin) => (plugin.name === 'viva-memory' ? { ...plugin, config: { file } } : plugin))
+    .map((plugin) => (pluginConfig[plugin.name] ? { ...plugin, config: { ...plugin.config, ...pluginConfig[plugin.name] } } : plugin))
   const llm = await startFakeLlm({ decideFirst })
   const requests = testRequests({ tasks })
   // As the app does at every launch (main.ts prepareProfile), with the pnpm the app ships for the plugin manager.
@@ -74,6 +76,7 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
       cwd: workspace,
       env: dshEnv({ base: process.env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, ...extraEnv } }),
       mcpServers: () => mcpServers,
+      onPluginMessage,
       prewarmSessions,
       configActions,
       emit: (event) => {

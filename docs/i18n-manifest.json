@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-10",
+  "reviewedOn": "2026-11-13",
   "pairs": [
     {
       "en": "README.md",
@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "c074186d4233b7fb7e6dd54983b30d680f8190568d7e90fb5ac9edea2bcb9747",
-      "zhHash": "2a10fe4e236782f9576c050ff764f8928b011767bbcc34cdfe8927577494fc87"
+      "enHash": "c4ac206c47fb38e11f9683d190affe39954b32ac12f8dc19d01e8b85740929e7",
+      "zhHash": "b54b88be53d7722859126d26053fe386e89ca0762d04ef0d4825c5d610088e14"
     },
     {
       "en": "docs/live-check.md",
@@ -71,8 +71,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "a640aff4f64ded856678332f54cdd0c784c36afda096ba324fc9ee8566205fe6",
-      "zhHash": "3c375dec66591fbf4ad20f7808db86d7356a77f93f8faa255fe4cfdfedc30bbf"
+      "enHash": "389294a6b87e51e3e08bbca8dfbf0f6214c70fec5c4a5eb84fe11c88a954ad33",
+      "zhHash": "c9c1857c1b20846fe01353d37c13b9f8fd211a69bfdec2f442ae0d16a870cf92"
     },
     {
       "en": "docs/architecture-health.md",

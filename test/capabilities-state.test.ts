@@ -76,7 +76,7 @@ test('counts for the tabs, and how many need looking at for the way in', () => {
     plugins: [plugin('ok'), plugin('bad', { error: { code: 'not-bundle', detail: null } }), plugin('off', { enabled: false }), plugin('web', { fit: { kind: 'needs-web', needs: ['@deepseek-ai/dsh-web'] } })],
     active: ['on'], dropped: [{ name: 'down', reason: 'x' }],
   })
-  assert.deepEqual(capabilityCounts(state), { skills: 2, mcp: 3, plugins: 4 })
+  assert.deepEqual(capabilityCounts(state), { skills: 2, mcp: 3, plugins: 4, sources: 0 })
   assert.equal(capabilityProblems(state), 5, 'a broken skill, a dropped server, one missing a key, a broken plugin, one Viva cannot run; one switched off is fine')
   assert.equal(capabilityProblems(initialState), 0, 'nothing loaded, nothing wrong')
 })

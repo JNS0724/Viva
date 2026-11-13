@@ -24,6 +24,7 @@ import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
 import { createPluginActions } from './plugin-actions.ts'
 import { createCapabilityActions } from './capability-actions.ts'
+import { createSourceActions } from './sources-actions.ts'
 import { createImportFlowActions } from './import-flow-actions.ts'
 import { createNewTopicAction } from './new-topic-actions.ts'
 import { createAgentEvents } from './agent-events.ts'
@@ -462,6 +463,9 @@ doneNotice = createDoneNotice({
   looking: () => document.visibilityState === 'visible' && document.hasFocus(),
 })
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
+const sourceActions = createSourceActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
+/** 动态 and the sources it says how to add, read together. */
+const loadFeedAndSources = () => Promise.all([feedActions.loadFeed(), sourceActions.loadSources()])
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
 const importFlowActions = createImportFlowActions({ api, getState: () => state, dispatch, errorMessage })
@@ -470,6 +474,7 @@ const capabilityActions = createCapabilityActions({
   load: () => {
     extensionActions.loadExtensions()
     pluginActions.loadPlugins()
+    sourceActions.loadSources()
   },
 })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
@@ -671,13 +676,17 @@ const handlers = {
   selectFeed: (kind: 'item' | 'schedule', id: string) => dispatch({ type: 'feed_select', kind, id }),
   openFeed: () => {
     dispatch({ type: 'feed_open' })
-    feedActions.loadFeed()
+    void loadFeedAndSources()
   },
   toggleFeed: () => (state.feed.open ? handlers.closeHub() : handlers.openFeed()),
   continueFeedItem: (id: string) => feedActions.continueItem(id),
   dismissFeedItem: (id: string) => feedActions.dismissItem(id),
   pauseSchedule: (id: string, paused: boolean) => feedActions.pauseSchedule(id, paused),
   deleteSchedule: (id: string) => feedActions.deleteSchedule(id),
+  pauseSource: (id: string, paused: boolean) => sourceActions.pauseSource(id, paused),
+  deleteSource: (id: string) => sourceActions.deleteSource(id),
+  addSource: () => sourceActions.addSource(),
+  openSources: () => capabilityActions.openCapabilities('sources'),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
   inputProblem: (message: string) => historyActions.showToast(message),
@@ -946,7 +955,7 @@ agentEvents = createAgentEvents({
   ready: (info) => reportMcpProblems(info, { fresh: true }), mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo), refreshWorkDir: workDirActions.refresh,
   refreshFiles: filesActions.filesAfterTurn,
   memoryChanged: memoryActions.onMemoryChanged, filesChanged: filesActions.onFilesChanged,
-  refreshFeed: feedActions.loadFeed,
+  refreshFeed: loadFeedAndSources,
   rejected: issue => console.warn('[agent:event]', issue.reason, issue.tag),
 })
 function handleEvent(event: AgentEvent) { agentEvents!.replay(event) }
@@ -965,7 +974,7 @@ async function boot() {
   document.addEventListener('visibilitychange', () => doneNotice?.check())
   api.onFocusComposer?.(() => dom.input.focus())
   api.onEvent(value => agentEvents!.receive(value))
-  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), feedActions.loadFeed()])
+  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), loadFeedAndSources()])
   // The tasks the last launch kept: ended ones, and those it quit on.
   await taskActions.loadKept()
   await timelineActions.loadEarlier()

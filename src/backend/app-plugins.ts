@@ -43,6 +43,11 @@ const PARTS = Object.freeze({
     '用户要你在某个时间或定期做一件事（「提醒我」「每周五帮我起草周报」）时，用 schedule_create 提出定时任务：prompt 写成到点时能独立执行的完整说明；',
     '由用户在卡片上同意才保存，你不要自己承诺已经定好。查看、修改、暂停、删除定时任务用 schedule_list、schedule_update、schedule_delete，按用户的话做。',
   ],
+  sources: [
+    '用户想在某类新消息到来时被提醒（「邮件 MCP 有重要邮件时提醒我」「工单有分给我的 P0 就告诉我」）时，把它设成消息源：先用 viva_source_candidates 找一个能列出新消息的只读工具，',
+    '再用 viva_source_preview 试读并生成预览，把预览告诉用户，用户同意后用 viva_source_add 开启。查看、删除用 viva_source_list、viva_source_remove。',
+    '消息源只能用已经接好的 MCP 或插件；没有合适的工具时如实说，建议先接入。不要用定时任务去轮询消息。',
+  ],
   ownership: [
     '用户的后台任务都归你管，不论它是在哪个话题里开的、是你开的还是用户交给后台的。收到「【后台任务结束】」的说明时（它不是用户说的话），'
     + '不论你此刻在聊什么，都要把结果反馈给用户：先点明是哪件事（当时交代的目的、来自哪个话题），再说结果，以及需要用户做什么（如果有）。',
@@ -80,7 +85,7 @@ const PARTS = Object.freeze({
     '收到「【调度已处理】」说明的请求已经交给后台，不要再提交；在回答结尾用一句话告诉用户。',
   ],
   routeApp: [
-    '应用自己的设置（定时任务、长期记忆、接入 MCP、skill）要改时，先提交 app_operation（app_action 写明工具名），再在下一步调用同名工具。',
+    '应用自己的设置（定时任务、长期记忆、接入 MCP、skill、消息源）要改时，先提交 app_operation（app_action 写明工具名），再在下一步调用同名工具。',
   ],
   reports: [
     '「【后台任务结束】」的说明不是新请求，不用提交路由。',
@@ -95,10 +100,10 @@ const personaOf = (parts: readonly Part[]) => Object.freeze({ prefix: parts.flat
 /** The profile's persona: background tasks and schedules' runs do the work. */
 export const PERSONA = personaOf(['identity', 'recall', 'ask', 'remember', 'config', 'schedule', 'taskQuery', 'subagent', 'taskTruth', 'history'])
 /** The main conversation's persona: it routes each request (viva-routing). */
-export const ROUTING_PERSONA = personaOf(['identity', 'route', 'recall', 'history', 'routeAnswer', 'routeTasks', 'routeApp', 'remember', 'config', 'schedule', 'ownership', 'reports', 'taskQuery', 'taskTruth'])
+export const ROUTING_PERSONA = personaOf(['identity', 'route', 'recall', 'history', 'routeAnswer', 'routeTasks', 'routeApp', 'remember', 'config', 'schedule', 'sources', 'ownership', 'reports', 'taskQuery', 'taskTruth'])
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1, mcp: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1, mcp: 1, sources: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
@@ -139,6 +144,8 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-plugins', dir: 'plugins/plugins', contract: 'plugins', config: () => ({}) },
   // The user's MCP servers, connected once for the whole dsh by its manager (plugins/mcp); the manager's row with it.
   { name: 'viva-mcp', dir: 'plugins/mcp', contract: 'mcp', config: () => ({}), stock: [{ id: 'mcp-manager', name: '@deepseek-ai/dsh-mcp-manager' }] },
+  // 消息源: a read-only tool the user confirmed, read on a timer; what is worth it goes into 动态 (sources-desk.ts).
+  { name: 'viva-sources', dir: 'plugins/sources', contract: 'sources', config: () => ({}) },
   {
     name: 'viva-permission', dir: 'plugins/permission', contract: 'permission',
     config: ({ permission }) => ({ preset: permission ?? DEFAULT_PERMISSION }),

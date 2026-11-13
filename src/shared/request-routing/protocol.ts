@@ -12,6 +12,7 @@ export const APP_OPERATIONS = Object.freeze([
   'memory_remember', 'memory_forget',
   'viva_mcp_add', 'viva_mcp_update', 'viva_mcp_remove', 'viva_mcp_import',
   'viva_skill_create', 'viva_skill_install', 'viva_skill_remove',
+  'viva_source_preview', 'viva_source_add', 'viva_source_remove',
 ] as const)
 export type AppOperation = (typeof APP_OPERATIONS)[number]
 

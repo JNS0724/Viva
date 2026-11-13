@@ -6,19 +6,20 @@ import { h, keepingInput } from './dom.ts'
 import { serverMain, serversSide } from './capability-mcp.ts'
 import { pluginMain, pluginsSide } from './capability-plugins.ts'
 import { skillMain, skillsSide } from './capability-skills.ts'
+import { sourceMain, sourcesSide } from './capability-sources.ts'
 
 /**
- * 能力 (capabilities-state.ts): a page of the hub beside 关于你 and 设置. Skills, MCP and plugins as tabs; each lists on
+ * 能力 (capabilities-state.ts): a page of the hub beside 关于你 and 设置. Skills, MCP, plugins and 消息源 as tabs; each lists on
  * the left and shows the one picked on the right, as 后台 and 动态 do.
  */
 let TAB_NAMES: Readonly<Record<CapabilityTab, string>> = tabNames()
 function tabNames() {
-  return { skills: t('capabilities.skills'), mcp: 'MCP', plugins: t('capabilities.plugins') }
+  return { skills: t('capabilities.skills'), mcp: 'MCP', plugins: t('capabilities.plugins'), sources: t('capabilities.sources') }
 }
 onLocaleChange(() => { TAB_NAMES = tabNames() })
 
-const SIDES: Record<CapabilityTab, (state: State, handlers: Handlers) => Node[]> = { skills: skillsSide, mcp: serversSide, plugins: pluginsSide }
-const MAINS: Record<CapabilityTab, (state: State, handlers: Handlers) => HTMLElement> = { skills: skillMain, mcp: serverMain, plugins: pluginMain }
+const SIDES: Record<CapabilityTab, (state: State, handlers: Handlers) => Node[]> = { skills: skillsSide, mcp: serversSide, plugins: pluginsSide, sources: (state, handlers) => sourcesSide(state, handlers) }
+const MAINS: Record<CapabilityTab, (state: State, handlers: Handlers) => HTMLElement> = { skills: skillMain, mcp: serverMain, plugins: pluginMain, sources: (state, handlers) => sourceMain(state, handlers) }
 
 function tabs(state: State, handlers: Handlers) {
   const counts = capabilityCounts(state)
@@ -51,7 +52,7 @@ export function renderCapabilitiesPage(container: HTMLElement, state: State, han
     return
   }
   const tab = openTab(state)
-  const loaded = tab === 'plugins' ? state.plugins.loaded : state.extensions.loaded
+  const loaded = tab === 'plugins' ? state.plugins.loaded : tab === 'sources' ? state.sources.loaded : state.extensions.loaded
   const side = h('nav', { class: 'tp-side cap-side', 'aria-label': t('capabilities.title') },
     h('div', { class: 'tp-side-head' }, h('h1', { class: 'feed-title', text: t('capabilities.title') })),
     tabs(state, handlers),
