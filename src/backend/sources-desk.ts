@@ -129,7 +129,8 @@ export function createSourcesDesk({ send, store, deliver, onChange, now = Date.n
     }
     const sources = store()
     const source = sources?.list().find((item) => item.id === message.sourceId)
-    if (!sources || !source) return undefined
+    // Paused since the check left the plugin: what it found is not delivered.
+    if (!sources || !source || source.paused) return undefined
     if (!message.ok) {
       statuses.set(source.id, { ...statusOf(source.id), checkedAt: now(), nextAt: message.nextAt, error: message.error })
       return onChange()

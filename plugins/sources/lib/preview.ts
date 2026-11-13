@@ -27,6 +27,7 @@ export function problemText({ code, detail }: SourceError): string {
     case 'unknown-tool': return `找不到工具 ${detail}（可能已卸载，或只在对话里可用）`
     case 'not-a-list': return `${detail} 不是一个列表`
     case 'missing-field': return `有的消息在 ${detail} 找不到值`
+    case 'duplicate-key': return `不同的消息在 ${detail} 的值相同，它不能当消息的编号，换一个每条都不同的字段`
     case 'too-many': return `一次列出了 ${detail} 条，超过 ${MAX_SEEN} 条的上限，换个只读一段时间内消息的参数`
     case 'no-judgement': return '判断模型没有给出能用的结果'
     case 'timeout': return '超时了'

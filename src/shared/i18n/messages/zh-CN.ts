@@ -1051,6 +1051,7 @@ export const zhCN = {
   "main.sources.error.tool": "工具出错：{detail}",
   "main.sources.error.not-a-list": "工具返回的结果里，{detail} 不是列表。",
   "main.sources.error.missing-field": "有的消息在 {detail} 找不到值。",
+  "main.sources.error.duplicate-key": "不同的消息在 {detail} 的值相同，不能用它区分消息。",
   "main.sources.error.too-many": "工具一次列出了 {detail} 条，超过 1000 条的上限。在对话里让它只读一段时间内的消息。",
   "main.sources.error.no-judgement": "判断模型没有给出能用的结果。",
   "main.sources.error.timeout": "检查超时了。",

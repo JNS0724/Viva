@@ -105,6 +105,11 @@ export function messagesOf(spec: { items: string, map: SourceMap }, decoded: unk
       time,
     })
   }
+  // Confirming, a key must tell messages apart: one that does not (a sender, a thread) would hide every later message
+  // that shares it.
+  if (strict && new Set(messages.map((message) => message.key)).size < messages.length) {
+    return { ok: false, problem: { code: 'duplicate-key', detail: spec.map.key } }
+  }
   return { ok: true, messages }
 }
 

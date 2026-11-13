@@ -1050,6 +1050,7 @@ export const en = {
   "main.sources.error.tool": "The tool failed: {detail}",
   "main.sources.error.not-a-list": "In the tool’s result, {detail} is not a list.",
   "main.sources.error.missing-field": "Some messages have no value at {detail}.",
+  "main.sources.error.duplicate-key": "Different messages share the same value at {detail}, so it cannot tell them apart.",
   "main.sources.error.too-many": "The tool listed {detail} messages at once, over the limit of 1000. In a conversation, have it read only a recent period.",
   "main.sources.error.no-judgement": "The model gave no usable judgement.",
   "main.sources.error.timeout": "The check timed out.",

@@ -18,7 +18,7 @@ export type Decode = 'value' | 'structured' | 'json-text'
  * Why a check failed, as a code the app says in the window's language (main.sources.error.*), with the detail that
  * is not words of ours: the tool's own message, a path, a name, a count.
  */
-export const SOURCE_ERRORS = ['no-result', 'unknown-tool', 'tool', 'not-a-list', 'missing-field', 'too-many', 'no-judgement', 'timeout', 'failed'] as const
+export const SOURCE_ERRORS = ['no-result', 'unknown-tool', 'tool', 'not-a-list', 'missing-field', 'duplicate-key', 'too-many', 'no-judgement', 'timeout', 'failed'] as const
 export type SourceErrorCode = typeof SOURCE_ERRORS[number]
 export interface SourceError { code: SourceErrorCode, detail: string }
 

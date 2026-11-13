@@ -45,6 +45,9 @@ test('messages are found by the confirmed paths, with stable keys and only http(
   assert.match(lenient.messages[0].key, /^h:[0-9a-f]{32}$/, 'and one without a key is known by its title and time')
   assert.equal(normalizeKey(undefined, '周五评审改到 15:00', '2026-11-12T08:00:00Z'), lenient.messages[0].key)
   assert.equal(normalizeKey(' <A1@example.test> ', 't', ''), 'A1@example.test')
+  const sameSender = [{ id: 'm1', from: 'alice', subject: '一' }, { id: 'm2', from: 'alice', subject: '二' }]
+  assert.deepEqual(messagesOf({ items: '$', map: { ...MAP, key: '$.from', title: '$.subject' } }, sameSender, { strict: true }),
+    { ok: false, problem: { code: 'duplicate-key', detail: '$.from' } }, 'confirming, a key that does not tell messages apart is refused')
   const long = 'x'.repeat(MAX_KEY)
   assert.equal(normalizeKey(long, 't', ''), long, 'a key that fits is kept whole')
   const [one, two] = [normalizeKey(`${long}-1`, 't', ''), normalizeKey(`${long}-2`, 't', '')]

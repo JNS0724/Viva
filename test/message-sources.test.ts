@@ -176,6 +176,9 @@ test('a check that went through remembers every key, delivers only what is pushe
   assert.deepEqual(desk.views()[0].status, { checkedAt: 5000, nextAt: 12000, fresh: 2, pushed: 1, error: said }, 'said in the window\'s language')
   assert.equal(store.list()[0].lastCheckedAt, 4000, 'a failed check does not move the time new messages are read from')
   desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-404', at: 1, nextAt: 2, ok: true, items, seen: [] })
+  store.setPaused('src-1', true)
+  desk.receive({ type: 'source_checked', version: 1, sourceId: 'src-1', at: 7000, nextAt: 13000, ok: true, items, seen: [] })
+  assert.equal(delivered.length, 1, 'a check that arrives after the source was paused is not delivered')
   assert.equal(delivered.length, 1, 'a check of a source no longer kept is dropped')
 })
 
