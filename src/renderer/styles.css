@@ -851,6 +851,12 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .feed-her { display: flex; align-items: center; gap: 12px; padding: 10px 12px 14px; }
 .feed-say { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.3; }
 .feed-empty { align-items: center; justify-content: center; }
+/* view/feed-page.ts: how to add a message source, at the foot of the side while there is none. */
+.feed-hint { margin: auto 0 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); }
+.feed-hint-title { margin: 0; font-size: 14px; font-weight: 700; }
+.feed-hint-text { margin: 0; font-size: 13px; line-height: 1.7; color: var(--ink-2); }
+.feed-hint-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.feed-hint-actions .btn-text { padding-inline: 0; }
 
 /* ---------- 后台 page (view/tasks-page.ts): one of the hub's pages, its list and the task picked side by side ---------- */
 .hub-page.hub-tasks { width: 100%; height: 100%; margin: 0; padding: 0; display: flex; min-height: 0; }
@@ -917,6 +923,11 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .hub-nav .hub-count { margin-left: auto; background: var(--orange); color: var(--bg); font-weight: 700; }
 .cap-side { width: 320px; gap: 4px; }
 .cap-tabs { margin: 4px 12px 8px; }
+/* view/capabilities.ts: four tabs share the side's width instead of running past it (over .seg's max-content, personal.css). */
+.seg.cap-tabs { display: flex; width: auto; }
+
+.seg.cap-tabs button { flex: 1 1 0; min-width: 0; padding-inline: 4px; white-space: nowrap; }
+.cap-tabs .cap-tab-count { margin-left: 4px; }
 .cap-tab-count { margin-left: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
 .cap-search-row { display: flex; align-items: center; gap: 8px; margin: 0 12px 4px; }
 .cap-search-row .cap-search { flex: 1; min-width: 0; margin: 0; }
@@ -960,6 +971,9 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .ext-item.cap-card { flex-direction: column; align-items: stretch; gap: 14px; }
 .cap-add { margin-top: 8px; color: var(--accent); }
 .cap-empty, .cap-hint { padding: 4px 12px; }
+/* view/capability-sources.ts: no message source yet. */
+.cap-sources-empty { margin: 0 12px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.cap-sources-empty p { margin: 0; }
 .cap-text { margin: 0; font-size: 14px; line-height: 1.7; color: var(--ink); white-space: pre-wrap; }
 .cap-facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0; font-size: 13px; }
 .cap-facts dt { color: var(--ink-3); }

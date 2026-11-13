@@ -1,6 +1,7 @@
 import type { ActionHandlers } from './action-types.ts'
 import { closedImport } from './import-flow-state.ts'
-import type { CapabilityTab, ExtensionStatus, PluginView, ServerView, SkillView } from './capability-types.ts'
+import type { CapabilityTab, ExtensionStatus, PluginView, ServerView, SkillView, SourceView } from './capability-types.ts'
+import { sourcesOf, sourceWrong } from './sources-state.ts'
 export type { CapabilityTab } from './capability-types.ts'
 
 /**
@@ -8,7 +9,7 @@ export type { CapabilityTab } from './capability-types.ts'
  * in their own slices (extensions in personal-state.ts, plugins in plugins-state.ts) with their own actions; this keeps
  * which tab is open, the one picked and what is searched, and works out what is shown and what is wrong.
  */
-export const CAPABILITY_TABS: readonly CapabilityTab[] = Object.freeze(['skills', 'mcp', 'plugins'])
+export const CAPABILITY_TABS: readonly CapabilityTab[] = Object.freeze(['skills', 'mcp', 'plugins', 'sources'])
 
 export const initialCapabilities = Object.freeze({
   open: false,
@@ -117,24 +118,32 @@ export const shownServer = (state: State): ServerView | null =>
   shown(serversOf(state), (server) => server.name, (server) => serverWrong(server, statusOf(state)), state.capabilities.selected)
 export const shownPlugin = (state: State): PluginView | null =>
   shown(pluginsOf(state), (plugin) => plugin.name, pluginWrong, state.capabilities.selected)
+export const shownSource = (state: State): SourceView | null =>
+  shown(sourcesOf(state), (source) => source.id, sourceWrong, state.capabilities.selected)
 
 /**
  * What the last change on the open tab came to (a failure and why, or what was done), said whatever is listed or
  * picked: a first import that fails leaves nothing to pick, and removing the last one leaves nothing either.
  */
 export function capabilityFeedback(state: State): { error: string | null, notice: string | null } {
-  const slice = openTab(state) === 'plugins' ? state.plugins : state.extensions
+  const tab = openTab(state)
+  if (tab === 'sources') return { error: state.sources.error ?? null, notice: null }
+  const slice = tab === 'plugins' ? state.plugins : state.extensions
   return { error: slice.error ?? null, notice: slice.notice ?? null }
 }
 
 /** How many each tab lists. */
 export const capabilityCounts = (state: State): Record<CapabilityTab, number> =>
-  ({ skills: skillsOf(state).length, mcp: serversOf(state).length, plugins: pluginsOf(state).length })
+  ({ skills: skillsOf(state).length, mcp: serversOf(state).length, plugins: pluginsOf(state).length, sources: sourcesOf(state).length })
 
-/** How many need looking at: a skill dsh skips, a server not working, a plugin broken, one Viva cannot run, or not running. */
+/**
+ * How many need looking at: a skill dsh skips, a server not working, a plugin broken, one Viva cannot run, or not
+ * running, a message source whose last check failed.
+ */
 export function capabilityProblems(state: State): number {
   const status = statusOf(state)
   return skillsOf(state).filter(skillWrong).length
     + serversOf(state).filter((server) => serverWrong(server, status)).length
     + pluginsOf(state).filter(pluginWrong).length
+    + sourcesOf(state).filter(sourceWrong).length
 }

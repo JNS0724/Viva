@@ -31,7 +31,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'memory_context': return { type: 'memory_context', injected: event.injected }
       case 'error': return { type: 'error', message: event.message }
       case 'schedule_propose': return { type: 'schedule_proposed', proposal: event.proposal }
-      case 'memory_changed': case 'files_changed': case 'feed_changed': case 'schedules_changed': return null
+      case 'memory_changed': case 'files_changed': case 'feed_changed': case 'schedules_changed': case 'sources_changed': return null
       default: { const exhaustive: never = event; return exhaustive }
     }
   }

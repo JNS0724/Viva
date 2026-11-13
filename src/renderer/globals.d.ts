@@ -253,6 +253,9 @@ interface AgentApi extends DraftApi {
   declineSchedule: Invoke<'schedules:decline'>
   pauseSchedule: Invoke<'schedules:pause'>
   deleteSchedule: Invoke<'schedules:delete'>
+  listSources: Invoke<'sources:list'>
+  pauseSource: Invoke<'sources:pause'>
+  deleteSource: Invoke<'sources:delete'>
   listFeed: Invoke<'feed:list'>
   markFeedSeen: Invoke<'feed:seen'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */

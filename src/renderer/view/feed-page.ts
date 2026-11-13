@@ -6,6 +6,7 @@ import { whenText } from './proposal-card.ts'
 import { maidFor } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
 import { renderMarkdown } from './markdown.ts'
+import { offersSources } from '../sources-state.ts'
 
 /**
  * 动态 (system-design §12.2): what the app brings on its own, its own page, opened from the title bar. Her line and
@@ -87,6 +88,16 @@ function scheduleDetail(schedule: ScheduleView, state: State, handlers: Handlers
     state.feed.error ? h('p', { class: 'form-error', role: 'alert', text: state.feed.error }) : null)
 }
 
+/** With no message source yet: what one is, and where to add one (the conversation, or 能力 · 消息源). */
+function sourcesHint(handlers: Handlers) {
+  return h('section', { class: 'feed-hint', 'aria-labelledby': 'feed-hint-title' },
+    h('h2', { class: 'feed-hint-title', id: 'feed-hint-title', text: t('feed.sources.title') }),
+    h('p', { class: 'feed-hint-text', text: t('feed.sources.text') }),
+    h('div', { class: 'feed-hint-actions' },
+      h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t('feed.sources.say'), onClick: () => handlers.addSource() }),
+      h('button', { class: 'btn btn-text btn-small', type: 'button', text: t('feed.sources.open'), onClick: () => handlers.openSources() })))
+}
+
 export function renderFeedPage(container: HTMLElement, state: State, handlers: Handlers, now = Date.now()) {
   const { fresh, next, seen } = feedGroups(state)
   const shown = feedShown(state)
@@ -99,7 +110,8 @@ export function renderFeedPage(container: HTMLElement, state: State, handlers: H
     herLine(state),
     ...group(t('feed.new'), fresh.map((item) => itemRow(item, now)), picked, handlers),
     ...group(t('feed.next'), next.map((schedule) => scheduleRow(schedule, now)), picked, handlers),
-    ...group(t('feed.seen'), seen.map((item) => itemRow(item, now)), picked, handlers))
+    ...group(t('feed.seen'), seen.map((item) => itemRow(item, now)), picked, handlers),
+    offersSources(state) ? sourcesHint(handlers) : null)
   const main = shown?.kind === 'item'
     ? itemDetail(shown.item, shown.fresh, state, handlers, now)
     : shown ? scheduleDetail(shown.schedule, state, handlers, now)

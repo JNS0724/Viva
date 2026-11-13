@@ -3,7 +3,7 @@ import type { KeptTask } from '../shared/ipc-results.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
-import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from './capability-types.ts'
+import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView, SourceView } from './capability-types.ts'
 
 type Info = AgentInfo
 type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images'> & { key?: string }
@@ -64,6 +64,9 @@ export interface ActionPayloads extends ConversationPayloads {
   feed_loaded: { items?: readonly FeedItemView[], schedules?: readonly ScheduleView[] }
   feed_busy: {}
   feed_failed: { message: string | null }
+  sources_loaded: { list: readonly SourceView[] }
+  sources_busy: {}
+  sources_failed: { message: string | null }
   files_listed: { path: string, entries: State['files']['folders'][string] }
   files_toggled: { path: string }
   files_selected: { path: string }

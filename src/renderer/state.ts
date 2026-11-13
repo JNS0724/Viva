@@ -18,6 +18,7 @@ import { WAITS_ACTIONS } from './waits-state.ts'
 import { PROPOSAL_ACTIONS } from './proposal-state.ts'
 import { FEED_ACTIONS, initialFeed } from './feed-state.ts'
 import { CAPABILITY_ACTIONS, initialCapabilities } from './capabilities-state.ts'
+import { initialSources, SOURCE_ACTIONS } from './sources-state.ts'
 import { initialImportFlow, IMPORT_FLOW_ACTIONS } from './import-flow-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
@@ -76,6 +77,7 @@ export const initialState = Object.freeze({
   plugins: initialPlugins,
   /** 能力: which of skills, MCP and plugins is shown, and the one picked (capabilities-state.ts). */
   capabilities: initialCapabilities,
+  sources: initialSources,
   /** 能力 · 导入, skills or MCP servers: where from, what was found, what is ticked (import-flow-state.ts). */
   importFlow: initialImportFlow,
   toast: null as Untyped,
@@ -298,6 +300,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...PROPOSAL_ACTIONS,
   ...FEED_ACTIONS,
   ...CAPABILITY_ACTIONS,
+  ...SOURCE_ACTIONS,
   ...IMPORT_FLOW_ACTIONS,
 } satisfies ActionHandlers
 

@@ -105,6 +105,18 @@ Say “remind me”, “help me with it then” or “every Friday…”, and Vi
 - **Local data:** `app.db` keeps the schedules (dsh-schedule records), runs not finished yet, and Activity's items (up to 500), all on this computer. Windows notifications use the installer's AppUserModelID `app.viva.desktop`.
 
 <a id="模型和-key"></a>
+## Message sources
+
+Places where new things arrive, such as mail, tickets or group chats, can be set up as message sources: Viva looks at them on a timer and puts only what's worth it into Activity, with a notification. A source uses a read-only tool of an MCP server or plugin you already connected; the plugin's author changes nothing.
+
+- **Say it in the conversation**: for example "remind me when my mail MCP gets important mail" or "tell me when a P0 ticket is assigned to me". The model finds a tool that lists new messages (`viva_source_candidates`), asks on a card whether it may read it once (`viva_source_preview`), and tells you the preview: which messages would be reminded and which not, how often it looks, and by what standard. When you say to turn it on, it confirms once more on a card (`viva_source_add`). To change the standard or the pace, say so and it previews again.
+- **Read only**: dsh cannot tell whether a tool changes anything, so you confirm each one; tools named like sending, deleting or marking read, and dsh's and Viva's own tools, cannot be sources. Once on, only the confirmed tool is called, with the confirmed arguments.
+- **Once each, no flood**: messages already there when it is turned on are not reminded; after that each message is judged once and reminded at most once. A check looks at up to 30 new messages and counts the rest as seen. Judging is a model call without tools: the messages are only data, and nothing they say is acted on.
+- **Pace**: every 15 minutes by default, 5 at the fastest. After an error the wait doubles, up to an hour; after the computer sleeps, one check catches up.
+- **Capabilities · Sources**: lists how often each source looks, when it last looked, and how many new messages the last check found and reminded; a failing one shows in orange and counts on Capabilities. Pause, resume or delete it there. "Add a message source" and "Say it in the conversation" at the foot of Activity put a sentence in the input for you to finish and send.
+- **Not yet supported**: tools that answer in prose rather than JSON, skills, events a plugin pushes, and tools that exist only inside a conversation.
+- **Data**: sources are kept in `message-sources.json`, on this computer only, with the keys of messages already seen (up to 1000 each); reminders live in Activity like schedule results.
+
 ## Models and keys
 
 Without a usable model, home shows Connect model and disables the composer. Add a DeepSeek key or another model in Settings to connect. Keys are encrypted with AES-256-GCM under a data key (`data-key.bin` in app data) that safeStorage protects (Keychain on macOS, DPAPI on Windows), and kept in app-data `settings.json` with mode 600 where supported. Unavailable secure storage refuses saving instead of plaintext fallback. Only the backend process holds the key; the UI shows the last four characters. Saving/clearing restarts dsh and starts a new conversation. Saved keys override environment values. A missing dsh installation prompts dependency repair.

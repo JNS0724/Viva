@@ -152,6 +152,9 @@ export const IPC_ARGS = Object.freeze({
   'schedules:decline': z.tuple([id]),
   'schedules:pause': z.tuple([id, z.boolean()]),
   'schedules:delete': z.tuple([id]),
+  'sources:list': read(none),
+  'sources:pause': z.tuple([id, z.boolean()]),
+  'sources:delete': z.tuple([id]),
   'feed:list': read(none),
   'feed:seen': z.tuple([id]),
 

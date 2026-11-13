@@ -37,7 +37,7 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
         case 'turn_end': refreshFiles(); afterTurn(event.stopReason); break
         case 'task_end': refreshFiles(); break
         case 'error': clearAfterTurn(); break
-        case 'feed_changed': case 'schedules_changed': refreshFeed(); break
+        case 'feed_changed': case 'schedules_changed': case 'sources_changed': refreshFeed(); break
       }
     },
   })

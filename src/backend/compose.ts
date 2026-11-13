@@ -48,6 +48,9 @@ import { createTaskStore } from './task-store.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
 import { createMcpConfigStore } from './mcp-config.ts'
+import { createSourceStore, type SourceStore, type StoredSource } from './message-sources.ts'
+import { createSourcesDesk, sourceItemBody } from './sources-desk.ts'
+import type { CheckedItem } from '../shared/sources-channel.ts'
 import { registerMemoryIpc } from './memory-ipc.ts'
 import { createModelStore, defaultModel, modelValue, parseModelValue, piAiProviders, providerEnv } from './model-providers.ts'
 import { registerModelsIpc } from './models-ipc.ts'
@@ -147,9 +150,20 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let requests!: RequestRuntime
   /** 动态's items (feed-store.ts): what schedules brought; set once the personal stores are open. */
   let feed: FeedStore | null = null
+  /** The same store unjournaled, for a write made inside a change of its own (a source's item with its notice). */
+  let feedItems: FeedStore | null = null
   let schedules: Schedules | null = null
   /** Schedules run when due, their answers into 动态 (schedule-runs.ts). */
   let scheduleRuns: ScheduleRuns | null = null
+  /** The user's 消息源 (message-sources.ts); set once the personal stores are open. */
+  let sourceStore: SourceStore | null = null
+  /** viva-sources' side in the app (sources-desk.ts), kept across dsh restarts so how each source stands stays. */
+  const sourcesDesk = createSourcesDesk({
+    send: (message) => dsh.current?.sendToPlugins(message),
+    store: () => sourceStore,
+    deliver: (source, items) => deliverSourceItems(source, items),
+    onChange: () => emitToRenderer({ type: 'sources_changed' }),
+  })
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
   let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
   /**
@@ -396,6 +410,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       historyRead: (ref, around) => (historyDb ? historyRecall(historyDb).read(ref, around) : { status: 'deleted' as const }),
       taskRead: (request, sessionId) => requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId }),
       taskAct: (request, sessionId) => actOnSchedule(request, sessionId),
+      onPluginMessage: (message) => { if (lifetime.isCurrent()) sourcesDesk.receive(message) },
       routing: { receive: (request) => requests.receive(request), decide: (decision) => requests.decide(decision), fail: (failure) => requests.fail(failure), noteFast: (outcome) => requests.noteFast(outcome), endTurn: (turn) => requests.endTurn(turn) },
       conversationContext: sessionId => {
         const context = sessions.context()
@@ -786,6 +801,25 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     effects.queue(FEED_NOTICE, item.id, { title: item.title, body: item.body.slice(0, NOTICE_BODY_CHARS) })
   }
 
+  /** A source's messages worth a reminder (sources-desk.ts): each into 动态 once, its notice queued with it. */
+  function deliverSourceItems(source: StoredSource, items: readonly CheckedItem[]) {
+    const store = feedItems
+    if (!store) return
+    let made = 0
+    for (const item of items) {
+      // The item and its notice together (the event records the source, not what the message says).
+      const added = applyChange('source.delivered', { source: source.id }, () => {
+        const result = store.add({ source: `source:${source.id}`, key: item.key, title: item.title, body: sourceItemBody(item), origin: { label: source.name, ref: source.id } })
+        if (result.made && effects) queueFeedNotice(result.item)
+        return result.made
+      }).value
+      if (added) made++
+    }
+    if (!made) return
+    wakeEffects()
+    feedChanged()
+  }
+
   /** A schedule's prompt run in its own folder; one whose folder is gone fails, saying so. */
   function runSchedule(prompt: string, cwd: string): Promise<RunResult> {
     if (!isFolder(cwd)) return Promise.resolve({ ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) })
@@ -854,6 +888,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     schedules = createSchedules({ db: appDb.db, apply: applyChange, emit: event => emitToRenderer({ ...event, context: sessions.context() }), changed: () => { scheduleRuns?.arm(); schedulesChanged() } })
     // A schedule's run adds its item inside its own change (schedule.ran); the window's writes are events of their own.
     const items = openFeedStore({ db: appDb.db })
+    feedItems = items
     feed = journaled(items, 'feed', FEED_WRITES, applyChange)
     scheduleRuns = createScheduleRuns({
       db: appDb.db,
@@ -876,6 +911,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     // 动态's 接下来: pause, resume and delete by hand too (the conversation does the rest).
     ipcMain.handle('schedules:pause', (_event, id, paused) => requireSchedules().update(String(id), { paused: Boolean(paused) }))
     ipcMain.handle('schedules:delete', (_event, id) => requireSchedules().remove(String(id)))
+    sourceStore = createSourceStore({ file: path.join(userData, 'message-sources.json'), onError: (err) => console.error('[sources]', err.message) })
+    sourcesDesk.push()
+    // 能力 · 消息源: listed, paused or resumed, deleted by hand; set up from the conversation (viva-sources).
+    ipcMain.handle('sources:list', () => sourcesDesk.views())
+    ipcMain.handle('sources:pause', (_event, id, paused) => { sourcesDesk.setPaused(String(id), Boolean(paused)); return sourcesDesk.views() })
+    ipcMain.handle('sources:delete', (_event, id) => { sourcesDesk.remove(String(id)); return sourcesDesk.views() })
     ipcMain.handle('feed:list', () => items.list(FEED_LISTED))
     ipcMain.handle('feed:seen', (_event, id) => {
       requireFeed().markSeen(String(id))

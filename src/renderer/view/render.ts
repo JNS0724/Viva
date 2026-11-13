@@ -87,7 +87,7 @@ let renderedCapabilities: unknown[] = []
 /** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins, how the servers stand now, and on itself. */
 function renderCapabilitiesIfChanged(dom: Dom, state: State, handlers: Handlers) {
   const connected = state.info.mode === 'live'
-  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, state.importFlow, connected, state.info.mcp]
+  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, state.importFlow, connected, state.info.mcp, state.sources]
   if (inputs.every((value, i) => value === renderedCapabilities[i])) return
   renderedCapabilities = inputs
   const problems = capabilityProblems(state)
@@ -141,9 +141,9 @@ function renderHistoryIfChanged(dom: Dom, state: State, handlers: Handlers) {
 let renderedTasksPage: unknown[] = []
 let renderedFeedPage: unknown[] = []
 
-/** 动态 and its count in the title bar depend on it alone. */
+/** 动态 and its count in the title bar depend on it, and on whether there is a message source yet. */
 function renderFeedIfChanged(dom: Dom, state: State, handlers: Handlers, now: number) {
-  const inputs = [localeRevision(), state.feed]
+  const inputs = [localeRevision(), state.feed, state.sources]
   if (inputs.every((value, i) => value === renderedFeedPage[i])) return
   renderedFeedPage = inputs
   const count = feedCount(state)

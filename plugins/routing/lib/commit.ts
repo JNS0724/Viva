@@ -25,7 +25,7 @@ export const COMMIT_DESCRIPTION = [
   '- delegate：交给新的后台任务，用于调研、联网、整理资料、写文件、跑命令。',
   '- update_task、stop_task：补充、追问、修改或停止已有任务。taskId 用【刚结束的后台任务】里的；不在那里的先用 list_background_tasks 查。',
   '- needs_input：缺少只有用户能给的信息，或几个对象同样合理、选错会白做。问题写进 question，不要用 reply 在正文里问。',
-  '- app_operation：改应用自己的设置（定时任务、长期记忆、MCP、skill）。提交后下一步调用与 operation 同名的工具，一个 app_action 只调用一次，要调几次就写几个；需要确认的由卡片确认。',
+  '- app_operation：改应用自己的设置（定时任务、长期记忆、MCP、skill、消息源）。提交后下一步调用与 operation 同名的工具，一个 app_action 只调用一次，要调几次就写几个；需要确认的由卡片确认。',
   '找回旧标准、读聊天记录只是准备，不算目标。',
   '',
   '示例：用户说「整理一下今天的国际大事，顺便讲讲 G20 是什么」',
