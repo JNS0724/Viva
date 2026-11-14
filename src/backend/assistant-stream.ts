@@ -1,6 +1,22 @@
 import { randomUUID } from 'node:crypto'
+import { objectOf } from '../shared/unknown-value.ts'
+import { t } from '../shared/i18n/translate.ts'
 
-/** Source selection belongs to a prompt operation, never a reusable session flag. */
+type OutputBlock = { type: 'text' | 'reasoning', text: string }
+type CommittedOutput = { key: string, blocks: OutputBlock[] }
+const committedOutput = (value: unknown): value is CommittedOutput => {
+  const entry = objectOf(value)
+  return typeof entry?.key === 'string' && Array.isArray(entry.blocks) && entry.blocks.every((value: unknown) => {
+    const block = objectOf(value)
+    return (block?.type === 'text' || block?.type === 'reasoning') && typeof block.text === 'string'
+  })
+}
+
+/**
+ * The app's side of the stream contract (plugins/routing/lib/assistant-stream.ts): what a prompt operation shows
+ * comes only from the plugin, which decides what may be shown (the main agent's routing steps are not). ACP's copy of
+ * the text is never replayed; an operation whose output the plugin did not confirm ends in an error.
+ */
 export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
@@ -9,10 +25,17 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
   let ready = false
   const instance = randomUUID()
   let sequence = 0
-  type Operation = { id: string, sessionId: string, live: boolean, active: Set<string>, keys: Set<string>, fallback: any[], closed: Map<string, Set<number>>, resolve?: (live: boolean) => void, flushed?: (ok: boolean) => void }
+  type Operation = {
+    id: string, sessionId: string, live: boolean
+    active: Set<string>, keys: Set<string>
+    settled: Map<string, Array<{ type: string, text?: string }>>
+    closed: Map<string, Set<number>>
+    finalReply?: boolean, committed?: CommittedOutput[]
+    resolve?: (live: boolean) => void, flushed?: (ok: boolean) => void
+  }
   const operations = new Map<string, Operation>()
   const begin = async (sessionId: string) => {
-    const operation: Operation = { id: `${instance}:${++sequence}`, sessionId, live: false, active: new Set(), keys: new Set(), fallback: [], closed: new Map() }
+    const operation: Operation = { id: `${instance}:${++sequence}`, sessionId, live: false, finalReply: false, active: new Set(), keys: new Set(), settled: new Map(), closed: new Map() }
     operations.set(sessionId, operation)
     if (ready) {
       operation.live = await new Promise<boolean>(resolve => {
@@ -38,7 +61,13 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
       return
     }
     if (message.type === 'assistant_stream_flushed') {
-      for (const operation of operations.values()) if (operation.id === message.operation) operation.flushed?.(true)
+      for (const operation of operations.values()) if (operation.id === message.operation) {
+        if (Array.isArray(message.messages) && message.messages.every(committedOutput) && typeof message.finalReply === 'boolean') {
+          operation.committed = message.messages
+          operation.finalReply = message.finalReply
+        }
+        operation.flushed?.(true)
+      }
       return
     }
     if (message.type !== 'assistant_stream') return
@@ -54,6 +83,7 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
       emit(message.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: message.kind, index: message.index, blockType: message.blockType, text: message.text })
     }
     if (message.kind === 'settle' && Array.isArray(message.blocks)) {
+      operation.settled.set(message.key, message.blocks)
       emit(message.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks })
       operation.active.delete(message.key); operation.closed.delete(message.key)
     }
@@ -61,26 +91,40 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
   return { begin, finish, receive,
     suppress: (sessionId: string, update: any) => {
       const operation = operations.get(sessionId)
-      if (!operation?.live || !['agent_message_chunk', 'agent_thought_chunk'].includes(update?.sessionUpdate)) return false
-      operation.fallback.push(update)
-      return true
+      if (!operation) return false
+      return ['agent_message_chunk', 'agent_thought_chunk'].includes(update?.sessionUpdate)
     },
     async complete(operation: Operation) {
       if (operations.get(operation.sessionId) !== operation) return
       if (operation.live) {
-        const flushed = await new Promise<boolean>(resolve => {
+        await new Promise<boolean>(resolve => {
           const timer = setTimeout(() => { operation.flushed = undefined; resolve(false) }, timeoutMs)
           operation.flushed = ok => { clearTimeout(timer); operation.flushed = undefined; resolve(ok) }
           send({ type: 'assistant_stream_flush', version: 1, operation: operation.id })
         })
         if (operations.get(operation.sessionId) !== operation) return
-        if (!flushed || operation.active.size || (!operation.keys.size && operation.fallback.length)) {
-          for (const key of operation.keys) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+        if (operation.committed) {
+          const keys = new Set(operation.committed.map(message => message.key))
+          for (const key of operation.keys) if (!keys.has(key)) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+          const before: { text?: string, reasoning?: string } = {}
+          let recovered = false
+          for (const message of [...operation.committed].reverse()) {
+            if (JSON.stringify(operation.settled.get(message.key)) !== JSON.stringify(message.blocks)) {
+              emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks, before: { ...before } })
+              recovered = true
+            }
+            for (const block of message.blocks) if (block.text) before[block.type] = message.key
+          }
+          // Task previews consume settlements too. Finish recovery on the last committed text.
+          const lastText = operation.committed.findLast(message => message.blocks.some(block => block.type === 'text' && block.text))
+          if (recovered && lastText) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: lastText.key, kind: 'settle', blocks: lastText.blocks })
           operation.active.clear()
-          for (const update of operation.fallback) emit(operation.sessionId, update)
+          finish(operation)
+          return operation.finalReply
         }
       }
       finish(operation)
+      throw new Error(t('main.assistant-stream.output.not.confirmed'))
     },
     close() { ready = false; for (const operation of [...operations.values()]) finish(operation) },
   }

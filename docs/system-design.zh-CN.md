@@ -2,7 +2,7 @@
 
 [English](system-design.md) | 简体中文
 
-> 描述的是 main 到 PR #101（`fe65612`，2026-11-06）为止的架构。拆分的设计稿和各阶段的实施记录在 git 历史里（`docs/backend-split-design.md`，本文取代它之后删除）；之后按模块做的整治记在[架构整治](architecture-health.zh-CN.md)里。
+> 描述的是 main 到 PR #132（`82a5bf3`，2026-11-10）为止的架构。拆分的设计稿和各阶段的实施记录在 git 历史里（`docs/backend-split-design.md`，本文取代它之后删除）；之后按模块做的整治记在[架构整治](architecture-health.zh-CN.md)里。
 
 ## 1. 概述
 
@@ -32,13 +32,13 @@ flowchart TB
   subgraph backend["后端进程 · src/backend（Electron 以 Node 运行，不导入 electron）"]
     b1["<b>事件内核</b><br/>信号 → 路由 → apply<br/>改动和事件同一事务写入"]
     b2["<b>对话与后台任务</b><br/>conversation-session：屏幕上的话题<br/>TaskRuntime：任务的唯一写者<br/>历史、设置、模型、记忆"]
-    b3["<b>定时与动态</b><br/>schedule-runs、只读的无人值守运行<br/>动态条目、副作用队列"]
+    b3["<b>定时与动态</b><br/>schedule-runs、无人值守的运行<br/>动态条目、副作用队列"]
     b4["<b>dsh 与 ACP</b><br/>dsh-lifecycle 启动和重启 dsh<br/>acp-bridge、acp-operations、acp-task-sessions"]
   end
   subgraph dsh["dsh 进程（后端的子进程）"]
     d1["<b>Viva 自带插件</b><br/>12 个 viva-*，按约定通信<br/>后端写记忆库，过程插件写过程库"]
     d2["<b>用户插件</b><br/>经插件管理器安装<br/>运行中即可启停"]
-    d3["<b>工具与沙箱</b><br/>viva-policy 先查规则<br/>再经用户授权"]
+    d3["<b>工具与沙箱</b><br/>dsh 的档位与沙箱<br/>需要时经用户授权"]
   end
   pages -- "IPC：每个调用按契约校验" --> shell
   shell -- "回环 HTTP（令牌、序号）<br/>rpc · control · blob · image" --> backend
@@ -112,7 +112,7 @@ flowchart TB
 
 | 文件 | 内容 | 谁写 | 事件 |
 | --- | --- | --- | --- |
-| `app.db` | `app_events`、`meta`；定时（`schedules`，以及还没跑完的 `schedule_runs`）和动态的条目（`feed_items`）；历史（`conversations`、`messages` 及全文索引、`stars`）；留给下次启动的后台任务（`background_tasks`）；还要在外面做的事（`effects`，§12.3） | 后端 | 和写入在同一个事务里 |
+| `app.db` | `app_events`、`meta`；定时（`schedules`，以及还没跑完的 `schedule_runs`）和动态的条目（`feed_items`）；历史（`conversations`、`messages` 及全文索引、`stars`）；留给下次启动的后台任务（`background_tasks`）；还要在外面做的事（`effects`，§11.4）；对话里的结果记录（`report_records`，§11.5）；主对话的请求、决策和动作（`routing_requests`、`routing_decisions`、`routing_actions`，见[路由设计](agent-routing-design.zh-CN.md)第 12 节） | 后端 | 和写入在同一个事务里 |
 | `memory.db` | 手填画像、记忆和证据、来源回执、变更历史、排除记录、待提取任务 | 后端记忆 Runtime | 提交后发布带 revision 的 `memory.changed` |
 | `trace.db` | 每轮的“过程”：工具调用和思考 | 过程插件（dsh 进程） | 无 |
 | `settings.json`、`models.json`、`mcp-servers.json`、`preferences.json` | key、模型提供方、MCP 服务器、偏好 | 后端 | 无 |
@@ -138,16 +138,16 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | --- | --- |
 | `memory` | 记忆工具、上下文注入、后端提取任务的模型计算 |
 | `trace` | 把每轮的工具调用和思考记进 `trace.db` |
-| `tasks` | 后台任务的工具（`list_background_tasks`、`get_background_task`、`start_background_task`、`stop_background_task`、`message_background_task`）和定时的工具（`schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete`）；由后端去做，范围由后端按工作目录和会话限定，不由工具参数决定 |
+| `tasks` | 后台任务的查询工具（`list_background_tasks`、`get_background_task`）和定时的工具（`schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete`）；由后端去做，范围由后端按工作目录和会话限定，不由工具参数决定。开始、停止任务和给任务发话不是工具，由主会话的路由决定交给后端去做（§11.1） |
 | `history` | 让模型查以前的对话 |
-| `stream` | 把回答的流式内容交给应用 |
-| `questions` | 模型向用户提问的卡片 |
-| `steer` | 一轮进行中用户插话：原话前加「【插话】」送进去（`steer-channel.ts`），人设要求模型逐句回应，再接着做手上的事。后台结果也走这条路插进正在跑的一轮（§11.5） |
+| `stream` | `viva-routing`：主会话的请求路由（[路由设计](agent-routing-design.zh-CN.md)）。把主会话收窄到路由、上下文和应用设置的工具，并换上主会话的人设；`commit_route` 的决定交给后端（`request-runtime.ts`）接受和执行；只显示获准回答的文字。它同时是回答流式内容交给应用的唯一途径 |
+| `questions` | 模型向用户提问的卡片（后台任务用；主会话用 `clarify` 在文字里提问） |
+| `steer` | 一轮进行中用户插话：原话带上请求头、前加「【插话】」送进去（`steer-channel.ts`），作为一条单独的请求路由。后台结果也走这条路插进正在跑的一轮（§11.5） |
 | `fork` | 回到早先某一点重新来过 |
 | `config` | 模型在对话里接入 MCP 服务器、新建或安装 skill，经用户批准 |
-| `permission` | 用户选的权限档位（完全、自动、工作区修改、仅可查看），用到 dsh 打开的每个会话；应用标为无人值守的会话（定时的运行）只能查看 |
-| `policy` | 工具运行前在 dsh 内检查应用的规则，被拒的调用作为工具错误交回模型 |
+| `permission` | 用户选的权限档位（完全、自动、工作区修改、仅可查看），用到 dsh 打开的每个会话；各档位允许什么完全由 dsh 的沙箱和审批预设决定，应用不另加规则 |
 | `plugins` | dsh 插件管理器的入口，供「能力 · 插件」使用 |
+| `mcp` | `viva-mcp`：用户的 MCP 服务器交给 dsh 的 MCP 管理器（`dsh-mcp-manager`），整个 dsh 只连一次、各会话共用，而不是每个会话各连一遍。应用在插件启动时和每次改动时把整组服务器经 IPC 发过去（`mcp-desk.ts`），密钥只在内存里；插件逐个注册，状态变化报回应用，「能力 · MCP」显示并能「重试」 |
 
 插件和应用之间走 dsh 启动时打开的 IPC 通道，每个约定各有自己的消息格式（如 `plugins/tasks/lib/channel.ts`）。
 
@@ -159,20 +159,20 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 **约定检查。** `APP_PLUGINS` 列出每个插件的名字、目录、约定和配置；插件在 `package.json` 里声明约定，如 `"viva": { "contract": { "memory": 6 } }`。启动前 `resolvePlugins` 检查插件存在、`package.json` 可读、名字一致、约定版本和 dsh 版本完全匹配；不通过的插件不写进 profile，原因显示在「能力」页。过程库记录 `meta.contract_version`。记忆库由后端通过 SQLite 的 `user_version` 校验契约。
 
-**各插件用到的 dsh 接口。** `memory` 使用 agent/pre-step、tools.register、llm/stream 钩子和 llm.stream；`trace`：agent/turn-stopping、session.eventAt；`policy`：tools/pre-execute（在授权之前，拒绝时附原因）；`stream`：agent/assistant-stream、session/event、agent/disposed；`plugins`：ctx.pluginManager。插件出错只降级：注入失败就不带记忆，记录过程失败就没有“过程”，对话照常。
+**各插件用到的 dsh 接口。** `memory`：agent/pre-step、sessionProjections、tools.register、agent/turn-stopping、llm.stream；`trace`：agent/turn-stopping、session.eventAt；`stream`（`viva-routing`）：agent/created、agent.ctx.tools.restrict、agent.ctx.plugin（dsh-persona）、tools/pre-execute（在审批之前）、tools.register、agent/pre-step、agent/turn-stopping、agent/status、agent/assistant-stream、session/event、agent/disposed、llm.stream；`plugins`：ctx.pluginManager；`mcp`：ctx.mcpManager（register、list、restart）、mcp-manager/status。插件出错只降级：注入失败就不带记忆，记录过程失败就没有“过程”，对话照常。
 
-**会话准备。** 新话题先显示空输入框，准备期间可以打字，发送要等准备好。最多提前准备一个独立的空会话，带自己的 MCP 进程，120 秒没用就作废。单例 MCP 服务器拒绝第二个连接时，丢掉这个预备会话，不影响正式的 MCP 状态。会话之间不共享 MCP 客户端；旧会话的资源关完，才创建新的冷启动 MCP。计时：后端设 `VIVA_SESSION_TIMING=1`，页面设 `localStorage.setItem('viva:session-timing', '1')`，只记阶段、耗时和结果，不记提示词和 MCP 配置。
+**会话准备。** 新话题先显示空输入框，准备期间可以打字，发送要等准备好。最多提前准备一个独立的空会话，120 秒没用就作废。会话不带自己的 MCP 服务器：用户的服务器由 `viva-mcp` 交给 dsh 的 MCP 管理器，整个 dsh 只连一次、各会话共用（单例服务器也只起一个进程）。连接在后台进行，每次尝试最多 30 秒，失败按退避自动重连；一个服务器卡住或坏掉只会让它自己的工具暂时没有，不会拖住会话的创建，也就不会拖慢 commit_route 交给后台任务。计时：后端设 `VIVA_SESSION_TIMING=1`，页面设 `localStorage.setItem('viva:session-timing', '1')`，只记阶段、耗时和结果，不记提示词和 MCP 配置。
 
 **升级 dsh 时要复查。**
 
-- `viva-stream` 依赖 dsh 的内部事件，不是通用的 ACP 扩展。dsh 固定在 `0.2.0-rc.2`，它的 ACP 适配器只转发完整的块。升级后用真实 dsh 和延迟 SSE 重跑 `test/stream-runtime.test.js`：第一段文字要先于回答完成到达，取消要保留已提交的部分。流式通道中途失败时，先撤回这次调用的临时内容，再用 ACP 的完整输出。
+- `viva-routing` 依赖 dsh 的内部事件，不是通用的 ACP 扩展。dsh 固定在 `0.2.2-rc.2`，它的 ACP 适配器只转发完整的块。升级后用真实 dsh 和延迟 SSE 重跑 `test/stream-runtime.test.js`：第一段文字要先于回答完成到达，取消要保留已提交的部分；再跑 `test/tasks-routing-dsh.test.ts`：第一步组装前已经收窄。流式通道中途失败时，撤回这次调用的临时内容，这次调用以错误结束；ACP 的文字从不直接显示，否则路由步骤的文字会漏出来。
 - 升级 dsh 时复验记忆通道。在遗忘和恢复旧路径后，捕获发给模型的第一条请求，核对排除状态在新会话开放前已生效。
 
 **几项定下来的取舍。**
 
 - 人设是个人工作助手，不用 ACP 模板的编程 agent 身份；测试检查发给模型的请求。
 - 不用 `dsh-time-context`：在 ACP 下没有浏览器时区，它会反复让模型确认日期。今天的日期由记忆插件注入。
-- `viva-policy` 在执行前拒绝名字含 send、reply、forward、post、publish、deliver、broadcast 的 MCP 工具（包括下划线和驼峰写法）。dsh 不会为 MCP 工具请求授权，所以这是“不替用户发出去”的硬边界。
+- 应用不在 dsh 的权限之上另设规则：dsh 不会为 MCP 工具请求授权，发送类工具（发邮件、发消息等）照常执行；「只起草、由用户自己发」只是人设里的要求，没有硬性拦截。
 - 其它模型复用 llm-pi-ai（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages），不另写插件。
 
 ## 7. 安全边界
@@ -187,8 +187,9 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | 系统钥匙串 | 只在外壳里用；后端只拿到一把数据密钥，经 IPC 通道传过去，不进环境变量，所以 dsh 继承不到 | `src/shell/data-key.ts`、`test/envelope.test.ts` |
 | 后端与 Electron | 后端运行时不导入 `electron`，桌面能力只通过 `HostCapabilities` 拿到；也不加载 `src/shell` 的任何东西 | `test/backend-boundary.test.ts` |
 | 事件表 | 事件只记 id、数字和文字长度；命令参数一律只记形状，API key 不会写进 `app.db` | `test/commands.test.ts`、记忆组冒烟测试（检查 `app.db` 及其日志文件里查不到 key） |
-| dsh 的环境 | 给 dsh 的环境去掉所有 `DSH_*`、`DEEPSEEK_*`、`ELECTRON_*`、`VIVA_*`，再放进应用设定的值；工具在 dsh 内先过 `viva-policy` 的规则 | `src/backend/dsh-runtime.ts`、`plugins/policy` |
+| dsh 的环境 | 给 dsh 的环境去掉所有 `DSH_*`、`DEEPSEEK_*`、`ELECTRON_*`、`VIVA_*`，再放进应用设定的值 | `src/backend/dsh-runtime.ts` |
 | 工作区文件 | 页面只能看工作区里的文件；`../`、绝对路径和指向工作区外的链接都被拒绝 | `src/backend/workspace-files.ts` |
+| 主会话的工具 | 主会话只拿到路由、上下文和应用设置的工具；每次调用在 DSH 请用户审批之前按分层再判一次；应用变更要本轮已接受的 `app_action` 放行，一次放行一次调用 | `plugins/routing/lib/policy.ts`、`test/tasks-routing-dsh.test.ts` |
 
 已知的缺口：用户安装的 dsh 插件和 dsh 跑在同一个进程里，拥有用户的文件权限。沙箱只管工具调用，不管插件本身，所以装插件等于信任它。
 
@@ -217,7 +218,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 - 同时发来的启动请求合用一次连接。停止立即撤销这一代的事件和启动结果；创建后、连接前收到停止，也不再连接。
 - 换 key 或增删模型时，等待旧实例真正释放，新的才会创建。启动失败也先清理实例；释放失败会明确阻止替换。
-- 实例退场时明确结束正在运行的前台轮，清除忙碌和等待状态，设置变更触发的有意重启也如此。换 key 时先结清旧话题，再创建新话题；结清不依赖已被过滤的旧实例事件。
+- 实例退场时明确结束正在运行的前台轮，清除忙碌和等待状态，设置变更触发的有意重启也如此；这一轮的路由请求同时结束（[路由设计](agent-routing-design.zh-CN.md)第 11 节）。换 key 时先结清旧话题，再创建新话题；结清不依赖已被过滤的旧实例事件。
 - 意外退出按上面的退避重启并接回当前对话；旧 generation 的退出不会触发新一次重启。退出标记会撤销待执行重启并禁止再启动。
 - 退出等待最多 5 秒；超时只结束等待，真实释放仍是之后启动必须通过的屏障。
 
@@ -279,28 +280,30 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 ## 11. 后台任务
 
-用户只管说话。开始后台任务、让它停下、再问它，都由 agent 通过工具去做。界面负责显示任务，只保留两件只有用户能做的事：批准任务要做的操作，以及让任务停下。
+用户只管说话。开始后台任务、让它停下、再问它，都由主 agent 为每条请求提交的路由决定（`commit_route`，见[路由设计](agent-routing-design.zh-CN.md)），由后端去做。界面负责显示任务，只保留两件只有用户能做的事：批准任务要做的操作，以及让任务停下。
 
-### 11.1 agent 的工具（`viva-tasks`）
+### 11.1 交接任务
 
-| 工具 | 作用 |
+主 agent 用 `viva-tasks` 的 `list_background_tasks`、`get_background_task` 查任务列表、单个任务的状态和最新输出；开始、停止和发话是路由决定里的动作，由请求运行时（`src/backend/request-runtime.ts`）在决定被接受、写进 `app.db` 之后交给 TaskRuntime 执行，每个动作留下回执：
+
+| 动作 | 作用 |
 | --- | --- |
-| `list_background_tasks`、`get_background_task` | 任务列表，以及单个任务的状态和最新输出 |
-| `start_background_task(brief)` | 在主对话的工作目录里开一个全新的 dsh 会话，交代就是它的第一条消息 |
-| `stop_background_task(taskId)` | 停下它这一轮；任务还在，之后还能再发消息 |
-| `message_background_task(taskId, text)` | 正在跑的任务，这句话插进它这一轮；已经做完、停下或失败的，作为它的下一个问题；上次 Viva 退出时没做完（已中断）的，先按 id 用 ACP 的 `session/resume` 接回来 |
+| `start(title, brief)` | 在请求所在对话的工作目录里开一个全新的 dsh 会话，交代就是它的第一条消息，`title` 是卡片标题；屏幕上已换成别的对话时不开，回执记为失败 |
+| `stop(taskId)` | 停下它这一轮；任务还在，之后还能再发消息 |
+| `message(taskId, text)` | 正在跑的任务，这句话插进它这一轮；已经做完、停下或失败的，作为它的下一个问题；上次 Viva 退出时没做完（已中断）的，先按 id 用 ACP 的 `session/resume` 接回来 |
 
-- 交代要能独立成立：目标、所需的背景、文件路径、报错信息、限制条件和输出语言。卡片把交代显示为任务的第一条消息，标题取它的第一行。
-- 同时最多 5 个在跑，接着问和接着做也算。满了时工具返回"已满"的错误，不排队。任务的会话不能开始、停止其他任务，也不能给它们发消息，它的查询只看得到自己。
-- 工具说明里写明：开始任务后就结束这一轮，不要等待或轮询，结果会自己回来。任务交回来的是数据，不是指令。凡是往外发送的，要拿到可以核对的凭据（链接、编号、路径），核对之后再告诉用户。
-- 权限：任务沿用用户的权限级别，发送类工具仍会在执行前被拦下（`viva-policy`）。
+- 交代要能独立成立：目标、所需的背景、文件路径、报错信息、限制条件和输出语言。卡片把交代显示为任务的第一条消息；标题取决策里的任务名，没有任务名时取对应的目标。
+- 同时最多 5 个在跑，接着问和接着做也算。满了时回执写明"已满"，主 agent 如实告诉用户，不排队。只有请求所在工作目录里的任务能被停止或发话。任务的会话不能开始、停止其他任务，也不能给它们发消息，它的查询只看得到自己。
+- 交接办成后，路由决策里那句 `notice`（交给了哪个任务、去做什么）作为这一轮的回复显示，这一轮随即结束，不等待也不轮询，结果会自己回来。任务交回来的是数据，不是指令。凡是往外发送的，要拿到可以核对的凭据（链接、编号、路径），核对之后再告诉用户。
+- 回执存下之前 Viva 退出的动作，下次启动标为"不确定"，不会重做。
+- 权限：任务沿用用户的权限级别，完全按 dsh 的档位执行。
 
 ### 11.2 TaskRuntime：后台任务唯一的写入方
 
 `src/backend/task-runtime.ts` 管着每个任务的生命周期（在跑、等待、做完、停下、出错、已中断）、它在等什么、在跑的名额、它说过的话，以及它被保存下来的内容。其余模块各司其职：`task-registry.ts` 根据 dsh 说的话算出任务的状态，并维护一个随每次变化增长的 `revision`；`task-words.ts` 和 `task-transcript.ts` 保存任务说的话；`task-store.ts` 跨启动保存任务；`task-ipc.ts` 只放窗口的命令。没有别的模块写这些。
 
 - **标识。** `taskId` 指一个任务；`runId` 指它的一次运行，从开始它的那一轮、或让它重新开始的那条消息起，到那一轮结束为止。关于任务的每次变化、事件、推送和副作用都带着这两者。
-- **接口。** 每个调用方只拿到窄接口：`window`（task-ipc.ts）、`agent`（viva-tasks 工具）、`dsh`（它报告的事）、`reports`（task-reports.ts）。
+- **接口。** 每个调用方只拿到窄接口：`window`（task-ipc.ts）、`agent`（viva-tasks 的查询，以及请求运行时执行的交接）、`dsh`（它报告的事）、`reports`（task-reports.ts）。
 - **事务。** 任务的一次变化（`task.started`、`task.restarted`、`task.ended`、`task.closed`）把任务的状态、它的事件，以及它排进队列的副作用写在同一个事务里（`apply`）；变化失败时，内存里也一并回滚。推送给窗口、执行副作用，都在提交之后。dsh 对一轮结束只说一次，所以没能存下的结束会再试（1、5、30 秒后，之后每 60 秒一次），只要那次运行仍是这个任务当前的运行。
 - **dsh 说的话。** dsh 的任务事件先交给 runtime（`task-signals.ts`）；一轮的结束、等待的开始和结束，随后作为事件核心的信号记下，只用于记录。任务结束之后要做的事，都以存下的 `task.ended` 为依据，从不依据这个信号。
 - **运行准入。** 每次运行都从 `reserveRun` 开始：新建、接着问、接着做，都在任何等待之前先预留 5 个名额中的一个；开始这次运行的变化提交时，名额交给 registry；结束或失败后，再交还仍占着的部分。同一个任务同一时刻只开始一次新运行。任务的开始没能存下时，dsh 为它建好的会话会被放掉；如果 Viva 恰好在这之间退出，那个会话就留给 dsh，没有任务持有它。
@@ -341,9 +344,9 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 子 agent 适合那种会撑满上下文、但这一轮就需要结果的子工作（读一批文档交回结论、同时查几件事）。要跑很久、该让用户看见、或之后可能还要追问的工作，交给 Viva 的任务。在 `viva.patch.yml` 里：
 
-- `subagent` 和 `subagent_fork` 保留，关掉后台模式（`enableRunInBackground: false`），结果作为工具结果在同一轮回来；`maxDepth: 1`：子 agent 自己是第 1 层，不能再往下委派。
-- 子 agent 只拿到用于查找的只读工具，按允许名单：`toolFilter.allow` 是 `read`、`glob`、`grep`、`read_image`、`web_search`、`web_fetch`、`memory_recall`、`search_conversations`、`read_conversation`、`todo_write`。
-- `send_message`、`list_agents` 和 `interrupt_agent` 关掉。人设说明主对话会等子 agent 的结果，也说明子 agent 和 Viva 任务怎样分工。
+- `subagent` 和 `subagent_fork` 保留，`maxDepth: 1`：子 agent 自己是第 1 层，不能再往下委派。结果在同一次回复里回到对话（`test/tasks-plugin.test.ts` 用真实 dsh 检查）；dsh 0.2.1 去掉了后台模式的开关。
+- 子 agent 只拿到用于查找的只读工具，按允许名单：`read`、`glob`、`grep`、`read_image`、`web_search`、`web_fetch`、`memory_recall`、`search_conversations`、`read_conversation`、`todo_write`（`src/shared/subagent-tools.ts`）。dsh 0.2.1 去掉了 `tool-subagent` 的 `toolFilter`，所以由 `viva-routing` 在每个会话 `origin: 'subagent'` 的 agent 创建时收窄。
+- 控制工具（`send_message`、`interrupt_agent`、`wait_agent`）关掉。人设说明主对话会等子 agent 的结果，也说明子 agent 和 Viva 任务怎样分工。
 - 有了允许名单，`subagent_fork` 的工具表和父会话不同，可能不再命中 KV 缓存；没有用真实的 DeepSeek API 测过。
 
 ### 11.8 没有从 Super-agent 采纳的部分
@@ -371,22 +374,22 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 - **来源配置。** 每个来源一份：开没开、能读到什么程度、规则、每小时最多判断几件。这就是用户的授权，随来源保存，每次运行前再核对一次。
 - **只出一次，可靠提交。** 一个编号最多产生一条条目；判断、条目和它的通知在同一次变更里保存；失败的步骤重试，不丢弃。复用 effects 队列（§11.4），不另建一套重试。
 - **内容不可信。** 邮件和网页可能夹带指令。判断不带工具，输出只是一段放进动态的文字；只有用户点「在对话里继续」才会进入能做事的对话，在那里仍标为外部材料。不带工具限制的是副作用，不能保证模型不受内容影响。
-- **来自 dsh 的部分。** 时间用 `dsh-schedule` 的记录和到期计算（一次、每天、每周、cron，含时区和夏令时规则），定时任务的记录就是 dsh 的格式。暂不使用 `dsh-schedule` 和 `dsh-webhook` 的运行时：它们需要 dsh 的 Web Host 组合（Viva 经 ACP 运行 dsh），动作是把提示词投进带工具的会话，而且同一次到期可能投递两次。定时的运行由 Viva 的权限插件保证只读（无人值守的会话），不只靠提示词。
+- **来自 dsh 的部分。** 时间用 `dsh-schedule` 的记录和到期计算（一次、每天、每周、cron，含时区和夏令时规则），定时任务的记录就是 dsh 的格式。暂不使用 `dsh-schedule` 和 `dsh-webhook` 的运行时：它们需要 dsh 的 Web Host 组合（Viva 经 ACP 运行 dsh），动作是把提示词投进带工具的会话，而且同一次到期可能投递两次。定时在应用标为无人值守的会话里运行，按用户选的权限档位执行，需要确认的直接拒绝（见下文「只有一种定时」）。
 - 第一个来源是定时；邮件和网页的适配器以后再做，连同它们的规则、模型判断和用量上限。
 
 用户在哪里看到它们（2026-11-06 与 owner 确定）。后台和动态是两件事，彻底分开，互不交接：
 
-- **后台**（下面的布局是暂缓的方案，见 F1a-2）是用户交代、心里有预期的事：后台任务（都由 agent 开，用户让它开的或它自己开的）。它是单独的页面，移出 hub（搜索 · 关于你 · 设置保留三项）。入口是岛的尾格：没有任务时是安静的「后台」，有任务在做时是转圈加数量，有任务等你时整个岛描橙边并写「N 个等你」，做完还没看的是 ✓ N。点尾格在岛下展开一个小清单（等你的排最前，可以直接允许），底部进完整页面；⌘J 也能打开。页面左边分「等你 · 在做 · 做完了」，右边是选中的那件（批准卡片，或它完整的对话）。岛上只数这些；跟进不再出现在岛上。
-- **动态**是应用主动带来的事：定时带回来的结果，以及已安排的定时。入口是标题栏的「动态」按钮，新东西用蓝色数字（橙色仍只表示在等你）。页面开头是她的一句话和她的图，下面是「新的 · 接下来（已安排的定时，左边写时间；可暂停、恢复、删除）· 看过的」。右边打开的那一件写明来源；操作只有「在对话里继续」（带着条目和来源进入屏幕上的对话）和「不用了」。动态里的东西不会变成后台任务；定时的只读运行不显示在后台、不计入岛上的数字，也不作为后台任务的结果回报到对话里。
+- **后台**（下面的布局是暂缓的方案，见 F1a-2）是用户交代、心里有预期的事：后台任务（都由 agent 开，用户让它开的或它自己开的）。它是单独的页面，移出 hub（搜索 · 关于你 · 设置保留三项）。入口是岛的尾格：没有任务时是安静的「后台」，有任务在做时是转圈加数量，有任务等你时整个岛描橙边并写「N 个等你」；做完的不在岛上计数，结果由主对话告诉你。点尾格在岛下展开一个小清单（等你的排最前，可以直接允许），底部进完整页面；⌘J 也能打开。页面左边分「等你 · 在做 · 做完了」，右边是选中的那件（批准卡片，或它完整的对话）。岛上只数这些；跟进不再出现在岛上。
+- **动态**是应用主动带来的事：定时带回来的结果，以及已安排的定时。入口是标题栏的「动态」按钮，新东西用蓝色数字（橙色仍只表示在等你）。页面开头是她的一句话和她的图，下面是「新的 · 接下来（已安排的定时，左边写时间；可暂停、恢复、删除）· 看过的」。右边打开的那一件写明来源；操作只有「在对话里继续」（带着条目和来源进入屏幕上的对话）和「不用了」。动态里的东西不会变成后台任务；定时的运行不显示在后台、不计入岛上的数字，也不作为后台任务的结果回报到对话里。
 - 交付：F1a-1 动态页及其入口（已完成，#93）；定时来源（已完成，#94）。后台移出 hub（F1a-2）暂不做：后台和动态无关，留在原处照常可用（owner，2026-11-06）。
-- **只有一种定时（owner，2026-11-06）：时间加一段提示词。** 模型根据对话写好提示词，用卡片提出（什么时候、做什么），用户同意才保存。时间可以是一次、每天、每周或 cron，用 `dsh-schedule` 的记录格式。到点时，这段提示词在一个新开的、被应用标为「无人值守」的会话里运行，工作目录是定时创建时的那个：不管用户选了哪个权限级别，Viva 的权限插件都只让它用只读工具、只看工作区里的文件，本该询问用户的一律拒绝，因为没人在场回答（`unattendedDecision`）。这个会话不是后台任务：它的事件只交给这次运行（`unattended-runs.ts`），这一轮结束就关掉。到点的事从定时里取出，并在同一个事务里存成一次待运行，没跑完的下次启动会再跑；失败的稍后重试，最多三次，之后变成一条说明没做成的条目；开始前定时已被暂停或删除的就不跑；回答拿到了但条目没存下的，隔一段越来越长的时间再存，不再问一次模型（`schedule-runs.ts`）。最后的回答成为一条动态条目（按这次到点作键，不会出现两条），通知在同一个变更里排进 effects 队列。提醒也一样：它的提示词就是让它写一句提醒。每次到点只执行一次，错过的在启动时补上，在「接下来」里可暂停、恢复、删除。随之去掉：跟进的两种时间（提醒、准备）、准备时段及其预设、用户忙时让路、每日调用上限、「今天」汇总和空闲时段通知，以及 `followup-notifier.ts`、`prepare-scheduler.ts`、`prepare-schedule.ts`、`notice-plan.ts` 和后台准备设置；以前的跟进直接清掉（开发阶段不做兼容）。
+- **只有一种定时（owner，2026-11-06）：时间加一段提示词。** 模型根据对话写好提示词，用卡片提出（什么时候、做什么），用户同意才保存。时间可以是一次、每天、每周或 cron，用 `dsh-schedule` 的记录格式。到点时，这段提示词在一个新开的、被应用标为「无人值守」的会话里运行，工作目录是定时创建时的那个，按用户选的权限级别执行；按那个级别本该询问用户的一律拒绝，因为没人在场回答（`acp-bridge.ts` 对无人值守会话的授权请求直接取消）。这个会话不是后台任务：它的事件只交给这次运行（`unattended-runs.ts`），这一轮结束就关掉。到点的事从定时里取出，并在同一个事务里存成一次待运行，没跑完的下次启动会再跑；失败的稍后重试，最多三次，之后变成一条说明没做成的条目；开始前定时已被暂停或删除的就不跑；回答拿到了但条目没存下的，隔一段越来越长的时间再存，不再问一次模型（`schedule-runs.ts`）。最后的回答成为一条动态条目（按这次到点作键，不会出现两条），通知在同一个变更里排进 effects 队列。提醒也一样：它的提示词就是让它写一句提醒。每次到点只执行一次，错过的在启动时补上，在「接下来」里可暂停、恢复、删除。随之去掉：跟进的两种时间（提醒、准备）、准备时段及其预设、用户忙时让路、每日调用上限、「今天」汇总和空闲时段通知，以及 `followup-notifier.ts`、`prepare-scheduler.ts`、`prepare-schedule.ts`、`notice-plan.ts` 和后台准备设置；以前的跟进直接清掉（开发阶段不做兼容）。
 - **以自然语言为中心（owner，2026-11-06）。** 定时的建立、修改、暂停、删除都靠对话：模型有一组形状和 `dsh-schedule` 一致的工具（`schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete`），新建仍要用户在卡片上同意。页面只负责展示，上面的按钮只是能用话说的事情的快捷方式。
-- 定时来源在 #94 里分五步做完：`feed_items` 及其存储；定时的表、卡片和定时器；到点以无人值守的只读方式运行，回答成为条目和通知；动态列出条目和定时；删除旧的跟进那一套。
+- 定时来源在 #94 里分五步做完：`feed_items` 及其存储；定时的表、卡片和定时器；到点在无人值守的会话里运行，回答成为条目和通知；动态列出条目和定时；删除旧的跟进那一套。
 
 它取代了跟进的提醒（`followup-notifier.ts`）和后台准备（`prepare-scheduler.ts`、`prepare-schedule.ts`）；跟进的「盯着文件」在此之前已删（#92）。结果只显示在动态里，用户要继续时才进入对话，不作为后台任务的结果回报。
 
 ### 12.3 顺序
 
-1. 已完成：删除跟进的「盯着文件」；动态页及其入口；靠对话定、改、删的定时，到点只读运行，结果进动态；删除跟进那一套（§12.2）。邮件和网页来源以后再做。
+1. 已完成：删除跟进的「盯着文件」；动态页及其入口；靠对话定、改、删的定时，到点在无人值守的会话里运行，结果进动态；删除跟进那一套（§12.2）。邮件和网页来源以后再做。
 
 此前已完成：任务结束的唯一写入方；TaskRuntime；effects 队列和回报；对话里的记录；窗口的顺序、由快照建任务、一个对话 reducer；运行准入；生命周期只认快照，以及首次加载的交接；同代重连不漏推送（§12.1）。

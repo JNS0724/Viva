@@ -11,6 +11,7 @@ import { DEEPSEEK_DEFAULT } from '../src/backend/model-providers.ts'
 import type { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import type { TestContext } from 'node:test'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { questionOf } from './fixtures/fake-llm.js'
 
 /** The memory plugin inside the real dsh, with the app's whole profile and a fake model. */
 
@@ -29,7 +30,7 @@ async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]
   })
   harness.defer(() => memory.close())
   agent = harness.bridge({
-    onSessionCreated: (id, parent) => {
+    onSessionCreated: (id, _cwd, parent) => {
       memory.recordSession(id)
       if (parent) dispatch.inherit(parent, id)
     },
@@ -97,11 +98,18 @@ function contextOf(request: ModelRequest) {
   return parts.find((part) => part.type === 'text' && part.text?.startsWith('<about-user>'))?.text ?? ''
 }
 
+/** Whether the request's last message is one the user's turn begins with (not a tool's result in a later step). */
+const beginsTurn = (request: ModelRequest) => {
+  const last = request.messages[request.messages.length - 1]
+  return !Array.isArray(last.content) || last.content.some((part) => part.type === 'text')
+}
+
 function lastContext(llm: { requests: object[] }) {
-  // Background extraction and synthesis share the endpoint with the foreground conversation.
+  // Background extraction and synthesis share the endpoint with the foreground conversation, and a routed turn takes
+  // several steps: the block goes with the step the turn begins with.
   // The fake endpoint records parsed Messages API requests with this shape.
   const requests = llm.requests as ModelRequest[]
-  const request = requests.findLast(request => JSON.stringify(request.system ?? '').includes('你是用户的个人工作助手'))
+  const request = requests.findLast(request => JSON.stringify(request.system ?? '').includes('你是用户的个人工作助手') && beginsTurn(request))
   assert.ok(request, 'the foreground model request must exist')
   return contextOf(request)
 }
@@ -167,9 +175,7 @@ test('real DSH receives cross-language memory while the local encoder reuses its
   const { memory, ask, freshSession, llm } = await setupMemory(t, { decideFirst: raw => {
     const request = raw as ModelRequest
     if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    const words = request.messages.flatMap(({ content }) => typeof content === 'string' ? [content]
-      : content.flatMap(part => part.type === 'text' && part.text ? [part.text] : []))
-    const query = queries.find(value => words.includes(value))
+    const query = queries.find(value => questionOf(request.messages) === value)
     return query ? { tool: { name: 'memory_recall', input: { query, deep: true } } } : null
   } }, {
     fingerprint: 'fixture-e5',
@@ -239,7 +245,7 @@ test('the adapter requests asynchronous extraction of the received source', { ti
   const { llm, events, ask, memory } = await setupMemory(t)
   const words = '以后回答我，先给结论再展开'
   await ask(words)
-  assert.equal(events.some(event => event.update?.sessionUpdate === 'tool_call'), false)
+  assert.equal(events.some(event => event.update?.sessionUpdate === 'tool_call' && String(event.update.title).startsWith('memory_')), false)
   const saved = await eventually(() => memory.listMemories().items.find(item => item.kind === 'preference'))
   assert.equal(saved?.text, words)
   const extraction = (llm.requests as ModelRequest[]).find(request => JSON.stringify(request.system).includes('UTF-16'))
@@ -250,9 +256,12 @@ test('the adapter requests asynchronous extraction of the received source', { ti
 })
 
 test('a task-specific question card is not accepted as a user fact', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { events, ask, agent, memory, store } = await setupMemory(t)
-  const turn = ask('明天天气怎么样')
-  const asked = await eventually(() => events.find(event => event.type === 'question'))
+  const { events, agent, memory, store } = await setupMemory(t)
+  const task = await agent.startTask()
+  assert.ok(task.ok, JSON.stringify(task))
+  const turn = agent.promptTask(task.taskId, '明天天气怎么样')
+  const asked = await eventually(() => events.find(event => event.type === 'task_question'))
+  assert.ok(asked)
   assert.equal(agent.answerQuestion(asked.questionId, [{ id: 'city', selected: ['上海'] }]), true)
   await turn
   await memory.wake()
@@ -495,23 +504,91 @@ test('DSH releases its dispatch lease while the provider is still preparing a re
   const marker = 'pending-response-memory-marker'
   const answer = 'response-after-request-body'
   const { llm, bridge, events } = await setup(t, {
-    decideFirst: request => JSON.stringify(request).includes(marker) ? { text: answer, delayMs: 1500 } : null,
+    decideFirst: request => JSON.stringify(request).includes(marker)
+      && JSON.stringify((request as ModelRequest).messages.at(-1)?.content).includes('tool_result')
+      ? { text: answer, delayMs: 1500 } : null,
   })
   const acquired = new Set<string>()
-  let released = false
+  let released = 0
   const agent = bridge({
     memoryRequest: () => '',
     beginMemoryDispatch: id => { acquired.add(id); return true },
-    endMemoryDispatch: id => { if (acquired.delete(id)) released = true },
+    endMemoryDispatch: id => { if (acquired.delete(id)) released++ },
   })
   await agent.start()
   const turn = agent.prompt(marker)
   try {
-    assert.ok(await eventually(() => released && llm.requests.some(request => JSON.stringify(request).includes(marker)),
+    assert.ok(await eventually(() => released >= 2 && llm.requests.some(request =>
+      JSON.stringify((request as ModelRequest).messages.at(-1)?.content).includes('tool_result')),
       { timeoutMs: 4000, intervalMs: 10 }))
     assert.ok(!replies(events).join('').includes(answer), 'the request body lease is independent of response delivery')
   } finally { await turn }
   assert.ok(replies(events).join('').includes(answer))
+})
+
+for (const memoryReady of [true, false]) {
+  test(`fast steering ${memoryReady ? 'checks the dispatch barrier for its own request' : 'keeps working through the main agent without a guarded fast model'}`,
+    { timeout: DSH_TIMEOUT_MS }, async t => {
+      const ask = '比较两份报告，回复要详细'
+      const steer = '再另外整理出一份会议纪要'
+      const { llm, bridge, requests } = await setup(t, {
+        decideFirst: raw => {
+          const request = raw as ModelRequest
+          if (JSON.stringify(request.system).includes('Viva 的快速调度')) return { text: '{"decision":"defer"}' }
+          if (JSON.stringify(request.messages.at(-1)?.content).includes('tool_result')
+            && request.messages.some(({ content }) => JSON.stringify(content).includes(ask))
+            && !request.messages.some(({ content }) => JSON.stringify(content).includes(steer))) {
+            return { text: '两份报告的比较。', delayMs: 1300 }
+          }
+          return null
+        },
+      })
+      let denyNext = false
+      let denied = false
+      const agent = bridge({
+        memoryRequest: memoryReady ? () => '' : undefined,
+        beginMemoryDispatch: () => {
+          if (!denyNext) return true
+          denyNext = false
+          denied = true
+          return false
+        },
+        taskRead: () => ({ tasks: [] }),
+      })
+      const { sessionId } = await agent.start()
+      assert.ok(sessionId)
+      assert.equal(agent.memory.ready(), memoryReady)
+      const turn = agent.prompt(ask)
+      try {
+        assert.ok(await eventually(() => (llm.requests as ModelRequest[]).some(request =>
+          JSON.stringify(request.messages.at(-1)?.content).includes('tool_result')), { intervalMs: 10 }))
+        denyNext = memoryReady
+        assert.deepEqual(await agent.steer(steer), { ok: true })
+        if (memoryReady) assert.ok(await eventually(() => denied, { timeoutMs: 900, intervalMs: 15 }))
+      } finally { await turn }
+      assert.ok(llm.requests.every(raw => !JSON.stringify((raw as ModelRequest).system).includes('Viva 的快速调度')),
+        'nothing from the fast lane may leave without authorization')
+      assert.ok(llm.requests.some(request => JSON.stringify(request).includes(steer)), 'the main route still gets the interjection')
+      assert.deepEqual(requests.endTurn({ sessionId, reason: 'unrouted' }), [])
+    })
+}
+
+test('an idle interjection starts neither a fast model request nor a routing decision', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const marker = '把会议纪要另交给后台'
+  const { llm, bridge, requests } = await setup(t, {
+    decideFirst: request => JSON.stringify((request as ModelRequest).system).includes('Viva 的快速调度')
+      ? { text: '{"decision":"start","brief":"整理会议纪要"}' } : null,
+  })
+  const agent = bridge({ taskRead: () => ({ tasks: [] }) })
+  const { sessionId } = await agent.start()
+  assert.ok(sessionId)
+  await agent.prompt('先看看这份报告')
+  assert.equal(agent.memory.ready(), true)
+  assert.deepEqual(await agent.steer(marker), { ok: false, reason: 'idle' })
+  // Starting another real step proves no fast request was allowed to reach the provider during the failed steering.
+  await agent.prompt('继续下一件事')
+  assert.ok(llm.requests.every(raw => !JSON.stringify((raw as ModelRequest).system).includes('Viva 的快速调度')))
+  assert.deepEqual(requests.endTurn({ sessionId, reason: 'unrouted' }), [])
 })
 
 
@@ -524,6 +601,7 @@ test('the model is told it is a personal work assistant, not the coding agent of
 
   const request = JSON.stringify(llm.requests[0])
   assert.match(request, /你是用户的个人工作助手/)
-  assert.match(request, /你的工作目录是 /)
+  // The working directory comes in dsh's runtime context now (it has no {{cwd}} for the persona any more).
+  assert.match(request, /Current working directory: /)
   assert.doesNotMatch(request, /coding agent/)
 })

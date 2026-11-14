@@ -84,10 +84,10 @@ function renderSettingsIfChanged(container: HTMLElement, state: State, handlers:
   renderSettings(container, state.settings, state.models, handlers)
 }
 let renderedCapabilities: unknown[] = []
-/** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins and on itself. */
+/** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins, how the servers stand now, and on itself. */
 function renderCapabilitiesIfChanged(dom: Dom, state: State, handlers: Handlers) {
   const connected = state.info.mode === 'live'
-  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, state.importFlow, connected]
+  const inputs = [localeRevision(), state.capabilities, state.extensions, state.plugins, state.importFlow, connected, state.info.mcp]
   if (inputs.every((value, i) => value === renderedCapabilities[i])) return
   renderedCapabilities = inputs
   const problems = capabilityProblems(state)
@@ -112,7 +112,8 @@ function latestQuestionTop(thread: HTMLElement, scroll: HTMLElement) {
 
 /** Re-render the thread, then let the follower decide whether (and how far) to scroll. */
 function renderThreadFollowing(dom: Dom, state: State, handlers: Handlers, now: number) {
-  if (!renderThread(dom.thread, state, handlers, now)) return
+  // Stream updates grow retained text nodes even when the thread's direct children stay attached.
+  renderThread(dom.thread, state, handlers, now)
   queueLayout(dom.thread, () => {
     if (!dom.thread.isConnected || dom.thread.hidden) return
     return dom.follower.measureAfterRender(() => latestQuestionTop(dom.thread, dom.scroll))

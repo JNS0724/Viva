@@ -13,12 +13,22 @@ function deferred<T>() {
 const fail = (value: unknown) => assert.fail(String(value))
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 const prompt = [{ type: 'text' as const, text: 'work' }]
+/** The app's side of the stream, its plugin side confirming every bind and flush with nothing shown. */
+function confirmedStreams() {
+  const streams = createAssistantStream({ emit: () => {}, send: message => {
+    const { type, operation } = message as { type: string, operation: string }
+    if (type === 'assistant_stream_bind') streams.receive({ type: 'assistant_stream_bound', version: 1, operation })
+    if (type === 'assistant_stream_flush') streams.receive({ type: 'assistant_stream_flushed', version: 1, operation, messages: [], finalReply: false })
+  } })
+  streams.receive({ type: 'assistant_stream_ready', version: 1 })
+  return streams
+}
 
 test('cancel deadline revokes one operation, and its late response/finally cannot end a newer operation of the same session', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const first = deferred<PromptResponse>(), second = deferred<PromptResponse>(), ended: string[] = [], cancelled: string[] = []
   let requested = 0, forced = 0
-  const streams = createAssistantStream({ send: () => {}, emit: () => {} })
+  const streams = confirmedStreams()
   const operations = createAcpOperations({
     streams, connection: () => ({ prompt: () => (++requested === 1 ? first.promise : second.promise), cancel: () => new Promise(() => {}) }),
     cancelPermissions: id => { cancelled.push(id) }, streamUpdate: () => {},
@@ -52,7 +62,7 @@ test('disposal while stream binding waits cannot send a late native prompt or re
 
 test('prompt admission waits for stream setup and the final session check', async () => {
   const binding = deferred<void>()
-  const streams = createAssistantStream({ send: () => {}, emit: () => {} })
+  const streams = confirmedStreams()
   let allowed = true
   const events: string[] = []
   const operations = createAcpOperations({
@@ -76,7 +86,7 @@ test('prompt admission waits for stream setup and the final session check', asyn
 
 test('captured context cannot be changed by the caller or a reader, and completed operations reject unowned stream updates', async () => {
   const result = deferred<PromptResponse>(), events: unknown[] = [], context = { conversationId: 'original', sessionId: 's' }
-  const streams = createAssistantStream({ send: () => {}, emit: () => {} })
+  const streams = confirmedStreams()
   const operations = createAcpOperations({
     streams, connection: () => ({ prompt: () => result.promise, cancel: async () => {} }), cancelPermissions: () => {},
     streamUpdate: (_id, _update, captured) => { events.push(captured) },
@@ -87,4 +97,34 @@ test('captured context cannot be changed by the caller or a reader, and complete
   operations.forwardStream('s', { chunk: 'late' })
   assert.deepEqual(events, [{ conversationId: 'original', sessionId: 's' }])
   operations.dispose()
+})
+
+test('cancelled preparation cannot start a late prompt or release a newer operation', async () => {
+  const binding = deferred<void>(), result = deferred<PromptResponse>()
+  const streams = confirmedStreams()
+  let prompted = 0, cancelled = 0, finished = 0
+  const operations = createAcpOperations({ streams, cancelPermissions: () => {}, streamUpdate: () => {},
+    connection: () => ({ prompt: () => { prompted++; return result.promise }, cancel: async () => {} }) })
+  const first = operations.run({ sessionId: 'session', prompt, prepare: () => binding.promise, onEnd: fail, onError: fail })
+  assert.equal(operations.has('session'), true)
+  assert.equal(operations.cancelPreparing('session', () => { cancelled++ }), true)
+  const next = operations.run({ sessionId: 'session', prompt, onEnd: () => { finished++ }, onError: fail })
+  await flush()
+  binding.resolve(); await first
+  assert.equal(prompted, 1, 'only the new request may prompt')
+  assert.equal(operations.has('session'), true)
+  assert.equal(cancelled, 1)
+  result.resolve({ stopReason: 'end_turn' }); await next
+  assert.equal(finished, 1)
+})
+
+test('a prompt failure still settles once when gated output recovery fails too', async () => {
+  const failure = new Error('Native prompt failed')
+  const errors: unknown[] = []
+  const streams = createAssistantStream({ send: () => {}, emit: () => {} })
+  const operations = createAcpOperations({ streams, cancelPermissions: () => {}, streamUpdate: () => {},
+    connection: () => ({ prompt: async () => { throw failure }, cancel: async () => {} }) })
+  await operations.run({ sessionId: 'session', prompt, onEnd: fail, onError: error => errors.push(error) })
+  assert.deepEqual(errors, [failure])
+  assert.equal(operations.has('session'), false)
 })

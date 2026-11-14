@@ -45,13 +45,16 @@ export interface DshDirs { defaultDir: string, lastDir: string }
 /**
  * IPC for the 扩展 section of settings: the user's MCP servers and skills, to list, edit and remove, and the
  * servers of the user's own dsh, to import with their keys. Adding one by hand happens in the conversation
- * (viva-config, config-channel.js). Any change to the servers reattaches the session.
+ * (viva-config, config-channel.js). A change to the servers goes to viva-mcp at once (dsh's MCP manager), no session
+ * reopened; 重试 starts a server that stopped trying again.
  */
 export function registerExtensionsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   store: ReturnType<typeof createMcpConfigStore>,
   roots: () => ReturnType<typeof skillRoots>,
-  mcpStatus: () => { active: string[], dropped: Array<{ name: string, reason: string }> },
+  mcpStatus: () => { active: string[], connecting: Array<{ name: string, reason: string }>, dropped: Array<{ name: string, reason: string }> },
   applyMcp: () => Promise<object | null>,
+  /** 重试: the manager starts that server again, with a fresh retry budget. */
+  restartMcp: (name: string) => void,
   trash: (file: string) => Promise<void>,
   /** Shows a file in the system's file manager. */
   reveal: (file: string) => void,
@@ -61,7 +64,7 @@ export function registerExtensionsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps
   importDsh: (dir: string) => Promise<ImportResult>,
   rememberDshDir: (dir: string) => void,
 }) {
-  const { store, roots, mcpStatus, applyMcp, trash, reveal, dshDirs, chooseDshDir, importDsh, rememberDshDir } = deps
+  const { store, roots, mcpStatus, applyMcp, restartMcp, trash, reveal, dshDirs, chooseDshDir, importDsh, rememberDshDir } = deps
   const handle = handlerOf(ipcMain)
   const userRoot = () => roots().find((root) => root.managed)
 
@@ -77,6 +80,13 @@ export function registerExtensionsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps
   }
 
   handle('ext:get', view)
+
+  handle('ext:restart-mcp', (name) => {
+    const server = store.list().find((item) => item.name === assertName(name))
+    if (!server) throw new Error(t("main.extensions-ipc.no.server.named", { name: name }))
+    restartMcp(server.name)
+    return view()
+  })
 
   handle('ext:remove-mcp', async (name) => {
     store.remove(assertName(name))

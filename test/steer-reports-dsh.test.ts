@@ -11,6 +11,7 @@ import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
 import { startFakeLlm } from './fixtures/fake-llm.js'
 import { randomUUID } from 'node:crypto'
+import { testRequests } from './fixtures/request-routing.ts'
 
 /**
  * A background task's result into the main conversation, on the real dsh with Viva's plugins (system-design §11.5):
@@ -41,7 +42,7 @@ async function harness(t: TestContext) {
   ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
   const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
   const events: Event[] = []
-  const bridge = createAcpBridge({ dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: workspace, profile,
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: workspace, profile,
     overlay: vivaLayerFile(dshHome), prewarmSessions: false,
     env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
     emit: (event: Event) => { events.push(event) },

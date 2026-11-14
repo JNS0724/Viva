@@ -52,7 +52,9 @@ import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts
 import { createReportRecords } from './report-records.ts'
 import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
-import type { ScheduleAction, TaskAction } from './tasks-channel.ts'
+import type { ScheduleAction } from './tasks-channel.ts'
+import { createRequestStore } from './request-store.ts'
+import { createRequestRuntime, type RequestPlace, type RequestRuntime } from './request-runtime.ts'
 import { createTaskStore } from './task-store.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
@@ -141,7 +143,6 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   /** The user's MCP servers, encrypted where they hold keys (mcp-config.ts). */
   let mcpStore!: ReturnType<typeof createMcpConfigStore>
   /** An MCP server was added or removed from the conversation: reattach the session once the turn is over. */
-  let mcpReloadDue = false
   let memory!: ReturnType<typeof createMemoryRuntime>
   let memoryDispatch: ReturnType<typeof createMemoryDispatch> | undefined
   let memoryTransition = false
@@ -152,6 +153,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let taskStore: ReturnType<typeof createTaskStore> | null = null
   /** The background tasks, their one writer (task-runtime.ts); set once the history is open. */
   let taskRuntime: TaskRuntime | null = null
+  /** The main conversation's requests and their decisions (request-runtime.ts); set once the history is open. */
+  let requests!: RequestRuntime
   /** 动态's items (feed-store.ts): what schedules brought; set once the personal stores are open. */
   let feed: FeedStore | null = null
   let schedules: Schedules | null = null
@@ -198,7 +201,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     onError: (err) => console.error('[tasks] could not record what a task reported; it goes on all the same:', err instanceof Error ? err.message : String(err)),
   })
 
-  /** Prompts run where nobody watches, read-only (a schedule's): their sessions' events are theirs, not 后台's. */
+  /** Scheduled runs have their own events, separate from background tasks. */
   const unattended = createUnattendedRuns({ agent: () => dsh.current, provenance: taskId => memoryDispatch?.snapshot(taskId) })
 
   /** One input to the backend (event-core.ts): recorded, then routed. */
@@ -287,6 +290,9 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         emitToRenderer({ type: 'turn_end', stopReason: 'cancelled', context: sessions.context() })
         finishForegroundTurn()
       }
+      // Its requests too: the retired generation's turn_end never reaches endRequests.
+      const left = sessions.context().sessionId
+      if (left) endRequests({ type: 'turn_end', stopReason: 'cancelled' }, left)
     },
     onCrash: ({ message }, delay) => {
       turn = { active: false, startedAt: 0 }
@@ -331,13 +337,13 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       }
       if (bySegment.get(row.segmentId) !== project?.id || !allowedModelHistory(row)) return false
       if (row.sourceId && !memory.projectAllows({ dependencies: [], sources: [row.sourceId] }, project)) return false
-      return row.role === 'user' || !row.sessionId || mayUseProjectEvidence(memoryDispatch?.snapshot(row.sessionId), project)
+      return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId || mayUseProjectEvidence(memoryDispatch?.snapshot(row.sessionId), project)
     }
   }
   function usedHistory(session: string | undefined, row: HistoryEvidence) {
     if (!session || !memoryDispatch) return
     if (row.sourceId) memoryDispatch.recordSource(session, row.sourceId)
-    if (row.role !== 'user' && row.sessionId) memoryDispatch.inherit(row.sessionId, session)
+    if (row.sessionId && (row.role !== 'user' || !row.sourceId)) memoryDispatch.inherit(row.sessionId, session)
   }
   function trackCarry(session: string | null, evidence: readonly HistoryEvidence[]) {
     if (session) for (const row of evidence) usedHistory(session, row)
@@ -443,6 +449,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
       const dir = ensureDshProfile({
         dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
+        webSearch: webSearchNow(),
       })
       const found = registry ? scopesOf(dir, pnpmCommand) : []
       if (found) scopes = found
@@ -501,17 +508,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     return createConfigActions({
       store: mcpStore,
       roots: () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd }),
-      onMcpChange: () => { mcpReloadDue = true }, importDsh,
+      // viva-mcp takes the change at once, even mid-turn: no session is reopened for it.
+      onMcpChange: () => { void applyMcpChange() }, importDsh,
       rememberDshDir: (dir) => preferences.set('dshImportDir', dir), trash: (file) => host.shell.trash(file),
     })
-  }
-
-  function reloadMcpAfterTurn() {
-    mcpReloadDue = false
-    applyMcpChange()
-      .catch((err) => console.error('[mcp] could not reattach the session after a change:', err.message))
-      // A task's result held back while the session was reattached comes back now.
-      .finally(wakeEffects)
   }
 
   /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
@@ -618,7 +618,10 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         }
         return result
       },
-      taskAct: (request, sessionId) => actOnTask(request, sessionId),
+      taskAct: (request, sessionId) => actOnSchedule(request, sessionId),
+      routing: { receive: (request) => requests.receive(request), decide: (decision) => allowMemorySession(decision.sessionId) && decision.sessionId === sessions.current().sessionId
+        ? requests.decide(decision)
+        : Promise.resolve({ accepted: false, reason: t('main.memory.context.stale') }), fail: (failure) => requests.fail(failure), noteFast: (outcome) => requests.noteFast(outcome), endTurn: (turn) => requests.endTurn(turn) },
       conversationContext: sessionId => {
         const context = sessions.context()
         return context.sessionId === sessionId ? context : { conversationId: null, sessionId }
@@ -640,6 +643,12 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
             return wakeEffects()
           }
         }
+        // How the MCP servers stand (viva-mcp): kept with the agent's info, for the settings page and the window.
+        if (event.type === 'mcp_status') {
+          lastInfo = { ...lastInfo, mcp: event.mcp as AgentInfo['mcp'] }
+          emitToRenderer({ type: 'mcp_status', mcp: event.mcp })
+          return undefined
+        }
         // A task's turn ending, or its waiting on the user beginning or ending, is a signal; what it says streams. Each
         // reaches the window from the task runtime, in order with the task's snapshots (task-runtime.ts), not from here.
         const { taskId } = event
@@ -647,6 +656,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
         emitToRenderer(event)
+        if (event.type === 'turn_end' || event.type === 'error') endRequests(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended', stopReason: typeof event.stopReason === 'string' ? event.stopReason : undefined })
         if (event.type === 'error') finishForegroundTurn()
         return undefined
@@ -655,59 +665,51 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     })
   }
 
-  /**
-   * The agent of the conversation on screen starting, stopping or messaging a task (viva-tasks). A task's own session
-   * may not; and only a task the conversation could list (its working folder) can be stopped or messaged.
-   */
-  async function actOnTask(request: TaskAction, sessionId: string) {
+  /** The agent of the conversation on screen changing schedules (viva-tasks); a task's own session may not. */
+  async function actOnSchedule(request: ScheduleAction, sessionId: string) {
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
     if (!allowMemorySession(sessionId)) throw new Error(t('main.memory.context.stale'))
     const evidence = memoryDispatch?.snapshot(sessionId)
-    const admit = (taskId: string, cwd?: string) => {
-      const project = cwd === undefined ? projectOfSession(taskId) : memoryProjectScope(cwd)
-      if (!allowMemorySession(sessionId) || !allowMemorySession(taskId, cwd)
-        || !mayUseProjectEvidence(evidence, project) || !canTransferMemoryToModel(taskId)
-        || (needsMemoryTransport(evidence) && !dsh.current?.memory.ready()) || (evidence && !memoryDispatch?.transferable(evidence))) return false
-      if (evidence) memoryDispatch?.attach(taskId, evidence)
-      return true
+    if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+    const memoryReady = dsh.current?.memory.ready()
+    const project = currentMemoryProject()
+    const sameWorkspace = (schedule: { cwd: string, memory: MemoryProvenance | null }) =>
+      memoryProjectScope(schedule.cwd)?.id === project?.id && mayUseProjectEvidence(schedule.memory, project)
+    if (request.op === 'schedule_list') {
+      const modelSchedules = schedules.store.list().filter(schedule => sameWorkspace(schedule) && (!schedule.memory
+        || (!needsMemoryTransport(schedule.memory) || memoryReady) && memoryDispatch?.transferable(schedule.memory)))
+      if (memoryDispatch) for (const schedule of modelSchedules) if (schedule.memory) memoryDispatch.attach(sessionId, schedule.memory)
+      const visible = new Set(modelSchedules.map(schedule => schedule.id))
+      return schedules.list().filter(schedule => visible.has(schedule.id))
     }
-    if (request.op.startsWith('schedule_')) {
-      if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-      const memoryReady = dsh.current?.memory.ready()
-      const project = currentMemoryProject()
-      const sameWorkspace = (schedule: { cwd: string, memory: MemoryProvenance | null }) =>
-        memoryProjectScope(schedule.cwd)?.id === project?.id && mayUseProjectEvidence(schedule.memory, project)
-      if (request.op === 'schedule_list') {
-        const modelSchedules = schedules.store.list().filter(schedule => sameWorkspace(schedule) && (!schedule.memory
-          || (!needsMemoryTransport(schedule.memory) || memoryReady) && memoryDispatch?.transferable(schedule.memory)))
-        if (memoryDispatch) for (const schedule of modelSchedules) if (schedule.memory) memoryDispatch.attach(sessionId, schedule.memory)
-        const visible = new Set(modelSchedules.map(schedule => schedule.id))
-        return schedules.list().filter(schedule => visible.has(schedule.id))
-      }
-      if (!memoryReady && (request.op === 'schedule_create' || request.op === 'schedule_update')) {
-        throw new Error(t('main.memory.context.stale'))
-      }
-      if (request.op === 'schedule_update' || request.op === 'schedule_delete') {
-        const schedule = schedules.store.get(request.id)
-        if (schedule && !sameWorkspace(schedule)) throw new Error(t('main.schedule-runs.memory.stale'))
-        const old = schedule?.memory
-        if (request.op === 'schedule_update' && old) {
-          if (memoryDispatch?.transferable(old)) memoryDispatch.attach(sessionId, old)
-          else if (request.prompt === undefined || request.title === undefined) throw new Error(t('main.schedule-runs.memory.stale'))
-        }
-      }
-      return schedules.act(request as ScheduleAction, sessions.current().id, workDirNow() ?? '', evidence)
+    if (!memoryReady && (request.op === 'schedule_create' || request.op === 'schedule_update')) {
+      throw new Error(t('main.memory.context.stale'))
     }
-    const tasks = requireTasks().agent
-    if (request.op !== 'start' && request.op !== 'stop' && request.op !== 'message') throw new Error(t('main.task-registry.unknown.task.query.operation'))
-    if (request.op === 'start') {
-      // The task's history row has not been committed yet. Its native session uses the selected folder.
-      const cwd = workDirNow() ?? sessions.current().cwd ?? undefined
-      return tasks.start(request.brief, id => admit(id, cwd))
+    if (request.op === 'schedule_update' || request.op === 'schedule_delete') {
+      const schedule = schedules.store.get(request.id)
+      if (schedule && !sameWorkspace(schedule)) throw new Error(t('main.schedule-runs.memory.stale'))
+      const old = schedule?.memory
+      if (request.op === 'schedule_update' && old) {
+        if (memoryDispatch?.transferable(old)) memoryDispatch.attach(sessionId, old)
+        else if (request.prompt === undefined || request.title === undefined) throw new Error(t('main.schedule-runs.memory.stale'))
+      }
     }
-    tasks.query({ op: 'get', taskId: request.taskId }, { cwd: workDirNow() ?? '' })
-    if (request.op === 'stop') return tasks.stop(request.taskId)
-    return tasks.message(request.taskId, request.text, admit)
+    return schedules.act(request, sessions.current().id, workDirNow() ?? '', evidence)
+  }
+
+  /**
+   * A turn of the main conversation ended, or ended in an error: the requests it left undecided fail, and the user is
+   * told, unless they stopped it themselves.
+   */
+  function endRequests(event: Record<string, unknown>, sessionId = dsh.current?.currentSession()) {
+    if (!sessionId) return
+    const reason = event.type === 'error' ? 'turn_error' : event.stopReason === 'cancelled' ? 'cancelled' : 'unrouted'
+    try {
+      const failed = requests.endTurn({ sessionId, reason })
+      if (failed.length && reason !== 'cancelled') emitToRenderer({ type: 'error', message: t('main.requests.not.routed'), context: sessions.context() })
+    } catch (err) {
+      console.error('[requests] could not end the turn\'s requests:', err instanceof Error ? err.message : String(err))
+    }
   }
 
   function requireSchedules(): Schedules {
@@ -765,7 +767,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       for (const taskId of taskIds) memoryDispatch?.inherit(taskId, session)
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task', context })
-      agent.prompt(note).catch((err: Error) => {
+      agent.prompt(note, [], { request: false }).catch((err: Error) => {
         if (dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
         emitToRenderer({ type: 'error', message: err.message, context })
@@ -856,6 +858,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       shortcut: shellSettings.shortcut,
       images: imageStore.usage(),
       permission: permissionNow(),
+      webSearch: webSearchNow(),
       openAtLogin: { on: preferences.get().openAtLogin, available: canOpenAtLogin() && shellSettings.openAtLogin.available },
     }
   }
@@ -871,6 +874,23 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
    * Another permission level: dsh starts again with it (viva-permission applies it to every session), on the
    * conversation on screen. Not while a turn runs, which the restart would cut short.
    */
+  /**
+   * 联网搜索 as it is now: as set, or, left to 自动, off when the DeepSeek route has its own endpoint (an intranet
+   * gateway, where dsh's DeepSeek Search API is not reachable) and on otherwise.
+   */
+  function webSearchNow(): boolean {
+    const set = preferences.get().webSearch
+    return set === 'on' ? true : set === 'off' ? false : !process.env.DEEPSEEK_BASE_URL
+  }
+
+  /** 联网搜索 switched: dsh starts again without (or with) web_search, on the conversation on screen. Not mid-turn. */
+  async function setWebSearch(on: unknown) {
+    if (typeof on !== 'boolean') throw new Error('invalid web search setting')
+    if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before"))
+    preferences.set('webSearch', on ? 'on' : 'off')
+    return { settings: settingsView(), info: await restartKeepingConversation() }
+  }
+
   async function setPermission(level: string) {
     if (!PERMISSION_LEVELS.includes(level)) throw new Error(`invalid permission level: ${level}`)
     if (turn.active) throw new Error(t("main.main.wait.for.this.turn.to.finish.before"))
@@ -1019,7 +1039,6 @@ ${question}` : question
       // A turn of the user's just ended: clear the turn's source bindings.
       'agent.turn_ended': ({ stopReason }) => {
         finishForegroundTurn(stopReason === 'end_turn')
-        if (mcpReloadDue) reloadMcpAfterTurn()
         // A task that ended while this turn ran comes back now that the conversation is free.
         wakeEffects()
       },
@@ -1044,6 +1063,7 @@ ${question}` : question
       return { settings: settingsView(), info: await restartWithNewConversation() }
     })
     ipcMain.handle('settings:set-permission', (_event, level) => setPermission(level))
+    ipcMain.handle('settings:set-web-search', (_event, on) => setWebSearch(on))
     ipcMain.handle('settings:set-open-at-login', (_event, on) => {
       setOpenAtLogin(on)
       return settingsView()
@@ -1088,15 +1108,13 @@ ${question}` : question
   })
   const chooseDshDir = () => host.dialogs.chooseFolder({ title: t("main.main.choose.the.dsh.folder.usually.named.dsh"), defaultPath: os.homedir(), showHidden: true })
 
-  /** Reattaches the session with the current MCP servers; not while a turn runs (it would be cancelled). */
+  /**
+   * The MCP servers changed: viva-mcp (dsh's MCP manager) takes the new set at once and connects it in the background;
+   * no session is reopened, so this works mid-turn too. How the servers stand comes back as `mcp_status`.
+   */
   async function applyMcpChange() {
-    if (!dsh.current || turn.active) return null
-    return sessions.withSelection(async selection => {
-      const info = await selection.reloadAgent()
-      // Publish the new runtime identity before the transition releases waiting reports.
-      emitToRenderer({ type: 'config', info })
-      return info
-    })
+    dsh.current?.applyMcp()
+    return null
   }
 
   /** 动态 changed: the window shows it, the tray counts what is new. */
@@ -1164,6 +1182,7 @@ ${question}` : question
       roots,
       mcpStatus: () => ({ ...personal.mcpStatus(lastInfo), memory: Boolean(dsh.current?.memory.ready()), plugins: pluginProblems }),
       applyMcp: applyMcpChange,
+      restartMcp: (name) => dsh.current?.restartMcp(name),
       trash: (file) => host.shell.trash(file),
       reveal: (file) => host.shell.showItemInFolder(file),
       dshDirs: () => ({ defaultDir: userDshHome(), lastDir: preferences.get().dshImportDir }),
@@ -1254,7 +1273,7 @@ ${question}` : question
       onError: (err) => console.error('[schedules]', err instanceof Error ? err.message : String(err)),
     })
     ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
-    ipcMain.handle('schedules:accept', (_event, proposalId) => requireSchedules().accept(String(proposalId)))
+    ipcMain.handle('schedules:accept', (_event, proposalId, edits) => requireSchedules().accept(String(proposalId), edits ?? undefined))
     ipcMain.handle('schedules:decline', (_event, proposalId) => { requireSchedules().decline(String(proposalId)) })
     // 动态's 接下来: pause, resume and delete by hand too (the conversation does the rest).
     ipcMain.handle('schedules:pause', (_event, id, paused) => requireSchedules().update(String(id), { paused: Boolean(paused) }))
@@ -1366,6 +1385,51 @@ ${question}` : question
       effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
+    // The main conversation's requests: each decision's task actions go to the task runtime. A task starts from the
+    // conversation on screen (task-runtime.ts), so only while that is still the request's: a decision outliving its
+    // turn (stopped meanwhile) must not start its remaining work in another conversation. Only tasks of the request's
+    // working folder are stopped or messaged.
+    const tasks = taskRuntime.agent
+    const visible = (taskId: string, cwd: string | null) => { tasks.query({ op: 'get', taskId }, { cwd: cwd ?? '' }) }
+    function requestEvidence(place: RequestPlace) {
+      const selected = sessions.current()
+      if (selected.id !== place.conversationId || selected.sessionId !== place.sessionId) throw new Error(t('main.requests.start.elsewhere'))
+      if (!allowMemorySession(place.sessionId, place.cwd ?? undefined)) throw new Error(t('main.memory.context.stale'))
+      return memoryDispatch?.snapshot(place.sessionId)
+    }
+    function admitTask(place: RequestPlace, evidence: MemoryProvenance | undefined, targetCwd?: string) {
+      return (taskId: string) => {
+        if (sessions.current().sessionId !== place.sessionId || !allowMemorySession(place.sessionId, place.cwd ?? undefined)
+          || !allowMemorySession(taskId, targetCwd) || !canTransferMemoryToModel(taskId)) return false
+        const project = targetCwd === undefined ? projectOfSession(taskId) : memoryProjectScope(targetCwd)
+        if (!mayUseProjectEvidence(evidence, project) || (evidence && !memoryDispatch?.transferable(evidence))
+          || (needsMemoryTransport(evidence) && !dsh.current?.memory.ready())) return false
+        if (evidence) memoryDispatch?.attach(taskId, evidence)
+        return true
+      }
+    }
+    requests = createRequestRuntime({
+      store: createRequestStore({ db: appDb.db }),
+      apply: applyChange,
+      tasks: {
+        start: async ({ title, brief }, place) => {
+          const evidence = requestEvidence(place)
+          return tasks.start(brief, title, admitTask(place, evidence, place.cwd ?? workDirNow() ?? undefined))
+        },
+        message: async (taskId, text, place) => {
+          const evidence = requestEvidence(place)
+          visible(taskId, place.cwd)
+          return tasks.message(taskId, text, admitTask(place, evidence))
+        },
+        stop: async (taskId, place) => {
+          requestEvidence(place)
+          visible(taskId, place.cwd)
+          return tasks.stop(taskId)
+        },
+      },
+    })
+    const recovered = requests.recover()
+    if (recovered.uncertain) console.error(`[requests] ${recovered.uncertain} task action(s) were left without a receipt when Viva stopped; they are not done again`)
   }
 
   /** Opens the stores and registers the backend's channels, before the window loads. */

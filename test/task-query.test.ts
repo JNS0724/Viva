@@ -109,33 +109,30 @@ test('text updates remain queryable without duplicate UI refreshes; status snaps
   assert.equal(interrupted.tasks.list[0]!.now, null)
 })
 
-test('the agent\'s actions travel the same channel: checked, carried out by the app, their result or refusal returned', async () => {
+test('the agent\'s schedule changes travel the same channel: checked, carried out by the app, their result or refusal returned', async () => {
   const port = new EventEmitter()
   const acted: unknown[] = []
   const desk = createTasksDesk({
     send: message => port.emit('message', message), authorized: id => id === 'main', read: () => ({ tasks: [] }),
     act: async (request, sessionId) => {
       acted.push([request, sessionId])
-      if (request.op === 'stop') throw new Error('任务不存在或不在当前可查询范围内')
-      return { taskId: 't1', status: 'running' }
+      if (request.op === 'schedule_delete') throw new Error('没有这个定时任务')
+      return { id: 's1' }
     },
   })
   const channel = createTasksChannel({ send: message => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
-  assert.deepEqual(JSON.parse(await channel.request({ op: 'start', brief: '  整理发布说明  ' }, 'main')), { taskId: 't1', status: 'running' })
-  assert.deepEqual(acted, [[{ op: 'start', brief: '整理发布说明' }, 'main']], 'the brief arrives trimmed')
-  await assert.rejects(channel.request({ op: 'stop', taskId: 'x' }, 'main'), /不存在/)
-  await assert.rejects(channel.request({ op: 'start', brief: ' ' }, 'main'), /brief 无效/)
-  await assert.rejects(channel.request({ op: 'message', taskId: 't1' }, 'main'), /text 无效/)
-  await assert.rejects(channel.request({ op: 'start', brief: '整理' }, 'old'), /会话已失效/)
+  assert.deepEqual(JSON.parse(await channel.request({ op: 'schedule_list', extra: 1 }, 'main')), { id: 's1' })
+  assert.deepEqual(acted, [[{ op: 'schedule_list' }, 'main']], 'the request arrives as parsed')
+  await assert.rejects(channel.request({ op: 'schedule_delete', id: 's9' }, 'main'), /没有这个定时任务/)
+  await assert.rejects(channel.request({ op: 'schedule_update', title: '无 id' }, 'main'))
+  await assert.rejects(channel.request({ op: 'schedule_list' }, 'old'), /会话已失效/)
   assert.equal(acted.length, 2, 'nothing malformed or from a stale session reaches the app')
   const readOnly = createTasksDesk({ send: message => port.emit('message', message), authorized: () => true, read: () => ({}) })
   const second = createTasksChannel({ send: message => readOnly.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
-  await assert.rejects(second.request({ op: 'start', brief: '整理' }, 'main'), /未启用/)
+  await assert.rejects(second.request({ op: 'schedule_list' }, 'main'), /未启用/)
   channel.close(); second.close()
 })
 
-test('an action is parsed to what it names, no more', () => {
-  assert.deepEqual(parseTaskAction({ op: 'message', taskId: 't1', text: ' 接着做 ', extra: true }), { op: 'message', taskId: 't1', text: '接着做' })
-  assert.deepEqual(parseTaskAction({ op: 'stop', taskId: 't1' }), { op: 'stop', taskId: 't1' })
-  for (const bad of [null, { op: 'stop' }, { op: 'start' }, { op: 'start', brief: 'x'.repeat(20_001) }, { op: 'other', taskId: 't1' }]) assert.throws(() => parseTaskAction(bad))
+test('tasks are not started, stopped or messaged over this channel: only an accepted routing decision does that', () => {
+  for (const op of ['start', 'stop', 'message']) assert.throws(() => parseTaskAction({ op, brief: '整理', taskId: 't1', text: '接着做' }))
 })

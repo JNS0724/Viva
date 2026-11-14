@@ -2,12 +2,67 @@ import { test, expect } from './fixtures.ts'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { checkIslandLayouts } from './island-layout.ts'
+import { checkDeskSignals, checkIslandLayouts } from './island-layout.ts'
+import { checkDesktopHost } from './desktop-host.ts'
 import { checkStreamingDrawer } from './drawer-interaction.ts'
 import { checkStreamingNavigation } from './ui-retention.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
 declare global { interface Window { vivaDraftAudit?: Array<{ key: string, version: number, sequence: number, epoch: number, owner: string, chars: number, files: number, images: number }> } }
+
+test('MCP import menu stays inside its sidebar and cancelling an edit restores the saved server', async ({ scenario }, info) => {
+  const run = await scenario({ phase: 'setup', bridge: 'real' })
+  const serverFile = path.join(run.profile.userData, 'mcp-servers.json')
+  const saved = JSON.stringify({ version: 1, servers: [{ name: 'cancel-demo', type: 'stdio', command: 'node', args: ['original'], secrets: null, missing: [] }] })
+  fs.writeFileSync(serverFile, saved)
+  const session = await run.start('mcp-controls')
+  const { page } = session
+  await page.locator('#open-profile').click()
+  await page.locator('.hub-nav[data-page="capabilities"]').click()
+  await page.locator('.cap-tabs [data-tab="mcp"]').click()
+  await expect(page.locator('.cap-row[data-name="cancel-demo"]')).toBeVisible()
+  const mainWindow = await session.application.browserWindow(page)
+  const bounds = []
+  for (const width of [1360, 880, 720]) {
+    await mainWindow.evaluate((window, width) => window.setSize(width, 860), width)
+    await page.locator('.import-btn').click()
+    await expect(page.locator('.import-menu')).toBeVisible()
+    const metrics = await page.locator('.import-menu').evaluate(menu => {
+      const sidebar = menu.closest('.cap-side')!
+      const box = menu.getBoundingClientRect(), side = sidebar.getBoundingClientRect()
+      const location = menu.querySelector('.workdir-item-name')!
+      return { viewport: innerWidth, menuLeft: box.left, menuRight: box.right,
+        sideLeft: side.left, sideRight: side.left + sidebar.clientLeft + sidebar.clientWidth,
+        leftVisible: Boolean(document.elementFromPoint(box.left + 2, box.top + 12)?.closest('.import-menu')),
+        locationSingleLine: location.getBoundingClientRect().height < parseFloat(getComputedStyle(location).fontSize) * 1.8 }
+    })
+    bounds.push(metrics)
+    await page.screenshot({ path: info.outputPath(`mcp-import-menu-${width}.png`) })
+    expect.soft(metrics.menuLeft, `left edge at ${width}px`).toBeGreaterThanOrEqual(metrics.sideLeft)
+    expect.soft(metrics.menuRight, `right edge at ${width}px`).toBeLessThanOrEqual(metrics.sideRight)
+    expect.soft(metrics.leftVisible, `menu is hit-testable at ${width}px`).toBe(true)
+    expect.soft(metrics.locationSingleLine, `location label at ${width}px`).toBe(true)
+    await page.locator('.import-scrim').click({ position: { x: 8, y: 400 } })
+    await expect(page.locator('.import-menu')).toHaveCount(0)
+  }
+  await info.attach('mcp-menu-bounds', { body: JSON.stringify(bounds, null, 2), contentType: 'application/json' })
+  await mainWindow.evaluate(window => window.setSize(1360, 860))
+  const details = page.locator('.cap-card[data-name="cancel-demo"]')
+  await details.locator('.ext-actions button').first().click()
+  const form = page.locator('.ext-edit')
+  await expect(form).toBeVisible()
+  await form.locator('[name="mcp-command"]').fill('discard-this-command')
+  await form.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(form).toHaveCount(0)
+  await expect(details).toContainText('node original')
+  expect(fs.readFileSync(serverFile, 'utf8')).toBe(saved)
+  await details.locator('.ext-actions button').first().click()
+  await expect(form.locator('[name="mcp-command"]')).toHaveValue('node')
+  await form.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(form).toHaveCount(0)
+  expect(fs.readFileSync(serverFile, 'utf8')).toBe(saved)
+  await page.screenshot({ path: info.outputPath('mcp-edit-cancelled.png') })
+})
 
 test('desktop drafts retain text, real images and files through collapse and window recreation, then return editing to the main window', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'memory', bridge: 'real' })
@@ -111,7 +166,7 @@ test('desktop drafts retain text, real images and files through collapse and win
         bytes.set(png)
         data.items.add(new File([bytes], `large-${size}.png`, { type: 'image/png' }))
       }
-      const open = [...document.querySelectorAll<HTMLButtonElement>('.isl-surface-head button')].find(button => button.textContent === '打开 Viva')!
+      const open = document.querySelector<HTMLButtonElement>('.isl-surface button[aria-label="打开 Viva"]')!
       document.querySelector('.isl-field')!.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
       setTimeout(() => open.click(), 0)
     })
@@ -139,12 +194,15 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.locator('#settings-root')).toBeVisible()
   await checkIslandLayouts(page, info)
+  await checkDeskSignals(page, info)
   const desk = session.hooks.desk()
   await desk.force(true)
   try {
     await desk.openInput()
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    await checkDesktopHost(session.application, desktop, info)
+    await desk.openInput()
     await desktop.getByRole('button', { name: '去设置', exact: true }).click()
     await expect(page.locator('#settings-root')).toBeVisible()
     await expect.poll(() => desk.inputOpen()).toBe(false)
@@ -158,9 +216,37 @@ test('a real embedded agent answers and history survives a restart', async ({ sc
   await session.page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('外部冒烟验证')
   await expect(session.page.locator('#send-btn')).toHaveAttribute('data-busy', 'false')
+  // A desktop-island reply must finish while the ordinary conversation window remains closed to the tray.
+  await session.application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(true))
+  const mainWindow = await session.application.browserWindow(session.page)
+  try {
+    await mainWindow.evaluate(window => window.close())
+    await session.hooks.desk().openInput()
+    await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
+    const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    const longIslandTask = '桌面岛隐藏窗口回复验证\n\n' + Array.from({ length: 60 }, (_, index) => `第 ${index + 1} 项：逐步核对合成数据，最后给出完整总结。`).join('\n\n')
+    await desktop.locator('.isl-field').fill(longIslandTask)
+    await desktop.evaluate(async () => {
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      await Promise.all(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => {})))
+    })
+    await desktop.locator('.isl-send').click()
+    await expect(session.page.locator('.msg-user').last()).toContainText('桌面岛隐藏窗口回复验证')
+    await expect(desktop.locator('.isl')).toHaveAttribute('data-form', 'done')
+    expect(await mainWindow.evaluate(window => window.isVisible())).toBe(false)
+    await mainWindow.evaluate(window => window.show())
+    await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('桌面岛隐藏窗口回复验证')
+    await expect.poll(() => session.page.locator('#scroll').evaluate(scroll => scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight), {
+      message: 'opening a desktop-island reply reveals the latest output',
+    }).toBeLessThanOrEqual(32)
+    await expect(session.page.locator('#send-btn')).toHaveAttribute('data-busy', 'false')
+  } finally {
+    await mainWindow.evaluate(window => window.show())
+    await session.application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(false))
+  }
   session = await run.start('restart')
-  await expect(session.page.locator('.msg-user').last()).toContainText('外部冒烟验证')
-  await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('外部冒烟验证')
+  await expect(session.page.locator('.msg-user').last()).toContainText('桌面岛隐藏窗口回复验证')
+  await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('桌面岛隐藏窗口回复验证')
   await checkStreamingDrawer(session, info)
   await checkStreamingNavigation(session, info)
 })

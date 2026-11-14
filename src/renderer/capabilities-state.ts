@@ -38,15 +38,33 @@ export const CAPABILITY_ACTIONS = {
 
 const skillsOf = (state: State): readonly SkillView[] => state.extensions.skills as readonly SkillView[]
 const serversOf = (state: State): readonly ServerView[] => state.extensions.servers as readonly ServerView[]
-const statusOf = (state: State): ExtensionStatus => state.extensions.status as ExtensionStatus
+/**
+ * How the servers stand now: what the page read when it opened (with servers whose command was not found), brought up
+ * to date by what viva-mcp says as it happens (state.info.mcp, from the agent's config events).
+ */
+export function statusOf(state: State): ExtensionStatus {
+  const read = state.extensions.status as ExtensionStatus
+  const live = state.info?.mcp
+  if (!live) return read
+  const named = new Set([...live.active, ...(live.connecting ?? []).map((item) => item.name), ...live.dropped.map((item) => item.name)])
+  return {
+    ...read,
+    active: live.active,
+    connecting: live.connecting ?? [],
+    dropped: [...live.dropped, ...(read.dropped ?? []).filter((item) => !named.has(item.name))],
+  }
+}
 const pluginsOf = (state: State): readonly PluginView[] => state.plugins.plugins as readonly PluginView[]
 
 /** How a server stands: a key it needs has no value, the agent connected it, dropped it (and why), or has not tried. */
-export type ServerStanding = { kind: 'missing', names: readonly string[] } | { kind: 'connected' } | { kind: 'dropped', reason: string } | { kind: 'idle' }
+export type ServerStanding = { kind: 'missing', names: readonly string[] } | { kind: 'connected' } | { kind: 'connecting', reason: string }
+  | { kind: 'dropped', reason: string } | { kind: 'idle' }
 
 export function serverStanding(server: ServerView, status: ExtensionStatus): ServerStanding {
   if (server.missingNames?.length) return { kind: 'missing', names: server.missingNames }
   if (status.active.includes(server.name)) return { kind: 'connected' }
+  const connecting = status.connecting?.find((item) => item.name === server.name)
+  if (connecting) return { kind: 'connecting', reason: connecting.reason }
   const dropped = status.dropped.find((item) => item.name === server.name)
   return dropped ? { kind: 'dropped', reason: dropped.reason } : { kind: 'idle' }
 }

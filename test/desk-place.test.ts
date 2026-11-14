@@ -1,11 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deskLayout, DRAG_SIZE, dragBounds, homePoint, keepInside, pointOf, readPlaces, settle, withPlace } from '../src/shell/desk-place.ts'
+import { deskLayout, DESK_SIZE, DRAG_SIZE, FIXED_DESK_HOST, dragBounds, homePoint, keepInside, pointOf, readPlaces, settle, withPlace } from '../src/shell/desk-place.ts'
 
 const mac = { x: 0, y: 25, width: 1440, height: 875 }
 const left = { x: -1920, y: 0, width: 1920, height: 1040 }
 
 test('by default the island sits at the top centre of the screen', () => {
+  if (FIXED_DESK_HOST) {
+    const layout = deskLayout(homePoint(mac), mac)
+    assert.deepEqual(layout.anchor, { x: 504, y: 352 })
+    assert.deepEqual(layout.bounds, { x: 216, y: -271, width: 1008, height: 704 })
+    assert.deepEqual(deskLayout(homePoint(left), left).bounds, { x: -1464, y: -296, width: 1008, height: 704 })
+    return
+  }
   assert.deepEqual(deskLayout(homePoint(mac), mac), { bounds: { x: 660, y: 31, width: 600, height: 352 }, align: 'start', dir: 'down', anchor: { x: 60, y: 50 }, side: 'right', panelWidth: 440 })
   assert.deepEqual(deskLayout(homePoint(left), left).bounds, { x: -1020, y: 6, width: 600, height: 352 }, 'on a display left of the main one too')
 })
@@ -13,19 +20,23 @@ test('by default the island sits at the top centre of the screen', () => {
 test('in the lower half it unfolds upwards, its head staying where it was put', () => {
   const { bounds, dir } = deskLayout({ x: 720, y: 800 }, mac)
   assert.equal(dir, 'up')
+  if (FIXED_DESK_HOST) {
+    assert.equal(bounds.y + DESK_SIZE.height / 2, 800)
+    return
+  }
   assert.equal(bounds.y + bounds.height, 800 + 40 + 10, 'the window ends just below the head')
   assert.equal(deskLayout({ x: 720, y: 880 }, mac).bounds.y + 352 <= mac.y + mac.height, true, 'and never below the screen')
 })
 
 test('near a side it keeps to that side, so what it unfolds stays on the screen', () => {
   const nearLeft = deskLayout({ x: 100, y: 300 }, mac)
-  assert.deepEqual([nearLeft.align, nearLeft.bounds.x], ['start', 40])
+  assert.deepEqual([nearLeft.align, nearLeft.bounds.x], ['start', FIXED_DESK_HOST ? -404 : 40])
   const nearRight = deskLayout({ x: 1400, y: 300 }, mac)
-  assert.deepEqual([nearRight.align, nearRight.bounds.x], ['end', 1440 - 600])
+  assert.deepEqual([nearRight.align, nearRight.bounds.x], ['end', FIXED_DESK_HOST ? 896 : 1440 - 600])
 })
 
-test('dragged, the window is just the island, centred under the pointer', () => {
-  assert.deepEqual(dragBounds({ x: 100, y: 300.4 }), { x: 48, y: 248, ...DRAG_SIZE })
+test('the drag host keeps its platform size and is centred under the pointer', () => {
+  assert.deepEqual(dragBounds({ x: 100, y: 300.4 }), { x: Math.round(100 - DRAG_SIZE.width / 2), y: Math.round(300.4 - DRAG_SIZE.height / 2), ...DRAG_SIZE })
 })
 
 test('dropped near home it goes home; elsewhere it is kept as fractions of the screen', () => {
@@ -45,7 +56,7 @@ test('the head is never off the screen', () => {
 })
 
 test('every layout keeps the saved avatar centre and its neighbouring panel within the host', () => {
-  for (const area of [mac, left, { x: 0, y: 0, width: 1024, height: 768 }]) {
+  for (const area of [mac, left, { x: 0, y: 0, width: 1024, height: 768 }, { x: 100, y: -700, width: 800, height: 600 }]) {
     for (const fx of [0, .25, .5, .75, 1]) for (const fy of [0, .5, 1]) {
       const point = pointOf({ fx, fy }, area)
       const { bounds, anchor, side, panelWidth } = deskLayout(point, area)
@@ -53,6 +64,11 @@ test('every layout keeps the saved avatar centre and its neighbouring panel with
       assert.ok(Math.abs(bounds.y + anchor.y - point.y) <= 1)
       const panelX = side === 'right' ? anchor.x + 52 : anchor.x - 52 - panelWidth
       assert.ok(panelX >= 0 && panelX + panelWidth <= bounds.width)
+      assert.ok(bounds.x + panelX >= area.x - 1 && bounds.x + panelX + panelWidth <= area.x + area.width + 1)
+      if (FIXED_DESK_HOST) {
+        assert.deepEqual(anchor, { x: DESK_SIZE.width / 2, y: DESK_SIZE.height / 2 })
+        assert.deepEqual(bounds, dragBounds(point), 'crossing midlines cannot move the local portrait anchor or resize the host')
+      }
     }
   }
 })

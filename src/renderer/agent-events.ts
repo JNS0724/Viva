@@ -4,11 +4,13 @@ import { decodeAgentEvent, type EventIssue } from './agent-event-decoder.ts'
 import type { AgentEvent } from './agent-event-types.ts'
 
 /** Owns the wire boundary, foreground selection handoff, task-load handoff and push-triggered effects. */
-export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, clearAfterTurn, ready, refreshWorkDir, refreshFiles, memoryChanged, filesChanged, refreshFeed, rejected, now = Date.now }: {
+export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, clearAfterTurn, ready, mcpChanged = () => {}, refreshWorkDir, refreshFiles, memoryChanged, filesChanged, refreshFeed, rejected, now = Date.now }: {
   getState: () => State, dispatch: (action: Action) => void
   holdTask: (event: AgentEvent) => boolean
   afterTurn: (reason?: string) => void, clearAfterTurn: () => void
   ready: (info: AgentInfo) => void
+  /** How the MCP servers stand changed (viva-mcp). */
+  mcpChanged?: (mcp: NonNullable<AgentInfo['mcp']>) => void
   refreshWorkDir: () => void, refreshFiles: () => void, refreshFeed: () => void
   memoryChanged: (event: Extract<AgentEvent, { type: 'memory_changed' }>) => void
   filesChanged: (event: Extract<AgentEvent, { type: 'files_changed' }>) => void
@@ -31,6 +33,7 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
       switch (event.type) {
         case 'ready': ready(event.info); refreshWorkDir(); break
         case 'workdir': refreshWorkDir(); break
+        case 'mcp_status': mcpChanged(event.mcp); break
         case 'turn_end': refreshFiles(); afterTurn(event.stopReason); break
         case 'task_end': refreshFiles(); break
         case 'error': clearAfterTurn(); break

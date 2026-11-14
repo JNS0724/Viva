@@ -13,12 +13,20 @@ const FIXTURE = path.join(ROOT, 'test', 'fixtures', 'plugins', 'demo-plugin')
 const TOOL = 'demo_dsh_echo'
 const INSTALL_TIMEOUT_MS = 5 * 60_000
 
-type Bridge = { start: () => Promise<unknown>, newSession: () => Promise<unknown>, prompt: (text: string) => Promise<unknown>, dispose: () => Promise<unknown>, plugins: (op: string, args?: Record<string, unknown>) => Promise<{ ok: boolean, value?: any, problem?: string }> }
+type Bridge = {
+  start: () => Promise<unknown>, dispose: () => Promise<unknown>,
+  startTask: () => Promise<{ ok: boolean, taskId?: string }>, promptTask: (taskId: string, text: string) => Promise<unknown>,
+  plugins: (op: string, args?: Record<string, unknown>) => Promise<{ ok: boolean, value?: any, problem?: string }>,
+}
 
-/** The tools the model is offered in a new conversation now. */
+/**
+ * The tools the model is offered in a new background task now: a user's plugin is a task's to use (the main
+ * conversation only routes).
+ */
 async function toolsNow(agent: Bridge, llm: { requests: Array<{ tools?: Array<{ name: string }> }> }): Promise<string[]> {
-  await agent.newSession()
-  await agent.prompt('你好')
+  const task = await agent.startTask()
+  assert.ok(task.ok && task.taskId, JSON.stringify(task))
+  await agent.promptTask(task.taskId, '你好')
   const asked = [...llm.requests].reverse().find((request) => request.tools?.length)
   return (asked?.tools ?? []).map((tool) => tool.name)
 }

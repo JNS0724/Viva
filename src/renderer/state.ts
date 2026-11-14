@@ -1,5 +1,6 @@
 import { handleAction, type ActionHandlers, type PayloadFor } from './action-types.ts'
 import { t } from '../shared/i18n/translate.ts'
+import { retainedMessagePositions, retainedMessageBoundary } from '../shared/message-order.ts'
 import { CONVERSATION_ACTIONS, initialConversation, reduceConversation, isConversationAction } from './conversation-state.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
 import { recordsFrom, REPORT_ACTIONS } from './report-state.ts'
@@ -7,11 +8,11 @@ import { FILES_ACTIONS, initialFiles } from './files-state.ts'
 import { HISTORY_ACTIONS, initialHistory } from './history-state.ts'
 import { REVIEW_ACTIONS, initialReview } from './review-state.ts'
 import { RESUME_ACTIONS, initialResume } from './resume-state.ts'
-import { closeHub, initialHub, oneHubPage } from './hub-state.ts'
+import { closeHub, hubPage, initialHub, oneHubPage } from './hub-state.ts'
 import { initialModels, MODEL_ACTIONS } from './model-state.ts'
 import { initialPlugins, PLUGIN_ACTIONS } from './plugins-state.ts'
 import { initialRewind, rewindActions } from './rewind-state.ts'
-import { initialTasks, routeToTask, taskActions } from './tasks-state.ts'
+import { initialTasks, routeToTask, taskActions, toldByRecords } from './tasks-state.ts'
 import { SECRET_ACTIONS } from './secret-state.ts'
 import { WAITS_ACTIONS } from './waits-state.ts'
 import { PROPOSAL_ACTIONS } from './proposal-state.ts'
@@ -98,6 +99,9 @@ export const initialState = Object.freeze({
     imagesBusy: false,
     /** What the assistant may do without asking (view/permission-picker.js), its menu, and a switch under way. */
     permission: 'workspace-write',
+    /** 联网搜索 as it is now (compose.ts webSearchNow), and a switch under way (dsh restarts). */
+    webSearch: true,
+    webSearchBusy: false,
     permissionMenu: false,
     permissionBusy: false,
   },
@@ -124,8 +128,15 @@ const isRevealingMessage = (m: ThreadMessage): m is ThreadMessage & { shown: num
 /** Whether some assistant text is still being typed out. */
 export const isRevealing = (state: State): boolean => state.messages.some(isRevealingMessage)
 
+const topicChanged = (state: State, info: AgentInfo) =>
+  info.topicId !== undefined && state.info.topicId !== undefined && info.topicId !== state.info.topicId
+
+// The saved segment can load before the renderer gets its first topic identity.
+const readyStartsNewTopic = (state: State, info: AgentInfo) => topicChanged(state, info)
+  || (info.remembersHistory === false && Boolean(info.conversationId && state.conversationId && info.conversationId !== state.conversationId))
+
 const ACTION_HANDLERS: ActionHandlers = {
-  ready: (state, { info }) => ({
+  ready: (state, { info }) => !state.newTopicPending && readyStartsNewTopic(state, info) ? ACTION_HANDLERS.new_session!(state, { info }) : ({
     ...state,
     info,
     phase: !state.newTopicPending && state.phase === 'error' ? 'idle' : state.phase,
@@ -136,6 +147,15 @@ const ACTION_HANDLERS: ActionHandlers = {
 
 
   user_prompt: (state, action) => ({ ...reduceConversation(state, { ...action, type: 'user_prompt' }), island: false }),
+
+  turn_end: (state, action) => {
+    // A delegation can end without a reply while its task and result delivery continue.
+    const delegated = state.tasks.list.some(task => task.status !== 'interrupted' && typeof task.startedAt === 'number'
+      && task.startedAt >= (state.turn?.startedAt ?? Infinity)
+      && (task.status === 'running' || task.status === 'waiting'
+        || !state.records.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= action.at)))
+    return reduceConversation(state, { ...action, type: 'turn_end', ...(delegated ? { finalReply: undefined } : {}) })
+  },
 
   /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
   steer_resent: (state, { at }) => ({
@@ -157,8 +177,9 @@ const ACTION_HANDLERS: ActionHandlers = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: messages.length ? 'loading' : null,
-      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, sourceId?: string, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string, sourceId?: string }, i: number) => ({
+        id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
+        ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
       })),
       records: recordsFrom(records),
       restored: messages.length ? { count: messages.length, savedAt } : null,
@@ -208,11 +229,14 @@ const ACTION_HANDLERS: ActionHandlers = {
     toast: state.toast,
   }),
 
-  /** The conversation goes on in another working directory, with everything said so far (a fork): the same topic. */
-  workdir_switched: (state, { info }) => ({
-    ...ACTION_HANDLERS.new_session!(state, { info }),
-    topic: { ...initialTopic, parentId: state.conversationId, startedAt: state.topic.startedAt },
-  }),
+  /** A different project opens a fresh topic. A switch within the same project keeps the previous segment. */
+  workdir_switched: (state, { info }) => {
+    const next = ACTION_HANDLERS.new_session!(state, { info })
+    return topicChanged(state, info) ? next : {
+      ...next,
+      topic: { ...initialTopic, parentId: state.conversationId, startedAt: state.topic.startedAt },
+    }
+  },
 
   /** 回到这个话题 (or 撤销 a new one): the agent goes on from that segment; what is said next follows below. */
   /** `carried`: how many turns of its saved records the topic goes on from, its own session gone (null: it is the session). */
@@ -289,11 +313,28 @@ const ACTION_HANDLERS: ActionHandlers = {
 } satisfies ActionHandlers
 
 export function reduce(state: State, action: Action): State {
+  const next = reduceOnce(state, action)
+  // Results drawn in the conversation tell their tasks (tasks-state.ts) once the conversation is in view: not while a
+  // hub page covers it, and again on coming back to it.
+  const inView = hubPage(next) === null
+  const changed = next.records !== state.records || next.tasks.list !== state.tasks.list || hubPage(state) !== null
+  return inView && changed ? toldByRecords(next) : next
+}
+
+function reduceOnce(state: State, action: Action): State {
   const routed = routeToTask(state, action)
   if (routed) return routed
   const next = Object.hasOwn(ACTION_HANDLERS, action.type) ? handleAction(state, action, ACTION_HANDLERS)
     : isConversationAction(action) ? reduceConversation(state, action) : state
-  return oneHubPage(state, next, reduce)
+  const projected = oneHubPage(state, next, reduce)
+  if (projected.messages.length <= state.messages.length || !projected.records.length) return projected
+  const positions = retainedMessagePositions(state.messages, projected.messages, (before, after) => before.id === after.id)
+  if (!positions) return projected
+  const records = projected.records.map(record => {
+    const after = retainedMessageBoundary(record.after, positions)
+    return after === record.after ? record : { ...record, after }
+  })
+  return records.some((record, index) => record !== projected.records[index]) ? { ...projected, records } : projected
 }
 
 export const isBusy = (state: { phase: string }): boolean => state.phase === 'working' || state.phase === 'waiting' || state.phase === 'asking'

@@ -3,15 +3,20 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness } from './fixtures/dsh-harness.js'
 import { piAiProviders, providerEnv } from '../src/backend/model-providers.ts'
+import { routeDelta } from './fixtures/fake-openai.js'
 import { initialState, reduce } from '../src/renderer/state.ts'
 
 test('real dsh forwards first live text before a delayed SSE response finishes; cancellation retains the committed prefix', { timeout: DSH_TIMEOUT_MS }, async t => {
   let completedAt = 0
   const server = http.createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk
-    const model = JSON.parse(body).model
+    const request = JSON.parse(body), model = request.model
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    const chunk = (content, stop = null) => res.write(`data: ${JSON.stringify({ id: 'stream-test', object: 'chat.completion.chunk', created: 1, model, choices: [{ index: 0, delta: { content }, finish_reason: stop }] })}\n\n`)
+    const send = (delta, stop = null) => res.write(`data: ${JSON.stringify({ id: 'stream-test', object: 'chat.completion.chunk', created: 1, model, choices: [{ index: 0, delta, finish_reason: stop }] })}\n\n`)
+    const chunk = (content, stop = null) => send({ content }, stop)
+    // The main conversation routes each request first; the answer after it is what streams late.
+    const route = routeDelta(request)
+    if (route) { send(route); send({}, 'tool_calls'); res.end('data: [DONE]\n\n'); return }
     chunk('第一段')
     await new Promise(resolve => setTimeout(resolve, 900))
     if (res.destroyed) return

@@ -97,10 +97,10 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
   return {
     measureAfterRender,
     afterRender({ anchorTop }: { anchorTop: number | null }) { measureAfterRender(() => anchorTop)() },
-    /** A new question: follow again, anchored on it. */
-    resetForPrompt() {
+    /** A new question follows again. Island submissions follow the latest output without the reading anchor. */
+    resetForPrompt({ anchor = true }: { anchor?: boolean } = {}) {
       follow(true)
-      anchorSpent = false
+      anchorSpent = !anchor
     },
     jumpToLatest() {
       follow(true)

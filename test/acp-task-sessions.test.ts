@@ -16,7 +16,7 @@ function harness(overrides: Partial<Parameters<typeof createAcpTaskSessions>[0]>
     foreground: () => ({ sessionId: 'main', cwd: '/origin', config: source }), canResume: () => true, prepareFresh: () => { prepares++ },
     operations: { run: async () => {}, cancelInTime: async () => {}, count: () => 0 },
     permissions: { pendingFor: () => [], waitingSessions: () => new Set() }, questions: { declineTask: () => {}, pendingOf: () => [] },
-    steer: async () => ({ ok: true }), markReadOnly: async () => true, emit: event => { events.push(event) }, describeError: String, goneMessage: () => 'gone', stoppedMessage: () => 'stopped',
+    steer: async () => ({ ok: true }), emit: event => { events.push(event) }, describeError: String, goneMessage: () => 'gone', stoppedMessage: () => 'stopped',
     ...overrides,
   })
   return { sessions, closed, configured, events, prepares: () => prepares, source: (value: readonly SessionConfigOption[]) => { source = value } }
@@ -43,14 +43,15 @@ for (const mode of ['fresh', 'resume'] as const) test(`disposal revokes in-fligh
   assert.equal(h.sessions.has('task'), false); assert.deepEqual(h.closed, ['task']); assert.equal(h.prepares(), 0)
 })
 
-test('failed unattended permission marking closes the acquired session before returning refusal', async () => {
-  const mark = deferred<boolean>(), h = harness({ markReadOnly: () => mark.promise })
-  const pending = h.sessions.startReadOnlyTask({ cwd: '/scheduled' })
-  await new Promise<void>(resolve => setImmediate(resolve))
+test('an unattended task is one nobody answers for; taken up again under the same id it is an ordinary task', async () => {
+  const h = harness()
+  assert.deepEqual(await h.sessions.startUnattendedTask({ cwd: '/scheduled' }), { ok: true, taskId: 'task' })
   assert.equal(h.sessions.isUnattended('task'), true)
-  mark.resolve(false)
-  assert.deepEqual(await pending, { ok: false, reason: 'unavailable' })
-  assert.equal(h.sessions.has('task'), false); assert.equal(h.sessions.isUnattended('task'), false); assert.deepEqual(h.closed, ['task'])
+  await h.sessions.closeTask('task')
+  assert.equal(h.sessions.isUnattended('task'), false)
+  await h.sessions.resumeTask({ taskId: 'task' })
+  assert.equal(h.sessions.has('task'), true)
+  assert.equal(h.sessions.isUnattended('task'), false)
 })
 
 test('failed model matching retires the unreported session instead of keeping a native attachment', async t => {
@@ -99,17 +100,4 @@ test('a reattachment waits for the previous native close and cannot have its per
   close.resolve({}); await closing
   assert.equal((await pending).ok, true)
   assert.deepEqual(log, ['decline-old', 'closing', 'closed', 'resume'])
-})
-
-test('an old unattended acknowledgement cannot close a newer attachment of the same native id', async () => {
-  const mark = deferred<boolean>(), h = harness({ markReadOnly: () => mark.promise })
-  const pending = h.sessions.startReadOnlyTask({ cwd: '/scheduled' })
-  await new Promise<void>(resolve => setImmediate(resolve))
-  await h.sessions.closeTask('task')
-  await h.sessions.resumeTask({ taskId: 'task' })
-  mark.resolve(false)
-  assert.equal((await pending).ok, false)
-  assert.equal(h.sessions.has('task'), true)
-  assert.equal(h.sessions.isUnattended('task'), false)
-  assert.deepEqual(h.closed, ['task'])
 })

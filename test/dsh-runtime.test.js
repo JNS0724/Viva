@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import { dshEnv, dshHomeFor, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { CRASH_WINDOW_MS, RESTART_DELAYS_MS, restartDelay } from '../src/shared/restart-delay.ts'
+import { testRequests } from './fixtures/request-routing.ts'
 
 test("dsh gets the user's environment without anything that steers dsh, then what the app sets", () => {
   const base = {
@@ -49,7 +50,7 @@ function bridgeWith(t, { platform = 'darwin' } = {}) {
     spawned.push({ command, args, child })
     return child
   }
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: '/app/dsh.js', nodeBin: '/apps/Viva', cwd: '/w', emit: (event) => event.type === 'error' && errors.push(event), spawnFn, platform,
     onExit: (exit) => exits.push(exit),
   })

@@ -247,21 +247,21 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * A task begun from the agent's brief (start_background_task), in a fresh session. The conversation on screen
    * stays where it is; the task's segment hangs off it, out of the timeline, and is kept like any task going on.
    */
-  async function begin(text: string, admit?: AdmitBrief): Promise<TaskStartResult> {
+  async function begin(text: string, name?: string, admit?: AdmitBrief): Promise<TaskStartResult> {
     const main = current()
     const { mode, model } = agentInfo()
     if (mode === 'connecting') return { ok: false as const, problem: taskProblems().connecting }
     const place = reserveRun(null)
     if ('problem' in place) return { ok: false as const, problem: place.problem }
     try {
-      return await beginReserved(text, main, mode, model, place.counted, admit)
+      return await beginReserved(text, main, mode, model, place.counted, name, admit)
     } finally {
       place.release()
     }
   }
 
   async function beginReserved(text: string, main: Conversation, mode: string | undefined, model: string | undefined,
-    counted: () => void, admit?: AdmitBrief): Promise<TaskStartResult> {
+    counted: () => void, name?: string, admit?: AdmitBrief): Promise<TaskStartResult> {
     const started = await agent.startTask()
     if (!started.ok || !started.taskId) {
       const reason = started.reason ?? 'missing'
@@ -279,7 +279,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       if (!db.get(main.id)) db.save(main, [], { keepEmpty: true })
       const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
-      const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(text), words: text }
+      const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(name?.trim() || text), words: text }
       store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent' })
       opens(taskId, { words: text, task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
@@ -457,9 +457,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     return kept
   }
 
-  /** start_background_task: afresh, from the agent's brief, its card in the conversation on screen. */
-  async function agentStart(brief: string, admit?: AdmitBrief) {
-    const started = await begin(brief, admit)
+  /** A task the main agent's decision starts: its brief, and the name its card shows (else the brief's first line). */
+  async function agentStart(brief: string, title?: string, admit?: AdmitBrief) {
+    const started = await begin(brief, title, admit)
     if (!started.ok) throw new Error(started.problem)
     return { taskId: started.task.id, title: started.task.title, status: 'running' }
   }

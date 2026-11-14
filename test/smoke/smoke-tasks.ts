@@ -66,9 +66,9 @@ async function tellAgent(win: SmokeWindow, words: string) {
   await until(win, `${userTexts}.length > ${before} && ${mainIdle}`, `the agent done with 「${words}」`)
 }
 
-/** The agent hands `text` to a background task (start_background_task, the fake model's 「后台做：」). */
+/** The agent routes `text` to a new background task (commit_route start, the fake model's 「后台做：」). */
 const startInBackground = (win: SmokeWindow, text: string) => tellAgent(win, `后台做：${text}`)
-/** The agent finds the task titled `title` and says `words` to it (message_background_task). */
+/** The agent finds the task titled `title` and routes `words` to it (commit_route message). */
 const tellTask = (win: SmokeWindow, title: string, words: string) => tellAgent(win, `告诉后台的「${title}」：${words}`)
 
 /**
@@ -88,8 +88,10 @@ async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect,
     answers: [...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent),
     busy: document.getElementById('send-btn').dataset.busy,
   })`)
-  expect(front.answers.some((text: string) => text.includes('已经交给后台')) && !front.answers.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
-    'the agent should say it handed the work over, the task answering on its own card', front)
+  // A handover ends the turn with its notice as the answer; the task answers on its own card.
+  expect(front.answers.some((text: string) => text.includes('已经交给后台')) && !front.answers.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`))
+    && !front.answers.some((text: string) => /请求 ID|commit_route/.test(text)),
+    'the agent should say it handed the work over, the task answering on its own card, no routing step showing', front)
   // The task's own session begins with its brief: nothing of the conversation comes before it.
   const firstWords = (request: { messages?: Array<{ content?: unknown }> }) => {
     const content = request.messages?.[0]?.content
@@ -104,14 +106,15 @@ async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect,
 }
 
 /**
- * The count at the island's tail opens the 后台 page: the task's whole conversation and what to do with it;
- * ← 返回 / Esc closes it. The drawer has no tabs of tasks any more.
+ * An ended task's line in the conversation opens the 后台 page (the island counts only tasks going on): the task's
+ * whole conversation and what to do with it; ← 返回 / Esc closes it. The drawer has no tabs of tasks any more.
  */
 async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
-  await run(win, `document.querySelector('#island .isl-bg').click()`)
+  expect(await run(win, `document.querySelector('#island .isl-bg') === null`), 'with none going on, the island should count no task')
+  await run(win, `(${cardOf(OTHER_ASK)}).click()`)
   const page = await until(win, `(() => { const seen = ${pageState}; return seen.open && seen.title && seen })()`, 'the 后台 page')
   expect(page.title === `#${OTHER_ASK}` && page.rows.includes(OTHER_ASK) && page.act === '关掉这件' && page.said.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`)),
-    'the tail should open the 后台 page, the task shown whole', page)
+    'its line should open the 后台 page, the task shown whole', page)
   await capture(win, outDir, 'tasks-page')
   // Its list folds to a narrow strip (« at its head) and unfolds from there (»); the task shown stays.
   await run(win, `document.querySelector('#tasks-page .tp-side .tp-fold').click()`)
@@ -198,7 +201,7 @@ async function reportSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `(${cardOf(BIG_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-report')
-  // The island's tail (✓ N 做完了) stays inside it, a long task name giving way (…) instead.
+  // The island's tail, if any (it counts tasks going on), stays inside it, a long task name giving way (…) instead.
   const tail = await run(win, `(() => {
     const island = document.querySelector('#island .isl')?.getBoundingClientRect()
     const cell = document.querySelector('#island .isl-bg')?.getBoundingClientRect()

@@ -6,6 +6,7 @@ import { createIsland } from './view/island-dom.ts'
 import { createIslandInput } from './view/island-input.ts'
 import { placeDesktopIsland } from './view/desktop-layout.ts'
 import { createComposerDraftActions } from './composer-draft-actions.ts'
+import { escapeAction, nextRequest, requestFor, showsCoach } from './island-desk-card.ts'
 import type { DraftContent } from '../shared/composer-draft.ts'
 
 /**
@@ -34,6 +35,7 @@ await initializeLanguage(api, () => { if (languageReady) show() })
  * whether the user has yet to see what it can do (coach).
  */
 type Payload = { view?: IslandShown, form?: string, align?: string, dir?: string, dragging?: boolean, hover?: boolean, coach?: boolean, layoutVersion?: number,
+  viewport?: { top: number, bottom: number },
   expanded?: boolean, panel?: 'input' | 'request' | 'background' | 'status', anchor?: { x: number, y: number }, side?: 'left' | 'right', panelWidth?: number }
 let payload: Payload | null = null
 /**
@@ -120,27 +122,52 @@ function busyOf(view: { form: string }) {
 }
 
 /** What the island shows now, from what the main process said and what happens on this page. */
-function shownView() {
+function shownView(): IslandShown {
   const view = payload?.view ?? IDLE_VIEW
   const context = { desktopOpen: Boolean(payload?.expanded) || Boolean(dropping), desktopPanel: payload?.panel, targetLabel: view.target?.label }
   if (dropping) return { ...context, desktopOpen: true, form: 'drop', tone: 'done', mood: 'idle', label: t("desk.give.to.viva"), recent: [], count: dropping }
-  // Dragged, it is the cat alone, the size of the window that follows the pointer (desk-place.ts DRAG_SIZE): the
-  // tail of tasks and preparation would make it wider and be cut off on both sides.
+  // While dragged only the portrait remains; the canvas and local anchor may stay fixed on Windows.
   if (payload?.dragging) return { ...view, ...context, desktopOpen: false, form: 'mini', dragging: true, background: null }
   if (payload?.expanded && payload.panel === 'input') {
     return { ...context, form: 'input', tone: 'done', mood: view.mood, label: t("desk.ask.viva"), recent: [], busy: busyOf(view), steering: view.target?.working ?? view.form === 'working',
+      action: view.action, startedAt: view.startedAt,
       waitingNotice: view.form === 'waiting' || view.form === 'asking' ? view : null, files, images, error, sending }
   }
   if (payload?.expanded && payload.panel === 'background') return { ...view, ...context, form: 'background' }
-  if (payload?.expanded && payload.panel === 'request' && activeRequest) {
-    const id = requestId(activeRequest)
-    const candidates = [view, ...(view.background?.items ?? []).map((item: IslandShown) => item.permission ? { ...view, form: 'waiting', permission: item.permission, question: null } : { ...view, form: 'asking', permission: null, question: item.question })]
-    const current = candidates.find(candidate => requestId(candidate) === id)
-    return current ? { ...current, ...context } : { ...context, ...IDLE_VIEW, form: 'resolved', label: t('desk.interaction.resolved') }
+  if (payload?.expanded && payload.panel === 'request') {
+    const current = activeRequest && requestFor(view, requestId(activeRequest))
+    // Answered with none left: the card folds (takeView asked the main process to close it) to a short note.
+    return current ? { ...current, ...context } : resolvedNote(view, context)
   }
-  return { ...view, ...context, ...(payload?.form === 'mini' && !['waiting', 'asking'].includes(view.form) ? { form: 'mini' } : {}) }
+  const waits = NEEDS_USER.has(view.form)
+  if (!waits && Date.now() < resolvedUntil) return resolvedNote(view, context)
+  if (!waits && showsCoach({ ...payload, dropping: Boolean(dropping) })) {
+    return { ...context, ...IDLE_VIEW, desktopOpen: true, form: 'coach', tone: 'done', mood: view.mood, label: t('desk.viva.is.here') }
+  }
+  return { ...view, ...context, ...(payload?.form === 'mini' && !waits ? { form: 'mini' } : {}) }
 }
 const requestId = (view: IslandShown) => view.permission?.requestId ?? view.question?.questionId ?? null
+/** Forms in which the island shows what waits on the user. */
+const NEEDS_USER = new Set(['waiting', 'asking'])
+/** How long the peek says a request was handled, once its card has folded. */
+const RESOLVED_NOTE_MS = 2_000
+let resolvedUntil = 0
+const resolvedNote = (view: IslandShown, context: object) => ({ ...context, ...IDLE_VIEW, desktopOpen: false, form: 'resolved', tone: 'done',
+  label: t('desk.interaction.resolved'), background: view.background ?? null })
+
+/**
+ * The request card follows what it shows: once answered (here or in the window) it moves to the next request that
+ * waits, or, with none left, asks the main process to fold it and says for a moment that it was handled.
+ */
+function followRequest(next: Payload) {
+  if (!next.expanded || next.panel !== 'request' || !activeRequest || !next.view) return
+  const following = nextRequest(next.view, requestId(activeRequest))
+  if (following === null) return
+  if (following) { activeRequest = following; return }
+  activeRequest = null
+  resolvedUntil = Date.now() + RESOLVED_NOTE_MS
+  api.act({ kind: 'dismiss' })
+}
 
 /** The 后台 list, opened by a click on the count at the island's tail; it closes when no task is left. */
 
@@ -169,16 +196,18 @@ async function ask(text: string) {
 }
 
 let layoutFrame = 0
+let paintedVersion = -1
+let acknowledgingVersion = -1
+let readyVersion = -1
 const takeView = (next: Payload) => {
-  const layoutChanged = !payload || payload.layoutVersion !== next.layoutVersion
   if (next.expanded && next.panel === 'request' && (!payload?.expanded || payload.panel !== 'request')) activeRequest = next.view ?? null
   payload = next
+  followRequest(next)
   if (next.view?.target?.key) draftActions?.expect(next.view.target.key)
   Object.assign(stage.dataset, { align: next.align, dir: next.dir, dragging: String(Boolean(next.dragging)) })
   island.el.dataset.dir = next.dir
   island.setPointer(Boolean(next.hover))
   show()
-  if (layoutChanged) acknowledgeLayout(next.layoutVersion ?? 0)
 }
 api.onView(takeView)
 stopEarly()
@@ -188,7 +217,7 @@ setInterval(show, TICK_MS)
 // The main process lets clicks through to what is below except over the island, so it needs to know where
 // the island is; that changes with every change of shape and place.
 function reportRect(ready = false) {
-  if (!payload) return
+  if (!payload || paintedVersion !== (payload.layoutVersion ?? 0)) return
   const { x, y, width, height } = island.el.getBoundingClientRect()
   const regions = [...island.el.querySelectorAll<HTMLElement>('.isl-anchor, .isl-peek:not([hidden]), .isl-surface:not([hidden])')].map(el => {
     const { x, y, width, height } = el.getBoundingClientRect(); return { x, y, width, height }
@@ -196,14 +225,25 @@ function reportRect(ready = false) {
   api.act({ kind: 'rect', x, y, width, height, regions, version: payload?.layoutVersion ?? 0, ready })
 }
 function placeSurface() {
-  if (payload) placeDesktopIsland(island.el, stage!, { anchor: payload.anchor ?? { x: 60, y: 50 }, side: payload.side ?? 'right', panelWidth: payload.panelWidth ?? 440 }, reportRect)
+  if (!payload) return
+  const version = payload.layoutVersion ?? 0
+  placeDesktopIsland(island.el, stage!, { anchor: payload.anchor ?? { x: 60, y: 50 }, side: payload.side ?? 'right', panelWidth: payload.panelWidth ?? 440, viewport: payload.viewport }, () => {
+    if (version !== (payload?.layoutVersion ?? 0)) return
+    paintedVersion = version
+    reportRect()
+    if (readyVersion !== version && acknowledgingVersion !== version) acknowledgeLayout(version)
+  })
 }
-/** One painted frame separates the compact renderer layout from the native window resize. */
+/** Acknowledge only after queued placement commits and its geometry has had time to paint. */
 function acknowledgeLayout(version: number) {
   cancelAnimationFrame(layoutFrame)
+  acknowledgingVersion = version
   layoutFrame = requestAnimationFrame(() => {
     layoutFrame = requestAnimationFrame(() => {
-      if ((payload?.layoutVersion ?? 0) === version) reportRect(true)
+      if ((payload?.layoutVersion ?? 0) === version && paintedVersion === version) {
+        readyVersion = version
+        reportRect(true)
+      }
     })
   })
 }
@@ -314,7 +354,7 @@ document.addEventListener('keydown', (event) => {
     if (press && dragged) {
       cancelAnimationFrame(frame); press.canceled = true
       api.act({ kind: 'drag', phase: 'cancel' })
-    } else api.act({ kind: 'dismiss' })
+    } else api.act(escapeAction(shownView()))
   }
   if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) { event.preventDefault(); api.act({ kind: 'menu' }) }
 })

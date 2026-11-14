@@ -56,10 +56,11 @@ test('inside dsh the plugin records each turn, and the app reads it without dsh 
   const db = openTraceDb({ file: path.join(userData, 'trace.db') })
   defer(() => db.close())
   await eventually(() => db.hasSession(sessionId))
-  assert.deepEqual(db.stepsOf(sessionId).map((step) => [step.kind, step.name, step.args, step.status]), [
-    ['tool', 'memory_recall', { query: '张三' }, 'completed'],
-  ])
+  // The main conversation routes the request first (commit_route), then looks it up.
+  const steps = db.stepsOf(sessionId)
+  assert.deepEqual(steps.map((step) => [step.kind, step.name, step.status]), [['tool', 'commit_route', 'completed'], ['tool', 'memory_recall', 'completed']])
+  assert.deepEqual(steps[1].args, { query: '张三' })
   const { trace, available } = await readSessionTrace({ dshHome: path.join(userData, 'no-dsh-here'), traceDb: db, sessionIds: [sessionId], until: Date.now() })
   assert.equal(available, true, 'no dsh log was needed')
-  assert.deepEqual(Object.values(trace.tools).map((tool) => [tool.title, tool.status]), [['memory_recall', 'completed']])
+  assert.deepEqual(Object.values(trace.tools).map((tool) => [tool.title, tool.status]), [['commit_route', 'completed'], ['memory_recall', 'completed']])
 })

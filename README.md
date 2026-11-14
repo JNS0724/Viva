@@ -29,7 +29,7 @@ It remembers what you mention, does it when it is due and brings the result to A
 Most assistants wait for a request. Work often requires remembering things you mention and then forget: “the weekly report is due Friday” or “the contract expires tomorrow.”
 
 - **Proactive:** hears what you will need later in a conversation, then asks whether to schedule it.
-- **Within your boundaries:** schedules only what you approve. A scheduled run can look things up but not change anything; you send emails and messages yourself.
+- **Within your boundaries:** schedules only what you approve. A scheduled run works at the permission level you picked, and does nothing that would need your approval while nobody is there.
 - **Just ask:** schedule, change, pause, or delete by saying so in the conversation.
 
 ## Highlights
@@ -42,9 +42,9 @@ Say “My weekly report is due before I leave on Friday; help me draft it then.�
 |---|---|
 | ![Schedule card: weekly report, every Friday at 16:00, draft this week's report from last week's template](docs/images/schedule-card.png) | ![Activity page with New, Coming up and Seen on the left, and a result with Continue in chat and Not needed](docs/images/feed-item.png) |
 
-### Runs read-only when due, results in Activity
+### Runs when due, results in Activity
 
-When it is due, the prompt runs in a session of its own that may **only use look-up tools**, on files in the workspace only. Whatever permission level you picked, writing files, running commands, and sending messages are refused, without asking you, since nobody is there. The answer becomes an item in Activity, with a notification; the Activity button in the title bar counts what is new. Runs missed while the computer slept or Viva was closed happen at the next launch, once per due time.
+When it is due, the prompt runs in a session of its own, at the permission level you picked; what that level would ask approval for is refused, without waiting for you, since nobody is there. The answer becomes an item in Activity, with a notification; the Activity button in the title bar counts what is new. Runs missed while the computer slept or Viva was closed happen at the next launch, once per due time.
 
 Activity is separate from Background: Background holds the tasks you hand over; Activity holds what the app brings on its own.
 
@@ -78,7 +78,7 @@ Closing the window leaves Viva in the tray. The desktop island shows work and ap
 flowchart LR
   A["Conversation"] --> P{"Schedule it?"}
   P -->|You approve| S["Coming up"]
-  S -->|When due, its own session; read-only tools| R["New in Activity"]
+  S -->|When due, its own session| R["New in Activity"]
   R -->|Notification| N["You open it"]
   N -->|Continue in chat| C["In the input; you review and send"]
 ```
@@ -110,8 +110,7 @@ Installers are unsigned. First launch may require an extra step:
 ## Privacy and safety
 
 - **Encrypted keys:** macOS Keychain or Windows DPAPI encrypts keys locally; the UI shows only the last four characters.
-- **Draft, never send:** sending email or messages is blocked; you send the prepared content yourself.
-- **Read-only schedules:** a scheduled run may only use look-up tools on workspace files; everything else is refused.
+- **dsh's permission levels:** what the assistant may do without asking is dsh's level you pick (Read only, Workspace changes, Auto, Full); Viva adds no rules of its own. A scheduled run has nobody to ask, so what its level would ask about is refused.
 - **Local data:** conversations, memories, schedules, and Activity stay locally. Viva has no server. Model calls, network tools, and connected services use the network. Conversation history is plaintext locally.
 
 ## Run from source

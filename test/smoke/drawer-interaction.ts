@@ -103,6 +103,8 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
     await files.dispose()
     await page.locator('#drawer .file-row').filter({ hasText: 'drawer-long-preview.txt' }).click()
     await expect.poll(() => page.evaluate(() => document.querySelector('.file-preview[data-path]')?.textContent?.length ?? 0)).toBeGreaterThan(100000)
+    // Content arrives before the queued layout restores its scroll. Scroll only after the preview is painted.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     const firstPage = await page.evaluate(() => {
       const preview = document.querySelector('.file-preview[data-path]')!
       const top = preview.scrollHeight - preview.clientHeight

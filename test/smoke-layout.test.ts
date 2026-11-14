@@ -26,8 +26,9 @@ test('the source smoke tests cover independent memory, schedules and real task r
   const source = (file: string) => fs.readFileSync(path.join(import.meta.dirname, 'smoke', file), 'utf8')
   const specs = ['critical.spec.ts', ...integrationSpecs()]
   const titles = specs.flatMap(file => [...source(file).matchAll(/\btest\('([^']+)'/g)].map(match => match[1]))
-  assert.equal(titles.length, 12)
+  assert.equal(titles.length, 13)
   for (const title of [
+    'MCP import menu stays inside its sidebar and cancelling an edit restores the saved server',
     'setup and source management @setup',
     'walkthrough and persisted relaunch @walkthrough @relaunch',
     'memory, capabilities and background tasks @memory',

@@ -1,13 +1,17 @@
 import { test } from './fixtures.ts'
 import { finishTurn, newTopic, run, submit, until } from './smoke-kit.ts'
 
+/** An approval card in the conversation, not a schedule proposal. */
+const PERMISSION_CARD = '#thread .confirm:not(.ask):not(.fu-card)'
+
 test('intentional dsh restarts settle the old foreground turn @lifecycle', async ({ scenario }) => {
   const app = await scenario({ phase: 'memory', bridge: 'real' })
   const { window: win } = await app.start('lifecycle')
 
   for (const restart of ['model', 'key']) {
-    await submit(win, '明天天气怎么样')
-    await until(win, `Boolean(document.querySelector('.ask'))`, 'the foreground question before restart')
+    // A foreground turn waiting on the user: an app operation's approval card (the main conversation asks no question cards).
+    await submit(win, '帮我接入演示服务')
+    await until(win, `Boolean(document.querySelector(${JSON.stringify(PERMISSION_CARD)}))`, 'the foreground approval before restart')
     // Both public settings paths restart a live dsh. Keep the local fake provider and its endpoint:
     // updating the model resumes the topic; clearing the unused DeepSeek key creates a new topic.
     await run(win, restart === 'model' ? `(async () => {
@@ -18,8 +22,8 @@ test('intentional dsh restarts settle the old foreground turn @lifecycle', async
     })()` : `window.agent.clearApiKey()`)
     await until(win, `(() => {
       const send = document.getElementById('send-btn')
-      return send?.dataset.busy === 'false' && !send.disabled && !document.querySelector('.ask')
-    })()`, `the ${restart} restart settling the old question`, 15_000)
+      return send?.dataset.busy === 'false' && !send.disabled && !document.querySelector(${JSON.stringify(PERMISSION_CARD)})
+    })()`, `the ${restart} restart settling the old approval`, 15_000)
     // Exercise the backend busy guard too; merely hiding the card would leave new topics blocked.
     const previous = await run(win, `window.agent.getInfo().then(info => info.sessionId)`)
     await newTopic(win)

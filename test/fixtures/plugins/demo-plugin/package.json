@@ -5,7 +5,7 @@
   "type": "module",
   "main": "tool.js",
   "exports": { ".": "./tool.js", "./package.json": "./package.json" },
-  "peerDependencies": { "@deepseek-ai/cordis": "~4.0.4", "@deepseek-ai/dsh-tools": "0.2.0-rc.2" },
+  "peerDependencies": { "@deepseek-ai/cordis": "~4.1.0", "@deepseek-ai/dsh-tools": "0.2.2-rc.2" },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-slots"] }

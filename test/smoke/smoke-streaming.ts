@@ -34,6 +34,11 @@ const SAMPLES = [
   '- 一\n\n- 二\n\n  续上第二项\n\n- 三\n\n结束',
   '    缩进代码\n\n    空行后还是代码\n\n正文',
   '前言\n\n```js\n' + Array.from({ length: 40 }, (_, i) => `const v${i} = ${i} // 第 ${i} 行`).join('\n') + '\n```\n\n后记',
+  // A changing paragraph retains only inline tokens the full lexer still considers equal.
+  '起始 **加粗**和*斜体*、~~删除~~、`代码`与[链接](https://example.com "标题")。继续 **未闭合的加粗',
+  '**外层 *内层* 加粗**与![图片](https://example.com/a.png)，转义 \\*星号\\*和&lt;内容&gt;。\n下一行  \n硬换行',
+  '安全[链接](javascript:alert(1))与<b>原样 HTML</b>和 https://example.com/path。追加内容',
+  '首段持续增长。\n\n新段带**加粗**。\n---\n\n- 列表接在段落后\n\n最后一段',
 ]
 
 /**
@@ -57,7 +62,7 @@ export async function checkStreamMarkdown(win: SmokeWindow): Promise<string[]> {
         drawn = streamMarkdown(drawn, text.slice(0, end), ctx)
         frames += 1
         const whole = renderMarkdown(text.slice(0, end), ctx)
-        // Text can sit in more than one adjacent node (a growing code block; inline runs drawn whole): compared joined.
+        // Growing text may sit in adjacent nodes; compare their normalized contents.
         const joined = drawn.el.cloneNode(true)
         joined.normalize()
         whole.normalize()
@@ -74,7 +79,66 @@ export async function checkStreamMarkdown(win: SmokeWindow): Promise<string[]> {
       if (kept) headingsKept += 1
       else mismatches.push({ step, problem: 'the finished heading was drawn again' })
     }
-    return { frames, headingsKept, mismatches }
+    const retained = []
+    const check = (ok, name) => {
+      if (ok) retained.push(name)
+      else mismatches.push({ problem: name })
+    }
+    const host = document.createElement('div')
+    document.body.append(host)
+    const selection = getSelection()
+    try {
+      const opened = []
+      const handlers = { openLink: href => opened.push(href), image: null }
+      const start = '可以选择的文字 **加粗**和[链接](https://example.com)。'
+      let drawn = streamMarkdown(null, start, handlers)
+      host.append(drawn.el)
+      const paragraph = drawn.el.querySelector('p')
+      const strong = paragraph.querySelector('strong')
+      const anchor = paragraph.querySelector('a')
+      const text = paragraph.firstChild
+      const caret = document.createElement('span')
+      caret.className = 'caret'
+      paragraph.append(caret)
+      const range = document.createRange()
+      range.setStart(text, 0)
+      range.setEnd(text, 4)
+      selection.removeAllRanges()
+      selection.addRange(range)
+      const selected = selection.toString()
+      drawn = streamMarkdown(drawn, start + '继续写**新的加粗**与正文。', handlers)
+      check(drawn.el.querySelector('p') === paragraph, 'growing paragraph keeps its element')
+      check(drawn.el.querySelector('strong') === strong && drawn.el.querySelector('a') === anchor, 'stable inline nodes survive')
+      check(selection.toString() === selected && selection.anchorNode === text, 'selection survives paragraph growth')
+      check(drawn.el.querySelector('p').lastChild === caret, 'caret stays after appended inline nodes')
+      drawn.el.querySelector('a').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      check(opened.length === 1 && opened[0] === 'https://example.com/', 'retained link keeps its handler')
+      caret.remove()
+      const complete = renderMarkdown(start + '继续写**新的加粗**与正文。', handlers)
+      const normalized = drawn.el.cloneNode(true)
+      normalized.normalize()
+      complete.normalize()
+      check(normalized.isEqualNode(complete), 'retained inline DOM matches the complete renderer')
+
+      let plain = streamMarkdown(null, '可以选择的纯文字', ctx)
+      host.append(plain.el)
+      const plainParagraph = plain.el.firstChild
+      const plainText = plainParagraph.firstChild
+      range.setStart(plainText, 0)
+      range.setEnd(plainText, 4)
+      selection.removeAllRanges()
+      selection.addRange(range)
+      const plainSelected = selection.toString()
+      plain = streamMarkdown(plain, '可以选择的纯文字继续增长', ctx)
+      check(plain.el.firstChild === plainParagraph && plainParagraph.firstChild === plainText, 'growing plain text keeps its text node')
+      check(selection.toString() === plainSelected && selection.anchorNode === plainText, 'selection survives text-node append')
+      const shortened = streamMarkdown(plain, '缩短后的文字', ctx)
+      check(shortened.el.textContent === '缩短后的文字', 'replacement text removes its old suffix')
+    } finally {
+      selection.removeAllRanges()
+      host.remove()
+    }
+    return { frames, headingsKept, retained, mismatches }
   })()`) as { frames: number, headingsKept: number, mismatches: unknown[] }
   report(`stream markdown: ${JSON.stringify(seen)}`)
   return seen.mismatches.length ? [`a streamed answer should draw what the whole text draws, at every step: ${JSON.stringify(seen.mismatches)}`] : []
@@ -88,7 +152,7 @@ export interface StreamingCost {
   answer: FrameCost
   /** A 120 000-character answer that is one code block, still open. */
   code: FrameCost
-  /** A 60 000-character answer that is one paragraph: drawn again each frame (diagnostic, no budget). */
+  /** A 60 000-character answer that is one paragraph (diagnostic, no budget). */
   paragraph: FrameCost
   /** Unfolding 过程 of a task of 1000 steps: the click's work, the rows drawn, and how many it should draw. */
   steps: { steps: number, rows: number, shown: number, expandMs: number }

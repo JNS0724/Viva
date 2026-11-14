@@ -38,7 +38,10 @@
   --desk-capsule-width: 440px; --desk-capsule-height: 72px; --desk-input-width: 520px; --desk-input-height: 112px;
   --desk-card-width: 440px; --desk-card-max: 320px; --desk-card-head: 70px; --desk-card-footer: 60px;
   --desk-pad: 16px; --desk-gap: 10px; --desk-control: 32px; --desk-radius: 22px; --desk-files-max: 128px; --desk-field-max: 72px;
-  --desk-neighbor-gap: 12px; --desk-hit-pad: 4px; --desk-peek-width: 320px; --desk-surface-head: 62px;
+  --desk-neighbor-gap: 12px; --desk-hit-pad: 4px; --desk-peek-width: 320px; --desk-surface-head: 44px;
+  --desk-icon: 28px; --desk-button: 34px; --desk-strip: 40px; --desk-key: 56px;
+  /* The portrait's state ring and the sign it may wear (view/island-dom.ts deskSignal). */
+  --desk-ring: 3px; --desk-sign: 22px; --desk-sign-glyph: 14px;
   --titlebar-gutter: 12px;
   /* the 动态 button (about 96px) and 2 title bar buttons (36px), with 6px gaps */
   --titlebar-actions: 180px;
@@ -882,6 +885,8 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 }
 .tp-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-meta { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* An ended task not told of yet, its line marked 未读 (view/tasks-page.ts). */
+.tp-row[data-unread="true"] .tp-meta { color: var(--accent); }
 .tp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tp-empty { align-items: center; justify-content: center; padding: 40px; }
 .tp-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 14px 28px; border-bottom: 1px solid var(--line); }
@@ -930,7 +935,11 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 .cap-candidate + .cap-candidate { border-top: 1px solid var(--line); }
 .cap-candidate[data-status="blocked"] .cap-candidate-name { color: var(--ink-3); }
 .cap-candidate-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cap-tools { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 4px; }
+.cap-tools { position: relative; display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 4px; }
+/* Anchor the dsh menu to the toolbar so it fits inside the scrolling sidebar (view/capability-mcp.ts). */
+.cap-tools .import-area { position: static; }
+.cap-tools .import-menu { left: 12px; right: 12px; width: auto; transform: none; }
+.cap-tools .import-menu .workdir-item-name { max-width: 100%; white-space: normal; }
 .cap-row .ext-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* How the one picked stands, by its name: one line, cut short, so the name keeps its room (the whole in its title). */
 .cap-standing { flex: 0 1 auto; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1095,6 +1104,30 @@ body:has(.overlay) .toast-root, body:has(.hub[data-open="true"]) .toast-root { t
 .fu-line { display: flex; gap: 12px; }
 .fu-when { flex: none; min-width: 116px; color: var(--accent); }
 .fu-note { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ink-2); }
+/* A schedule's card on 修改 (view/proposal-card.ts editForm): a row per field; a row says for which repeats it shows (data-for). */
+.fu-form { display: flex; flex-direction: column; gap: 12px; }
+.fu-edit-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 12px; }
+.fu-edit-row.top { align-items: start; }
+.fu-edit-row.top > .label { padding-top: 14px; }
+.fu-edit-row > .label { color: var(--ink-3); }
+.fu-edit-row > .field { flex: none; width: 100%; }
+.fu-prompt { height: auto; padding: 12px 14px; line-height: 1.6; resize: vertical; font-family: var(--font-sans); }
+.fu-inline { display: flex; align-items: center; gap: 12px; }
+.fu-inline > .field { flex: none; width: 96px; }
+.fu-form [data-for] { display: none; }
+.fu-form:has(option[value="at"]:checked) [data-for~="at"],
+.fu-form:has(option[value="daily"]:checked) [data-for~="daily"],
+.fu-form:has(option[value="weekly"]:checked) [data-for~="weekly"],
+.fu-form:has(option[value="monthly"]:checked) [data-for~="monthly"],
+.fu-form:has(option[value="cron"]:checked) [data-for~="cron"] { display: grid; }
+.fu-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.fu-day > span {
+  display: inline-flex; align-items: center; height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-2);
+  color: var(--ink-2); font-size: 13px; cursor: pointer;
+}
+.fu-day:has(input:checked) > span { border-color: var(--accent); background: var(--raised); color: var(--ink); font-weight: 700; }
+.fu-day:has(input:focus-visible) > span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fu-day:has(input:disabled) > span { opacity: .5; cursor: not-allowed; }
 .fu-scroll { display: flex; flex-direction: column; gap: 12px; padding: 16px 32px 32px; }
 .fu-draft { padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); }
 .fu-actions { margin-top: 4px; }

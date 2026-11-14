@@ -1,4 +1,5 @@
 import { objectOf } from '../shared/unknown-value.ts'
+import { turnProblem } from '../shared/turn-outcome.ts'
 import { calendarDays, formatDate } from '../shared/i18n/format.ts'
 import { onLocaleChange, localeRevision, getLocale } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -52,9 +53,9 @@ export function workspaceName(cwd: string | null | undefined): string {
 }
 
 /** What gets saved: finished messages only, in the shape the main process stores. */
-export const historyMessages = (state: State) => state.messages
+export const historyMessages = (state: State, { keys = false }: { keys?: boolean } = {}) => state.messages
   .filter((m) => !m.open && !m.pending)
-  .map(({ role, text, receipt, images, sourceId }) => ({ role, text, receipt: receipt ?? null, ...(sourceId ? { sourceId } : {}), ...(images?.length ? { images } : {}) }))
+  .map(({ role, text, receipt, images, sourceId, streamKey }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}), ...(sourceId ? { sourceId } : {}), ...(keys && streamKey ? { key: streamKey } : {}) }))
 
 const DAY_MS = 86_400_000
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)
@@ -221,17 +222,24 @@ function workingEvent(state: State, now: number) {
  * up a ! or ? sign while it waits on the user, pleased once a turn is done, worried after an error. */
 export type CatMood = 'idle' | 'thinking' | 'typing' | 'confirm' | 'ask' | 'done' | 'error'
 
-export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'messages' | 'lastReceipt'>): CatMood {
+/** A turn done well, its 已完成 not yet looked at (conversation-types.ts doneNotice): once seen, she is at rest. */
+export const isDoneNews = (state: Pick<State, 'lastReceipt' | 'doneNotice'>): boolean =>
+  !!state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled' && !turnProblem(state.lastReceipt.stopReason) && state.doneNotice !== 'seen'
+
+export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'messages' | 'lastReceipt' | 'doneNotice'>): CatMood {
   if (state.phase === 'waiting') return 'confirm'
   if (state.phase === 'asking') return 'ask'
   if (state.phase === 'error') return 'error'
   if (state.phase === 'working') return latestActiveTool(state) || state.messages.at(-1)?.open ? 'typing' : 'thinking'
-  if (state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled') return 'done'
-  return 'idle'
+  if (turnProblem(state.lastReceipt?.stopReason)) return 'error'
+  return isDoneNews(state) ? 'done' : 'idle'
 }
 
 /** What waits on the user is headed alike wherever it shows: the thread's card, the island, the status (prompt-card.js). */
 export let PROMPT_HEADS = Object.freeze({ permission: t("selectors.needs.your.approval"), question: t("selectors.needs.your.answer"), secret: t("selectors.needs.your.input") })
+
+/** What keeps the agent from connecting, in a few words (the status island, the desktop card). */
+export const setupProblem = (info: Pick<AgentInfo, 'problem'>): string => (info.problem === 'no-dsh' ? t("selectors.dsh.not.installed") : t("selectors.set.up.a.model"))
 
 /** Copy and tone for the avatar/status island. */
 export function statusView(state: State, now = Date.now()): { tone: string, label: string, event: string } {
@@ -240,8 +248,12 @@ export function statusView(state: State, now = Date.now()): { tone: string, labe
   if (state.phase === 'working') return { tone: 'working', label: t("island-view.working"), event: workingEvent(state, now) }
   if (state.phase === 'error') return { tone: 'error', label: t("island-view.error"), event: truncate(state.error, EVENT_LIMIT) }
   if (state.info.mode === 'connecting') return { tone: 'pending', label: t("island-view.connecting"), event: 'DEEPSEEK HARNESS' }
-  if (state.info.mode === 'setup') return { tone: 'pending', label: t("island-view.not.connected"), event: state.info.problem === 'no-dsh' ? t("selectors.dsh.not.installed") : t("selectors.set.up.a.model") }
-  if (state.lastReceipt) {
+  if (state.info.mode === 'setup') return { tone: 'pending', label: t("island-view.not.connected"), event: setupProblem(state.info) }
+  // A turn done well and looked at says no more (done-notice-actions.ts); one stopped or gone wrong still says so.
+  const seenDone = state.lastReceipt?.stopReason !== 'cancelled' && !turnProblem(state.lastReceipt?.stopReason) && state.doneNotice === 'seen'
+  if (state.lastReceipt && !seenDone) {
+    const problem = turnProblem(state.lastReceipt.stopReason)
+    if (problem) return { tone: 'error', label: t('island-view.incomplete'), event: problem }
     const stopped = state.lastReceipt.stopReason === 'cancelled'
     return { tone: stopped ? 'idle' : 'done', label: stopped ? t("island-view.stopped") : t("island-view.completed"), event: formatElapsed(state.lastReceipt.ms) }
   }
@@ -251,8 +263,9 @@ export function statusView(state: State, now = Date.now()): { tone: string, labe
 /** One-line receipt under an answer, e.g. "用时 42 秒 · 3 次工具". */
 export function receiptLine(receipt: Receipt): string {
   const seconds = Math.max(1, Math.round(receipt.ms / 1000))
+  const incomplete = turnProblem(receipt.stopReason) ? t('island-view.incomplete') : null
   return [
-    receipt.stopReason === 'cancelled' ? t("island-view.stopped") : t("selectors.seconds", { seconds: seconds }),
+    incomplete ?? (receipt.stopReason === 'cancelled' ? t("island-view.stopped") : t("selectors.seconds", { seconds: seconds })),
     receipt.tools ? t("selectors.tool.calls", { tools: receipt.tools }) : '',
   ].filter(Boolean).join(' · ')
 }
@@ -285,10 +298,20 @@ type TimelineEntry = State['timeline'][number]
 
 /** What of a conversation its trace is drawn from: the order of what happened, the tools and the thoughts. */
 type TraceSource = Pick<ConversationView, 'timeline' | 'tools' | 'thoughts'>
+const thoughtIndexes = new WeakMap<TraceSource['thoughts'], Map<string, TraceSource['thoughts'][number]>>()
+function thoughtOf(state: TraceSource, id: string) {
+  let index = thoughtIndexes.get(state.thoughts)
+  if (!index) {
+    index = new Map()
+    for (const thought of state.thoughts) if (!index.has(thought.id)) index.set(thought.id, thought)
+    thoughtIndexes.set(state.thoughts, index)
+  }
+  return index.get(id)
+}
 const TRACE_BUILDERS: { [K in TimelineEntry['kind']]: (state: TraceSource, entry: Extract<TimelineEntry, { kind: K }> extends never ? TimelineEntry & { kind: K } : Extract<TimelineEntry, { kind: K }>) => TraceRow | null | undefined } = {
   memory: (_state, entry) => memoryTrace(entry.injection),
   thought: (state, entry) => {
-    const thought = state.thoughts.find((t) => t.id === entry.ref)
+    const thought = thoughtOf(state, entry.ref)
     return thought && { title: t("selectors.thinking.2"), detail: truncate(thought.text, DETAIL_LIMIT), tone: 'think' }
   },
   tool: (state, entry) => {
@@ -320,6 +343,18 @@ export function traceItems(state: TraceSource): Array<TraceRow & { key: string, 
     const item = build(state, entry)
     return item ? [{ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item }] : []
   })
+}
+
+/** The last visible steps, keeping their timeline keys without formatting the whole trace. */
+export function traceTail(state: TraceSource, count: number): ReturnType<typeof traceItems> {
+  const rows: ReturnType<typeof traceItems> = []
+  for (let index = state.timeline.length - 1; index >= 0 && rows.length < count; index -= 1) {
+    const entry = state.timeline[index]
+    const build = TRACE_BUILDERS[entry.kind] as (state: TraceSource, entry: TimelineEntry) => TraceRow | null | undefined
+    const item = build(state, entry)
+    if (item) rows.push({ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item })
+  }
+  return rows.reverse()
 }
 
 const toolsInOrder = (state: State) =>

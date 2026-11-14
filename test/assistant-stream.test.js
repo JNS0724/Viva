@@ -2,18 +2,26 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { createAssistantStream } from '../src/backend/assistant-stream.ts'
-import { apply } from '../plugins/stream/index.ts'
+import { installAssistantStream } from '../plugins/routing/lib/assistant-stream.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 
-function setup({ ready = true, ack = true } = {}) {
-  const sent = [], updates = []
+/** The app's side of the stream; the plugin's side answers binds, and flushes with what it settled (unless `flush` is false). */
+function setup({ ready = true, flush = true } = {}) {
+  const sent = [], updates = [], settled = new Map()
   const desk = createAssistantStream({ timeoutMs: 15, send: message => {
     sent.push(message)
-    if (ack && message.type === 'assistant_stream_bind') desk.receive({ type: 'assistant_stream_bound', version: 1, operation: message.operation })
-    if (ack && message.type === 'assistant_stream_flush') desk.receive({ type: 'assistant_stream_flushed', version: 1, operation: message.operation })
+    if (message.type === 'assistant_stream_bind') desk.receive({ type: 'assistant_stream_bound', version: 1, operation: message.operation })
+    if (flush && message.type === 'assistant_stream_flush') {
+      const messages = [...settled].map(([key, blocks]) => ({ key, blocks }))
+      desk.receive({ type: 'assistant_stream_flushed', version: 1, operation: message.operation, messages, finalReply: messages.length > 0 })
+    }
   }, emit: (sessionId, update) => updates.push({ sessionId, update }) })
   if (ready) desk.receive({ type: 'assistant_stream_ready', version: 1 })
-  const frame = (op, kind, values = {}) => desk.receive({ type: 'assistant_stream', version: 1, sessionId: op.sessionId, operation: op.id, key: op.id + ':1', kind, ...values })
+  const frame = (op, kind, values = {}) => {
+    const key = op.id + ':1'
+    if (kind === 'settle') settled.set(key, values.blocks)
+    desk.receive({ type: 'assistant_stream', version: 1, sessionId: op.sessionId, operation: op.id, key, kind, ...values })
+  }
   return { desk, frame, sent, updates }
 }
 
@@ -25,12 +33,12 @@ test('bridge recreation cannot reuse the identity of a committed answer after a 
   first.desk.finish(old); restarted.desk.finish(next)
 })
 
-test('source is selected before a prompt, late ready applies to the next operation; tools and usage remain ACP', async () => {
+test('ACP text never shows during an operation, the plugin ready or not; late ready applies to the next operation; tools and usage remain ACP', async () => {
   const { desk } = setup({ ready: false })
   const op = await desk.begin('s')
   desk.receive({ type: 'assistant_stream_ready', version: 1 })
-  assert.equal(desk.suppress('s', { sessionUpdate: 'agent_message_chunk' }), false)
-  desk.finish(op)
+  assert.equal(desk.suppress('s', { sessionUpdate: 'agent_message_chunk' }), true)
+  await assert.rejects(desk.complete(op), /确认|confirm/i, 'an operation the plugin never bound is not confirmed')
   const next = await desk.begin('s')
   assert.equal(desk.suppress('s', { sessionUpdate: 'agent_message_chunk', content: { text: 'ok' } }), true)
   assert.equal(desk.suppress('s', { sessionUpdate: 'tool_call' }), false)
@@ -83,7 +91,7 @@ test('interleaved delta-only blocks, failed attempt, retry and partial cancel se
 test('plugin projects actual live events, settles from matching session/event, and omits tool arguments and replay state', () => {
   const ctx = new EventEmitter(); ctx.effect = () => {}
   const port = new EventEmitter(); const sent = []; port.connected = true; port.send = m => sent.push(m)
-  apply(ctx, {}, port)
+  installAssistantStream(ctx, port, () => true)
   port.emit('message', { type: 'assistant_stream_bind', version: 1, sessionId: 's', operation: 'op1' })
   const session = { id: 's' }, agent = { session }
   const publish = frame => ctx.emit('agent/assistant-stream', { agent, frame: { attemptId: 'a1', revision: 1, ...frame } })
@@ -97,13 +105,13 @@ test('plugin projects actual live events, settles from matching session/event, a
   assert.doesNotMatch(JSON.stringify(sent), /private|not sent/)
 })
 
-test('lost stream channel rolls back provisional output before using complete ACP output', async () => {
-  const { desk, frame, updates } = setup()
+test('a lost stream channel rolls back provisional output and ends in an error, never showing ACP\'s copy', async () => {
+  const { desk, frame, updates } = setup({ flush: false })
   const op = await desk.begin('s')
   frame(op, 'start'); frame(op, 'delta', { index: 0, blockType: 'text', text: 'partial' })
   desk.suppress('s', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'complete' } })
-  await desk.complete(op)
+  await assert.rejects(desk.complete(op), /确认|confirm/i)
   let state = reduce(initialState, { type: 'user_prompt', text: 'q', at: 0 })
   for (const { update } of updates) state = reduce(state, { type: 'acp_update', update, at: 1 })
-  assert.deepEqual(state.messages.map(m => m.text), ['q', 'complete'])
+  assert.deepEqual(state.messages.map(m => m.text), ['q'])
 })

@@ -3,8 +3,10 @@
  * so integration tests and the smoke run exercise the same bridge code as a real session.
  * Started as `node fake-dsh.js --profile viva`. FAKE_DSH_DELAY_MS sets the pace (default 450 ms per step).
  * Like dsh, it connects to the stdio MCP servers a session declares and refuses the session when one fails.
- * It has no plugins, but takes words sent mid-turn as viva-steer would: memory and steering are tested with the
- * real dsh and a fake model (test/fixtures/fake-llm.js).
+ * It has no plugins, but answers the app's channels as they would: words sent mid-turn (viva-steer), the main
+ * session's role (viva-routing, which it binds without routing anything) and the stream contract, the only way the
+ * app shows what a turn says (viva-routing's assistant stream). Memory, steering and routing themselves are tested
+ * with the real dsh and a fake model (test/fixtures/fake-llm.js).
  */
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -12,6 +14,7 @@ import { Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
+import { withoutHeaders } from '../../src/shared/request-routing/header.ts'
 
 const STEP_MS = Number(process.env.FAKE_DSH_DELAY_MS ?? 450)
 const PIECE_CHARS = 3
@@ -125,6 +128,7 @@ const closeMcp = (session) => Promise.all([...(session?.mcp?.values() ?? [])].ma
 function createAgent(conn) {
   const sessions = new Map()
   answerSteering(sessions)
+  const shown = answerStream()
 
   const openSession = (sessionId, cwd, mcp) => {
     const session = { cwd, model: MODELS[0].value, effort: 'high', turn: null, mcp }
@@ -137,14 +141,18 @@ function createAgent(conn) {
     const send = (update) => conn.sessionUpdate({ sessionId, update })
     const step = async (update, ratio = 1) => {
       await sleep(STEP_MS * ratio, signal)
+      if (update.sessionUpdate === 'tool_call') shown.tool(sessionId)
       await send(update)
     }
     const stream = async (kind, text, size = PIECE_CHARS, ratio = PIECE_RATIO) => {
       await sleep(STEP_MS, signal)
+      const attempt = shown.start(sessionId, kind === 'agent_message_chunk' ? 'text' : 'reasoning')
       for (const piece of pieces(text, size)) {
+        attempt.delta(piece)
         await send({ sessionUpdate: kind, content: { type: 'text', text: piece } })
         await sleep(STEP_MS * ratio, signal)
       }
+      attempt.settle(text)
     }
     const tool = (toolCallId, title, kind, extra = {}) => ({ sessionUpdate: 'tool_call', toolCallId, title, kind, status: 'in_progress', ...extra })
     const status = (toolCallId, value) => ({ sessionUpdate: 'tool_call_update', toolCallId, status: value })
@@ -240,7 +248,7 @@ function createAgent(conn) {
       const session = sessionOrThrow(params.sessionId)
       const controller = new AbortController()
       session.turn = controller
-      const text = params.prompt.map((block) => block.text ?? '').join('\n')
+      const text = withoutHeaders(params.prompt.map((block) => block.text ?? '').join('\n'))
       // Pictures come as image blocks, base64; the answer says what came, so the smoke run can see they got here.
       const images = params.prompt.filter((block) => block.type === 'image' && block.data && block.mimeType)
       try {
@@ -274,6 +282,50 @@ function answerSteering(sessions) {
     const running = Boolean(sessions.get(message.sessionId)?.turn)
     process.send({ type: 'steer_result', id: message.id, ok: running, ...(running ? {} : { reason: 'idle' }) })
   })
+}
+
+/**
+ * Stands in for the stream contract (plugins/routing/lib/assistant-stream.ts): each piece of text a script streams is
+ * an attempt of its own, opened, filled and settled on the channel; a flush returns what was settled.
+ */
+function answerStream() {
+  const bindings = new Map()
+  const send = (message) => { if (process.connected) process.send(message) }
+  if (typeof process.send === 'function') {
+    process.on('message', (message) => {
+      if (message?.version !== 1) return
+      if (message.type === 'routing_bind') send({ type: 'routing_bound', version: 1, id: message.id })
+      if (message.type === 'assistant_stream_bind') {
+        bindings.set(message.sessionId, { operation: message.operation, messages: [], finalReply: false })
+        send({ type: 'assistant_stream_bound', version: 1, operation: message.operation })
+      }
+      if (message.type === 'assistant_stream_flush') {
+        const binding = [...bindings.values()].find((entry) => entry.operation === message.operation)
+        send({ type: 'assistant_stream_flushed', version: 1, operation: message.operation, messages: binding?.messages ?? [], finalReply: binding?.finalReply ?? false })
+      }
+    })
+    process.channel?.unref?.()
+    send({ type: 'assistant_stream_ready', version: 1 })
+  }
+  return {
+    tool(sessionId) { const binding = bindings.get(sessionId); if (binding) binding.finalReply = false },
+    start(sessionId, blockType) {
+      const binding = bindings.get(sessionId)
+      if (!binding) return { delta: () => {}, settle: () => {} }
+      const key = `${binding.operation}:${binding.messages.length + 1}`
+      const base = { type: 'assistant_stream', version: 1, sessionId, operation: binding.operation, key }
+      send({ ...base, kind: 'start' })
+      return {
+        delta: (text) => send({ ...base, kind: 'delta', index: 0, blockType, text }),
+        settle: (text) => {
+          const blocks = [{ type: blockType, text }]
+          binding.messages = [...binding.messages, { key, blocks }]
+          binding.finalReply = blockType === 'text' && Boolean(text.trim())
+          send({ ...base, kind: 'settle', blocks })
+        },
+      }
+    },
+  }
 }
 
 const stream = ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))

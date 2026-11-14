@@ -78,6 +78,23 @@ export function topicTitle(messages: ReadonlyArray<{ role: string, text: string 
   return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS)}…` : line
 }
 
+/** Fewer letters than this, without spaces and punctuation, and a title does not say what a topic is about. */
+const HINT_MIN_CHARS = 6
+/** A first question that is only a greeting names no topic, however it is spelled. */
+const GREETING = /^(?:你好|您好|哈喽|嗨|在吗|在不在|hi|hello|hey)$/i
+
+/**
+ * The topic's title where it tells the user which conversation something goes to (view/island-input.ts), or null
+ * when it would not: a greeting, a few words, or the placeholder for a topic with no question (in parentheses).
+ */
+export function topicHint(title: string): string | null {
+  const shown = title.trim()
+  if (/^[(（]/.test(shown)) return null
+  const letters = shown.replace(/[\s\p{P}\p{S}]/gu, '')
+  if ([...letters].length < HINT_MIN_CHARS || GREETING.test(letters)) return null
+  return shown
+}
+
 /** How many turns: the user's questions. */
 export const turnsOf = (messages: ReadonlyArray<{ role: string }>) => messages.filter((message) => message.role === 'user').length
 

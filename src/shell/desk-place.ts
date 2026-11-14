@@ -4,10 +4,12 @@
  * display's work area. Near the top centre it snaps home. In the lower half it unfolds upwards, and near a
  * side it keeps to that side, so whatever it unfolds into stays on the screen.
  *
- * The island's window is larger than the island (DESK_SIZE); the island sits at the top or the bottom of it
- * (`dir`), at its left, centre or right (`align`), with STAGE_PAD around (island.css .desk-stage).
+ * On Windows one fixed canvas reserves space on both sides of the head, including while dragged. Changing
+ * its native bounds and the head's local anchor separately can display an old frame at the wrong position.
+ * Other platforms keep their compact drag host and screen-contained expanded host.
  */
-export const DESK_SIZE = Object.freeze({ width: 600, height: 352 })
+export const FIXED_DESK_HOST = process.platform === 'win32'
+export const DESK_SIZE = Object.freeze(FIXED_DESK_HOST ? { width: 1008, height: 704 } : { width: 600, height: 352 })
 /** The island's head (island-dom.js SIZES.desk.head) and the room around it in the window. */
 const HEAD = 80
 export const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
@@ -15,11 +17,8 @@ export const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
 const TOP_GAP = 6
 /** Dropped this close to home, the island goes home. */
 const SNAP_PX = 1
-/**
- * While dragged the window shrinks to the island (80px, her picture) and a little room for its shadow (island.css data-dragging):
- * a transparent window costs in proportion to its area every time it moves, so the smaller the better.
- */
-export const DRAG_SIZE = Object.freeze({ width: 104, height: 104 })
+/** Windows retains its canvas; other platforms use a small host for the dragged portrait. */
+export const DRAG_SIZE = FIXED_DESK_HOST ? DESK_SIZE : Object.freeze({ width: 104, height: 104 })
 
 export interface Area { x: number, y: number, width: number, height: number }
 /** The centre of the island's head, on the screen. */
@@ -48,6 +47,12 @@ export function deskLayout(point: Point, area: Area): { bounds: Area, align: 'st
   const dir = point.y > area.y + area.height / 2 ? 'up' : 'down'
   const side = point.x > area.x + area.width / 2 ? 'left' : 'right'
   const align = side === 'left' ? 'end' : 'start'
+  if (FIXED_DESK_HOST) {
+    const anchor = { x: width / 2, y: height / 2 }
+    const room = side === 'left' ? point.x - area.x : area.x + area.width - point.x
+    return { bounds: { x: Math.round(point.x - anchor.x), y: Math.round(point.y - anchor.y), width, height },
+      anchor, align, dir, side, panelWidth: Math.min(440, room - HEAD / 2 - 14) }
+  }
   const preferredX = side === 'left' ? point.x + HEAD / 2 + STAGE_PAD.side - width : point.x - HEAD / 2 - STAGE_PAD.side
   const x = Math.round(clamp(preferredX, area.x, Math.max(area.x, area.x + area.width - width)))
   const y = dir === 'down' ? point.y - HEAD / 2 - STAGE_PAD.end : point.y + HEAD / 2 + STAGE_PAD.end - height

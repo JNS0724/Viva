@@ -24,8 +24,9 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
 }) {
   let mirror: Mirror = start.mirror
   const listeners = new Set<Listener>()
-  /** The latest calls made, oldest first; and the number of the last one handed to a shell listening. */
+  /** A bounded ring of calls; and the number of the last one handed to a shell listening. */
   const kept: HostCall[] = []
+  let oldest = 0
   let handed = 0
   /** Calls no shell had are being let go (said once, till a shell listens). */
   let dropping = false
@@ -38,12 +39,13 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
     sent += 1
     const call: HostCall = { ...unnumbered, n: sent }
     // Kept in place: this runs for every piece streamed, and a copy of all that is kept each time would be the cost.
-    kept.push(call)
-    if (kept.length > MAX_KEPT_CALLS) {
-      const [gone] = kept.splice(0, kept.length - MAX_KEPT_CALLS)
+    if (kept.length === MAX_KEPT_CALLS) {
+      const gone = kept[oldest]
+      kept[oldest] = call
+      oldest = (oldest + 1) % MAX_KEPT_CALLS
       // One no shell had goes: lost for good (a shell listening again sees the gap in the numbers). Said once a while.
       if (gone.n > handed && !dropping) { dropping = true; onDropped(gone.n) }
-    }
+    } else kept.push(call)
     if (listeners.size === 0) return
     handed = call.n
     for (const listener of listeners) listener(call)
@@ -104,8 +106,9 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
      * listen), in order, then each as it is made.
      */
     listen(listener: Listener, after = 0): () => void {
-      for (const call of kept.filter((one) => one.n > after)) listener(call)
-      if (kept.length) handed = Math.max(handed, kept[kept.length - 1].n)
+      const replay = Array.from({ length: kept.length }, (_, index) => kept[(oldest + index) % kept.length]).filter(call => call.n > after)
+      for (const call of replay) listener(call)
+      if (kept.length) handed = Math.max(handed, sent)
       dropping = false
       listeners.add(listener)
       return () => { listeners.delete(listener) }

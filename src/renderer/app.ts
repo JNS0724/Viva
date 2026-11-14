@@ -15,6 +15,7 @@ import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
 import { createExtensionActions } from './extension-actions.ts'
 import { createProposalActions } from './proposal-actions.ts'
+import { createDoneNotice } from './done-notice-actions.ts'
 import { createFeedActions } from './feed-actions.ts'
 import { createFilesActions } from './files-actions.ts'
 import { createHistoryActions } from './history-actions.ts'
@@ -41,6 +42,7 @@ import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.ts'
 import { createPageElements } from './page-elements.ts'
+import { takeReaderControl } from './view/scroll-follow.ts'
 import { attachTurnRail } from './view/turn-rail.ts'
 import { attachStars } from './view/star-buttons.ts'
 import { openEarlierRow } from './view/earlier.ts'
@@ -145,12 +147,15 @@ function dispatch(action: Action) {
   }
   startReveal()
   publishIsland()
+  doneNotice?.check()
   afterRender?.()
   if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
   agentEvents?.stateChanged()
 }
 
 let publishedIsland = ''
+/** Made with the other actions below; dispatch may run before them. */
+let doneNotice: ReturnType<typeof createDoneNotice> | undefined
 let composerDraft: ReturnType<typeof createComposerDraftActions> | undefined
 let composerFiles: DraftFile[] = []
 let composerError: string | null = null
@@ -199,6 +204,8 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   settings: () => handlers.openSettings(),
   /** A notification of something new, or the tray's count: the 动态 page (system-design §12.2). */
   feed: () => handlers.openFeed(),
+  /** The desktop island's card on 已完成, read and closed (desk-island.ts): looked at. */
+  seen: () => doneNotice?.seen(),
   /** 停下 on a task's line in the island's 后台 list. */
   'stop-task': ({ taskId }) => handlers.stopTask(taskId),
   /** The conversation's, or one a task in the background waits on (island-view.js background). */
@@ -221,6 +228,7 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
     const receipt = (ok: boolean, error = t('desk.interaction.draft.not.sent')) => api.islandAskResult(receiptId, { ok, ...(ok ? {} : { error }) })
     const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt
       && ask(withFiles(text, files), { via: 'island', images, feedItemId, admitted: receipt })
+    if (ok) dom.follower.resetForPrompt({ anchor: false })
     if (!ok || !feedItemId) receipt(Boolean(ok))
   },
 }
@@ -229,7 +237,7 @@ function saveHistory() {
   if (!historyReady || state.messages.length === 0) return
   const sessionId = state.info.sessionId
   const topicStartedAt = state.topic.startedAt
-  api.saveHistory(historyMessages(state))
+  api.saveHistory(historyMessages(state, { keys: true }))
     .then((summary) => {
       // A save from the topic just left must not attach its id to the new blank topic.
       if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
@@ -417,6 +425,7 @@ const timelineRow = (msgId: string) => dom.thread.querySelector<HTMLElement>(`[d
 
 /** Scrolls a row of the timeline to the middle and marks it a moment. */
 function revealRow(row: HTMLElement) {
+  takeReaderControl(dom.scroll)
   row.scrollIntoView({ block: 'center' })
   row.classList.add('msg-found')
   setTimeout(() => row.classList.remove('msg-found'), FOUND_MS)
@@ -454,6 +463,11 @@ function fillComposer(text: string, feedItemId: string) {
   dom.input.focus()
 }
 const proposalActions = createProposalActions({ api, getState: () => state, dispatch, errorMessage })
+/** 已完成 until looked at (done-notice-actions.ts): the window in front and on screen is the user on it. */
+doneNotice = createDoneNotice({
+  getState: () => state, dispatch,
+  looking: () => document.visibilityState === 'visible' && document.hasFocus(),
+})
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
@@ -632,6 +646,20 @@ const handlers = {
       historyActions.showToast(t("app.permission.changed.to", { value1: PERMISSION_LEVELS.find((item) => item.value === settings.permission)?.name ?? settings.permission }))
     } catch (err) {
       dispatch({ type: 'permission_done', level: null })
+      historyActions.showToast(errorMessage(err))
+    }
+    return undefined
+  },
+  /** 联网搜索 switched: dsh starts again with or without web_search, keeping the conversation on screen. */
+  async setWebSearch(on: boolean) {
+    if (state.switching || state.newTopicPending || state.settings.webSearchBusy) return
+    dispatch({ type: 'settings_loaded', view: { webSearchBusy: true } })
+    try {
+      const { settings } = await api.setWebSearch(on)
+      dispatch({ type: 'settings_loaded', view: { ...settings, webSearchBusy: false } })
+      historyActions.showToast(t(settings.webSearch ? 'settings.web.search.on' : 'settings.web.search.off'))
+    } catch (err) {
+      dispatch({ type: 'settings_loaded', view: { webSearchBusy: false } })
       historyActions.showToast(errorMessage(err))
     }
     return undefined
@@ -916,9 +944,16 @@ function labelShortcuts() {
   dom.hubSearchKey.textContent = platform === 'darwin' ? '⌘F' : 'Ctrl+F'
 }
 
-/** An MCP server that would not start is left out; say so once per connection instead of failing. */
-function reportMcpProblems(info: AgentInfo | undefined) {
-  const dropped: ReadonlyArray<{ name: string }> = info?.mcp?.dropped ?? []
+/** Servers already said to have stopped trying, this launch of dsh: each is said once, when it stops. */
+const mcpProblemsSaid = new Set<string>()
+/**
+ * An MCP server that stopped trying to connect (dsh's MCP manager gave up on it, in the background): say so once,
+ * with a way to 能力 · MCP and its 重试. A new dsh tries every server again, so it may be said again then.
+ */
+function reportMcpProblems(info: AgentInfo | undefined, { fresh = false } = {}) {
+  if (fresh) mcpProblemsSaid.clear()
+  const dropped: ReadonlyArray<{ name: string }> = (info?.mcp?.dropped ?? []).filter((item) => !mcpProblemsSaid.has(item.name))
+  for (const item of dropped) mcpProblemsSaid.add(item.name)
   if (dropped.length === 0) return
   const names = dropped.map((item) => (item.name === 'memory' ? t("app.memory.tools") : `「${item.name}」`)).join('、')
   historyActions.showToast(t("app.could.not.connect.and.were.skipped.for", { names: names }), { action: { label: t("app.view"), kind: 'open-settings' }, ms: 8000 })
@@ -928,7 +963,7 @@ function reportMcpProblems(info: AgentInfo | undefined) {
 agentEvents = createAgentEvents({
   getState: () => state, dispatch, holdTask: taskActions.hold,
   afterTurn: sendAfterTurn, clearAfterTurn: conversationActions.clearAfterTurn,
-  ready: reportMcpProblems, refreshWorkDir: workDirActions.refresh,
+  ready: (info) => reportMcpProblems(info, { fresh: true }), mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo), refreshWorkDir: workDirActions.refresh,
   refreshFiles: filesActions.filesAfterTurn,
   memoryChanged: memoryActions.onMemoryChanged, filesChanged: filesActions.onFilesChanged,
   refreshFeed: feedActions.loadFeed,
@@ -945,6 +980,9 @@ async function boot() {
     return
   }
   api.onIslandAction?.((action) => handlers.islandAction(action))
+  // Coming to the window, or leaving it, changes what 已完成 waits for (done-notice-actions.ts).
+  for (const type of ['focus', 'blur']) window.addEventListener(type, () => doneNotice?.check())
+  document.addEventListener('visibilitychange', () => doneNotice?.check())
   api.onFocusComposer?.(() => dom.input.focus())
   api.onEvent(value => agentEvents!.receive(value))
   await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), feedActions.loadFeed()])

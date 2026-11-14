@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { randomUUID } from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -85,4 +87,28 @@ test('a rewind copy cannot turn an old assistant answer into output from the new
   assert.equal(recall.search('建议改成 30 天').length, 0)
   assert.equal(recall.search('继续审合同').length, 1)
   assert.deepEqual(used, ['继续审合同'])
+})
+
+test('late routed output can move a message without changing its memory evidence or originating session', t => {
+  const database = new DatabaseSync(':memory:')
+  t.after(() => database.close())
+  const db = openHistoryDb({ db: database })
+  const sourceId = randomUUID()
+  const question = { ...said('user', '记住项目北辰'), key: 'user-route-key', sourceId }
+  const answer = { ...said('assistant', '已记下'), key: 'answer-route-key' }
+  const segment = db.save(db.create({ sessionId: 'old-session' }), [question, answer])
+  const link = db.sourceLink(sourceId, segment.id)
+  const before = db.timelineOf(segment.id)
+  assert.ok(link?.includes('/0/'))
+
+  db.save({ ...segment, sessionId: 'current-session' }, [
+    { ...said('assistant', '上一轮延迟出现的回复'), key: 'late-answer-key' }, question, answer,
+  ])
+
+  const messages = db.read(`s:${segment.id}`)!.messages
+  assert.deepEqual(messages.slice(1).map(row => [row.seq, row.id, row.key, row.sourceId, row.sessionId]), [
+    [1, before[0].id, question.key, sourceId, 'old-session'],
+    [2, before[1].id, answer.key, undefined, 'old-session'],
+  ])
+  assert.equal(db.sourceLink(sourceId, segment.id), `viva://timeline/${segment.id}/1/${before[0].id}`)
 })

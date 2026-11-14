@@ -4,6 +4,7 @@ import { formatSize } from '../selectors.ts'
 import { h } from './dom.ts'
 import { picture } from './pictures.ts'
 import { icon } from './icons.ts'
+import { topicHint } from '../topics.ts'
 
 /**
  * The desktop island's input (desk.js): what the user asks from any app, with the shortcut or by dropping
@@ -86,9 +87,10 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
         h('span', { text: t("island-input.only.file.paths.are.shared.with.the", { value1: view.count > 1 ? t("island-input.files", { count: view.count }) : t("drawer.files") }) }))) ]
     }
     const error = view.error ? h('div', { class: 'isl-error', role: 'alert', text: view.error }) : null
-    if (view.busy) return [hint(configure ? h('button', { type: 'button', class: 'isl-link', text: t('selectors.open.settings'), onClick: configure }) : null,
-      h('span', { class: 'isl-push', text: t("island-input.esc.to.close") })), error]
-    const target = view.steering ? TARGET_STEER : TARGET
+    if (view.busy) return [hint(configure ? h('button', { type: 'button', class: 'isl-link', text: t('selectors.open.settings'), onClick: configure }) : null), error]
+    // The topic is named only when its title says which one it is: never a greeting like 你好.
+    const topic = view.steering ? null : topicHint(view.targetLabel ?? '')
+    const target = view.steering ? TARGET_STEER : topic ? t('island-input.send.to.topic', { title: topic }) : TARGET
     const images = view.images ?? []
     if (view.files.length || images.length) {
       return [

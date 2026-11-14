@@ -16,8 +16,9 @@ import type { AgentInfo } from '../src/shared/agent-info.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 import type { IpcResults, MemorySummaryView } from '../src/shared/ipc-results.ts'
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
+import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/dsh-harness.js'
-import { questionOf, startFakeLlm } from './fixtures/fake-llm.js'
+import { questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.js'
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 
 const oldValue = 'amber@example.com'
@@ -25,7 +26,8 @@ const newValue = 'cobalt@example.com'
 const oldFact = `我的周报提交邮箱是 ${oldValue}`
 const replacement = `从现在起，我的周报提交邮箱从 ${oldValue} 改为 ${newValue}`
 const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', import.meta.url)
-type Request = { system?: unknown, messages: Parameters<typeof questionOf>[0] }
+type ModelMessage = { role?: string, content?: string | { text?: string, type?: string }[] }
+type Request = { system?: unknown, messages: ModelMessage[] }
 type Task = IpcResults['task:finished'][number]
 type Change = IpcResults['memory:list-changes'][number]
 
@@ -45,7 +47,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     DSH_NODE: process.env.DSH_NODE, NO_PROXY: process.env.NO_PROXY }
   delete process.env.DEEPSEEK_API_KEY
   Object.assign(process.env, { AGENT_CWD: workspace, DSH_NODE: process.execPath, NO_PROXY: '127.0.0.1,localhost' })
-  const model = await startFakeLlm({ decideFirst: raw => decide(raw as Request) })
+  const model = await startFakeLlm({ decideFirst: routeFixtureTools(raw => decide(raw as Request)) })
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const register: IpcRegistry['handle'] = (channel, listener) => {
     handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
@@ -546,26 +548,35 @@ test('a persisted schedule waits for the dispatch adapter while degraded chat st
   assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === prompt))
 })
 
-test('an ordinary city choice still lets the same foreground operation start a background task', { timeout: 45_000 }, async t => {
+test('an ordinary city clarification stays scoped to the routed background task', { timeout: 45_000 }, async t => {
   const marker = 'Set up a background check with a confirmed city'
-  const brief = 'Use Shanghai for this task only'
+  const answer = 'Use Shanghai for this task only'
   const app = await setup(t, request => {
-    if (JSON.stringify(request.system).includes('记忆整理员')) return null
-    const wire = JSON.stringify(request.messages)
-    if (!wire.includes(marker)) return null
-    if (!wire.includes('tool_result')) return { tool: { name: 'ask_user_question', input: { questions: [{
-      id: 'city', question: '在哪个城市？', options: [{ label: 'Shanghai' }, { label: 'Beijing' }],
-    }] } } }
-    if (!wire.includes('start_background_task')) return { tool: { name: 'start_background_task', input: { brief } } }
-    return { text: '任务已交给后台。' }
+    const question = questionOf(request.messages)
+    if (JSON.stringify(request.system).includes('记忆整理员') || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
+    if (question === marker) {
+      const requestId = request.messages.flatMap(message => typeof message.content === 'string'
+        ? requestsIn(message.content)
+        : (message.content ?? []).flatMap((part: { text?: string }) => requestsIn(part.text ?? '')))
+        .find(request => request.words === marker)?.id
+      if (!requestId) return null
+      return { tool: { name: 'commit_route', input: { requestId, goals: [{ goal: marker, disposition: 'needs_input' }],
+        actions: [{ kind: 'clarify', question: '在哪个城市？' }] } } }
+    }
+    if (question === answer && request.messages.some(message => JSON.stringify(message.content).includes('【请求 ID：'))) {
+      return { tool: { name: 'start_background_task', input: { title: answer, brief: answer } } }
+    }
+    return null
   })
-  const reply = app.ask(marker)
-  const question = await eventually(() => app.events.find(event => event.type === 'question'))
-  assert.ok(question)
-  assert.equal(app.call('agent:answer', question.questionId, [{ id: 'city', selected: ['Shanghai'] }], randomUUID()), true)
-  await reply
-  assert.ok(await eventually(() => app.tasks().some(task => task.endedAt && task.task.title === brief)))
-  assert.ok(app.model.requests.some(request => questionOf((request as Request).messages) === brief))
+  await app.ask(marker)
+  await app.ask(answer)
+  assert.ok(await eventually(() => app.tasks().some(task => task.endedAt && task.task.title === answer), { timeoutMs: 4_000 }),
+    JSON.stringify({
+      tasks: app.tasks().map(task => ({ title: task.task.title, status: task.status })),
+      requests: (app.model.requests as Request[]).map(request => questionOf(request.messages)),
+      errors: app.events.filter(event => event.type === 'error').map(event => event.message),
+    }))
+  assert.ok(app.model.requests.some(request => questionOf((request as Request).messages) === answer))
   assert.equal(app.memories().length, 0)
 })
 

@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
+import { testRequests } from './fixtures/request-routing.ts'
 
 /**
  * End-to-end through the real ACP bridge and a real child process: the fake dsh fixture.
@@ -11,23 +12,23 @@ import { createAcpBridge } from '../src/backend/acp-bridge.ts'
  */
 const FAKE_DSH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-dsh.js')
 
-const kindOf = (event) => event.update?.sessionUpdate ?? event.type
+/** What the window got: the stream contract's pieces (text or reasoning as it streams, then each settled), or ACP's. */
+const kindOf = (event) => {
+  const update = event.update
+  if (update?.sessionUpdate !== 'viva_stream') return update?.sessionUpdate ?? event.type
+  return update.kind === 'delta' ? update.blockType : update.kind
+}
 const collapse = (kinds) => kinds.filter((kind, i) => kind !== kinds[i - 1])
 const lastToolStatus = (events) => events.filter((e) => kindOf(e) === 'tool_call_update').at(-1).update.status
-const texts = (events, kind) => events.filter((e) => kindOf(e) === kind).map((e) => e.update.content.text)
+const texts = (events, kind) => events.filter((e) => kindOf(e) === kind).map((e) => e.update.text)
 
-/** Text of the final run of message chunks before the turn ended. */
-function trailingMessage(events) {
-  const kinds = events.map(kindOf)
-  const end = kinds.lastIndexOf('agent_message_chunk') + 1
-  const start = kinds.slice(0, end).lastIndexOf('tool_call_update') + 1
-  return events.slice(start, end).map((e) => e.update.content.text).join('')
-}
+/** The text of the last answer settled before the turn ended. */
+const trailingMessage = (events) => events.filter((e) => kindOf(e) === 'settle').at(-1).update.blocks.map((block) => block.text).join('')
 
 /** A bridge on the fake dsh that answers permission requests with `answer` (or never, when null). */
 function fakeBridge(answer = 'allow-once') {
   const events = []
-  const bridge = createAcpBridge({
+  const bridge = createAcpBridge({ routing: testRequests(),
     dshBin: FAKE_DSH,
     nodeBin: 'node',
     cwd: os.tmpdir(),
@@ -49,10 +50,11 @@ test('fake dsh plays the full script through the real bridge and honours an allo
   assert.deepEqual([info.mode, info.model, info.effort, info.resumed], ['live', 'Fake Flash', 'high', false])
   assert.match(info.sessionId, /^fake-session-/)
   assert.deepEqual(collapse(events.map(kindOf)), [
-    'agent_thought_chunk', 'tool_call', 'tool_call_update', 'tool_call', 'tool_call_update',
-    'agent_message_chunk', 'tool_call', 'permission', 'tool_call_update', 'agent_message_chunk', 'turn_end',
+    'reasoning', 'settle', 'tool_call', 'tool_call_update', 'tool_call', 'tool_call_update',
+    'text', 'settle', 'tool_call', 'permission', 'tool_call_update', 'text', 'settle', 'turn_end',
   ])
-  assert.ok(texts(events, 'agent_message_chunk').length > 10, 'text arrives in many pieces')
+  assert.ok(texts(events, 'text').length > 10, 'text arrives in many pieces')
+  assert.equal(events.some((e) => kindOf(e) === 'agent_message_chunk'), false, 'never ACP\'s copy of it')
   assert.equal(lastToolStatus(events), 'completed')
   assert.equal(trailingMessage(events), '已写入 summary.md（假 dsh，没有真正写入磁盘）。')
   assert.equal(events.at(-1).stopReason, 'end_turn')
@@ -91,7 +93,7 @@ test('fake dsh plays a long task: many tool calls, then a long answer', async ()
   await bridge.prompt('演示一个长任务')
 
   assert.equal(events.filter((e) => kindOf(e) === 'tool_call').length, 16)
-  assert.ok(texts(events, 'agent_message_chunk').join('').length > 1000)
+  assert.ok(texts(events, 'text').join('').length > 1000)
   assert.equal(events.some((e) => e.type === 'permission'), false)
   bridge.dispose()
 })

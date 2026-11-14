@@ -6,6 +6,7 @@ import { CHAT_SCENARIOS } from './live-scenarios-chat.ts'
 import { SCHEDULE_SCENARIOS } from './live-scenarios-schedules.ts'
 import { TASK_SCENARIOS } from './live-scenarios-tasks.ts'
 import { MEMORY_SCENARIOS } from './live-scenarios-memory.ts'
+import { ROUTING_SCENARIOS } from './live-scenarios-routing.ts'
 import { report, run, until, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 
 /**
@@ -15,7 +16,7 @@ import { report, run, until, type SmokeHooks, type SmokeWindow } from './smoke-k
  * times (3 by default) and passes only if every attempt does; LIVE_SET=core runs the ones marked core, LIVE_ONLY
  * the ids it lists. Each launch writes smoke/live/report-<phase>.json, which scripts/live.ts puts together.
  */
-export const LIVE_SCENARIOS: readonly LiveScenario[] = [...CHAT_SCENARIOS, ...MEMORY_SCENARIOS, ...SCHEDULE_SCENARIOS, ...TASK_SCENARIOS, ...APP_SCENARIOS]
+export const LIVE_SCENARIOS: readonly LiveScenario[] = [...CHAT_SCENARIOS, ...MEMORY_SCENARIOS, ...SCHEDULE_SCENARIOS, ...TASK_SCENARIOS, ...APP_SCENARIOS, ...ROUTING_SCENARIOS]
 
 const DEFAULT_REPEAT = 3
 const MAX_REPEAT = 10

@@ -12,6 +12,7 @@ import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { launcherText } from '../src/backend/pnpm-launcher.ts'
 import { startFakeLlm } from './fixtures/fake-llm.js'
+import { testRequests } from './fixtures/request-routing.ts'
 
 /**
  * The company's plugin source with real dsh, started through the app's entry (dsh-entry.ts): the token reaches the
@@ -49,7 +50,7 @@ test('real dsh started by the app\'s entry hands the registry token to pnpm, and
   assert.deepEqual(problems, [])
   const profileDir = ensureDshProfile({ dshHome, profile: 'viva-source-test', plugins, persona: PERSONA, pnpmCommand: pnpm, registry: REGISTRY })
 
-  bridge = createAcpBridge({
+  bridge = createAcpBridge({ routing: testRequests(),
     dshBin: path.join(root, 'src', 'backend', 'dsh-entry.ts'), nodeBin: runtime.nodeBin, cwd: dir, profile: 'viva-source-test', overlay: vivaLayerFile(dshHome),
     env: dshEnv({ base: { ...process.env, FAKE_PNPM_LOG: log }, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
     launch: launchMessage({ pnpmCommand: pnpm, registry: REGISTRY, registryToken: TOKEN, scopes: ['@company'] }),

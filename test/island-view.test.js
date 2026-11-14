@@ -20,6 +20,9 @@ test('before the agent is connected the island says so, with no panel content', 
   assert.deepEqual(islandView(initialState), { form: 'pending', tone: 'pending', mood: 'idle', label: '连接中', recent: [] })
   const setup = run([{ type: 'ready', info: { mode: 'setup', problem: 'no-key', cwd: '/w', model: '' } }])
   assert.equal(islandView(setup).label, '未连接')
+  assert.equal(islandView(setup).detail, '需要配置模型', 'what is missing, for the desktop card')
+  const noDsh = run([{ type: 'ready', info: { mode: 'setup', problem: 'no-dsh', cwd: '/w', model: '' } }])
+  assert.equal(islandView(noDsh).detail, '未安装 DSH')
 })
 
 test('idle shows the model; working shows what runs now, since when, how many steps and the latest steps', () => {
@@ -82,6 +85,10 @@ test('done keeps how long it took and the start of the answer; stopped and faile
   assert.equal(done.tone, 'done')
   assert.equal(done.elapsedMs, 21_000)
   assert.equal(done.detail, '天气')
+  assert.equal(done.summary, '天气 上海明天多云，18–24°C。', 'the desktop card reads more of the answer than the head')
+
+  const limited = islandView(run([...asked, { type: 'turn_end', stopReason: 'max_tokens', at: T0 + 1000 }]))
+  assert.deepEqual([limited.form, limited.label, limited.incomplete], ['error', '未完成', true])
 
   const stopped = islandView(run([...asked, { type: 'turn_end', stopReason: 'cancelled', at: T0 + 1000 }]))
   assert.equal(stopped.form, 'idle')
@@ -89,6 +96,7 @@ test('done keeps how long it took and the start of the answer; stopped and faile
 
   const failed = islandView(run([...asked, { type: 'error', message: 'dsh 已退出' }]))
   assert.deepEqual([failed.form, failed.tone, failed.mood, failed.detail], ['error', 'error', 'error', 'dsh 已退出'])
+  assert.equal(failed.incomplete, undefined, 'a failure has no reply to open')
 })
 
 test('the answer preview is its first line of text, without Markdown marks, kept short', () => {
@@ -109,7 +117,7 @@ test('tasks in the background: a count at the tail, and one line each when the i
   const view = islandView(run(started))
   assert.equal(view.form, 'idle', 'the island still says what the conversation on screen does')
   assert.deepEqual(view.background, {
-    count: 1, waiting: 0, done: 0,
+    count: 1, waiting: 0,
     items: [{ id: 's1', title: '明天上海天气', status: 'running', now: '运行 git log', startedAt: T0 }],
   })
   assert.equal(islandView(run([live])).background, undefined, 'with none, nothing changes')
@@ -125,12 +133,11 @@ test('a task waiting on the user takes the whole island, named, and is first in 
   assert.deepEqual([mainAsks.permission.requestId, mainAsks.task], ['p1', undefined], 'the conversation on screen comes first')
 })
 
-test('a task that ends is counted at the tail; the island still says what the conversation on screen does', () => {
+test('a task that ends leaves the island: the conversation tells its result, the 后台 page lists it', () => {
   const ended = run([...started, { type: 'task_end', taskId: 's1', stopReason: 'end_turn', at: T0 + 9000 }])
   const view = islandView(ended)
   assert.equal(view.form, 'idle')
-  assert.deepEqual([view.background.count, view.background.done], [0, 1], 'counted among those done, so the 后台 page is a click away')
-  assert.equal(islandView(reduce(ended, { type: 'task_closed', taskId: 's1' })).background, undefined, 'closed, nothing is left')
+  assert.equal(view.background, undefined, 'nothing going on, nothing in the background to show')
 })
 
 test('when the conversation on screen and a task both wait, the tail says the task waits too', () => {

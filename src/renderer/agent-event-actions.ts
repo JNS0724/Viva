@@ -8,6 +8,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'ready': return { type: 'ready', info: event.info }
       case 'workdir': return { type: 'workdir_switched', info: event.info }
       case 'config': return { type: 'config_applied', info: event.info }
+      case 'mcp_status': return { type: 'config_applied', info: { mcp: event.mcp } }
       case 'update': return { type: 'acp_update', update: event.update, at }
       case 'turn_started': return { type: 'agent_turn_started', by: event.by ?? null, at }
       case 'permission': return event.taskId !== undefined
@@ -27,7 +28,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'waits': return { type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at }
       case 'secret_request': return { type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at }
       case 'secret_closed': return { type: 'secret_closed', requestId: event.requestId }
-      case 'turn_end': return { type: 'turn_end', stopReason: event.stopReason, at }
+      case 'turn_end': return { type: 'turn_end', stopReason: event.stopReason, ...(event.finalReply === undefined ? {} : { finalReply: event.finalReply }), at }
       case 'memory_context': return { type: 'memory_context', injected: event.injected }
       case 'error': return { type: 'error', message: event.message }
       case 'schedule_propose': return { type: 'schedule_proposed', proposal: event.proposal }

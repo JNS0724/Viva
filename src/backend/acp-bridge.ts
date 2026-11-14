@@ -3,11 +3,12 @@ import type { ConversationContext } from '../shared/conversation-context.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import type { AcpServer } from './mcp-config.ts'
+import type { McpServerEntry } from '../shared/mcp-channel.ts'
+import { createMcpDesk } from './mcp-desk.ts'
 import fs from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import type { McpServer, RequestPermissionRequest, SessionNotification, SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { RequestPermissionRequest, SessionNotification, SessionConfigOption } from '@agentclientprotocol/sdk'
 import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
@@ -15,8 +16,9 @@ import { createSteerDesk, interjection } from './steer-channel.ts'
 import { createMemoryChannel } from './memory-channel.ts'
 import type { MemoryDispatchAdmission } from './memory-channel.ts'
 import type { MemoryRequest } from '../shared/memory-contract.ts'
+import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
+import { withRequestHeader } from '../shared/request-routing/header.ts'
 import { createForkDesk } from './fork-channel.ts'
-import { createReadOnlyDesk } from './read-only-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
 import { createPluginsDesk, type PluginsOp, type PluginsResult } from './plugins-channel.ts'
@@ -42,8 +44,7 @@ const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false },
 const noImagesMessage = () => t("main.acp-bridge.this.model.cannot.read.images.among.deepseek")
 /** A task let go when it would not stop (cancelTask): what dsh started for it may still be running. */
 const stoppedMessage = () => t("main.acp-bridge.stopped.a.command.started.earlier.did.not")
-const NO_MCP = (): AcpServer[] => []
-export const MCP_RETRY_MS = 30_000
+const NO_MCP = (): McpServerEntry[] => []
 type PromptBlocks = Parameters<ClientSideConnection['prompt']>[0]['prompt']
 /** One of a session's choices (model, effort), as dsh lists them; only these fields are read here. */
 type ConfigOption = SessionConfigOption
@@ -54,18 +55,6 @@ type Emit = (event: { type: string, [field: string]: unknown }) => void
 function opened(id: string | null): string {
   if (!id) throw new Error('no session is open')
   return id
-}
-
-/**
- * dsh rejects the whole session when one MCP server cannot start, naming it as `mcp-client(<name>)`
- * or by its position (`mcpServers[2]`). Returns that server, or null when the error is about something else.
- */
-export function failingMcpServer<S extends { name: string }>(err: any, servers: readonly S[]): S | null {
-  const text = `${err?.message ?? ''} ${JSON.stringify(err?.data ?? '')}`
-  const byName = /mcp-client\(([^)]+)\)/.exec(text)?.[1]
-  if (byName) return servers.find((server) => server.name === byName) ?? null
-  const byIndex = /mcpServers\[(\d+)\]/.exec(text)?.[1]
-  return byIndex === undefined ? null : servers[Number(byIndex)] ?? null
 }
 
 /** spawn reports a missing working directory as ENOENT too, so that is checked before blaming the program. */
@@ -84,7 +73,8 @@ const isRunning = (target: Pick<ChildProcess, 'exitCode' | 'signalCode'>) => (ta
  * Drives `dsh --profile <profile>` over stdio. Everything the agent reports is forwarded through `emit`
  * as plain objects: ready / update / config / permission / question / question_closed / turn_end / error.
  * Questions come from the app's dsh plugin over an IPC channel beside stdio (question-channel.js).
- * `mcpServers()` lists the MCP servers to attach to each session (read again on every new or resumed session).
+ * `mcpServers()` lists the user's MCP servers; viva-mcp registers them once for the whole dsh with its MCP manager
+ * (mcp-desk.ts), so no session waits on them: sessions open with none of their own.
  * `onExit`, when given, hears about dsh ending on its own (a crash) instead of the window getting an error,
  * so the owner can start it again.
  */
@@ -93,7 +83,7 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
-  launch = null as object | null, memoryRequest, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, readyMemory,
+  launch = null as object | null, routing, memoryRequest, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, readyMemory,
   beginMemoryDispatch, beginMemoryJobDispatch, endMemoryDispatch, memoryClarificationQuestion, allowGeneralQuestion,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
@@ -101,11 +91,11 @@ export function createAcpBridge({
   launch?: object | null,
   /** The app's layer over the profile (dsh-profile.ts vivaLayerFile); none for the stock fallback profile. */
   overlay?: string | null, cwd: string, env?: NodeJS.ProcessEnv, emit: Emit,
-  spawnFn?: typeof spawn, mcpServers?: () => AcpServer[],
+  spawnFn?: typeof spawn, mcpServers?: () => McpServerEntry[],
   onExit?: ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead?: TaskRead | null,
-  /** The agent starting, stopping or messaging a background task (viva-tasks); null leaves it unavailable. */
+  /** Schedule actions from viva-tasks. */
   taskAct?: TaskAct | null,
   /** What was said in the timeline before, for search_conversations (viva-history); null leaves it saying there is none. */
   historySearch?: HistorySearch | null,
@@ -126,10 +116,13 @@ export function createAcpBridge({
   readyMemory?: () => void,
   onSessionCreated?: (id: string, cwd: string, parent?: string) => void,
   onQuestionAnswer?: Parameters<typeof createQuestionDesk>[0]['onAnswer'],
+  /**
+   * The request runtime (request-runtime.ts): the user's words to the main conversation are each a request, taken
+   * here as they are sent; the routing plugin's decisions and failures go to it (routing-channel.ts).
+   */
+  routing: RoutingHandlers,
 }) {
   const broker = createPermissionBroker()
-  let mcp: { active: string[], dropped: Array<{ name: string, reason: string }> } = { active: [], dropped: [] }
-  const failedMcp = new Map<string, { until: number, reason: string }>()
   let child: ChildProcess | null = null
   let connection: ClientSideConnection | null = null
   let sessionId: string | null = null
@@ -159,6 +152,7 @@ export function createAcpBridge({
   const requestContext = conversationContext ? (id: string) => operations.context(id) : undefined
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
     allowGeneralQuestion: (session, cards, waiting) => {
+      if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true
       const operation = operations.turn(session)
       if (!operation || !allowSession(session)) return false
@@ -180,10 +174,10 @@ export function createAcpBridge({
   const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
-  // Sessions nobody watches (a schedule's run): read-only tools, nothing asked of the user (viva-permission).
-  const readOnlyDesk = createReadOnlyDesk({ send: toPlugins })
   // The plugins page, through dsh's plugin manager (viva-plugins).
   const pluginsDesk = createPluginsDesk({ send: toPlugins })
+  // The user's MCP servers, for viva-mcp: sent when it starts and when they change; how each stands comes back.
+  const mcpDesk = createMcpDesk({ send: toPlugins, servers: mcpServers, onStatus: (mcp) => emit({ type: 'mcp_status', mcp }) })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || taskSessions.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || taskSessions.has(id) })
   const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
@@ -209,6 +203,14 @@ export function createAcpBridge({
       return typeof response === 'string' ? afterRead(response) : response.then(afterRead)
     }),
   })
+  // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
+  const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })
+  /** The user's words as the main agent reads them: under the header of the request they are taken as. */
+  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection') => {
+    const context = contextFor(session)
+    const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind })
+    return { requestId, text: withRequestHeader(words, requestId) }
+  }
   const operations = createAcpOperations({
     connection: live, streams,
     allowSession,
@@ -224,7 +226,7 @@ export function createAcpBridge({
   let configNow: ConfigOption[] | null = null
   const infoFrom = (configOptions: ConfigOption[] | null | undefined) => {
     configNow = configOptions ?? configNow
-    return { mode: 'live', cwd: sessionCwd, reason: '', sessionId, mcp, ...describeConfig(configNow) }
+    return { mode: 'live', cwd: sessionCwd, reason: '', sessionId, mcp: mcpDesk.status(), ...describeConfig(configNow) }
   }
 
   const client = {
@@ -244,8 +246,8 @@ export function createAcpBridge({
     },
     async requestPermission(params: RequestPermissionRequest) {
       if (disposed || (params.sessionId !== sessionId && !taskSessions.has(params.sessionId))) return { outcome: { outcome: 'cancelled' as const } }
-      // Nobody is there to answer: turned down.
-      if (taskSessions.isUnattended(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
+      // Nobody is there to answer. A stale session cannot ask for permission to proceed.
+      if (taskSessions.isUnattended(params.sessionId) || !allowSession(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       if (conversationContext && !taskSessions.has(params.sessionId) && !operations.context(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
@@ -269,12 +271,13 @@ export function createAcpBridge({
       config?.receive(message)
       steering.receive(message)
       forking.receive(message)
-      readOnlyDesk.receive(message)
       tasksDesk.receive(message)
       historyDesk.receive(message)
       pluginsDesk.receive(message)
       streams.receive(message)
       memory.receive(message)
+      routingDesk.receive(message)
+      mcpDesk.receive(message)
     })
     proc.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_LIMIT)
@@ -287,7 +290,7 @@ export function createAcpBridge({
       memory.processExited()
       taskSessions.dispose()
       pluginsDesk.close()
-      readOnlyDesk.closeAll()
+      routingDesk.close()
       if (disposed) return
       disposed = true
       const message = describeError(t("main.acp-bridge.dsh.exited", { value1: String(code ?? signal) }), stderrTail)
@@ -304,54 +307,14 @@ export function createAcpBridge({
     return connection
   }
 
-  /** Sends `request` with the MCP servers, leaving out each one dsh reports as failing until the rest work. */
-  async function withMcpServers<R>(request: (servers: McpServer[]) => Promise<R>, speculative = false, status?: (value: typeof mcp) => void): Promise<R> {
-    // Built as ACP's session/new takes them (mcp-config.ts toAcpServers).
-    const configured = mcpServers() as McpServer[]
-    const keys = new Set(configured.map(server => JSON.stringify(server)))
-    if (!speculative) for (const [key, failure] of failedMcp) if (!keys.has(key) || failure.until <= Date.now()) failedMcp.delete(key)
-    const failureOf = (server: McpServer) => {
-      const failure = failedMcp.get(JSON.stringify(server))
-      return failure && failure.until > Date.now() ? failure : null
-    }
-    let servers = configured.filter(server => !failureOf(server))
-    const dropped = configured.flatMap(server => {
-      const failure = failureOf(server)
-      return failure ? [{ name: server.name, reason: failure.reason }] : []
-    })
-    for (;;) {
-      try {
-        const response = await request(servers)
-        status?.({ active: servers.map(server => server.name), dropped })
-        if (!speculative) mcp = { active: servers.map((server) => server.name), dropped }
-        return response
-      } catch (err) {
-        // A second MCP instance may conflict with the active one. Discard this spare, without treating
-        // its failure as evidence that the user's real connection is unavailable.
-        if (speculative) throw err
-        const failing = failingMcpServer(err, servers)
-        if (!failing) throw err
-        console.error(`[acp-bridge] MCP server "${failing.name}" failed, retrying without it:`, describeError(err))
-        const reason = describeError(err)
-        failedMcp.set(JSON.stringify(failing), { until: Date.now() + MCP_RETRY_MS, reason })
-        dropped.push({ name: failing.name, reason })
-        servers = servers.filter((server) => server !== failing)
-      }
-    }
-  }
-
   const fresh = createFreshSessions({
-    open: async (targetCwd: string, speculative: boolean) => {
-      let status = mcp
-      const response = await sessionTiming(onTiming)('session.create-and-mcp', () => withMcpServers(
-        servers => live().newSession({ cwd: targetCwd, mcpServers: servers }), speculative, value => { status = value },
-      ), speculative ? 'speculative' : 'requested')
-      return { response, status }
-    },
+    // No MCP servers of its own: viva-mcp has them for the whole dsh, so a slow or broken one never holds a session up.
+    open: async (targetCwd: string, speculative: boolean) => ({
+      response: await sessionTiming(onTiming)('session.create', () => live().newSession({ cwd: targetCwd, mcpServers: [] }), speculative ? 'speculative' : 'requested'),
+    }),
     close: entry => live().closeSession({ sessionId: entry.response.sessionId }),
   })
-  // The fingerprint stays in memory; changing a server/secret or directory discards the untouched spare.
-  const freshKey = (targetCwd: string) => JSON.stringify([targetCwd, mcpServers(), [...failedMcp].filter(([, failure]) => failure.until > Date.now()).map(([key, failure]) => [key, failure.until])])
+  const freshKey = (targetCwd: string) => targetCwd
   const prepareFresh = () => {
     if (prewarmSessions && !disposed && !closing.size && !failedCloses.size) fresh.prepare(freshKey(sessionCwd), sessionCwd)
     else fresh.clear()
@@ -362,7 +325,7 @@ export function createAcpBridge({
     acquire: {
       resume: (id, cwd) => {
         if (!allowTask(id, cwd)) throw new Error('session has outdated memory context')
-        return withMcpServers(servers => live().resumeSession({ sessionId: id, cwd, mcpServers: servers }))
+        return live().resumeSession({ sessionId: id, cwd, mcpServers: [] })
       },
       fresh: async cwd => {
         const { response } = await fresh.take(freshKey(cwd), cwd)
@@ -372,20 +335,19 @@ export function createAcpBridge({
     },
     foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
     operations, permissions: broker, questions, allowSession: allowTask,
-    steer: (id, text) => steering.steer(text, id), markReadOnly: readOnlyDesk.mark,
+    steer: (id, text) => steering.steer(text, id),
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
-  const { resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
+  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
 
   async function openSession(beforeOpen?: () => Promise<unknown>) {
     const measure = sessionTiming(onTiming)
     let source = 'cold'
-    const { response, status } = await measure('session.acquire', () => fresh.take(freshKey(sessionCwd), sessionCwd, {
+    const { response } = await measure('session.acquire', () => fresh.take(freshKey(sessionCwd), sessionCwd, {
       beforeOpen, onUse: value => { source = value },
     }))
     await measure('session.source', async () => {}, source)
-    mcp = status
     sessionId = response.sessionId
     onSessionCreated?.(sessionId, sessionCwd)
     prepareFresh()
@@ -400,7 +362,7 @@ export function createAcpBridge({
     sessionCwd = targetCwd
     if (!resumeSessionId || !canResume || !allowSession(resumeSessionId, targetCwd)) return openSession()
     try {
-      const response = await withMcpServers((servers) => live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: servers }))
+      const response = await live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: [] })
       sessionId = resumeSessionId
       prepareFresh()
       return { ...infoFrom(response.configOptions), resumed: true }
@@ -425,7 +387,7 @@ export function createAcpBridge({
     try {
       // Closed earlier (撤销 a new topic goes back to the session just left): that close finishes first.
       await closing.get(targetSessionId)?.catch(() => {})
-      response = await withMcpServers((servers) => live().resumeSession({ sessionId: targetSessionId, cwd: targetCwd, mcpServers: servers }))
+      response = await live().resumeSession({ sessionId: targetSessionId, cwd: targetCwd, mcpServers: [] })
     } catch (err) {
       console.error('[acp-bridge] could not resume the topic\'s session; staying where it was:', describeError(err))
       throw new ResumeError(resumeReason(err), describeError(err, stderrTail))
@@ -475,11 +437,13 @@ export function createAcpBridge({
   }
 
   /**
-   * Its end is the main conversation's, or (once the turn went to the background) its task's.
+   * Its end is the main conversation's, or (once the turn went to the background) its task's. The session is bound as
+   * the main conversation before the prompt goes (routing-channel.ts).
    * @param images pictures pasted with it, base64
+   * @param request whether these are the user's words, a request of their own; a task's result coming back is not
    */
-  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { userTurn = false, onStart }: {
-    userTurn?: boolean, onStart?: () => void,
+  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart }: {
+    request?: boolean, userTurn?: boolean, onStart?: () => void,
   } = {}) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
     if (isSwitching()) throw new Error(switchingMessage())
@@ -490,15 +454,18 @@ export function createAcpBridge({
     const asked = sessionId
     if (asked && !allowSession(asked)) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
+    const words = request && asked ? asRequest(text, asked, 'prompt').text : text
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
-      ...(text ? [{ type: 'text' as const, text }] : []),
+      ...(words ? [{ type: 'text' as const, text: words }] : []),
     ]
     await operations.run({
       sessionId: asked, prompt: blocks, context, userTurn, onStart,
-      onEnd: response => {
+      prepare: asked ? () => routingDesk.bind(asked) : undefined,
+      onEnd: (response, finalReply) => {
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
-        else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason, ...scoped(context) })
+        else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason,
+          ...(response.stopReason === 'end_turn' && finalReply !== undefined ? { finalReply } : {}), ...scoped(context) })
       },
       onError: error => {
         const message = describeError(error, stderrTail)
@@ -513,6 +480,9 @@ export function createAcpBridge({
     questions.declineAll()
     if (!connection || !sessionId) return
     operations.endUserTurn(sessionId)
+    endRequestsOf(sessionId)
+    const context = operations.context(sessionId)
+    if (operations.cancelPreparing(sessionId, () => emit({ type: 'turn_end', stopReason: 'cancelled', ...scoped(context) }))) return
     try {
       await live().cancel({ sessionId })
     } catch (err) {
@@ -520,11 +490,22 @@ export function createAcpBridge({
     }
   }
 
+  /**
+   * A main session's turn stopped (the user's Stop) or left: what it left undecided fails as cancelled, and a decision
+   * still being carried out sends nothing more (request-runtime.ts), at once rather than once the turn winds down.
+   */
+  function endRequestsOf(id: string) {
+    try { routing.endTurn({ sessionId: id, reason: 'cancelled' }) }
+    catch (err) { console.error('[acp-bridge] could not end the requests of a stopped session:', describeError(err)) }
+  }
+
   function retire(id: string, measure: ReturnType<typeof sessionTiming>) {
     if (closing.has(id)) return
+    // Its turn, if one runs, ends here: what it said reaches nothing from now on, its turn_end included.
+    endRequestsOf(id)
     const cleanup = (async () => {
       if (operations.has(id)) {
-        try { await measure('session.cancel', () => live().cancel({ sessionId: id })) }
+        try { if (!operations.cancelPreparing(id, () => {})) await measure('session.cancel', () => live().cancel({ sessionId: id })) }
         catch (err) { console.error('[acp-bridge] cancel failed; still closing session:', describeError(err)) }
       }
       await measure('session.close', () => live().closeSession({ sessionId: id }))
@@ -574,8 +555,7 @@ export function createAcpBridge({
         sessionCwd = targetCwd
         // One old foreground session may drain in parallel, never an unbounded pile after rapid clicks.
         if (closing.size > 1) await released()
-        // A prepared session already acquired its MCP resources. A cold MCP start must wait for old ones.
-        return openSession(mcpServers().length ? released : undefined)
+        return openSession()
       })
     } catch (err) {
       if (err instanceof ResumeError) throw err
@@ -618,18 +598,27 @@ export function createAcpBridge({
   }
 
   const newSession = () => switchSession(null)
-  /** Reattaches the current session, so a changed list of MCP servers takes effect without losing context. */
-  const reloadSession = () => { failedMcp.clear(); fresh.reset(); return switchSession(sessionId) }
+  /** Reattaches the current session, keeping its context. */
+  const reloadSession = () => { fresh.reset(); return switchSession(sessionId) }
 
   /**
    * Hands `text` to the turn that is running. Not ok with reason 'idle' when the turn has just ended (the
    * caller asks it as a new question), else when it could not be sent (steer-channel.js NO_PLUGIN, or the
    * plugin's reasons).
    */
-  /** The user's words into the running turn of the conversation on screen, marked as said mid-turn. */
-  const steer = (text: string) => sessionId && !allowSession(sessionId)
-    ? Promise.resolve({ ok: false as const, reason: 'unavailable' })
-    : steering.steer(interjection(text))
+  /**
+   * The user's words into the running turn of the conversation on screen, marked as said mid-turn, a request of their
+   * own; one that reached no turn fails, since the window asks the words anew.
+   */
+  async function steer(text: string) {
+    if (!sessionId) return steering.steer(interjection(text))
+    const asked = sessionId
+    if (!allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
+    const request = asRequest(text, asked, 'interjection')
+    const result = await steering.steer(interjection(request.text), asked, { fast: memory.ready() })
+    if (!result.ok) routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
+    return result
+  }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
   const deliverReport = (session: string, reportId: string, token: string, text: string) => allowSession(session)
     ? steering.report(session, reportId, token, text) : Promise.resolve('unavailable' as const)
@@ -677,8 +666,8 @@ export function createAcpBridge({
     taskSessions.dispose()
     broker.cancelAll()
     steering.closeAll()
+    routingDesk.close()
     pluginsDesk.close()
-    readOnlyDesk.closeAll()
     if (!child || !isRunning(child)) return Promise.resolve()
     const target = child
     const exited = new Promise((resolve) => target.once('exit', resolve))
@@ -702,5 +691,10 @@ export function createAcpBridge({
 
   /** Whether the main session is being switched (a topic taken up, a new one, going back): no question goes in meanwhile. */
   const isSwitching = () => switching || preparing > 0
-  return { start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startReadOnlyTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, refreshMemoryQuestions: questions.refreshMemoryQuestions, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid, memory }
+  /** The MCP servers changed: viva-mcp takes the new set at once, no session is reopened. */
+  const applyMcp = () => mcpDesk.push()
+  /** 重试 on a server that stopped trying. */
+  const restartMcp = (name: string) => mcpDesk.restart(name)
+
+  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, refreshMemoryQuestions: questions.refreshMemoryQuestions, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid, memory }
 }

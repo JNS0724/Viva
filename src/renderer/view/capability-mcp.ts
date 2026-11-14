@@ -1,6 +1,6 @@
 import { t } from '../../shared/i18n/translate.ts'
-import { serverStanding, shownServer, type ServerStanding } from '../capabilities-state.ts'
-import type { ExtensionStatus, ServerView } from '../capability-types.ts'
+import { serverStanding, shownServer, statusOf, type ServerStanding } from '../capabilities-state.ts'
+import type { ServerView } from '../capability-types.ts'
 import { h } from './dom.ts'
 import { importButton, serverForm, typeLabel } from './extensions.ts'
 import { importing } from '../import-flow-state.ts'
@@ -15,11 +15,10 @@ import { importMain } from './import-flow.ts'
 function standingText(standing: ServerStanding) {
   if (standing.kind === 'missing') return { tone: 'off', text: t('extensions.missing.credentials', { value1: standing.names.join('、') }) }
   if (standing.kind === 'connected') return { tone: 'ok', text: t('extensions.connected') }
+  if (standing.kind === 'connecting') return { tone: 'idle', text: standing.reason ? t('capabilities.mcp.reconnecting', { reason: standing.reason }) : t('capabilities.mcp.connecting') }
   if (standing.kind === 'dropped') return { tone: 'off', text: t('extensions.not.connected', { reason: standing.reason }) }
   return { tone: 'off', text: t('island-view.not.connected') }
 }
-
-const statusOf = (state: State) => state.extensions.status as ExtensionStatus
 
 export function serversSide(state: State, handlers: Handlers): Node[] {
   const servers = state.extensions.servers as readonly ServerView[]
@@ -52,6 +51,9 @@ function serverFacts(server: ServerView, state: State, handlers: Handlers) {
       h('dt', { text: server.type === 'http' ? t('extensions.address') : t('extensions.launch.command') }), h('dd', { class: 'mono', text: target ?? '' }),
       secrets.length ? [h('dt', { text: t('capabilities.keys') }), h('dd', { text: t('extensions.encrypted.and.saved', { value1: secrets.join('、') }) })] : null),
     h('div', { class: 'ext-actions settings-actions' },
+      serverStanding(server, statusOf(state)).kind === 'dropped' && !server.missingNames?.length
+        ? h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: busy, text: t('extensions.retry'), 'aria-label': t('extensions.retry.mcp.server', { name: server.name }), onClick: () => handlers.restartServer(server.name) })
+        : null,
       h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: busy, text: t('extensions.edit'), 'aria-label': t('extensions.edit.mcp.server', { name: server.name }), onClick: () => handlers.editServer(server) }),
       h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: busy, text: t('extensions.delete'), 'aria-label': t('extensions.delete.mcp.server', { name: server.name }), onClick: () => handlers.removeServer(server.name) })))
 }

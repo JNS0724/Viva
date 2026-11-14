@@ -1,6 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
 import type { ImportKind, ImportScanView, ImportSourceView, ServerView, SkillView } from './capability-types.ts'
-import { isBusy } from './state.ts'
 
 /**
  * 能力 · 导入 (import-flow-state.ts): the places found to bring skills (skill-import-ipc.ts) or MCP servers
@@ -64,8 +63,6 @@ export function createImportFlowActions({ api, getState, dispatch, errorMessage 
     async importPicked() {
       const { kind, scan, picks, busy, flow } = getState().importFlow
       if (!kind || !scan || !picks.length || busy) return
-      // Changing servers attaches the session again, which would cut a running turn short.
-      if (kind === 'mcp' && isBusy(getState())) return dispatch({ type: 'import_failed', flow, message: t('extension-actions.stop.the.current.task.before.changing.mcp') })
       dispatch({ type: 'import_busy', flow })
       try {
         const done = await calls[kind as ImportKind].run((scan as ImportScanView).scanId, [...picks]) as Changed | object

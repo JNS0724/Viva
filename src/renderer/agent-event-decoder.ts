@@ -19,28 +19,38 @@ function list<T>(value: unknown, read: (value: unknown) => T | null): T[] | null
 }
 const texts = (value: unknown) => list(value, item => string(item) ? item : null)
 const choice = (value: unknown) => { const item = objectOf(value); return item && string(item.value) && string(item.name) && optional(item.group, string) ? { value: item.value, name: item.name, ...(item.group === undefined ? {} : { group: item.group }) } : null }
+/** How the MCP servers stand (viva-mcp): connected, still trying, stopped trying. */
+function decodeMcp(value: unknown): NonNullable<AgentInfo['mcp']> | null {
+  const mcp = objectOf(value)
+  if (!mcp) return null
+  const named = (row: unknown) => { const item = objectOf(row); return item && string(item.name) && string(item.reason) ? { name: item.name, reason: item.reason } : null }
+  const dropped = mcp.dropped === undefined ? [] : list(mcp.dropped, named)
+  const connecting = mcp.connecting === undefined ? [] : list(mcp.connecting, named)
+  const active = mcp.active === undefined ? [] : texts(mcp.active)
+  return active && dropped && connecting ? { active, connecting, dropped } : null
+}
+
 export function decodeInfo(value: unknown): AgentInfo | null {
   const item = objectOf(value)
   if (!item || !string(item.mode) || !string(item.model) || !string(item.cwd)) return null
-  if (!optional(item.sessionId, nullableText) || !optional(item.conversationId, string) || !optional(item.reason, string)
+  if (!optional(item.sessionId, nullableText) || !optional(item.conversationId, string) || !optional(item.topicId, string) || !optional(item.reason, string)
     || !optional(item.problem, string) || !optional(item.modelValue, string) || !optional(item.effort, string)
     || !optional(item.remembersHistory, (value): value is boolean => typeof value === 'boolean')) return null
   const models = item.models === undefined ? undefined : list(item.models, choice)
   const efforts = item.efforts === undefined ? undefined : list(item.efforts, choice)
   if (models === null || efforts === null) return null
-  const mcp = objectOf(item.mcp)
-  const dropped = mcp?.dropped === undefined ? [] : list(mcp.dropped, value => { const row = objectOf(value); return row && string(row.name) && string(row.reason) ? { name: row.name, reason: row.reason } : null })
-  const active = mcp?.active === undefined ? [] : texts(mcp.active)
-  if (item.mcp !== undefined && (!mcp || !active || !dropped)) return null
+  const mcp = item.mcp === undefined ? undefined : decodeMcp(item.mcp)
+  if (mcp === null) return null
   return { mode: item.mode, model: item.model, cwd: item.cwd,
     ...(item.sessionId === undefined ? {} : { sessionId: item.sessionId }),
     ...(item.conversationId === undefined ? {} : { conversationId: item.conversationId }),
+    ...(item.topicId === undefined ? {} : { topicId: item.topicId }),
     ...(item.reason === undefined ? {} : { reason: item.reason }),
     ...(item.problem === undefined ? {} : { problem: item.problem }),
     ...(item.modelValue === undefined ? {} : { modelValue: item.modelValue }),
     ...(item.effort === undefined ? {} : { effort: item.effort }),
     ...(item.remembersHistory === undefined ? {} : { remembersHistory: item.remembersHistory }),
-    ...(models ? { models } : {}), ...(efforts ? { efforts } : {}), ...(mcp && active && dropped ? { mcp: { active, dropped } } : {}) }
+    ...(models ? { models } : {}), ...(efforts ? { efforts } : {}), ...(mcp ? { mcp } : {}) }
 
 }
 export function decodeQuestions(value: unknown): QuestionItem[] | null {
@@ -98,7 +108,10 @@ export function decodeUpdate(value: unknown): ConversationUpdate | null {
     if (!string(item.key)) return null
     if (item.kind === 'settle') {
       const blocks = list(item.blocks, value => { const block = objectOf(value); return block && string(block.type) && optional(block.text, string) ? { type: block.type, text: block.text } : null })
-      return blocks ? { sessionUpdate: item.sessionUpdate, key: item.key, kind: 'settle', blocks } : null
+      const before = item.before === undefined ? undefined : objectOf(item.before)
+      if (before === null || (before && (!optional(before.text, string) || !optional(before.reasoning, string)))) return null
+      return blocks ? { sessionUpdate: item.sessionUpdate, key: item.key, kind: 'settle', blocks,
+        ...(before ? { before: { text: before.text as string | undefined, reasoning: before.reasoning as string | undefined } } : {}) } : null
     }
     if ((item.kind === 'delta' || item.kind === 'block') && natural(item.index) && (item.blockType === 'text' || item.blockType === 'reasoning') && string(item.text)) return { sessionUpdate: item.sessionUpdate, key: item.key, kind: item.kind, index: item.index, blockType: item.blockType, text: item.text }
     return null
@@ -133,15 +146,20 @@ const memoryInjection = (value: unknown): MemoryInjection | null => {
   const pushed = item.pushed === undefined ? [] : list(item.pushed, value => { const row = objectOf(value), names = texts(row?.names); return row && names && string(row.text) ? { names, text: row.text } : null })
   return pushed ? { at: item.at, fixed: item.fixed, pushed } : null
 }
+/** A rule's time zone, kept when it is one: the card's form edits in it (proposal-draft.ts). */
+const zoned = (input: ObjectValue) => (string(input.time_zone) && input.time_zone ? { time_zone: input.time_zone } : {})
 function scheduleRule(value: unknown): ScheduleRuleView | null {
   const rule = objectOf(value)
-  if (rule?.kind === 'at') return { kind: 'at' }
-  if (rule?.kind === 'daily') { const daily = objectOf(rule.daily); return daily && string(daily.time) ? { kind: 'daily', daily: { time: daily.time } } : null }
+  if (rule?.kind === 'at') {
+    const at = objectOf(rule.at)
+    return at && string(at.date) && string(at.time) ? { kind: 'at', at: { date: at.date, time: at.time, ...zoned(at) } } : { kind: 'at' }
+  }
+  if (rule?.kind === 'daily') { const daily = objectOf(rule.daily); return daily && string(daily.time) ? { kind: 'daily', daily: { time: daily.time, ...zoned(daily) } } : null }
   if (rule?.kind === 'weekly') {
     const weekly = objectOf(rule.weekly), weekdays = list(weekly?.weekdays, value => natural(value) && value <= 7 ? value : null)
-    return weekly && string(weekly.time) && weekdays ? { kind: 'weekly', weekly: { time: weekly.time, weekdays } } : null
+    return weekly && string(weekly.time) && weekdays ? { kind: 'weekly', weekly: { time: weekly.time, weekdays, ...zoned(weekly) } } : null
   }
-  if (rule?.kind === 'cron') { const cron = objectOf(rule.cron); return cron && string(cron.expression) ? { kind: 'cron', cron: { expression: cron.expression } } : null }
+  if (rule?.kind === 'cron') { const cron = objectOf(rule.cron); return cron && string(cron.expression) ? { kind: 'cron', cron: { expression: cron.expression, ...zoned(cron) } } : null }
   return null
 }
 function eventOf(item: ObjectValue): AgentEvent | null {
@@ -151,6 +169,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
     if (!info || (item.context !== undefined && !context)) return null
     return type === 'config' ? { type, info, ...(context ? { context } : {}) } : { type, info }
   }
+  if (type === 'mcp_status') { const mcp = decodeMcp(item.mcp); return mcp ? { type, mcp } : null }
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
   if (type === 'memory_changed') {
     const memories = item.memories === undefined ? undefined : texts(item.memories), invalidated = item.invalidated === undefined ? undefined : texts(item.invalidated)
@@ -175,7 +194,8 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (!context || item.taskId !== undefined) return null
   if (type === 'update') { const update = decodeUpdate(item.update); return update ? { type, context, update } : null }
   if (type === 'turn_started') return optional(item.by, nullableText) ? { type, context, by: item.by } : null
-  if (type === 'turn_end') return optional(item.stopReason, string) ? { type, context, stopReason: item.stopReason } : null
+  if (type === 'turn_end') return optional(item.stopReason, string) && (item.finalReply === undefined || typeof item.finalReply === 'boolean')
+    ? { type, context, stopReason: item.stopReason, ...(item.finalReply === undefined ? {} : { finalReply: item.finalReply }) } : null
   if (type === 'question') { const questions = decodeQuestions(item.questions); return string(item.questionId) && questions ? { type, context, questionId: item.questionId, questions } : null }
   if (type === 'question_answered') {
     const answers = decodeAnswers(item.answers)
@@ -195,7 +215,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

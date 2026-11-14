@@ -38,7 +38,8 @@ type ProfilePlugin = { name: string, dir: string, config?: Readonly<Record<strin
 /**
  * dsh-base's rows the app relies on for safety, restated whole (as dsh-base writes them, test/dsh-profile.test.js
  * keeps them in step) so a bundle or the user's layer cannot loosen them: the sandbox mode, when to ask, and the
- * permission presets. Patches by id keep the lower layer's `disabled`, so it is stated too.
+ * permission presets. Patches by id keep the lower layer's `disabled`, so it is stated too. Also read-before-write
+ * (fs-observation-policy): on in dsh 0.2.0, off by default since 0.2.2; kept on so the upgrade loosens nothing.
  */
 export const SAFETY_ROWS = `- id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
@@ -65,6 +66,9 @@ export const SAFETY_ROWS = `- id: sandbox-policy
       danger-full-access:
         sandbox: danger-full-access
         approval: never
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+  disabled: false
 `
 
 /**
@@ -82,22 +86,20 @@ function pluginManagerLines(pnpmCommand: string | null, registry: string | null)
   ]
 }
 /**
- * dsh's sub-agents, used within a turn only (system-design §11.7): in the foreground, so the main conversation waits
- * for the result in the same turn; with read-only tools for looking things up, by allow list, so tools dsh or a
- * plugin adds later are not given to them; and unable to delegate further. Work that runs long, should be seen by
- * the user or asked about later goes to Viva's background tasks instead. The follow-up tools (send_message,
- * interrupt_agent, list_agents) serve background children only, so they are off.
+ * dsh's sub-agents, used within a turn only (system-design §11.7), unable to delegate further. Their read-only tools are
+ * set by viva-routing when each is created (shared/subagent-tools.ts): dsh 0.2.1 took `toolFilter` off tool-subagent.
+ * Work that runs long, should be seen by the user or asked about later goes to Viva's background tasks instead. The
+ * control tools (send_message, interrupt_agent, wait_agent) serve children the model follows up on, so they are off.
  */
-export const SUBAGENT_TOOLS = Object.freeze(['read', 'glob', 'grep', 'read_image', 'web_search', 'web_fetch', 'memory_recall', 'search_conversations', 'read_conversation', 'todo_write'])
+export { SUBAGENT_TOOLS } from '../shared/subagent-tools.ts'
 function subagentLines() {
-  const shared = { enableRunInBackground: false, backgroundMode: 'one-shot', toolFilter: { allow: SUBAGENT_TOOLS }, maxDepth: 1 }
+  const shared = { maxDepth: 1 }
   return [
     '- id: tool-subagent', "  name: '@deepseek-ai/dsh-tool-subagent'", '  disabled: false',
     `  config: ${JSON.stringify({ provider: 'spawn', toolName: 'subagent', ...shared })}`,
     '- id: tool-subagent-fork', "  name: '@deepseek-ai/dsh-tool-subagent'", '  disabled: false',
     `  config: ${JSON.stringify({ provider: 'fork', toolName: 'subagent_fork', ...shared })}`,
     '- id: tool-subagent-control', '  disabled: true',
-    '- id: tool-subagent-list-agents', '  disabled: true',
   ]
 }
 
@@ -116,6 +118,13 @@ function configLines(config: ProfilePlugin['config'], indent: string) {
   if (entries.length === 0) return []
   return [`${indent}config:`, ...entries.map(([key, value]) => `${indent}  ${key}: ${yamlValue(value)}`)]
 }
+
+/**
+ * dsh-base's tool-web row with web_search off (联网搜索 off). dsh 0.2.2 searches through the DeepSeek Search API, at the
+ * DeepSeek route's origin plus /v1/tools: unreachable or not served behind an intranet gateway. Patches by id replace
+ * the whole row, so its other values are restated as dsh-base has them.
+ */
+export const WEB_SEARCH_OFF: readonly string[] = Object.freeze(['- id: tool-web', "  name: '@deepseek-ai/dsh-tool-web'", '  config:', '    search: false', '    fetch: true', '    searchTimeoutMs: 60000'])
 
 /** Stock entries the DeepSeek route needs; without a DeepSeek key they are switched off so it is not offered. */
 const DEEPSEEK_ENTRIES = Object.freeze(['llm-deepseek', 'llm-deepseek-account'])
@@ -142,11 +151,14 @@ function modelLines({ providers, deepseek, defaultModel }: ProfileModels) {
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
  * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
-export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null, registry = null }: {
+export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null, registry = null, webSearch = true }: {
   plugins: readonly ProfilePlugin[], persona?: Persona | null, models?: ProfileModels | null, imagesDir?: string | null, pnpmCommand?: string | null,
   registry?: string | null,
+  /** 联网搜索 (settings): off takes web_search away from the model; web_fetch stays. */
+  webSearch?: boolean,
 }) {
   const lines = [VIVA_LAYER_MARK]
+  if (!webSearch) lines.push(...WEB_SEARCH_OFF)
   if (persona) {
     lines.push('- id: system-prompt', '  config:', `    personaPrefix: ${yamlString(persona.prefix)}`, `    personaSuffix: ${yamlString(persona.suffix)}`)
   }
@@ -214,9 +226,9 @@ function ensureUserLayer(file: string) {
 }
 
 /** @returns the profile directory */
-export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand, registry = null }: {
+export function ensureDshProfile({ dshHome, profile, plugins, persona, models, imagesDir, pnpmCommand, registry = null, webSearch = true }: {
   dshHome: string, profile: string, plugins: readonly ProfilePlugin[],
-  persona?: Persona, models?: ProfileModels, imagesDir?: string, pnpmCommand?: string | null,
+  persona?: Persona, models?: ProfileModels, imagesDir?: string, pnpmCommand?: string | null, webSearch?: boolean,
   /** The company's plugin source (plugin-source.ts); its token goes to pnpm at launch, never into a file here. */
   registry?: string | null,
 }): string {
@@ -229,6 +241,6 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
   ensureUserLayer(path.join(dir, 'cordis.patch.yml'))
-  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry }))
+  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry, webSearch }))
   return dir
 }

@@ -202,12 +202,13 @@ function extensionsIpc(t, { chosen = null, defaultDir = '/home/me/.dsh', lastDir
   store.add(parseServerInput(STDIO_INPUT, []))
   const roots = skillRoots({ dshHome: path.join(dir, 'dsh'), cwd: path.join(dir, 'ws') })
   const handlers = new Map()
-  const seen = { applied: 0, imported: [], remembered: [], revealed: [] }
+  const seen = { applied: 0, imported: [], remembered: [], revealed: [], restarted: [] }
   registerExtensionsIpc({ handle: (channel, fn) => handlers.set(channel, fn) }, {
     store,
     roots: () => roots,
     mcpStatus: () => ({ active: ['github'], memory: true, dropped: [] }),
     applyMcp: async () => ({ mode: 'live', applied: ++seen.applied }),
+    restartMcp: (name) => seen.restarted.push(name),
     trash: async () => {},
     reveal: (file) => seen.revealed.push(file),
     dshDirs: () => ({ defaultDir, lastDir }),
@@ -228,7 +229,7 @@ test('extensions IPC lists and removes, never returns secrets, and has no way to
   assert.deepEqual([shown.servers.map((s) => s.name), shown.skillDir], [['github'], roots[0].dir])
   assert.equal(JSON.stringify(shown).includes('ghp_example'), false)
   assert.equal((await call('ext:remove-mcp', 'github')).info.applied, 1)
-  assert.deepEqual([...handlers.keys()].sort(), ['ext:get', 'ext:import-dsh', 'ext:remove-mcp', 'ext:remove-skill', 'ext:reveal-skill', 'ext:update-mcp'],
+  assert.deepEqual([...handlers.keys()].sort(), ['ext:get', 'ext:import-dsh', 'ext:remove-mcp', 'ext:remove-skill', 'ext:restart-mcp', 'ext:reveal-skill', 'ext:update-mcp'],
     'adding by hand happens in the conversation')
 })
 
@@ -270,4 +271,13 @@ test('a cancelled folder dialog imports nothing', async (t) => {
   const { seen, call } = extensionsIpc(t, { chosen: null })
   const result = await call('ext:import-dsh', 'choose')
   assert.deepEqual([result.cancelled, seen.imported, seen.applied], [true, [], 0])
+})
+
+test('重试 starts a configured server again through viva-mcp; a name not configured is refused', async (t) => {
+  const { call, seen, store } = extensionsIpc(t)
+  const [server] = store.list()
+  await call('ext:restart-mcp', server.name)
+  assert.deepEqual(seen.restarted, [server.name])
+  await assert.rejects(call('ext:restart-mcp', 'nobody'))
+  assert.deepEqual(seen.restarted, [server.name])
 })

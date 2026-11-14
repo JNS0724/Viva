@@ -181,3 +181,18 @@ test('the backend hands a shell listening again only the calls after the one it 
   remote.host.window.send({ type: 'update', seq: 0 })
   assert.deepEqual([gone, seen], [[1, 2], [2, 3, 4]])
 })
+
+test('a wrapped host-call ring replays an ordered snapshot even if a listener sends during replay', () => {
+  const remote = createRemoteHost({ start: START, secrets: createEnvelope({ key: randomBytes(32) }) })
+  for (let i = 0; i < 10_005; i++) remote.host.window.send({ type: 'update', seq: 0 })
+  const seen: number[] = []
+  const stop = remote.listen(call => {
+    seen.push(call.n)
+    if (seen.length === 1) for (let i = 0; i < 10_005; i++) remote.host.window.send({ type: 'update', seq: 0 })
+  }, 5)
+  stop()
+  assert.deepEqual(seen, Array.from({ length: 10_000 }, (_, index) => index + 6))
+  const later: number[] = []
+  remote.listen(call => later.push(call.n), 10_005)()
+  assert.deepEqual(later, Array.from({ length: 10_000 }, (_, index) => index + 10_011))
+})

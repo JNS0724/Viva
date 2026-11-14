@@ -6,7 +6,7 @@ import { optionName } from '../approval.ts'
 import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.ts'
 import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.ts'
 import type { CatMood } from '../selectors.ts'
-import { maidFor, maidMood } from './maid.ts'
+import { maidFor, maidMood, showMaid } from './maid.ts'
 import type { MaidMood, MaidSlots } from './maid.ts'
 import { h, label } from './dom.ts'
 import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown, streamMarkdown, type MarkdownStream } from './markdown.ts'
@@ -19,7 +19,9 @@ import { recordsAt } from '../report-state.ts'
 import { cardedTasks, restoredTaskAnchors, taskCard, taskCardInputs } from './task-card.ts'
 import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
-import { proposalCard } from './proposal-card.ts'
+import { keepTyped, proposalCard } from './proposal-card.ts'
+import { proposalHost } from '../proposal-state.ts'
+import type { ProposalCard } from '../proposal-types.ts'
 import { userError } from '../user-error.ts'
 
 const AVATAR_PX = 48
@@ -32,7 +34,8 @@ const ON_THE_CARD: ReadonlySet<MaidMood> = new Set(['confirm', 'ask'])
  * Whether a message is the answer of the turn in progress or just finished, and what Viva is doing; and, in a
  * view that redraws as an answer is typed out, where each answer being typed was drawn last frame.
  */
-type Look = { latest: boolean, mood: CatMood | 'idle', maids?: MaidSlots, streams?: Map<string, MarkdownStream> }
+/** `still`: done with nobody looking, her pose held (done-notice-actions.ts), as on the island. */
+type Look = { latest: boolean, mood: CatMood | 'idle', still?: boolean, maids?: MaidSlots, streams?: Map<string, MarkdownStream> }
 const containerMaids = new WeakMap<HTMLElement, MaidSlots>()
 /** Per view, the answers being typed out (markdown.ts streamMarkdown): each frame draws only what changed. */
 const containerStreams = new WeakMap<HTMLElement, Map<string, MarkdownStream>>()
@@ -48,10 +51,10 @@ function portrait(message: ThreadMessage, look: Look): HTMLElement[] {
   if (!look.latest) return []
   const mood = avatarMood(message, look)
   if (ON_THE_CARD.has(mood)) return []
-  return [maidFor(look.maids ?? new Map(), message.id, mood, { size: AVATAR_PX, framing: 'face', moving: true })]
+  return [maidFor(look.maids ?? new Map(), message.id, mood, { size: AVATAR_PX, framing: 'face', moving: !(look.still && mood === 'done') })]
 }
 
-const lookKey = (message: ThreadMessage, look: Look) => (look.latest ? avatarMood(message, look) : 'none')
+const lookKey = (message: ThreadMessage, look: Look) => (look.latest ? `${avatarMood(message, look)}${look.still ? '|still' : ''}` : 'none')
 
 function avatar(message: ThreadMessage, look: Look) {
   const slot = h('span', { class: 'maid-avatar', 'aria-hidden': 'true' }, ...portrait(message, look))
@@ -61,12 +64,12 @@ function avatar(message: ThreadMessage, look: Look) {
 
 /** Status changes update only the portrait, keeping a reader-expanded answer and its nodes intact. */
 function refreshAvatar(view: View, message: ThreadMessage, look: Look) {
-  if (message.role !== 'assistant') return
-  const slot = elementsOf(view)[0]?.querySelector<HTMLElement>('.maid-avatar')
+  if (message.role !== 'assistant' || !look.latest) return
+  const slot = firstElement(view)?.querySelector<HTMLElement>('.maid-avatar')
   if (!slot) return
   const key = lookKey(message, look)
   if (avatarLooks.get(slot) === key) return
-  reconcileChildren(slot, portrait(message, look))
+  showMaid(slot, portrait(message, look)[0] ?? null)
   avatarLooks.set(slot, key)
 }
 
@@ -144,14 +147,15 @@ function typeOn(message: ThreadMessage, handlers: Handlers, look: Look, before: 
   const typing = message.open || (message.shown ?? message.text.length) < message.text.length
   if (message.role !== 'assistant' || !typing || !look.streams) return false
   if (before.length !== after.length || before.some((value, i) => !TYPED_INPUTS.has(i) && value !== after[i])) return false
-  const el = elementsOf(view)[0]?.querySelector<HTMLElement>('.msg-text.markdown')
+  const el = firstElement(view)?.querySelector<HTMLElement>('.msg-text.markdown')
   const stream = look.streams.get(message.id)
   if (!el || !stream || stream.el !== el) return false
   const drawn = streamMarkdown(stream, visibleText(message.text, message.shown), { openLink: handlers.openLink, image: null })
   look.streams.set(message.id, drawn)
   if (drawn.el !== el) return false
-  el.querySelector('.caret')?.remove()
-  caretHost(el).append(h('span', { class: 'caret', 'aria-hidden': 'true' }))
+  const caret = el.querySelector('.caret')
+  const host = caretHost(el)
+  if (caret?.parentElement !== host) host.append(caret ?? h('span', { class: 'caret', 'aria-hidden': 'true' }))
   return true
 }
 
@@ -332,6 +336,7 @@ function secretCard(secret: { requestId: string, server: string, names: readonly
 
 /** The elements of a view, one level down, without the empty parts. */
 const elementsOf = (view: View): Element[] => [view].flat().filter((el): el is Element => el instanceof Element)
+const firstElement = (view: View): Element | undefined => view instanceof Element ? view : elementsOf(view)[0]
 
 /**
  * A message with what going back adds to it: over the user's words the bar to go back there (or the editor, in
@@ -465,11 +470,12 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
   const mood = catMood(state)
+  const still = mood === 'done' && state.doneNotice === 'still'
   const start = threadStart(state)
   // Only what is drawn is built: the messages before `start` are neither drawn nor kept.
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
-    const look = { latest: message.id === latestAnswer, mood, maids, streams }
+    const look = { latest: message.id === latestAnswer, mood, still, maids, streams }
     // Whether it is the latest answer is an input: once it is not, it is built again, and folds if tall (message-fold.ts).
     const view = part(`message:${message.id}`, [...messageInputs(message, traceReady), look.latest], () => messageView(message, handlers, traceReady, look),
       view => localizeAssistant(view, message), (before, after, view) => typeOn(message, handlers, look, before, after, view))
@@ -495,8 +501,13 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   // those of messages not drawn are not drawn either.
   const recordsAfter = (after: number) => recordsAt(state, after)
     .map((record) => part(`record:${record.reportId}`, [record], () => reportRecord(record, handlers)))
+  // A schedule's card goes at the end of the turn it came in (proposal-state.ts proposalHost); one of a message not
+  // drawn, at the top of what is.
+  const hosts = (state.proposals as ProposalCard[]).map((card) => ({ card, at: proposalHost(state.messages, card.after ?? state.messages.length) }))
+  const proposalsAfter = (test: (at: number) => boolean) => hosts.filter(({ at }) => test(at))
+    .map(({ card }) => part(`proposal:${card.id}`, [card], () => keepTyped(previous.get(`proposal:${card.id}`)?.view, proposalCard(card, handlers, now))))
   const views = messageEntries(state, plain, handlers, start).slice(start).map((entries, i) => {
-    const hosted = [...hostedBy(start + i), ...recordsAfter(start + i + 1)]
+    const hosted = [...hostedBy(start + i), ...recordsAfter(start + i + 1), ...proposalsAfter((at) => at === start + i)]
     return hosted.length ? [...entries, ...hosted] : entries
   })
   const divided = note && state.restored.count >= start
@@ -508,9 +519,8 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     ...earlierCards,
     ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),
     ...recordsAfter(start),
+    ...proposalsAfter((at) => at < start),
     ...divided.flat().filter(isContent),
-    // The schedules the model proposed in this conversation, each to be decided on (view/proposal-card.ts).
-    ...state.proposals.map((card: Untyped) => part(`proposal:${card.id}`, [card], () => proposalCard(card, handlers, now))),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
     state.question ? part('question', [state.question], () => questionCard(state.question!, handlers)) : '',
     state.secret ? secretCard(state.secret, handlers) : '',

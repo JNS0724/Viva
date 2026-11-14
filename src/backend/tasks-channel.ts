@@ -5,11 +5,10 @@ import type { TaskQuery } from './task-registry.ts'
 
 /**
  * The viva-tasks plugin's requests (plugins/tasks): queries (list, get) answered from the task registry, and the
- * agent's actions on tasks (start, stop, message), carried out by the task runtime (task-runtime.ts).
+ * agent's changes to schedules. Tasks themselves are started, stopped and messaged only by an accepted routing
+ * decision (request-runtime.ts).
  */
 export type TaskRead = (request: TaskQuery, sessionId: string) => unknown
-export type TaskAction = { op: 'start', brief: string } | { op: 'stop', taskId: string } | { op: 'message', taskId: string, text: string }
-  | ScheduleAction
 /**
  * What the model asks of schedules (schedule-store.ts), by talking (system-design §12.2): one proposed (the user says
  * yes on its card), the list, one changed, paused or resumed, one deleted. The rule is dsh-schedule's input, checked
@@ -20,9 +19,9 @@ export type ScheduleAction =
   | { op: 'schedule_list' }
   | { op: 'schedule_update', id: string, title?: string, prompt?: string, rule?: Record<string, unknown>, paused?: boolean }
   | { op: 'schedule_delete', id: string }
-export type TaskAct = (request: TaskAction, sessionId: string) => Promise<unknown>
+export type TaskAct = (request: ScheduleAction, sessionId: string) => Promise<unknown>
 
-const ACTIONS = new Set(['start', 'stop', 'message', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete'])
+const ACTIONS = new Set(['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete'])
 const MAX_TITLE_CHARS = 120
 const RULE_KINDS = new Set(['at', 'daily', 'weekly', 'cron'])
 const MAX_ID_CHARS = 200
@@ -36,12 +35,19 @@ function ruleOf(value: unknown): Record<string, unknown> {
   return { kind: rule.kind, [String(rule.kind)]: rule[String(rule.kind)] }
 }
 
+/**
+ * A schedule's name, what it does and its rule, checked: as the model proposes one, and as the user changed it on the
+ * proposal's card before saying yes (schedules.ts accept).
+ */
+export function parseScheduleWords(value: unknown): { title: string, prompt: string, rule: Record<string, unknown> } {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  if (!isText(raw.title, MAX_TITLE_CHARS) || !isText(raw.prompt, MAX_MESSAGE_CHARS)) throw new Error(t('main.tasks-channel.invalid.schedule'))
+  return { title: raw.title.trim(), prompt: raw.prompt.trim(), rule: ruleOf(raw.rule) }
+}
+
 function parseScheduleAction(raw: Record<string, unknown>): ScheduleAction {
   if (raw.op === 'schedule_list') return { op: 'schedule_list' }
-  if (raw.op === 'schedule_create') {
-    if (!isText(raw.title, MAX_TITLE_CHARS) || !isText(raw.prompt, MAX_MESSAGE_CHARS)) throw new Error(t('main.tasks-channel.invalid.schedule'))
-    return { op: 'schedule_create', title: raw.title.trim(), prompt: raw.prompt.trim(), rule: ruleOf(raw.rule) }
-  }
+  if (raw.op === 'schedule_create') return { op: 'schedule_create', ...parseScheduleWords(raw) }
   if (!isText(raw.id, MAX_ID_CHARS)) throw new Error(t('main.tasks-channel.invalid.schedule'))
   if (raw.op === 'schedule_delete') return { op: 'schedule_delete', id: raw.id }
   const changes = {
@@ -53,17 +59,10 @@ function parseScheduleAction(raw: Record<string, unknown>): ScheduleAction {
   return { op: 'schedule_update', id: raw.id, ...changes }
 }
 
-export function parseTaskAction(value: unknown): TaskAction {
+export function parseTaskAction(value: unknown): ScheduleAction {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
   if (typeof raw.op === 'string' && raw.op.startsWith('schedule_')) return parseScheduleAction(raw)
-  if (raw.op === 'start') {
-    if (!isText(raw.brief, MAX_MESSAGE_CHARS)) throw new Error(t('main.tasks-channel.invalid.brief', { max: MAX_MESSAGE_CHARS }))
-    return { op: 'start', brief: raw.brief.trim() }
-  }
-  if (!isText(raw.taskId, MAX_ID_CHARS)) throw new Error(t('main.task-registry.invalid.taskid'))
-  if (raw.op === 'stop') return { op: 'stop', taskId: raw.taskId }
-  if (raw.op === 'message' && isText(raw.text, MAX_MESSAGE_CHARS)) return { op: 'message', taskId: raw.taskId, text: raw.text.trim() }
-  throw new Error(raw.op === 'message' ? t('main.tasks-channel.invalid.text', { max: MAX_MESSAGE_CHARS }) : t('main.task-registry.unknown.task.query.operation'))
+  throw new Error(t('main.task-registry.unknown.task.query.operation'))
 }
 
 export function createTasksDesk({ send, read, act = null, authorized }: {

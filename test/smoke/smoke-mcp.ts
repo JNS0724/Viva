@@ -8,7 +8,7 @@ import { capture, run, settle, until, type Expect, type SmokeHooks, type SmokeWi
  * skipped as its name is in use, one key left missing).
  */
 const IMPORT_KEY = 'smoke-import-key-9c1'
-/** No such command: the imported server is left out of the session rather than started (mcp-config.ts toAcpServers). */
+/** No such command: the imported server is left out rather than started (mcp-config.ts toManagerServers). */
 const IMPORTED_COMMAND = 'viva-smoke-imported-mcp'
 
 const PATCH = [

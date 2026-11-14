@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-user-questions'
 import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, memoryClarificationResult, memoryCompute, memoryKinds } from '../../../src/shared/memory-contract.ts'
 import type { MemoryCompute, MemoryRequest } from '../../../src/shared/memory-contract.ts'
 import { objectOf } from '../../../src/shared/unknown-value.ts'
+import { withoutHeaders } from '../../../src/shared/request-routing/header.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -51,12 +52,19 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
   const lifetime = new AbortController()
   const send = (message: object) => { if (port.connected) port.send?.(message, () => {}) }
   const parentOf = (agent: Agent | undefined) => {
-    if (!agent) return undefined
-    const agents = ctx.agents.list()
-    let root = agent
-    for (let owner = agents.find(candidate => ctx.agents.isOwnedBy(root.session.id, candidate)); owner;
-      owner = agents.find(candidate => ctx.agents.isOwnedBy(root.session.id, candidate))) root = owner
-    return root !== agent ? String(root.session.id) : undefined
+    if (agent?.session.header.origin !== 'subagent') return undefined
+    const seen = new Set([agent.session.id])
+    let child = agent
+    while (child.session.header.origin === 'subagent') {
+      // DSH 0.2.2 records the direct creator. Fork lineage alone is not delegation.
+      const id = child.session.header.parentSession
+      if (!id || seen.has(id)) return undefined
+      const parent = ctx.agents.get(id)
+      if (!parent) return undefined
+      seen.add(id)
+      child = parent
+    }
+    return String(child.session.id)
   }
   function exchange(message: { type: string; [field: string]: unknown }, id: string, signal?: AbortSignal, timeoutMs = 2000) {
     return new Promise<string | null>(resolve => {
@@ -253,7 +261,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
     if (decision.kind === 'reject' || signal.aborted || step !== 1) return decision
     clearPreviousContext(agent)
     const question = decision.messages.filter(message => message.source.kind === 'user')
-      .flatMap(message => message.content.flatMap(part => part.type === 'text' ? [part.text] : [])).join('\n').slice(0, 20_000)
+      .flatMap(message => message.content.flatMap(part => part.type === 'text' ? [withoutHeaders(part.text)] : [])).join('\n').slice(0, 20_000)
     if (!question) return decision
     const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent, signal)
     if (!text || signal.aborted) return decision

@@ -1,8 +1,9 @@
 import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
-import { catMood, currentAction, traceItems, truncate } from './selectors.ts'
-import { liveTasks, unseenEnded } from './tasks-state.ts'
+import { catMood, currentAction, setupProblem, traceTail, truncate } from './selectors.ts'
+import { liveTasks } from './tasks-state.ts'
+import { turnProblem } from '../shared/turn-outcome.ts'
 
 /**
  * What the Viva island shows, for both of its hosts: the capsule in the window's title bar (view/island.js)
@@ -14,6 +15,8 @@ import { liveTasks, unseenEnded } from './tasks-state.ts'
 const RECENT_STEPS = 4
 const DETAIL_LIMIT = 60
 const PREVIEW_LIMIT = 40
+/** The desktop card reads the answer at more length than the head's one line (island-desk-card.ts). */
+const SUMMARY_LIMIT = 120
 
 type IslandForm = 'pending' | 'idle' | 'working' | 'waiting' | 'asking' | 'done' | 'error'
 type IslandStep = { title: string, tone: string }
@@ -24,10 +27,16 @@ type IslandTask = {
   id: string, title: string, status: string, now?: string | null, startedAt?: number,
   permission?: IslandPermission, question?: IslandQuestion,
 }
-type IslandBackground = { count: number, waiting: number, done: number, items: IslandTask[], alsoWaiting?: number }
+type IslandBackground = { count: number, waiting: number, items: IslandTask[], alsoWaiting?: number }
 export type IslandView = {
   form: IslandForm, tone: string, mood: string, label: string, recent: IslandStep[],
   detail?: string, action?: string | null, startedAt?: number | null, steps?: number, elapsedMs?: number,
+  /** Done, and her pose has played a while unwatched: she holds it, still (conversation-types.ts doneNotice). */
+  still?: boolean,
+  /** Done: the answer's first lines as plain text, for the desktop card's body. */
+  summary?: string,
+  /** An error that ended a turn with a reply kept in part (turn-outcome.ts), rather than a failure. */
+  incomplete?: boolean,
   /** The task it speaks for, when a task (not the conversation) has the island. */
   task?: string,
   permission?: IslandPermission,
@@ -37,16 +46,23 @@ export type IslandView = {
 }
 type IslandBase = Pick<IslandView, 'mood' | 'recent'>
 
-const recentSteps = (state: State): IslandStep[] => traceItems(state).slice(-RECENT_STEPS).map(({ title, tone }: IslandStep) => ({ title, tone }))
+const recentSteps = (state: State): IslandStep[] => traceTail(state, RECENT_STEPS).map(({ title, tone }: IslandStep) => ({ title, tone }))
+
+/** A line of Markdown as plain text: no heading, quote or list mark, no emphasis. */
+const plainLine = (line: string) => line.trim()
+  .replace(/^(#{1,6}\s+|>\s*|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/, '')
+  .replace(/[*_`~]/g, '')
+  .trim()
+const answerLines = (text: unknown) => String(text ?? '').split('\n').map(plainLine).filter(Boolean)
 
 /** The first line of an answer as plain text: what the island shows of it once the turn is done. */
 export function answerPreview(text: unknown) {
-  const line = String(text ?? '').split('\n').map((item) => item.trim()).find(Boolean) ?? ''
-  const plain = line
-    .replace(/^(#{1,6}\s+|>\s*|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/, '')
-    .replace(/[*_`~]/g, '')
-    .trim()
-  return truncate(plain, PREVIEW_LIMIT)
+  return truncate(answerLines(text)[0] ?? '', PREVIEW_LIMIT)
+}
+
+/** The answer's opening lines on one line as plain text: what the desktop card shows of it. */
+export function answerSummary(text: unknown) {
+  return truncate(answerLines(text).join(' '), SUMMARY_LIMIT)
 }
 
 /** The approval as the thread's card has it (prompt-card.js), with its command on one line instead of all its arguments. */
@@ -77,25 +93,40 @@ function questionView(question: { questionId: string, questions: readonly Questi
   }
 }
 
-function lastAnswer(state: State) {
-  const message = state.messages.findLast((item: ThreadMessage) => item.role === 'assistant')
-  return message ? answerPreview(message.text) : ''
-}
+const lastAnswerText = (state: State): string => state.messages.findLast((item: ThreadMessage) => item.role === 'assistant')?.text ?? ''
 
-function afterTurn(state: State, base: IslandBase): IslandView {
+const idleView = (state: State, base: IslandBase): IslandView => ({ ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' })
+
+function afterTurn(state: State, base: IslandBase, background: IslandBackground | null): IslandView {
   const receipt = state.lastReceipt!
   if (receipt.stopReason === 'cancelled') return { ...base, form: 'idle', tone: 'idle', label: t("island-view.stopped"), detail: state.info.model || '' }
-  return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: lastAnswer(state) }
+  const completed = state.completedTurn
+  const awaitingResult = completed && state.tasks.list.some(task => task.status !== 'interrupted'
+    && typeof task.endedAt === 'number' && task.endedAt >= completed.startedAt
+    && !state.records.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= completed.endedAt))
+  if (background?.count || awaitingResult) {
+    const running = background?.items[0]
+    return { ...base, recent: [], mood: 'thinking', form: 'working', tone: 'working',
+      label: background?.count ? t('island-view.background.working') : t('island-view.preparing.result'),
+      action: running?.now ?? running?.title ?? null, startedAt: running?.startedAt ?? completed?.startedAt ?? null, steps: 0 }
+  }
+  const problem = turnProblem(receipt.stopReason)
+  if (problem) return { ...base, mood: 'error', form: 'error', tone: 'error', label: t('island-view.incomplete'), detail: problem, incomplete: true }
+  // Looked at already: nothing new to say, so the island is at rest (待命), as before the turn.
+  if (state.doneNotice === 'seen') return idleView(state, base)
+  const answer = lastAnswerText(state)
+  return { ...base, form: 'done', tone: 'done', label: t("island-view.completed"), elapsedMs: receipt.ms, detail: answerPreview(answer), summary: answerSummary(answer),
+    ...(state.doneNotice === 'still' ? { still: true } : {}) }
 }
 
 /**
- * Tasks in the background (tasks-state.js), those that wait on the user first: how many go on, how many ended
- * (still there until closed, so the 后台 page stays a click away), and a line each for when the island opens.
- * null with none, so the island is as it always was.
+ * Tasks going on in the background (tasks-state.js), those that wait on the user first: how many, and a line each for
+ * when the island opens. Ended ones are not the island's: the conversation tells their results (report-state.ts), and
+ * the 后台 page lists them. null with none going on, so the island is as it always was.
  */
 function backgroundOf(state: State): IslandBackground | null {
   const live: BackgroundTask[] = liveTasks(state)
-  if (!state.tasks.list.length) return null
+  if (!live.length) return null
   const items: IslandTask[] = live
     .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
     .map((task) => ({
@@ -103,9 +134,7 @@ function backgroundOf(state: State): IslandBackground | null {
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),
       ...(task.question ? { question: questionView(task.question) } : {}),
     }))
-  // Ended and not yet seen: once opened on the 后台 page, no longer counted.
-  const done = unseenEnded(state).length
-  return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, done, items }
+  return { count: live.length, waiting: live.filter((task) => task.status === 'waiting').length, items }
 }
 
 export function islandView(state: State): IslandView {
@@ -150,7 +179,7 @@ function mainView(state: State, background: IslandBackground | null): IslandView
   }
   if (state.phase === 'error') return { ...base, form: 'error', tone: 'error', label: t("island-view.error"), detail: truncate(state.error, DETAIL_LIMIT) }
   if (state.info.mode === 'connecting') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.connecting") }
-  if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected") }
-  if (state.lastReceipt) return afterTurn(state, base)
-  return { ...base, form: 'idle', tone: 'idle', label: t("island-view.idle"), detail: state.info.model || '' }
+  if (state.info.mode === 'setup') return { ...base, form: 'pending', tone: 'pending', label: t("island-view.not.connected"), detail: setupProblem(state.info) }
+  if (state.lastReceipt) return afterTurn(state, base, background)
+  return idleView(state, base)
 }

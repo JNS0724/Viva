@@ -11,7 +11,7 @@ function setup({ started = { ok: true, taskId: 't1' } as { ok: boolean, taskId?:
   const calls: string[] = []
   let onPrompt: (taskId: string) => void = () => {}
   const agent: UnattendedAgent = {
-    startReadOnlyTask: async ({ cwd }) => { calls.push(`start ${cwd}`); return started },
+    startUnattendedTask: async ({ cwd }) => { calls.push(`start ${cwd}`); return started },
     promptTask: (taskId, text) => { calls.push(`prompt ${taskId} ${text}`); onPrompt(taskId) },
     closeTask: (taskId) => { calls.push(`close ${taskId}`) },
   }

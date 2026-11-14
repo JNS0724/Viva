@@ -271,6 +271,8 @@ Original-message delivery receipts are independent of memory admission. A delive
 
 The UI distinguishes “no longer used” from “application-controlled memory copies cleaned up.” The latter requires cleanup work and checks of the memory store, derived indexes, and caches. Original chats, operating system backups, external model services, and user exports follow their respective retention rules. Chat deletion uses the history deletion flow. A memory supported only by a deleted message also stops being used. Undoing chat deletion restores the original chat in the app. Model reads still apply the exclusion policy, and restoring memory requires an explicit restore operation. Deleting an individual memory cleans the copies held by the memory system according to that fact's evidence and preserves other facts with independent valid support. The deletion transaction queues cleanup. Completion verifies affected source spans, index revisions, and profile references and requires a successful SQLite WAL truncation. Supplemental assistant question text without dependency references may quote a deleted value, so deletion clears that text and retains the user's answers and receipts.
 
+Saved routing plans can contain task briefs or follow-up text. They remain with chat and task history for diagnostics. Recovery can inspect their status without replaying the plan text or rerunning its actions. Clearing memory copies does not delete these diagnostic records.
+
 ## 9 Durable receipt and background execution
 
 ### 9.1 Receipt protocol

@@ -3,8 +3,9 @@ import { ended, updated, type Transcript } from './task-transcript.ts'
 import type { MemoryProvenance } from './memory-dispatch.ts'
 
 /**
- * One prompt run where nobody watches (a schedule's, system-design §12.2): in a fresh session of its own that may only
- * look things up (acp-bridge.ts startReadOnlyTask), not one of 后台's tasks. What it says is gathered here from dsh's
+ * One prompt run where nobody watches (a schedule's, system-design §12.2): in a fresh session of its own, at the level
+ * the user picked, what it would ask refused since nobody is there (acp-bridge.ts startUnattendedTask); not one of
+ * 后台's tasks. What it says is gathered here from dsh's
  * task events, which go nowhere else; its last answer is the result. The session is closed once it is over.
  */
 export const RUN_TIMEOUT_MS = 10 * 60 * 1000
@@ -16,7 +17,7 @@ export type RunResult = (
 ) & { memory?: MemoryProvenance }
 
 export interface UnattendedAgent {
-  startReadOnlyTask: (where: { cwd: string }) => Promise<{ ok: boolean, reason?: string, taskId?: string }>
+  startUnattendedTask: (where: { cwd: string }) => Promise<{ ok: boolean, reason?: string, taskId?: string }>
   promptTask: (taskId: string, text: string) => unknown
   closeTask: (taskId: string) => unknown
 }
@@ -63,7 +64,7 @@ export function createUnattendedRuns({ agent, provenance, timeoutMs = RUN_TIMEOU
   async function run(prompt: string, cwd: string, authorize?: (taskId: string, bridge: UnattendedAgent) => 'stale' | 'memory-unavailable' | void): Promise<RunResult> {
     const now = agent()
     if (!now) return UNAVAILABLE
-    const started = await now.startReadOnlyTask({ cwd })
+    const started = await now.startUnattendedTask({ cwd })
     if (!started.ok || !started.taskId) return UNAVAILABLE
     const taskId = started.taskId
     const refused = authorize?.(taskId, now)

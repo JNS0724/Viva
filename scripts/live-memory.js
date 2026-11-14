@@ -22,6 +22,7 @@ import { DSH_PROFILE } from '../src/backend/config.ts'
 import { ensureDshProfile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { removeTree } from '../src/backend/remove-tree.ts'
+import { testRequests } from '../test/fixtures/request-routing.ts'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 /** The app's runtime: this script runs on the app's Electron as Node (or DSH_NODE), and so does dsh. */
@@ -100,10 +101,11 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
   let route = DEEPSEEK_DEFAULT
   const origin = { conversation: null, session: null }
   const memory = createMemoryRuntime({
-    store: openMemoryStore(memoryFile), route: () => route, compute: job => bridge.memory.compute(job),
+    store: openMemoryStore(memoryFile), route: () => route, compute: (job, signal) => bridge.memory.compute(job, signal),
     quiesce: async () => {}, changed: () => {}, injected: (session, turn, pushed) => injected.push({ session, turn, pushed }),
   })
   const bridge = createAcpBridge({
+    routing: testRequests(),
     dshBin: path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
     nodeBin: RUNTIME.nodeBin,
     cwd: workspace,

@@ -2,8 +2,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
-import type { ScheduleAction } from './tasks-channel.ts'
 import { combineMemoryProvenance, type MemoryProvenance } from './memory-dispatch.ts'
+import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
 
 /**
  * Schedules as the model and the user handle them (system-design §12.2), natural language first: the model proposes,
@@ -14,6 +14,14 @@ import { combineMemoryProvenance, type MemoryProvenance } from './memory-dispatc
 export interface ScheduleProposal { proposalId: string, title: string, prompt: string, rule: ScheduleRule, firstAt: string }
 /** A schedule as the model and the window see it. */
 export interface ScheduleView { id: string, title: string, prompt: string, kind: string, nextAt: string, status: string }
+
+/** dsh-schedule's refusal of a time, in the user's words: one gone by, or one it cannot read; anything else as it is. */
+function timeRefused(err: unknown): unknown {
+  const code = (err as { code?: unknown } | null)?.code
+  if (code === 'not_future') return new Error(t('main.schedules.time.past'))
+  if (code === 'invalid_rule') return new Error(t('main.schedules.time.invalid'))
+  return err
+}
 
 const viewOf = (schedule: Schedule): ScheduleView => ({
   id: schedule.id, title: schedule.record.title, prompt: schedule.record.prompt, kind: schedule.record.kind,
@@ -49,13 +57,26 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
     return { proposed: true, firstAt: record.scheduledAt, note: t('main.schedules.proposed') }
   }
 
-  /** The user's yes on a card: the schedule kept. */
-  function accept(proposalId: string): ScheduleView {
+  /**
+   * The user's yes on a card: the schedule kept, as proposed or as the user changed it there (`edits`: its name and
+   * what it does, and its rule unless its time was not touched; checked as the model's own are).
+   */
+  function accept(proposalId: string, edits?: unknown): ScheduleView {
     const proposal = proposals.get(proposalId)
     if (!proposal) throw new Error(t('main.schedules.proposal.gone'))
+    // A rule left out: the time was not touched on the card, and the proposal's own stays, to the second.
+    const kept = edits !== null && typeof edits === 'object' && (edits as Record<string, unknown>).rule === undefined
+    const edited = edits === undefined ? null : parseScheduleWords(kept ? { ...edits, rule: proposal.rule } : edits)
+    const words = edited ? { ...edited, rule: edited.rule as unknown as ScheduleRule } : proposal
     // Let go only once kept: a save that fails leaves the card to be answered again.
     if (proposal.memory && !memoryCurrent(proposal.memory)) throw new Error(t('main.schedule-runs.memory.stale'))
-    const schedule = store.create({ title: proposal.title, prompt: proposal.prompt, rule: proposal.rule, cwd: proposal.cwd, conversationId: proposal.conversationId, memory: proposal.memory })
+    let schedule: Schedule
+    try {
+      schedule = store.create({ title: words.title, prompt: words.prompt, rule: words.rule,
+        cwd: proposal.cwd, conversationId: proposal.conversationId, memory: proposal.memory })
+    } catch (err) {
+      throw timeRefused(err)
+    }
     proposals = new Map([...proposals].filter(([id]) => id !== proposalId))
     changed()
     return viewOf(schedule)
