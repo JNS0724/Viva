@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
+import type { MemoryChangeRecord } from '../shared/ipc-results.ts'
 const SEARCH_DEBOUNCE_MS = 200
-const UNDO_TOAST_MS = 8000
 const NOTICE_TOAST_MS = 6000
 /** The profile fields the intro asks for: all three. Sites and documents are only read, not kept. */
 export const INTRO_FIELDS = Object.freeze(['role', 'projects', 'preferences'])
@@ -10,7 +10,9 @@ const lines = (text: unknown) => String(text ?? '').split('\n').map((line) => li
 /** What the intro form gives: the profile fields, and the sites (one a line) to read. */
 type IntroValues = Readonly<Record<string, string | undefined>>
 /** A memory as the 关于你 page lists it. */
-type MemoryItem = { id: number, [field: string]: any }
+type MemoryItem = { id: number, revision: number }
+type ConflictResolution = Parameters<AgentApi['resolveMemoryConflictPair']>[2]
+type ConflictInterval = Parameters<AgentApi['resolveMemoryConflictPair']>[5]
 
 /**
  * What the agent is asked after the intro when the user gave sites or documents: read them and fill in
@@ -39,6 +41,8 @@ export function memoryNotice({ memories = [], invalidated = [] }: { memories?: r
 /** The "关于你" page and the intro. */
 export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'>) {
   let searchTimer: ReturnType<typeof setTimeout> | undefined
+  let changesRequest = 0
+  let invalidRequest = 0
   const fail = (err: unknown) => dispatch({ type: 'memory_failed', message: errorMessage(err) })
 
   async function loadMemory() {
@@ -57,10 +61,56 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     }
   }
 
+  async function loadChanges() {
+    const request = ++changesRequest
+    try {
+      const changes = await api.listMemoryChanges()
+      if (request === changesRequest && getState().memory.changesOpen) dispatch({ type: 'memory_changes_listed', changes })
+    } catch (err) {
+      if (request === changesRequest && getState().memory.changesOpen) fail(err)
+    }
+  }
+
+  async function loadInvalid() {
+    const request = ++invalidRequest
+    try {
+      const items = await api.listInvalidMemories()
+      if (request === invalidRequest && getState().memory.invalidOpen) dispatch({ type: 'memory_invalid_listed', items })
+    } catch (err) {
+      if (request === invalidRequest && getState().memory.invalidOpen) fail(err)
+    }
+  }
+
+  async function refreshMemoryViews() {
+    await loadMemory()
+    const current = getState().memory
+    await Promise.all([
+      current.open && current.query.trim() ? runSearch(current.query) : null,
+      current.invalidOpen ? loadInvalid() : null,
+      current.changesOpen ? loadChanges() : null,
+    ])
+  }
+
+  async function reviseFromHistory(write: (operation: string) => Promise<boolean>) {
+    if (getState().memory.changeBusy) return false
+    dispatch({ type: 'memory_change_busy', busy: true })
+    try {
+      if (!await write(globalThis.crypto.randomUUID())) throw new Error(t('main.memory.revision.conflict'))
+      await refreshMemoryViews()
+      return true
+    } catch (err) {
+      await refreshMemoryViews()
+      fail(err)
+      return false
+    } finally {
+      dispatch({ type: 'memory_change_busy', busy: false })
+    }
+  }
+
   async function saveIntro(values: IntroValues, analyze: boolean) {
     const { docs } = getState().memory
     const changes = introChanges(values)
-    const profile = await api.saveProfile(changes)
+    const profile = await api.saveProfile(changes, globalThis.crypto.randomUUID())
     dispatch({ type: 'memory_profile_saved', profile })
     dispatch({ type: 'memory_onboarding', status: await api.setOnboarding('done') })
     dispatch({ type: 'memory_close' })
@@ -78,13 +128,29 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       dispatch({ type: 'memory_open', view })
       loadMemory()
     },
-    closeProfile: () => dispatch({ type: 'memory_close' }),
+    closeProfile() {
+      invalidRequest++
+      changesRequest++
+      dispatch({ type: 'memory_close' })
+    },
     editField: (key: string | null) => dispatch({ type: 'memory_edit', key }),
+    editMemoryEntry: (target: MemoryItem | null) => dispatch({ type: 'memory_edit_entry', target }),
+    editMemoryConflict: (key: string | null) => dispatch({ type: 'memory_conflict_edit', key }),
+
+    async toggleMemoryChanges() {
+      if (getState().memory.changesOpen) {
+        changesRequest++
+        dispatch({ type: 'memory_changes_closed' })
+        return
+      }
+      dispatch({ type: 'memory_changes_opened' })
+      await loadChanges()
+    },
 
     async saveField(key: string, value: string) {
       dispatch({ type: 'memory_busy' })
       try {
-        dispatch({ type: 'memory_profile_saved', profile: await api.saveProfile({ [key]: value }) })
+        dispatch({ type: 'memory_profile_saved', profile: await api.saveProfile({ [key]: value }, globalThis.crypto.randomUUID()) })
       } catch (err) {
         fail(err)
       }
@@ -101,7 +167,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       if (!text.trim()) return false
       dispatch({ type: 'memory_busy' })
       try {
-        dispatch({ type: 'memory_added', memory: await api.addMemory(text.trim(), 'fact') })
+        dispatch({ type: 'memory_added', memory: await api.addMemory(text.trim(), 'fact', globalThis.crypto.randomUUID()) })
         return true
       } catch (err) {
         fail(err)
@@ -109,43 +175,76 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       }
     },
 
-    async deleteMemory(memory: MemoryItem) {
+    async editMemory(memory: MemoryItem, text: string) {
       try {
-        const removed = await api.deleteMemory(memory.id)
-        dispatch({ type: 'memory_removed', id: memory.id })
-        if (removed) showToast(t("memory-actions.memory.deleted"), { action: { label: t("memory-actions.undo"), kind: 'undo-memory', payload: removed }, ms: UNDO_TOAST_MS })
+        await api.updateMemory(memory.id, text, memory.revision, globalThis.crypto.randomUUID())
+        if (getState().memory.editingMemory?.id === memory.id) dispatch({ type: 'memory_edit_entry', target: null })
+        await runSearch(getState().memory.query)
+        return true
+      } catch (err) {
+        fail(err)
+        return false
+      }
+    },
+
+    async forgetMemory(memory: MemoryItem) {
+      try {
+        await api.forgetMemory(memory.id, memory.revision, globalThis.crypto.randomUUID())
+        await runSearch(getState().memory.query)
       } catch (err) {
         fail(err)
       }
     },
 
-    async undoMemoryDelete(memory: MemoryItem) {
+    async deleteMemory(memory: MemoryItem) {
       try {
-        await api.restoreMemory(memory)
-        await runSearch(getState().memory.query)
+        if (await api.deleteMemory(memory.id, memory.revision, globalThis.crypto.randomUUID())) {
+          dispatch({ type: 'memory_removed', id: memory.id })
+          await runSearch(getState().memory.query)
+          showToast(t("memory-actions.memory.deleted"))
+        }
       } catch (err) {
-        showToast(t("memory-actions.could.not.undo", { value1: errorMessage(err) }))
+        fail(err)
       }
     },
 
     /** Opens or closes the list of memories that no longer count. */
     async toggleInvalid() {
       if (getState().memory.invalidOpen) {
+        invalidRequest++
         dispatch({ type: 'memory_invalid_closed' })
         return
       }
+      dispatch({ type: 'memory_invalid_opened' })
+      await loadInvalid()
+    },
+
+    async reviveMemory(memory: MemoryItem) {
       try {
-        dispatch({ type: 'memory_invalid_listed', items: await api.listInvalidMemories() })
+        dispatch({ type: 'memory_revived', memory: await api.restoreMemory(memory.id, memory.revision, globalThis.crypto.randomUUID()) })
       } catch (err) {
         fail(err)
       }
     },
 
-    async reviveMemory(memory: MemoryItem) {
-      try {
-        dispatch({ type: 'memory_revived', memory: await api.reviveMemory(memory.id) })
-      } catch (err) {
-        fail(err)
+    resolveMemoryConflictPair(first: MemoryItem, second: MemoryItem, resolution: ConflictResolution, conflictId: number, interval: ConflictInterval) {
+      return reviseFromHistory(async operation => {
+        const resolved = await api.resolveMemoryConflictPair(
+          { id: first.id, revision: first.revision }, { id: second.id, revision: second.revision }, resolution, operation, conflictId, interval,
+        )
+        if (resolved) dispatch({ type: 'memory_conflict_edit', key: null })
+        return resolved
+      })
+    },
+
+    async undoMemoryChange(change: MemoryChangeRecord) {
+      if (await reviseFromHistory(async operation => {
+        const result = await api.undoMemoryChange(change.id, change.revision, operation, change.expectedRevisions)
+        if (result.status === 'applied') return true
+        if (!result.current.length) return false
+        throw new Error(t('memory-actions.memory.change.conflict', { ids: result.current.map(({ id }) => `#${id}`).join(', ') }))
+      })) {
+        showToast(t('memory-actions.memory.change.undone'))
       }
     },
 
@@ -178,10 +277,11 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     },
 
     /** The agent saved something during the last turn: say so, and keep an open page current. */
-    onMemoryChanged(event: { memories?: readonly string[], invalidated?: readonly string[] }) {
+    onMemoryChanged(event: { memories?: readonly string[], invalidated?: readonly string[], failure?: string }) {
+      if (event.failure) showToast(event.failure)
       const text = memoryNotice(event)
       if (text) showToast(text, { action: { label: t("app.view"), kind: 'open-profile' }, ms: NOTICE_TOAST_MS })
-      loadMemory()
+      void refreshMemoryViews()
     },
   }
 }

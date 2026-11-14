@@ -104,13 +104,22 @@ function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): Th
 
 /** The conversation's own actions: what is said, asked and done in it, and how its turns go. */
 export const CONVERSATION_ACTIONS = {
-  user_prompt: (view, { text, at, via = null, images = [] }) => {
+  user_prompt: (view, { text, at, via = null, images = [], sourceId, pending }) => {
     const closed = closeStreams(view)
     const message = {
-      id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
+      id: `m${closed.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(pending ? { pending } : {}),
+      open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
     }
     return { ...closed, phase: 'working', error: null, messages: [...closed.messages, message], turn: { startedAt: at, tools: 0, thoughts: 0 } }
   },
+
+  prompt_admitted: (view, { sourceId, accepted }) => ({
+    ...view,
+    messages: view.messages.flatMap(message => {
+      if (!message.pending || message.sourceId !== sourceId) return [message]
+      return accepted ? [{ ...message, pending: false }] : []
+    }),
+  }),
 
   /**
    * A turn the app started, not the user: a background task ended and its result comes back (backend/task-reports.ts).
@@ -127,9 +136,9 @@ export const CONVERSATION_ACTIONS = {
    * Said while the agent works (viva-steer): into the thread at once, the turn going on. What the agent was
    * writing closes, so its reply to these words starts below them.
    */
-  user_steer: (view, { text, via = null }) => {
+  user_steer: (view, { text, via = null, sourceId }) => {
     const closed = closeStreams(view)
-    const message = { id: `m${closed.messages.length}`, role: 'user', text, open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
+    const message = { id: `m${closed.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
     return { ...closed, messages: [...closed.messages, message] }
   },
 

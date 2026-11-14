@@ -48,6 +48,7 @@ export const CITY_QUESTION = Object.freeze({
   id: 'city', question: '你想看哪个城市的天气？', header: '城市', options: [{ label: '上海' }, { label: '北京' }],
 })
 const CONTEXT_OPEN = '<about-user>'
+const CARRY_CLOSE = '</以前的记录>\n\n用户现在说：'
 /** 「发邮件…」 / 「存草稿…」 call the MCP tool whose name ends so; dsh prefixes it with the hashed server name. */
 const MAIL = [[/^发邮件/, '__send_email'], [/^存草稿/, '__create_draft']]
 
@@ -71,18 +72,24 @@ function trailingUserTexts(messages) {
   return messages.slice(start).flatMap(textParts)
 }
 
+function currentWords(text) {
+  if (!text.startsWith('以下是这个话题以前的记录（最近 ')) return text
+  const end = text.lastIndexOf(CARRY_CLOSE)
+  return end < 0 ? text : text.slice(end + CARRY_CLOSE.length).trimStart()
+}
+
 /**
  * The user's words: the first text of the turn's user messages that is not the memory block. What dsh and the
  * plugins add (the block, notices) comes after them, in the same message or, in a forked session, in others.
  */
-export const questionOf = (messages) => trailingUserTexts(messages).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? ''
+export const questionOf = (messages) => currentWords(trailingUserTexts(messages).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
 
 /** After a tool result the turn's last user message is that result: the words the user said come before it. */
-export const lastWords = (messages) => messages
+export const lastWords = (messages) => currentWords(messages
   .filter((message) => message.role === 'user')
   .flatMap(textParts)
   .filter((text) => !text.startsWith(CONTEXT_OPEN))
-  .at(-1) ?? ''
+  .at(-1) ?? '')
 
 /**
  * What the user asked in this turn, for deciding after a tool result: the first words of the last run of user
@@ -94,7 +101,7 @@ const askedWords = (messages) => {
   while (end >= 0 && !hasText(messages[end])) end -= 1
   let start = end
   while (start > 0 && messages[start - 1].role === 'user') start -= 1
-  return messages.slice(start, end + 1).flatMap(textParts).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? ''
+  return currentWords(messages.slice(start, end + 1).flatMap(textParts).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
 }
 
 function lastToolUse(messages) {
@@ -106,6 +113,16 @@ function lastToolUse(messages) {
 }
 
 const resultText = (result) => (Array.isArray(result.content) ? result.content.map((part) => part.text ?? '').join('') : String(result.content ?? ''))
+
+function memoryResult(result) {
+  try {
+    const parsed = JSON.parse(resultText(result))
+    if (typeof parsed === 'string') return JSON.parse(parsed)
+    return typeof parsed?.text === 'string' ? JSON.parse(parsed.text) : parsed
+  } catch {
+    return null
+  }
+}
 
 /** What the user answered to the city question, or null when the tool came back without an answer. */
 function cityFrom(result) {
@@ -142,47 +159,77 @@ function afterTool(messages, result) {
   // 「…再问我城市」: once the server is dealt with, it asks which city (a question later in the turn).
   if (use?.name === 'viva_mcp_add' && THEN_ASK.test(askedWords(messages))) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
+  if (use?.name === 'memory_recall' && /(?:按记忆)?填写周报提交邮箱/.test(askedWords(messages))) {
+    const resultValue = memoryResult(result)
+    const alternative = [...(resultValue?.conflicts ?? []), ...(resultValue?.pendingChanges ?? [])].find(item => item.ref)
+    if (alternative) return { tool: { name: 'memory_clarify', input: { ref: alternative.ref } } }
+  }
+  if (use?.name === 'memory_clarify') {
+    const selected = memoryResult(result)?.answer?.answers?.[0]?.selected?.[0]
+    return { text: selected ? `这次填 ${selected}` : '先保留提交地址，继续处理其他内容。' }
+  }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
-  const saved = output.includes('已记住') || output.includes('之前已经记过')
-  return { text: saved ? `好的，我记住了：${use.input.text}` : `没能记住：${output}` }
+  const status = resultText(result)
+  const saved = output.includes('已记住') || output.includes('之前已经记过') || status.includes('"status":"accepted"')
+  return { text: saved ? `好的，我记住了：${use.input.text}`
+    : status.includes('"status":"pending"') ? `已收到，稍后整理：${use.input.text}` : `没能记住：${output}` }
 }
 
 const systemText = (request) => (Array.isArray(request.system) ? request.system.map((part) => part.text ?? '').join('\n') : String(request.system ?? ''))
 const EXTRACTOR = '记忆整理员'
-const NEW_MANAGER = /现在(?:我的)?(?:直属)?上级是(\S{2,4}?)[，。,.]?$/
+const MEMORY_REVIEWER = '记忆变更复核员'
+const MEMORY_QUESTION_REVIEWER = '记忆提问校验员'
+const modelInput = request => JSON.parse(textParts(request.messages.at(-1))[0])
 
-/**
- * Plays the background extractor (plugins/memory/lib/extract.js): 「以后…」 becomes a preference, a new
- * manager replaces the agent's memory about the old one, and a city the user answered with is kept.
- * Anything else: no change.
- */
+/** Plays the structured extractor for a preference, an open fact or a proposed change. */
 function extract(request) {
-  const input = JSON.parse(textParts(request.messages[request.messages.length - 1])[0])
-  const add = []
-  if (/^以后/.test(input.user)) add.push({ text: input.user.replace(/^以后/, '').replace(/[，,]/, ''), kind: 'preference', keywords: [] })
-  const city = input.answers?.find((item) => item.question.includes('城市'))?.answer
-  if (city) add.push({ text: `用户在${city}`, kind: 'fact', keywords: [city] })
-  const manager = NEW_MANAGER.exec(input.user)
-  if (manager) {
-    const old = input.memories.find((memory) => memory.text.includes('上级'))
-    add.push({ text: `直属上级是${manager[1]}`, kind: 'person', keywords: [manager[1]], replaces: old?.id ?? null })
+  const input = modelInput(request)
+  const user = input.user
+  const span = input.explicitlySaved ? input.spans[0] : { start: 0, end: user.length }
+  const words = user.slice(span.start, span.end)
+  const proposals = []
+  const offset = (value, at = span.start) => {
+    const start = user.indexOf(value, at)
+    return { start, end: start + value.length }
   }
-  return { text: JSON.stringify({ add, invalidate: [] }) }
+  const email = /^(?:(从现在起)[，,])?(我)(?:(唯一)的|的)(周报提交邮箱)(?:是\s+(\S+)|从\s+(\S+)\s+(改为|切换至|更新为)\s+(\S+))$/.exec(words)
+  if (email) {
+    const [, effective, subject, exclusive, relation, value, prior, action, next] = email
+    const object = value ?? next
+    const previous = (input.related ?? []).find(row => row.predicate === 'report_email'
+      && (prior ? row.text.includes(prior) : !row.text.includes(object)))
+    const reference = previous ? { id: previous.id, revision: previous.revision } : null
+    proposals.push({ spans: [span], kind: 'fact', scope: 'user', modality: 'asserted', attribution: 'self', keywords: [relation],
+      fact: { predicate: 'report_email', polarity: 'positive', subject: { kind: 'user', span: offset(subject) },
+        relation: offset(relation), object: offset(object, action ? user.indexOf(action, span.start) : span.start) },
+      ...(input.author === 'answer' ? { durableIntent: offset(effective ?? subject) } : {}),
+      ...(action && reference ? { change: { kind: 'supersede', target: reference, temporal: { kind: 'current' },
+        evidence: { action: offset(action), target: offset(prior), ...(effective ? { effective: offset(effective) } : {}) } } } : {}),
+      ...(!action && exclusive && reference ? { independent: true, change: { kind: 'possible_conflict', target: reference,
+        evidence: { action: offset(exclusive), target: offset(relation) } } } : {}) })
+  }
+  if (!email && input.explicitlySaved) proposals.push({ spans: input.spans, kind: 'fact', scope: 'user', modality: 'asserted', attribution: 'self',
+    keywords: KNOWN_NAMES.filter(name => words.includes(name)), temporal: { kind: 'current' } })
+  if (!input.explicitlySaved && /^以后/.test(words)) proposals.push({ spans: [span], kind: 'preference', scope: 'user', modality: 'asserted', attribution: 'self', keywords: [] })
+  return { text: JSON.stringify({ proposals }) }
 }
 
-const SYNTHESIZER = '画像整理员'
-const SYNTHESIS_HEADINGS = [['role', '身份与职责'], ['person', '常打交道的人'], ['project', '在推进的事'], ['preference', '偏好']]
+function reviewMemory(request) {
+  const { user, proposals, related } = modelInput(request)
+  return { text: JSON.stringify({ reviews: proposals.map(({ index, proposal, draft }) => {
+    const { change } = proposal
+    const old = change && related.find(row => row.id === change.target.id && row.revision === change.target.revision)
+    const confirmed = draft.purpose === 'answer-intent' ? user.startsWith('从现在起')
+      : old?.predicate === 'report_email' && user.includes('周报提交邮箱')
+    return { index, verdict: confirmed ? 'confirmed' : 'rejected', draftId: draft.id }
+  }) }) }
+}
 
-/** Plays the profile synthesis (plugins/memory/lib/synthesize.js): the memories, grouped under the agreed headings. */
-function synthesize(request) {
-  const input = JSON.parse(textParts(request.messages[request.messages.length - 1])[0])
-  const text = SYNTHESIS_HEADINGS
-    .map(([kind, heading]) => [heading, input.memories.filter((memory) => memory.kind === kind)])
-    .filter(([, memories]) => memories.length)
-    .flatMap(([heading, memories]) => [`【${heading}】`, ...memories.map((memory) => `- ${memory.text}`)])
-    .join('\n')
-  return { text }
+function reviewMemoryQuestion(request) {
+  const { snapshotId, questions } = modelInput(request)
+  return { text: JSON.stringify({ snapshotId, verdict: questions.some(({ question }) => /平时把例行汇报交到哪里|两个周报提交邮箱要用哪一个/u.test(question))
+    ? 'related' : 'unrelated' }) }
 }
 
 /** dsh's Auto review asks the model about each pending step; its request starts with this section. */
@@ -199,9 +246,10 @@ function review(request) {
 
 /** @returns {{ tool: { name: string, input: object } } | { text: string }} */
 export function decide(request) {
+  if (systemText(request).includes(MEMORY_QUESTION_REVIEWER)) return reviewMemoryQuestion(request)
   if (JSON.stringify(request.messages).includes(REVIEWER) || systemText(request).includes(REVIEWER)) return review(request)
+  if (systemText(request).includes(MEMORY_REVIEWER)) return reviewMemory(request)
   if (systemText(request).includes(EXTRACTOR)) return extract(request)
-  if (systemText(request).includes(SYNTHESIZER)) return synthesize(request)
   const messages = request.messages
   const last = messages[messages.length - 1]
   const result = partsOf(last).find((part) => part.type === 'tool_result')
@@ -220,6 +268,7 @@ export function decide(request) {
   if (handOff) return { tool: { name: 'start_background_task', input: { brief: handOff[1] } } }
   if (TELL.test(question)) return { tool: { name: 'list_background_tasks', input: {} } }
   if (WEATHER.test(question)) return { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } }
+  if (/填写周报提交邮箱/.test(question)) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   if (FOLLOW.test(question)) return { tool: { name: 'schedule_create', input: followupProposal() } }
   const recall = RECALL.exec(question)
@@ -239,6 +288,10 @@ export function decide(request) {
 function stream(res, request, index, decideFirst) {
   const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
   const answer = decideFirst?.(request) ?? decide(request)
+  if (answer.httpError) {
+    res.writeHead(answer.httpError, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Simulated model failure' } }))
+    return
+  }
   // An answer may take a while (the showcase shows preparation at work).
   if (answer.delayMs) return setTimeout(() => streamAnswer(res, request, index, answer, send), answer.delayMs)
   return streamAnswer(res, request, index, answer, send)

@@ -1,7 +1,7 @@
 /** One application-run draft per selected conversation, shared by the two composer hosts. */
 export interface DraftFile { path: string, name: string, size: number }
 export interface DraftImage { id: string, size?: number }
-export interface DraftContent { text: string, files: DraftFile[], images: DraftImage[], error: string | null }
+export interface DraftContent { text: string, files: DraftFile[], images: DraftImage[], error: string | null, feedItemId?: string }
 export interface DraftSnapshot extends DraftContent { key: string, version: number, epoch: number, sequence: number, owner: 'main' | 'desk', baseImages?: string[], baseFiles?: string[], baseError?: string | null }
 export const EMPTY_DRAFT: Readonly<DraftContent> = Object.freeze({ text: '', files: [], images: [], error: null })
 
@@ -46,7 +46,9 @@ export function createComposerDraftStore(changed: (snapshot: DraftSnapshot) => v
       const files = [...next.files, ...content().files.filter(file => !fileBase.has(file.path) && !paths.has(file.path))].slice(0, 10)
       const error = next.baseError === undefined || next.baseError === content().error ? next.error : content().error
       sequence = next.sequence
-      drafts.set(key, { text: next.text, files: structuredClone(files), images: structuredClone(images), error, version: content().version + 1 })
+      const feedItemId = next.text.trim() ? next.feedItemId ?? content().feedItemId : undefined
+      drafts.set(key, { text: next.text, files: structuredClone(files), images: structuredClone(images), error,
+        ...(feedItemId ? { feedItemId } : {}), version: content().version + 1 })
       return { ok: true, draft: publish() }
     },
     appendImage(target: string, image: DraftImage) {

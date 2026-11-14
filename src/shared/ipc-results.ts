@@ -51,6 +51,27 @@ export type KeptTask = ({ mark?: TaskMark }) & (
  */
 export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
+export interface MemoryChangeRecord {
+  id: number
+  revision: number
+  kind: 'correct' | 'supersede' | 'end'
+  status: 'applied' | 'undone' | 'withdrawn' | 'pending'
+  before: string | null
+  after: string | null
+  scope: import('./memory-contract.ts').MemoryScope | null
+  from: number | null
+  to: number | null
+  effectiveAt: number | null
+  createdAt: number
+  expectedRevisions: readonly { id: number, revision: number }[]
+  evidence: ReadonlyArray<{ text: string | null, link: string | null }>
+}
+
+export type UndoMemoryChangeResult = { status: 'applied' } | {
+  status: 'conflict',
+  current: readonly { id: number, revision: number }[],
+}
+
 export interface IpcResults {
   'draft:get': import('./composer-draft.ts').DraftSnapshot
   'draft:append-image': void
@@ -68,11 +89,15 @@ export interface IpcResults {
   'agent:secrets': boolean
   'schedules:accept': { title: string, nextAt: string }
   'schedules:decline': void
+  'feed:continue': string
   'task:finished': KeptTask[]
   /** Said on the live channel (`waits`, a SessionWaits), in its place among the pushes. */
   'agent:waits': true
   'task:close': void
   'task:stop': void
+  'memory:list-changes': readonly MemoryChangeRecord[]
+  'memory:undo-change': UndoMemoryChangeResult
+  'memory:resolve-conflict-pair': boolean
 }
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'

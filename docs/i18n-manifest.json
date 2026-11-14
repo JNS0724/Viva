@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "25e8a20483dcc5145cad7040797903a9a1735795c7f462ea1bf9a302ea97faad",
-      "zhHash": "bd59a20406feeb5e8dc69ad005a01de10f45adf784af3e865b74cbd90d589325"
+      "enHash": "c266b5e9a9df7d7d63ad5536fe7af33a3a2064f0ea7fb166975ab01d42d4de89",
+      "zhHash": "4b206c8d5ad5e7c426b456e1d157b2417bcf45878820d640702f5587b1c879b7"
     },
     {
       "en": "docs/live-check.md",
@@ -65,20 +65,26 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "cc71cf61df18419f2952e6128146ce9ee311c2883e4102cb8c31e6be38fb5e0f",
-      "zhHash": "0caae51c20c067078149c2738425045ef925b854876e6978af97ef78f4a4a8a3"
+      "enHash": "0774d05eafbd9055b8eedd8511e5b7a3bc821d19afdc8d5ec68e1c62174ae0f0",
+      "zhHash": "e574ed76ba7e152bf8d7511bcf531aaa013f821b3c59c03c70ce0d00969875cc"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "a33539e3c532213af74dd3f91441f1a84052716ae2e0806dda10d60bb795c9b1",
-      "zhHash": "cef25e9af41463310f9d120cfa3ad25d1dcc52d3dc85b24e1c4b4ce5e26c08ae"
+      "enHash": "4b08d23e1322b6d6728d147c72dfb053f11349a10b40a1034e45c51b52592426",
+      "zhHash": "f7416464ad3d9c7218cb233f786813a1a9c5237d2c6e62c7c1c5ba425adc93e8"
     },
     {
       "en": "docs/architecture-health.md",
       "zh": "docs/architecture-health.zh-CN.md",
       "enHash": "6fd68cf2215c553d2b8bcb39d4fa4c126346def14417ada892ff313caeec92e5",
       "zhHash": "a7cd843eb80c16a2e3dcb158402dfc9660e83477835d1294a252a251fe3969e2"
+    },
+    {
+      "en": "docs/memory-design.md",
+      "zh": "docs/memory-design.zh-CN.md",
+      "enHash": "66937f367dc24ee625cfa7dd6c34a065f1bb127ef6e61750b5ac97c2a10b5e40",
+      "zhHash": "9ba38ba2ccd904134ea0307fa8bd52bf8074a01066aa09ad6d6e6ada065b96d2"
     }
   ],
   "bilingual": [

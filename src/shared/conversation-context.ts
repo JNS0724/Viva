@@ -10,7 +10,7 @@ export interface ContextEvent {
 }
 
 const FOREGROUND = new Set([
-  'config', 'update', 'turn_started', 'turn_end', 'permission', 'question', 'question_closed',
+  'config', 'update', 'turn_started', 'turn_end', 'permission', 'question', 'question_answered', 'question_closed',
   'waits', 'secret_request', 'secret_closed', 'memory_context', 'schedule_propose', 'report_delivered',
 ])
 export function contextOf(event: ContextEvent): ConversationContext | null {

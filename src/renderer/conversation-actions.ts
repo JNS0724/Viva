@@ -29,18 +29,27 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
    * as a new question (not into a running turn).
    * @returns {boolean} false when the agent can't take it now
    */
-  function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }> } = {}): boolean {
+  function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }>, sourceId, newSource = false, feedItemId, admitted }: {
+    via?: string | null, images?: Array<{ id: string }>, sourceId?: string, newSource?: boolean, feedItemId?: string,
+    admitted?: (accepted: boolean, problem?: string) => void,
+  } = {}): boolean {
     if (text.length > MAX_MESSAGE_CHARS) {
       showToast(MESSAGE_TOO_LONG)
       return false
     }
     if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
+    if (feedItemId && isBusy(getState())) {
+      showToast(t('feed.continue.wait'))
+      return false
+    }
+    if (feedItemId) return sendNewPrompt(text, images, via, { id: feedItemId, admitted })
     if (images.length) return askWithImages(text, images, via)
-    if (isBusy(getState())) return steer(text, via)
+    if (isBusy(getState())) return sourceId && !newSource ? false : steer(text, via, sourceId)
     const origin = context(), epoch = ++sendEpoch
     beforePrompt()
-    dispatch({ type: 'user_prompt', text, at: now(), via })
-    api.prompt(text).catch(promptFailed(origin, epoch))
+    const operation = sourceId ?? globalThis.crypto.randomUUID()
+    dispatch({ type: 'user_prompt', text, at: now(), via, sourceId: operation })
+    api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation).catch(promptFailed(origin, epoch))
     return true
   }
 
@@ -50,17 +59,37 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       showToast(t("app.the.assistant.is.working.send.images.after"))
       return false
     }
+    return sendNewPrompt(text, images, via)
+  }
+
+  function sendNewPrompt(text: string, images: Array<{ id: string }>, via: string | null,
+    feed?: { id: string, admitted?: (accepted: boolean, problem?: string) => void }) {
     beforePrompt()
     const origin = context(), epoch = ++sendEpoch
     // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
     for (const { id } of images) keepPicture(id)
-    dispatch({ type: 'user_prompt', text, at: now(), via, images })
-    api.prompt(text, images).catch(promptFailed(origin, epoch))
+    const operation = globalThis.crypto.randomUUID()
+    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, pending: Boolean(feed) })
+    if (feed) {
+      // The same conversation can replace its DSH session before a send. Resolve the message by its operation.
+      const pendingHere = () => getState().messages.some(message => message.pending && message.sourceId === operation)
+      api.prompt(text, images, operation, feed.id).then(() => {
+        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: true })
+        feed.admitted?.(true)
+      }, error => {
+        const message = errorMessage(error)
+        if (pendingHere()) {
+          dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: false })
+          if (epoch === sendEpoch && !selectionPending()) dispatch({ type: 'error', message })
+        }
+        feed.admitted?.(false, message)
+      })
+    } else api.prompt(text, images, operation).catch(promptFailed(origin, epoch))
     return true
   }
 
   /** Words said as a turn was ending: sent as the next question once it has ended. */
-  let afterTurn: Array<{ text: string, id: string | undefined, origin: ConversationContext, epoch: number }> = []
+  let afterTurn: Array<{ text: string, id: string | undefined, operation: string, origin: ConversationContext, epoch: number }> = []
   let sendEpoch = 0
 
   function clearAfterTurn() {
@@ -74,18 +103,18 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
    * Should that turn have just ended, the words go as the next question; should they not get through at all,
    * they stay in the thread marked as not sent.
    */
-  function steer(text: string, via: string | null) {
-    dispatch({ type: 'user_steer', text, via })
+  function steer(text: string, via: string | null, operation: string = globalThis.crypto.randomUUID()) {
+    dispatch({ type: 'user_steer', text, via, sourceId: operation })
     // The words just said, the last message now (user_steer above).
     const id = getState().messages.at(-1)?.id
     const epoch = sendEpoch, origin = context()
-    api.steer(text)
+    api.steer(text, operation)
       .then((result) => {
         if (result.ok) return
         if (!canReply(origin, epoch)) throw new Error(steerLost())
         if (result.reason !== 'idle') throw new Error(steerLost())
-        if (isBusy(getState())) afterTurn = [...afterTurn, { text, id, origin, epoch }]
-        else resend(text)
+        if (isBusy(getState())) afterTurn = [...afterTurn, { text, id, operation, origin, epoch }]
+        else resend(text, [operation])
       })
       .catch((err) => {
         if (!belongsHere(origin)) return
@@ -95,10 +124,10 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     return true
   }
 
-  function resend(text: string) {
+  function resend(text: string, operation: string[]) {
     const origin = context(), epoch = ++sendEpoch
     dispatch({ type: 'steer_resent', at: now() })
-    api.prompt(text).catch(promptFailed(origin, epoch))
+    api.prompt(text, undefined, operation).catch(promptFailed(origin, epoch))
   }
 
   function sendAfterTurn(stopReason?: string) {
@@ -106,21 +135,22 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     // receipt may start another prompt against that instance or its replacement.
     if (stopReason === 'cancelled') return clearAfterTurn()
     if (!afterTurn.length) return
-    const text = afterTurn.filter(item => canReply(item.origin, item.epoch)).map(item => item.text).join('\n\n')
+    const pending = afterTurn.filter(item => canReply(item.origin, item.epoch))
+    const text = pending.map(item => item.text).join('\n\n')
     afterTurn = []
-    if (text) resend(text)
+    if (text) resend(text, pending.map(item => item.operation))
   }
 
   /** What the user answers to each question: the options picked, and words of their own. */
   type Answers = QuestionAnswer[]
 
-  /** Answers the agent's open question; the reply shows at once, like an approval. */
+  /** The backend publishes the reply once the question and its answer are still valid. */
   function answer(answers: Answers) {
     const question = getState().question
     if (!question) return
     const origin = context(), epoch = sendEpoch
-    dispatch({ type: 'question_answered', questionId: question.questionId, answers, at: now() })
-    api.answerQuestion(question.questionId, answers)
+    const operation = globalThis.crypto.randomUUID()
+    api.answerQuestion(question.questionId, answers, operation)
       .then((accepted) => accepted || (canReply(origin, epoch) && showToast(t("app.this.question.has.ended.your.answer.was"))))
       .catch(promptFailed(origin, epoch))
   }

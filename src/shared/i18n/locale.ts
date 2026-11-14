@@ -1,4 +1,5 @@
-export type Locale = 'zh-CN' | 'en'
+export const LOCALES = ['zh-CN', 'en'] as const
+export type Locale = typeof LOCALES[number]
 export type Language = Locale | 'system'
 export interface LanguageState { language: Language; locale: Locale }
 

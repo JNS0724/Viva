@@ -121,7 +121,7 @@ Viva configures the existing plugin rather than implementing adapters. Provider 
 <a id="助手反问"></a>
 ## Clarifying questions
 
-When an essential location/time/object/account is missing and memory cannot answer, persona rules require asking instead of guessing from timezone/IP. The built-in `ask_user_question` tool is relayed by `viva-questions` to cards. One single-choice question submits on click; multiple questions/selections require Submit. Free text and Skip are supported. Stopping or switching conversations closes pending questions. Answers enter ordinary memory extraction, so stable information can prevent repeated questions.
+When an essential location, time, object, or account is missing, the assistant asks the user. The `viva-questions` plugin displays cards from the built-in `ask_user_question` tool. One single-choice question submits on click. Multiple questions or selections require Submit. Free text and Skip are supported. Stopping or switching conversations closes pending questions. A selection applies to the current task. To save information for later, explicitly ask Viva to remember it in your own words.
 
 <a id="历史对话"></a>
 ## Conversation history
@@ -137,13 +137,11 @@ Conversation menus offer Rename, Pin, Export Markdown, and Delete. Deletion offe
 <a id="记忆"></a>
 ## Memory
 
-`plugins/memory` owns memory; the app provides UI. Its tables and the `meta.contract_version` it records are the contract; see `plugins/memory/lib/store.ts` and [System design](system-design.md#6-dsh-and-plugins). `dsh-profile.ts` writes the private `profiles/viva` ACP composition with linked plugins and a shared `memory.db`; it does not touch the user's `~/.dsh`. Profile-write failure falls back to ACP without memory. App and plugin share the store contract: app edits profile/memories and habits; plugin stores learned memories, per-session retrieval state, and injection logs.
+The backend owns `memory.db`. The memory plugin connects Viva's private DSH profile to model computation and memory tools. If the profile or plugin cannot load, chat remains available and the capability status reports the issue. [System design](system-design.md#6-dsh-and-plugins)
 
-Retrieval has three layers: fixed rules/profile/preferences/habits at first turn, changes, and compaction; up to three name-matched memories from the user's own words, deduplicated within the session; explicit `memory_recall` keyword lookup when needed. Long pasted material uses the user's opening/closing lines; short follow-ups incorporate the preceding question. Native memory tools do not require approval; sensitive secrets/identity numbers are rejected.
+Viva accepts clear requests to remember and extracts longer-term facts in the background. Memory records carry original evidence, scope, time, and conditions. A separate review checks whether a proposed correction, replacement, or ending is supported. Confirmed changes update the records and retain an undoable history. When the current answer or action requires resolving a disagreement, Viva can ask once per turn. The selected option applies to that turn. A lasting correction written by the user goes through the same review as a chat message. Passwords, keys, verification codes, and identity numbers are excluded from memory intake.
 
-Explicit Remember requests save immediately. After each turn, bounded background extraction adds facts or invalidates candidate memories it was shown, with all-or-nothing validation; it cannot alter user-owned entries. Casual chat is filtered. Profile fields are user-owned. Learned identity/people/projects/preferences become memories and periodically produce a synthesized profile after 24 hours or five changes; invalidations trigger earlier rebuilding. Only active memories are used, and recent additions appear separately. Invalid/sensitive synthesis falls back to the previous result.
-
-Forgetting/replacement invalidates instead of deleting and remains restorable in About you; only explicit UI deletion removes rows. Injection includes today's date, refreshed across midnight, so relative dates can become absolute. Activity shows which memories were included and why; saves notify the user. Failed plugin loading leaves chat functional and is reported in Settings.
+The current request can receive the user-entered profile, today's date, and up to three relevant memories. The assistant can also call `memory_recall` with keywords and an optional date. Activity shows which memories were included. About You shows sources and changes, and provides editing, forgetting, and deletion controls. [Memory design](memory-design.md)
 
 <a id="消息里的-markdown"></a>
 ## Markdown in messages

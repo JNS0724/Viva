@@ -14,6 +14,7 @@ export type AgentEvent =
   | ({ type: 'turn_end', stopReason?: string } & Scoped)
   | ({ type: 'permission' } & Payload<'permission_request'> & (Scoped | Position))
   | ({ type: 'question' } & Scoped & Payload<'question_request'>)
+  | ({ type: 'question_answered' } & Scoped & Payload<'question_answered'>)
   | ({ type: 'question_closed' } & Scoped & Payload<'question_closed'>)
   | ({ type: 'secret_request' } & Scoped & Payload<'secret_request'>)
   | ({ type: 'secret_closed' } & Scoped & Payload<'secret_closed'>)
@@ -22,7 +23,7 @@ export type AgentEvent =
   | ({ type: 'report_delivered' } & Scoped & ConversationPayloads['report_delivered'])
   | ({ type: 'error', message: string, context?: ConversationContext })
   | ({ type: 'schedule_propose', proposal: ScheduleProposal } & Scoped)
-  | { type: 'memory_changed', memories?: readonly string[], invalidated?: readonly string[] }
+  | { type: 'memory_changed', failure?: string, memories?: readonly string[], invalidated?: readonly string[] }
   | { type: 'files_changed', path: string }
   | { type: 'feed_changed' | 'schedules_changed' }
   | { type: 'task_snapshot', snapshot: WindowSnapshot }

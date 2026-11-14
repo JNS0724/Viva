@@ -85,7 +85,8 @@ export function rewindActions(newSession: (state: State, payload: PayloadFor<'ne
       topic: state.topic,
       conversationId: conversation.id,
       messages: conversation.messages.map((m, i: number) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, ...(m.images ? { images: m.images } : {}),
+        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null,
+        ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
       })),
       // The task records of the part kept, and, back onto a path, those of that path (main/rewind-ipc.ts).
       records: recordsFrom(conversation.records),

@@ -53,7 +53,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error'])
+const SAVE_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error'])
 const api = window.agent
 const platform = api?.platform ?? 'darwin'
 const dom = createPageElements(document, platform)
@@ -217,9 +217,11 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
     return task ? handlers.skipTaskQuestion(task.id) : undefined
   },
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
-  ask: ({ text, files, images = [], targetKey, receiptId, expiresAt }) => {
-    const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt && ask(withFiles(text, files), { via: 'island', images })
-    api.islandAskResult(receiptId, { ok: Boolean(ok), ...(ok ? {} : { error: t('desk.interaction.draft.not.sent') }) })
+  ask: ({ text, files, images = [], targetKey, receiptId, expiresAt, feedItemId }) => {
+    const receipt = (ok: boolean, error = t('desk.interaction.draft.not.sent')) => api.islandAskResult(receiptId, { ok, ...(ok ? {} : { error }) })
+    const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt
+      && ask(withFiles(text, files), { via: 'island', images, feedItemId, admitted: receipt })
+    if (!ok || !feedItemId) receipt(Boolean(ok))
   },
 }
 
@@ -383,11 +385,14 @@ const draftImages = createDraftImages({
 })
 const sharedFiles = h('div', { class: 'isl-files composer-shared-files', hidden: true })
 dom.draftPics.after(sharedFiles)
+let composerFeedItem: string | undefined
 composerDraft = createComposerDraftActions({ api, host: 'main',
-  read: () => ({ text: dom.input.value, files: composerFiles, images: draftImages.list(), error: composerError }),
+  read: () => ({ text: dom.input.value, files: composerFiles, images: draftImages.list(), error: composerError,
+    feedItemId: dom.input.value.trim() ? composerFeedItem : undefined }),
   write: draft => {
     dom.input.readOnly = draft.owner !== 'main'
     if (dom.input.value !== draft.text) dom.input.value = draft.text
+    composerFeedItem = draft.feedItemId
     composerFiles = draft.files; composerError = draft.error
     draftImages.replace(draft.images)
     sharedFiles.hidden = !draft.files.length && !draft.error
@@ -440,8 +445,10 @@ const resumeActions = createResumeActions({
 const workDirActions = createWorkDirActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 const extensionActions = createExtensionActions({ api, getState: () => state, dispatch, errorMessage })
 /** Words into the input, the conversation in front; the user reads them and sends them. */
-function fillComposer(text: string) {
+function fillComposer(text: string, feedItemId: string) {
+  if (!composerDraft?.ready()) return
   dispatch({ type: 'hub_close' })
+  composerFeedItem = feedItemId
   dom.input.value = text
   dom.input.dispatchEvent(new Event('input'))
   dom.input.focus()
@@ -476,7 +483,6 @@ async function imagesChange(run: () => Promise<unknown>, done: string) {
 /** What a toast's button does. */
 const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>) => unknown>> = {
   'open-profile': () => memoryActions.openProfile(),
-  'undo-memory': (toast) => memoryActions.undoMemoryDelete(toast.action.payload),
   'open-settings': () => handlers.openSettings(),
   'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
   'resume-topic': (toast) => resumeActions.retryResume(toast.action.payload),
@@ -533,15 +539,28 @@ const handlers = {
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     const text = dom.input.value.trim()
+    if (composerFeedItem && text && (state.question || isBusy(state))) return historyActions.showToast(t('feed.continue.wait'))
+    const sentDraft = composerDraft?.snapshot()
+    const clearDraft = () => {
+      dom.input.value = ''
+      composerFeedItem = undefined
+      draftImages.clear()
+      composerFiles = []; composerError = null; sharedFiles.hidden = true
+    }
+    if (composerFeedItem && text) {
+      ask(withFiles(text, composerFiles.map(file => file.path)), { images: draftImages.list(), feedItemId: composerFeedItem, admitted: accepted => {
+        const latest = composerDraft?.snapshot()
+        if (!accepted || !composerDraft?.ready() || !sentDraft || latest?.key !== sentDraft.key || latest.version !== sentDraft.version) return
+        clearDraft()
+        composerDraft.changed()
+      } })
+      return
+    }
     if (state.question) {
       if (!text) return
       answer(answersFrom(state.question, text))
       dom.input.value = ''
-    } else if (ask(withFiles(text, composerFiles.map(file => file.path)), { images: draftImages.list() })) {
-      dom.input.value = ''
-      draftImages.clear()
-      composerFiles = []; composerError = null; sharedFiles.hidden = true
-    }
+    } else if (ask(withFiles(text, composerFiles.map(file => file.path)), { images: draftImages.list() })) clearDraft()
     dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
     composerDraft?.changed()
     // Emptied while the agent works, the button goes back to stopping it.
@@ -754,6 +773,7 @@ function wireComposer() {
     else handlers.send()
   })
   dom.input.addEventListener('input', () => {
+    if (!dom.input.value.trim()) composerFeedItem = undefined
     composerDraft?.changed()
     renderSendButton(dom, state)
   })

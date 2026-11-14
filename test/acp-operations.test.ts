@@ -50,6 +50,30 @@ test('disposal while stream binding waits cannot send a late native prompt or re
   assert.equal(calls, 0); assert.equal(operations.has('s'), false)
 })
 
+test('prompt admission waits for stream setup and the final session check', async () => {
+  const binding = deferred<void>()
+  const streams = createAssistantStream({ send: () => {}, emit: () => {} })
+  let allowed = true
+  const events: string[] = []
+  const operations = createAcpOperations({
+    streams: { ...streams, begin: async id => { await binding.promise; return streams.begin(id) } },
+    connection: () => ({ prompt: async () => { events.push('wire'); return { stopReason: 'end_turn' } }, cancel: async () => {} }),
+    allowSession: () => allowed, cancelPermissions: () => {}, streamUpdate: () => {},
+  })
+  const send = () => operations.run({ sessionId: 's', prompt, onStart: () => events.push('admitted'), onEnd: () => {}, onError: () => events.push('rejected') })
+  const pending = send()
+  await flush()
+  assert.deepEqual(events, [])
+  allowed = false
+  binding.resolve()
+  await pending
+  assert.deepEqual(events, ['rejected'])
+  allowed = true
+  await send()
+  assert.deepEqual(events, ['rejected', 'wire', 'admitted'])
+  operations.dispose()
+})
+
 test('captured context cannot be changed by the caller or a reader, and completed operations reject unowned stream updates', async () => {
   const result = deferred<PromptResponse>(), events: unknown[] = [], context = { conversationId: 'original', sessionId: 's' }
   const streams = createAssistantStream({ send: () => {}, emit: () => {} })

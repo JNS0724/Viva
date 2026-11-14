@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createConversationActions } from '../src/renderer/conversation-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
+import { historyMessages } from '../src/renderer/selectors.ts'
 import { MAX_MESSAGE_CHARS } from '../src/shared/text-limits.ts'
 
 function deferred<T>() {
@@ -41,6 +42,39 @@ test('normal and image questions keep their visible message and send once', asyn
   assert.equal(h.resets(), 1)
   assert.equal(h.state().messages.at(-1)?.text, 'hello')
   assert.equal(h.state().messages.at(-1)?.via, 'island')
+})
+
+test('an Updates draft awaits backend admission before clearing or entering saved history', async () => {
+  const pending = deferred<void>()
+  const sent: string[] = []
+  const accepted: boolean[] = []
+  const h = harness({ prompt: (_words, _images, _operation, resultId) => { sent.push(resultId!); return pending.promise } })
+  assert.equal(h.actions.ask('旧结果', { feedItemId: 'feed-1', admitted: ok => accepted.push(ok) }), true)
+  assert.deepEqual(historyMessages(h.state()), [])
+  pending.reject(new Error('已失效'))
+  await settle()
+  assert.deepEqual([sent, accepted, h.state().messages], [['feed-1'], [false], []])
+  assert.match(h.state().error ?? '', /已失效/)
+})
+
+test('an Updates send settles its pending message when the kept conversation reopens in a fresh DSH session', async () => {
+  for (const accepted of [true, false]) {
+    const receipt = deferred<void>()
+    const notifications: boolean[] = []
+    const h = harness({ prompt: () => receipt.promise })
+    const info = { ...h.state().info, conversationId: 'topic', sessionId: 'old' }
+    h.dispatch({ type: 'ready', info })
+    assert.equal(h.actions.ask('定时结果', { feedItemId: 'feed-1', admitted: ok => notifications.push(ok) }), true)
+    h.dispatch({ type: 'ready', info: { ...info, sessionId: 'fresh' } })
+    assert.deepEqual(historyMessages(h.state()), [])
+    if (accepted) receipt.resolve(undefined)
+    else receipt.reject(new Error('结果已失效'))
+    await settle()
+    assert.deepEqual(notifications, [accepted])
+    assert.equal(h.state().messages.length, accepted ? 1 : 0)
+    assert.deepEqual(historyMessages(h.state()).map(message => message.text), accepted ? ['定时结果'] : [])
+    assert.equal(h.state().phase, accepted ? 'working' : 'error')
+  }
 })
 
 test('setup, topic switches, empty and oversized questions do not reach the agent', () => {
@@ -147,6 +181,7 @@ test('question and credential replies use their request ids and never save crede
   h.dispatch({ type: 'question_request', at: 1, questionId: 'q', questions: [{ id: 'city', question: 'City?', options: [] }] })
   h.actions.answer([{ id: 'city', selected: [], custom: 'Shanghai' }])
   await settle(); assert.deepEqual(replies, ['q']); assert.equal(h.toasts.length, 1)
+  assert.equal(h.state().messages.some(message => message.text === 'Shanghai'), false)
   h.dispatch({ type: 'secret_request', at: 1, requestId: 'keys', server: 'mail', names: ['TOKEN'] })
   await h.actions.provideSecrets({ TOKEN: 'test-only' })
   assert.deepEqual(replies, ['q', 'keys']); assert.equal(h.state().secret, null)

@@ -48,9 +48,12 @@ export async function failureDiagnostics(session: SmokeApplication | null, profi
       const db = new DatabaseSync(file, { readOnly: true })
       try {
         db.exec('PRAGMA busy_timeout = 1000')
-        const rows = db.prepare('SELECT id, session_id, turn, created_at, fixed, pushed FROM injections ORDER BY id DESC LIMIT 20').all()
-        const output = path.join(directory, 'memory-injections.json')
-        fs.writeFileSync(output, JSON.stringify(rows, null, 2)); files.push(output)
+        const dependencies = db.prepare(`SELECT session, fact, revision, as_of, disputed
+          FROM memory_session_dependencies ORDER BY rowid DESC LIMIT 50`).all()
+        const changes = db.prepare(`SELECT id, revision, kind, status, target, replacement, effective_at
+          FROM memory_links ORDER BY id DESC LIMIT 20`).all()
+        const output = path.join(directory, 'memory-dependencies.json')
+        fs.writeFileSync(output, JSON.stringify({ dependencies, changes }, null, 2)); files.push(output)
       } finally { db.close() }
     }
   } catch (error) { errors.push(`memory journal: ${String(error)}`) }

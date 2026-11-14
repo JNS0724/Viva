@@ -1,3 +1,4 @@
+import { operationId } from './memory-contract.ts'
 import { z } from 'zod'
 
 /**
@@ -21,6 +22,12 @@ const record = z.looseObject({})
 const images = z.array(z.looseObject({ id })).max(MAX_IMAGES)
 const bytes = z.union([z.instanceof(Uint8Array), z.instanceof(ArrayBuffer)])
 const none = z.tuple([])
+const memoryVersion = z.object({ id: z.number().int().positive(), revision: z.number().int().positive() })
+const memoryInterval = z.object({ from: z.number().int().nullable(), to: z.number().int().nullable() })
+const memoryResolution = z.discriminatedUnion('kind', [
+  z.object({ kind: z.enum(['keep-first', 'keep-both', 'discard-both']) }),
+  z.object({ kind: z.literal('replace'), text }),
+])
 const QUERY = 'query'
 /** A channel that only reads (QUERY_CHANNELS below): said here, where the channel is defined, not in a list apart. */
 const read = <T extends z.ZodType>(schema: T): T => schema.describe(QUERY) as T
@@ -31,13 +38,13 @@ export const IPC_ARGS = Object.freeze({
   'language:set': z.tuple([z.enum(['system', 'zh-CN', 'en'])]),
   'agent:info': read(none),
   'agent:waits': read(none),
-  'agent:prompt': z.tuple([text, images.optional()]),
-  'agent:steer': z.tuple([text]),
+  'agent:prompt': z.tuple([text, images.optional(), z.union([operationId, z.array(operationId).max(24)]).optional(), id.optional()]),
+  'agent:steer': z.tuple([text, operationId.optional()]),
   'agent:cancel': none,
   'agent:new-session': none,
   'agent:set-config': z.tuple([id, id]),
   'agent:permission': z.tuple([id, id.nullable()]),
-  'agent:answer': z.tuple([id, z.array(record).max(MAX_LIST)]),
+  'agent:answer': z.tuple([id, z.array(record).max(MAX_LIST), operationId.optional()]),
   'agent:secrets': z.tuple([id, z.record(z.string(), z.unknown()).nullable()]),
 
   'shell:open-link': z.tuple([path]),
@@ -102,13 +109,16 @@ export const IPC_ARGS = Object.freeze({
 
   'memory:get': read(none),
   'memory:list': read(z.tuple([text.optional()])),
-  'memory:set-profile': z.tuple([z.record(z.string(), z.unknown())]),
-  'memory:add': z.tuple([text, id.optional()]),
-  'memory:update': z.tuple([z.number(), text]),
-  'memory:delete': z.tuple([z.number()]),
-  'memory:restore': z.tuple([record]),
+  'memory:set-profile': z.tuple([z.record(z.string(), z.unknown()), operationId.optional()]),
+  'memory:add': z.tuple([text, id.optional(), operationId.optional()]),
+  'memory:update': z.tuple([z.number(), text, z.number().int().positive(), operationId]),
+  'memory:delete': z.tuple([z.number(), z.number().int().positive(), operationId]),
+  'memory:forget': z.tuple([z.number(), z.number().int().positive(), operationId]),
+  'memory:restore': z.tuple([z.number(), z.number().int().positive(), operationId]),
+  'memory:resolve-conflict-pair': z.tuple([memoryVersion, memoryVersion, memoryResolution, operationId, z.number().int().positive(), memoryInterval]),
   'memory:list-invalid': read(none),
-  'memory:revive': z.tuple([z.number()]),
+  'memory:list-changes': read(none),
+  'memory:undo-change': z.tuple([z.number().int().positive(), z.number().int().positive(), operationId, z.array(memoryVersion).max(MAX_LIST).readonly()]),
   'memory:onboarding': z.tuple([id]),
   'memory:add-docs': none,
 
@@ -150,6 +160,7 @@ export const IPC_ARGS = Object.freeze({
   'schedules:pause': z.tuple([id, z.boolean()]),
   'schedules:delete': z.tuple([id]),
   'feed:list': read(none),
+  'feed:continue': read(z.tuple([id])),
   'feed:seen': z.tuple([id]),
 
   'island:view': read(z.tuple([record])),
@@ -158,7 +169,7 @@ export const IPC_ARGS = Object.freeze({
   'island:ask': z.tuple([record]),
   'island:ask-result': z.tuple([id, z.object({ ok: z.boolean(), error: text.optional() })]),
   'draft:get': read(none),
-  'draft:update': z.tuple([z.object({ key: id, version: count, epoch: count, sequence: count, baseImages: z.array(id).max(10).optional(), baseFiles: z.array(path).max(10).optional(), owner: z.enum(['main', 'desk']), text,
+  'draft:update': z.tuple([z.object({ key: id, version: count, epoch: count, sequence: count, baseImages: z.array(id).max(10).optional(), baseFiles: z.array(path).max(10).optional(), owner: z.enum(['main', 'desk']), text, feedItemId: id.optional(),
     files: z.array(z.object({ path, name: id, size: count })).max(10),
     images: z.array(z.object({ id, size: count.optional() })).max(10), error: text.nullable(), baseError: text.nullable().optional() })]),
   'draft:append-image': z.tuple([id, z.object({ id, size: count.optional() })]),

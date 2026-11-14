@@ -172,7 +172,8 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
         if (result.ok) { drafts.clear(snapshot); island.closeInput({ sent: true }) }
         resolve(result)
       } })
-      toWindow({ kind: 'ask', text: ask.text, files: ask.files, images: ask.images, targetKey: snapshot.key, receiptId, expiresAt: Date.now() + 10_000 })
+      toWindow({ kind: 'ask', text: ask.text, files: ask.files, images: ask.images, targetKey: snapshot.key, receiptId,
+        expiresAt: Date.now() + 10_000, feedItemId: snapshot.feedItemId })
     })
   })
   return { ownDraft: drafts.own }

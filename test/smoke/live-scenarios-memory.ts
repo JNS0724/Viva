@@ -48,7 +48,7 @@ const memoryRecall: LiveScenario = {
 
 const memorySupersede: LiveScenario = {
   id: 'memory-supersede',
-  title: '信息更新后用新的，旧的不再算数',
+  title: '指定记忆更正后使用新内容',
   feature: '记忆',
   async run(ctx) {
     const { win, expect, code } = ctx
@@ -59,8 +59,8 @@ const memorySupersede: LiveScenario = {
       await ask(win, `记住：我的直属上级是 ${before}。`)
       const original = await untilRemembered(win, before)
       expect(original.length > 0, 'the original manager fact should be stored before the correction')
-      await ask(win, `更正一下：从现在开始我的直属上级换成 ${after} 了，${before} 已经调去别的部门了。`)
-      await wait(MEMORY_SETTLE_MS)
+      await ask(win, `更正 #${original[0].id} 为我的直属上级是 ${after}。`)
+      expect((await untilRemembered(win, after)).length > 0, 'the correction should replace the original')
       await fresh(win)
       const out = await ask(win, '我现在的直属上级是谁？只回答名字。')
       expect(out.answer.includes(after), 'the new manager should be the answer', clip(out.answer))

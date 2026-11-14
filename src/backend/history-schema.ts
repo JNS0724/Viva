@@ -1,3 +1,4 @@
+import { operationId } from '../shared/memory-contract.ts'
 import { t } from '../shared/i18n/translate.ts'
 /** Validation shared by the history database and the IPC boundary. */
 import { checkImages, type ImageRef } from '../shared/images.ts'
@@ -14,7 +15,7 @@ const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/
 export interface Receipt { ms: number, tools: number, thoughts: number, stopReason: string }
 
 /** A message as it is kept. */
-export interface StoredMessage { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[] }
+export interface StoredMessage { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[], sourceId?: string }
 
 const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0
 
@@ -33,7 +34,8 @@ function normalizeMessage(message: any): StoredMessage {
   if (typeof message.text !== 'string' || message.text.length > MAX_TEXT_CHARS) throw new Error(t("main.history-schema.invalid.message.text"))
   const images = checkImages(message.images)
   if (!images) throw new Error(t("main.history-schema.invalid.message.images"))
-  return { role: message.role, text: message.text, receipt: normalizeReceipt(message.receipt), ...(images.length ? { images } : {}) }
+  const sourceId = operationId.safeParse(message.sourceId)
+  return { role: message.role, text: message.text, ...(message.role === 'user' && sourceId.success ? { sourceId: sourceId.data } : {}), receipt: normalizeReceipt(message.receipt), ...(images.length ? { images } : {}) }
 }
 
 /** Keeps only what is persisted from a list of messages (renderer state or a file), or throws. */

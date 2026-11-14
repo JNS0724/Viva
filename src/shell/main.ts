@@ -98,6 +98,8 @@ function showWindow() {
   if (!win || win.isDestroyed()) return
   if (win.isMinimized()) win.restore()
   win.show()
+  // A rapid hide/show can make the window visible without a native 'show' event.
+  desk?.setAway(false)
   if (process.platform === 'darwin') app.focus({ steal: true })
   win.focus()
 }

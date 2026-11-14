@@ -157,8 +157,8 @@ const ACTION_HANDLERS: ActionHandlers = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: messages.length ? 'loading' : null,
-      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
-        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, sourceId?: string, images?: ReadonlyArray<{ id: string }> }, i: number) => ({
+        id: `m${i}`, role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
       })),
       records: recordsFrom(records),
       restored: messages.length ? { count: messages.length, savedAt } : null,

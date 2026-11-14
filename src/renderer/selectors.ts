@@ -53,8 +53,8 @@ export function workspaceName(cwd: string | null | undefined): string {
 
 /** What gets saved: finished messages only, in the shape the main process stores. */
 export const historyMessages = (state: State) => state.messages
-  .filter((m) => !m.open)
-  .map(({ role, text, receipt, images }) => ({ role, text, receipt: receipt ?? null, ...(images?.length ? { images } : {}) }))
+  .filter((m) => !m.open && !m.pending)
+  .map(({ role, text, receipt, images, sourceId }) => ({ role, text, receipt: receipt ?? null, ...(sourceId ? { sourceId } : {}), ...(images?.length ? { images } : {}) }))
 
 const DAY_MS = 86_400_000
 const startOfDay = (ts: number) => new Date(ts).setHours(0, 0, 0, 0)

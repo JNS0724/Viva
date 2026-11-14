@@ -94,6 +94,7 @@ test('desktop drafts retain text, real images and files through collapse and win
   try {
     const mainWindow = await session.application.browserWindow(page)
     await mainWindow.evaluate(window => window.close())
+    await expect.poll(() => mainWindow.evaluate(window => window.isVisible())).toBe(false)
     await desk.openInput()
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const readingDesktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
@@ -117,6 +118,7 @@ test('desktop drafts retain text, real images and files through collapse and win
     await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).images.map(image => image.size))).toEqual([20 * 1024 * 1024 - 1, 20 * 1024 * 1024])
     await expect(page.locator('#composer-input')).toHaveValue(topicDraft)
     await expect(page.locator('.draft-pic')).toHaveCount(2)
+    await expect.poll(() => mainWindow.evaluate(window => window.isVisible())).toBe(true)
     await expect.poll(() => readingDesktop.isClosed()).toBe(true)
     const draft = await page.evaluate(() => window.agent.getDraft())
     expect(draft.key).toBe(originalKey)

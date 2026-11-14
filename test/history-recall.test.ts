@@ -32,7 +32,8 @@ function seeded() {
 function joined(db: ReturnType<typeof openHistoryDb>) {
   const recall = historyRecall(db)
   const port = new EventEmitter()
-  const desk = createHistoryDesk({ send: (message) => port.emit('message', message), search: recall.search, read: recall.read, authorized: () => true })
+  const desk = createHistoryDesk({ send: (message) => port.emit('message', message), search: recall.search,
+    read: (ref, around) => recall.read(ref, around), authorized: () => true })
   const channel = createHistoryChannel({ send: (message: object) => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
   return (request: object) => channel.request(request, 'main')
 }
@@ -72,4 +73,16 @@ test('a message said again since is read as the ones near where it was, not as t
   assert.equal('messages' in missing && missing.messages.some((m) => m.target), false, 'nothing taken for the original')
   db.softDelete(contract.id)
   assert.deepEqual(recall.read({ segmentId: hit.segmentId, seq: hit.seq }), { status: 'deleted' })
+})
+
+test('a rewind copy cannot turn an old assistant answer into output from the new session', () => {
+  const { db, contract } = seeded()
+  const next = db.create({ sessionId: 'fresh', topicId: db.topicOf(contract.id) })
+  const old = db.get(contract.id)!.messages.slice(0, 2)
+  db.save(next, [...old, said('user', '继续审合同')], { copy: { from: contract.id, count: 2 } })
+  const used: string[] = []
+  const recall = historyRecall(db, message => message.role === 'user' || message.sessionId === 'fresh', message => used.push(message.text))
+  assert.equal(recall.search('建议改成 30 天').length, 0)
+  assert.equal(recall.search('继续审合同').length, 1)
+  assert.deepEqual(used, ['继续审合同'])
 })

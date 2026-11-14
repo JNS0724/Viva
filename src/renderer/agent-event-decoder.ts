@@ -51,6 +51,13 @@ export function decodeQuestions(value: unknown): QuestionItem[] | null {
     return options ? { id: item.id, question: item.question, header: item.header, multiSelect: item.multiSelect, options } : null
   })
 }
+function decodeAnswers(value: unknown) {
+  return list(value, value => {
+    const item = objectOf(value), selected = texts(item?.selected)
+    if (!item || !string(item.id) || !selected || !optional(item.custom, string)) return null
+    return { id: item.id, selected, ...(item.custom === undefined ? {} : { custom: item.custom }) }
+  })
+}
 export function decodePermission(value: unknown): PermissionRequest | null {
   const item = objectOf(value), tool = objectOf(item?.toolCall)
   if (!item || !string(item.requestId) || !tool || !optional(tool.toolCallId, string) || !optional(tool.title, nullableText) || !optional(tool.kind, nullableText)) return null
@@ -147,7 +154,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
   if (type === 'memory_changed') {
     const memories = item.memories === undefined ? undefined : texts(item.memories), invalidated = item.invalidated === undefined ? undefined : texts(item.invalidated)
-    return memories !== null && invalidated !== null ? { type, memories, invalidated } : null
+    return memories !== null && invalidated !== null ? { type, memories, invalidated, ...(string(item.failure) ? { failure: item.failure } : {}) } : null
   }
   if (type === 'files_changed') return string(item.path) ? { type, path: item.path } : null
   if (type === 'feed_changed' || type === 'schedules_changed') return { type }
@@ -170,6 +177,11 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'turn_started') return optional(item.by, nullableText) ? { type, context, by: item.by } : null
   if (type === 'turn_end') return optional(item.stopReason, string) ? { type, context, stopReason: item.stopReason } : null
   if (type === 'question') { const questions = decodeQuestions(item.questions); return string(item.questionId) && questions ? { type, context, questionId: item.questionId, questions } : null }
+  if (type === 'question_answered') {
+    const answers = decodeAnswers(item.answers)
+    return string(item.questionId) && answers && optional(item.sourceId, string)
+      ? { type, context, questionId: item.questionId, answers, sourceId: item.sourceId } : null
+  }
   if (type === 'question_closed') return string(item.questionId) ? { type, context, questionId: item.questionId } : null
   if (type === 'secret_request') { const parsed = secret(item); return parsed ? { type, context, ...parsed } : null }
   if (type === 'secret_closed') return string(item.requestId) ? { type, context, requestId: item.requestId } : null
@@ -183,7 +195,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

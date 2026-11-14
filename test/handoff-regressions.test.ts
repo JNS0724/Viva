@@ -6,11 +6,12 @@ import path from 'node:path'
 import { permissionCard } from '../src/renderer/prompt-card.ts'
 import { permissionDetail } from '../src/renderer/selectors.ts'
 import { userError } from '../src/renderer/user-error.ts'
-import { recallCandidates, recallMatches, MIN_COVERAGE } from '../plugins/memory/lib/match.ts'
-import { memoryTools } from '../plugins/memory/lib/tools.ts'
-import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
+import { recallCandidates, recallMatches, MIN_COVERAGE } from '../src/backend/memory-match.ts'
+import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
+import { openMemoryStore } from '../src/backend/memory-store.ts'
 import { createTaskRuntime, taskProblems } from '../src/backend/task-runtime.ts'
+import { scratch } from './fixtures/scratch.js'
 
 test('approval shows the complete command and every additional argument', () => {
   const command = 'Write-Output "' + '完整命令'.repeat(500) + '"; Remove-Item important.txt'
@@ -34,15 +35,19 @@ test('keyword fallback recovers residence candidates without changing strict cov
   }
 })
 
-test('recall tool labels partial matches and never recovers invalidated memories', t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-recall-regression-'))
-  const db = openMemoryDb({ file: path.join(dir, 'memory.db') })
-  t.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }) })
-  const { memory } = db.addMemory({ text: '我常住杭州', kind: 'fact', keywords: [], source: 'user' })
-  const recall = memoryTools(db).find(tool => tool.name === 'memory_recall')!
-  assert.match(recall.run({ query: '常住 城市 地点' }), /分词补查候选[\s\S]*我常住杭州/)
-  db.invalidateMemory(memory.id, { by: 'user' })
-  assert.doesNotMatch(recall.run({ query: '常住 城市 地点' }), /我常住杭州/)
+test('recall tool labels partial matches and never recovers invalidated memories', async t => {
+  const { dir, defer } = scratch(t, 'viva-recall-regression-')
+  const store = openMemoryStore(path.join(dir, 'memory.db'))
+  const runtime = createMemoryRuntime({ store, compute: () => null, route: () => null, quiesce: async () => {}, changed: () => {} })
+  defer(async () => { await runtime.wake(); runtime.close() })
+  const memory = runtime.addMemory('我常住杭州')!
+  const origin = { conversation: null, session: 'session' }
+  const recall = () => JSON.parse(runtime.handle({ op: 'recall', session: origin.session, query: '常住 城市 地点' }, origin))
+  const partial = recall()
+  assert.equal(partial.partial, true)
+  assert.deepEqual(partial.memories.map((entry: { text: string }) => entry.text), ['我常住杭州'])
+  await runtime.forget(memory.id, memory.revision, 'forget')
+  assert.deepEqual(recall().memories, [])
 })
 
 test('a task asked for while connecting is refused before one is created, and starts once connected', async t => {

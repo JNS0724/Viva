@@ -125,6 +125,7 @@ const examples = {
   ready: { type: 'ready', info }, workdir: { type: 'workdir', info }, config: { type: 'config', info }, update: { type: 'update', context, update: chunk('answer') },
   turn_started: { type: 'turn_started', context }, turn_end: { type: 'turn_end', context }, permission: { type: 'permission', context, ...permission },
   question: { type: 'question', context, ...question }, question_closed: { type: 'question_closed', context, questionId: 'q' },
+  question_answered: { type: 'question_answered', context, questionId: 'q', answers: [{ id: 'city', selected: [], custom: 'Shanghai' }] },
   secret_request: { type: 'secret_request', context, ...secret }, secret_closed: { type: 'secret_closed', context, requestId: 'secret' }, waits: { type: 'waits', context, permissions: [permission], questions: [question], secrets: [secret] },
   memory_context: { type: 'memory_context', context, injected: [{ at: 1, fixed: 'profile', pushed: [{ names: ['work'], text: 'context' }] }] },
   report_delivered: { type: 'report_delivered', context, ...context, reportId: 'r', text: 'result', at: 1 }, error: { type: 'error', message: 'fixture' },

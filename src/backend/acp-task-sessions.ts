@@ -12,7 +12,8 @@ const choices = (options: readonly SessionConfigOption[] | null | undefined): re
 const resultOf = (result: Acquired): Started => result.ok ? { ok: true, taskId: result.taskId } : result
 
 /** Native attachment/request identities only. TaskRuntime owns admission, application runs, status and storage. */
-export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, markReadOnly, emit, describeError, goneMessage, stoppedMessage }: {
+export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, markReadOnly, emit, describeError, goneMessage, stoppedMessage, allowSession = () => true }: {
+  allowSession?: (id: string) => boolean
   connection: () => Pick<ClientSideConnection, 'setSessionConfigOption' | 'closeSession'>
   acquire: { resume: (id: string, cwd: string) => Promise<ResumeSessionResponse>, fresh: (cwd: string) => Promise<NewSessionResponse> }
   foreground: () => { sessionId: string | null, cwd: string, config: readonly SessionConfigOption[] | null }
@@ -150,6 +151,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     taskOf: (id: string) => has(id) ? id : null,
     isUnattended: (id: string) => sessions.get(id)?.unattended === true,
     async steerTask(id: string, text: string): Promise<SteerResult> {
+      if (!allowSession(id)) return { ok: false, reason: 'unavailable' }
       const attachment = sessions.get(id)
       if (!attachment?.attached) return { ok: false, reason: 'missing' }
       const result = await steer(id, text)

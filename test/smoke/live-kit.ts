@@ -277,14 +277,16 @@ export async function closeHub(win: SmokeWindow) {
 export const escape = (win: SmokeWindow) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 
 /** The memories the app keeps that mention `words` (valid ones only). */
-export async function memoriesWith(win: SmokeWindow, words: string): Promise<Array<{ id: string, text: string }>> {
+export async function memoriesWith(win: SmokeWindow, words: string): Promise<Array<{ id: number, revision: number, text: string }>> {
   const list = await run(win, `window.agent.listMemories(${JSON.stringify(words)})`)
   return (list?.items ?? []).filter((m: { text: string }) => m.text.includes(words))
 }
 
 /** Forgets every memory that mentions `words`, so a later attempt starts without it. */
 export async function forgetMemories(win: SmokeWindow, words: string) {
-  for (const memory of await memoriesWith(win, words)) await run(win, `window.agent.deleteMemory(${JSON.stringify(memory.id)})`)
+  for (const memory of await memoriesWith(win, words)) {
+    await run(win, `window.agent.deleteMemory(${memory.id}, ${memory.revision}, crypto.randomUUID())`)
+  }
 }
 
 /** Whether `file` (a database, a JSON file) holds `secret` anywhere in its bytes. */

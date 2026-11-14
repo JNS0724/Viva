@@ -51,11 +51,11 @@ export const QUESTION_ACTIONS = {
     return { ...state, question: { ...question, picks } }
   },
 
-  question_answered: (state, { questionId, answers, at }) => {
+  question_answered: (state, { questionId, answers, at, sourceId }) => {
     if (state.question?.questionId !== questionId) return state
     const { questions } = state.question
     const text = answerText(questions, answers)
-    const reply = { id: `m${state.messages.length}`, role: 'user', text, asked: askedText(questions), open: false, receipt: null }
+    const reply = { id: `m${state.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), asked: askedText(questions), open: false, receipt: null }
     return {
       ...state,
       phase: 'working',

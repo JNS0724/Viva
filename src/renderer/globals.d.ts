@@ -5,6 +5,7 @@
 
 type Args<C extends import('../shared/ipc-contract.ts').Channel> = import('../shared/ipc-contract.ts').ChannelArgs<C>
 type IpcResults = import('../shared/ipc-results.ts').IpcResults
+type MemoryChangeRecord = import('../shared/ipc-results.ts').MemoryChangeRecord
 /** A channel's call: its arguments, and its answer where written out (ipc-results.ts), else `any` for now. */
 type Invoke<C extends import('../shared/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<C extends keyof IpcResults ? IpcResults[C] : any>
 type Unlisten = () => void
@@ -25,6 +26,7 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends readonly (infer U)[] ? ReadonlyArray<Widened<U>>
   : T extends (...args: any[]) => any ? T
   : T extends BackgroundTask ? BackgroundTask
+  : T extends MemoryChangeRecord ? MemoryChangeRecord
   : T extends object ? ([keyof T] extends [never] ? Readonly<Record<string, Untyped>> : { -readonly [K in keyof T]: Widened<T[K]> })
   : T
 /** What the main process tells the window of the agent (session-info.ts, acp-bridge.ts): the fields the window reads. */
@@ -123,7 +125,7 @@ interface ActionDeps {
   errorMessage: (err: unknown) => string
   showToast: (text: string, options?: { action?: ToastAction | null, ms?: number }) => void
   /** Sends words as the user's next question (app.ts ask); false when the agent can't take them now. */
-  ask: (text: string) => boolean
+  ask: (text: string, options?: { sourceId?: string, newSource?: boolean }) => boolean
 }
 /** What the views call back (app.ts handlers), by name. */
 type Handlers = Readonly<Record<string, (...args: any[]) => any>>
@@ -214,9 +216,12 @@ interface AgentApi extends DraftApi {
   addMemory: Invoke<'memory:add'>
   updateMemory: Invoke<'memory:update'>
   deleteMemory: Invoke<'memory:delete'>
+  forgetMemory: Invoke<'memory:forget'>
   restoreMemory: Invoke<'memory:restore'>
+  resolveMemoryConflictPair: Invoke<'memory:resolve-conflict-pair'>
   listInvalidMemories: Invoke<'memory:list-invalid'>
-  reviveMemory: Invoke<'memory:revive'>
+  listMemoryChanges: Invoke<'memory:list-changes'>
+  undoMemoryChange: Invoke<'memory:undo-change'>
   setOnboarding: Invoke<'memory:onboarding'>
   addDocs: Invoke<'memory:add-docs'>
   listFiles: Invoke<'files:list'>
@@ -252,6 +257,7 @@ interface AgentApi extends DraftApi {
   pauseSchedule: Invoke<'schedules:pause'>
   deleteSchedule: Invoke<'schedules:delete'>
   listFeed: Invoke<'feed:list'>
+  continueFeed: Invoke<'feed:continue'>
   markFeedSeen: Invoke<'feed:seen'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (...args: Args<'island:view'>) => void

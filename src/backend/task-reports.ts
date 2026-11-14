@@ -109,9 +109,9 @@ export interface TaskReportsDeps {
   /** How a report stands in a session (acp-bridge.ts reportStatus). */
   status: (session: string, reportId: string, token: string) => Promise<ReportState>
   /** A report into that session's running turn, unless it is there already (acp-bridge.ts deliverReport). */
-  deliver: (session: string, reportId: string, token: string, text: string) => Promise<ReportState>
+  deliver: (session: string, reportId: string, token: string, text: string, taskId: string) => Promise<ReportState>
   /** Opens a turn with the note in the main conversation; false when it could not be opened now. */
-  report: (note: string) => boolean
+  report: (note: string, taskIds: readonly string[]) => boolean
   /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
   /**
@@ -194,7 +194,8 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       if (state !== 'busy') { forTurn.push(effect); continue }
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
       const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
-      const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string, noteFor([endedOf(sending)], { inTurn: true })) : 'unavailable'
+      const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string,
+        noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId) : 'unavailable'
       if (sent === 'read') outcomes.set(effect.key, readOutcome(sending ?? effect))
       else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
@@ -202,7 +203,7 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     // A turn of its own, once nothing runs, for those still theirs right now: done when their reading is confirmed.
     if (conversation() === 'idle') {
       const opening = forTurn.filter(still).flatMap((effect) => kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn' }) ?? [])
-      if (opening.length) report(noteFor(opening.map(endedOf)))
+      if (opening.length) report(noteFor(opening.map(endedOf)), opening.map(effect => effect.payload.taskId))
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     return outcomes

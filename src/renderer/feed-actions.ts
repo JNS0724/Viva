@@ -1,4 +1,4 @@
-import { continueText, type FeedItemView } from './feed-state.ts'
+import type { FeedItemView } from './feed-state.ts'
 
 /**
  * 动态 from the window: its items and schedules loaded, an item taken into the conversation (在对话里继续: into the
@@ -6,7 +6,7 @@ import { continueText, type FeedItemView } from './feed-state.ts'
  */
 export function createFeedActions({ api, getState, dispatch, errorMessage, fillComposer }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage'> & {
   /** Puts `text` in the input, the conversation in front. */
-  fillComposer: (text: string) => void
+  fillComposer: (text: string, feedItemId: string) => void
 }) {
   const fail = (err: unknown) => dispatch({ type: 'feed_failed', message: errorMessage(err) })
 
@@ -39,8 +39,13 @@ export function createFeedActions({ api, getState, dispatch, errorMessage, fillC
     async continueItem(id: string) {
       const item = itemOf(id)
       if (!item) return
-      fillComposer(continueText(item))
-      if (item.seenAt === null) await change(() => api.markFeedSeen(id))
+      await change(async () => {
+        const origin = getState().conversationId
+        const text = await api.continueFeed(id)
+        if (getState().conversationId !== origin || getState().newTopicPending || !getState().feed.open) return
+        fillComposer(text, id)
+        if (item.seenAt === null) await api.markFeedSeen(id)
+      })
     },
     dismissItem: (id: string) => change(() => api.markFeedSeen(id)),
     pauseSchedule: (id: string, paused: boolean) => change(() => api.pauseSchedule(id, paused)),

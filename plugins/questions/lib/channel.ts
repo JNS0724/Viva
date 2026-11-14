@@ -71,7 +71,8 @@ export function createQuestionChannel(
   function onMessage(message: Incoming) {
     const entry = waiting.get(message?.id)
     if (!entry || (message.type !== 'answer' && message.type !== 'decline')) return
-    if (message.type === 'decline') return entry.settle(() => entry.reject(new Error(DECLINED)))
+    if (message.type === 'decline') return entry.settle(() => entry.reject(new Error(message.reason === 'memory-clarification'
+      ? '这轮的记忆分歧须用 memory_clarify 和有效引用。后台任务继续无争议的部分。' : DECLINED)))
     const answer = answerFor(entry.questions, message)
     if (!answer) return log(`ignored an answer that does not match question ${message.id}`)
     entry.settle(() => entry.resolve(answer))

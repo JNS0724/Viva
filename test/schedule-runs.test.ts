@@ -16,7 +16,7 @@ type Timer = { run: () => void, ms: number }
 const UNAVAILABLE: RunResult = { ok: false, problem: 'unavailable', unavailable: true }
 const ONCE = { kind: 'at', at: '2026-11-06T11:00:00+08:00' } as const
 
-function setup(answers: Array<RunResult | Promise<RunResult>> = []) {
+function setup(answers: Array<RunResult | Promise<RunResult>> = [], memoryCurrent: NonNullable<Parameters<typeof createScheduleRuns>[0]['memoryCurrent']> = () => true) {
   let now = at('2026-11-06T10:00:00+08:00')
   const db = new DatabaseSync(':memory:')
   const store = openScheduleStore({ db, now: () => now, newId: () => 's1' })
@@ -37,7 +37,7 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = []) {
     return { value: transaction(db, write) }
   }
   const make = () => createScheduleRuns({
-    db, apply, store, feed,
+    db, apply, store, feed, memoryCurrent,
     run: async (prompt, cwd) => {
       asked.push({ prompt, cwd })
       const [next, ...rest] = queue
@@ -74,6 +74,50 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = []) {
     runs: () => (db.prepare('SELECT COUNT(*) AS n FROM schedule_runs').get() as { n: number }).n,
   }
 }
+
+test('a cached schedule result is rechecked on storage retry and refreshed from the original prompt', async () => {
+  let current = true
+  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const app = setup([{ ok: true, text: '旧地址', memory }, { ok: true, text: '新地址' }], () => current)
+  app.store.create({ title: '周报', prompt: '核对当前地址', cwd: '/work', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  app.fail('schedule.ran', 1)
+  app.make().wake()
+  await app.settle()
+  assert.deepEqual([app.asked.length, app.feed.list().length, app.runs()], [1, 0, 1])
+  current = false
+  app.go('2026-11-06T11:00:01+08:00')
+  app.fire()
+  await app.settle()
+  assert.deepEqual([app.asked.length, app.feed.list().length, app.runs()], [1, 0, 1])
+  app.go('2026-11-06T11:01:02+08:00')
+  app.fire()
+  await app.settle()
+  assert.deepEqual([app.asked.length, app.feed.list().map(item => item.body), app.runs()], [2, ['新地址'], 0])
+})
+
+test('a parked occurrence cannot replay or pause a rewritten recurring schedule after reconnect', async () => {
+  let current = true
+  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const app = setup([{ ...UNAVAILABLE, memoryUnavailable: true }], () => current)
+  const { id } = app.store.create({ title: '原定时', prompt: '旧指令', cwd: '/work', memory,
+    rule: { kind: 'daily', daily: { time: '18:00:00', time_zone: 'Asia/Shanghai' } } })
+  app.go('2026-11-06T18:00:01+08:00')
+  const runner = app.make()
+  runner.wake()
+  await app.settle()
+  assert.equal(app.runs(), 1)
+  app.store.setPaused(id, true)
+  app.store.update(id, { title: '新定时', prompt: '新指令', memory: { ...memory, dependencies: [] } })
+  app.store.setPaused(id, false)
+  current = false
+  runner.wake()
+  await app.settle()
+  assert.deepEqual(app.asked.map(run => run.prompt), ['旧指令'])
+  assert.equal(app.runs(), 0)
+  assert.equal(app.store.get(id)?.status, 'active')
+  assert.equal(app.feed.list().length, 0)
+})
 
 test('one timer, for the soonest; due, the prompt runs in the folder it was made in, its answer one item, its notice kept with it', async () => {
   const { store, asked, kept, delivered, timers, fire, make, settle, go, changes } = setup()

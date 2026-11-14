@@ -13,9 +13,9 @@ export type DshTaskEvent = { type: string, taskId: string, [field: string]: unkn
 
 export type Signal =
   /** The user asked something in the conversation (agent:prompt). */
-  | { kind: 'chat.said', text: string, images: readonly unknown[] }
+  | { kind: 'chat.said', text: string, images: readonly unknown[], operation?: string | string[], feedItemId?: string }
   /** A turn of the user's ended (acp-bridge turn_end). */
-  | { kind: 'agent.turn_ended' }
+  | { kind: 'agent.turn_ended', stopReason?: string }
   /** A background task's turn ended (task_end), or it began or stopped waiting on the user (a permission or question). */
   | { kind: 'agent.task_ended', event: DshTaskEvent }
   | { kind: 'agent.task_waits', event: DshTaskEvent }

@@ -73,6 +73,7 @@ const titleOf = (words: string) => {
 /** A task's session as dsh started it (its id), or why not (acp-bridge.ts startTask). */
 type StartedTask = { ok: boolean, taskId?: string, reason?: string }
 type Maybe<T> = T | Promise<T>
+type AdmitBrief = (taskId: string) => boolean
 /** What the runtime asks of dsh for its tasks (compose.ts taskAgent, over acp-bridge.ts). */
 export interface TaskAgent {
   startTask: () => Maybe<StartedTask>
@@ -246,27 +247,31 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * A task begun from the agent's brief (start_background_task), in a fresh session. The conversation on screen
    * stays where it is; the task's segment hangs off it, out of the timeline, and is kept like any task going on.
    */
-  async function begin(text: string): Promise<TaskStartResult> {
+  async function begin(text: string, admit?: AdmitBrief): Promise<TaskStartResult> {
     const main = current()
     const { mode, model } = agentInfo()
     if (mode === 'connecting') return { ok: false as const, problem: taskProblems().connecting }
     const place = reserveRun(null)
     if ('problem' in place) return { ok: false as const, problem: place.problem }
     try {
-      return await beginReserved(text, main, mode, model, place.counted)
+      return await beginReserved(text, main, mode, model, place.counted, admit)
     } finally {
       place.release()
     }
   }
 
   async function beginReserved(text: string, main: Conversation, mode: string | undefined, model: string | undefined,
-    counted: () => void): Promise<TaskStartResult> {
+    counted: () => void, admit?: AdmitBrief): Promise<TaskStartResult> {
     const started = await agent.startTask()
     if (!started.ok || !started.taskId) {
       const reason = started.reason ?? 'missing'
       return { ok: false as const, problem: taskProblems()[reason] ?? t("main.task-ipc.could.not.start.in.background", { reason }) }
     }
     const taskId = started.taskId
+    if (admit && !admit(taskId)) {
+      await agent.closeTask(taskId)
+      return { ok: false, problem: t('main.memory.context.stale') }
+    }
     const runId = newRunId()
     const task = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
       // A conversation whose only turns started background tasks may have no messages kept yet. Keep its identity too,
@@ -368,7 +373,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * 接着问: a task that ended is asked `text` as its next question, in its own session, which remembers all it
    * did; taken up first when an earlier launch held it. It is going again, so kept as going.
    */
-  async function ask(taskId: string, text: unknown) {
+  async function ask(taskId: string, text: unknown, admit?: AdmitBrief) {
     if (!isText(text)) throw new Error('invalid task request')
     const kept = store.list().find((entry) => entry.id === taskId)
     // Let go since the window listed it (beyond the latest kept): said plainly, not as an error.
@@ -377,18 +382,19 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await askReserved(taskId, text, kept, place.counted)
+      return await askReserved(taskId, text, kept, place.counted, admit)
     } finally {
       place.release()
     }
   }
 
-  async function askReserved(taskId: string, text: string, kept: StoredTask, counted: () => void) {
+  async function askReserved(taskId: string, text: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
     if (!attached.has(taskId)) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
       if (!taken.ok) return { ok: false, problem: taskProblems().gone }
       attached = new Set([...attached, taskId])
     }
+    if (admit && !admit(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
     const { endedAt: _endedAt, status: _status, ...going } = kept
     const runId = newRunId()
     const running = { ...going, runId }
@@ -410,21 +416,22 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * Taken up again: its dsh session is reattached as a task and asked `words` (the agent's); the window gets what
    * it had said, from its own words on, and those words, to show it as it was.
    */
-  async function resume(taskId: string, words: string) {
+  async function resume(taskId: string, words: string, admit?: AdmitBrief) {
     const kept = store.list().find((entry) => entry.id === taskId)
     if (!kept) throw new Error('no such task')
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await resumeReserved(taskId, words, kept, place.counted)
+      return await resumeReserved(taskId, words, kept, place.counted, admit)
     } finally {
       place.release()
     }
   }
 
-  async function resumeReserved(taskId: string, words: string, kept: StoredTask, counted: () => void) {
+  async function resumeReserved(taskId: string, words: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok) return { ok: false, problem: taskProblems().lost }
+    if (admit && !admit(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
     const runId = newRunId()
     const running = { ...kept, runId }
     change('task.restarted', { taskId, runId }, () => {
@@ -451,8 +458,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   }
 
   /** start_background_task: afresh, from the agent's brief, its card in the conversation on screen. */
-  async function agentStart(brief: string) {
-    const started = await begin(brief)
+  async function agentStart(brief: string, admit?: AdmitBrief) {
+    const started = await begin(brief, admit)
     if (!started.ok) throw new Error(started.problem)
     return { taskId: started.task.id, title: started.task.title, status: 'running' }
   }
@@ -479,18 +486,19 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text })
   }
 
-  async function agentMessage(taskId: string, text: string) {
+  async function agentMessage(taskId: string, text: string, admit?: AdmitBrief) {
     const kept = keptTask(taskId)
     if (isEnded(kept)) {
-      const asked = await ask(taskId, text)
+      const asked = await ask(taskId, text, admit)
       if (!asked.ok) throw new Error(asked.problem)
       return { taskId, delivered: 'next question' }
     }
     if (!attached.has(taskId)) {
-      const taken = await resume(taskId, text)
+      const taken = await resume(taskId, text, admit)
       if (!taken.ok) throw new Error(taken.problem)
       return { taskId, delivered: 'taken up again' }
     }
+    if (admit && !admit(taskId)) throw new Error(t('main.memory.context.stale'))
     said(taskId, text)
     const steered = await agent.steerTask(taskId, text)
     if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))

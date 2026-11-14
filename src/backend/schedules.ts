@@ -3,6 +3,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
 import type { ScheduleAction } from './tasks-channel.ts'
+import { combineMemoryProvenance, type MemoryProvenance } from './memory-dispatch.ts'
 
 /**
  * Schedules as the model and the user handle them (system-design §12.2), natural language first: the model proposes,
@@ -22,7 +23,7 @@ const viewOf = (schedule: Schedule): ScheduleView => ({
 /** The schedules' writes made by the user or the model, each an event (journal.ts); being run is schedule-runs.ts's. */
 const SCHEDULE_WRITES = Object.freeze(['create', 'update', 'setPaused', 'remove'] as const)
 
-export function createSchedules({ db, apply, emit, changed = () => {}, now = Date.now, newId = () => `p${crypto.randomUUID().slice(0, 8)}` }: {
+export function createSchedules({ db, apply, emit, changed = () => {}, now = Date.now, newId = () => `p${crypto.randomUUID().slice(0, 8)}`, memoryCurrent = () => true }: {
   db: DatabaseSync
   /** The event core's apply: each write and its event together. Without it (tests), plain writes. */
   apply?: Apply
@@ -32,17 +33,18 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   changed?: () => void
   now?: () => number
   newId?: () => string
+  memoryCurrent?: (memory: MemoryProvenance) => boolean
 }) {
   const opened = openScheduleStore({ db, now })
   const store = apply ? journaled(opened, 'schedule', SCHEDULE_WRITES, apply) : opened
   /** Proposals waiting on the user's yes, by id: kept in memory, gone with the app (the card then says so). */
-  let proposals = new Map<string, ScheduleProposal & { conversationId: string | null, cwd: string }>()
+  let proposals = new Map<string, ScheduleProposal & { conversationId: string | null, cwd: string, memory?: MemoryProvenance }>()
 
-  function propose(action: Extract<ScheduleAction, { op: 'schedule_create' }>, conversationId: string | null, cwd: string) {
+  function propose(action: Extract<ScheduleAction, { op: 'schedule_create' }>, conversationId: string | null, cwd: string, memory?: MemoryProvenance) {
     const rule = action.rule as unknown as ScheduleRule
     const record = store.preview({ title: action.title, prompt: action.prompt, rule })
     const proposal: ScheduleProposal = { proposalId: newId(), title: action.title, prompt: action.prompt, rule, firstAt: record.scheduledAt }
-    proposals = new Map([...proposals, [proposal.proposalId, { ...proposal, conversationId, cwd }]])
+    proposals = new Map([...proposals, [proposal.proposalId, { ...proposal, conversationId, cwd, memory }]])
     emit({ type: 'schedule_propose', proposal })
     return { proposed: true, firstAt: record.scheduledAt, note: t('main.schedules.proposed') }
   }
@@ -52,7 +54,8 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
     const proposal = proposals.get(proposalId)
     if (!proposal) throw new Error(t('main.schedules.proposal.gone'))
     // Let go only once kept: a save that fails leaves the card to be answered again.
-    const schedule = store.create({ title: proposal.title, prompt: proposal.prompt, rule: proposal.rule, cwd: proposal.cwd, conversationId: proposal.conversationId })
+    if (proposal.memory && !memoryCurrent(proposal.memory)) throw new Error(t('main.schedule-runs.memory.stale'))
+    const schedule = store.create({ title: proposal.title, prompt: proposal.prompt, rule: proposal.rule, cwd: proposal.cwd, conversationId: proposal.conversationId, memory: proposal.memory })
     proposals = new Map([...proposals].filter(([id]) => id !== proposalId))
     changed()
     return viewOf(schedule)
@@ -64,7 +67,7 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
 
   const list = (): ScheduleView[] => store.list().map(viewOf)
 
-  function update(id: string, changes: { title?: string, prompt?: string, rule?: ScheduleRule, paused?: boolean }): ScheduleView {
+  function update(id: string, changes: { title?: string, prompt?: string, rule?: ScheduleRule, paused?: boolean, memory?: MemoryProvenance }): ScheduleView {
     const { paused, ...rest } = changes
     let found = Object.keys(rest).length ? store.update(id, rest) : store.get(id)
     if (found && paused !== undefined) found = store.setPaused(id, paused)
@@ -80,12 +83,15 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   }
 
   /** What the model asked (tasks-channel.ts ScheduleAction), from the conversation on screen, in its working folder. */
-  function act(action: ScheduleAction, conversationId: string | null, cwd: string): unknown {
-    if (action.op === 'schedule_create') return propose(action, conversationId, cwd)
+  function act(action: ScheduleAction, conversationId: string | null, cwd: string, memory?: MemoryProvenance): unknown {
+    if (action.op === 'schedule_create') return propose(action, conversationId, cwd, memory)
     if (action.op === 'schedule_list') return list()
     if (action.op === 'schedule_delete') return remove(action.id)
     const { op: _op, id, rule, ...rest } = action
-    return update(id, { ...rest, ...(rule ? { rule: rule as unknown as ScheduleRule } : {}) })
+    const previous = store.get(id)
+    const updated = previous && memory && (rest.prompt === undefined || rest.title === undefined)
+      ? combineMemoryProvenance(previous.memory, memory) : memory
+    return update(id, { ...rest, ...(rule ? { rule: rule as unknown as ScheduleRule } : {}), ...(updated ? { memory: updated } : {}) })
   }
 
   return { act, accept, decline, list, update, remove, store }

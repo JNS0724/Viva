@@ -1,7 +1,7 @@
 import type { FeedItemView, ScheduleView, FeedPick, FeedShown } from './feed-types.ts'
 export type { FeedItemView, ScheduleView, FeedPick, FeedShown } from './feed-types.ts'
 import type { ActionHandlers } from './action-types.ts'
-import { t } from '../shared/i18n/translate.ts'
+export { continueText } from '../shared/feed-continuation.ts'
 
 export const initialFeed = Object.freeze({
   open: false,
@@ -52,9 +52,6 @@ export function feedLine(state: State): { fresh: number, next: number } {
   const { fresh, next } = feedGroups(state)
   return { fresh: fresh.length, next: next.filter((schedule) => schedule.status === 'active').length }
 }
-
-/** 在对话里继续: what goes into the input, for the user to read and send: where it came from, then the item. */
-export const continueText = (item: Pick<FeedItemView, 'title' | 'body'>): string => `${t('feed.continue.from', { title: item.title })}\n\n${item.body}`
 
 const withFeed = (state: State, changes: Partial<State['feed']>): State => ({ ...state, feed: { ...state.feed, ...changes } })
 const pickOf = (kind: unknown, id: unknown): FeedPick | null => ((kind === 'item' || kind === 'schedule') && typeof id === 'string' ? { kind, id } : null)
