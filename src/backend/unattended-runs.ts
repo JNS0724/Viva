@@ -23,7 +23,7 @@ export interface UnattendedAgent {
 
 export interface TaskEvent { type: string, taskId: string, update?: unknown, stopReason?: unknown, message?: unknown }
 
-interface Running { transcript: Transcript, finish: (result: RunResult) => void }
+interface Running { cwd: string, transcript: Transcript, finish: (result: RunResult) => void }
 
 const UNAVAILABLE = Object.freeze({ ok: false, problem: 'unavailable', unavailable: true } as const)
 
@@ -47,6 +47,7 @@ export function createUnattendedRuns({ agent, provenance, timeoutMs = RUN_TIMEOU
 
   /** Whether `taskId` is a run of these: its events are for `receive`, not for 后台. */
   const owns = (taskId: string): boolean => runs.has(taskId)
+  const workspaceOf = (taskId: string): string | undefined => runs.get(taskId)?.cwd
 
   function receive(event: TaskEvent): void {
     const running = runs.get(event.taskId)
@@ -80,7 +81,7 @@ export function createUnattendedRuns({ agent, provenance, timeoutMs = RUN_TIMEOU
         resolve(memory ? { ...value, memory } : value)
       }
       const timer = later(() => finish({ ok: false, problem: t('main.unattended-runs.timed.out') }), timeoutMs)
-      runs = new Map([...runs, [taskId, { transcript: [], finish }]])
+      runs = new Map([...runs, [taskId, { cwd, transcript: [], finish }]])
       Promise.resolve(now.promptTask(taskId, prompt)).catch((err: unknown) => finish({ ok: false, problem: err instanceof Error ? err.message : String(err) }))
     })
     Promise.resolve(now.closeTask(taskId)).catch(() => {})
@@ -92,7 +93,7 @@ export function createUnattendedRuns({ agent, provenance, timeoutMs = RUN_TIMEOU
     for (const running of [...runs.values()]) running.finish(UNAVAILABLE)
   }
 
-  return { owns, receive, run, gone }
+  return { owns, workspaceOf, receive, run, gone }
 }
 
 export type UnattendedRuns = ReturnType<typeof createUnattendedRuns>

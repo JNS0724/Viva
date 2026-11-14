@@ -55,7 +55,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   /** Records to go with the first question of a conversation (main.ts agent:prompt). */
   carryNext?: (conversationId: string, text: string) => void,
   staleSession?: (id: string | null) => boolean,
-  filteredCarry?: (conversationId: string, userOnly?: boolean) => { text: string, turns: number, evidence: HistoryEvidence[] },
+  filteredCarry?: (conversationId: string, userOnly?: boolean, targetCwd?: string) => { text: string, turns: number, evidence: HistoryEvidence[] },
   onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void,
   recordSession?: (id: string | null) => void,
   deleteHistory?: (id: string) => Promise<void>,
@@ -159,7 +159,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("workspace.missing.choose"))
     const topicId = db.topicOf(found.conversation.id)
     const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
-    const filtered = deps.filteredCarry?.(found.conversation.id)
+    const filtered = deps.filteredCarry?.(found.conversation.id, false, dir)
     const carried = filtered ?? carriedRecords(part?.messages ?? found.messages)
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(null, dir)

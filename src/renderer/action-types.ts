@@ -97,6 +97,7 @@ export interface ActionPayloads extends ConversationPayloads {
   memory_busy: {}
   memory_failed: { message: string }
   memory_profile_saved: { profile: State['memory']['profile'] }
+  memory_summaries_stale: {}
   memory_query: { query: string }
   memory_listed: { query: string, items: State['memory']['items'], total: number }
   memory_added: { memory: State['memory']['items'][number] }

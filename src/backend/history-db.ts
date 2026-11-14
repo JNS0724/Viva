@@ -307,6 +307,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return parent?.topic_id ?? id
   }
 
+  const conversationOf = (id: string) => sql.conversation.get(id)
+
   function get(id: unknown) {
     const row = sql.conversation.get(assertId(id))
     return row ? { conversation: toConversation(row), messages: sql.messages.all(id).map(toMessage), records: recordsOf(row.id) } : null
@@ -551,7 +553,10 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   return {
     addRecord, hasRecord, moveRecords, recordsOf, bySession,
-    create, save, get, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,
+    create, save, get, workspaceOf: (id: string) => {
+      const row = conversationOf(id)
+      return row ? { cwd: row.cwd, sessionId: row.session_id } : null
+    }, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,
     questionTimes, segmentsBefore, searchMessages, timelineOf, fold, unfold, foldsOf, sideTaskHost, ...reviewing, ...reading,
     // The app database is the backend's to close.
     close: () => { if (!given) db.close() },

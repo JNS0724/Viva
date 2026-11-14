@@ -1,4 +1,5 @@
 import { PROFILE_FIELDS } from '../shared/profile-fields.ts'
+import type { MemoryDependency } from './memory-store.ts'
 
 /** The memory block sent separately from the user's message. */
 export const CONTEXT_TAG = 'about-user'
@@ -18,13 +19,14 @@ const DISPUTED = '当前问题涉及待澄清的记忆。需要依赖该事实�
 
 const WEEKDAYS = '日一二三四五六'
 
-/** The fixed layer's parts: what the user wrote, the latest synthesis, profile memories since it, habits. */
+/** Manually supplied profile fields and evidence-backed excerpts. */
 export interface FixedLayer {
   profile: Readonly<Record<string, { value: string } | undefined>>
-  synthesis?: string | null
-  recent?: ReadonlyArray<MemoryLike>
-  habits?: string
+  user?: ProfileContext
+  project?: ProfileContext
 }
+type ProfileContext = { generated: boolean, items: readonly ProfileContextItem[] }
+export type ProfileContextItem = { text: string, dependency: MemoryDependency }
 /** A memory as far as the block shows it. */
 type MemoryLike = { text: string, createdAt: number, updatedAt?: number }
 /** A memory pushed because the question named something, with the names it was found by. */
@@ -60,7 +62,7 @@ const pushedLine = ({ memory, names }: PushedMemory) => `${memoryLine(memory)}�
 /** Packs complete rows and returns the exact related memories the model will receive. */
 export function packContext<T extends PushedMemory>({ fixed, pushed, today = '', disputed = false }: {
   fixed: FixedLayer | null, pushed: readonly T[], today?: string, disputed?: boolean,
-}): { text: string, pushed: T[] } {
+}): { text: string, pushed: T[], profile: ProfileContextItem[] } {
   const rules = fixed ? [FIXED_INTRO, sectionTitle('记忆规则'), MEMORY_RULES] : []
   const conflict = disputed ? [sectionTitle('记忆冲突'), DISPUTED] : []
   let room = MAX_CONTEXT_CHARS - OPEN_TAG.length - CLOSE_TAG.length - 1 - sizeOf(rules) - sizeOf(conflict)
@@ -89,12 +91,12 @@ export function packContext<T extends PushedMemory>({ fixed, pushed, today = '',
   const firstField = take(profileTitle, profile.slice(0, 1), unchanged)
   const matches = take([PUSHED_INTRO, sectionTitle('相关记忆')], pushed, pushedLine)
   const remainingFields = take(firstField.kept.length ? [] : profileTitle, profile.slice(firstField.kept.length), unchanged)
-  const synthesis = take([sectionTitle('助手整理的画像')], fixed?.synthesis ? [fixed.synthesis] : [], unchanged)
-  const recent = take([sectionTitle('最近了解到的')], fixed?.recent ?? [], memoryLine)
-  const habits = take([sectionTitle('使用习惯')], fixed?.habits ? [fixed.habits] : [], unchanged)
+  const excerptLine = ({ text }: ProfileContextItem) => `- ${text}`
+  const project = take([sectionTitle(fixed?.project?.generated ? '项目摘要' : '项目原始记忆')], fixed?.project?.items ?? [], excerptLine)
+  const user = take([sectionTitle(fixed?.user?.generated ? '助手整理的画像' : '画像原始记忆')], fixed?.user?.items ?? [], excerptLine)
   const lines = [
     ...date.lines, ...rules, ...firstField.lines, ...remainingFields.lines,
-    ...synthesis.lines, ...recent.lines, ...habits.lines, ...matches.lines, ...conflict,
+    ...user.lines, ...project.lines, ...matches.lines, ...conflict,
   ]
-  return { text: lines.length ? [OPEN_TAG, ...lines, CLOSE_TAG].join('\n') : '', pushed: matches.kept }
+  return { text: lines.length ? [OPEN_TAG, ...lines, CLOSE_TAG].join('\n') : '', pushed: matches.kept, profile: [...user.kept, ...project.kept] }
 }

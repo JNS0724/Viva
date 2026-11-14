@@ -125,6 +125,18 @@ function discardDerivedTables(db: DatabaseSync) {
   }
 }
 
+const STALE_VECTORS = `memory IN (SELECT value FROM json_each(?))
+  AND (revision<? OR NOT EXISTS (SELECT 1 FROM memories m
+    WHERE m.id=memory_semantic_vectors.memory AND m.revision=memory_semantic_vectors.revision AND ${RETAINED}))`
+
+export function memorySemanticCopiesCleared(db: DatabaseSync, ids: readonly number[], revision: number) {
+  try {
+    const kind = db.prepare("SELECT type FROM main.sqlite_schema WHERE name='memory_semantic_vectors'").get()?.type
+    return kind === undefined || (kind === 'table' && schemaMatches(db)
+      && !db.prepare(`SELECT 1 FROM memory_semantic_vectors WHERE ${STALE_VECTORS} LIMIT 1`).get(JSON.stringify(ids), revision))
+  } catch { return false }
+}
+
 /** Rebuildable index. It runs on ordinary SQLite so vector support can degrade independently of memory reads. */
 export function openMemorySemanticIndex(db: DatabaseSync) {
   let healthy = true
@@ -265,6 +277,17 @@ export function openMemorySemanticIndex(db: DatabaseSync) {
         updateConfig.run(settings()?.fingerprint ?? null, CODEC_VERSION)
         scanCursors.clear()
       })
+    },
+    purge(ids: readonly number[], revision: number) {
+      try {
+        if (!healthy || !schemaMatches(db)) return false
+        transaction(db, () => {
+          db.prepare(`DELETE FROM memory_semantic_vectors WHERE ${STALE_VECTORS}`).run(JSON.stringify(ids), revision)
+          updateConfig.run(settings()?.fingerprint ?? null, CODEC_VERSION)
+          scanCursors.clear()
+        })
+        return memorySemanticCopiesCleared(db, ids, revision)
+      } catch { return false }
     },
     missing(fingerprint: string, authorized: readonly MemorySemanticReference[], limit = MEMORY_EMBEDDING_BATCH) {
       if (version(fingerprint) === null || !authorized.length || !Number.isSafeInteger(limit) || limit < 1) return []

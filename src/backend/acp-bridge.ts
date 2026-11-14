@@ -122,9 +122,9 @@ export function createAcpBridge({
     ReturnType<NonNullable<Parameters<typeof createQuestionDesk>[0]['memoryClarificationQuestion']>>,
   allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean) =>
     import('./question-channel.ts').QuestionAdmission | Promise<import('./question-channel.ts').QuestionAdmission>,
-  allowSession?: (id: string, memoryReady: boolean, task: boolean) => boolean,
+  allowSession?: (id: string, memoryReady: boolean, task: boolean, cwd?: string) => boolean,
   readyMemory?: () => void,
-  onSessionCreated?: (id: string, parent?: string) => void,
+  onSessionCreated?: (id: string, cwd: string, parent?: string) => void,
   onQuestionAnswer?: Parameters<typeof createQuestionDesk>[0]['onAnswer'],
 }) {
   const broker = createPermissionBroker()
@@ -152,8 +152,8 @@ export function createAcpBridge({
    */
   const taskOf = (id: string) => taskSessions.taskOf(id)
   const isTask = (id: string | null) => id !== null && taskSessions.has(id)
-  const allowSession = (id: string) => sessionAllowed(id, memory.ready(), isTask(id))
-  const allowTask = (id: string) => sessionAllowed(id, memory.ready(), true)
+  const allowSession = (id: string, cwd = id === sessionId ? sessionCwd : undefined) => sessionAllowed(id, memory.ready(), isTask(id), cwd)
+  const allowTask = (id: string, cwd?: string) => sessionAllowed(id, memory.ready(), true, cwd)
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.context(id) : undefined
@@ -361,12 +361,12 @@ export function createAcpBridge({
     connection: live,
     acquire: {
       resume: (id, cwd) => {
-        if (!allowTask(id)) throw new Error('session has outdated memory context')
+        if (!allowTask(id, cwd)) throw new Error('session has outdated memory context')
         return withMcpServers(servers => live().resumeSession({ sessionId: id, cwd, mcpServers: servers }))
       },
       fresh: async cwd => {
         const { response } = await fresh.take(freshKey(cwd), cwd)
-        onSessionCreated?.(response.sessionId)
+        onSessionCreated?.(response.sessionId, cwd)
         return response
       },
     },
@@ -387,7 +387,7 @@ export function createAcpBridge({
     await measure('session.source', async () => {}, source)
     mcp = status
     sessionId = response.sessionId
-    onSessionCreated?.(sessionId)
+    onSessionCreated?.(sessionId, sessionCwd)
     prepareFresh()
     return { ...infoFrom(response.configOptions), resumed: false }
   }
@@ -398,7 +398,7 @@ export function createAcpBridge({
    */
   async function resumeOrOpen(resumeSessionId: string | null, targetCwd = sessionCwd) {
     sessionCwd = targetCwd
-    if (!resumeSessionId || !canResume || !allowSession(resumeSessionId)) return openSession()
+    if (!resumeSessionId || !canResume || !allowSession(resumeSessionId, targetCwd)) return openSession()
     try {
       const response = await withMcpServers((servers) => live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: servers }))
       sessionId = resumeSessionId
@@ -417,7 +417,7 @@ export function createAcpBridge({
    * screen without its session, nor puts a new one in its place.
    */
   async function switchExactly(targetSessionId: string, targetCwd: string, measure: ReturnType<typeof sessionTiming>) {
-    if (!allowSession(targetSessionId)) throw new ResumeError('gone', t('main.memory.context.stale'))
+    if (!allowSession(targetSessionId, targetCwd)) throw new ResumeError('gone', t('main.memory.context.stale'))
     const leaving = sessionId
     if (targetSessionId === leaving) return { ...infoFrom(configNow ?? undefined), resumed: true }
     if (!canResume) throw new ResumeError('gone', t("session.resume.unsupported"))
@@ -596,9 +596,10 @@ export function createAcpBridge({
       if (sessionId && !allowSession(sessionId)) return { ok: false, reason: 'missing' }
       const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
       if (!result.ok) return result
-      onSessionCreated?.(result.sessionId, sessionId ?? undefined)
-      if (!allowSession(result.sessionId)) return { ok: false, reason: 'missing' }
-      return { ok: true as const, info: await switchSession(result.sessionId, targetCwd ?? sessionCwd) }
+      const directory = targetCwd ?? sessionCwd
+      onSessionCreated?.(result.sessionId, directory, sessionId ?? undefined)
+      if (!allowSession(result.sessionId, directory)) return { ok: false, reason: 'missing' }
+      return { ok: true as const, info: await switchSession(result.sessionId, directory) }
     })
   }
 

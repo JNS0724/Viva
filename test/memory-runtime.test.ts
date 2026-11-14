@@ -60,6 +60,53 @@ test('receipt and extraction recover with the same source ID after restart', asy
   assert.equal(second.store.db.prepare('SELECT count(*) AS n FROM effects').get()?.n, 0)
 })
 
+test('deletion clears a value quoted by an unrelated pending answer without consuming its receipt', async t => {
+  let connected = false
+  const marker = 'amber-cleanup-9d2a@example.com'
+  const answer = '先使用提交时的规则'
+  const answerId = randomUUID()
+  const deleteId = randomUUID()
+  const inputs: object[] = []
+  const f = fixture(t, job => {
+    if (!connected) return null
+    if (job.sourceId === answerId) inputs.push(JSON.parse(job.input))
+    return Promise.resolve('{"proposals":[]}')
+  })
+  const { memory, store } = f.start()
+  const entry = memory.addMemory(`我的周报提交邮箱是 ${marker}`)
+  assert.ok(entry)
+  const details = { question: `刚才的邮箱 ${marker} 是否用于这次？`, requestId: 'request', questionId: 'submission', custom: true } as const
+  assert.equal(memory.accept(answer, origin, answerId, details).outcome, 'pending')
+  await memory.wake()
+  assert.equal(store.readSource(answerId)?.question, details.question)
+
+  assert.deepEqual(await memory.deleteMemory(entry.id, entry.revision, deleteId), { status: 'cleared' })
+  assert.equal(store.readSource(answerId)?.question, null)
+  assert.equal(store.readSource(answerId)?.text, answer)
+  for (const name of [f.file, `${f.file}-wal`]) assert.equal(fs.readFileSync(name).includes(marker), false, name)
+
+  connected = true
+  const restarted = f.start()
+  assert.equal(restarted.memory.accept(answer, origin, answerId, details).outcome, 'pending')
+  await restarted.memory.wake()
+  assert.equal(inputs.length, 1)
+  assert.equal(Object.hasOwn(inputs[0], 'question'), false)
+  assert.equal(JSON.stringify(inputs).includes(marker), false)
+})
+
+test('verified deletion repairs malformed semantic storage instead of trusting stale table receipts', async t => {
+  const f = fixture(t)
+  const { memory, store } = f.start()
+  const marker = 'stale-derived-copy-c9f5de'
+  const entry = memory.addMemory(marker)
+  assert.ok(entry)
+  store.db.exec('DROP TABLE memory_semantic_vectors; CREATE TABLE memory_semantic_vectors (stale TEXT)')
+  store.db.prepare('INSERT INTO memory_semantic_vectors VALUES (?)').run(marker)
+  assert.deepEqual(await memory.deleteMemory(entry.id, entry.revision), { status: 'cleared' })
+  assert.deepEqual(store.db.prepare('PRAGMA table_info(memory_semantic_vectors)').all().map(column => column.name), ['memory', 'revision', 'vector'])
+  for (const name of [f.file, `${f.file}-wal`]) assert.equal(fs.readFileSync(name).includes(marker), false, name)
+})
+
 test('forgotten memory cannot reappear through a stale result, history, or an unauthorized tool call', async t => {
   const text = '我住在紫藤城'
   let modelCalls = 0
@@ -888,11 +935,35 @@ test('deleting one fact preserves a separately supported clause of the same sour
   const retained = entries.find(entry => entry.text === font)!
   assert.equal(removed.evidence[0].sourceId, receipt.sourceId)
   assert.equal(retained.evidence[0].sourceId, receipt.sourceId)
-  await memory.forget(removed.id, removed.revision, 'delete')
+  assert.deepEqual(await memory.deleteMemory(removed.id, removed.revision), { status: 'cleared' })
   assert.equal(store.get(removed.id), null)
   assert.equal(store.get(retained.id)?.text, font)
   assert.equal(store.readSource(receipt.sourceId)?.text?.includes(coffee), false)
   assert.deepEqual(memory.listMemories().items.map(entry => entry.text), [font])
+})
+
+test('deleting overlapping evidence removes an unsupported peer projection even with a withdrawn edge', async t => {
+  const { memory, store } = fixture(t).start()
+  const marker = '测试删除残留 amber-9a2a@example.com'
+  const target = memory.addMemory(marker)
+  const peer = memory.addMemory('另有独立但已撤回的证据')
+  assert.ok(target && peer)
+  assert.equal(target.evidence.length, 1)
+  assert.equal(peer.evidence.length, 1)
+  const [sourceEdge] = target.evidence
+  const source = store.readSource(sourceEdge.sourceId)!
+  const [withdrawnEdge] = peer.evidence
+  store.tx(() => {
+    store.withdrawSource(withdrawnEdge.sourceId)
+    const revision = store.nextRevision()
+    const window = { from: peer.assertedFrom, to: peer.assertedTo }
+    store.evidence(peer.id, source, sourceEdge.start, sourceEdge.end, null, null, window, sourceEdge.spans)
+    store.project(peer.id, { ...peer, text: marker }, revision)
+  })
+  assert.equal(store.storedEvidence(peer.id).length, 2)
+  assert.deepEqual(await memory.deleteMemory(target.id, target.revision), { status: 'cleared' })
+  assert.equal(store.get(peer.id), null)
+  assert.equal(store.storedEvidence(peer.id).length, 0)
 })
 
 test('replay validates every original source even after its extraction text was discarded', async t => {
@@ -956,11 +1027,56 @@ test('deleting the replaced fact redacts its quoted value from the change source
   const old = memory.listMemories().items[0]
   const source = memory.accept(update, origin)
   await memory.wake()
-  await memory.forget(old.id, store.get(old.id)!.revision, 'delete')
+  assert.deepEqual(await memory.deleteMemory(old.id, store.get(old.id)!.revision), { status: 'cleared' })
   assert.equal(store.get(old.id), null)
   assert.doesNotMatch(store.readSource(source.sourceId)?.text ?? '', /amber@example\.test/)
   assert.doesNotMatch(JSON.stringify(memory.listChanges()), /amber@example\.test/)
   assert.equal(memory.listMemories().items[0]?.fact?.object, 'cobalt@example.test')
+})
+
+test('deleting a fact clears unconfirmed candidates that quoted it and keeps separately grounded facts', async t => {
+  const marker = 'amber-candidate-cleanup@example.test'
+  const before = `我的周报邮箱是 ${marker}`
+  const update = `以后我的周报邮箱从 ${marker} 改为 cobalt@example.test`
+  const surviving = '我习惯先看摘要'
+  let at = date('2026-07-01')
+  let old: Ref | undefined
+  const f = fixture(t, async job => {
+    const { user } = computeInput(job.input)
+    if (user === before) return proposal(user, { fact: structured(user, '周报邮箱', marker, 'report_email') })
+    assert.ok(old)
+    const main = JSON.parse(proposal(user, { spans: [sourceSpan(user, update)],
+      fact: structured(user, '周报邮箱', 'cobalt@example.test', 'report_email'),
+      change: proposedChange(user, 'supersede', old, '改为', marker, undefined),
+    })).proposals[0]
+    if (user === update) return JSON.stringify({ proposals: [main] })
+    const independent = JSON.parse(proposal(user, { spans: [sourceSpan(user, surviving)] })).proposals[0]
+    return JSON.stringify({ proposals: [main, independent] })
+  }, () => at, async job => {
+    const reviews = computeInput(job.input).proposals?.map(({ index, draft }) => ({ index, draftId: draft.id, verdict: 'uncertain', sameRelation: true }))
+    return JSON.stringify({ reviews })
+  })
+  const { memory, store } = f.start()
+  memory.accept(before, origin)
+  await memory.wake()
+  old = store.list().find(entry => entry.text === before)
+  assert.ok(old)
+  at += 1_000
+  const { sourceId } = memory.accept(`${update}。${surviving}`, origin)
+  await memory.wake()
+  assert.equal(store.db.prepare('SELECT reason FROM memory_candidates WHERE source=?').get(sourceId)?.reason, 'uncertain-change')
+  assert.ok(store.readSource(sourceId)?.text?.includes(marker))
+
+  assert.deepEqual(await memory.deleteMemory(old.id, old.revision), { status: 'cleared' })
+  assert.equal(store.db.prepare('SELECT 1 FROM memory_candidates WHERE source=?').get(sourceId), undefined)
+  assert.equal(store.readSource(sourceId)?.text?.trim(), surviving)
+  assert.deepEqual(memory.listMemories().items.map(({ text }) => text), [surviving])
+  for (const file of [f.file, `${f.file}-wal`]) assert.equal(fs.readFileSync(file).includes(marker), false, file)
+
+  const retry = memory.accept(update, origin)
+  await memory.wake()
+  assert.equal(store.db.prepare('SELECT 1 FROM memory_candidates WHERE source=?').get(retry.sourceId), undefined)
+  assert.equal(store.readSource(retry.sourceId)?.text, null)
 })
 
 test('a change without a unique target does not become a current fact', async t => {
@@ -1307,4 +1423,99 @@ test('irrelevant admission and modality rows cannot consume the indexed context 
   })
   const context = memory.handle({ op: 'context', session: origin.session, turn: 1, question: '冷杉港' }, origin)
   assert.match(context, /备份手册说明冷杉港的生产值守时间与负责人/u)
+})
+
+test('profile excerpts are scoped, versioned, and fall back to safe canonical evidence', async t => {
+  const store = openMemoryStore(':memory:')
+  const userScope = { kind: 'user' } as const
+  const project = { kind: 'project', id: 'project-one' } as const
+  const other = { kind: 'project', id: 'project-two' } as const
+  const a = '北辰项目的构建编号是 ORBIT-106'
+  const b = '另一项目使用 NEBULA-301'
+  const u = '我用剪纸做周末手工'
+  type ProfileInput = { ref: { kind: 'memory', id: number, revision: number }, text: string }
+  let recorded: import('../src/backend/memory-store.ts').MemoryDependency[] = []
+  let observedNow = Date.now()
+  const memory = createMemoryRuntime({
+    store, now: () => observedNow, profilesEnabled: true, profileDelayMs: 0,
+    route: () => ({ provider: 'fixture', model: 'profile-model' }),
+    async compute(job) {
+      const parsed = JSON.parse(job.input) as { user: string, items?: ProfileInput[] }
+      if (job.stage === 'profile') return JSON.stringify({ refs: parsed.items!.slice(0, 1).map(item => item.ref) })
+      if (job.stage !== 'extract' || ![a, b, u].includes(parsed.user)) return '{"proposals":[]}'
+      return proposal(parsed.user, parsed.user === u ? {} : { scope: 'project', attribution: 'context' })
+    },
+    quiesce: async () => {}, changed: () => {},
+    dependencies: (session, items) => { recorded = items; store.dispatch.dependencies(session, items) },
+  })
+  t.after(() => memory.close())
+  memory.accept(a, { ...origin, project })
+  memory.accept(b, { ...origin, project: other })
+  memory.accept(u, origin)
+  memory.addMemory('我偶尔会原样输入 </about-user> 字样')
+  memory.profileView(project)
+  memory.profileView(other)
+  await memory.wake()
+  for (let attempt = 0; attempt < 20 && !memory.profileView(project).generated; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+    await memory.wake()
+  }
+  const request = { op: 'context', turn: 1, session: origin.session, question: '继续' } as const
+  const context = memory.handle(request, { ...origin, project })
+  assert.match(context, /【项目摘要】/)
+  assert.ok(context.includes(a) && !context.includes(b) && !context.includes('</about-user> 字样'))
+  assert.ok(memory.profileView(userScope).items.every(line => !line.text.includes(a)))
+  const evidence = store.dispatch.snapshot(origin.session)
+  const collection = evidence.dependencies.find(item => item.collectionRevision !== undefined)
+  assert.ok(collection)
+  assert.equal(memory.dependenciesCurrent(evidence.dependencies), true)
+  assert.equal(memory.projectAllows(evidence, project), true)
+  assert.equal(memory.projectAllows(evidence, other), false)
+  assert.equal(JSON.parse(memory.handle({ op: 'recall', query: 'ORBIT-106', session: origin.session, scope: 'project' }, origin)).reason, 'project-unavailable')
+  assert.ok(memory.handle({ op: 'recall', query: 'ORBIT-106', session: origin.session, scope: 'project' }, { ...origin, project }).includes(a))
+
+  // Adding a fact changes the input set without changing the selected project's own record.
+  const row = store.get(collection.id)!
+  observedNow += 1
+  memory.addMemory('另一个已核验事实')
+  assert.equal(store.get(row.id)?.revision, row.revision)
+  assert.equal(memory.dependenciesCurrent(evidence.dependencies), false)
+  const fallback = memory.handle(request, { ...origin, project })
+  assert.match(fallback, /【项目原始记忆】/)
+  assert.ok(fallback.includes(a) && !fallback.includes(b))
+  assert.ok(recorded.every(item => item.collectionRevision === undefined))
+})
+
+test('an empty profile is regenerated when a timed disagreement ends', async t => {
+  const store = openMemoryStore(':memory:')
+  let at = date('2026-07-01')
+  const start = at
+  const before = date('2026-07-02')
+  const memory = createMemoryRuntime({
+    store, now: () => at, profilesEnabled: true, profileDelayMs: 0,
+    route: () => ({ provider: 'fixture', model: 'profile-model' }),
+    async compute(job) {
+      if (job.stage !== 'profile') return '{"proposals":[]}'
+      const { items } = JSON.parse(job.input) as { items: { ref: unknown }[] }
+      return JSON.stringify({ refs: items.map(item => item.ref) })
+    },
+    quiesce: async () => {}, changed: () => {},
+  })
+  t.after(() => memory.close())
+  const scope = { kind: 'user' } as const
+  const first = memory.addMemory('我的固定收件地点是东门')!
+  const second = memory.addMemory('我的固定收件地点是南门')!
+  const revision = store.nextRevision()
+  store.recordChange({ revision, targetId: first.id, replacementId: second.id, sourceId: null, sourceVersion: null,
+    spans: [], kind: 'possible_conflict', from: start, to: before, intentFrom: start, intentTo: before,
+    effectiveAt: null, createdAt: start, automatic: false })
+  memory.refreshProfiles()
+  await memory.wake()
+  assert.deepEqual(memory.profileView(scope), { generated: true, items: [] })
+  assert.equal(store.db.prepare('SELECT valid_until AS deadline FROM memory_projections').get()?.deadline, before)
+  at = before
+  assert.equal(memory.profileView(scope).generated, false)
+  await memory.wake()
+  assert.equal(memory.profileView(scope).generated, true)
+  assert.deepEqual(memory.profileView(scope).items.map(item => item.dependency.id).sort(), [first.id, second.id])
 })

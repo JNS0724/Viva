@@ -123,6 +123,10 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   expect(page.role === ROLE && page.memories.includes(FACT) && page.agentMarked, 'the profile page should show the intro and the memory', page)
   const meta = await run(win, `document.querySelector('.memory-item[data-source="agent"] .memory-meta')?.textContent ?? ''`)
   expect(meta.includes('关键词：') && meta.includes('周报') && meta.includes('张三'), 'the memory should show the verified keywords', meta)
+  await until(win, `window.agent.getMemory().then(({ summaries }) => summaries?.user.generated &&
+    summaries.user.items.some(item => item.text === ${JSON.stringify(FACT)} && item.source?.link?.startsWith('viva://timeline/')))`,
+  'the generated user profile with a verified chat source')
+  await until(win, `document.querySelector('[data-profile-summary="user"] button[aria-label$="的原文"]')`, 'the summary source control')
   await capture(win, outDir, 'memory-profile')
   await run(win, `document.querySelector('[name="memory-rebuild-indexes"]').click()`)
   await until(win, `document.querySelector('.toast')?.textContent?.includes('索引已开始重建，语义索引会在后台分批补齐。')`, 'the index rebuild receipt')

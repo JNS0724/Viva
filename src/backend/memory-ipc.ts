@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { MAX_MEMORY_CHARS } from './memory-sensitive.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
-import type { IpcResults } from '../shared/ipc-results.ts'
+import type { IpcResults, MemorySummaryView } from '../shared/ipc-results.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'
@@ -44,12 +44,13 @@ function assertMemoryText(value: unknown) {
   return value
 }
 
-export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { runtime, changingMemory, habits, cwd, chooseDocs, sourceLink }: {
+export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { runtime, changingMemory, habits, cwd, chooseDocs, sourceLink, projectScope }: {
   runtime: import('./memory-runtime.ts').MemoryRuntime,
   changingMemory: <T>(work: () => T | Promise<T>) => Promise<T>,
   habits: () => { text: string, samples: number },
   cwd: () => string,
   chooseDocs: () => Promise<string[] | null>,
+  projectScope?: () => ReturnType<typeof import('./memory-project.ts').memoryProjectScope>,
   sourceLink?: (sourceId: string, segmentId: string) => string | null,
 }) {
   const handle = handlerOf(ipcMain)
@@ -64,15 +65,26 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     const result = runtime.listMemories(query)
     return { ...result, items: result.items.map(withLinks) }
   }
-  handle('memory:get', () => ({
-    profile: runtime.profile(), ...list(), onboarding: runtime.onboarding(),
-    revision: runtime.revision(), synthesis: null, habits: habits(),
-  }))
+  const summary = ({ generated, items }: ReturnType<typeof runtime.profileView>): MemorySummaryView => ({
+    generated,
+    items: items.map(({ text, dependency, evidence }) => ({
+      id: dependency.id, text, source: evidence ? { text: evidence.text, link: linkFor(evidence) } : null,
+    })),
+  })
+  handle('memory:get', () => {
+    const project = projectScope?.()
+    return {
+      profile: runtime.profile(), ...list(), onboarding: runtime.onboarding(),
+      cleanupPending: runtime.cleanupPending(),
+      revision: runtime.revision(), habits: habits(),
+      summaries: { user: summary(runtime.profileView({ kind: 'user' })), project: project ? summary(runtime.profileView(project)) : null },
+    }
+  })
   handle('memory:list', list)
   handle('memory:set-profile', (changes, operation) => changingMemory(() => runtime.setProfile(changes, operation)))
   handle('memory:add', (text, kind = 'fact', operation) => changingMemory(() => runtime.addMemory(assertMemoryText(text), kind, operation)))
   handle('memory:update', (id, text, revision, operation) => changingMemory(() => runtime.editMemory(id, assertMemoryText(text), revision, operation)))
-  handle('memory:delete', (id, revision, operation) => changingMemory(() => runtime.forget(id, revision, 'delete', operation)))
+  handle('memory:delete', (id, revision, operation) => changingMemory(() => runtime.deleteMemory(id, revision, operation)))
   handle('memory:forget', (id, revision, operation) => changingMemory(() => runtime.forget(id, revision, 'forget', operation)))
   handle('memory:restore', (id, revision, operation) => changingMemory(() => runtime.restore(id, revision, operation)))
   handle('memory:resolve-conflict-pair', (first, second, resolution, operation, conflictId, interval) => changingMemory(() =>

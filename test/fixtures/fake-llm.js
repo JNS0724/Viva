@@ -180,6 +180,7 @@ const systemText = (request) => (Array.isArray(request.system) ? request.system.
 const EXTRACTOR = '记忆整理员'
 const MEMORY_REVIEWER = '记忆变更复核员'
 const MEMORY_QUESTION_REVIEWER = '记忆提问校验员'
+const MEMORY_PROFILER = '从已核验的记忆和用户手填资料中，选择最多六条'
 const modelInput = request => JSON.parse(textParts(request.messages.at(-1))[0])
 
 /** Plays the structured extractor for a preference, an open fact or a proposed change. */
@@ -246,6 +247,10 @@ function review(request) {
 
 /** @returns {{ tool: { name: string, input: object } } | { text: string }} */
 export function decide(request) {
+  if (systemText(request).includes(MEMORY_PROFILER)) {
+    const { items } = modelInput(request)
+    return { text: JSON.stringify({ refs: items.slice(0, 6).map(({ ref }) => ref) }) }
+  }
   if (systemText(request).includes(MEMORY_QUESTION_REVIEWER)) return reviewMemoryQuestion(request)
   if (JSON.stringify(request.messages).includes(REVIEWER) || systemText(request).includes(REVIEWER)) return review(request)
   if (systemText(request).includes(MEMORY_REVIEWER)) return reviewMemory(request)

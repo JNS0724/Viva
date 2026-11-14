@@ -41,23 +41,32 @@ export function memoryNotice({ memories = [], invalidated = [] }: { memories?: r
 /** The "关于你" page and the intro. */
 export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'>) {
   let searchTimer: ReturnType<typeof setTimeout> | undefined
+  let memoryRequest = 0
+  let searchRequest = 0
   let changesRequest = 0
   let invalidRequest = 0
   const fail = (err: unknown) => dispatch({ type: 'memory_failed', message: errorMessage(err) })
 
   async function loadMemory() {
+    const request = ++memoryRequest
     try {
-      dispatch({ type: 'memory_loaded', data: await api.getMemory() })
+      const data = await api.getMemory()
+      if (request !== memoryRequest) return false
+      dispatch({ type: 'memory_loaded', data })
+      return true
     } catch (err) {
-      fail(err)
+      if (request === memoryRequest) fail(err)
+      return false
     }
   }
 
   async function runSearch(query: string) {
+    const request = ++searchRequest
     try {
-      dispatch({ type: 'memory_listed', query, ...await api.listMemories(query.trim()) })
+      const result = await api.listMemories(query.trim())
+      if (request === searchRequest) dispatch({ type: 'memory_listed', query, ...result })
     } catch (err) {
-      fail(err)
+      if (request === searchRequest && query === getState().memory.query) fail(err)
     }
   }
 
@@ -82,7 +91,11 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
   }
 
   async function refreshMemoryViews() {
-    await loadMemory()
+    searchRequest++
+    invalidRequest++
+    changesRequest++
+    dispatch({ type: 'memory_summaries_stale' })
+    if (!await loadMemory()) return
     const current = getState().memory
     await Promise.all([
       current.open && current.query.trim() ? runSearch(current.query) : null,
@@ -129,8 +142,11 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       loadMemory()
     },
     closeProfile() {
+      memoryRequest++
+      searchRequest++
       invalidRequest++
       changesRequest++
+      clearTimeout(searchTimer)
       dispatch({ type: 'memory_close' })
     },
     editField: (key: string | null) => dispatch({ type: 'memory_edit', key }),
@@ -151,6 +167,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       dispatch({ type: 'memory_busy' })
       try {
         dispatch({ type: 'memory_profile_saved', profile: await api.saveProfile({ [key]: value }, globalThis.crypto.randomUUID()) })
+        await refreshMemoryViews()
       } catch (err) {
         fail(err)
       }
@@ -190,7 +207,8 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     async forgetMemory(memory: MemoryItem) {
       try {
         await api.forgetMemory(memory.id, memory.revision, globalThis.crypto.randomUUID())
-        await runSearch(getState().memory.query)
+        await refreshMemoryViews()
+        showToast(t('memory-actions.memory.stopped'))
       } catch (err) {
         fail(err)
       }
@@ -198,11 +216,10 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
 
     async deleteMemory(memory: MemoryItem) {
       try {
-        if (await api.deleteMemory(memory.id, memory.revision, globalThis.crypto.randomUUID())) {
-          dispatch({ type: 'memory_removed', id: memory.id })
-          await runSearch(getState().memory.query)
-          showToast(t("memory-actions.memory.deleted"))
-        }
+        const result = await api.deleteMemory(memory.id, memory.revision, globalThis.crypto.randomUUID())
+        dispatch({ type: 'memory_removed', id: memory.id })
+        await refreshMemoryViews()
+        showToast(t(result.status === 'cleared' ? 'memory-actions.memory.cleared' : 'memory-actions.memory.cleanup.pending'))
       } catch (err) {
         fail(err)
       }

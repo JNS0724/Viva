@@ -143,8 +143,12 @@ async function checkRuntime(embedder: MemoryEmbedder) {
     { scope: privateScope, id: 'private-escrow', text: 'ORCHID-19 的托管密钥只交给黑桦项目的专员。' },
   ]
   const memory = createMemoryRuntime({
-    store, embedder, maintainSemanticIndex: true, route: () => ({ provider: 'offline-fixture', model: 'source-echo' }),
+    store, embedder, maintainSemanticIndex: true, profilesEnabled: true, profileDelayMs: 0, route: () => ({ provider: 'offline-fixture', model: 'source-echo' }),
     compute: job => {
+      if (job.stage === 'profile') {
+        const { items } = JSON.parse(job.input) as { items: { ref: unknown }[] }
+        return Promise.resolve(JSON.stringify({ refs: items.slice(0, 6).map(item => item.ref) }))
+      }
       if (job.stage !== 'extract') return null
       const { user } = JSON.parse(job.input) as { user: string }
       return Promise.resolve(JSON.stringify({ proposals: [{
@@ -188,6 +192,15 @@ async function checkRuntime(embedder: MemoryEmbedder) {
       await new Promise(resolve => setTimeout(resolve, 20))
     }
     assert.equal(indexed.get()?.count, byId.size, 'the derived index must cover the warm fixture')
+    await memory.wake()
+    assert.ok(memory.profileView({ kind: 'user' }).generated, 'measure the generated L0, not a warming fallback')
+    const profileTimes: number[] = []
+    for (let i = 0; i < 100; i++) {
+      const started = performance.now()
+      const profile = memory.profileView({ kind: 'user' })
+      profileTimes.push(performance.now() - started)
+      assert.ok(profile.items.length > 0 && profile.items.length <= 6)
+    }
     const cases: RuntimeCase[] = []
     for (const item of queries) {
       const started = performance.now()
@@ -215,7 +228,7 @@ async function checkRuntime(embedder: MemoryEmbedder) {
         timings: timingsOf(cases.map(item => item[layer].elapsedMs)),
       }
     }
-    return { automatic: metrics('automatic'), keyword: metrics('keyword'), semantic: metrics('semantic'), scopeCases, cases }
+    return { profile: timingsOf(profileTimes), automatic: metrics('automatic'), keyword: metrics('keyword'), semantic: metrics('semantic'), scopeCases, cases }
   } finally {
     memory.close()
   }

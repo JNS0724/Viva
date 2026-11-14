@@ -29,6 +29,8 @@ const SCHEMA = `
 
 /** Waits after a failed try, the last repeated. */
 export const RETRY_MS: readonly number[] = Object.freeze([5_000, 30_000, 120_000, 600_000])
+/** Node treats larger delays as 1 ms. Wake and check the clock again for longer deadlines. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 export type Outcome = 'done' | 'wait' | 'retry'
 export interface Effect<P = unknown> { kind: string, key: string, payload: P, generation: number, attempts: number }
@@ -168,7 +170,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
 
   function wakeIn(ms: number) {
     if (timer !== null) cancelTimer(timer)
-    timer = later(() => { timer = null; void wake() }, ms)
+    timer = later(() => { timer = null; void wake() }, Math.min(ms, MAX_TIMER_DELAY_MS))
   }
 
   /** The next wake: after a pass that failed, a growing wait; else when the soonest effect put off is due. */

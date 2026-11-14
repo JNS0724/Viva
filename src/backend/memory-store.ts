@@ -88,19 +88,24 @@ const DISPATCH_SCHEMA = `
 `
 
 // Derived delivery metadata is additive. Existing session receipts do not have relation deadlines.
-const RELATION_DISPATCH_SCHEMA = `
+const DERIVED_DISPATCH_SCHEMA = `
   CREATE TABLE IF NOT EXISTS memory_session_relation_dependencies (
     session TEXT NOT NULL, fact INTEGER NOT NULL, revision INTEGER NOT NULL, expires INTEGER NOT NULL,
     PRIMARY KEY(session, fact, revision)
   );
+  CREATE TABLE IF NOT EXISTS memory_session_projects (session TEXT PRIMARY KEY, project TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS memory_session_profile_dependencies (
+    session TEXT NOT NULL, fact INTEGER NOT NULL, revision INTEGER NOT NULL, collection_revision INTEGER NOT NULL, expires INTEGER,
+    PRIMARY KEY(session, fact, revision, collection_revision)
+  );
 `
 
-export type MemoryDependency = { id: number, revision: number, asOf?: string, asOfZone?: string, disputed?: boolean, expiresAt?: number }
-export type MemoryProvenance = { dependencies: MemoryDependency[], sources: string[], turnOnly: boolean, epoch: number }
+export type MemoryDependency = { id: number, revision: number, asOf?: string, asOfZone?: string, disputed?: boolean, expiresAt?: number, collectionRevision?: number }
+export type MemoryProvenance = { dependencies: MemoryDependency[], sources: string[], turnOnly: boolean, epoch: number, projects?: readonly string[] }
 
 export interface MemorySource {
   id: string, operation: string, version: number, conversation: string | null, session: string | null,
-  scope: MemoryScope, context: MemoryScope | null, author: 'user' | 'manual' | 'answer', text: string | null, hash: string | null, length: number,
+  scope: MemoryScope, context: MemoryScope | null, project?: MemoryScope | null, author: 'user' | 'manual' | 'answer', text: string | null, hash: string | null, length: number,
   question: string | null, requestId: string | null, questionId: string | null, at: number, timezone: string, outcome: string, withdrawn: boolean,
   rememberedHash?: string | null,
 }
@@ -109,6 +114,7 @@ export type StoredFact = Pick<MemoryFact, 'subject' | 'predicate' | 'relation' |
 export interface MemoryCandidate {
   sourceId: string, start: number, end: number, proposal: string, expiresAt: number,
 }
+const CANDIDATE_TARGET = "COALESCE(json_extract(proposal,'$.proposal.change.target.id'),json_extract(proposal,'$.change.target.id'))"
 export type MemoryEvidence = {
   sourceId: string, conversationId: string | null, sourceVersion: number, start: number, end: number,
   parts: MemoryFact['evidence'] | null, spans: { start: number, end: number }[], changeId: number | null,
@@ -139,7 +145,7 @@ type MemoryRow = Omit<MemoryEntry, 'scope' | 'conditional' | 'keywords' | 'evide
 type ChangeRow = Omit<MemoryChange, 'spans' | 'automatic' | 'intentWindows' | 'oldValueSpans' | 'needsConfirmation'>
   & { spans: string, automatic: number, intentWindows: string | null, oldValueSpans: string, needsConfirmation: number }
 type EvidenceRow = Omit<MemoryEvidence, 'parts' | 'spans' | 'inheritsChangeTime'> & { parts: string | null, spans: string, inheritsChangeTime: number }
-type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'withdrawn' | 'requestId' | 'questionId' | 'rememberedHash'> & { scope: string, context: string | null, withdrawn: number, request_id: string | null, question_id: string | null, remembered_hash: string | null }
+type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'withdrawn' | 'requestId' | 'questionId' | 'rememberedHash'> & { scope: string, context: string | null, project: string | null, withdrawn: number, request_id: string | null, question_id: string | null, remembered_hash: string | null }
 const columns = 'id, revision, text, kind, scope, modality, conditional, keywords, source, conversation AS conversationId, created_at AS createdAt, updated_at AS updatedAt, state, retention, authorized_revision AS authorizedRevision, invalid_at AS invalidAt, invalidated_by AS invalidatedBy, valid_from AS validFrom, valid_to AS validTo, asserted_from AS assertedFrom, asserted_to AS assertedTo, windows'
 const changeColumns = 'id, revision, target AS targetId, replacement AS replacementId, kind, source AS sourceId, source_version AS sourceVersion, spans, affected_from AS "from", affected_to AS "to", effective_at AS effectiveAt, intent_from AS intentFrom, intent_to AS intentTo, derived_from AS derivedFrom, intent_windows AS intentWindows, old_value_spans AS oldValueSpans, needs_confirmation AS needsConfirmation, created_at AS createdAt, automatic, status'
 export const memoryScopeKey = (scope: MemoryScope) => scope.kind === 'user' ? '{"kind":"user"}' : JSON.stringify({ kind: scope.kind, id: scope.id })
@@ -182,13 +188,17 @@ export function openMemoryStore(file: string, now = Date.now) {
       db.exec(`PRAGMA user_version = ${MEMORY_CONTRACT}`)
       db.prepare('INSERT INTO memory_meta (key,value) VALUES (?,?)').run('secret', randomBytes(32).toString('hex'))
     })
-    db.exec(RELATION_DISPATCH_SCHEMA)
+    db.exec(DERIVED_DISPATCH_SCHEMA)
+    if (!db.prepare("SELECT 1 FROM pragma_table_info('memory_sources') WHERE name='project'").get()) {
+      db.exec('ALTER TABLE memory_sources ADD COLUMN project TEXT')
+    }
     // Reindex these derived keys if the normalization of entity labels changes.
     db.function('memory_relation_label', { deterministic: true }, value =>
       typeof value === 'string' ? memoryRelationLabel(value) : '')
     db.exec(`
       CREATE INDEX IF NOT EXISTS memory_fact_relation_subject ON memory_facts(memory_relation_label(subject)) WHERE polarity='positive';
       CREATE INDEX IF NOT EXISTS memory_fact_relation_object ON memory_facts(memory_relation_label(object)) WHERE polarity='positive';
+      CREATE INDEX IF NOT EXISTS memory_candidates_target ON memory_candidates(${CANDIDATE_TARGET});
     `)
   } catch (error) {
     db.close()
@@ -224,6 +234,7 @@ export function openMemoryStore(file: string, now = Date.now) {
   const linksOf = db.prepare(`${activeChangeSql} AND (target=? OR replacement=?) ORDER BY id`)
   const activeChanges = db.prepare(`${activeChangeSql} ORDER BY id`)
   const rowOf = db.prepare(`SELECT ${columns} FROM memories WHERE id=?`)
+  const exists = db.prepare('SELECT 1 FROM memories WHERE id=?')
   const entryOrder = 'ORDER BY updated_at DESC,id DESC'
   const allEntries = {
     rows: db.prepare(`SELECT ${columns} FROM memories ${entryOrder}`),
@@ -310,6 +321,25 @@ export function openMemoryStore(file: string, now = Date.now) {
     fallbackRefs.all(...memoryScopeKeys(scope), ...memoryWindowParameters(interval), Number(contextOnly), limit) as RecallRef[]
   const relationRecallRefs = (scope: MemoryScope, label: string, interval: MemoryInterval, limit: number) =>
     relationRefs.all(`named:${label}`, label, memoryScopeKey(scope), alternateScopeKey(scope), ...memoryWindowParameters(interval), limit) as RecallRef[]
+  const profileRefs = db.prepare(`SELECT m.id,m.revision FROM memories m
+    WHERE m.scope IN (?,?) AND ${retainedReadable} AND ${memoryEligibleEvidence}
+      AND m.modality='asserted' AND m.conditional=0 AND ${memoryWindowsOverlap}
+    ORDER BY m.updated_at DESC,m.id DESC LIMIT ?`)
+  const profileBoundary = db.prepare(`WITH eligible AS (
+    SELECT m.id, m.valid_from, m.windows FROM memories m WHERE m.scope IN (?,?)
+      AND ${retainedReadable} AND ${memoryEligibleEvidence} AND m.modality='asserted' AND m.conditional=0
+  ), bounds(at) AS (
+    SELECT valid_from FROM eligible
+    UNION ALL SELECT json_extract(w.value,'$.from') FROM eligible m JOIN json_each(m.windows) w
+    UNION ALL SELECT json_extract(w.value,'$.to') FROM eligible m JOIN json_each(m.windows) w
+    UNION ALL SELECT e.asserted_to FROM eligible m JOIN memory_evidence e ON e.memory=m.id
+    UNION ALL SELECT l.affected_from FROM eligible m JOIN memory_links l ON l.target=m.id OR l.replacement=m.id WHERE l.status='applied'
+    UNION ALL SELECT l.affected_to FROM eligible m JOIN memory_links l ON l.target=m.id OR l.replacement=m.id WHERE l.status='applied'
+  ) SELECT MIN(at) AS at FROM bounds WHERE at>?`)
+  const profileCandidates = (scope: MemoryScope, at: number, limit: number) =>
+    profileRefs.all(memoryScopeKey(scope), alternateScopeKey(scope), ...memoryWindowParameters({ from: at, to: at + 1 }), limit) as RecallRef[]
+  const nextProfileBoundary = (scope: MemoryScope, at: number) =>
+    (profileBoundary.get(memoryScopeKey(scope), alternateScopeKey(scope), at) as { at: number | null }).at
   const modelEligible = (id: number) => Boolean(eligibleEvidence.get(id))
   const pendingEndingAt = db.prepare(`SELECT 1 FROM memory_links WHERE kind='end' AND status='applied' AND needs_confirmation=1
     AND (? IS NULL OR intent_from IS NULL OR intent_from<?)
@@ -365,12 +395,12 @@ export function openMemoryStore(file: string, now = Date.now) {
       fact.object, fact.polarity, Number(fact.dated), fact.dated && !fact.uncertain ? fact.from : null, fact.dated && !fact.uncertain ? fact.to : null)
   const readSource = (id: string): MemorySource | null => {
     const row = db.prepare('SELECT * FROM memory_sources WHERE id=?').get(id) as SourceRow | undefined
-    return row ? { ...row, requestId: row.request_id, questionId: row.question_id, rememberedHash: row.remembered_hash, scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null, withdrawn: Boolean(row.withdrawn) } : null
+    return row ? { ...row, requestId: row.request_id, questionId: row.question_id, rememberedHash: row.remembered_hash, scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null, project: row.project ? memoryScope.parse(JSON.parse(row.project)) : null, withdrawn: Boolean(row.withdrawn) } : null
   }
   const insertSource = (source: MemorySource) => db.prepare(`INSERT INTO memory_sources
-    (id, operation, version, conversation, session, scope, context, author, text, hash, remembered_hash, length, question, request_id, question_id, at, timezone, outcome)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
-    memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.author, source.text, source.hash, source.rememberedHash ?? null, source.length,
+    (id, operation, version, conversation, session, scope, context, project, author, text, hash, remembered_hash, length, question, request_id, question_id, at, timezone, outcome)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
+    memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.project ? memoryScopeKey(source.project) : null, source.author, source.text, source.hash, source.rememberedHash ?? null, source.length,
     source.question, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
   const outcome = (id: string, state: string) => db.prepare('UPDATE memory_sources SET outcome=? WHERE id=?').run(state, id)
   const withdrawSource = (id: string) => db.prepare("UPDATE memory_sources SET withdrawn=1,text=NULL,question=NULL,hash=NULL,remembered_hash=NULL,outcome='withdrawn' WHERE id=?").run(id)
@@ -391,6 +421,9 @@ export function openMemoryStore(file: string, now = Date.now) {
       .run(JSON.stringify(spans), memory, edge.sourceId, edge.start, edge.end)
   const redactSource = (source: string, text: string) =>
     db.prepare('UPDATE memory_sources SET text=?,question=NULL WHERE id=?').run(text, source)
+  // An assistant question can quote an old value without a reference to the entry it used.
+  const clearSourceQuestions = () => (db.prepare('UPDATE memory_sources SET question=NULL WHERE question IS NOT NULL RETURNING id')
+    .all() as { id: string }[]).map(row => row.id)
   const setKeywords = (id: number, words: readonly string[]) => db.prepare('UPDATE memories SET keywords=? WHERE id=?').run(JSON.stringify(words), id)
   const touchChange = (id: number, revision: number) =>
     db.prepare('UPDATE memory_links SET revision=? WHERE id=?').run(revision, id)
@@ -458,6 +491,10 @@ export function openMemoryStore(file: string, now = Date.now) {
     ORDER BY c.expires_at DESC,c.source,c.start LIMIT ?`)
   const pendingCandidate = db.prepare(`SELECT source AS sourceId,start,end,proposal,expires_at AS expiresAt
     FROM memory_candidates WHERE reason='uncertain-change' AND expires_at>? AND source=? AND start=? AND end=?`)
+  const candidatesReferencing = db.prepare(`SELECT source AS sourceId,start,end,proposal,expires_at AS expiresAt
+    FROM memory_candidates WHERE ${CANDIDATE_TARGET}=?`)
+  const candidateReference = db.prepare(`SELECT 1 FROM memory_candidates WHERE ${CANDIDATE_TARGET}=? LIMIT 1`)
+  const removeCandidate = db.prepare('DELETE FROM memory_candidates WHERE source=? AND start=? AND end=?')
   const discardUnused = (id: string) => db.prepare(`UPDATE memory_sources SET text=NULL,question=NULL WHERE id=?
     AND NOT EXISTS (SELECT 1 FROM memory_evidence WHERE source=?)
     AND NOT EXISTS (SELECT 1 FROM memory_candidates WHERE source=?)
@@ -506,6 +543,8 @@ export function openMemoryStore(file: string, now = Date.now) {
   const clearCandidates = (id: string) => db.prepare('DELETE FROM memory_candidates WHERE source=?').run(id)
   const sessionEpoch = (id: string) => (db.prepare('SELECT epoch FROM memory_sessions WHERE id=?').get(id) as { epoch: number } | undefined)?.epoch ?? 0
   const recordSession = (id: string) => db.prepare('INSERT OR IGNORE INTO memory_sessions VALUES (?,?)').run(id, epoch())
+  const sessionProject = (id: string) => db.prepare('SELECT project FROM memory_session_projects WHERE session=?').get(id)?.project as string | undefined
+  const recordSessionProject = (id: string, project: string) => db.prepare('INSERT OR IGNORE INTO memory_session_projects VALUES (?,?)').run(id, project)
   const profile = () => Object.fromEntries((db.prepare('SELECT field,value,updated_at AS updatedAt,revision FROM profile').all() as Array<{ field: string, value: string, updatedAt: number, revision: number }>)
     .map(({ field, value, updatedAt, revision }) => [field, { value, updatedAt, revision, source: 'user' }]))
   function setProfile(fields: Record<string, string>) {
@@ -524,6 +563,11 @@ export function openMemoryStore(file: string, now = Date.now) {
   const addRelationDeadline = db.prepare(`INSERT INTO memory_session_relation_dependencies VALUES (?, ?, ?, ?)
     ON CONFLICT(session, fact, revision) DO UPDATE SET expires=MIN(expires,excluded.expires)`)
   const readRelationDeadlines = db.prepare('SELECT fact AS id, revision, expires AS expiresAt FROM memory_session_relation_dependencies WHERE session=?')
+  const addProfileDependency = db.prepare(`INSERT INTO memory_session_profile_dependencies VALUES (?,?,?,?,?)
+    ON CONFLICT(session,fact,revision,collection_revision) DO UPDATE SET expires=
+      CASE WHEN expires IS NULL OR excluded.expires IS NULL THEN COALESCE(expires,excluded.expires) ELSE MIN(expires,excluded.expires) END`)
+  const readProfileDependencies = db.prepare(`SELECT fact AS id, revision, collection_revision AS collectionRevision, expires
+    FROM memory_session_profile_dependencies WHERE session=?`)
   const insertSessionSource = db.prepare('INSERT OR IGNORE INTO memory_session_sources VALUES (?, ?)')
   const readSessionSources = db.prepare('SELECT source FROM memory_session_sources WHERE session = ?')
   const retainTurnOnly = db.prepare('INSERT OR IGNORE INTO memory_session_turn_only VALUES (?)')
@@ -532,7 +576,8 @@ export function openMemoryStore(file: string, now = Date.now) {
     dependencies(session: string, dependencies: readonly MemoryDependency[]) {
       tx(() => {
         for (const item of dependencies) {
-          if (item.expiresAt !== undefined) addRelationDeadline.run(session, item.id, item.revision, item.expiresAt)
+          if (item.collectionRevision !== undefined) addProfileDependency.run(session, item.id, item.revision, item.collectionRevision, item.expiresAt ?? null)
+          else if (item.expiresAt !== undefined) addRelationDeadline.run(session, item.id, item.revision, item.expiresAt)
           else {
             // A civil date and its IANA zone together identify the day delivered by recall.
             const dated = item.asOf && item.asOfZone ? `${item.asOf}|${item.asOfZone}` : item.asOf ?? ''
@@ -544,6 +589,7 @@ export function openMemoryStore(file: string, now = Date.now) {
     source: (session: string, source: string) => insertSessionSource.run(session, source),
     turnOnly: (session: string) => retainTurnOnly.run(session),
     snapshot(session: string): MemoryProvenance {
+      const project = sessionProject(session)
       const rows = readDependencies.all(session) as Array<{ id: number, revision: number, asOf: string, disputed: number }>
       return {
         dependencies: [
@@ -552,24 +598,30 @@ export function openMemoryStore(file: string, now = Date.now) {
             return { ...row, asOf: day || undefined, ...(asOfZone ? { asOfZone } : {}), disputed: Boolean(row.disputed) }
           }),
           ...readRelationDeadlines.all(session) as Array<{ id: number, revision: number, expiresAt: number }>,
+          ...(readProfileDependencies.all(session) as { id: number, revision: number, collectionRevision: number, expires: number | null }[])
+            .map(({ expires, ...item }) => ({ ...item, ...(expires === null ? {} : { expiresAt: expires }) })),
         ],
         sources: (readSessionSources.all(session) as Array<{ source: string }>).map(row => row.source),
         turnOnly: Boolean(usedTurnOnly.get(session)),
+        ...(project ? { projects: [project] } : {}),
         epoch: epoch(),
       }
     },
   }
-  return { db, tx, revision, epoch, nextRevision, get, list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
-    readSource, insertSource, outcome, withdrawSource, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource,
+  return { db, tx, revision, epoch, nextRevision, get, exists: (id: number) => Boolean(exists.get(id)), list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, profileCandidates, nextProfileBoundary, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
+    readSource, insertSource, outcome, withdrawSource, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
     insert, setAssertion, project, touch, authorize, remove, forgetEntry, restoreEntry, recordFact, setKeywords, touchChange,
     exclude, excluded, sourceExcluded, excludeSource, sourceIds, answerSourceIds, memoriesFrom, changesFrom, changesReferencing, hasChangeSource,
     deliveredSourceIds, deliveredSource, recordDeliveredSource, dispatch,
     priorSources, candidate, expire, clearCandidates, discardUnused, compactSource, nextCandidateExpiry,
+    candidatesReferencing: (id: number) => candidatesReferencing.all(id) as unknown as MemoryCandidate[],
+    hasCandidateReference: (id: number) => Boolean(candidateReference.get(id)),
+    removeCandidate: ({ sourceId, start, end }: MemoryCandidate) => removeCandidate.run(sourceId, start, end),
     pendingChanges: (at: number) => pendingCandidates.all(at) as unknown as MemoryCandidate[],
     recallPendingChanges: (at: number, scope: MemoryScope | undefined, limit: number) =>
       scopedPendingCandidates.all(at, scope?.kind ?? 'user', scope && 'id' in scope ? scope.id : '', limit) as unknown as MemoryCandidate[],
     pendingChange: (at: number, ref: Pick<MemoryCandidate, 'sourceId' | 'start' | 'end'>) =>
       pendingCandidate.get(at, ref.sourceId, ref.start, ref.end) as unknown as MemoryCandidate | undefined,
-    sessionEpoch, recordSession, meta, setMeta, profile, setProfile, command, recordCommand, close: () => db.close() }
+    sessionEpoch, recordSession, sessionProject, recordSessionProject, meta, setMeta, profile, setProfile, command, recordCommand, close: () => db.close() }
 }
 export type MemoryStore = ReturnType<typeof openMemoryStore>

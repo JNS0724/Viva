@@ -90,28 +90,31 @@ test('onboarding starts pending and only takes known states', t => {
 
 test('the context block carries the fixed layer and pushed memories with their names, never the email', () => {
   const memory = (text: string) => ({ text, createdAt: at(10, 12) })
+  const preference = { text: '回答先给结论', dependency: { id: 1, revision: 3, collectionRevision: 5 } }
+  const projectFact = { text: '先核对清结算的草稿', dependency: { id: 2, revision: 5 } }
   const fixed = {
     profile: { role: { value: '后端负责人\n负责清结算' }, email: { value: 'me@corp.example' } },
-    synthesis: '【偏好】\n- 回答先给结论',
-    recent: [memory('李四是新的直属上级')],
-    habits: '常在 9–12 点使用',
+    user: { generated: true, items: [preference] },
+    project: { generated: false, items: [projectFact] },
   }
-  const { text: context } = packContext({ fixed, pushed: [{ memory: memory('周报每周五交给张三'), names: ['周报', '张三'] }] })
+  const { text: context, profile } = packContext({ fixed, pushed: [{ memory: memory('周报每周五交给张三'), names: ['周报', '张三'] }] })
   assert.match(context, /^<about-user>\n/)
   assert.match(context, /【记忆规则】\n.*memory_recall/)
-  assert.match(context, /【画像】\n角色与职责：后端负责人；负责清结算\n【助手整理的画像】\n【偏好】\n- 回答先给结论\n【最近了解到的】\n- （2026-10-12）李四是新的直属上级\n/)
-  assert.match(context, /【使用习惯】\n常在 9–12 点使用/)
+  assert.match(context, /【画像】\n角色与职责：后端负责人；负责清结算\n【助手整理的画像】\n- 回答先给结论\n【项目原始记忆】\n- 先核对清结算的草稿\n/)
   assert.match(context, /【相关记忆】\n- （2026-10-12）周报每周五交给张三〔周报、张三〕\n<\/about-user>$/)
-  assert.doesNotMatch(context, /me@corp/)
+  assert.doesNotMatch(context, /me@corp|collectionRevision/)
+  assert.deepEqual(profile, [preference, projectFact])
   assert.doesNotMatch(packContext({ fixed: null, pushed: [{ memory: memory('x'), names: ['x'] }] }).text, /记忆规则/)
-  assert.deepEqual(packContext({ fixed: null, pushed: [] }), { text: '', pushed: [] })
+  assert.deepEqual(packContext({ fixed: null, pushed: [] }), { text: '', pushed: [], profile: [] })
 })
 
 test('the fixed layer stays within its budget however much is stored', () => {
-  const many = Array.from({ length: 200 }, (_, i) => ({ text: `第 ${i} 条很长的记忆`.padEnd(120, '。'), createdAt: at(1, 1) }))
+  const many = Array.from({ length: 200 }, (_, i) => ({ text: `第 ${i} 条很长的记忆`.padEnd(120, '。'), dependency: { id: i + 1, revision: 1 } }))
   const profile = Object.fromEntries(['role', 'department', 'domain', 'projects', 'people', 'preferences', 'sources'].map((key) => [key, { value: 'x'.repeat(1000) }]))
-  const { text: context } = packContext({ fixed: { profile, synthesis: 'y'.repeat(1200), recent: many }, pushed: [] })
+  const { text: context, profile: shown } = packContext({ fixed: { profile, user: { generated: true, items: many } }, pushed: [] })
   assert.ok(context.length <= MAX_CONTEXT_CHARS, `was ${context.length}`)
+  assert.ok(shown.length > 0 && shown.length < many.length)
+  assert.deepEqual(shown, many.filter(item => context.includes(item.text)))
   assert.match(context, /【记忆规则】/, 'the rules always fit')
   assert.match(context, /<\/about-user>$/)
 })
@@ -136,7 +139,7 @@ test('the context budget covers the date, profile, full memories and the conflic
   assert.ok(text.includes(`${exact.memory.text}〔周报〕`), 'critical qualifiers and a fitting memory remain complete')
   assert.match(text, /【记忆冲突】\n当前问题涉及待澄清的记忆。/)
   assert.doesNotMatch(text, /过大的周报|没有空间的周报/)
-  assert.deepEqual(packContext({ fixed: null, pushed: [oversized] }), { text: '', pushed: [] })
+  assert.deepEqual(packContext({ fixed: null, pushed: [oversized] }), { text: '', pushed: [], profile: [] })
 })
 
 test('active hours need enough questions and merge neighbouring hours', () => {

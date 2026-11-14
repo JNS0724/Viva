@@ -3,9 +3,10 @@ import { t } from '../../shared/i18n/translate.ts'
 import { PROFILE_FIELDS } from '../../shared/profile-fields.ts'
 import { formatListTime } from '../selectors.ts'
 import { formatDate } from '../../shared/i18n/format.ts'
+import { timelinePlace } from '../timeline-search.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { icon } from './icons.ts'
-import type { MemoryChangeRecord } from '../../shared/ipc-results.ts'
+import type { MemoryChangeRecord, MemorySummaryView } from '../../shared/ipc-results.ts'
 
 /** The 关于你 page's part of the state (personal-state.ts). */
 type MemoryPage = State['memory']
@@ -277,12 +278,31 @@ function memoriesSection(memory: MemoryPage, handlers: Handlers, now: number) {
       ? h('ul', { class: 'memory-list' }, memory.items.map((item: MemoryRow) =>
         memoryItem(item, memory.editingMemory?.id === item.id ? memory.editingMemory.revision : null, handlers, now)))
       : h('p', { class: 'empty', text: empty }),
+    memory.cleanupPending > 0 ? h('p', { class: 'help', role: 'status',
+      text: t('profile-panel.memory.cleanup.pending', { count: memory.cleanupPending }) }) : null,
     invalidSection(memory, handlers, now),
     memoryChangesSection(memory, handlers),
     h('div', { class: 'memory-invalid' },
       h('button', { class: 'link-btn', type: 'button', name: 'memory-rebuild-indexes', disabled: memory.rebuildingIndexes,
         text: t(memory.rebuildingIndexes ? 'profile-panel.memory.index.rebuilding' : 'profile-panel.memory.index.rebuild'),
         onClick: handlers.rebuildMemoryIndexes })))
+}
+
+function summarySection(scope: 'user' | 'project', summary: MemorySummaryView | null, handlers: Handlers) {
+  if (!summary?.items.length) return null
+  return h('section', { class: 'profile-section', 'aria-labelledby': `profile-summary-${scope}`, 'data-profile-summary': scope },
+    h('h3', { class: 'profile-heading', id: `profile-summary-${scope}`, text: t(`profile-panel.summary.${scope}`) }),
+    summary.generated ? null : h('p', { class: 'help', text: t('profile-panel.summary.fallback') }),
+    h('ul', { class: 'memory-list' }, summary.items.map(({ id, text, source }) => {
+      const link = source?.link
+      return h('li', { class: 'memory-item', 'data-memory-id': id },
+        h('div', { class: 'memory-copy' },
+          h('span', { class: 'memory-text', text }),
+          h('span', { class: 'memory-meta', text: t('profile-panel.memory.revision', { id }) }),
+          source?.text && source.text !== text ? h('p', { class: 'help', text: source.text }) : null),
+        link && timelinePlace(link) ? h('button', { class: 'link-btn', type: 'button', text: t('profile-panel.memory.source'),
+          'aria-label': t('profile-panel.summary.source', { id }), onClick: () => { handlers.closeProfile(); handlers.openLink(link) } }) : null)
+    })))
 }
 
 function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[] {
@@ -294,6 +314,8 @@ function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[
       h('h3', { class: 'profile-heading', text: t("profile-panel.your.profile") }),
       h('div', { class: 'profile-grid' }, PROFILE_FIELDS.map((field) => fieldCard(field, memory, handlers))),
       habitsRow(memory.habits)),
+    memory.summaries ? summarySection('user', memory.summaries.user, handlers) : null,
+    memory.summaries ? summarySection('project', memory.summaries.project, handlers) : null,
     memoriesSection(memory, handlers, now),
   ]
 }

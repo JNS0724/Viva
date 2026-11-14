@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createMemoryActions, introChanges, introPrompt, memoryNotice } from '../src/renderer/memory-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
+import { renderProfilePanel } from '../src/renderer/view/profile-panel.ts'
 
 test('memory notices distinguish saved memories from facts that stopped counting', () => {
   assert.equal(memoryNotice({ memories: ['直属上级是李四'], invalidated: ['张三是直属上级'] }), '已记住：直属上级是李四；「张三是直属上级」已不再使用')
@@ -18,6 +19,126 @@ test('a restored memory moves out of the inactive list', () => {
   assert.equal(opened.memory.invalidOpen, true)
   assert.deepEqual([revived.memory.invalid, revived.memory.invalidItems, revived.memory.items.map(item => item.id), revived.memory.total], [0, [], [7], 1])
   assert.equal(reduce(opened, { type: 'memory_invalid_closed' }).memory.invalidOpen, false)
+})
+
+test('delete distinguishes stopping use and verified cleanup and refreshes the persistent status', async () => {
+  const memory = { id: 7, revision: 3, text: '要删除的具体记忆' }
+  const load = { profile: {}, items: [], total: 0, invalid: 0, onboarding: 'done', habits: { text: '', samples: 0 } }
+  let state: State = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
+    ...load, items: [memory], total: 1,
+  } })
+  const toasts: string[] = []
+  let cleanupPending = 0
+  const writes: Parameters<AgentApi['deleteMemory']>[] = []
+  const api: Pick<AgentApi, 'deleteMemory' | 'getMemory' | 'listInvalidMemories'> = {
+    deleteMemory: async (...args) => {
+      writes.push(args)
+      return { status: cleanupPending ? 'stopped' : 'cleared' }
+    },
+    getMemory: async () => ({ ...load, cleanupPending }),
+    listInvalidMemories: async () => [],
+  }
+  const actions = createMemoryActions({
+    api: api as AgentApi, getState: () => state, dispatch: action => { state = reduce(state, action) },
+    showToast: message => { toasts.push(message) }, errorMessage: String, ask: () => false,
+  })
+  await actions.toggleInvalid()
+  cleanupPending = 1
+  await actions.deleteMemory(memory)
+  assert.deepEqual(writes[0].slice(0, 2), [memory.id, memory.revision])
+  assert.equal(state.memory.cleanupPending, 1)
+  assert.deepEqual(state.memory.items, [])
+  assert.deepEqual(state.memory.invalidItems, [])
+  assert.equal(toasts[0], '已停止使用这条记忆，正在清理副本。')
+
+  cleanupPending = 0
+  await actions.loadMemory()
+  assert.equal(state.memory.cleanupPending, 0)
+  await actions.deleteMemory({ ...memory, id: 8 })
+  assert.equal(toasts[1], 'Viva 中的记忆副本已删除')
+})
+
+test('a summary from an earlier load cannot replace the fallback after memory changes', async () => {
+  let state: State = reduce(initialState, { type: 'memory_open' })
+  const old = { user: { generated: true, items: [{ id: 1, text: '已撤回', source: null }] }, project: null }
+  const fallback = { user: { generated: false, items: [{ id: 2, text: '目前有效', source: null }] }, project: null }
+  const load = { profile: {}, items: [], total: 0, invalid: 0, onboarding: 'done', habits: { text: '', samples: 0 } }
+  type Data = typeof load & { summaries: typeof old }
+  const pending: Array<(data: Data) => void> = []
+  const api: Pick<AgentApi, 'getMemory'> = { getMemory: () => new Promise<Data>(resolve => { pending.push(resolve) }) }
+  const actions = createMemoryActions({
+    api: api as AgentApi, getState: () => state, dispatch: action => { state = reduce(state, action) },
+    showToast: () => {}, errorMessage: String, ask: () => false,
+  })
+  state = reduce(state, { type: 'memory_loaded', data: { ...load, summaries: old } })
+  const stale = actions.loadMemory()
+  actions.onMemoryChanged({})
+  assert.equal(state.memory.summaries, null, 'stop presenting the invalid summary as soon as invalidation arrives')
+  pending[1]({ ...load, summaries: fallback })
+  await Promise.resolve()
+  pending[0]({ ...load, summaries: old })
+  await stale
+  assert.deepEqual(state.memory.summaries, fallback)
+
+  const closing = actions.loadMemory()
+  actions.closeProfile()
+  pending[2]({ ...load, summaries: fallback })
+  await closing
+  assert.equal(state.memory.summaries, null)
+})
+
+test('About You presents distinct summary scopes, fallback notice, and verified timeline navigation', () => {
+  class Element {
+    textContent = ''
+    children: Element[] = []
+    attrs: Record<string, string> = {}
+    listeners: Record<string, () => void> = {}
+    readonly tag: string
+    constructor(tag: string) { this.tag = tag }
+    setAttribute(name: string, value: string) { this.attrs[name] = value }
+    addEventListener(name: string, listener: () => void) { this.listeners[name] = listener }
+    append(child: Element) { this.children.push(child) }
+    replaceChildren(...children: Element[]) { this.children = children }
+    querySelector() { return null }
+    querySelectorAll() { return [] }
+    contains() { return false }
+  }
+  function flatten(element: Element): Element[] { return [element, ...element.children.flatMap(flatten)] }
+  const globals = globalThis as unknown as Record<string, unknown>
+  const before = Object.fromEntries(['Node', 'document', 'HTMLInputElement', 'HTMLTextAreaElement'].map(key => [key, globals[key]]))
+  globals.Node = Element
+  globals.HTMLInputElement = Element
+  globals.HTMLTextAreaElement = Element
+  globals.document = {
+    createElement: (tag: string) => new Element(tag), createElementNS: (_ns: string, tag: string) => new Element(tag),
+    createTextNode: (text: string) => Object.assign(new Element('#text'), { textContent: text }),
+  }
+  try {
+    const link = 'viva://timeline/segment-1/0/88'
+    const summaries = {
+      user: { generated: true, items: [{ id: 1, text: '长期工作方式', source: { text: '原始发言', link } }] },
+      project: { generated: false, items: [{ id: 2, text: '<b>当前项目约束</b>', source: { text: null, link: 'javascript:bad()' } }] },
+    }
+    const loaded = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
+      summaries, profile: {}, habits: { text: '', samples: 0 }, total: 0, items: [],
+    } })
+    const navigated: string[] = []
+    const handlers = { closeProfile: () => { navigated.push('close') }, openLink: (url: string) => { navigated.push(url) } }
+    const panel = new Element('root')
+    renderProfilePanel(panel as unknown as HTMLElement, loaded.memory, handlers as Handlers)
+    const sections = flatten(panel).filter(node => node.attrs['data-profile-summary'])
+    assert.deepEqual(sections.map(node => node.attrs['data-profile-summary']), ['user', 'project'])
+    const user = flatten(sections[0]), project = flatten(sections[1])
+    assert.ok(user.some(node => node.textContent === '原始发言'))
+    assert.ok(!user.some(node => node.textContent.startsWith('摘要还没准备好')))
+    assert.ok(project.some(node => node.textContent.startsWith('摘要还没准备好')))
+    assert.ok(project.some(node => node.textContent === '<b>当前项目约束</b>'))
+    assert.ok(!project.some(node => node.tag === 'button'))
+    user.find(node => node.attrs['aria-label'] === '查看记忆 #1 的原文')?.listeners.click()
+    assert.deepEqual(navigated, ['close', link])
+  } finally {
+    Object.assign(globals, before)
+  }
 })
 
 test('the intro saves only the profile fields and lists sites and documents in the reading prompt', () => {

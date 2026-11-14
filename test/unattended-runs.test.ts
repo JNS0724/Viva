@@ -24,6 +24,8 @@ test('its events are its own; the answer after its last step is the result; the 
   const { runs, calls, prompted } = setup()
   prompted((taskId) => {
     assert.ok(runs.owns(taskId), 'its events go to it, not to 后台')
+    assert.equal(runs.workspaceOf(taskId), '/work')
+    assert.equal(runs.workspaceOf('unrelated'), undefined)
     runs.receive(chunk(taskId, '我先看看文件。'))
     runs.receive(toolCall(taskId))
     runs.receive(chunk(taskId, '周报草稿：'))
@@ -33,6 +35,7 @@ test('its events are its own; the answer after its last step is the result; the 
   assert.deepEqual(await runs.run('起草周报', '/work'), { ok: true, text: '周报草稿：本周完成三件事。' })
   assert.deepEqual(calls, ['start /work', 'prompt t1 起草周报', 'close t1'], 'in the folder it was given')
   assert.equal(runs.owns('t1'), false)
+  assert.equal(runs.workspaceOf('t1'), undefined)
 })
 
 test('a turn that errs, says nothing or runs too long fails; no session, or dsh gone, is unavailable', async () => {

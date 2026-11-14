@@ -51,6 +51,13 @@ export type KeptTask = ({ mark?: TaskMark }) & (
  */
 export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
+export interface MemorySourceLink { text: string | null, link: string | null }
+
+export interface MemorySummaryView {
+  generated: boolean
+  items: ReadonlyArray<{ id: number, text: string, source: MemorySourceLink | null }>
+}
+
 export interface MemoryChangeRecord {
   id: number
   revision: number
@@ -64,13 +71,15 @@ export interface MemoryChangeRecord {
   effectiveAt: number | null
   createdAt: number
   expectedRevisions: readonly { id: number, revision: number }[]
-  evidence: ReadonlyArray<{ text: string | null, link: string | null }>
+  evidence: readonly MemorySourceLink[]
 }
 
 export type UndoMemoryChangeResult = { status: 'applied' } | {
   status: 'conflict',
   current: readonly { id: number, revision: number }[],
 }
+
+export type MemoryDeleteResult = { status: 'stopped' | 'cleared' }
 
 export interface IpcResults {
   'draft:get': import('./composer-draft.ts').DraftSnapshot
@@ -96,6 +105,7 @@ export interface IpcResults {
   'task:close': void
   'task:stop': void
   'memory:list-changes': readonly MemoryChangeRecord[]
+  'memory:delete': MemoryDeleteResult
   'memory:undo-change': UndoMemoryChangeResult
   'memory:rebuild-indexes': { fullText: boolean, semantic: boolean }
   'memory:resolve-conflict-pair': boolean

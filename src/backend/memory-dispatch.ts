@@ -8,7 +8,8 @@ export function needsMemoryTransport(evidence: MemoryProvenance | null | undefin
 export function combineMemoryProvenance(first: MemoryProvenance | null, second: MemoryProvenance): MemoryProvenance {
   if (!first) return second
   const dependencies = new Map([...first.dependencies, ...second.dependencies].map(item => [JSON.stringify(item), item]))
-  return { dependencies: [...dependencies.values()], sources: [...new Set([...first.sources, ...second.sources])], turnOnly: first.turnOnly || second.turnOnly,
+  const projects = [...new Set([...first.projects ?? [], ...second.projects ?? []])]
+  return { ...(projects.length ? { projects } : {}), dependencies: [...dependencies.values()], sources: [...new Set([...first.sources, ...second.sources])], turnOnly: first.turnOnly || second.turnOnly,
     epoch: Math.min(first.epoch, second.epoch) }
 }
 

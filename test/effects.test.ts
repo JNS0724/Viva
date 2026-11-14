@@ -134,6 +134,30 @@ test('a timed effect becoming due during an awaited pass wakes the queue once', 
   assert.deepEqual(timers().filter(entry => entry !== timer), [])
 })
 
+test('a far-future job uses a supported timer duration until it becomes due', async t => {
+  const { effects, advance, timers } = setup(t)
+  const maximumTimeout = 2_147_483_647
+  const remaining = 5000
+  effects.queue('profile', 'scheduled-boundary', null, 1000 + maximumTimeout + remaining)
+  const profile = runner(() => 'done')
+  effects.runs('profile', profile.run)
+
+  await effects.wake()
+  assert.equal(timers().at(-1)?.ms, maximumTimeout)
+
+  advance(maximumTimeout)
+  timers().at(-1)?.run()
+  await effects.wake()
+  assert.equal(profile.seen.length, 0)
+  assert.equal(timers().at(-1)?.ms, remaining)
+
+  advance(remaining)
+  timers().at(-1)?.run()
+  await effects.wake()
+  assert.deepEqual(profile.seen.map(batch => batch.map(job => job.key)), [['scheduled-boundary']])
+  assert.deepEqual(effects.list(), [])
+})
+
 test('a key cancelled and queued again gets a generation never given before: a try for the old one settles nothing', async (t) => {
   const { effects } = setup(t)
   effects.queue('report', 'a', { n: 1 })

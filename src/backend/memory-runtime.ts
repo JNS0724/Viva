@@ -6,24 +6,32 @@ import type { MemoryCompute, MemoryProposal, MemoryRequest, MemoryReview, Memory
 import { t } from '../shared/i18n/translate.ts'
 import { looksSecret, MAX_MEMORY_CHARS } from './memory-sensitive.ts'
 import { dateLine, packContext } from './memory-context.ts'
+import type { ProfileContextItem } from './memory-context.ts'
 import { recallCandidates } from './memory-match.ts'
 import { memoryIdentifierTokens, memoryIndexMatches, openMemoryIndex } from './memory-index.ts'
 import { expandMemoryRelations, memoryRelationQueryLabels } from './memory-relations.ts'
 import type { MemoryRelationEntity, MemoryRelationProof } from './memory-relations.ts'
 import { MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_MAX_CHARS } from './memory-embedder.ts'
 import type { MemoryEmbedder } from './memory-embedder.ts'
-import { openMemorySemanticIndex } from './memory-semantic.ts'
+import { memorySemanticCopiesCleared, openMemorySemanticIndex } from './memory-semantic.ts'
+import { createMemoryCleanup } from './memory-cleanup.ts'
 import type { MemorySemanticReference } from './memory-semantic.ts'
 import { createMemorySemanticMaintenance } from './memory-semantic-maintenance.ts'
+import { MEMORY_PROFILE_INPUT_LIMIT, prepareMemoryProfileInput } from './memory-profile.ts'
+import type { MemoryProfileInput, MemoryProfileRef, MemoryProfileScope } from './memory-profile.ts'
+import { openMemoryProfileStore } from './memory-profile-store.ts'
+import { createMemoryProfileJobs } from './memory-profile-jobs.ts'
+import type { MemoryProfileSnapshot } from './memory-profile-jobs.ts'
 import { MemoryDispatchConflict, type MemoryDependency } from './memory-dispatch.ts'
 import { createEffects } from './effects.ts'
 import type { Effect, Outcome } from './effects.ts'
 import { memoryHash } from './memory-store.ts'
-import type { MemoryCandidate, MemoryChange, MemoryChangeKind, MemoryEntry, MemorySource, MemoryStore } from './memory-store.ts'
-import { compatibleTransitionTime, covers, factIdentity, groundedChange, groundedEventChange, groundedFact, localDay, nextDay, proposalSpans, rememberContent, resolveMemoryTime, sameRelation, sourceText, spanEnvelope, statementIsQuestion, todayAt } from './memory-facts.ts'
+import type { MemoryCandidate, MemoryChange, MemoryChangeKind, MemoryEntry, MemoryProvenance, MemorySource, MemoryStore } from './memory-store.ts'
+import { compatibleTransitionTime, covers, factIdentity, groundedChange, groundedEventChange, groundedFact, localDay, nextDay, proposalSpans, rememberContent, resolveMemoryTime, sameRelation, sourceText, spanEnvelope, statementIsQuestion, todayAt, validChangeEvidence } from './memory-facts.ts'
 import type { GroundedChange, MemoryFact } from './memory-facts.ts'
 import { intersect, overlapWindows, sameWindows, subtract } from './memory-intervals.ts'
 import type { MemoryInterval } from './memory-intervals.ts'
+import { objectOf } from '../shared/unknown-value.ts'
 import { createMemoryClarifications } from './memory-clarification.ts'
 import { connected, projectTimeline } from './memory-timeline.ts'
 
@@ -42,7 +50,7 @@ const INDEX_MATCH_LIMIT = 64
 const KEYWORD_FALLBACK_LIMIT = 128
 const RELATION_NEIGHBOR_LIMIT = 24
 const PENDING_RECALL_LIMIT = 64
-const USER: MemoryScope = { kind: 'user' }
+const USER = { kind: 'user' } as const
 const CORRECT = /^(?:请\s*)?(?:更正|纠正|correct)\s*#(\d+)\s*(?:为|[:：]|to)\s*(.+)$/is
 const INTENT = {
   forget: /^(?:请\s*)?(?:帮我\s*)?(?:忘掉|忘记|别再记|别再用|forget)\s*[:：]?\s*#(\d+)\s*[。.!！]?$/iu,
@@ -73,7 +81,7 @@ const QUESTION_SYSTEM = [
 ].join('\n')
 const questionReview = z.object({ verdict: z.enum(['related', 'unrelated', 'uncertain']), snapshotId: z.string() })
 
-type Origin = { conversation: string | null, session: string | null, scope?: MemoryScope, context?: MemoryScope, foregroundTurn?: string, turn?: string }
+type Origin = { conversation: string | null, session: string | null, scope?: MemoryScope, context?: MemoryScope, project?: Extract<MemoryProfileScope, { kind: 'project' }>, foregroundTurn?: string, turn?: string }
 type DisputeReference = {
   kind: 'dispute',
   id: number, revision: number, sides: readonly [ConflictSide, ConflictSide],
@@ -104,7 +112,7 @@ function contextAllows(owned: MemoryScope, scope: MemoryScope | undefined) {
 }
 function sourceCanRead(owned: MemoryScope, source: MemorySource) {
   const context = source.context ?? (source.conversation ? { kind: 'conversation' as const, id: source.conversation } : undefined)
-  return contextAllows(owned, source.scope) || contextAllows(owned, context)
+  return contextAllows(owned, source.scope) || contextAllows(owned, context) || contextAllows(owned, source.project ?? undefined)
 }
 function sourceSpans(text: string): Array<{ start: number, end: number }> {
   const trimmed = text.trim()
@@ -120,13 +128,17 @@ const textOf = (result: object) => JSON.stringify(result)
 const sameScope = (a: MemoryScope, b: MemoryScope) => a.kind === b.kind && (a.kind === 'user' || 'id' in b && a.id === b.id)
 const automaticSource = (source: MemorySource) => source.author === 'user' || source.author === 'answer'
 
-export function createMemoryRuntime({ store, compute, route, embedder, maintainSemanticIndex = false, quiesce, changed, injected, dependencies, provisionalRead,
+export function createMemoryRuntime({ store, compute, route, embedder, maintainSemanticIndex = false, profilesEnabled = false, profileDelayMs, profileBusy = () => false, projectionChanged, quiesce, changed, injected, dependencies, provisionalRead,
   canCommit = () => true, validateDispatch = () => {}, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
   store: MemoryStore,
   compute: (request: MemoryCompute, signal?: AbortSignal) => Promise<string> | null,
   route: () => Route | null,
   embedder?: Pick<MemoryEmbedder, 'fingerprint' | 'embedBatch' | 'close'>,
   maintainSemanticIndex?: boolean,
+  profilesEnabled?: boolean,
+  profileDelayMs?: number,
+  profileBusy?: () => boolean,
+  projectionChanged?: () => void,
   quiesce: () => Promise<void>,
   changed: (change: { revision: number, ids: number[], learned?: string[], invalidated?: number[] }) => void,
   now?: () => number,
@@ -137,7 +149,8 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
   canCommit?: (source: MemorySource) => boolean,
   validateDispatch?: () => void,
 }) {
-  const effects = createEffects({ db: store.db, now, onError: () => console.error('[memory] durable extraction queue failed') })
+  const effects = createEffects({ db: store.db, now, onError: () => console.error('[memory] durable memory queue failed') })
+  const projectionStore = openMemoryProfileStore(store.db)
   const lexical = openMemoryIndex(store.db)
   let semantic = openMemorySemanticIndex(store.db)
   let lexicalTimer: ReturnType<typeof setTimeout> | undefined
@@ -151,6 +164,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     sourceBlocked({ id: edge.sourceId, conversation: edge.conversationId })
   let mutation: Promise<unknown> | null = null
   let closed = false
+  const runningComputations = new Map<string, { ready: () => boolean, current: () => boolean, deadline: number | null }>()
   const semanticControllers = new Map<AbortController, { current: () => boolean, reads: readonly IndexHit[] }>()
   const maintenance = maintainSemanticIndex && embedder ? createMemorySemanticMaintenance({
     index: () => semantic, embedder,
@@ -164,6 +178,50 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     },
     current: ref => indexableEntry(ref) !== null,
   }) : null
+  const profiles = profilesEnabled ? createMemoryProfileJobs({
+    effects, store: projectionStore, tx: store.tx, revision: store.revision, route, now, delayMs: profileDelayMs,
+    ready: profileInputCurrent,
+    busy: () => Boolean(mutation || blocked.size || blockedSources.size || profileBusy()),
+    makeSnapshot(scope, at) {
+      const choices = profileChoices(scope, at)
+      const manual: MemoryProfileInput[] = scope.kind === 'user' ? Object.entries(store.profile()).flatMap(([field, data]) =>
+        data ? [{ ref: { kind: 'manual', field, revision: data.revision }, text: data.value }] : []) : []
+      const inputs = prepareMemoryProfileInput(scope, [...manual, ...choices])
+      const ids = inputs.flatMap(({ ref }) => ref.kind === 'memory' ? [{ id: ref.id, revision: ref.revision }] : [])
+      const deadline = Math.min(store.nextProfileBoundary(scope, at) ?? Infinity, dispatchDeadline(ids, [], at) ?? Infinity)
+      return { inputs, validUntil: Number.isFinite(deadline) ? deadline : null }
+    },
+    dispatch(request, signal, admission) {
+      runningComputations.set(request.id, admission)
+      const drop = () => runningComputations.delete(request.id)
+      try {
+        const result = compute(request, signal)
+        if (result) return result.finally(drop)
+        drop()
+        return null
+      } catch (error) {
+        drop()
+        throw error
+      }
+    },
+    changed: projectionChanged,
+  }) : null
+  const cleanup = createMemoryCleanup({
+    db: store.db, effects, lexical,
+    hasCandidateReference: store.hasCandidateReference,
+    clearSemantic(ids, revision) {
+      if (semantic?.purge(ids, revision)) return true
+      if (memorySemanticCopiesCleared(store.db, ids, revision)) return true
+      semantic = openMemorySemanticIndex(store.db)
+      return semantic?.purge(ids, revision) ?? memorySemanticCopiesCleared(store.db, ids, revision)
+    },
+    clearProfile(revision) {
+      projectionStore.invalidate(revision)
+      return true
+    },
+    onCleared: projectionChanged,
+  })
+  profiles?.observe({ kind: 'user' })
   function warmLexicalIndex() {
     if (closed || lexicalTimer !== undefined || !lexical.pending()) return
     lexicalTimer = setTimeout(() => {
@@ -193,6 +251,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     lexical?.refresh()
     warmLexicalIndex()
     maintenance?.schedule(true)
+    profiles?.sync()
     try { changed({ revision, ids, learned, invalidated }) } catch { console.error('[memory] could not publish committed revision') }
   }
 
@@ -200,7 +259,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     const id = operationId.parse(operation)
     const secret = looksSecret(text) || (answer !== undefined && looksSecret(answer.question))
     const denied = secret || (author === 'answer' && !answer?.custom)
-      || (!explicit && excludedSourceText(text, origin.context ?? origin.scope))
+      || (!explicit && (excludedSourceText(text, origin.context ?? origin.scope) || origin.project && excludedSourceText(text, origin.project)))
     const hash = denied ? null : memoryHash(text)
     const existing = store.readSource(id)
     if (existing) {
@@ -210,7 +269,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     }
     const source: MemorySource = {
       id, operation: id, version: 1, conversation: origin.conversation, session: origin.session,
-      scope: origin.scope ?? USER, context: origin.context ?? null, author, text: denied ? null : text, hash: denied ? null : hash,
+      scope: origin.scope ?? USER, context: origin.context ?? null, project: origin.project ?? null, author, text: denied ? null : text, hash: denied ? null : hash,
       rememberedHash: saved && !denied ? memoryHash(saved) : null, length: denied ? 0 : text.length,
       question: answer && !denied && !store.excluded(answer.question, origin.context ?? origin.scope) ? answer.question.slice(0, 1000) : null,
       requestId: answer?.requestId ?? null, questionId: answer?.questionId ?? null,
@@ -230,7 +289,6 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
   }
 
   function accept(text: string, origin: Origin, operation: string = randomUUID(), answer?: AnswerSource): Receipt {
-    const changedIds = new Set<number>()
     const source = store.tx(() => {
       const known = store.readSource(operation)
       const content = rememberContent(text)
@@ -241,15 +299,16 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
         const start = text.lastIndexOf(explicit)
         const scope = current.scope.kind === 'user' && origin.conversation
           ? origin.context ?? { kind: 'conversation', id: origin.conversation } : current.scope
-        savedText(current, { start, end: start + explicit.length }, scope, 'fact', 'agent', [], store.nextRevision, changedIds, { separate: true })
+        // This holder remains outside every model read until the extraction transaction admits it.
+        // Queue it without changing the visible collection or interrupting a request already sending it.
+        savedText(current, { start, end: start + explicit.length }, scope, 'fact', 'agent', [], store.revision, new Set(), { separate: true })
         store.outcome(current.id, 'explicit-pending')
         return { ...current, outcome: 'explicit-pending' }
       }
       effects.queue(EXTRACT, current.id, null)
       return current
     })
-    if (changedIds.size) publish(store.revision(), [...changedIds])
-    if (source.outcome === 'pending' || changedIds.size) void effects.wake()
+    if (source.outcome === 'pending' || source.outcome === 'explicit-pending') void effects.wake()
     return { sourceId: source.id, outcome: source.outcome === 'explicit-pending' ? 'pending'
       : source.outcome === 'explicit-accepted' ? 'accepted' : source.outcome }
   }
@@ -469,7 +528,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     if (source.author === 'answer' && existing) return existing.scope
     if (proposal.scope === 'user') return proposal.attribution === 'self' && source.scope.kind === 'user' ? source.scope : undefined
     if (proposal.scope === 'conversation') return context
-    return [source.scope, source.context ?? undefined].find(granted => granted?.kind === proposal.scope)
+    return [source.scope, source.context ?? undefined, source.project ?? undefined].find(granted => granted?.kind === proposal.scope)
   }
 
   function hasDurableIntentSpan(source: MemorySource, proposal: MemoryProposal) {
@@ -525,6 +584,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     const candidateSpan = spanEnvelope(offered)
     const candidate = (reason: string, proposed: object = { ...proposal, spans: offered }) => {
       if (existing && source.author === 'manual') return
+      if (proposal.change && !store.exists(proposal.change.target.id)) return
       store.candidate(source.id, candidateSpan.start, candidateSpan.end, proposed, reason)
       return 'candidate' as const
     }
@@ -604,9 +664,6 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     return replacement
   }
 
-  const runningComputations = new Map<string, {
-    ready: () => boolean, current: () => boolean, deadline: number | null,
-  }>()
   function computeAdmission(id: string) {
     const job = runningComputations.get(id)
     return job?.ready() && (job.deadline === null || now() < job.deadline) ? job : null
@@ -617,6 +674,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     if (closed || sourceBlocked(source) || !effects.holds(job) || store.sourceExcluded(source.id)) return false
     const current = store.readSource(source.id)
     return Boolean(current?.text && current.text === source.text && !current.withdrawn && current.version === source.version && current.hash === source.hash
+      && current.question === source.question
       && contextSources.every(id => sourceCurrent(id, at)))
   }
 
@@ -659,7 +717,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
         outcomes.set(job.key, 'done')
         continue
       }
-      if (looksSecret(source.text) || (!structure && excludedSourceText(source.text, source.context ?? source.scope))) {
+      if (looksSecret(source.text) || (!structure && (excludedSourceText(source.text, source.context ?? source.scope) || source.project && excludedSourceText(source.text, source.project)))) {
         store.tx(() => {
           if (!effects.holds(job)) return
           store.outcome(source.id, 'rejected')
@@ -677,7 +735,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
         const nearby = store.priorSources(source).filter(row => {
           const prior = store.readSource(row.id)
           return row.text && prior && sourceCanRead(prior.scope, source)
-            && (!prior.context || sourceCanRead(prior.context, source)) && !looksSecret(row.text)
+            && (!prior.context || sourceCanRead(prior.context, source)) && (!prior.project || sourceCanRead(prior.project, source)) && !looksSecret(row.text)
             && sourceCurrent(row.id) && !excludedSourceText(row.text, source.context ?? source.scope)
         })
         const relatedEntries = store.list().filter(entry => entry.id !== existing?.id && modelEligible(entry) && retained(entry) && available(entry)
@@ -805,11 +863,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
           }
           const accepted = proposals.some(item => item && item !== 'candidate')
           const explicit = source.outcome === 'explicit-pending'
-          if (existing && explicit && !changedIds.has(existing.id)) {
-            store.remove(existing.id)
-            changedIds.add(existing.id)
-            revision ??= store.nextRevision()
-          }
+          if (existing && explicit && !changedIds.has(existing.id)) store.remove(existing.id)
           if (!structure || explicit || accepted) store.outcome(source.id, accepted ? (explicit ? 'explicit-accepted' : 'accepted')
             : proposals.includes('candidate') ? 'candidate' : 'skipped')
           store.compactSource(source.id)
@@ -880,7 +934,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     return store.get(entry.id)!
   }
 
-  function stopUsing(entry: MemoryEntry, revision: number, mode: 'forget' | 'delete') {
+  function stopUsing(entry: MemoryEntry, revision: number, mode: 'forget' | 'delete', operation: string) {
     store.exclude(entry.text, entry.scope)
     const affected = new Set<number>([entry.id])
     const removals = new Map<string, MemorySpan[]>()
@@ -914,9 +968,32 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
       if (change.oldValueSpans.length) redact(source.id, change.oldValueSpans)
     }
     if (mode === 'delete') {
+      const compact = new Set<string>()
+      for (const candidate of store.candidatesReferencing(entry.id)) {
+        store.removeCandidate(candidate)
+        compact.add(candidate.sourceId)
+        const source = store.readSource(candidate.sourceId)
+        if (!source?.text || !sourceCanRead(entry.scope, source)) continue
+        const record = objectOf(JSON.parse(candidate.proposal))
+        const parsed = memoryProposals.shape.proposals.element.safeParse(record?.proposal ?? record)
+        if (!parsed.success || !parsed.data.change) continue
+        const scope = scopeOfProposal(source, parsed.data)
+        if (!scope || !sameScope(entry.scope, scope)) continue
+        const offered = proposalSpans(source.text, parsed.data, sourceSpans(source.text))
+        if (!offered || !validChangeEvidence(source.text, parsed.data.change, offered)) continue
+        const replacement = groundedFact(source.text, parsed.data, source.at, source.timezone, offered)
+        // Candidate text has not been confirmed by the user. Only redact a literal value from validated spans.
+        // When there are no matching spans, compaction still drops text retained only by the candidate.
+        const spans = oldValueMentions(source, entry, replacement?.evidence ?? null, [], offered)
+        if (spans.length) redact(candidate.sourceId, spans)
+      }
+      const redactedPeers = new Set<number>()
       for (const [id, spans] of removals) {
         const source = store.readSource(id)
-        if (!source?.text) continue
+        store.excludeSource(id)
+        store.clearCandidates(id)
+        effects.cancel(EXTRACT, id)
+        if (!source?.text || !spans.length) continue
         const cuts = spans.map(span => ({ from: span.start, to: span.end }))
         const overlapsCut = (span: MemorySpan) => cuts.some(cut => intersect(cut, { from: span.start, to: span.end }))
         for (const memoryId of store.memoriesFrom(id)) {
@@ -931,6 +1008,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
               store.updateEvidenceSpans(memoryId, edge, surviving)
             } else store.removeEvidence(memoryId, id, edge.start, edge.end)
             affected.add(memoryId)
+            redactedPeers.add(memoryId)
           }
         }
         for (const change of store.changesFrom(id)) {
@@ -939,15 +1017,15 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
             store.touchChange(change.id, revision)
           } else disableChange(change)
         }
-        store.excludeSource(id)
-        store.clearCandidates(id)
-        effects.cancel(EXTRACT, id)
         const redacted = spans.reduce((text, span) => text.slice(0, span.start) + ' '.repeat(span.end - span.start) + text.slice(span.end), source.text)
         store.redactSource(id, redacted)
       }
       store.remove(entry.id)
+      // A withdrawn edge may remain for history and cannot justify retaining the peer's old projection.
+      for (const { entry: peer, supports } of timelineRows(redactedPeers)) if (!supports.length) store.remove(peer.id)
       for (const id of affected) if (store.get(id) && store.storedEvidence(id).length === 0) store.remove(id)
-      for (const id of removals.keys()) store.compactSource(id)
+      for (const id of new Set([...compact, ...removals.keys()])) store.compactSource(id)
+      scheduleExpiry()
     } else store.forgetEntry(entry.id, revision)
     reproject(affected, revision)
     for (const change of discard.values()) retainIndependentDisputes(change, revision, affected)
@@ -955,6 +1033,8 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
       const surviving = store.get(id)
       if (surviving) store.setKeywords(id, surviving.keywords.filter(word => surviving.text.includes(word)))
     }
+    if (mode === 'delete') cleanup.queue(operation, entry.id, [...affected], revision,
+      [...removals].map(([sourceId, spans]) => ({ sourceId, spans })), store.clearSourceQuestions())
     return [...affected]
   }
 
@@ -1005,10 +1085,18 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
       const result = command(key, `${mode}:${id}`, revision, () => {
         const entry = entryAt(id, revision)
         const next = store.nextRevision()
-        affected = stopUsing(entry, next, mode)
+        affected = stopUsing(entry, next, mode, key)
         return { result: id, value: true }
       }, previous => previous === id)
-      if (before !== store.revision()) publish(store.revision(), affected, undefined, affected)
+      if (before !== store.revision()) {
+        if (mode === 'delete') {
+          resetSemanticJobs()
+          maintenance?.pause()
+          profiles?.resetLive()
+        }
+        publish(store.revision(), affected, undefined, affected)
+      }
+      if (mode === 'delete' && result) cleanup.attempt(key)
       return result
     })
   }
@@ -1262,6 +1350,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
 
   function holdWithdrawal(conversation: string, ids?: readonly string[]) {
     maintenance?.pause()
+    profiles?.resetLive()
     if (ids) for (const id of relatedSourceIds(ids)) blockedSources.add(id)
     else blocked.add(conversation)
     for (const [controller, { reads }] of semanticControllers) {
@@ -1273,6 +1362,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     if (ids) for (const id of relatedSourceIds(ids)) blockedSources.delete(id)
     else blocked.delete(conversation)
     maintenance?.schedule(true)
+    profiles?.sync()
     void effects.wake()
   }
 
@@ -1483,7 +1573,9 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     if (!items.length) return true
     const entries = [...entriesWithPeers(new Set(items.map(item => item.id))).values()]
     const selections = new Map<string | undefined, ReturnType<typeof readableSelection>>()
+    const revision = store.revision()
     return items.every(item => {
+      if (item.collectionRevision !== undefined && item.collectionRevision !== revision) return false
       if (item.expiresAt !== undefined && at >= item.expiresAt) return false
       if (item.asOfZone !== undefined && item.asOfZone !== timezone()) return false
       if (!selections.has(item.asOf)) {
@@ -1670,24 +1762,27 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
   type CardQuestion = { question: string, header?: string, options: readonly { label: string, description?: string }[] }
   function authorizeGeneralQuestion(origin: Origin & { session: string, turn: string }, cards: readonly CardQuestion[], stillWaiting = () => true) {
     const scope = origin.context ?? origin.scope
+    const scopes = [scope, ...(origin.project ? [origin.project] : [])]
     const questions = cards.map(({ question, header, options }) => ({ question, header, options }))
     const wording = questions.flatMap(card => [card.question, card.header ?? '', ...card.options.flatMap(option => [option.label, option.description ?? ''])])
-    if (wording.some(part => looksSecret(part) || excludedSourceText(part, scope))) return false
+    if (wording.some(part => looksSecret(part) || scopes.some(scope => excludedSourceText(part, scope)))) return false
     const incomplete = () => (clarifications.incompleteDates(origin.session, origin.turn)?.size ?? 0) > 8
     if (incomplete()) return false
     const inspect = () => {
       const at = now()
-      const entries = scopedEntries(scope)
-      const selected = selection(entries, at)
       const references = new Map<string, ClarificationReference>()
       const track = (reference: ClarificationReference) => references.set(JSON.stringify(reference), reference)
-      for (const dispute of selected.disputes) track(disputeReference(dispute, scope))
-      for (const pending of availablePending(scope, undefined, at, selected.current)) track(pending.reference)
-      for (const asOf of clarifications.incompleteDates(origin.session, origin.turn) ?? []) {
-        const historical = recallSelection(entries, asOf, at)
-        if (!historical) continue
-        for (const dispute of historical.disputes) track(disputeReference(dispute, scope, asOf))
-        for (const pending of availablePending(scope, asOf, at, historical.current)) track(pending.reference)
+      for (const scope of scopes) {
+        const entries = scopedEntries(scope)
+        const selected = selection(entries, at)
+        for (const dispute of selected.disputes) track(disputeReference(dispute, scope))
+        for (const pending of availablePending(scope, undefined, at, selected.current)) track(pending.reference)
+        for (const asOf of clarifications.incompleteDates(origin.session, origin.turn) ?? []) {
+          const historical = recallSelection(entries, asOf, at)
+          if (!historical) continue
+          for (const dispute of historical.disputes) track(disputeReference(dispute, scope, asOf))
+          for (const pending of availablePending(scope, asOf, at, historical.current)) track(pending.reference)
+        }
       }
       for (const observed of clarifications.observed(origin.session, origin.turn)) track(observed)
       const related: { relations: string[], choices: string[][], reference: ClarificationReference }[] = []
@@ -1783,9 +1878,9 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
 
   function clarify(session: string, ref: string, origin: Origin) {
     if (!origin.foregroundTurn || origin.session !== session) return { status: 'rejected', reason: 'foreground-only' }
-    const scope = origin.context ?? origin.scope
+    const scopes = [origin.context ?? origin.scope, ...(origin.project ? [origin.project] : [])]
     return clarifications.issue(session, origin.foregroundTurn, ref, (id, reference) => {
-      const matchingScope = scope && reference.scope ? sameScope(scope, reference.scope) : scope === reference.scope
+      const matchingScope = scopes.some(scope => scope && reference.scope ? sameScope(scope, reference.scope) : scope === reference.scope)
       return matchingScope && !mutation ? questionForReference(id, reference) : null
     })
   }
@@ -1919,9 +2014,71 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     semanticControllers.clear()
   }
 
+  function profileChoices(scope: MemoryProfileScope, at: number): MemoryProfileInput[] {
+    const reader = createRecallReader(scope, { from: at, to: at + 1 })
+    const refs = store.profileCandidates(scope, at, MEMORY_PROFILE_INPUT_LIMIT * 2)
+    const selected = reader.select(refs)
+    const pending = new Set(selected.pendingRelations.map(row => row.id))
+    return selected.current.flatMap(entry => {
+      if (!sameScope(entry.scope, scope) || entry.conditional || entry.modality !== 'asserted' || pending.has(entry.id)) return []
+      const text = passageText(entry)
+      return text ? [{ ref: { kind: 'memory' as const, id: entry.id, revision: entry.revision }, text }] : []
+    })
+  }
+
+  function readProfileItems(scope: MemoryProfileScope, refs: readonly MemoryProfileRef[], at: number): MemoryProfileInput[] | null {
+    const reader = createRecallReader(scope, { from: at, to: at + 1 })
+    const selected = reader.select(refs.flatMap(ref => ref.kind === 'memory' ? [ref] : []))
+    const pending = new Set(selected.pendingRelations.map(row => row.id))
+    const byId = new Map(selected.current.map(entry => [entry.id, entry]))
+    const manual = scope.kind === 'user' ? store.profile() : {}
+    const items = refs.flatMap<MemoryProfileInput>(ref => {
+      if (ref.kind === 'manual') {
+        const field = manual[ref.field]
+        return field?.revision === ref.revision ? [{ ref, text: field.value }] : []
+      }
+      const entry = byId.get(ref.id)
+      if (!entry || !sameScope(entry.scope, scope) || entry.conditional || entry.modality !== 'asserted' || pending.has(entry.id)) return []
+      const text = passageText(entry)
+      return text ? [{ ref, text }] : []
+    })
+    const safe = prepareMemoryProfileInput(scope, items)
+    return safe.length === refs.length ? safe : null
+  }
+
+  function profileInputCurrent(snapshot: MemoryProfileSnapshot) {
+    if (closed || blocked.size || blockedSources.size) return false
+    const values = readProfileItems(snapshot.scope, snapshot.inputs.map(({ ref }) => ref), now())
+    return values !== null && values.every(({ text }, index) => text === snapshot.inputs[index].text)
+  }
+
+  function profileSummary(scope: MemoryProfileScope = { kind: 'user' }, at = now()) {
+    const result = profiles?.read(scope)
+    if (!result || blocked.size || blockedSources.size) return null
+    const items = readProfileItems(scope, result.refs, at)
+    return items ? { revision: result.revision, validUntil: result.validUntil, items } : null
+  }
+
+  function profileView(scope: MemoryProfileScope, at = now()) {
+    profiles?.observe(scope)
+    const projection = profileSummary(scope, at)
+    const rows = projection?.items ?? (profilesEnabled ? prepareMemoryProfileInput(scope, profileChoices(scope, at)).slice(0, 4) : [])
+    const items = rows.flatMap(({ ref, text }) => {
+      if (ref.kind !== 'memory') return []
+      const entry = store.get(ref.id)
+      if (!entry) return []
+      const dependency: MemoryDependency = { id: ref.id, revision: ref.revision }
+      const deadline = projection?.validUntil ?? dispatchDeadline([dependency], [], at)
+      if (deadline !== null) dependency.expiresAt = deadline
+      if (projection) dependency.collectionRevision = projection.revision
+      return [{ text, dependency, evidence: entry.evidence.flatMap(edge => excerptsForEdge(entry, edge) ?? [])[0] }]
+    })
+    return { generated: projection !== null, items }
+  }
+
   async function semanticRecall(request: RecallRequest, origin: Origin, stillCurrent: () => boolean, interval: MemoryInterval, lexicalHits: readonly IndexHit[], signal?: AbortSignal): Promise<SemanticRecall> {
     const failure = (reason: string) => ({ hits: [], reasons: [reason] })
-    const scope = origin.context ?? origin.scope
+    const scope = recallScope(request, origin)
     const index = semantic
     if (!index || !embedder || mutation || closed || signal?.aborted || !stillCurrent()) return failure('semantic-unavailable')
     if (looksSecret(request.query) || excludedSourceText(request.query, scope)) return failure('semantic-unavailable')
@@ -1995,9 +2152,14 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     }
   }
 
+  function recallScope(request: RecallRequest, origin: Origin) {
+    return request.scope === 'project' ? origin.project : origin.context ?? origin.scope
+  }
+
   function handleModelRequest(request: MemoryRequest, origin: Origin, stillCurrent: () => boolean, signal?: AbortSignal) {
     if (request.op !== 'recall') return handle(request, origin)
-    const scope = origin.context ?? origin.scope
+    if (request.scope === 'project' && !origin.project) return textOf({ status: 'rejected', reason: 'project-unavailable' })
+    const scope = recallScope(request, origin)
     const at = now()
     const snapshot = recallSnapshot(request, scope, at)
     if (!snapshot) return textOf({ status: 'rejected', reason: 'invalid-date' })
@@ -2052,7 +2214,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
 
   function recallPacket(request: RecallRequest, origin: Origin, snapshot: NonNullable<ReturnType<typeof recallSnapshot>>, at: number,
     semanticResult?: SemanticRecall) {
-    const scope = origin.context ?? origin.scope
+    const scope = recallScope(request, origin)
     const { reader, interval, selected, found, related, index, fallbackLimited } = snapshot
     const semanticRefs = semanticResult?.hits ?? []
     const semanticRows = reader.select(semanticRefs)
@@ -2211,8 +2373,9 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     const scope = origin.context ?? origin.scope
     if (request.op === 'clarify') return textOf(clarify(request.session, request.ref, origin))
     if (request.op === 'recall') {
+      if (request.scope === 'project' && !origin.project) return textOf({ status: 'rejected', reason: 'project-unavailable' })
       const at = now()
-      const snapshot = recallSnapshot(request, scope, at)
+      const snapshot = recallSnapshot(request, recallScope(request, origin), at)
       return snapshot ? recallPacket(request, origin, snapshot, at) : textOf({ status: 'rejected', reason: 'invalid-date' })
     }
     if (request.op === 'context') {
@@ -2220,15 +2383,25 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
       const interval = { from: at, to: at + 1 }
       const reader = createRecallReader(scope, interval)
       const { found, related } = indexedSelection(request.question, scope, interval, reader, true)
+      const activeProject = origin.project && indexedSelection(request.question, origin.project, interval, createRecallReader(origin.project, interval), true)
+      const merge = (primary: MemoryEntry[], project: MemoryEntry[] = []) => [...new Map([...primary, ...project].map(entry => [entry.id, entry])).values()]
       const profile = store.profile()
-      const pushed = found.found.map(entry => ({
+      const pushed = merge(found.found, activeProject?.found.found).map(entry => ({
         memory: entry, names: entry.keywords.filter(name => request.question.includes(name)),
       }))
-      const disputed = related.found
-      const packed = packContext({ fixed: { profile }, pushed, today: dateLine(new Date(at)), disputed: disputed.length > 0 })
+      const disputed = merge(related.found, activeProject?.related.found)
+      const fixed = { profile, user: profileView(USER, at), project: origin.project ? profileView(origin.project, at) : undefined }
+      const pulledIds = new Set(pushed.map(({ memory }) => memory.id))
+      const separate = (block: ReturnType<typeof profileView>): { generated: boolean, items: ProfileContextItem[] } =>
+        ({ ...block, items: block.items.filter(item => !pulledIds.has(item.dependency.id)) })
+      const packed = packContext({
+        fixed: { profile, user: separate(fixed.user), project: fixed.project && separate(fixed.project) },
+        pushed, today: dateLine(new Date(at)), disputed: disputed.length > 0,
+      })
       injected?.(request.session, request.turn, packed.pushed.map(({ memory, names }) => ({ text: memory.text, names })))
       dependencies?.(request.session, [
         ...packed.pushed.map(({ memory: { id, revision } }) => ({ id, revision })),
+        ...packed.profile.map(({ dependency }) => dependency),
         ...disputed.map(({ id, revision }) => ({ id, revision, disputed: true })),
       ])
       return packed.text
@@ -2250,11 +2423,11 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
     return textOf({ status: 'rejected', reason: 'no-explicit-user-source' })
   }
 
-  function forgetIntent(text: string, scope?: MemoryScope) {
+  function forgetIntent(text: string, scope?: MemoryScope, project?: Origin['project']) {
     const id = INTENT.forget.exec(text)?.[1]
     if (!id) return null
     const entry = store.get(Number(id))
-    return entry && stillAvailable(entry, scope) ? entry : false
+    return entry && (stillAvailable(entry, scope) || project && stillAvailable(entry, project)) ? entry : false
   }
   function finishTurn(session: string | null, _completed = false) {
     if (session) {
@@ -2285,21 +2458,38 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
   return {
     accept, bindSource, handle, handleModelRequest, rebuildIndexes, forgetIntent, clarificationQuestion, computeCurrent, computeAdmission, provisionalReadsCurrent, provisionalDeadline,
     authorizeGeneralQuestion,
-    correctionIntent(text: string, scope?: MemoryScope) {
+    correctionIntent(text: string, scope?: MemoryScope, project?: Origin['project']) {
       const match = CORRECT.exec(text)
       if (!match) return null
       const entry = store.get(Number(match[1]))
-      return entry && stillAvailable(entry, scope) ? { entry, text: match[2] } : false
+      return entry && (stillAvailable(entry, scope) || project && stillAvailable(entry, project)) ? { entry, text: match[2] } : false
     },
     addMemory, editMemory, forget, restore, resolveConflict, resolveConflictPair, listChanges, undoChange, setProfile, dependenciesCurrent, sourceCurrent,
     recordDeliveredSource, isDerivedDelivery: (id: string) => Boolean(store.deliveredSource(id)?.derived), dispatchSourceCurrent, dispatchDeadline,
     replaySource: (id: string, text: string) => replaySources([id], text),
     replaySources,
-    profile: store.profile, revision: store.revision, epoch: store.epoch, recordSession: store.recordSession,
+    async deleteMemory(id: number, revision: number, operation: string = randomUUID()) {
+      await forget(id, revision, 'delete', operation)
+      return cleanup.status(operation)
+    },
+    cleanupPending: cleanup.pending,
+    projectAllows(evidence: Pick<MemoryProvenance, 'dependencies' | 'sources' | 'projects'>, project?: Origin['project']) {
+      const allowed = (scope?: MemoryScope | null) => scope?.kind !== 'project' || Boolean(project && sameScope(scope, project))
+      return (evidence.projects ?? []).every(id => id === project?.id) && evidence.dependencies.every(item => {
+        const scope = store.get(item.id)?.scope
+        if (scope?.kind === 'conversation' && scope.id.includes('@')) return scope.id.split('@').at(-1) === project?.id
+        return allowed(scope)
+      })
+        && evidence.sources.every(id => allowed(store.readSource(id)?.project))
+    },
+    profile: store.profile, profileView, refreshProfiles: () => profiles?.sync(), revision: store.revision, epoch: store.epoch, recordSession: store.recordSession,
+    sessionProject: store.sessionProject,
+    recordSessionProject: store.recordSessionProject,
     staleSession: (id: string | null | undefined) => Boolean(id && store.sessionEpoch(id) < store.epoch()),
     finishTurn,
     resetLive() {
       resetSemanticJobs()
+      profiles?.resetLive()
       turnSources.clear()
       clarifications.clear()
     },
@@ -2337,7 +2527,7 @@ export function createMemoryRuntime({ store, compute, route, embedder, maintainS
       store.setMeta('onboarding', status)
       return status
     },
-    close() { closed = true; resetSemanticJobs(); maintenance?.close(); embedder?.close(); clearTimeout(lexicalTimer); effects.close(); store.close() },
+    close() { closed = true; profiles?.close(); resetSemanticJobs(); maintenance?.close(); embedder?.close(); clearTimeout(lexicalTimer); effects.close(); store.close() },
   }
 }
 export type MemoryRuntime = ReturnType<typeof createMemoryRuntime>

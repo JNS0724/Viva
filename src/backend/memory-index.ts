@@ -97,6 +97,7 @@ export function openMemoryIndex(db: DatabaseSync) {
     const fts = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_lexical_fts'").get()?.sql
     return columns('memory_lexical_meta') === 'key,value' && columns('memory_lexical_rows') === 'id,revision'
       && typeof fts === 'string' && fts.includes('USING fts5(') && fts.includes("content='', contentless_delete=1")
+      && db.prepare("SELECT v FROM memory_lexical_fts_config WHERE k='secure-delete'").get()?.v === 1
       && triggerNames.every(name => {
         const sql = trigger.get(name)?.sql
         return typeof sql === 'string' && sql.includes(`INTO memory_meta (key,value) VALUES ('${DIRTY_PREFIX}'`)
@@ -139,6 +140,28 @@ export function openMemoryIndex(db: DatabaseSync) {
     catch { return false }
   }
 
+  function rewriteRows(dirty: readonly { key: string, id: number }[]) {
+    const read = db.prepare(`SELECT text,keywords,scope,revision FROM memories WHERE id=? AND ${RETAINED}`)
+    const removeTerms = db.prepare('DELETE FROM memory_lexical_fts WHERE rowid=?')
+    const removeReceipt = db.prepare('DELETE FROM memory_lexical_rows WHERE id=?')
+    const writeTerms = db.prepare('INSERT INTO memory_lexical_fts(rowid,terms,scope) VALUES (?,?,?)')
+    const writeReceipt = db.prepare('INSERT INTO memory_lexical_rows VALUES (?,?)')
+    const clean = db.prepare('DELETE FROM memory_meta WHERE key=?')
+    for (const { id, key } of dirty) {
+      removeTerms.run(id)
+      removeReceipt.run(id)
+      const row = read.get(id) as { text: string, keywords: string, scope: string, revision: number } | undefined
+      if (row) {
+        const terms = [...lexicalTerms([row.text, ...JSON.parse(row.keywords) as string[]].join(' '), true)]
+        if (terms.length) {
+          writeTerms.run(id, terms.map(term => token('term', term)).join(' '), scopeToken(JSON.parse(row.scope) as MemoryScope))
+          writeReceipt.run(id, row.revision)
+        }
+      }
+      clean.run(key)
+    }
+  }
+
   function refreshBatch() {
     if (!usable) return false
     try {
@@ -146,31 +169,39 @@ export function openMemoryIndex(db: DatabaseSync) {
       transaction(db, () => {
         const dirty = db.prepare(`SELECT key, CAST(value AS INTEGER) AS id FROM memory_meta WHERE ${DIRTY_KEYS} ORDER BY key LIMIT ?`)
           .all(REFRESH_BATCH) as { key: string, id: number }[]
-        const read = db.prepare(`SELECT text,keywords,scope,revision FROM memories WHERE id=? AND ${RETAINED}`)
-        const removeTerms = db.prepare('DELETE FROM memory_lexical_fts WHERE rowid=?')
-        const removeReceipt = db.prepare('DELETE FROM memory_lexical_rows WHERE id=?')
-        const writeTerms = db.prepare('INSERT INTO memory_lexical_fts(rowid,terms,scope) VALUES (?,?,?)')
-        const writeReceipt = db.prepare('INSERT INTO memory_lexical_rows VALUES (?,?)')
-        const clean = db.prepare('DELETE FROM memory_meta WHERE key=?')
-        for (const { id, key } of dirty) {
-          removeTerms.run(id)
-          removeReceipt.run(id)
-          const row = read.get(id) as { text: string, keywords: string, scope: string, revision: number } | undefined
-          if (row) {
-            const terms = [...lexicalTerms([row.text, ...JSON.parse(row.keywords) as string[]].join(' '), true)]
-            if (terms.length) {
-              writeTerms.run(id, terms.map(term => token('term', term)).join(' '), scopeToken(JSON.parse(row.scope) as MemoryScope))
-              writeReceipt.run(id, row.revision)
-            }
-          }
-          clean.run(key)
-        }
+        rewriteRows(dirty)
       })
       return true
     } catch { return false }
   }
 
   const refresh = () => refreshBatch() && !pending()
+
+  function purge(ids: readonly number[], revision: number) {
+    try {
+      // A damaged rebuildable index may still hold a copy. Replace its storage before recording completion.
+      if (!usable || !schemaMatches()) usable = initialize(true)
+      if (!usable) return !db.prepare(`SELECT 1 FROM main.sqlite_schema WHERE name='memory_lexical_rows'
+        OR name GLOB 'memory_lexical_fts*' LIMIT 1`).get()
+      const keys = JSON.stringify(ids)
+      const outdated = db.prepare(`SELECT 1 FROM memories WHERE id IN (SELECT value FROM json_each(?))
+        AND revision<? AND ${RETAINED} LIMIT 1`)
+      if (outdated.get(keys, revision)) return false
+      transaction(db, () => rewriteRows(ids.map(id => ({ id, key: DIRTY_PREFIX + id }))))
+      const residue = db.prepare(`WITH affected AS (SELECT value AS id FROM json_each(:keys))
+        SELECT 1 FROM affected a JOIN memory_lexical_fts f ON f.rowid=a.id
+          LEFT JOIN memory_lexical_rows r ON r.id=a.id WHERE r.id IS NULL
+        UNION ALL
+        SELECT 1 FROM affected a JOIN memory_lexical_rows r ON r.id=a.id
+          LEFT JOIN memory_lexical_fts f ON f.rowid=a.id
+          LEFT JOIN memories m ON m.id=r.id AND m.revision=r.revision AND m.retention='retained' AND m.state IN ('active','superseded')
+          WHERE f.rowid IS NULL OR m.id IS NULL OR r.revision<:revision
+        LIMIT 1`).get({ keys, revision })
+      if (!residue) return true
+    } catch { /* Attempt to replace derived storage if the scoped purge could not verify it. */ }
+    usable = initialize(true)
+    return usable
+  }
 
   function search(query: string, scope: MemoryScope | undefined, limit: number, interval?: MemoryInterval,
     reader?: 'recall' | 'context'): MemoryIndexResult | null {
@@ -205,5 +236,5 @@ export function openMemoryIndex(db: DatabaseSync) {
     } catch { return null }
   }
 
-  return { search, refresh, refreshBatch, pending, rebuild() { usable = initialize(true); return usable } }
+  return { search, refresh, refreshBatch, pending, purge, rebuild() { usable = initialize(true); return usable } }
 }
