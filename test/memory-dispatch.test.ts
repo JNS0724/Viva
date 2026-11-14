@@ -175,3 +175,40 @@ test('aborting a question review cancels the matching DSH calculation and reject
   assert.deepEqual(sent.at(-1), { type: 'memory_dispatch_result', id: 'late', allowed: false })
   channel.close()
 })
+
+test('cancelling an asynchronous memory query aborts it and discards any late reply', async () => {
+  const request = { op: 'recall', query: 'Latest report', session: 'main' }
+  const responses: object[] = []
+  const signals: AbortSignal[] = []
+  const resolveReply: Array<(text: string) => void> = []
+  const channel = createMemoryChannel({
+    send: response => responses.push(response),
+    handle: (_request, _parent, signal) => {
+      signals.push(signal)
+      return new Promise<string>(resolve => { resolveReply.push(resolve) })
+    },
+  })
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+  channel.receive({ type: 'memory_query', id: 'recall', request })
+  channel.receive({ type: 'memory_query', id: 'recall', request })
+  assert.equal(signals.length, 1)
+  channel.receive({ type: 'memory_query_cancel', id: 'recall' })
+  assert.equal(signals[0].aborted, true)
+  channel.receive({ type: 'memory_query', id: 'recall', request })
+  assert.equal(signals.length, 2)
+  resolveReply[0]('stale proof')
+  await tick()
+  assert.deepEqual(responses, [])
+  assert.equal(signals[1].aborted, false)
+  resolveReply[1]('fresh proof')
+  await tick()
+  assert.deepEqual(responses, [{ type: 'memory_response', id: 'recall', text: 'fresh proof' }])
+
+  channel.receive({ type: 'memory_query', id: 'closing', request })
+  channel.close()
+  assert.equal(signals[2].aborted, true)
+  resolveReply[2]('closed channel')
+  await tick()
+  assert.equal(responses.length, 1)
+})

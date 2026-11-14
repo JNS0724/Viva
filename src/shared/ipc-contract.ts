@@ -119,6 +119,7 @@ export const IPC_ARGS = Object.freeze({
   'memory:list-invalid': read(none),
   'memory:list-changes': read(none),
   'memory:undo-change': z.tuple([z.number().int().positive(), z.number().int().positive(), operationId, z.array(memoryVersion).max(MAX_LIST).readonly()]),
+  'memory:rebuild-indexes': none,
   'memory:onboarding': z.tuple([id]),
   'memory:add-docs': none,
 

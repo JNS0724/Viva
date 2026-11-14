@@ -10,9 +10,11 @@ on:
     paths:
       - package.json
       - package-lock.json
+      - build/memory-embedding/**
       - scripts/**
       - tsconfig*.json
       - src/backend/config.ts
+      - src/backend/memory-embedder*.ts
       - src/backend/app-plugins.ts
       - src/shell/automation-driver.ts
       - test/smoke/**

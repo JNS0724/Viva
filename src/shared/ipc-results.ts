@@ -97,6 +97,7 @@ export interface IpcResults {
   'task:stop': void
   'memory:list-changes': readonly MemoryChangeRecord[]
   'memory:undo-change': UndoMemoryChangeResult
+  'memory:rebuild-indexes': { fullText: boolean, semantic: boolean }
   'memory:resolve-conflict-pair': boolean
 }
 

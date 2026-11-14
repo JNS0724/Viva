@@ -7,6 +7,8 @@ smoke.log
 .claude/
 dist/
 out/
+/build/memory-embedding/prepared/
+/build/memory-embedding/.prepare-*/
 .omx/i18n/
 .omx/language-smoke/
 .omx/test-tmp/

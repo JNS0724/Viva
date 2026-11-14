@@ -6,7 +6,7 @@ export type MemoryDispatchAdmission = boolean | { allowed: boolean, deadline?: n
 
 export function createMemoryChannel({ send, handle, onReady, beginDispatch, beginJobDispatch, endDispatch, timeoutMs = 120_000 }: {
   send: (message: object) => void,
-  handle?: (request: MemoryRequest, parent?: string) => string,
+  handle?: (request: MemoryRequest, parent: string | undefined, signal: AbortSignal) => string | Promise<string>,
   onReady?: () => void,
   beginDispatch?: (id: string, session: string, parent?: string) => MemoryDispatchAdmission | Promise<MemoryDispatchAdmission>,
   beginJobDispatch?: (id: string, jobId: string) => MemoryDispatchAdmission | Promise<MemoryDispatchAdmission>,
@@ -15,6 +15,7 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
 }) {
   const jobs = new Map<string, { generation: number, done: (text: string | null) => void }>()
   const dispatches = new Map<string, 'pending' | 'allowed'>()
+  const queries = new Map<string, AbortController>()
   let ready = false
   let closed = false
 
@@ -22,6 +23,12 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
     const state = dispatches.get(id)
     dispatches.delete(id)
     if (state === 'allowed') endDispatch?.(id)
+  }
+
+  function cancelQuery(id: string) {
+    const query = queries.get(id)
+    queries.delete(id)
+    query?.abort()
   }
 
   function compute(job: MemoryCompute, signal?: AbortSignal): Promise<string> | null {
@@ -67,6 +74,10 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
         return
       }
       if (closed) return
+      if (message.type === 'memory_query_cancel') {
+        cancelQuery(id)
+        return
+      }
       const parent = typeof message.parent === 'string' && message.parent.length <= 128 ? message.parent : undefined
       if (message.type === 'memory_dispatch') {
         const session = typeof message.session === 'string' && message.session.length > 0 && message.session.length <= 128 ? message.session : undefined
@@ -94,16 +105,30 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
         })
         return
       }
-      if (message.type !== 'memory_query' || !handle) return
+      if (message.type !== 'memory_query' || !handle || queries.has(id)) return
       const request = memoryRequest.safeParse(message.request)
+      const controller = new AbortController()
+      queries.set(id, controller)
+      const reply = (result: { text: string } | { error: true }) => {
+        if (queries.get(id) !== controller) return
+        queries.delete(id)
+        send({ type: 'memory_response', id, ...result })
+      }
       try {
         if (!request.success) throw new Error('invalid memory request')
-        send({ type: 'memory_response', id, text: handle(request.data, parent) })
+        const result = handle(request.data, parent, controller.signal)
+        if (typeof result === 'string') reply({ text: result })
+        else void result.then(text => reply({ text }), () => reply({ error: true }))
       } catch {
-        send({ type: 'memory_response', id: message.id, error: true })
+        reply({ error: true })
       }
     },
-    close() { closed = true; ready = false; for (const job of jobs.values()) job.done(null) },
+    close() {
+      closed = true
+      ready = false
+      for (const id of queries.keys()) cancelQuery(id)
+      for (const job of jobs.values()) job.done(null)
+    },
     processExited() { for (const id of dispatches.keys()) release(id) },
   }
 }

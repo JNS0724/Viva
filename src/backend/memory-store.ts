@@ -1,11 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import type { StatementSync } from 'node:sqlite'
 import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { APP_DB_PRAGMAS, transaction } from './app-db.ts'
 import { MEMORY_CONTRACT, memoryScope } from '../shared/memory-contract.ts'
 import type { MemoryKind, MemoryScope } from '../shared/memory-contract.ts'
 import { objectOf } from '../shared/unknown-value.ts'
+import { memoryRelationLabel } from './memory-facts.ts'
 import type { MemoryFact } from './memory-facts.ts'
 import type { MemoryInterval } from './memory-intervals.ts'
 
@@ -85,7 +87,15 @@ const DISPATCH_SCHEMA = `
   CREATE TABLE memory_session_turn_only (session TEXT PRIMARY KEY);
 `
 
-export type MemoryDependency = { id: number, revision: number, asOf?: string, disputed?: boolean }
+// Derived delivery metadata is additive. Existing session receipts do not have relation deadlines.
+const RELATION_DISPATCH_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS memory_session_relation_dependencies (
+    session TEXT NOT NULL, fact INTEGER NOT NULL, revision INTEGER NOT NULL, expires INTEGER NOT NULL,
+    PRIMARY KEY(session, fact, revision)
+  );
+`
+
+export type MemoryDependency = { id: number, revision: number, asOf?: string, asOfZone?: string, disputed?: boolean, expiresAt?: number }
 export type MemoryProvenance = { dependencies: MemoryDependency[], sources: string[], turnOnly: boolean, epoch: number }
 
 export interface MemorySource {
@@ -132,7 +142,28 @@ type EvidenceRow = Omit<MemoryEvidence, 'parts' | 'spans' | 'inheritsChangeTime'
 type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'withdrawn' | 'requestId' | 'questionId' | 'rememberedHash'> & { scope: string, context: string | null, withdrawn: number, request_id: string | null, question_id: string | null, remembered_hash: string | null }
 const columns = 'id, revision, text, kind, scope, modality, conditional, keywords, source, conversation AS conversationId, created_at AS createdAt, updated_at AS updatedAt, state, retention, authorized_revision AS authorizedRevision, invalid_at AS invalidAt, invalidated_by AS invalidatedBy, valid_from AS validFrom, valid_to AS validTo, asserted_from AS assertedFrom, asserted_to AS assertedTo, windows'
 const changeColumns = 'id, revision, target AS targetId, replacement AS replacementId, kind, source AS sourceId, source_version AS sourceVersion, spans, affected_from AS "from", affected_to AS "to", effective_at AS effectiveAt, intent_from AS intentFrom, intent_to AS intentTo, derived_from AS derivedFrom, intent_windows AS intentWindows, old_value_spans AS oldValueSpans, needs_confirmation AS needsConfirmation, created_at AS createdAt, automatic, status'
-const scopeKey = (scope: MemoryScope) => JSON.stringify(scope)
+export const memoryScopeKey = (scope: MemoryScope) => scope.kind === 'user' ? '{"kind":"user"}' : JSON.stringify({ kind: scope.kind, id: scope.id })
+const userScopeKey = memoryScopeKey({ kind: 'user' })
+const alternateScopeKey = (scope: MemoryScope) => scope.kind === 'user' ? userScopeKey : JSON.stringify({ id: scope.id, kind: scope.kind })
+export function memoryScopeKeys(scope?: MemoryScope): [string, string, string] {
+  return !scope || scope.kind === 'user' ? [userScopeKey, userScopeKey, userScopeKey]
+    : [userScopeKey, memoryScopeKey(scope), alternateScopeKey(scope)]
+}
+
+export const memoryWindowsOverlap = `EXISTS (SELECT 1 FROM json_each(m.windows) w WHERE
+  (? IS NULL OR json_extract(w.value,'$.from') IS NULL OR json_extract(w.value,'$.from') < ?)
+  AND (? IS NULL OR json_extract(w.value,'$.to') IS NULL OR json_extract(w.value,'$.to') > ?))`
+export const memoryEligibleEvidence = `EXISTS (
+  SELECT 1 FROM memory_evidence e JOIN memory_sources s ON s.id=e.source
+  LEFT JOIN memory_links l ON l.id=e.change_id
+  WHERE e.memory=m.id AND s.withdrawn=0 AND s.version=e.version AND s.outcome<>'explicit-pending'
+    AND (e.change_id IS NULL OR l.status='applied'))`
+export const memoryContextCandidate = `((m.modality='asserted' AND m.conditional=0) OR EXISTS (
+  SELECT 1 FROM memory_links l WHERE l.kind='possible_conflict' AND l.status='applied' AND l.target=m.id
+  UNION ALL
+  SELECT 1 FROM memory_links l WHERE l.kind='possible_conflict' AND l.status='applied' AND l.replacement=m.id
+))`
+export const memoryWindowParameters = ({ from, to }: MemoryInterval) => [to, to, from, from] as const
 export const memoryHash = (text: string) => createHash('sha256').update(text).digest('hex')
 const normalized = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 export function openMemoryStore(file: string, now = Date.now) {
@@ -151,6 +182,14 @@ export function openMemoryStore(file: string, now = Date.now) {
       db.exec(`PRAGMA user_version = ${MEMORY_CONTRACT}`)
       db.prepare('INSERT INTO memory_meta (key,value) VALUES (?,?)').run('secret', randomBytes(32).toString('hex'))
     })
+    db.exec(RELATION_DISPATCH_SCHEMA)
+    // Reindex these derived keys if the normalization of entity labels changes.
+    db.function('memory_relation_label', { deterministic: true }, value =>
+      typeof value === 'string' ? memoryRelationLabel(value) : '')
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS memory_fact_relation_subject ON memory_facts(memory_relation_label(subject)) WHERE polarity='positive';
+      CREATE INDEX IF NOT EXISTS memory_fact_relation_object ON memory_facts(memory_relation_label(object)) WHERE polarity='positive';
+    `)
   } catch (error) {
     db.close()
     throw error
@@ -170,23 +209,36 @@ export function openMemoryStore(file: string, now = Date.now) {
   }
   const evidenceColumns = `e.source AS sourceId,s.conversation AS conversationId,e.version AS sourceVersion,
     e.start,e.end,e.parts,e.spans,e.change_id AS changeId,e.asserted_from AS assertedFrom,e.asserted_to AS assertedTo,e.inherits_change_time AS inheritsChangeTime`
+  const evidenceOrder = 'ORDER BY s.at,e.source,e.start'
   const evidenceBase = `FROM memory_evidence e JOIN memory_sources s ON s.id=e.source
     LEFT JOIN memory_links l ON l.id=e.change_id
     WHERE s.withdrawn=0 AND s.version=e.version AND (e.change_id IS NULL OR l.status='applied')`
-  const evidenceRows = db.prepare(`SELECT ${evidenceColumns} ${evidenceBase} AND e.memory=? ORDER BY s.at,e.source,e.start`)
+  const evidenceRows = db.prepare(`SELECT ${evidenceColumns} ${evidenceBase} AND e.memory=? ${evidenceOrder}`)
   const storedEvidenceRows = db.prepare(`SELECT ${evidenceColumns}
-    FROM memory_evidence e JOIN memory_sources s ON s.id=e.source WHERE e.memory=? ORDER BY s.at,e.source,e.start`)
-  const allEvidence = db.prepare(`SELECT e.memory,${evidenceColumns} ${evidenceBase} ORDER BY s.at,e.source,e.start`)
+    FROM memory_evidence e JOIN memory_sources s ON s.id=e.source WHERE e.memory=? ${evidenceOrder}`)
   const factColumns = 'subject,predicate,relation,object,polarity,dated,intended_from AS intendedFrom,intended_to AS intendedTo'
   const factOf = db.prepare(`SELECT ${factColumns} FROM memory_facts WHERE memory=?`)
-  const allFacts = db.prepare(`SELECT memory,${factColumns} FROM memory_facts`)
   const activeChangeSql = `SELECT ${changeColumns} FROM memory_links
     WHERE status='applied' AND (source IS NULL OR EXISTS (SELECT 1 FROM memory_sources s
       WHERE s.id=memory_links.source AND s.version=memory_links.source_version AND s.withdrawn=0))`
   const linksOf = db.prepare(`${activeChangeSql} AND (target=? OR replacement=?) ORDER BY id`)
   const activeChanges = db.prepare(`${activeChangeSql} ORDER BY id`)
   const rowOf = db.prepare(`SELECT ${columns} FROM memories WHERE id=?`)
-  const allRows = db.prepare(`SELECT ${columns} FROM memories ORDER BY updated_at DESC,id DESC`)
+  const entryOrder = 'ORDER BY updated_at DESC,id DESC'
+  const allEntries = {
+    rows: db.prepare(`SELECT ${columns} FROM memories ${entryOrder}`),
+    evidence: db.prepare(`SELECT e.memory,${evidenceColumns} ${evidenceBase} ${evidenceOrder}`),
+    facts: db.prepare(`SELECT memory,${factColumns} FROM memory_facts`),
+    changes: activeChanges,
+  }
+  const retainedScope = "scope IN (?,?,?) AND retention='retained'"
+  const scopedIds = `WITH scoped AS (SELECT id FROM memories WHERE ${retainedScope})`
+  const scopedEntries = {
+    rows: db.prepare(`SELECT ${columns} FROM memories WHERE ${retainedScope} ${entryOrder}`),
+    evidence: db.prepare(`${scopedIds} SELECT e.memory,${evidenceColumns} ${evidenceBase} AND e.memory IN scoped ${evidenceOrder}`),
+    facts: db.prepare(`${scopedIds} SELECT memory,${factColumns} FROM memory_facts WHERE memory IN scoped`),
+    changes: db.prepare(`${scopedIds} ${activeChangeSql} AND (target IN scoped OR replacement IN scoped) ORDER BY id`),
+  }
   const matchingText = db.prepare('SELECT id FROM memories WHERE text=? AND scope=? AND retention=\'retained\'')
   const readChange = db.prepare(`SELECT ${changeColumns} FROM memory_links WHERE id=?`)
   const allChanges = db.prepare(`SELECT ${changeColumns} FROM memory_links ORDER BY id DESC`)
@@ -216,26 +268,72 @@ export function openMemoryStore(file: string, now = Date.now) {
     return toEntry(row, (evidenceRows.all(id) as unknown as EvidenceRow[]).map(toEvidence), fact ? toFact(fact) : null,
       (linksOf.all(id, id) as unknown as ChangeRow[]).map(toChange))
   }
-  function list() {
+  function readEntries(queries: { rows: StatementSync, evidence: StatementSync, facts: StatementSync, changes: StatementSync }, ...scopes: string[]) {
+    const rows = queries.rows.all(...scopes) as unknown as MemoryRow[]
+    if (!rows.length) return []
     const evidence = new Map<number, MemoryEvidence[]>()
-    for (const { memory, ...row } of allEvidence.all() as unknown as Array<EvidenceRow & { memory: number }>) {
+    for (const { memory, ...row } of queries.evidence.all(...scopes) as unknown as Array<EvidenceRow & { memory: number }>) {
       const edges = evidence.get(memory) ?? []
       edges.push(toEvidence(row))
       evidence.set(memory, edges)
     }
-    const facts = new Map((allFacts.all() as unknown as Array<Parameters<typeof toFact>[0] & { memory: number }>)
+    const facts = new Map((queries.facts.all(...scopes) as unknown as Array<Parameters<typeof toFact>[0] & { memory: number }>)
       .map(({ memory, ...row }) => [memory, toFact(row)]))
     const linked = new Map<number, MemoryChange[]>()
-    for (const change of (activeChanges.all() as unknown as ChangeRow[]).map(toChange)) {
+    for (const change of (queries.changes.all(...scopes) as unknown as ChangeRow[]).map(toChange)) {
       for (const id of [change.targetId, change.replacementId]) if (id) {
         const edges = linked.get(id) ?? []
         edges.push(change)
         linked.set(id, edges)
       }
     }
-    return (allRows.all() as unknown as MemoryRow[]).map(row =>
-      toEntry(row, evidence.get(row.id) ?? [], facts.get(row.id) ?? null, linked.get(row.id) ?? []))
+    return rows.map(row => toEntry(row, evidence.get(row.id) ?? [], facts.get(row.id) ?? null, linked.get(row.id) ?? []))
   }
+  const list = () => readEntries(allEntries)
+  const listForScope = (scope?: MemoryScope) => readEntries(scopedEntries, ...memoryScopeKeys(scope))
+  const retainedReadable = "m.retention='retained' AND m.state IN ('active','superseded')"
+  const eligibleEvidence = db.prepare(`SELECT 1 ${evidenceBase} AND e.memory=? AND s.outcome<>'explicit-pending' LIMIT 1`)
+  const fallbackRefs = db.prepare(`SELECT m.id,m.revision FROM memories m
+    WHERE m.scope IN (?,?,?) AND ${retainedReadable} AND ${memoryWindowsOverlap} AND ${memoryEligibleEvidence}
+      AND (?=0 OR ${memoryContextCandidate})
+    ORDER BY m.updated_at DESC,m.id DESC LIMIT ?`)
+  const relationRefs = db.prepare(`
+    SELECT m.id,m.revision FROM (
+      SELECT memory FROM memory_facts WHERE polarity='positive' AND memory_relation_label(subject)=?
+      UNION
+      SELECT memory FROM memory_facts WHERE polarity='positive' AND memory_relation_label(object)=?
+    ) f JOIN memories m ON m.id=f.memory
+    WHERE m.scope IN (?,?) AND ${retainedReadable} AND m.modality='asserted' AND m.conditional=0 AND ${memoryWindowsOverlap} AND ${memoryEligibleEvidence}
+    ORDER BY m.updated_at DESC,m.id DESC LIMIT ?`)
+  type RecallRef = Pick<MemoryEntry, 'id' | 'revision'>
+  const recentRecallRefs = (scope: MemoryScope | undefined, interval: MemoryInterval, limit: number, contextOnly = false) =>
+    fallbackRefs.all(...memoryScopeKeys(scope), ...memoryWindowParameters(interval), Number(contextOnly), limit) as RecallRef[]
+  const relationRecallRefs = (scope: MemoryScope, label: string, interval: MemoryInterval, limit: number) =>
+    relationRefs.all(`named:${label}`, label, memoryScopeKey(scope), alternateScopeKey(scope), ...memoryWindowParameters(interval), limit) as RecallRef[]
+  const modelEligible = (id: number) => Boolean(eligibleEvidence.get(id))
+  const pendingEndingAt = db.prepare(`SELECT 1 FROM memory_links WHERE kind='end' AND status='applied' AND needs_confirmation=1
+    AND (? IS NULL OR intent_from IS NULL OR intent_from<?)
+    AND (? IS NULL OR intent_to IS NULL OR intent_to>?) LIMIT 1`)
+  const inactiveRecall = db.prepare(`SELECT m.id,m.revision FROM memories m
+    WHERE m.scope IN (?,?,?) AND ${retainedReadable} AND NOT ${memoryWindowsOverlap} AND ${memoryEligibleEvidence}
+    ORDER BY m.updated_at DESC,m.id DESC LIMIT ?`)
+  const inactiveRecallRefs = (scope: MemoryScope | undefined, interval: MemoryInterval, limit: number) =>
+    inactiveRecall.all(...memoryScopeKeys(scope), ...memoryWindowParameters(interval), limit) as RecallRef[]
+  const hasPendingEnding = (interval: MemoryInterval) => Boolean(pendingEndingAt.get(...memoryWindowParameters(interval)))
+  const relatedEndings = db.prepare(`WITH RECURSIVE component(id) AS (
+    SELECT value FROM json_each(?)
+    UNION
+    SELECT l.replacement FROM memory_links l JOIN component c ON l.target=c.id
+      WHERE l.replacement IS NOT NULL AND (l.kind='supersede' OR (l.kind='correct' AND l.source IS NOT NULL))
+    UNION
+    SELECT l.target FROM memory_links l JOIN component c ON l.replacement=c.id
+      WHERE l.kind='supersede' OR (l.kind='correct' AND l.source IS NOT NULL)
+    LIMIT 256
+  )
+  SELECT ${changeColumns} FROM memory_links WHERE target IN component
+    AND kind='end' AND status='applied' AND needs_confirmation=1 LIMIT 64`)
+  const pendingEndingsFor = (ids: readonly number[]) =>
+    (relatedEndings.all(JSON.stringify(ids)) as unknown as ChangeRow[]).map(toChange)
   const getChange = (id: number) => {
     const row = readChange.get(id) as ChangeRow | undefined
     return row ? toChange(row) : null
@@ -244,7 +342,7 @@ export function openMemoryStore(file: string, now = Date.now) {
   const appliedChanges = () => (activeChanges.all() as unknown as ChangeRow[]).map(toChange)
   const changesFor = (id: number) => (linksOf.all(id, id) as unknown as ChangeRow[]).map(toChange)
   const sameText = (text: string, scope: MemoryScope) =>
-    (matchingText.all(text, scopeKey(scope)) as Array<{ id: number }>).map(row => get(row.id)!)
+    (matchingText.all(text, memoryScopeKey(scope)) as Array<{ id: number }>).map(row => get(row.id)!)
   type OptionalChangeFields = 'derivedFrom' | 'intentWindows' | 'oldValueSpans' | 'needsConfirmation'
   const recordChange = (change: Omit<MemoryChange, 'id' | 'status' | OptionalChangeFields>
     & Partial<Pick<MemoryChange, OptionalChangeFields>>) =>
@@ -272,7 +370,7 @@ export function openMemoryStore(file: string, now = Date.now) {
   const insertSource = (source: MemorySource) => db.prepare(`INSERT INTO memory_sources
     (id, operation, version, conversation, session, scope, context, author, text, hash, remembered_hash, length, question, request_id, question_id, at, timezone, outcome)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
-    scopeKey(source.scope), source.context ? scopeKey(source.context) : null, source.author, source.text, source.hash, source.rememberedHash ?? null, source.length,
+    memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.author, source.text, source.hash, source.rememberedHash ?? null, source.length,
     source.question, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
   const outcome = (id: string, state: string) => db.prepare('UPDATE memory_sources SET outcome=? WHERE id=?').run(state, id)
   const withdrawSource = (id: string) => db.prepare("UPDATE memory_sources SET withdrawn=1,text=NULL,question=NULL,hash=NULL,remembered_hash=NULL,outcome='withdrawn' WHERE id=?").run(id)
@@ -299,12 +397,12 @@ export function openMemoryStore(file: string, now = Date.now) {
   function insert(entry: Pick<MemoryEntry, 'text' | 'kind' | 'scope' | 'modality' | 'conditional' | 'keywords' | 'source' | 'conversationId'>, rev: number, at: number, interval: MemoryInterval) {
     return Number(db.prepare(`INSERT INTO memories (revision,text,kind,scope,modality,conditional,keywords,source,conversation,created_at,updated_at,
       asserted_from,asserted_to,valid_from,valid_to,windows) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(rev, entry.text, entry.kind, scopeKey(entry.scope), entry.modality, Number(entry.conditional),
+      .run(rev, entry.text, entry.kind, memoryScopeKey(entry.scope), entry.modality, Number(entry.conditional),
         JSON.stringify(entry.keywords), entry.source, entry.conversationId, at, at, interval.from, interval.to, interval.from, interval.to, JSON.stringify([interval])).lastInsertRowid)
   }
   const setAssertion = (id: number, interval: MemoryInterval, text: string, details: Pick<MemoryEntry, 'keywords' | 'scope' | 'conditional' | 'modality'>) =>
     db.prepare('UPDATE memories SET asserted_from=?,asserted_to=?,text=?,keywords=?,scope=?,conditional=?,modality=? WHERE id=?')
-      .run(interval.from, interval.to, text, JSON.stringify(details.keywords), scopeKey(details.scope), Number(details.conditional), details.modality, id)
+      .run(interval.from, interval.to, text, JSON.stringify(details.keywords), memoryScopeKey(details.scope), Number(details.conditional), details.modality, id)
   const project = (id: number, data: Pick<MemoryEntry, 'state' | 'text' | 'windows' | 'invalidAt' | 'invalidatedBy'>, revision: number) =>
     db.prepare('UPDATE memories SET text=?,state=?,windows=?,valid_from=?,valid_to=?,invalid_at=?,invalidated_by=?,revision=?,updated_at=? WHERE id=?')
       .run(data.text, data.state, JSON.stringify(data.windows), data.windows[0]?.from ?? null, data.windows.at(-1)?.to ?? null,
@@ -317,14 +415,14 @@ export function openMemoryStore(file: string, now = Date.now) {
   function exclude(text: string, scope: MemoryScope) {
     const value = normalized(text)
     if (!value) return
-    db.prepare('INSERT OR REPLACE INTO memory_exclusions VALUES (?,?,?,?)').run(fingerprint(value), value.length, scopeKey(scope), revision())
+    db.prepare('INSERT OR REPLACE INTO memory_exclusions VALUES (?,?,?,?)').run(fingerprint(value), value.length, memoryScopeKey(scope), revision())
   }
   function excluded(text: string, scope?: MemoryScope, authorizedRevision = -1): boolean {
     const value = normalized(text)
     if (!value) return false
     const rows = db.prepare('SELECT scope FROM memory_exclusions WHERE fingerprint=? AND revision>?')
       .all(fingerprint(value), authorizedRevision) as Array<{ scope: string }>
-    return rows.some(row => !scope || row.scope === scopeKey(scope) || row.scope === scopeKey({ kind: 'user' }))
+    return rows.some(row => !scope || row.scope === memoryScopeKey(scope) || row.scope === memoryScopeKey({ kind: 'user' }))
   }
   const sourceExcluded = (id: string) => Boolean(db.prepare('SELECT 1 FROM memory_excluded_sources WHERE id=?').get(id))
   const excludeSource = (id: string) => db.prepare('INSERT OR IGNORE INTO memory_excluded_sources VALUES (?)').run(id)
@@ -352,6 +450,12 @@ export function openMemoryStore(file: string, now = Date.now) {
     db.prepare('INSERT OR REPLACE INTO memory_candidates VALUES (?,?,?,?,?,?)').run(source, start, end, JSON.stringify(proposal), reason, now() + 7 * 86_400_000)
   const pendingCandidates = db.prepare(`SELECT source AS sourceId,start,end,proposal,expires_at AS expiresAt
     FROM memory_candidates WHERE reason='uncertain-change' AND expires_at>?`)
+  const scopedPendingCandidates = db.prepare(`SELECT c.source AS sourceId,c.start,c.end,c.proposal,c.expires_at AS expiresAt
+    FROM memory_candidates c JOIN memory_sources s ON s.id=c.source
+    WHERE c.reason='uncertain-change' AND c.expires_at>? AND s.withdrawn=0
+      AND ((json_extract(c.proposal,'$.scope.kind')='user')
+        OR (json_extract(c.proposal,'$.scope.kind')=? AND json_extract(c.proposal,'$.scope.id')=?))
+    ORDER BY c.expires_at DESC,c.source,c.start LIMIT ?`)
   const pendingCandidate = db.prepare(`SELECT source AS sourceId,start,end,proposal,expires_at AS expiresAt
     FROM memory_candidates WHERE reason='uncertain-change' AND expires_at>? AND source=? AND start=? AND end=?`)
   const discardUnused = (id: string) => db.prepare(`UPDATE memory_sources SET text=NULL,question=NULL WHERE id=?
@@ -417,33 +521,53 @@ export function openMemoryStore(file: string, now = Date.now) {
 
   const insertDependency = db.prepare('INSERT OR IGNORE INTO memory_session_dependencies VALUES (?, ?, ?, ?, ?)')
   const readDependencies = db.prepare('SELECT fact AS id, revision, as_of AS asOf, disputed FROM memory_session_dependencies WHERE session = ?')
+  const addRelationDeadline = db.prepare(`INSERT INTO memory_session_relation_dependencies VALUES (?, ?, ?, ?)
+    ON CONFLICT(session, fact, revision) DO UPDATE SET expires=MIN(expires,excluded.expires)`)
+  const readRelationDeadlines = db.prepare('SELECT fact AS id, revision, expires AS expiresAt FROM memory_session_relation_dependencies WHERE session=?')
   const insertSessionSource = db.prepare('INSERT OR IGNORE INTO memory_session_sources VALUES (?, ?)')
   const readSessionSources = db.prepare('SELECT source FROM memory_session_sources WHERE session = ?')
   const retainTurnOnly = db.prepare('INSERT OR IGNORE INTO memory_session_turn_only VALUES (?)')
   const usedTurnOnly = db.prepare('SELECT 1 FROM memory_session_turn_only WHERE session = ?')
   const dispatch = {
     dependencies(session: string, dependencies: readonly MemoryDependency[]) {
-      for (const item of dependencies) insertDependency.run(session, item.id, item.revision, item.asOf ?? '', Number(item.disputed ?? false))
+      tx(() => {
+        for (const item of dependencies) {
+          if (item.expiresAt !== undefined) addRelationDeadline.run(session, item.id, item.revision, item.expiresAt)
+          else {
+            // A civil date and its IANA zone together identify the day delivered by recall.
+            const dated = item.asOf && item.asOfZone ? `${item.asOf}|${item.asOfZone}` : item.asOf ?? ''
+            insertDependency.run(session, item.id, item.revision, dated, Number(item.disputed ?? false))
+          }
+        }
+      })
     },
     source: (session: string, source: string) => insertSessionSource.run(session, source),
     turnOnly: (session: string) => retainTurnOnly.run(session),
     snapshot(session: string): MemoryProvenance {
       const rows = readDependencies.all(session) as Array<{ id: number, revision: number, asOf: string, disputed: number }>
       return {
-        dependencies: rows.map(row => ({ ...row, asOf: row.asOf || undefined, disputed: Boolean(row.disputed) })),
+        dependencies: [
+          ...rows.map(row => {
+            const [day, asOfZone] = row.asOf.split('|')
+            return { ...row, asOf: day || undefined, ...(asOfZone ? { asOfZone } : {}), disputed: Boolean(row.disputed) }
+          }),
+          ...readRelationDeadlines.all(session) as Array<{ id: number, revision: number, expiresAt: number }>,
+        ],
         sources: (readSessionSources.all(session) as Array<{ source: string }>).map(row => row.source),
         turnOnly: Boolean(usedTurnOnly.get(session)),
         epoch: epoch(),
       }
     },
   }
-  return { db, tx, revision, epoch, nextRevision, get, list, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
+  return { db, tx, revision, epoch, nextRevision, get, list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
     readSource, insertSource, outcome, withdrawSource, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource,
     insert, setAssertion, project, touch, authorize, remove, forgetEntry, restoreEntry, recordFact, setKeywords, touchChange,
     exclude, excluded, sourceExcluded, excludeSource, sourceIds, answerSourceIds, memoriesFrom, changesFrom, changesReferencing, hasChangeSource,
     deliveredSourceIds, deliveredSource, recordDeliveredSource, dispatch,
     priorSources, candidate, expire, clearCandidates, discardUnused, compactSource, nextCandidateExpiry,
     pendingChanges: (at: number) => pendingCandidates.all(at) as unknown as MemoryCandidate[],
+    recallPendingChanges: (at: number, scope: MemoryScope | undefined, limit: number) =>
+      scopedPendingCandidates.all(at, scope?.kind ?? 'user', scope && 'id' in scope ? scope.id : '', limit) as unknown as MemoryCandidate[],
     pendingChange: (at: number, ref: Pick<MemoryCandidate, 'sourceId' | 'start' | 'end'>) =>
       pendingCandidate.get(at, ref.sourceId, ref.start, ref.end) as unknown as MemoryCandidate | undefined,
     sessionEpoch, recordSession, meta, setMeta, profile, setProfile, command, recordCommand, close: () => db.close() }

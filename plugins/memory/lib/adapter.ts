@@ -7,7 +7,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
-import { MEMORY_CONTRACT, memoryClarificationResult, memoryCompute, memoryKinds } from '../../../src/shared/memory-contract.ts'
+import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, memoryClarificationResult, memoryCompute, memoryKinds } from '../../../src/shared/memory-contract.ts'
 import type { MemoryCompute, MemoryRequest } from '../../../src/shared/memory-contract.ts'
 import { objectOf } from '../../../src/shared/unknown-value.ts'
 
@@ -58,16 +58,19 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
       owner = agents.find(candidate => ctx.agents.isOwnedBy(root.session.id, candidate))) root = owner
     return root !== agent ? String(root.session.id) : undefined
   }
-  function exchange(message: object, id: string, signal?: AbortSignal) {
+  function exchange(message: { type: string; [field: string]: unknown }, id: string, signal?: AbortSignal, timeoutMs = 2000) {
     return new Promise<string | null>(resolve => {
-      const cancel = () => done(null)
+      const cancel = () => {
+        if (message.type === 'memory_query') send({ type: 'memory_query_cancel', id })
+        done(null)
+      }
       const done = (text: string | null) => {
         clearTimeout(timer)
         pending.delete(id)
         signal?.removeEventListener('abort', cancel)
         resolve(text)
       }
-      const timer = setTimeout(() => done(null), 2000)
+      const timer = setTimeout(cancel, timeoutMs)
       timer.unref()
       pending.set(id, done)
       signal?.addEventListener('abort', cancel, { once: true })
@@ -75,8 +78,10 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
       else send({ ...message, id })
     })
   }
-  const request = (input: MemoryRequest, agent: Agent) =>
-    exchange({ type: 'memory_query', request: input, parent: parentOf(agent) }, randomUUID())
+  const request = (input: MemoryRequest, agent: Agent, signal?: AbortSignal) =>
+    exchange({ type: 'memory_query', request: input, parent: parentOf(agent) }, randomUUID(),
+      signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal,
+      input.op === 'recall' ? MEMORY_SEMANTIC_TIMEOUT_MS + 1500 : undefined)
 
   async function authorize(origin: DispatchOrigin, id: string, signal?: AbortSignal) {
     const allowed = await exchange({ type: 'memory_dispatch', ...origin }, id, signal)
@@ -250,7 +255,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
     const question = decision.messages.filter(message => message.source.kind === 'user')
       .flatMap(message => message.content.flatMap(part => part.type === 'text' ? [part.text] : [])).join('\n').slice(0, 20_000)
     if (!question) return decision
-    const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent)
+    const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent, signal)
     if (!text || signal.aborted) return decision
     return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text }], source: memorySource })] }
   }, { prepend: true })
@@ -259,9 +264,9 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
     { op: 'remember', description: '保存用户本轮明确要求记住的原文。只传原文，保留时间、条件和例外。',
       parameters: { text: { type: 'string', required: true }, kind: { type: 'string', enum: memoryKinds }, keywords: { type: 'array', items: { type: 'string' } } },
       input: (session: string, args: { text: string, kind?: typeof memoryKinds[number], keywords?: string[] }): MemoryRequest => ({ op: 'remember', session, ...args }) },
-    { op: 'recall', description: '按关键词查有效记忆。历史查询可用 asOf（YYYY-MM-DD）。conflicts 包含成对依据和适用区间。pendingChanges 是待确认变更，不能当成已发生。只有不确定性会改变当前答案或操作、且无法用原文、本轮指示或条件式答案继续时才用 memory_clarify。后台任务记录歧义并完成可做部分。',
-      parameters: { query: { type: 'string', required: true }, asOf: { type: 'string' } },
-      input: (session: string, args: { query: string, asOf?: string }): MemoryRequest => ({ op: 'recall', session, ...args }) },
+    { op: 'recall', description: '查有关的有效记忆，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。用户明确深查或需要关系链、跨记录归纳时可设 deep。中文句子中的关系起点可用「」标出完整名称。match 为 semantic 表示按语义相似度找到的候选，使用前依据原文核对实际对象、关系和限制。relations 是带原始证据和适用区间的路径。conflicts 包含成对依据，pendingChanges 仍待确认。partial 表示结果不完整，可参考 reasons 缩小范围。只有不确定性会改变答案或操作、且无法用原文、本轮指示或条件式答案继续时才用 memory_clarify。后台任务记录歧义并完成可做部分。',
+      parameters: { query: { type: 'string', required: true }, asOf: { type: 'string' }, deep: { type: 'boolean' } },
+      input: (session: string, args: { query: string, asOf?: string, deep?: boolean }): MemoryRequest => ({ op: 'recall', session, ...args }) },
     { op: 'forget', description: '用户明确要求忘掉时使用。请用户说「忘掉 #编号」，也可以在关于你中操作。',
       parameters: { id: { type: 'integer', required: true } },
       input: (session: string, args: { id: number }): MemoryRequest => ({ op: 'forget', session, id: args.id }) },
@@ -274,7 +279,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
     ctx.tools.register(defineTool({
       name: 'memory_' + op, description, parameters, output,
       execute: async (args, exec) => ({ text: exec.agent
-        ? await request(make(String(exec.agent.session.id), args), exec.agent) ?? '{"status":"unavailable"}'
+        ? await request(make(String(exec.agent.session.id), args), exec.agent, exec.signal) ?? '{"status":"unavailable"}'
         : '{"status":"unavailable"}' }),
     }))
   }
@@ -287,7 +292,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
       const agent = exec.agent
       const unavailable = { text: '{"status":"unavailable"}' }
       if (!agent || !ctx.userQuestions) return unavailable
-      const reply = await request({ op: 'clarify', session: String(agent.session.id), ref }, agent)
+      const reply = await request({ op: 'clarify', session: String(agent.session.id), ref }, agent, exec.signal)
       if (!reply) return unavailable
       const result = memoryClarificationResult.safeParse(JSON.parse(reply))
       if (!result.success) return unavailable

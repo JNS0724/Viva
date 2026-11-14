@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   listInvalidMemories: () => ipcRenderer.invoke('memory:list-invalid'),
   listMemoryChanges: () => ipcRenderer.invoke('memory:list-changes'),
   undoMemoryChange: (id, revision, operation, expectedRevisions) => ipcRenderer.invoke('memory:undo-change', id, revision, operation, expectedRevisions),
+  rebuildMemoryIndexes: () => ipcRenderer.invoke('memory:rebuild-indexes'),
   setOnboarding: (status) => ipcRenderer.invoke('memory:onboarding', status),
   addDocs: () => ipcRenderer.invoke('memory:add-docs'),
   listFiles: (rel) => ipcRenderer.invoke('files:list', rel),

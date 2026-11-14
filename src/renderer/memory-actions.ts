@@ -248,6 +248,22 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       }
     },
 
+    async rebuildMemoryIndexes() {
+      if (getState().memory.rebuildingIndexes) return
+      dispatch({ type: 'memory_index_rebuild', busy: true })
+      try {
+        const result = await api.rebuildMemoryIndexes()
+        const message = result.fullText && result.semantic ? t('memory-actions.index.rebuild.started')
+          : result.fullText ? t('memory-actions.index.rebuild.full-text-only')
+            : result.semantic ? t('memory-actions.index.rebuild.semantic-only') : t('memory-actions.index.rebuild.failed')
+        showToast(message)
+      } catch {
+        showToast(t('memory-actions.index.rebuild.failed'))
+      } finally {
+        dispatch({ type: 'memory_index_rebuild', busy: false })
+      }
+    },
+
     async addDocs() {
       dispatch({ type: 'memory_busy' })
       try {

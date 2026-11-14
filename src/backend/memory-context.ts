@@ -1,18 +1,10 @@
 import { PROFILE_FIELDS } from '../shared/profile-fields.ts'
 
-/**
- * The background sent ahead of a question: the fixed layer when it is due (rules, the profile the user
- * wrote, the profile the agent last synthesised from memories, the profile memories written since, habits),
- * and the memories pushed because the question named something. It is a separate text block of the
- * prompt, never shown in the thread. Nothing at all goes out on a turn with neither.
- */
+/** The memory block sent separately from the user's message. */
 export const CONTEXT_TAG = 'about-user'
-/** Budget for the fixed layer; pushed memories (a few lines at most) come on top. */
+/** Budget for the complete block, including headers, dates and related memories. */
 export const MAX_CONTEXT_CHARS = 3200
-/** Profile memories newer than the last synthesis that ride along with it, newest first. */
-export const RECENT_LIMIT = 8
 const FIELD_CHARS = 300
-/** Only used once mail is connected; the model has no use for the address itself. */
 
 const FIXED_INTRO = '以下是本机保存的用户画像和长期记忆。按当前请求选择相关资料。'
 export const MEMORY_RULES = [
@@ -60,54 +52,49 @@ function profileLines(profile: FixedLayer['profile']) {
 const memoryLine = (memory: MemoryLike) => `- （${day(memory.updatedAt ?? memory.createdAt)}）${memory.text}`
 const sectionTitle = (title: string) => `【${title}】`
 
-/** The leading lines that fit in `room` characters (one newline each), so the block keeps its budget. */
-function fitting(lines: readonly string[], room: number) {
-  const kept: string[] = []
-  let used = 0
-  for (const line of lines) {
-    if (used + line.length + 1 > room) break
-    kept.push(line)
-    used += line.length + 1
-  }
-  return kept
-}
-
-const section = (title: string, lines: readonly string[]): string[] => (lines.length ? [sectionTitle(title), ...lines] : [])
 const sizeOf = (lines: readonly string[]) => lines.reduce((total, line) => total + line.length + 1, 0)
-
-const TAGS_CHARS = `<${CONTEXT_TAG}>`.length + `</${CONTEXT_TAG}>`.length + 2
-
-/**
- * Each part in order of authority, as far as the budget goes: the rules always, then what the user
- * wrote, the synthesis, what was learned since it, and habits. A part goes in only with at least one line.
- */
-function fixedLines({ profile, synthesis, recent, habits }: Required<FixedLayer>) {
-  const rules = section('记忆规则', [MEMORY_RULES])
-  const parts = [
-    section('画像', profileLines(profile)),
-    section('助手整理的画像', synthesis ? synthesis.split('\n') : []),
-    section('最近了解到的', recent.map(memoryLine)),
-    section('使用习惯', habits ? [habits] : []),
-  ]
-  const { kept } = parts.reduce(({ kept: done, room }, lines) => {
-    const fitted = lines.length && sizeOf(lines.slice(0, 2)) <= room ? fitting(lines, room) : []
-    return { kept: [...done, ...fitted], room: room - sizeOf(fitted) }
-  }, { kept: [] as string[], room: MAX_CONTEXT_CHARS - TAGS_CHARS - FIXED_INTRO.length - 1 - sizeOf(rules) })
-  return [FIXED_INTRO, ...rules, ...kept]
-}
-
+const OPEN_TAG = `<${CONTEXT_TAG}>`
+const CLOSE_TAG = `</${CONTEXT_TAG}>`
 const pushedLine = ({ memory, names }: PushedMemory) => `${memoryLine(memory)}〔${names.join('、')}〕`
 
-/**
- * @param layers today: sent as 【今天】 when given
- * @returns '' when there is nothing to tell
- */
-export function buildContext({ fixed, pushed, today = '', disputed = false }: { fixed: FixedLayer | null, pushed: readonly PushedMemory[], today?: string, disputed?: boolean }): string {
+/** Packs complete rows and returns the exact related memories the model will receive. */
+export function packContext<T extends PushedMemory>({ fixed, pushed, today = '', disputed = false }: {
+  fixed: FixedLayer | null, pushed: readonly T[], today?: string, disputed?: boolean,
+}): { text: string, pushed: T[] } {
+  const rules = fixed ? [FIXED_INTRO, sectionTitle('记忆规则'), MEMORY_RULES] : []
+  const conflict = disputed ? [sectionTitle('记忆冲突'), DISPUTED] : []
+  let room = MAX_CONTEXT_CHARS - OPEN_TAG.length - CLOSE_TAG.length - 1 - sizeOf(rules) - sizeOf(conflict)
+
+  function take<Item>(heading: readonly string[], items: readonly Item[], lineOf: (item: Item) => string) {
+    const lines: string[] = []
+    const kept: Item[] = []
+    const headingSize = sizeOf(heading)
+    for (const item of items) {
+      const line = lineOf(item)
+      const needed = line.length + 1 + (kept.length ? 0 : headingSize)
+      if (needed > room) continue
+      if (!kept.length) lines.push(...heading)
+      kept.push(item)
+      lines.push(line)
+      room -= needed
+    }
+    return { lines, kept }
+  }
+
+  const unchanged = (line: string) => line
+  const date = take([sectionTitle('今天')], today ? [today] : [], unchanged)
+  const profile = fixed ? profileLines(fixed.profile) : []
+  const profileTitle = [sectionTitle('画像')]
+  // Reserve one profile field. The question's ranked memories then get first use of the remaining room.
+  const firstField = take(profileTitle, profile.slice(0, 1), unchanged)
+  const matches = take([PUSHED_INTRO, sectionTitle('相关记忆')], pushed, pushedLine)
+  const remainingFields = take(firstField.kept.length ? [] : profileTitle, profile.slice(firstField.kept.length), unchanged)
+  const synthesis = take([sectionTitle('助手整理的画像')], fixed?.synthesis ? [fixed.synthesis] : [], unchanged)
+  const recent = take([sectionTitle('最近了解到的')], fixed?.recent ?? [], memoryLine)
+  const habits = take([sectionTitle('使用习惯')], fixed?.habits ? [fixed.habits] : [], unchanged)
   const lines = [
-    ...(today ? section('今天', [today]) : []),
-    ...(fixed ? fixedLines({ synthesis: null, recent: [], habits: '', ...fixed }) : []),
-    ...(pushed.length ? [PUSHED_INTRO, ...section('相关记忆', pushed.map(pushedLine))] : []),
-    ...(disputed ? section('记忆冲突', [DISPUTED]) : []),
+    ...date.lines, ...rules, ...firstField.lines, ...remainingFields.lines,
+    ...synthesis.lines, ...recent.lines, ...habits.lines, ...matches.lines, ...conflict,
   ]
-  return lines.length ? [`<${CONTEXT_TAG}>`, ...lines, `</${CONTEXT_TAG}>`].join('\n') : ''
+  return { text: lines.length ? [OPEN_TAG, ...lines, CLOSE_TAG].join('\n') : '', pushed: matches.kept }
 }

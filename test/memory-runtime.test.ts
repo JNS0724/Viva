@@ -1197,3 +1197,114 @@ test('an expiry effect removes abandoned candidate source content without anothe
   assert.equal(store.readSource(sourceId)?.text, null)
   assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_candidates').get()?.n, 0)
 })
+
+test('scoped store reads hydrate retained entries and their applied links in list order', async t => {
+  const project = { id: 'shared-id', kind: 'project' } as const
+  const conversation = { kind: 'conversation', id: project.id } as const
+  const { memory, store } = fixture(t, async ({ input }) => {
+    const { user } = JSON.parse(input) as { user: string }
+    return proposal(user, { scope: user.includes('话题') ? 'conversation' : 'project', fact: structured(user, '负责', '排班', 'duty') })
+  }, () => date('2026-07-01')).start()
+  const global = memory.addMemory('我的编辑器使用 Iosevka')!
+  const forgotten = memory.addMemory('我用番茄钟核对工作时间')!
+  memory.accept('我负责项目排班', { ...origin, scope: project })
+  memory.accept('我负责话题排班', { ...origin, context: conversation })
+  await memory.wake()
+  const entries = store.list()
+  const scoped = entries.find(entry => entry.scope.kind === 'project')!
+  const elsewhere = entries.find(entry => entry.scope.kind === 'conversation')!
+  assert.ok(scoped.fact && scoped.evidence.length && elsewhere.fact && elsewhere.evidence.length)
+  assert.equal(await memory.forget(forgotten.id, forgotten.revision, 'forget'), true)
+
+  const link = { revision: store.revision(), targetId: scoped.id, replacementId: global.id, sourceId: null,
+    sourceVersion: null, spans: [], from: null, to: null, effectiveAt: null, intentFrom: null, intentTo: null,
+    createdAt: date('2026-07-01'), automatic: false }
+  const conflict = store.recordChange({ ...link, kind: 'possible_conflict' })
+  const correction = store.recordChange({ ...link, kind: 'correct', replacementId: elsewhere.id })
+  const undone = store.recordChange({ ...link, kind: 'supersede' })
+  store.setChangeStatus(undone, 'undone', store.revision())
+  const expected = store.list().filter(entry => entry.id === scoped.id || entry.id === global.id)
+  assert.deepEqual(expected.map(entry => entry.id), [scoped.id, global.id])
+  assert.deepEqual(expected[0].links.map(edge => edge.changeId), [conflict, correction])
+
+  // An unrelated evidence row must never reach the scoped hydration path.
+  store.db.prepare("UPDATE memory_evidence SET spans='invalid' WHERE memory=?").run(elsewhere.id)
+  assert.deepEqual(store.listForScope({ kind: 'project', id: project.id }), expected)
+  assert.deepEqual(store.listForScope(), [expected[1]])
+  assert.deepEqual(store.listForScope({ kind: 'user' }), [expected[1]])
+  assert.deepEqual(store.listForScope({ kind: 'task', id: project.id }), [expected[1]])
+})
+
+test('healthy recall and context hydrate indexed candidates before same-scope unrelated evidence', async t => {
+  const { memory, store } = fixture(t, undefined, () => date('2026-07-01')).start()
+  const relevant = memory.addMemory('我的交接地址记在钴蓝专线')!
+  const unrelated = memory.addMemory('我的笔记使用不同的排版设置')!
+  await memory.wake()
+  // Make a same-scope row unreadable as evidence so either path would throw if it hydrated the whole scope.
+  store.db.prepare("UPDATE memory_evidence SET spans='invalid' WHERE memory=?").run(unrelated.id)
+  const query = '钴蓝专线'
+  const packet = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query }, origin))
+  assert.deepEqual(packet.memories.map((item: { id: number }) => item.id), [relevant.id])
+  assert.equal(packet.partial, false)
+  const context = memory.handle({ op: 'context', session: origin.session, turn: 1, question: query }, origin)
+  assert.match(context, /我的交接地址记在钴蓝专线/u)
+})
+
+test('healthy full text without a verified whole-word hit still falls back to keyword substrings', t => {
+  const { memory } = fixture(t, undefined, () => date('2026-07-01')).start()
+  const record = memory.addMemory('我使用 Iosevka 字体')!
+  const query = 'Iose'
+  const packet = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query }, origin))
+  assert.deepEqual(packet.memories.map((item: { id: number }) => item.id), [record.id])
+  assert.ok(!packet.reasons.includes('full-text-unavailable'))
+  const context = memory.handle({ op: 'context', session: origin.session, turn: 1, question: query }, origin)
+  assert.match(context, /Iosevka/u)
+})
+
+test('unavailable full text preserves bounded keyword recall with a partial reason', async t => {
+  const at = date('2026-07-01')
+  const { memory, store } = fixture(t, undefined, () => at).start()
+  const old = memory.addMemory('北岸避险旧仓')!
+  await memory.wake()
+  const source = store.readSource(old.evidence[0].sourceId)!
+  const row = { kind: 'fact', modality: 'asserted', conditional: false, keywords: [],
+    scope: { kind: 'user' }, source: 'user', conversationId: null } as const
+  const window = { from: null, to: null }
+  store.tx(() => {
+    const revision = store.nextRevision()
+    for (let position = 0; position < 129; position++) {
+      const id = store.insert({ ...row, keywords: [], text: `未关联的演示记录 ${position}` }, revision, at, window)
+      store.evidence(id, source, 0, source.text!.length, null, null, window, [{ start: 0, end: source.text!.length }])
+    }
+  })
+  const recent = memory.addMemory('北岸避险新仓')!
+  store.db.exec('DROP TABLE memory_lexical_rows')
+  const packet = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '北岸避险' }, origin))
+  assert.ok(packet.memories.some((item: { id: number }) => item.id === recent.id))
+  assert.ok(!packet.memories.some((item: { id: number }) => item.id === old.id))
+  assert.equal(packet.partial, true)
+  assert.ok(packet.reasons.includes('full-text-unavailable'))
+  assert.ok(packet.reasons.includes('keyword-fallback-limit'))
+})
+
+test('irrelevant admission and modality rows cannot consume the indexed context budget', async t => {
+  const at = date('2026-07-01')
+  const { memory, store } = fixture(t, undefined, () => at).start()
+  const fact = memory.addMemory('备份手册说明冷杉港的生产值守时间与负责人。')!
+  await memory.wake()
+  const source = store.readSource(fact.evidence[0].sourceId)!
+  const scope = { kind: 'user' } as const
+  const base = { kind: 'fact', keywords: [], scope, source: 'user', conversationId: null } as const
+  const window = { from: null, to: null }
+  store.tx(() => {
+    const revision = store.nextRevision()
+    for (let i = 0; i < 132; i++) {
+      // These rows include indexed terms, but only facts with admitted evidence and asserted modality belong in context.
+      const text = `冷杉港 ${i}`
+      const id = store.insert({ ...base, keywords: [], text, modality: 'planned', conditional: i % 2 === 0 }, revision, at, window)
+      if (i % 2 === 0) store.evidence(id, source, 0, 3, null, null, window, [{ start: 0, end: 3 }])
+    }
+  })
+  const context = memory.handle({ op: 'context', session: origin.session, turn: 1, question: '冷杉港' }, origin)
+  assert.match(context, /备份手册说明冷杉港的生产值守时间与负责人/u)
+})

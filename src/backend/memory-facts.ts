@@ -29,6 +29,7 @@ export interface MemoryFact extends FactTime {
 }
 
 export const factIdentity = (text: string) => text.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase()
+export const memoryRelationLabel = (value: string) => factIdentity(value.normalize('NFKC'))
 export const sameRelation = (left: string, right: string) => factIdentity(left) === factIdentity(right)
 
 /** Resolve a calendar boundary in the zone captured with the source. */

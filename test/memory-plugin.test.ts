@@ -4,6 +4,9 @@ import path from 'node:path'
 import { openMemoryStore } from '../src/backend/memory-store.ts'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
 import { createMemoryDispatch } from '../src/backend/memory-dispatch.ts'
+import { recallCandidates } from '../src/backend/memory-match.ts'
+import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/backend/memory-embedder.ts'
+import type { MemoryEmbedder, MemoryEmbeddingInput } from '../src/backend/memory-embedder.ts'
 import { DEEPSEEK_DEFAULT } from '../src/backend/model-providers.ts'
 import type { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import type { TestContext } from 'node:test'
@@ -11,7 +14,7 @@ import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fi
 
 /** The memory plugin inside the real dsh, with the app's whole profile and a fake model. */
 
-async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]) {
+async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1], embedder?: MemoryEmbedder) {
   const harness = await setup(t, options)
   const origin = { conversation: 'test-conversation', session: null as string | null }
   const store = openMemoryStore(path.join(harness.userData, 'memory.db'))
@@ -19,8 +22,8 @@ async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]
   let activeUserTurn = false
   const dispatch = createMemoryDispatch(store, items => memory.dependenciesCurrent(items), id => memory.dispatchSourceCurrent(id))
   const memory = createMemoryRuntime({
-    store, compute: job => agent.memory.compute(job), route: () => DEEPSEEK_DEFAULT,
-    quiesce: async () => {}, changed: () => {},
+    store, compute: (job, signal) => agent.memory.compute(job, signal), route: () => DEEPSEEK_DEFAULT,
+    embedder, quiesce: async () => {}, changed: () => {},
     dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly,
     canCommit: () => !activeUserTurn && dispatch.canCommit(),
   })
@@ -44,7 +47,8 @@ async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]
     endMemoryDispatch: id => { dispatch.release(id); void memory.wake() },
     readyMemory: () => { void memory.wake() },
     conversationContext: sessionId => ({ conversationId: origin.conversation, sessionId }),
-    memoryRequest: (request, foregroundTurn, turn) => memory.handle(request, { ...origin, session: request.session, foregroundTurn, turn }),
+    memoryRequest: (request, foregroundTurn, turn, stillCurrent, signal) =>
+      memory.handleModelRequest(request, { ...origin, session: request.session, foregroundTurn, turn }, stillCurrent, signal),
     memoryClarificationQuestion: memory.clarificationQuestion,
     allowGeneralQuestion: (session, turn, cards, stillWaiting) => turn ? memory.authorizeGeneralQuestion({ ...origin, session, turn }, cards, stillWaiting) : false,
     onQuestionAnswer: (entry, answers, operation) => {
@@ -152,6 +156,83 @@ test('an affected session cannot send a model request after automatic replacemen
   await ask('再核对周报提交邮箱')
   assert.match(lastContext(llm), /cobalt@example\.com/)
   assert.doesNotMatch(JSON.stringify((llm.requests.at(-1) as ModelRequest).messages), /amber@example\.com/)
+})
+
+test('real DSH receives cross-language memory while the local encoder reuses its passage vector', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const record = '例行工作汇报材料发给财务小组'
+  const queries = ['Weekly report destination', 'Qui reçoit le bilan hebdomadaire ?']
+  const encodings: Array<readonly MemoryEmbeddingInput[]> = []
+  const vector = new Float32Array(MEMORY_EMBEDDING_DIMENSIONS)
+  vector[0] = 1
+  const { memory, ask, freshSession, llm } = await setupMemory(t, { decideFirst: raw => {
+    const request = raw as ModelRequest
+    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
+    const words = request.messages.flatMap(({ content }) => typeof content === 'string' ? [content]
+      : content.flatMap(part => part.type === 'text' && part.text ? [part.text] : []))
+    const query = queries.find(value => words.includes(value))
+    return query ? { tool: { name: 'memory_recall', input: { query, deep: true } } } : null
+  } }, {
+    fingerprint: 'fixture-e5',
+    async embedBatch(inputs) {
+      encodings.push(inputs)
+      return inputs.map(() => vector)
+    },
+    close() {},
+  })
+  const saved = memory.addMemory(record)
+  assert.ok(saved)
+  assert.ok(queries.every(query => recallCandidates([saved], query, 1).found.length === 0))
+  for (const query of queries) {
+    await freshSession()
+    const from = llm.requests.length
+    await ask(query)
+    const toolResult = llm.requests.slice(from).find(request => {
+      const wire = JSON.stringify((request as ModelRequest).messages.at(-1))
+      return wire.includes('tool_result') && wire.includes(record) && wire.includes('semantic')
+    })
+    assert.ok(toolResult, 'the next model request receives the grounded, labelled memory as a tool result')
+  }
+  assert.deepEqual(encodings, [
+    [{ kind: 'query', text: queries[0] }, { kind: 'passage', text: record }],
+    [{ kind: 'query', text: queries[1] }],
+  ])
+})
+
+test('cancelling a live DSH recall aborts local encoding and discards the fact', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const query = 'Weekly report destination'
+  const record = '例行工作汇报材料发给财务小组'
+  const vector = new Float32Array(MEMORY_EMBEDDING_DIMENSIONS)
+  vector[0] = 1
+  type Work = { signal: AbortSignal; finish: () => void }
+  let onStart!: (work: Work) => void
+  const started = new Promise<Work>(resolve => { onStart = resolve })
+  const { memory, ask, freshSession, agent, store, origin, llm } = await setupMemory(t, { decideFirst: raw => {
+    const request = raw as ModelRequest
+    const last = request.messages.at(-1)?.content
+    if (!last || !JSON.stringify(last).includes(query) || JSON.stringify(last).includes('tool_result')) return null
+    return { tool: { name: 'memory_recall', input: { query, deep: true } } }
+  } }, {
+    fingerprint: 'cancel-test-e5',
+    embedBatch(inputs, signal) {
+      assert.ok(signal)
+      return new Promise(resolve => onStart({ signal, finish: () => resolve(inputs.map(() => vector)) }))
+    },
+    close() {},
+  })
+  const saved = memory.addMemory(record)
+  assert.ok(saved)
+  await freshSession()
+  const turn = ask(query)
+  const work = await started
+  await agent.cancel()
+  assert.ok(await eventually(() => work.signal.aborted, { timeoutMs: 2_000 }))
+  work.finish()
+  await turn
+  assert.ok(!store.dispatch.snapshot(origin.session!).dependencies.some(item => item.id === saved.id))
+  assert.ok(!llm.requests.some(raw => {
+    const wire = JSON.stringify((raw as ModelRequest).messages.at(-1))
+    return wire?.includes('tool_result') && wire.includes(record)
+  }))
 })
 
 test('the adapter requests asynchronous extraction of the received source', { timeout: DSH_TIMEOUT_MS }, async t => {

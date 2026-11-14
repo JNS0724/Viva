@@ -106,6 +106,7 @@ export interface ActionPayloads extends ConversationPayloads {
   memory_invalid_closed: {}
   memory_conflict_edit: { key: string | null }
   memory_change_busy: { busy: boolean }
+  memory_index_rebuild: { busy: boolean }
   memory_changes_opened: {}
   memory_changes_listed: { changes: State['memory']['changes'] }
   memory_changes_closed: {}

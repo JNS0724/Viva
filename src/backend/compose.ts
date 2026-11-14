@@ -17,6 +17,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { openMemoryStore } from './memory-store.ts'
 import type { MemoryScope } from '../shared/memory-contract.ts'
 import { createMemoryRuntime } from './memory-runtime.ts'
+import { createMemoryEmbedder } from './memory-embedder.ts'
 import { createMemoryWithdrawal } from './memory-withdrawal.ts'
 import { createMemoryDispatch, MemoryDispatchConflict, needsMemoryTransport, type MemoryProvenance } from './memory-dispatch.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
@@ -499,14 +500,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         memoryDispatch?.release(id)
         void memory.wake()
       },
-      memoryRequest: (request, foregroundTurn, operation) => memory.handle(request, {
+      memoryRequest: (request, foregroundTurn, operation, stillCurrent, signal) => memory.handleModelRequest(request, {
         conversation: request.session === sessions.current().sessionId ? sessions.current().id : null,
         session: request.session,
         context: request.session === sessions.current().sessionId
           ? conversationMemoryScope() : { kind: 'task', id: request.session },
         foregroundTurn,
         turn: operation,
-      }),
+      }, stillCurrent, signal),
       memoryClarificationQuestion: (session, turn, id, phase) => memory.clarificationQuestion(session, turn, id, phase),
       allowGeneralQuestion: (session, turn, cards, stillWaiting) => turn ? memory.authorizeGeneralQuestion({
         session, turn, conversation: session === sessions.current().sessionId ? sessions.current().id : null,
@@ -1094,10 +1095,15 @@ ${question}` : question
     const store = openMemoryStore(path.join(userData, 'memory.db'))
     memoryDispatch = createMemoryDispatch(store, (items, at) => memory.dependenciesCurrent(items, at),
       (id, at) => memory.dispatchSourceCurrent(id, at), (items, sources, at) => memory.dispatchDeadline(items, sources, at))
+    const embeddingRoot = path.extname(APP_ROOT) === '.asar'
+      ? path.join(path.dirname(APP_ROOT), 'memory-embedding')
+      : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
     memory = createMemoryRuntime({
       store,
       compute: (request, signal) => dsh.current?.memory.compute(request, signal) ?? null,
       route: () => parseModelValue(lastInfo.modelValue ?? '') ?? profileModels(currentConfig()).defaultModel,
+      maintainSemanticIndex: true,
+      embedder: createMemoryEmbedder({ modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime') }),
       quiesce: () => dsh.stop(),
       canCommit: source => !memoryBusy()
         && (!turn.active || !source.session || source.session !== sessions.current().sessionId),

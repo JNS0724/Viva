@@ -124,24 +124,22 @@ function declaredText(entry) {
 }
 
 /**
- * @param {{ projectDir: string, platform: string, packages: string[] }} options packages: folders shipped, relative to the project
+ * @param {{ projectDir: string, platform: string, packages: string[], section?: boolean }} options packages: folders shipped, relative to the project
  * @returns {string} the notices text
  */
-function noticesText({ projectDir, platform, packages }) {
+function noticesText({ projectDir, platform, packages, section = false }) {
   const entries = describe(projectDir, packages)
   const copyleft = entries.filter((entry) => COPYLEFT.test(entry.license))
   return [
-    'Viva third-party notices',
+    section ? 'Viva local-embedding runtime third-party notices' : 'Viva third-party notices',
     RULE,
-    `Viva (${PROJECT_URL}) is released under the MIT License; see LICENSE.`,
+    ...section ? [] : [`Viva (${PROJECT_URL}) is released under the MIT License; see LICENSE.`],
     `This build for ${platform} includes the software listed below, each under its own license.`,
     '',
-    'Electron and Chromium',
-    RULE,
-    'Viva runs on Electron. Its license and the licenses of Chromium and its components ship with the',
-    'app as LICENSE.electron.txt and LICENSES.chromium.html (macOS: Viva.app/Contents/Resources;',
-    'Windows: the installation folder).',
-    '',
+    ...section ? [] : ['Electron and Chromium', RULE,
+      'Viva runs on Electron. Its license and the licenses of Chromium and its components ship with the',
+      'app as LICENSE.electron.txt and LICENSES.chromium.html (macOS: Viva.app/Contents/Resources;',
+      'Windows: the installation folder).', ''],
     'Source code of the MPL-2.0 and LGPL-3.0 components',
     RULE,
     ...copyleft.flatMap((entry) => [...sourceLines(entry), '']),

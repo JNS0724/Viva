@@ -124,6 +124,10 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   const meta = await run(win, `document.querySelector('.memory-item[data-source="agent"] .memory-meta')?.textContent ?? ''`)
   expect(meta.includes('关键词：') && meta.includes('周报') && meta.includes('张三'), 'the memory should show the verified keywords', meta)
   await capture(win, outDir, 'memory-profile')
+  await run(win, `document.querySelector('[name="memory-rebuild-indexes"]').click()`)
+  await until(win, `document.querySelector('.toast')?.textContent?.includes('索引已开始重建，语义索引会在后台分批补齐。')`, 'the index rebuild receipt')
+  expect(await run(win, `window.agent.listMemories('周报').then(({ items }) => items.some(item => item.text === ${JSON.stringify(FACT)}))`),
+    'the saved report memory should survive the index rebuild')
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   await wait(UI_WAIT_MS)
 
@@ -591,9 +595,10 @@ export async function checkMemory(win: SmokeWindow, outDir: string, hooks: Smoke
     await smokeStep(hooks, 'backend crash recovery', () => backendCrashSteps(win, outDir, expect, hooks))
     await smokeStep(hooks, 'working directory', () => workDirSteps(win, outDir, expect, hooks))
     await smokeStep(hooks, 'rewind', () => rewindSteps(win, outDir, expect, hooks))
-    await smokeStep(hooks, 'background task interactions', () => taskSteps(win, outDir, expect, hooks))
     await smokeStep(hooks, 'forgetting and filtered continuation', () => forgettingSteps(win, expect, hooks))
     await smokeStep(hooks, 'versioned conflict resolution', () => conflictSteps(win, outDir, expect, hooks))
+    // The installed restart check opens this topic and resumes the task left waiting here.
+    await smokeStep(hooks, 'background task interactions', () => taskSteps(win, outDir, expect, hooks))
   } catch (err) {
     failures.push(`memory: ${err instanceof Error ? err.message : String(err)}`)
   }

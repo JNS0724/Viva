@@ -278,7 +278,11 @@ function memoriesSection(memory: MemoryPage, handlers: Handlers, now: number) {
         memoryItem(item, memory.editingMemory?.id === item.id ? memory.editingMemory.revision : null, handlers, now)))
       : h('p', { class: 'empty', text: empty }),
     invalidSection(memory, handlers, now),
-    memoryChangesSection(memory, handlers))
+    memoryChangesSection(memory, handlers),
+    h('div', { class: 'memory-invalid' },
+      h('button', { class: 'link-btn', type: 'button', name: 'memory-rebuild-indexes', disabled: memory.rebuildingIndexes,
+        text: t(memory.rebuildingIndexes ? 'profile-panel.memory.index.rebuilding' : 'profile-panel.memory.index.rebuild'),
+        onClick: handlers.rebuildMemoryIndexes })))
 }
 
 function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[] {

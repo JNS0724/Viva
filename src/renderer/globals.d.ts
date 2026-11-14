@@ -222,6 +222,7 @@ interface AgentApi extends DraftApi {
   listInvalidMemories: Invoke<'memory:list-invalid'>
   listMemoryChanges: Invoke<'memory:list-changes'>
   undoMemoryChange: Invoke<'memory:undo-change'>
+  rebuildMemoryIndexes: Invoke<'memory:rebuild-indexes'>
   setOnboarding: Invoke<'memory:onboarding'>
   addDocs: Invoke<'memory:add-docs'>
   listFiles: Invoke<'files:list'>

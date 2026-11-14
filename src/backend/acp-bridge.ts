@@ -114,7 +114,7 @@ export function createAcpBridge({
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
   conversationContext?: (sessionId: string) => ConversationContext | null,
-  memoryRequest?: (request: MemoryRequest, foregroundTurn?: string, turn?: string) => string,
+  memoryRequest?: (request: MemoryRequest, foregroundTurn: string | undefined, turn: string | undefined, stillCurrent: () => boolean, signal: AbortSignal) => string | Promise<string>,
   beginMemoryDispatch?: (id: string, session: string) => MemoryDispatchAdmission | Promise<MemoryDispatchAdmission>,
   beginMemoryJobDispatch?: (id: string, jobId: string) => MemoryDispatchAdmission | Promise<MemoryDispatchAdmission>,
   endMemoryDispatch?: (id: string) => void,
@@ -194,12 +194,19 @@ export function createAcpBridge({
       const owner = parent ?? session
       return ownedSession(owner) && (beginMemoryDispatch?.(id, owner) ?? allowSession(owner))
     },
-    handle: memoryRequest && ((request, parent) => {
+    handle: memoryRequest && ((request, parent, signal) => {
       const owner = parent ?? request.session
       if (!ownedSession(owner) || !allowSession(owner) || (parent && request.op !== 'recall')) return '{"status":"unavailable"}'
-      const response = memoryRequest({ ...request, session: owner }, !parent && owner === sessionId ? operations.userTurn(owner) : undefined, operations.turn(owner))
-      questions.refreshMemoryQuestions()
-      return response
+      const operation = operations.turn(owner)
+      if (request.op === 'recall' && !operation) return '{"status":"unavailable"}'
+      const stillCurrent = () => !signal.aborted && !disposed && ownedSession(owner) && allowSession(owner) && operations.turn(owner) === operation
+      const response = memoryRequest({ ...request, session: owner }, !parent && owner === sessionId ? operations.userTurn(owner) : undefined, operation, stillCurrent, signal)
+      const afterRead = (text: string) => {
+        if (!stillCurrent()) return '{"status":"unavailable"}'
+        questions.refreshMemoryQuestions()
+        return text
+      }
+      return typeof response === 'string' ? afterRead(response) : response.then(afterRead)
     }),
   })
   const operations = createAcpOperations({

@@ -1,12 +1,20 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { PROFILE_KEYS, MAX_FIELD_CHARS } from '../shared/profile-fields.ts'
-import { memoryKind, memoryProposals, memoryReviews, memoryScope, operationId } from '../shared/memory-contract.ts'
+import { MEMORY_SEMANTIC_TIMEOUT_MS, memoryKind, memoryProposals, memoryReviews, memoryScope, operationId } from '../shared/memory-contract.ts'
 import type { MemoryCompute, MemoryProposal, MemoryRequest, MemoryReview, MemoryScope, MemorySpan } from '../shared/memory-contract.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { looksSecret, MAX_MEMORY_CHARS } from './memory-sensitive.ts'
-import { buildContext, dateLine } from './memory-context.ts'
+import { dateLine, packContext } from './memory-context.ts'
 import { recallCandidates } from './memory-match.ts'
+import { memoryIdentifierTokens, memoryIndexMatches, openMemoryIndex } from './memory-index.ts'
+import { expandMemoryRelations, memoryRelationQueryLabels } from './memory-relations.ts'
+import type { MemoryRelationEntity, MemoryRelationProof } from './memory-relations.ts'
+import { MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_MAX_CHARS } from './memory-embedder.ts'
+import type { MemoryEmbedder } from './memory-embedder.ts'
+import { openMemorySemanticIndex } from './memory-semantic.ts'
+import type { MemorySemanticReference } from './memory-semantic.ts'
+import { createMemorySemanticMaintenance } from './memory-semantic-maintenance.ts'
 import { MemoryDispatchConflict, type MemoryDependency } from './memory-dispatch.ts'
 import { createEffects } from './effects.ts'
 import type { Effect, Outcome } from './effects.ts'
@@ -17,7 +25,7 @@ import type { GroundedChange, MemoryFact } from './memory-facts.ts'
 import { intersect, overlapWindows, sameWindows, subtract } from './memory-intervals.ts'
 import type { MemoryInterval } from './memory-intervals.ts'
 import { createMemoryClarifications } from './memory-clarification.ts'
-import { connected, projectTimeline, timelinePredecessors } from './memory-timeline.ts'
+import { connected, projectTimeline } from './memory-timeline.ts'
 
 type ConflictSide = Pick<MemoryEntry, 'id' | 'revision'>
 type ConflictResolution = { kind: 'keep-first' | 'keep-both' | 'discard-both' } | { kind: 'replace', text: string }
@@ -27,6 +35,13 @@ type AffectedInterval = MemoryInterval & { windows?: MemoryInterval[] }
 const EXTRACT = 'memory.extract'
 const EXPIRE = 'memory.expire'
 const READ_LIMIT = 200
+// Bound the serialized tool response, including evidence, escaped characters and metadata.
+export const MAX_RECALL_CHARS = 6000
+export const MAX_DEEP_RECALL_CHARS = 12000
+const INDEX_MATCH_LIMIT = 64
+const KEYWORD_FALLBACK_LIMIT = 128
+const RELATION_NEIGHBOR_LIMIT = 24
+const PENDING_RECALL_LIMIT = 64
 const USER: MemoryScope = { kind: 'user' }
 const CORRECT = /^(?:请\s*)?(?:更正|纠正|correct)\s*#(\d+)\s*(?:为|[:：]|to)\s*(.+)$/is
 const INTENT = {
@@ -105,13 +120,17 @@ const textOf = (result: object) => JSON.stringify(result)
 const sameScope = (a: MemoryScope, b: MemoryScope) => a.kind === b.kind && (a.kind === 'user' || 'id' in b && a.id === b.id)
 const automaticSource = (source: MemorySource) => source.author === 'user' || source.author === 'answer'
 
-export function createMemoryRuntime({ store, compute, route, quiesce, changed, injected, dependencies, provisionalRead, canCommit = () => true, validateDispatch = () => {}, now = Date.now }: {
+export function createMemoryRuntime({ store, compute, route, embedder, maintainSemanticIndex = false, quiesce, changed, injected, dependencies, provisionalRead,
+  canCommit = () => true, validateDispatch = () => {}, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
   store: MemoryStore,
   compute: (request: MemoryCompute, signal?: AbortSignal) => Promise<string> | null,
   route: () => Route | null,
+  embedder?: Pick<MemoryEmbedder, 'fingerprint' | 'embedBatch' | 'close'>,
+  maintainSemanticIndex?: boolean,
   quiesce: () => Promise<void>,
   changed: (change: { revision: number, ids: number[], learned?: string[], invalidated?: number[] }) => void,
   now?: () => number,
+  timezone?: () => string,
   injected?: (session: string, turn: number, pushed: Array<{ text: string, names: string[] }>) => void,
   dependencies?: (session: string, items: MemoryDependency[]) => void,
   provisionalRead?: (session: string) => void,
@@ -119,6 +138,9 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
   validateDispatch?: () => void,
 }) {
   const effects = createEffects({ db: store.db, now, onError: () => console.error('[memory] durable extraction queue failed') })
+  const lexical = openMemoryIndex(store.db)
+  let semantic = openMemorySemanticIndex(store.db)
+  let lexicalTimer: ReturnType<typeof setTimeout> | undefined
   const turnSources = new Map<string, string[]>()
   const clarifications = createMemoryClarifications<ClarificationReference, PendingChangeReference>()
   const blocked = new Set<string>()
@@ -129,6 +151,27 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     sourceBlocked({ id: edge.sourceId, conversation: edge.conversationId })
   let mutation: Promise<unknown> | null = null
   let closed = false
+  const semanticControllers = new Map<AbortController, { current: () => boolean, reads: readonly IndexHit[] }>()
+  const maintenance = maintainSemanticIndex && embedder ? createMemorySemanticMaintenance({
+    index: () => semantic, embedder,
+    busy: () => Boolean(mutation || semanticControllers.size || blocked.size || blockedSources.size),
+    page(afterId, limit) {
+      const refs = semantic?.missingAfter(embedder.fingerprint, afterId, limit) ?? []
+      return { entries: refs.flatMap(ref => {
+        const entry = indexableEntry(ref)
+        return entry ? [{ ...ref, text: passageText(entry) }] : []
+      }), nextId: refs.length === limit ? refs.at(-1)!.id : null }
+    },
+    current: ref => indexableEntry(ref) !== null,
+  }) : null
+  function warmLexicalIndex() {
+    if (closed || lexicalTimer !== undefined || !lexical.pending()) return
+    lexicalTimer = setTimeout(() => {
+      lexicalTimer = undefined
+      if (!closed && lexical.refreshBatch()) warmLexicalIndex()
+    }, 25)
+    lexicalTimer.unref()
+  }
   store.expire()
   function scheduleExpiry() {
     const next = store.nextCandidateExpiry()
@@ -143,8 +186,13 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     return new Map(jobs.map(job => [job.key, 'done' as const]))
   })
   scheduleExpiry()
+  warmLexicalIndex()
+  maintenance?.schedule()
 
   function publish(revision: number, ids: number[], learned?: string[], invalidated?: number[]) {
+    lexical?.refresh()
+    warmLexicalIndex()
+    maintenance?.schedule(true)
     try { changed({ revision, ids, learned, invalidated }) } catch { console.error('[memory] could not publish committed revision') }
   }
 
@@ -210,12 +258,10 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     if (!entry.fact) effects.queue(EXTRACT, source.id, { id: entry.id, start, end })
   }
 
-  function modelEligible(entry: MemoryEntry) {
-    return entry.evidence.some(edge => {
-      const source = store.readSource(edge.sourceId)
-      return source && source.outcome !== 'explicit-pending'
-    })
-  }
+  const modelEligible = (entry: MemoryEntry) => store.modelEligible(entry.id)
+
+  // A known source being withdrawn can narrow an assertion even when another source keeps it retained.
+  const wholeEvidenceAvailable = (entry: MemoryEntry) => !entry.evidence.some(evidenceBlocked)
 
   function put(source: MemorySource, details: Pick<MemoryEntry, 'kind' | 'scope' | 'modality' | 'conditional' | 'keywords' | 'source'>,
     span: { start: number, end: number }, revision: () => number, ids: Set<number>, options: {
@@ -967,14 +1013,14 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     })
   }
 
-  function disputeBetween(first: MemoryEntry, second: MemoryEntry, changeId?: number) {
-    if (!retained(first) || !retained(second) || !available(first) || !available(second)) return null
+  function disputeBetween(first: MemoryEntry, second: MemoryEntry, changeId?: number, includeHeld = false) {
+    if (!retained(first) || !retained(second) || !available(first, includeHeld) || !available(second, includeHeld)) return null
     for (const change of store.changesFor(first.id)) {
       if (change.kind !== 'possible_conflict' || (changeId !== undefined && change.id !== changeId)
         || (change.targetId !== second.id && change.replacementId !== second.id)) continue
       if (change.sourceId) {
         const source = store.readSource(change.sourceId)
-        if (!source || store.sourceExcluded(source.id) || sourceBlocked(source)) continue
+        if (!source || store.sourceExcluded(source.id) || (!includeHeld && sourceBlocked(source))) continue
       }
       const windows = overlapWindows(first.windows, second.windows, change)
       if (windows.length) return { ...change, windows }
@@ -1215,13 +1261,18 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
   }
 
   function holdWithdrawal(conversation: string, ids?: readonly string[]) {
+    maintenance?.pause()
     if (ids) for (const id of relatedSourceIds(ids)) blockedSources.add(id)
     else blocked.add(conversation)
+    for (const [controller, { reads }] of semanticControllers) {
+      if (reads.some(ref => !indexableEntry(ref))) controller.abort()
+    }
   }
 
   function releaseWithdrawal(conversation: string, ids?: readonly string[]) {
     if (ids) for (const id of relatedSourceIds(ids)) blockedSources.delete(id)
     else blocked.delete(conversation)
+    maintenance?.schedule(true)
     void effects.wake()
   }
 
@@ -1318,23 +1369,23 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     return historySpans(text).some(part => store.excluded(part, scope))
   }
 
-  function available(entry: MemoryEntry) {
+  function available(entry: MemoryEntry, includeHeld = false) {
     return !store.excluded(entry.text, entry.scope, entry.authorizedRevision)
-      && entry.evidence.some(edge => !evidenceBlocked(edge))
+      && entry.evidence.some(edge => includeHeld || !evidenceBlocked(edge))
   }
 
-  function independentWindows(entry: MemoryEntry, projected = entry.windows) {
-    const assertions = entry.evidence.filter(edge => edge.changeId === null && !evidenceBlocked(edge))
+  function independentWindows(entry: MemoryEntry, projected = entry.windows, includeHeld = false) {
+    const assertions = entry.evidence.filter(edge => edge.changeId === null && (includeHeld || !evidenceBlocked(edge)))
       .map(edge => ({ from: edge.assertedFrom, to: edge.assertedTo }))
     return overlapWindows(projected, assertions, { from: null, to: null })
   }
 
-  function pendingRelationWindows(entry: MemoryEntry, byId: ReadonlyMap<number, MemoryEntry>) {
+  function pendingRelationWindows(entry: MemoryEntry, byId: ReadonlyMap<number, MemoryEntry>, includeHeld = false) {
     return entry.links.flatMap(link => {
       if (link.kind !== 'pending-relation' || !link.incoming) return []
       const peer = byId.get(link.id)
-      return peer && retained(peer) && available(peer)
-        ? overlapWindows(entry.windows, independentWindows(peer), { from: link.from ?? null, to: link.to ?? null }) : []
+      return peer && retained(peer) && available(peer, includeHeld)
+        ? overlapWindows(entry.windows, independentWindows(peer, peer.windows, includeHeld), { from: link.from ?? null, to: link.to ?? null }) : []
     })
   }
 
@@ -1344,27 +1395,29 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
 
   function recallInterval(asOf: string | undefined, at: number): MemoryInterval | null {
     if (!asOf) return { from: at, to: at + 1 }
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
-    const from = localDay(asOf, timezone)
+    const zone = timezone()
+    const from = localDay(asOf, zone)
     if (from === null) return null
-    const to = localDay(nextDay(asOf), timezone)
+    const to = localDay(nextDay(asOf), zone)
     return to === null ? null : { from, to }
   }
 
-  function classify(eligible: MemoryEntry[], interval: MemoryInterval) {
+  function classify(eligible: readonly MemoryEntry[], interval: MemoryInterval, includeHeld = false) {
     const byId = new Map(eligible.map(entry => [entry.id, entry]))
     const pending = new Map(eligible.flatMap(entry => {
-      const windows = pendingRelationWindows(entry, byId)
+      const windows = pendingRelationWindows(entry, byId, includeHeld)
       return windows.length ? [[entry.id, windows] as const] : []
     }))
     const disputes = eligible.flatMap(first => first.links.flatMap(link => {
       if (link.kind !== 'conflict' || first.id >= link.id || link.changeId === undefined) return []
       const second = byId.get(link.id)
       if (!second) return []
-      const dispute = disputeBetween(first, second, link.changeId)
-      if (!dispute?.windows.some(window => intersect(window, interval))) return []
+      const dispute = disputeBetween(first, second, link.changeId, includeHeld)
+      if (!dispute) return []
       return [{ ...dispute, sides: [first, second] as const }]
     }))
+    const applicable = disputes.filter(dispute => dispute.windows.some(window => intersect(window, interval)))
+    const activeConflicts = new Set(applicable.flatMap(item => item.sides.map(side => side.id)))
     const contested = new Map<number, MemoryInterval[]>()
     for (const dispute of disputes) for (const side of dispute.sides) {
       const windows = contested.get(side.id) ?? []
@@ -1374,19 +1427,15 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     return {
       current: eligible.flatMap(entry => {
         const holds = [...contested.get(entry.id) ?? [], ...pending.get(entry.id) ?? []]
-        if (!holds.length) return [entry]
+        if (!holds.length) return entry.windows.some(window => intersect(window, interval)) ? [entry] : []
         const windows = holds.reduce((rest, hold) => rest.flatMap(window => subtract(window, hold)), entry.windows)
         if (!windows.some(window => intersect(window, interval))) return []
         return [{ ...entry, windows, validFrom: windows[0].from, validTo: windows.at(-1)!.to }]
       }),
-      conflicts: eligible.filter(entry => contested.has(entry.id)),
-      disputes,
+      conflicts: eligible.filter(entry => activeConflicts.has(entry.id)),
+      disputes: applicable,
       pendingRelations: eligible.filter(entry => pending.get(entry.id)?.some(window => intersect(window, interval))),
     }
-  }
-
-  function valid(scope?: MemoryScope) {
-    return selection(store.list().filter(entry => contextAllows(entry.scope, scope)), now()).current
   }
 
   function recallSelection(entries: MemoryEntry[], asOf?: string, at = now()) {
@@ -1395,12 +1444,53 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     return day ? classify(entries.filter(entry => retained(entry) && available(entry) && entry.windows.some(window => intersect(window, day))), day) : null
   }
 
+  function scopedEntries(scope?: MemoryScope) {
+    return store.listForScope(scope).filter(modelEligible)
+  }
+
+  function valid(scope?: MemoryScope) {
+    return selection(store.listForScope(scope), now()).current
+  }
+
+  function entriesWithPeers(ids: ReadonlySet<number>) {
+    const entries = new Map<number, MemoryEntry>()
+    const load = (id: number) => {
+      const entry = store.get(id)
+      if (entry) entries.set(id, entry)
+    }
+    for (const id of ids) load(id)
+    const peers = new Set([...entries.values()].flatMap(entry => entry.links.flatMap(link =>
+      link.kind === 'conflict' || link.kind === 'pending-relation' ? [link.id] : [])))
+    for (const id of peers) if (!ids.has(id)) load(id)
+    return entries
+  }
+
+  function readableSelection(entries: readonly MemoryEntry[], interval: MemoryInterval) {
+    // Held evidence still contests a peer until withdrawal commits and the timeline is reprojected.
+    const selected = classify(entries.filter(entry => retained(entry) && available(entry, true)), interval, true)
+    const disputeAvailable = (dispute: typeof selected.disputes[number]) =>
+      dispute.sides.every(wholeEvidenceAvailable) && (!dispute.sourceId || !sourceBlocked({
+        id: dispute.sourceId, conversation: store.readSource(dispute.sourceId)?.conversation ?? null,
+      }))
+    const disputes = selected.disputes.filter(disputeAvailable)
+    const disputeIds = new Set(disputes.flatMap(item => item.sides.map(side => side.id)))
+    const current = selected.current.filter(wholeEvidenceAvailable)
+    return { ...selected, current, disputes, conflicts: selected.conflicts.filter(entry => disputeIds.has(entry.id)),
+      held: current.length !== selected.current.length || disputes.length !== selected.disputes.length }
+  }
+
   function dependenciesCurrent(items: readonly MemoryDependency[], at = now()) {
     if (!items.length) return true
-    const entries = store.list()
-    const selections = new Map<string | undefined, ReturnType<typeof recallSelection>>()
+    const entries = [...entriesWithPeers(new Set(items.map(item => item.id))).values()]
+    const selections = new Map<string | undefined, ReturnType<typeof readableSelection>>()
     return items.every(item => {
-      if (!selections.has(item.asOf)) selections.set(item.asOf, recallSelection(entries, item.asOf, at))
+      if (item.expiresAt !== undefined && at >= item.expiresAt) return false
+      if (item.asOfZone !== undefined && item.asOfZone !== timezone()) return false
+      if (!selections.has(item.asOf)) {
+        const interval = recallInterval(item.asOf, at)
+        if (!interval) return false
+        selections.set(item.asOf, readableSelection(entries, interval))
+      }
       const matching = selections.get(item.asOf)
       const availableEntries = item.disputed ? matching?.conflicts : matching?.current
       return availableEntries?.some(entry => entry.id === item.id && entry.revision === item.revision) ?? false
@@ -1410,16 +1500,17 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
   function dispatchDeadline(items: readonly MemoryDependency[], sources: readonly string[], at: number) {
     const ids = new Set([...items.filter(item => !item.asOf).map(item => item.id), ...sources.flatMap(store.memoriesFrom)])
     if (!ids.size) return null
-    const entries = store.list()
-    const byId = new Map(entries.map(entry => [entry.id, entry]))
-    let deadline = Infinity
-    for (const entry of entries) {
-      if (!ids.has(entry.id)) continue
+    const byId = entriesWithPeers(ids)
+    let deadline = items.reduce((first, item) => Math.min(first, item.expiresAt ?? Infinity), Infinity)
+    for (const id of ids) {
+      const entry = byId.get(id)
+      if (!entry) continue
       const disputeWindows = entry.links.flatMap(link => {
         const peer = byId.get(link.id)
         return link.kind === 'conflict' && peer ? disputeBetween(entry, peer, link.changeId)?.windows ?? [] : []
       })
-      for (const { from, to } of [...entry.windows, ...disputeWindows, ...pendingRelationWindows(entry, byId)]) {
+      const evidenceWindows = entry.evidence.map(edge => ({ from: edge.assertedFrom, to: edge.assertedTo }))
+      for (const { from, to } of [...entry.windows, ...evidenceWindows, ...disputeWindows, ...pendingRelationWindows(entry, byId)]) {
         if (from !== null && from > at) deadline = Math.min(deadline, from)
         if (to !== null && to > at) deadline = Math.min(deadline, to)
       }
@@ -1472,27 +1563,34 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     return [{ ...span, sourceId, conversationId: source.conversation, sourceVersion: version, text }]
   }
 
+  function spansForEdge(edge: MemoryEntry['evidence'][number], complete: boolean) {
+    if (edge.changeId === null) return edge.spans
+    const parts = edge.parts
+    const change = store.getChange(edge.changeId)
+    if (!parts || !change) return []
+    const [action, target] = change.spans
+    const spans = [parts.subject, parts.relation, parts.object, ...parts.qualifiers, ...parts.conditions, ...parts.temporal]
+      .filter(span => span !== undefined)
+    const safe = spans.filter(span => ![action, target].some(piece => piece && piece.start < span.end && span.start < piece.end))
+    return complete && safe.length !== spans.length ? [] : safe
+  }
+
+  function excerptsForEdge(entry: MemoryEntry, edge: MemoryEntry['evidence'][number], complete = false) {
+    const spans = spansForEdge(edge, complete)
+    const excerpts = spans.flatMap(span => evidenceExcerpt(edge.sourceId, edge.sourceVersion, span, entry.scope))
+    return complete && (excerpts.length !== spans.length || !excerpts.length) ? null : excerpts
+  }
+
   function summarizeSide(entry: MemoryEntry) {
-    const evidence = entry.evidence.flatMap(edge => {
-      if (edge.changeId === null) return edge.spans.flatMap(span => evidenceExcerpt(edge.sourceId, edge.sourceVersion, span, entry.scope))
-      const parts = edge.parts
-      const change = store.getChange(edge.changeId)
-      if (!parts || !change) return []
-      const [action, target] = change.spans
-      const spans = [parts.subject, parts.relation, parts.object, ...parts.qualifiers, ...parts.conditions, ...parts.temporal]
-      return spans.flatMap(span => {
-        if (!span || [action, target].some(piece => piece && piece.start < span.end && span.start < piece.end)) return []
-        return evidenceExcerpt(edge.sourceId, edge.sourceVersion, span, entry.scope)
-      })
-    }).slice(0, 8)
-    return { ...summarize(entry), evidence }
+    return { ...summarize(entry), evidence: entry.evidence.flatMap(edge => excerptsForEdge(entry, edge) ?? []).slice(0, 8) }
   }
 
   function currentDispute(reference: DisputeReference) {
     const [firstRef, secondRef] = reference.sides
     const first = store.get(firstRef.id)
     const second = store.get(secondRef.id)
-    if (!first || !second || first.revision !== firstRef.revision || second.revision !== secondRef.revision
+    if (!first || !second || !wholeEvidenceAvailable(first) || !wholeEvidenceAvailable(second)
+      || first.revision !== firstRef.revision || second.revision !== secondRef.revision
       || !contextAllows(first.scope, reference.scope) || !contextAllows(second.scope, reference.scope)) return null
     return recallSelection([first, second], reference.asOf)?.disputes.find(dispute =>
       dispute.id === reference.id && dispute.revision === reference.revision) ?? null
@@ -1508,7 +1606,7 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     if (!change || !source?.text || source.version !== sourceVersion || source.author === 'manual' || source.withdrawn
       || store.sourceExcluded(source.id) || sourceBlocked(source)) return null
     const target = store.get(change.target.id)
-    if (!target || target.revision !== change.target.revision || !sameScope(target.scope, data.data.scope)
+    if (!target || !wholeEvidenceAvailable(target) || target.revision !== change.target.revision || !sameScope(target.scope, data.data.scope)
       || !sourceCanRead(target.scope, source) || !retained(target) || !available(target)) return null
     if (!selected) return null
     const offered = proposalSpans(source.text, proposal, sourceSpans(source.text))
@@ -1538,10 +1636,8 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     if (!candidate || candidate.expiresAt !== reference.expiresAt || memoryHash(candidate.proposal) !== reference.candidateHash) return null
     const pending = pendingAlternative(candidate, reference.scope, reference.asOf, at)
     if (!pending || pending.reference.sourceVersion !== reference.sourceVersion) return null
-    const entries = [pending.target, ...pending.target.links.flatMap(link => {
-      const peer = link.kind === 'conflict' ? store.get(link.id) : null
-      return peer && contextAllows(peer.scope, reference.scope) ? [peer] : []
-    })]
+    const entries = [...entriesWithPeers(new Set([pending.target.id])).values()]
+      .filter(entry => contextAllows(entry.scope, reference.scope))
     const target = recallSelection(entries, reference.asOf, at)?.current.find(entry => entry.id === pending.target.id)
     return target ? withCurrentTarget(pending, target, recallInterval(reference.asOf, at)) : null
   }
@@ -1552,12 +1648,14 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     return windows.some(window => intersect(window, selected)) ? { ...pending, target, windows } : null
   }
 
-  function availablePending(scope: MemoryScope | undefined, asOf: string | undefined, at: number, current: readonly MemoryEntry[]) {
+  function availablePending(scope: MemoryScope | undefined, asOf: string | undefined, at: number,
+    current: readonly MemoryEntry[] | undefined, candidates = store.pendingChanges(at)) {
     const selected = recallInterval(asOf, at)
-    const targets = new Map(current.map(entry => [entry.id, entry]))
-    return store.pendingChanges(at).flatMap(candidate => {
+    const targets = current && new Map(current.map(entry => [entry.id, entry]))
+    const reader = selected && !targets ? createRecallReader(scope, selected) : null
+    return candidates.flatMap(candidate => {
       const pending = pendingAlternative(candidate, scope, asOf, at, selected)
-      const target = pending && targets.get(pending.target.id)
+      const target = pending && (targets ? targets.get(pending.target.id) : reader?.select([pending.target]).current[0])
       const applicable = pending && target && withCurrentTarget(pending, target, selected)
       return applicable ? [{ ...applicable, text: `${modelText(applicable.target)}\n${applicable.alternative.text}` }] : []
     })
@@ -1575,14 +1673,22 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     const questions = cards.map(({ question, header, options }) => ({ question, header, options }))
     const wording = questions.flatMap(card => [card.question, card.header ?? '', ...card.options.flatMap(option => [option.label, option.description ?? ''])])
     if (wording.some(part => looksSecret(part) || excludedSourceText(part, scope))) return false
+    const incomplete = () => (clarifications.incompleteDates(origin.session, origin.turn)?.size ?? 0) > 8
+    if (incomplete()) return false
     const inspect = () => {
       const at = now()
-      const scoped = store.list().filter(entry => contextAllows(entry.scope, scope) && modelEligible(entry))
-      const selected = selection(scoped, at)
+      const entries = scopedEntries(scope)
+      const selected = selection(entries, at)
       const references = new Map<string, ClarificationReference>()
       const track = (reference: ClarificationReference) => references.set(JSON.stringify(reference), reference)
       for (const dispute of selected.disputes) track(disputeReference(dispute, scope))
       for (const pending of availablePending(scope, undefined, at, selected.current)) track(pending.reference)
+      for (const asOf of clarifications.incompleteDates(origin.session, origin.turn) ?? []) {
+        const historical = recallSelection(entries, asOf, at)
+        if (!historical) continue
+        for (const dispute of historical.disputes) track(disputeReference(dispute, scope, asOf))
+        for (const pending of availablePending(scope, asOf, at, historical.current)) track(pending.reference)
+      }
       for (const observed of clarifications.observed(origin.session, origin.turn)) track(observed)
       const related: { relations: string[], choices: string[][], reference: ClarificationReference }[] = []
       const relationOf = (relation: string | undefined) => relation && relation.length <= 100 && !looksSecret(relation)
@@ -1605,21 +1711,22 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
       return related
     }
     const related = inspect()
-    if (!related.length) return () => stillWaiting() && !closed && !inspect().length
+    if (!related.length) return () => stillWaiting() && !closed && !incomplete() && !inspect().length
     const exactPair = questions.some(card => {
       const options = new Set(card.options.map(option => factIdentity(option.label)))
       return related.some(({ choices: [first, second] }) => first.some(a => options.has(a) && second.some(b => b !== a && options.has(b))))
     })
     if (exactPair) return false
     const model = route()
-    const disputes = related.flatMap(({ relations, reference }) => relations.length ? [{ relations, asOf: reference.asOf }] : [])
-    const unknownRelations = related.length - disputes.length
+    const descriptions = related.flatMap(({ relations, reference }) => relations.length ? [{ relations, asOf: reference.asOf }] : [])
+    const disputes = [...new Map(descriptions.map(item => [JSON.stringify(item), item])).values()]
+    const unknownRelations = related.length - descriptions.length
     const fingerprint = () => memoryHash(JSON.stringify([origin.session, origin.turn, questions, inspect()]))
     const snapshotId = fingerprint()
     const input = JSON.stringify({ snapshotId, questions, disputes, unknownRelations })
     // Any unreviewed pair may be the one the card asks about. Refuse partial input.
     if (!model || input.length > 24_000) return false
-    const current = () => stillWaiting() && !closed && fingerprint() === snapshotId
+    const current = () => stillWaiting() && !closed && !incomplete() && fingerprint() === snapshotId
     const valid = () => !mutation && current()
     const deadline = atNextQuestionBoundary(related.map(item => item.reference), now())
     const id = randomUUID()
@@ -1716,22 +1823,387 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     return { ...entry, text, keywords: entry.keywords.filter(word => text.includes(word)) }
   }
 
-  function recallsPendingEnding(entries: readonly MemoryEntry[], request: Extract<MemoryRequest, { op: 'recall' }>, at: number) {
-    const selected = recallInterval(request.asOf, at)
-    if (!selected) return false
-    const history = store.listChanges()
-    const affected = new Set<number>()
-    for (const change of history) {
-      if (change.kind !== 'end' || change.status !== 'applied' || !change.needsConfirmation
-        || !intersect(selected, { from: change.intentFrom, to: change.intentTo })) continue
-      const source = change.sourceId && store.readSource(change.sourceId)
-      if (!source || source.withdrawn || sourceBlocked(source)) continue
-      for (const id of timelinePredecessors(change.targetId, history)) affected.add(id)
+  type RecallRequest = Extract<MemoryRequest, { op: 'recall' }>
+  type IndexHit = Pick<MemoryEntry, 'id' | 'revision'>
+  type SemanticRecall = { hits: readonly IndexHit[], reasons: string[] }
+
+  function hasIdentifiers(text: string, identifiers: readonly string[]) {
+    if (!identifiers.length) return true
+    const stated = new Set(memoryIdentifierTokens(text))
+    return identifiers.some(value => stated.has(value))
+  }
+
+  function mergeMatches(entries: readonly MemoryEntry[], query: string, indexed: ReturnType<typeof lexical.search>, limit: number) {
+    const identifiers = memoryIdentifierTokens(query)
+    const projected = entries.map(modelEntry).filter(row => hasIdentifiers(row.text, identifiers))
+    const byId = new Map(projected.map(entry => [entry.id, entry]))
+    const verified = indexed?.hits.flatMap(({ id, revision }) => {
+      const row = byId.get(id)
+      return row?.revision === revision && memoryIndexMatches(row.text, query, row.keywords) ? [row] : []
+    }) ?? []
+    const keyword = recallCandidates(projected, query, limit)
+    const all = new Map([...verified, ...keyword.found].map(row => [row.id, row]))
+    return { found: [...all.values()].slice(0, limit), verified: new Set(verified.map(row => row.id)), partial: !verified.length && keyword.partial }
+  }
+
+  function createRecallReader(scope: MemoryScope | undefined, interval: MemoryInterval) {
+    const cache = new Map<number, MemoryEntry | null>()
+    function get(id: number) {
+      if (!cache.has(id)) {
+        const entry = store.get(id)
+        cache.set(id, entry && contextAllows(entry.scope, scope) && modelEligible(entry) ? entry : null)
+      }
+      return cache.get(id) ?? null
     }
-    if (!affected.size) return false
-    const matching = entries.filter(entry => affected.has(entry.id) && retained(entry) && available(entry)
-      && !entry.windows.some(window => intersect(window, selected)))
-    return recallCandidates(matching.map(modelEntry), request.query, 1).found.length > 0
+    function select(refs: readonly IndexHit[]) {
+      const entries = new Map<number, MemoryEntry>()
+      for (const ref of refs) {
+        const entry = get(ref.id)
+        if (entry?.revision === ref.revision) entries.set(entry.id, entry)
+      }
+      const requested = new Set(entries.keys())
+      for (const entry of [...entries.values()]) for (const link of entry.links) {
+        if (link.kind !== 'conflict' && link.kind !== 'pending-relation') continue
+        const peer = get(link.id)
+        if (peer) entries.set(peer.id, peer)
+      }
+      const selected = readableSelection([...entries.values()], interval)
+      return {
+        ...selected,
+        current: selected.current.filter(entry => requested.has(entry.id)),
+        conflicts: selected.conflicts.filter(entry => requested.has(entry.id)),
+        disputes: selected.disputes.filter(dispute => dispute.sides.some(side => requested.has(side.id))),
+        pendingRelations: selected.pendingRelations.filter(entry => requested.has(entry.id)),
+      }
+    }
+    return { get, select }
+  }
+
+  function indexedSelection(query: string, scope: MemoryScope | undefined, interval: MemoryInterval, reader: ReturnType<typeof createRecallReader>,
+    contextOnly = false) {
+    const index = lexical.search(query, scope, INDEX_MATCH_LIMIT, interval, contextOnly ? 'context' : 'recall')
+    function rank(refs: readonly IndexHit[]) {
+      const selected = reader.select(refs)
+      const current = contextOnly ? selected.current.filter(entry => !entry.conditional && entry.modality === 'asserted') : selected.current
+      const limit = contextOnly ? 3 : 6
+      return { selected, found: mergeMatches(current, query, index, limit), related: mergeMatches(selected.conflicts, query, index, limit) }
+    }
+    const hits = index?.hits ?? []
+    const first = rank(hits)
+    if (first.found.verified.size || first.related.verified.size || !query.trim()) return { index, ...first, fallbackLimited: false }
+    const recent = store.recentRecallRefs(scope, interval, KEYWORD_FALLBACK_LIMIT + 1, contextOnly)
+    const refs = [...new Map([...hits, ...recent.slice(0, KEYWORD_FALLBACK_LIMIT)].map(ref => [ref.id, ref])).values()]
+    return { index, ...rank(refs), fallbackLimited: recent.length > KEYWORD_FALLBACK_LIMIT }
+  }
+
+  function recallSnapshot(request: RecallRequest, scope: MemoryScope | undefined, at: number) {
+    const interval = recallInterval(request.asOf, at)
+    if (!interval) return null
+    const reader = createRecallReader(scope, interval)
+    const candidates = indexedSelection(request.query, scope, interval, reader)
+    return { reader, interval, ...candidates }
+  }
+
+  function indexableEntry({ id, revision }: MemorySemanticReference) {
+    const entry = store.get(id)
+    return entry?.revision === revision && retained(entry) && modelEligible(entry) && wholeEvidenceAvailable(entry) && available(entry) ? entry : null
+  }
+
+  function passageText(entry: MemoryEntry) {
+    const text = modelText(entry)
+    return text.trim() && text.length <= MEMORY_EMBEDDING_MAX_CHARS && !looksSecret(text) && !excludedSourceText(text, entry.scope) ? text : null
+  }
+
+  function resetSemanticJobs() {
+    for (const controller of semanticControllers.keys()) controller.abort()
+    semanticControllers.clear()
+  }
+
+  async function semanticRecall(request: RecallRequest, origin: Origin, stillCurrent: () => boolean, interval: MemoryInterval, lexicalHits: readonly IndexHit[], signal?: AbortSignal): Promise<SemanticRecall> {
+    const failure = (reason: string) => ({ hits: [], reasons: [reason] })
+    const scope = origin.context ?? origin.scope
+    const index = semantic
+    if (!index || !embedder || mutation || closed || signal?.aborted || !stillCurrent()) return failure('semantic-unavailable')
+    if (looksSecret(request.query) || excludedSourceText(request.query, scope)) return failure('semantic-unavailable')
+    if (semanticControllers.size) return failure('semantic-busy')
+    maintenance?.pause()
+    const { fingerprint } = embedder
+    const controller = new AbortController()
+    const work = { current: stillCurrent, reads: [] as IndexHit[] }
+    semanticControllers.set(controller, work)
+    const abort = () => controller.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    const deadline = performance.now() + MEMORY_SEMANTIC_TIMEOUT_MS
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      index.configure(fingerprint)
+      const version = index.version(fingerprint)
+      if (version === null) return failure('semantic-unavailable')
+      const reader = createRecallReader(scope, interval)
+      const identifiers = memoryIdentifierTokens(request.query)
+      const matchesIdentifier = (entry: MemoryEntry) => !identifiers.length || hasIdentifiers(modelText(entry), identifiers)
+      const preferred = index.missing(fingerprint, lexicalHits)
+      const missing = [...new Map([...preferred, ...index.missingScoped(fingerprint, scope, interval)].map(ref => [ref.id, ref])).values()]
+      const rows = reader.select(missing)
+      const eligible = new Map([...rows.current, ...rows.conflicts].map(entry => [entry.id, entry]))
+      const projections = missing.flatMap(ref => {
+        const entry = eligible.get(ref.id)
+        return entry && matchesIdentifier(entry) ? [{ ...ref, text: passageText(entry) }] : []
+      }).slice(0, MEMORY_EMBEDDING_BATCH)
+      work.reads = projections
+      const inputs = [{ kind: 'query' as const, text: request.query }, ...projections.flatMap(({ text }) =>
+        text === null ? [] : [{ kind: 'passage' as const, text }])]
+      const ready = () => !closed && !mutation && stillCurrent() && semantic === index && index.version(fingerprint) === version
+        && !excludedSourceText(request.query, scope)
+      const timeout = new Promise<null>(resolve => {
+        if (controller.signal.aborted) { resolve(null); return }
+        controller.signal.addEventListener('abort', () => resolve(null), { once: true })
+        timer = setTimeout(() => controller.abort(), MEMORY_SEMANTIC_TIMEOUT_MS)
+        timer.unref()
+      })
+      const output = await Promise.race([embedder.embedBatch(inputs, controller.signal), timeout])
+      if (!output || output.length !== inputs.length || !output[0] || controller.signal.aborted) return failure('semantic-unavailable')
+      if (!ready()) return failure('semantic-changed')
+      const fresh = createRecallReader(scope, interval)
+      const selection = fresh.select(projections)
+      const currentIds = new Set([...selection.current, ...selection.conflicts].map(entry => entry.id))
+      let position = 1
+      index.put(fingerprint, projections.flatMap(({ id, revision, text }) => {
+        const vector = text === null ? null : output[position++]
+        return currentIds.has(id) && indexableEntry({ id, revision }) ? [{ id, revision, vector }] : []
+      }), version)
+      const scanReader = createRecallReader(scope, interval)
+      const { hits, partial, skipped, incomplete } = await index.searchScoped(fingerprint, output[0], scope, 50, {
+        interval, signal: controller.signal, deadline,
+        accept(ref) {
+          const selected = scanReader.select([ref])
+          return [...selected.current, ...selected.conflicts].some(matchesIdentifier)
+        },
+      })
+      if (controller.signal.aborted || !ready()) return failure('semantic-changed')
+      return { hits, reasons: [
+        ...(incomplete ? ['semantic-index-incomplete'] : []),
+        ...(skipped ? ['semantic-unindexed-input'] : []),
+        ...(partial ? ['semantic-limit'] : []),
+        ...(rows.held || selection.held ? ['source-withdrawal-pending'] : []),
+      ] }
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      semanticControllers.delete(controller)
+      maintenance?.schedule()
+    }
+  }
+
+  function handleModelRequest(request: MemoryRequest, origin: Origin, stillCurrent: () => boolean, signal?: AbortSignal) {
+    if (request.op !== 'recall') return handle(request, origin)
+    const scope = origin.context ?? origin.scope
+    const at = now()
+    const snapshot = recallSnapshot(request, scope, at)
+    if (!snapshot) return textOf({ status: 'rejected', reason: 'invalid-date' })
+    if (!request.deep && (snapshot.found.verified.size || snapshot.related.verified.size)) return recallPacket(request, origin, snapshot, at)
+    if (snapshot.index && !snapshot.index.truncated && !snapshot.index.hits.length && memoryIdentifierTokens(request.query).length) {
+      return recallPacket(request, origin, snapshot, at)
+    }
+    if (!store.recentRecallRefs(scope, snapshot.interval, 1).length) return recallPacket(request, origin, snapshot, at)
+    return semanticRecall(request, origin, stillCurrent, snapshot.interval, snapshot.index?.hits ?? [], signal).catch(() => ({ hits: [], reasons: ['semantic-unavailable'] })).then(result => {
+      if (closed || signal?.aborted || !stillCurrent()) return textOf({ status: 'unavailable' })
+      const currentAt = now()
+      const current = recallSnapshot(request, scope, currentAt)
+      if (!current) return textOf({ status: 'rejected', reason: 'invalid-date' })
+      if (request.asOf && !sameWindows([snapshot.interval], [current.interval])) {
+        return recallPacket(request, origin, current, currentAt, { hits: [], reasons: ['semantic-changed'] })
+      }
+      return recallPacket(request, origin, current, currentAt, result)
+    })
+  }
+
+  function rebuildIndexes() {
+    maintenance?.reset()
+    resetSemanticJobs()
+    semantic = openMemorySemanticIndex(store.db)
+    let resetSemantic = false
+    try { if (semantic) { semantic.clear(); resetSemantic = true } } catch { /* Keyword and full-text recall remain available. */ }
+    if (resetSemantic) maintenance?.schedule()
+    const fullText = lexical.rebuild()
+    if (fullText) warmLexicalIndex()
+    return { fullText, semantic: resetSemantic }
+  }
+
+  function recallsPendingEnding(request: RecallRequest, scope: MemoryScope | undefined, snapshot: NonNullable<ReturnType<typeof recallSnapshot>>) {
+    if (!store.hasPendingEnding(snapshot.interval)) return false
+    const index = lexical.search(request.query, scope, INDEX_MATCH_LIMIT, undefined, 'recall')
+    const fallback = !index || index.truncated || !index.hits.length
+      ? store.inactiveRecallRefs(scope, snapshot.interval, KEYWORD_FALLBACK_LIMIT) : []
+    const candidates = new Map([...(index?.hits ?? []), ...fallback].map(ref => [ref.id, ref]))
+    const affected = [...candidates.values()].flatMap(({ id, revision }) => {
+      const entry = snapshot.reader.get(id)
+      return entry?.revision === revision && retained(entry) && wholeEvidenceAvailable(entry) && available(entry)
+        && !entry.windows.some(window => intersect(window, snapshot.interval)) ? [modelEntry(entry)] : []
+    })
+    const matched = recallCandidates(affected, request.query, 6).found
+    if (!matched.length) return false
+    return store.pendingEndingsFor(matched.map(entry => entry.id)).some(change => {
+      if (!intersect(snapshot.interval, { from: change.intentFrom, to: change.intentTo })) return false
+      const source = change.sourceId && store.readSource(change.sourceId)
+      return source && !source.withdrawn && !sourceBlocked(source)
+    })
+  }
+
+  function recallPacket(request: RecallRequest, origin: Origin, snapshot: NonNullable<ReturnType<typeof recallSnapshot>>, at: number,
+    semanticResult?: SemanticRecall) {
+    const scope = origin.context ?? origin.scope
+    const { reader, interval, selected, found, related, index, fallbackLimited } = snapshot
+    const semanticRefs = semanticResult?.hits ?? []
+    const semanticRows = reader.select(semanticRefs)
+    const rankedSemantic = (rows: MemoryEntry[]) => {
+      const byId = new Map(rows.map(entry => [entry.id, entry]))
+      return semanticRefs.flatMap(({ id }) => byId.get(id) ?? [])
+    }
+    const { asOf } = request
+    const dated = asOf ? { asOf, asOfZone: timezone() } : { asOf }
+    const { disputes, pendingRelations, held } = selected
+    const keywordIds = new Set(found.found.map(entry => entry.id))
+    const keywordConflictIds = new Set(related.found.map(entry => entry.id))
+    const direct = [...new Map([...found.found, ...rankedSemantic(semanticRows.current)].map(entry => [entry.id, entry])).values()]
+    const relatedEntries = [...new Map([...related.found, ...rankedSemantic(semanticRows.conflicts)].map(entry => [entry.id, entry])).values()]
+    const allDisputes = [...new Map([...disputes, ...semanticRows.disputes].map(dispute => [dispute.id, dispute])).values()]
+    const rank = new Map(relatedEntries.map((entry, index) => [entry.id, index]))
+    const position = (dispute: typeof disputes[number]) => Math.min(...dispute.sides.map(side => rank.get(side.id) ?? Infinity))
+    const matches = allDisputes.filter(dispute => Number.isFinite(position(dispute))).sort((a, b) => position(a) - position(b))
+    const pending = store.recallPendingChanges(at, scope, PENDING_RECALL_LIMIT + 1)
+    const pendingMatches = recallCandidates(availablePending(scope, asOf, at, undefined, pending.slice(0, PENDING_RECALL_LIMIT)), request.query, 6)
+    const limit = 5
+    const stopRelationsAt = performance.now() + 40
+    const relationScopes = scope && scope.kind !== 'user' ? [scope, USER] : [USER]
+    const roots = memoryRelationQueryLabels(request.query).flatMap(label => relationScopes.map(scope => ({ scope, label })))
+    const relations = expandMemoryRelations({ roots, neighbors: ({ scope, label }: MemoryRelationEntity) => {
+      const refs = store.relationRecallRefs(scope, label, interval, RELATION_NEIGHBOR_LIMIT + 1)
+      const selected = reader.select(refs.slice(0, RELATION_NEIGHBOR_LIMIT))
+      return { entries: selected.current, partial: refs.length > RELATION_NEIGHBOR_LIMIT || selected.held }
+    }, seeds: direct, interval, deep: request.deep, limit, retainWindows: !asOf,
+    evidenceAvailable: edge => !evidenceBlocked(edge),
+    shouldStop: () => performance.now() >= stopRelationsAt })
+    const operation = origin.turn ?? origin.foregroundTurn
+    const currentTurn = operation && origin.session === request.session ? clarifications.track(request.session, operation) : undefined
+    const turn = origin.foregroundTurn ? currentTurn : undefined
+    if (asOf && currentTurn && currentTurn.incompleteDates.size <= 8) {
+      currentTurn.incompleteDates.add(asOf)
+    }
+    const nextRef = () => turn && turn.refs.size < 50 ? randomUUID() : undefined
+    const observe = (reference: ClarificationReference) => {
+      currentTurn?.observed.set(JSON.stringify(reference), reference)
+    }
+    const identifiers = memoryIdentifierTokens(request.query)
+    const matchedIdentifiers = new Set([...direct, ...relatedEntries].flatMap(entry => memoryIdentifierTokens(modelText(entry))))
+    const reasons = [
+      ...(identifiers.length > 1 && identifiers.some(id => !matchedIdentifiers.has(id)) ? ['identifier-coverage'] : []),
+      ...((held || semanticRows.held) && !semanticResult?.reasons.includes('source-withdrawal-pending') ? ['source-withdrawal-pending'] : []),
+      ...(index?.truncated ? ['full-text-limit'] : index === null ? ['full-text-unavailable'] : []),
+      ...semanticResult?.reasons ?? [],
+      ...(fallbackLimited ? ['keyword-fallback-limit'] : []),
+      ...(found.partial || related.partial || pendingMatches.partial ? ['partial-keyword-match'] : []),
+      ...(direct.length > limit ? ['memory-limit'] : []),
+      ...(matches.length > limit || relatedEntries.length > limit ? ['dispute-limit'] : []),
+      ...(pendingMatches.found.length > limit || pending.length > PENDING_RECALL_LIMIT ? ['pending-change-limit'] : []),
+      ...(relations.partial ? ['relation-limit'] : []),
+      ...(recallsPendingEnding(request, scope, snapshot) ? ['pending-end'] : []),
+      ...(recallCandidates(pendingRelations.map(modelEntry), request.query, 1).found.length ? ['pending-relation'] : []),
+    ]
+    const packet = { status: 'ok', partial: false, reasons, asOf,
+      memories: [] as Array<ReturnType<typeof summarize> & { match?: 'semantic' }>, conflicts: [] as ReturnType<typeof conflictPacket>[],
+      pendingChanges: [] as ReturnType<typeof pendingPacket>[], relations: [] as NonNullable<ReturnType<typeof relationPacket>>[] }
+    const reads: MemoryDependency[] = []
+    // Reserve both reasons before packing. Every item, including a dispute with both sides, travels whole.
+    reasons.push('output-budget', 'pending-change', 'relation-evidence-unavailable')
+    let room = (request.deep ? MAX_DEEP_RECALL_CHARS : MAX_RECALL_CHARS) - textOf(packet).length
+    let limited = false, pendingUnavailable = false, relationUnavailable = false
+    function include<T extends object>(items: T[], item: T) {
+      const size = textOf(item).length + Number(items.length > 0)
+      if (size > room) { limited = true; return false }
+      room -= size
+      items.push(item)
+      return true
+    }
+    function conflictPacket(dispute: typeof disputes[number], ref: string | undefined) {
+      const { sourceId, sourceVersion } = dispute
+      const match = dispute.sides.some(side => keywordConflictIds.has(side.id)) ? undefined : 'semantic' as const
+      return { ref, match, scope: dispute.sides[0].scope, windows: dispute.windows, sides: dispute.sides.map(summarizeSide),
+        evidence: sourceId && sourceVersion !== null ? dispute.spans.flatMap(span => evidenceExcerpt(sourceId, sourceVersion, span, scope)) : [] }
+    }
+    function pendingPacket(candidate: typeof pendingMatches.found[number], ref: string) {
+      return { ref, status: 'provisional', kind: candidate.kind, scope: candidate.target.scope,
+        windows: candidate.windows, current: summarizeSide(candidate.target), alternative: candidate.alternative, event: candidate.event }
+    }
+    function relationPacket(hit: typeof relations.found[number], boundary: number | null) {
+      const windows = boundary === null ? hit.windows : hit.windows.flatMap(window => intersect(window, { from: null, to: boundary }) ?? [])
+      if (!windows.length) return null
+      function side(entry: MemoryEntry) {
+        const evidence = []
+        for (const { edge, windows: supported } of hit.proofs.get(entry.id) ?? []) {
+          const applies = overlapWindows(windows, supported, { from: null, to: null })
+          if (!applies.length) continue
+          const excerpts = excerptsForEdge(entry, edge, true)
+          if (!excerpts) return null
+          evidence.push(...excerpts.map(excerpt => ({ ...excerpt, windows: applies })))
+        }
+        return evidence.length ? { ...summarize(entry), evidence } : null
+      }
+      const path = hit.path.map(side)
+      const evidence = hit.dependencies.filter(entry => !hit.path.some(step => step.id === entry.id)).map(side)
+      if (path.some(item => item === null) || evidence.some(item => item === null)) return null
+      return { hops: hit.hops, windows, match: hit.entry.id, path, evidence }
+
+    }
+    function includeConflict(dispute: typeof disputes[number]) {
+      const reference = disputeReference(dispute, scope, asOf)
+      observe(reference)
+      const ref = nextRef()
+      if (!include(packet.conflicts, conflictPacket(dispute, ref))) return
+      if (ref) turn?.refs.set(ref, reference)
+      for (const { id, revision } of dispute.sides) reads.push({ id, revision, ...dated, disputed: true })
+    }
+    function includePending(candidate: typeof pendingMatches.found[number]) {
+      const { reference } = candidate
+      observe(reference)
+      const ref = nextRef()
+      if (!turn || !ref) {
+        pendingUnavailable = true
+        return
+      }
+      if (!include(packet.pendingChanges, pendingPacket(candidate, ref))) return
+      turn.refs.set(ref, reference)
+      turn.pending.set(JSON.stringify([reference.sourceId, reference.start, reference.end, asOf]), reference)
+    }
+    for (let index = 0; index < limit; index++) {
+      const dispute = matches[index], memory = direct[index], pending = pendingMatches.found[index], relation = relations.found[index]
+      if (dispute) includeConflict(dispute)
+      if (memory) {
+        const item = { ...summarize(memory), match: keywordIds.has(memory.id) ? undefined : 'semantic' as const }
+        if (include(packet.memories, item)) reads.push({ id: memory.id, revision: memory.revision, ...dated })
+      }
+      if (pending) includePending(pending)
+      if (relation) {
+        const revisions = relation.dependencies.map(({ id, revision }) => ({ id, revision, ...dated }))
+        const boundary = asOf ? null : dispatchDeadline(revisions, [], at)
+        const item = relationPacket(relation, boundary)
+        if (!item) { relationUnavailable = true; continue }
+        if (!include(packet.relations, item)) continue
+        const expires = relation.windows.find(window => covers(window.from, window.to, at))?.to ?? Infinity
+        const next = Math.min(boundary ?? Infinity, expires)
+        const expiry = !asOf && Number.isFinite(next) ? next : null
+        for (const ref of revisions) reads.push(expiry === null ? ref : { ...ref, expiresAt: expiry })
+      }
+    }
+    if (turn && (packet.pendingChanges.length || packet.conflicts.length)) provisionalRead?.(request.session)
+    dependencies?.(request.session, reads)
+    const finalReasons = reasons.filter(reason => {
+      if (reason === 'output-budget') return limited
+      if (reason === 'pending-change') return pendingUnavailable
+      if (reason === 'relation-evidence-unavailable') return relationUnavailable
+      return true
+    })
+    return textOf({ ...packet, partial: finalReasons.length > 0, reasons: finalReasons })
   }
 
   function handle(request: MemoryRequest, origin: Origin) {
@@ -1740,79 +2212,26 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     if (request.op === 'clarify') return textOf(clarify(request.session, request.ref, origin))
     if (request.op === 'recall') {
       const at = now()
-      const entries = store.list().filter(entry => contextAllows(entry.scope, scope) && modelEligible(entry))
-      const result = recallSelection(entries, request.asOf, at)
-      if (!result) return textOf({ status: 'rejected', reason: 'invalid-date' })
-      const { current, conflicts, disputes, pendingRelations } = result
-      const found = recallCandidates(current.map(modelEntry), request.query, 6)
-      const memories = found.found.slice(0, 5)
-      const related = recallCandidates(conflicts.map(modelEntry), request.query, 6)
-      const rank = new Map(related.found.map((entry, index) => [entry.id, index]))
-      const position = (dispute: typeof disputes[number]) => Math.min(...dispute.sides.map(side => rank.get(side.id) ?? Infinity))
-      const matches = disputes.filter(dispute => Number.isFinite(position(dispute))).sort((a, b) => position(a) - position(b))
-      const review = matches.slice(0, 5)
-      const operation = origin.turn ?? origin.foregroundTurn
-      const currentTurn = operation && origin.session === request.session ? clarifications.track(request.session, operation) : undefined
-      const turn = origin.foregroundTurn ? currentTurn : undefined
-      const addReference = (reference: ClarificationReference) => {
-        if (!turn || turn.refs.size >= 50) return undefined
-        const ref = randomUUID()
-        turn.refs.set(ref, reference)
-        return ref
-      }
-      const reviewedConflicts = review.map(dispute => {
-        const reference = disputeReference(dispute, scope, request.asOf)
-        currentTurn?.observed.set(JSON.stringify(reference), reference)
-        const ref = addReference(reference)
-        const { sourceId, sourceVersion } = dispute
-        return {
-          ref, scope: dispute.sides[0].scope, windows: dispute.windows, sides: dispute.sides.map(summarizeSide),
-          evidence: sourceId && sourceVersion !== null
-            ? dispute.spans.flatMap(span => evidenceExcerpt(sourceId, sourceVersion, span, scope)) : [],
-        }
-      })
-      const pendingMatches = recallCandidates(availablePending(scope, request.asOf, at, current), request.query, 6)
-      const pendingChanges = pendingMatches.found.slice(0, 5).flatMap(candidate => {
-        currentTurn?.observed.set(JSON.stringify(candidate.reference), candidate.reference)
-        const ref = addReference(candidate.reference)
-        if (!turn || !ref) return []
-        const key = JSON.stringify([candidate.reference.sourceId, candidate.reference.start, candidate.reference.end, request.asOf])
-        turn.pending.set(key, candidate.reference)
-        return [{ ref, status: 'provisional', kind: candidate.kind, scope: candidate.target.scope,
-          windows: candidate.windows, current: summarizeSide(candidate.target),
-          alternative: candidate.alternative, event: candidate.event }]
-      })
-      if (turn && (pendingChanges.length || reviewedConflicts.length)) provisionalRead?.(request.session)
-      dependencies?.(request.session, [
-        ...memories.map(({ id, revision }) => ({ id, revision, asOf: request.asOf })),
-        ...review.flatMap(dispute => dispute.sides.map(({ id, revision }) => ({ id, revision, asOf: request.asOf, disputed: true }))),
-      ])
-      const reasons = [
-        ...(found.partial || related.partial || pendingMatches.partial ? ['partial-keyword-match'] : []),
-        ...(found.found.length > memories.length ? ['memory-limit'] : []),
-        ...(matches.length > review.length || related.found.length > 5 ? ['dispute-limit'] : []),
-        ...(pendingMatches.found.length > pendingChanges.length ? [turn ? 'pending-change-limit' : 'pending-change'] : []),
-        ...(recallsPendingEnding(entries, request, at) ? ['pending-end'] : []),
-        ...(recallCandidates(pendingRelations.map(modelEntry), request.query, 1).found.length ? ['pending-relation'] : []),
-      ]
-      return textOf({ status: 'ok', partial: reasons.length > 0, reasons, asOf: request.asOf,
-        memories: memories.map(summarize), conflicts: reviewedConflicts, pendingChanges })
+      const snapshot = recallSnapshot(request, scope, at)
+      return snapshot ? recallPacket(request, origin, snapshot, at) : textOf({ status: 'rejected', reason: 'invalid-date' })
     }
     if (request.op === 'context') {
-      const scoped = store.list().filter(entry => contextAllows(entry.scope, scope) && modelEligible(entry))
-      const { current, conflicts } = selection(scoped, now())
-      const candidates = current.filter(entry => !entry.conditional && entry.modality === 'asserted').map(modelEntry)
+      const at = now()
+      const interval = { from: at, to: at + 1 }
+      const reader = createRecallReader(scope, interval)
+      const { found, related } = indexedSelection(request.question, scope, interval, reader, true)
       const profile = store.profile()
-      const pushed = recallCandidates(candidates, request.question, 3).found.map(entry => ({
+      const pushed = found.found.map(entry => ({
         memory: entry, names: entry.keywords.filter(name => request.question.includes(name)),
       }))
-      const disputed = recallCandidates(conflicts, request.question, 3).found
-      injected?.(request.session, request.turn, pushed.map(({ memory, names }) => ({ text: memory.text, names })))
+      const disputed = related.found
+      const packed = packContext({ fixed: { profile }, pushed, today: dateLine(new Date(at)), disputed: disputed.length > 0 })
+      injected?.(request.session, request.turn, packed.pushed.map(({ memory, names }) => ({ text: memory.text, names })))
       dependencies?.(request.session, [
-        ...pushed.map(({ memory: { id, revision } }) => ({ id, revision })),
+        ...packed.pushed.map(({ memory: { id, revision } }) => ({ id, revision })),
         ...disputed.map(({ id, revision }) => ({ id, revision, disputed: true })),
       ])
-      return buildContext({ fixed: { profile, recent: [] }, pushed, today: dateLine(new Date(now())), disputed: disputed.length > 0 })
+      return packed.text
     }
     if (mutation) return textOf({ status: 'rejected', reason: 'memory-change-in-progress' })
     const text = clean(request.text)
@@ -1842,6 +2261,7 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
       turnSources.delete(session)
       clarifications.finish(session)
     }
+    for (const [controller, { current }] of semanticControllers) if (!current()) controller.abort()
     void effects.wake()
   }
 
@@ -1863,7 +2283,7 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
   }
 
   return {
-    accept, bindSource, handle, forgetIntent, clarificationQuestion, computeCurrent, computeAdmission, provisionalReadsCurrent, provisionalDeadline,
+    accept, bindSource, handle, handleModelRequest, rebuildIndexes, forgetIntent, clarificationQuestion, computeCurrent, computeAdmission, provisionalReadsCurrent, provisionalDeadline,
     authorizeGeneralQuestion,
     correctionIntent(text: string, scope?: MemoryScope) {
       const match = CORRECT.exec(text)
@@ -1879,6 +2299,7 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
     staleSession: (id: string | null | undefined) => Boolean(id && store.sessionEpoch(id) < store.epoch()),
     finishTurn,
     resetLive() {
+      resetSemanticJobs()
       turnSources.clear()
       clarifications.clear()
     },
@@ -1916,7 +2337,7 @@ export function createMemoryRuntime({ store, compute, route, quiesce, changed, i
       store.setMeta('onboarding', status)
       return status
     },
-    close() { closed = true; effects.close(); store.close() },
+    close() { closed = true; resetSemanticJobs(); maintenance?.close(); embedder?.close(); clearTimeout(lexicalTimer); effects.close(); store.close() },
   }
 }
 export type MemoryRuntime = ReturnType<typeof createMemoryRuntime>

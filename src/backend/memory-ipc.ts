@@ -84,6 +84,7 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   })))
   handle('memory:undo-change', (id, revision, operation, expectedRevisions): Promise<IpcResults['memory:undo-change']> =>
     changingMemory(() => runtime.undoChange(id, revision, operation, expectedRevisions)))
+  handle('memory:rebuild-indexes', () => runtime.rebuildIndexes())
   handle('memory:onboarding', runtime.setOnboarding)
   handle('memory:add-docs', async () => {
     const files = await chooseDocs()

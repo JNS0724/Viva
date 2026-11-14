@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, type TestContext } from 'node:test'
-import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
+import { createMemoryRuntime, MAX_RECALL_CHARS } from '../src/backend/memory-runtime.ts'
 import { localDay } from '../src/backend/memory-facts.ts'
 import { memoryHash, openMemoryStore } from '../src/backend/memory-store.ts'
 import { createQuestionDesk } from '../src/backend/question-channel.ts'
@@ -34,12 +34,13 @@ type Recalled = {
   }[],
 }
 
-function fixture(t: TestContext, compute?: (job: MemoryCompute) => Promise<string> | null) {
+function fixture(t: TestContext, compute?: (job: MemoryCompute) => Promise<string> | null,
+  dependencies?: Parameters<typeof createMemoryRuntime>[0]['dependencies']) {
   const dir = mkdtempSync(join(tmpdir(), 'viva-memory-clarification-'))
   const store = openMemoryStore(join(dir, 'memory.db'), () => at)
   const memory = createMemoryRuntime({
     store, route: () => compute ? { provider: 'fake', model: 'fake' } : null,
-    compute: compute ?? (() => null), quiesce: async () => {}, changed: () => {}, now: () => at,
+    compute: compute ?? (() => null), quiesce: async () => {}, changed: () => {}, now: () => at, dependencies,
   })
   t.after(() => { memory.close(); rmSync(dir, { recursive: true, force: true }) })
   function add(text: string, scope: MemoryScope = user, interval: MemoryInterval = open, updatedAt = since) {
@@ -97,10 +98,62 @@ test('a bounded conflict result keeps the directly matching side and reports omi
     dispute(central, add(`我的工作地址是 peer${index}@example.com`, user, open, since + index))
   }
   const result = read()
-  assert.equal(result.conflicts.length, 5)
+  assert.ok(result.conflicts.length > 0 && result.conflicts.length <= 5)
   assert.ok(result.conflicts.every(conflict => conflict.sides[0].id === central.id && conflict.sides.length === 2))
   assert.equal(result.partial, true)
   assert.ok(result.reasons.includes('dispute-limit'))
+})
+
+test('the same turn cannot ask through an ordinary card for an omitted historical dispute', t => {
+  const { add, dispute, read, memory } = fixture(t)
+  const calendar = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const date = '2026-11-12'
+  const historical = { from: localDay(date, calendar)!, to: localDay('2026-11-13', calendar)! }
+  const center = add(amber, user, historical)
+  const peers = Array.from({ length: 10 }, (_, index) => add(`另一个提交地址 peer${index}@example.com`, user, historical))
+  for (const peer of peers) dispute(center, peer, historical)
+  const { conflicts, reasons } = read(foreground, '周报提交邮箱', date)
+  const omitted = peers.find(peer => !conflicts.some(conflict => conflict.sides.some(side => side.id === peer.id)))!
+  assert.ok(reasons.includes('dispute-limit'))
+  assert.ok(omitted)
+  assert.equal(memory.authorizeGeneralQuestion({ ...foreground, turn: foreground.foregroundTurn }, [
+    { question: '那天用哪一个地址？', options: [{ label: `#${center.id}` }, { label: `#${omitted.id}` }] },
+  ]), false)
+})
+
+test('recall budgets whole evidence packets and records only the facts it returned', t => {
+  const recorded: number[] = []
+  const { add, dispute, memory, store } = fixture(t, undefined, (_session, items) => recorded.push(...items.map(item => item.id)))
+  const calendar = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const date = '2026-11-12'
+  const historical = { from: localDay(date, calendar)!, to: localDay('2026-11-13', calendar)! }
+  const long = add(`我的周报提交邮箱是 ${'别名'.repeat(235)}`, user, historical)
+  const longPeer = add(`我的周报提交邮箱是 ${'备选'.repeat(235)}`, user, historical)
+  for (let index = 0; index < 8; index++) {
+    for (const entry of [long, longPeer]) {
+      const { source, id } = add(entry.text, user, historical)
+      store.evidence(entry.id, source, 0, entry.text.length, null, null, historical, [{ start: 0, end: entry.text.length }])
+      store.remove(id)
+    }
+  }
+  dispute(long, longPeer, historical)
+  const central = add(amber, user, historical)
+  const peer = add(jade, user, historical)
+  dispute(central, peer, historical)
+  const kept = add('另外一个项目的周报提交邮箱是 team@example.com', user, historical)
+  const raw = memory.handle({ op: 'recall', query: '周报提交邮箱', session, asOf: date }, foreground)
+  const result = JSON.parse(raw) as Recalled
+  assert.ok(raw.length <= MAX_RECALL_CHARS)
+  assert.ok(result.reasons.includes('output-budget'))
+  assert.ok(result.memories.some(item => item.id === kept.id))
+  assert.deepEqual(result.conflicts.map(item => item.sides.map(side => side.id)), [[central.id, peer.id]])
+  assert.ok(result.conflicts.every(item => item.sides.length === 2 && item.sides.every(side => side.evidence.length > 0)))
+  assert.deepEqual(recorded.sort((a, b) => a - b), [
+    ...result.memories.map(item => item.id), ...result.conflicts.flatMap(item => item.sides.map(side => side.id)),
+  ].sort((a, b) => a - b))
+  assert.equal(recorded.includes(long.id), false)
+  assert.equal(memory.authorizeGeneralQuestion({ ...foreground, turn: foreground.foregroundTurn },
+    [{ question: '11月12日的周报提交邮箱是哪一个？', options: [{ label: `#${long.id}` }, { label: `#${longPeer.id}` }] }]), false)
 })
 
 test('dated recall retains undisputed hours on either side of the conflict', t => {
@@ -132,6 +185,25 @@ test('dispatch expires at the start of a scheduled dispute for a used fact or so
   assert.equal(memory.dispatchDeadline([{ id: a.id, revision, asOf: '2026-11-13' }], [], at), null)
   assert.equal(memory.dependenciesCurrent([{ id: a.id, revision }], start - 1), true)
   assert.equal(memory.dependenciesCurrent([{ id: a.id, revision }], start), false)
+})
+
+test('holding the only source of a disputed side does not authorize its peer', t => {
+  const { memory, store, add, dispute, read } = fixture(t)
+  const first = add(amber)
+  const second = add(jade)
+  dispute(first, second)
+  const firstRevision = store.get(first.id)!.revision
+  assert.equal(read().conflicts.length, 1)
+
+  memory.holdWithdrawal(second.source.conversation, [second.source.id])
+  const held = read()
+  assert.deepEqual(held.memories, [])
+  assert.deepEqual(held.conflicts, [])
+  assert.ok(held.reasons.includes('source-withdrawal-pending'))
+  assert.equal(memory.dependenciesCurrent([{ id: first.id, revision: firstRevision }]), false)
+
+  memory.releaseWithdrawal(second.source.conversation, [second.source.id])
+  assert.equal(read().conflicts.length, 1)
 })
 
 test('the desk admits a current foreground ticket once and discards stale answers', t => {

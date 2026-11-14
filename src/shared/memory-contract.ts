@@ -76,9 +76,10 @@ export type MemoryReview = z.infer<typeof memoryReview>
 const session = z.string().min(1).max(128)
 const query = z.string().trim().min(1).max(200)
 const text = z.string().trim().min(1).max(MAX_MESSAGE_CHARS)
+export const MEMORY_SEMANTIC_TIMEOUT_MS = 6000
 export const memoryRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('context'), session, turn: z.number().int().positive(), question: z.string().max(MAX_MESSAGE_CHARS) }),
-  z.object({ op: z.literal('recall'), session, query, asOf: z.iso.date().optional() }),
+  z.object({ op: z.literal('recall'), session, query, asOf: z.iso.date().optional(), deep: z.boolean().optional() }),
   z.object({ op: z.literal('remember'), session, text, kind: memoryKind.optional(), keywords: z.array(z.string().max(20)).max(6).optional() }),
   z.object({ op: z.literal('forget'), session, id: z.number().int().positive() }),
   z.object({ op: z.literal('clarify'), session, ref: z.uuid() }),

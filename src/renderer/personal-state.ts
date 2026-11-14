@@ -22,6 +22,7 @@ export const initialMemory = Object.freeze({
   changesLoaded: false,
   changes: [] as MemoryChangeRecord[],
   changeBusy: false,
+  rebuildingIndexes: false,
   /** The profile the agent last synthesised from the memories: { text, createdAt }, or null. */
   synthesis: null,
   onboarding: 'pending',
@@ -122,6 +123,7 @@ export const PERSONAL_ACTIONS= {
   memory_invalid_closed: (state) => withMemory(state, { invalidOpen: false, invalidLoaded: false, invalidItems: [], conflictEditor: null }),
   memory_conflict_edit: (state, { key }) => withMemory(state, { conflictEditor: key, error: null }),
   memory_change_busy: (state, { busy }) => withMemory(state, busy ? { changeBusy: true, error: null } : { changeBusy: false }),
+  memory_index_rebuild: (state, { busy }) => withMemory(state, { rebuildingIndexes: busy }),
   memory_changes_opened: (state) => withMemory(state, { changesOpen: true, changesLoaded: false, changes: [], error: null }),
   memory_changes_listed: (state, { changes }) => state.memory.changesOpen ? withMemory(state, { changesLoaded: true, changes }) : state,
   memory_changes_closed: (state) => withMemory(state, { changesOpen: false, changesLoaded: false, changes: [] }),

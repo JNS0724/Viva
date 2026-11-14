@@ -12,6 +12,7 @@ interface Turn<Reference, Pending> {
   refs: Map<string, Reference>
   pending: Map<string, Pending>
   observed: Map<string, Reference>
+  incompleteDates: Set<string>
   ticket?: { id: string, reference: Reference, shown: boolean }
 }
 
@@ -22,7 +23,7 @@ export function createMemoryClarifications<Reference, Pending extends Reference>
   function track(session: string, id: string) {
     const existing = turns.get(session)
     if (existing?.id === id) return existing
-    const turn: Turn<Reference, Pending> = { id, refs: new Map(), pending: new Map(), observed: new Map() }
+    const turn: Turn<Reference, Pending> = { id, refs: new Map(), pending: new Map(), observed: new Map(), incompleteDates: new Set() }
     turns.set(session, turn)
     return turn
   }
@@ -54,6 +55,10 @@ export function createMemoryClarifications<Reference, Pending extends Reference>
     observed(session: string, turn?: string): Iterable<Reference> {
       const active = turns.get(session)
       return turn && active?.id === turn ? active.observed.values() : []
+    },
+    incompleteDates(session: string, turn: string): ReadonlySet<string> | undefined {
+      const active = turns.get(session)
+      return active?.id === turn ? active.incompleteDates : undefined
     },
     pending: (session: string) => turns.get(session)?.pending.values() ?? [],
     finish: (session: string) => turns.delete(session),

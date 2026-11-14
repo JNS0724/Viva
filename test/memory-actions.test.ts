@@ -150,3 +150,37 @@ test('an unsafe undo shows the current records named by the backend and refreshe
   assert.equal(state.memory.changes[0]?.status, 'applied')
   assert.deepEqual(toasts, [])
 })
+
+test('index rebuild runs once at a time and reports success and incomplete resets', async () => {
+  type Result = Awaited<ReturnType<AgentApi['rebuildMemoryIndexes']>>
+  let state: State = initialState
+  const requests: ((result: Result) => void)[] = []
+  const toasts: string[] = []
+  const api: Pick<AgentApi, 'rebuildMemoryIndexes'> = {
+    rebuildMemoryIndexes: () => new Promise(resolve => { requests.push(resolve) }),
+  }
+  const actions = createMemoryActions({
+    api: api as AgentApi, getState: () => state, dispatch: action => { state = reduce(state, action) },
+    showToast: text => toasts.push(text), errorMessage: String, ask: () => false,
+  })
+  const first = actions.rebuildMemoryIndexes()
+  assert.equal(state.memory.rebuildingIndexes, true)
+  await actions.rebuildMemoryIndexes()
+  assert.equal(requests.length, 1)
+  requests[0]({ fullText: true, semantic: true })
+  await first
+  assert.equal(state.memory.rebuildingIndexes, false)
+  assert.deepEqual(toasts, ['索引已开始重建，语义索引会在后台分批补齐。'])
+
+  for (const [result, message] of [
+    [{ fullText: true, semantic: false }, '全文索引已开始重建，语义索引暂时无法重置。'],
+    [{ fullText: false, semantic: true }, '语义索引已开始后台重建，全文索引暂时无法重置。'],
+    [{ fullText: false, semantic: false }, '无法启动记忆索引重建，请重试。'],
+  ] as const) {
+    const retry = actions.rebuildMemoryIndexes()
+    requests.at(-1)!(result)
+    await retry
+    assert.equal(state.memory.rebuildingIndexes, false)
+    assert.equal(toasts.at(-1), message)
+  }
+})
