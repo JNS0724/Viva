@@ -85,6 +85,8 @@ test('desktop drafts retain text, real images and files through collapse and win
     let desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
     await expect(desktop.locator('.isl-field')).toHaveValue(text)
     const before = await desktop.locator('.isl-anchor').boundingBox()
+    const surface = desktop.locator('.isl-surface')
+    const textOnlyHeight = await surface.evaluate(el => el.getBoundingClientRect().height)
     await desktop.evaluate(async () => {
       const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 16
       canvas.getContext('2d')!.fillRect(0, 0, 16, 16)
@@ -93,13 +95,13 @@ test('desktop drafts retain text, real images and files through collapse and win
       document.querySelector('.isl-field')!.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
     })
     await expect(desktop.locator('.isl-image')).toHaveCount(1)
+    expect(await surface.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(textOnlyHeight)
     await desktop.evaluate(async file => {
       const draft = await window.desk.getDraft()
       window.desk.updateDraft({ ...draft, sequence: draft.sequence + 1, files: [file] })
     }, file)
-    const surface = desktop.locator('.isl-surface')
-    const textOnlyHeight = await surface.evaluate(el => el.getBoundingClientRect().height)
     await expect(desktop.locator('.isl-file')).toHaveCount(2)
+    expect(await surface.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(textOnlyHeight)
     await desktop.locator('.isl-field').press('Escape')
     await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'false')
     const folded = await desktop.locator('.isl-anchor').boundingBox()
@@ -107,13 +109,11 @@ test('desktop drafts retain text, real images and files through collapse and win
     expect(Math.abs(before!.y - folded!.y)).toBeLessThanOrEqual(1)
     await desktop.locator('.isl-anchor').click()
     await expect(desktop.locator('.isl-field')).toHaveValue(text)
-    expect(await surface.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(textOnlyHeight)
     await expect(desktop.locator('.isl-file')).toHaveCount(2)
     await desktop.screenshot({ path: info.outputPath('shared-desktop-draft.png') })
     await desktop.getByRole('button', { name: '打开 Viva', exact: true }).click()
     await expect(page.locator('#composer-input')).toHaveValue(text)
     await expect(page.locator('.composer-shared-files .isl-file')).toHaveCount(1)
-    expect(await surface.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(textOnlyHeight)
     await expect(page.locator('.draft-pic')).toHaveCount(1)
     await page.screenshot({ path: info.outputPath('shared-main-draft.png') })
     await desk.force(true); await desk.openInput()
@@ -214,18 +214,6 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   } finally { await desk.force(false) }
 })
 
-test('a real embedded agent answers and history survives a restart', async ({ scenario }, info) => {
-  const run = await scenario({ phase: 'memory', bridge: 'real' })
-  let session = await run.start('send')
-  await session.page.locator('#composer-input').fill('你好，外部冒烟验证')
-  await session.page.getByRole('button', { name: '发送', exact: true }).click()
-  await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('外部冒烟验证')
-  await expect(session.page.locator('#send-btn')).toHaveAttribute('data-busy', 'false')
-  // A desktop-island reply must finish while the ordinary conversation window remains closed to the tray.
-  await session.application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(true))
-  const mainWindow = await session.application.browserWindow(session.page)
-  try {
-    await mainWindow.evaluate(window => window.close())
 test('desktop island preserves draft and focus while showing requests and compact states', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'setup', bridge: 'real' })
   const session = await run.start('desktop-redesign')
@@ -247,6 +235,18 @@ test('desktop portrait releases without undoing the drag or opening the panel', 
   } finally { await desk.force(false) }
 })
 
+test('a real embedded agent answers and history survives a restart', async ({ scenario }, info) => {
+  const run = await scenario({ phase: 'memory', bridge: 'real' })
+  let session = await run.start('send')
+  await session.page.locator('#composer-input').fill('你好，外部冒烟验证')
+  await session.page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(session.page.locator('.msg-agent .msg-text').last()).toContainText('外部冒烟验证')
+  await expect(session.page.locator('#send-btn')).toHaveAttribute('data-busy', 'false')
+  // A desktop-island reply must finish while the ordinary conversation window remains closed to the tray.
+  await session.application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(true))
+  const mainWindow = await session.application.browserWindow(session.page)
+  try {
+    await mainWindow.evaluate(window => window.close())
     await session.hooks.desk().openInput()
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!

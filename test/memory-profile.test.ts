@@ -57,10 +57,10 @@ test('profile replies can select and rank only the original exact-version refere
 })
 
 test('projection storage commits versioned references with the enclosing transaction and rejects cross-scope or stale snapshots', t => {
-  const { dir } = scratch(t, 'viva-memory-profile-')
+  const { dir, defer } = scratch(t, 'viva-memory-profile-')
   const path = join(dir, 'memory.db')
   let store = openMemoryStore(path)
-  t.after(() => store.close())
+  defer(() => store.close())
   const memo = (scope: MemoryProfileProjection['scope'], text: string): MemoryProfileRef => {
     const revision = store.nextRevision()
     const id = store.insert({ scope, text, kind: 'fact', modality: 'asserted', conditional: false, keywords: [],
@@ -269,7 +269,7 @@ test('an observed profile expires in the view even when model work is busy', asy
 })
 
 test('cancelling profile computation leaves its durable generation available after reopen', async t => {
-  const { dir } = scratch(t, 'viva-memory-profile-reopen-')
+  const { dir, defer } = scratch(t, 'viva-memory-profile-reopen-')
   const path = join(dir, 'memory.db')
   let store = openMemoryStore(path)
   function runtime(dispatch: Parameters<typeof createMemoryProfileJobs>[0]['dispatch']) {
@@ -302,7 +302,7 @@ test('cancelling profile computation leaves its durable generation available aft
     replayedGeneration = generation
     return JSON.stringify({ refs: [{ ...field, revision: 1 }] })
   })
-  t.after(reopened.close)
+  defer(reopened.close)
   await reopened.effects.wake()
   assert.equal(replayedGeneration, pending.generation)
   assert.deepEqual(reopened.jobs.read(user)?.refs, [{ ...field, revision: 1 }])

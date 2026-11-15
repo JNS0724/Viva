@@ -46,7 +46,9 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   const original = { AGENT_CWD: process.env.AGENT_CWD, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
     DSH_NODE: process.env.DSH_NODE, NO_PROXY: process.env.NO_PROXY }
   delete process.env.DEEPSEEK_API_KEY
-  Object.assign(process.env, { AGENT_CWD: workspace, DSH_NODE: process.execPath, NO_PROXY: '127.0.0.1,localhost' })
+  Object.assign(process.env, { AGENT_CWD: workspace, NO_PROXY: '127.0.0.1,localhost' })
+  // Electron's executable needs ELECTRON_RUN_AS_NODE, which a plain Node override deliberately omits.
+  if (!process.versions.electron && !process.env.DSH_NODE) process.env.DSH_NODE = process.execPath
   const model = await startFakeLlm({ decideFirst: routeFixtureTools(raw => decide(raw as Request)) })
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const register: IpcRegistry['handle'] = (channel, listener) => {

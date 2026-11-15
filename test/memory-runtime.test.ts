@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
@@ -11,6 +10,7 @@ import { openHistoryDb } from '../src/backend/history-db.ts'
 import { historyRecall } from '../src/backend/history-recall.ts'
 import { localDay, resolveMemoryTime } from '../src/backend/memory-facts.ts'
 import type { MemoryCompute, MemoryProposal, MemoryTemporal } from '../src/shared/memory-contract.ts'
+import { scratch } from './fixtures/scratch.js'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -26,7 +26,7 @@ const proposal = (text: string, props: Partial<MemoryProposal> = {}) => JSON.str
 
 function fixture(t: TestContext, extract: (job: MemoryCompute) => Promise<string> | null = () => null, now = Date.now,
   review: (job: MemoryCompute) => Promise<string> | null = job => Promise.resolve(confirmedReviews(job))) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-memory-runtime-'))
+  const { dir, defer } = scratch(t, 'viva-memory-runtime-')
   const file = path.join(dir, 'memory.db')
   let current: ReturnType<typeof createMemoryRuntime> | undefined
   let store: ReturnType<typeof openMemoryStore>
@@ -38,8 +38,8 @@ function fixture(t: TestContext, extract: (job: MemoryCompute) => Promise<string
       now, quiesce: async () => {}, changed: change => notifications.push(change.ids) })
     return { memory: current, store }
   }
-  t.after(() => { current?.close(); fs.rmSync(dir, { recursive: true, force: true }) })
-  return { start, file, dir, notifications }
+  defer(() => current?.close())
+  return { start, file, dir, notifications, defer }
 }
 
 test('receipt and extraction recover with the same source ID after restart', async t => {
@@ -126,7 +126,7 @@ test('forgotten memory cannot reappear through a stale result, history, or an un
   assert.equal(result.status, 'rejected')
   assert.equal(memory.listMemories().total, 1)
   const history = openHistoryDb({ file: path.join(f.dir, 'history.db') })
-  t.after(() => history.close())
+  f.defer(() => history.close())
   const saved = history.save(history.create(), [{ role: 'user', text, sourceId: source.sourceId }])
   assert.match(history.sourceLink(source.sourceId, saved.id) ?? '', new RegExp(`^viva://timeline/${saved.id}/0/\\d+$`))
   const pending = memory.accept(text, origin)

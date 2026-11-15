@@ -88,7 +88,12 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
     await desk.force(true)
     await desk.openInput()
     const page = { webContents: (await desk.webContents()) }
-    await until(page, `document.documentElement.lang === 'en' && document.querySelector('.isl-field')?.getAttribute('aria-label') === 'Ask Viva, or drop files…'`, 'English desktop island text')
+    // The fresh profile opens the disconnected card. Publish a connected view separately to exercise the composer.
+    await until(page, `document.documentElement.lang === 'en' &&
+      document.querySelector('.isl[data-signal=offline] .isl-footer button')?.textContent === 'Open Settings' &&
+      !document.querySelector('.isl-field')`, 'English desktop island disconnected card')
+    await run(win, `window.agent.islandView({ form: 'idle', tone: 'idle', mood: 'idle', label: 'Idle', recent: [] })`)
+    await until(page, `document.querySelector('.isl-field')?.getAttribute('aria-label') === 'Ask Viva, or drop files…'`, 'English desktop island composer')
     await run(page, `document.querySelector('.isl-field').value = 'island draft'`)
     await run(win, `window.agent.setLanguage('zh-CN')`)
     await until(page, `document.documentElement.lang === 'zh-CN'`, 'desktop island language broadcast')
