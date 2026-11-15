@@ -139,7 +139,7 @@ function editForm(card: ProposalCard, handlers: Handlers, now: number) {
   row(t('schedule.edit.time'), input('time', { type: 'time', value: base.time }), ['at', 'daily', 'weekly', 'monthly']),
   row(t('schedule.edit.expression'), input('expression', { class: 'field mono', value: base.expression, spellcheck: 'false', autocomplete: 'off' }), ['cron']),
   h('div', { class: 'confirm-actions' },
-    h('button', { class: BUTTON.primary, type: 'submit', text: t('schedule.card.accept'), disabled }),
+    h('button', { class: BUTTON.accent, type: 'submit', text: t('schedule.card.accept'), disabled }),
     h('button', { class: BUTTON.secondary, type: 'button', text: t('schedule.card.cancel'), disabled, onClick: () => handlers.editProposal(card.id, false) }),
     h('span', { class: 'confirm-hint', text: t('schedule.card.hint') })))
   return form
@@ -184,7 +184,7 @@ export function proposalCard(card: ProposalCard, handlers: Handlers, now = Date.
     h('div', { class: 'confirm-title', text: proposal.title }),
     h('div', { class: 'fu-lines' }, line(scheduleWhen(proposal.rule, proposal.firstAt, now), proposal.prompt)),
     h('div', { class: 'confirm-actions' },
-      h('button', { class: BUTTON.primary, type: 'button', text: t('schedule.card.accept'), disabled: card.busy, onClick: () => handlers.acceptProposal(card.id) }),
+      h('button', { class: BUTTON.accent, type: 'button', text: t('schedule.card.accept'), disabled: card.busy, onClick: () => handlers.acceptProposal(card.id) }),
       h('button', { class: BUTTON.secondary, type: 'button', text: t('schedule.card.edit'), disabled: card.busy, onClick: () => handlers.editProposal(card.id, true) }),
       h('button', { class: BUTTON.text, type: 'button', text: t('schedule.card.decline'), disabled: card.busy, onClick: () => handlers.declineProposal(card.id) }),
       h('span', { class: 'confirm-hint', text: t('schedule.card.hint') })),

@@ -120,7 +120,7 @@ async function pageSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `document.querySelector('#tasks-page .tp-side .tp-fold').click()`)
   const folded = await until(win, `(() => {
     const side = document.querySelector('#tasks-page .tp-side')
-    return side?.classList.contains('tp-side-folded') && { width: Math.round(side.getBoundingClientRect().width), rows: side.querySelectorAll('.tp-row').length, title: ${pageState}.title }
+    return side?.dataset.folded === 'true' && { width: Math.round(side.getBoundingClientRect().width), rows: side.querySelectorAll('.tp-row').length, title: ${pageState}.title }
   })()`, 'the list folded to its strip')
   expect(folded.width <= 40 && folded.rows === 0 && folded.title === `#${OTHER_ASK}`, 'folded, the list should be a narrow strip and the task stay shown', folded)
   await capture(win, outDir, 'tasks-list-folded')

@@ -157,7 +157,18 @@ async function checkLayouts(win: SmokeAppWindow, outDir: string) {
   const narrow = await run(win, TITLEBAR_METRICS)
   if (narrow.drawerPosition !== 'absolute') failures.push(`narrow window: the open drawer should float over the conversation, was ${narrow.drawerPosition}`)
   await capture(win, outDir, 'layout-narrow-drawer')
-  await click(win, 'toggle-drawer')
+  const requestEntry = '#drawer .drawer-request button'
+  await until(win, `document.querySelector('${requestEntry}')?.getBoundingClientRect().width > 0`, 'the request shortcut in the narrow drawer')
+  await run(win, `document.querySelector('${requestEntry}').click()`)
+  await until(win, `(() => {
+    const button = document.querySelector('#thread > .confirm .btn-primary')
+    if (!button) return false
+    const box = button.getBoundingClientRect()
+    return document.getElementById('drawer').dataset.open === 'false' && document.activeElement === button
+      && button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+  })()`, 'the focused approval button unobstructed by the drawer')
+  await settle(win)
+  await capture(win, outDir, 'layout-narrow-request')
   await run(win, `document.documentElement.dataset.platform = ${JSON.stringify(realPlatform)}`)
   await win.setSize(width, height)
   await wait(UI_WAIT_MS)

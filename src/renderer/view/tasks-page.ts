@@ -3,6 +3,7 @@ import { t } from '../../shared/i18n/translate.ts'
 import { traceItems } from '../selectors.ts'
 import { isRecentUnread, pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
+import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread, type ThreadView } from './thread.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
@@ -43,14 +44,14 @@ function createTaskSidebar(handlers: Handlers) {
   const rows = new Map<string, { el: HTMLButtonElement, name: HTMLSpanElement, mark: HTMLSpanElement, standing: Text }>()
   function update(state: State, now: number) {
     folded = state.tasks.listFolded
-    el.className = folded ? 'tp-side tp-side-folded' : 'tp-side'
+    el.dataset.folded = String(folded)
     el.setAttribute('aria-label', t('tasks-page.background.tasks'))
     title.textContent = t('tasks-page.background.tasks')
     const label = t(folded ? 'dock.expand' : 'task.list.collapse')
     fold.title = label
     fold.setAttribute('aria-label', label)
     fold.setAttribute('aria-expanded', String(!folded))
-    glyph.textContent = folded ? '»' : '«'
+    glyph.replaceChildren(icon(folded ? 'chevronsRight' : 'chevronsLeft', 14))
     if (folded) {
       const waiting = state.tasks.list.filter(task => task.status === 'waiting').length
       count.textContent = String(waiting)

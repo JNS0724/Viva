@@ -28,7 +28,7 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .profile-field[data-filled="true"] { border-color: var(--line-2); }
 .profile-field-head { display: flex; align-items: center; gap: 8px; color: var(--ink-3); }
 .profile-value { margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.profile-field[data-filled="false"] .profile-value { color: var(--mute); font-size: 13px; }
+.profile-field[data-filled="false"] .profile-value { color: var(--ink-3); font-size: 13px; }
 .profile-edit { display: flex; flex-direction: column; gap: 8px; }
 .profile-edit-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .profile-synthesis {
@@ -45,8 +45,6 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .memory-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .memory-text { font-size: 14px; line-height: 1.6; word-break: break-word; }
 .memory-meta { font-size: 11px; color: var(--ink-3); }
-.memory-delete { width: 30px; height: 30px; border-color: transparent; background: transparent; opacity: .6; }
-.memory-item:hover .memory-delete, .memory-delete:focus-visible { opacity: 1; }
 .memory-invalid { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .memory-invalid .link-btn { margin-left: 0; }
 .memory-invalid .memory-list { align-self: stretch; }
@@ -125,7 +123,7 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .secret-row { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) 34px; gap: 8px; align-items: center; }
 .secret-key {
   height: 40px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; overflow: hidden; text-overflow: ellipsis;
-  background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; color: var(--ink-2);
+  background: var(--panel-2); border: 1px solid var(--line); font-family: var(--font-mono); font-size: 12px; color: var(--ink-2);
 }
 .secret-row[data-missing="true"] .field { border-color: var(--orange); }
 .secret-del {

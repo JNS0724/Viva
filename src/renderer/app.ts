@@ -176,10 +176,13 @@ function publishIsland() {
 
 /** The card the agent waits on, brought into view with its first button focused. */
 function jumpToCard() {
-  const card = dom.thread.querySelector('.confirm')
+  const card = dom.thread.querySelector(':scope > .confirm:not(.fu-card)') ?? dom.thread.querySelector('.confirm:not(.fu-card)')
   if (!card) return
-  card.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  card.querySelector('button')?.focus({ preventScroll: true })
+  if (state.drawer && getComputedStyle(dom.drawer).position === 'absolute') dispatch({ type: 'close_drawer' })
+  if (hubPage(state)) dispatch({ type: 'hub_close' })
+  const field = card.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? dom.input
+  field.focus({ preventScroll: true })
+  card.scrollIntoView({ block: 'center' })
 }
 
 /** The task in the background that asks `questionId`, if one does. */
@@ -739,6 +742,7 @@ const handlers = {
     if (tab === 'files') filesActions.loadFiles()
   },
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
+  jumpToRequest: jumpToCard,
   islandAction: (action: IslandAction) => ISLAND_ACTIONS[action?.kind ?? '']?.(action),
   /** The earlier part of the timeline, a page more (the button at its top). */
   loadEarlier: () => timelineActions.loadEarlier(),
@@ -908,8 +912,8 @@ const carriesImages = (event: DragEvent) => {
  */
 function wireFolderDrop(target: Document = document) {
   const showing = (kind: 'folder' | 'images' | null) => {
-    document.body.classList.toggle('drop-folder', kind === 'folder')
-    document.body.classList.toggle('drop-images', kind === 'images')
+    if (kind) document.body.dataset.drop = kind
+    else delete document.body.dataset.drop
     // styles.css shows it as the body's ::after; read when held, so it is in the language of the moment.
     if (kind) document.body.dataset.dropHint = t(kind === 'images' ? 'app.drop.images.hint' : 'app.drop.folder.hint')
     else delete document.body.dataset.dropHint

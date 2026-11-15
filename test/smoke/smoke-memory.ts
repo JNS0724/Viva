@@ -120,6 +120,30 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
     summaries.user.items.some(item => item.text === ${JSON.stringify(FACT)} && item.source?.link?.startsWith('viva://timeline/')))`,
   'the generated user profile with a verified chat source')
   await until(win, `document.querySelector('[data-profile-summary="user"] button[aria-label$="的原文"]')`, 'the summary source control')
+  const actions = await run(win, `(() => {
+    const group = document.querySelector('.memory-item[data-source="agent"] .memory-actions')
+    if (!group) return null
+    const buttons = [...group.querySelectorAll('button')]
+    const bounds = group.getBoundingClientRect()
+    const wide = buttons.map(button => button.getBoundingClientRect())
+    group.style.maxInlineSize = '150px'
+    try {
+      const narrow = buttons.map(button => button.getBoundingClientRect())
+      return {
+        labels: buttons.map(button => button.textContent),
+        deleteLabel: buttons.at(-1)?.getAttribute('aria-label'),
+        compact: wide[0]?.left === bounds.left && wide.every((box, i) => i === 0 ||
+          (box.top === wide[0].top && box.left - wide[i - 1].right <= 16)),
+        wrapped: new Set(narrow.map(box => box.top)).size > 1,
+        fits: narrow.every(box => box.right <= bounds.left + 151),
+      }
+    } finally {
+      group.style.removeProperty('max-inline-size')
+    }
+  })()`)
+  expect(actions?.labels.join('/') === '查看原文/编辑/停止使用这条记忆/删除' && actions.deleteLabel?.includes(FACT),
+    'the memory actions should include a visible delete label and name the memory for assistive technology', actions)
+  expect(actions?.compact && actions.wrapped && actions.fits, 'the actions should stay together and wrap inside a narrow row', actions)
   await capture(win, outDir, 'memory-profile')
   await run(win, `document.querySelector('[name="memory-rebuild-indexes"]').click()`)
   await until(win, `document.querySelector('.toast')?.textContent?.includes('索引已开始重建，语义索引会在后台分批补齐。')`, 'the index rebuild receipt')
@@ -423,7 +447,7 @@ async function dropSteps(win: SmokeWindow, outDir: string, expect: Expect) {
     window.smokeDrop = new DataTransfer()
     window.smokeDrop.items.add(new File(['x'], '不在磁盘上.txt'))
     document.body.dispatchEvent(new DragEvent('dragover', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))
-    return { held: document.body.classList.contains('drop-folder'), hint: document.body.dataset.dropHint ?? null }
+    return { held: document.body.dataset.drop === 'folder', hint: document.body.dataset.dropHint ?? null }
   })()`)
   // The words come from the language resources (styles.css shows the body's data-drop-hint), not from the style sheet.
   expect(held.held && held.hint === '松开，在这个文件夹里工作', 'a folder held over the window should be told what letting go does', held)
@@ -432,7 +456,7 @@ async function dropSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `document.body.dispatchEvent(new DragEvent('drop', { dataTransfer: window.smokeDrop, bubbles: true, cancelable: true }))`)
   const after = await until(win, `(() => {
     const toast = document.querySelector('.toast')?.textContent ?? ''
-    return toast && { toast, held: document.body.classList.contains('drop-folder'), hint: document.body.dataset.dropHint ?? null }
+    return toast && { toast, held: document.body.dataset.drop === 'folder', hint: document.body.dataset.dropHint ?? null }
   })()`, 'the toast for a drop that is not a folder')
   expect(after.toast.includes('这不是电脑上的文件夹') && !after.held && after.hint === null, 'a drop that is not a folder on disk should be turned down', after)
 }
@@ -573,6 +597,15 @@ async function conflictSteps(win: SmokeWindow, outDir: string, expect: Expect, h
   const displayed = await run(win, `${changeRow}.textContent`)
   expect(displayed.includes(two) && displayed.includes('cobalt@example.com') && displayed.includes('原文依据'), 'the change shows both values and source wording', displayed)
   await run(win, `${changeRow}.scrollIntoView({ block: 'center' })`)
+  const toast = await run(win, `(() => {
+    const action = document.querySelector('#toast-root .toast-action')
+    if (!action) return null
+    const range = document.createRange()
+    range.selectNodeContents(action)
+    return { singleLine: range.getClientRects().length === 1,
+      abovePage: action.closest('.toast').getBoundingClientRect().bottom <= document.querySelector('#hub').getBoundingClientRect().top }
+  })()`)
+  expect(toast?.singleLine && toast.abovePage, 'the long memory notice keeps its action on one line above the page', toast)
   await capture(win, outDir, 'memory-change-history')
   await run(win, `${changeRow}.querySelector('.btn-outline').click()`)
   await until(win, `${changeRow}?.dataset.status === 'undone'`, 'the change is shown as undone')

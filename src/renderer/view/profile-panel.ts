@@ -79,8 +79,19 @@ function memoryMeta(memory: MemoryRow, now: number) {
   return [t('profile-panel.memory.revision', { id: memory.id }), scope, KIND_LABEL[memory.kind], SOURCE_LABEL[memory.source], formatListTime(memory.createdAt, now), keywords].filter(Boolean).join(' · ')
 }
 
-function memoryItem(memory: MemoryRow, editRevision: number | null, handlers: Handlers, now: number) {
+function memorySource(memory: MemoryRow, handlers: Handlers) {
   const source = memory.evidence?.find(edge => edge.link)?.link
+  return source ? h('button', { class: 'link-btn', type: 'button', text: t('profile-panel.memory.source'),
+    onClick: () => { handlers.closeProfile(); handlers.openLink(source) } }) : null
+}
+
+function memoryDelete(memory: MemoryRow, handlers: Handlers, disabled = false) {
+  return h('button', { class: 'link-btn', type: 'button', 'data-tone': 'danger', disabled,
+    text: t('extensions.delete'), 'aria-label': t('profile-panel.delete.memory', { text: memory.text }),
+    onClick: () => handlers.deleteMemory(memory) })
+}
+
+function memoryItem(memory: MemoryRow, editRevision: number | null, handlers: Handlers, now: number) {
   const editing = editRevision !== null
   const editor = h('input', { class: 'field', name: `memory-${memory.id}`, value: memory.text, maxlength: 500, 'aria-label': t('extensions.edit') })
   const form = editing ? h('form', { class: 'profile-edit', onSubmit: (event: SubmitEvent) => {
@@ -92,16 +103,12 @@ function memoryItem(memory: MemoryRow, editRevision: number | null, handlers: Ha
       h('span', { class: 'memory-text', text: memory.text }),
       h('span', { class: 'memory-meta mono', text: memoryMeta(memory, now) }),
       form,
-      h('div', { class: 'profile-edit-actions' },
-        source ? h('button', { class: 'link-btn', type: 'button', text: t('profile-panel.memory.source'),
-          onClick: () => { handlers.closeProfile(); handlers.openLink(source) } }) : null,
+      h('div', { class: 'memory-actions' },
+        memorySource(memory, handlers),
         h('button', { class: 'link-btn', type: 'button', 'aria-expanded': String(editing), text: t(editing ? 'extensions.cancel' : 'extensions.edit'),
           onClick: () => handlers.editMemoryEntry(editing ? null : { id: memory.id, revision: memory.revision }) }),
-        h('button', { class: 'link-btn', type: 'button', text: t('profile-panel.forget.memory'), onClick: () => handlers.forgetMemory(memory) }))),
-    h('button', {
-      class: 'icon-btn memory-delete', type: 'button', 'aria-label': t("profile-panel.delete.memory", { text: memory.text }), title: t("extensions.delete"),
-      onClick: () => handlers.deleteMemory(memory),
-    }, icon('close', 14)))
+        h('button', { class: 'link-btn', type: 'button', text: t('profile-panel.forget.memory'), onClick: () => handlers.forgetMemory(memory) }),
+        memoryDelete(memory, handlers))))
 }
 
 function invalidReason(memory: MemoryRow, now: number) {
@@ -120,20 +127,18 @@ function invalidReason(memory: MemoryRow, now: number) {
 }
 
 function invalidItem(memory: MemoryRow, handlers: Handlers, now: number) {
-  const source = memory.evidence?.find(edge => edge.link)?.link
   const withdrawn = memory.retention === 'forgotten' || memory.state === 'retracted'
   return h('li', { class: 'memory-item', 'data-invalid': String(withdrawn) },
     h('div', { class: 'memory-copy' },
       h('span', { class: 'memory-text', text: memory.text }),
       h('span', { class: 'memory-meta mono', text: invalidReason(memory, now) }),
-      source ? h('button', { class: 'link-btn', type: 'button', text: t('profile-panel.memory.source'),
-        onClick: () => { handlers.closeProfile(); handlers.openLink(source) } }) : null),
-    memory.retention === 'forgotten' && (memory.state === 'active' || memory.state === 'superseded') ? h('button', {
-      class: 'btn btn-outline btn-small', type: 'button', text: t("profile-panel.restore"), 'aria-label': t("profile-panel.restore.memory", { text: memory.text }),
-      onClick: () => handlers.reviveMemory(memory),
-    }) : null,
-    h('button', { class: 'icon-btn memory-delete', type: 'button', 'aria-label': t('profile-panel.delete.memory', { text: memory.text }),
-      onClick: () => handlers.deleteMemory(memory) }, icon('close', 14)))
+      h('div', { class: 'memory-actions' },
+        memorySource(memory, handlers),
+        memory.retention === 'forgotten' && (memory.state === 'active' || memory.state === 'superseded') ? h('button', {
+          class: 'btn btn-outline btn-small', type: 'button', text: t('profile-panel.restore'), 'aria-label': t('profile-panel.restore.memory', { text: memory.text }),
+          onClick: () => handlers.reviveMemory(memory),
+        }) : null,
+        memoryDelete(memory, handlers))))
 }
 
 const memoryTime = (time: number) => formatDate(time, { dateStyle: 'medium', timeStyle: 'short' })
@@ -150,21 +155,17 @@ function conflictPair(first: MemoryRow, second: MemoryRow, changeId: number, int
   const period = memoryPeriod(interval)
   const editing = memory.conflictEditor === key
   const choices = [[first, second], [second, first]] as const
-  const option = ([selected, other]: typeof choices[number]) => {
-    const source = selected.evidence?.find(edge => edge.link)?.link
-    return h('li', { class: 'memory-item', 'data-memory-id': selected.id },
+  const option = ([selected, other]: typeof choices[number]) =>
+    h('li', { class: 'memory-item', 'data-memory-id': selected.id },
       h('div', { class: 'memory-copy' },
         h('span', { class: 'memory-text', text: selected.text }),
         h('span', { class: 'memory-meta mono', text: memoryMeta(selected, now) }),
-        source ? h('button', { class: 'link-btn', type: 'button', text: t('profile-panel.memory.source'),
-          onClick: () => { handlers.closeProfile(); handlers.openLink(source) } }) : null),
-      h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: memory.changeBusy,
-        'aria-label': t('profile-panel.memory.resolve.label', { id: selected.id }), text: t('profile-panel.memory.resolve'),
-        onClick: () => handlers.resolveMemoryConflictPair(selected, other, { kind: 'keep-first' }, changeId, interval) }),
-      h('button', { class: 'icon-btn memory-delete', type: 'button', disabled: memory.changeBusy,
-        'aria-label': t('profile-panel.delete.memory', { text: selected.text }), title: t('extensions.delete'),
-        onClick: () => handlers.deleteMemory(selected) }, icon('close', 14)))
-  }
+        h('div', { class: 'memory-actions' },
+          memorySource(selected, handlers),
+          h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: memory.changeBusy,
+            'aria-label': t('profile-panel.memory.resolve.label', { id: selected.id }), text: t('profile-panel.memory.resolve'),
+            onClick: () => handlers.resolveMemoryConflictPair(selected, other, { kind: 'keep-first' }, changeId, interval) }),
+          memoryDelete(selected, handlers, memory.changeBusy))))
   const replacement = h('input', { class: 'field', name: `conflict-${key}`, maxlength: 500, required: true,
     'aria-label': t('profile-panel.memory.conflict.replacement'), placeholder: t('profile-panel.memory.conflict.replacement') })
   const form = editing ? h('form', { class: 'profile-edit', onSubmit: (event: SubmitEvent) => {

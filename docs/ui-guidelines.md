@@ -103,7 +103,7 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 - **Room for window buttons.** On macOS, `--reserve-left` keeps 84px on the left for the traffic lights. On Windows and Linux, `env(titlebar-area-width)` gives how much to leave on the right. This value is set only on `.titlebar`, so resizing the window doesn't invalidate the inherited style of every message.
 - **Status capsule.** It is always centered on the whole window. When space runs out it shrinks first, so it never covers the buttons on either side.
 - **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail.
-- **Drawer.** `--drawer-width` is 440px. At 1100px and narrower, it floats over the conversation instead of squeezing it.
+- **Drawer.** `--drawer-width` is 440px. At 1100px and narrower, it floats over the conversation. When a request is waiting in the conversation, the drawer offers **View request** to close it and focus the request.
 - **Breakpoints.** 720px (pages go to one column), 760px (home cards stack), 1100px (the drawer floats). The minimum window size is 880×600.
 - **Layers (z-index):**
 
@@ -176,7 +176,7 @@ Reuse existing components before writing similar styles of your own.
 - **Menus.** Follow `.ctx-menu`: `--panel-2` background, `--line-2` border, 14px radius, 6px padding. Items (`.ctx-item`) have a 9px radius and turn `--raised` on hover. Put an item's shortcut in `kbd` and its note in `small`.
 - **Cards.** `--panel` background, `--line` border, 14px radius. A card that needs the user to act gets a 22px radius and a state-colored border: the confirmation card `.confirm` is orange, the home to-do card is blue.
 - **Empty states, `.empty`.** Dashed border, 16px radius, centered 13px `--ink-3` text that says what will appear here and how to make it appear.
-- **Toasts.** A pill at the bottom center, with at most one blue action. While a dialog or a hub page is open it moves to the top so it doesn't cover their buttons. Show one with `showToast`; don't build banners page by page.
+- **Toasts.** A pill at the bottom center, with at most one blue action. The message can wrap and the action stays on one line. A toast moves to the top while a dialog or hub page is open. On About You it takes its own row above the page to keep the memory fields accessible. Show one with `showToast`.
 - **Modal dialogs, `.overlay`.** A solid `rgba(6, 11, 22, .82)` scrim with no blur. Needs `aria-modal`; Esc closes it.
 - **Errors and notices.** Under a form, use `.form-error` (light red) or `.form-notice` (blue), 13px. Help text is `.help`.
 
