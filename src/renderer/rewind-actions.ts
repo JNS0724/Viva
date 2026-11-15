@@ -4,9 +4,8 @@ import { rewindTarget } from './rewind-state.ts'
 import { MAX_MESSAGE_CHARS, MESSAGE_TOO_LONG } from '../shared/text-limits.ts'
 
 /**
- * Going back to something the user said, from the window (phase 2): the bar's 从这里重来 (the same words again)
- * and 改了重发 (the editor in place, then the new words). The main process forks the agent and stores the new
- * segment (main/rewind-ipc.js); then the words go as the next question.
+ * Resend a message from the in-place editor, with or without changes. The backend starts a new segment
+ * from before the message, then the editor's text goes as the next question.
  */
 let NOT_NOW = t("rewind-actions.the.assistant.is.busy.or.this.message")
 let FAILED = t("rewind-actions.could.not.return.there")
@@ -25,11 +24,12 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
   }
 
   /** Going back over files written or commands run asks first (view/rewind.js rewindConfirm); else it just goes. */
-  async function goBack(id: string, text: string | undefined, { confirmed = false } = {}) {
+  async function goBack(id: string, text: string, { confirmed = false } = {}) {
     const target = rewindTarget(getState(), id)
-    const words = text?.trim()
-    if (words && words.length > MAX_MESSAGE_CHARS) return showToast(MESSAGE_TOO_LONG)
-    if (!target || !words) return showToast(NOT_NOW)
+    const trimmed = text.trim()
+    const words = text === target?.words ? text : trimmed
+    if (words.length > MAX_MESSAGE_CHARS) return showToast(MESSAGE_TOO_LONG)
+    if (!target || !trimmed) return showToast(NOT_NOW)
     if (!confirmed) {
       const effects = await effectsOf(target)
       if (effects.files.length || effects.commands.length) return dispatch({ type: 'rewind_confirm', id, text: words, effects })
@@ -49,7 +49,7 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
     // Selection commits schedule the foreground ingress drain. Observe its turn_started before
     // deciding whether these words are a new prompt or an interjection into a report already running.
     await Promise.resolve()
-    return ask(words)
+    return ask(words, { sourceId: result.sourceId, newSource: result.newSource })
   }
 
   /** Opens a folded path in place to read it, or closes it again. */
@@ -83,7 +83,6 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
   return {
     toggleFold,
     switchPath,
-    redoFrom: (id: string) => goBack(id, getState().messages.find((message: ThreadMessage) => message.id === id)?.text),
     editFrom: (id: string) => (rewindTarget(getState(), id) ? dispatch({ type: 'rewind_edit', id }) : showToast(NOT_NOW)),
     cancelEdit: () => dispatch({ type: 'rewind_cancel' }),
     submitEdit: (id: string, text: string) => goBack(id, text),

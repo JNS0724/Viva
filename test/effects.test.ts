@@ -106,6 +106,58 @@ test('woken while a pass runs, another pass follows: nothing queued meanwhile wa
   assert.deepEqual(effects.list(), [])
 })
 
+test('a timed effect becoming due during an awaited pass wakes the queue once', async (t) => {
+  const { effects, advance, timers } = setup(t)
+  let release: (() => void) | undefined
+  effects.queue('work', 'waiting', {})
+  effects.queue('cleanup', 'expiry', {}, 1_050)
+  effects.runs('work', async ([effect]) => {
+    if (!release) await new Promise<void>(resolve => { release = resolve })
+    return new Map([[effect.key, 'wait']])
+  })
+  const cleanup = runner(() => 'done')
+  effects.runs('cleanup', cleanup.run)
+
+  const pass = effects.wake()
+  await Promise.resolve()
+  advance(50)
+  assert.ok(release)
+  release()
+  await pass
+  assert.equal(cleanup.seen.length, 0)
+  const [timer] = timers()
+  assert.equal(timer?.ms, 0)
+  timer.run()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(cleanup.seen.map(batch => batch.map(effect => effect.key)), [['expiry']])
+  assert.deepEqual(effects.list().map(({ key, attempts }) => [key, attempts]), [['waiting', 0]])
+  assert.deepEqual(timers().filter(entry => entry !== timer), [])
+})
+
+test('a far-future job uses a supported timer duration until it becomes due', async t => {
+  const { effects, advance, timers } = setup(t)
+  const maximumTimeout = 2_147_483_647
+  const remaining = 5000
+  effects.queue('profile', 'scheduled-boundary', null, 1000 + maximumTimeout + remaining)
+  const profile = runner(() => 'done')
+  effects.runs('profile', profile.run)
+
+  await effects.wake()
+  assert.equal(timers().at(-1)?.ms, maximumTimeout)
+
+  advance(maximumTimeout)
+  timers().at(-1)?.run()
+  await effects.wake()
+  assert.equal(profile.seen.length, 0)
+  assert.equal(timers().at(-1)?.ms, remaining)
+
+  advance(remaining)
+  timers().at(-1)?.run()
+  await effects.wake()
+  assert.deepEqual(profile.seen.map(batch => batch.map(job => job.key)), [['scheduled-boundary']])
+  assert.deepEqual(effects.list(), [])
+})
+
 test('a key cancelled and queued again gets a generation never given before: a try for the old one settles nothing', async (t) => {
   const { effects } = setup(t)
   effects.queue('report', 'a', { n: 1 })

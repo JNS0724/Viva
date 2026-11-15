@@ -1,4 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
+import { MEMORY_CONTRACT } from '../shared/memory-contract.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -23,8 +24,7 @@ const PARTS = Object.freeze({
   recall: [
     '缺少信息时：如果答案取决于一项用户没说的关键信息（例如地点、时间范围、对象、账号、版本），',
     '先看对话和关于用户的记忆；需要的稳定背景没有直接给出时，必须先用 memory_recall 检索再决定是否提问。',
-    '例如天气、带伞、出行问题需要地点时，先以单个关键词「常住」调用 memory_recall；没有结果再查「城市」。',
-    '不要把同义词堆在一个查询里，也不要没有检索就声称没有用户的城市记录。',
+    '用能定位相关事实的关键词查询。若记忆上下文或召回返回争议，只有当歧义会改变当前答案或操作、且无法按本轮指示或给出有用的条件式答案时，才查询本轮引用并调用 memory_clarify。这轮有记忆歧义时，普通问题工具不可用。待确认变更不视为已发生。后台任务记录歧义并完成无争议部分。',
   ],
   ask: [
     '仍然没有，或者只有时区、IP、系统语言这类不可靠的线索，而猜错会让回答白做时，先用 ask_user_question 问用户，',
@@ -32,7 +32,7 @@ const PARTS = Object.freeze({
     '只问会改变结果的信息，一次问完；猜错代价很小、或用户要你直接给结果时，就按最可能的情况做，并在回答开头说明你的假设。',
   ],
   remember: [
-    '用户告诉你的是以后还用得上的稳定信息（例如常住城市、所在时区、常用账号）时，用 memory_remember 记下来，下次就不用再问。',
+    '应用会自动提取稳定事实。用户明确要求记住时，才调用 memory_remember，并提交该要求对应的原文。仅本次使用的选择不作为长期更正。',
   ],
   config: [
     '用户想接入一个服务或工具（MCP 服务器），或者想把一套做法存成 skill 时，用 viva_mcp_add、viva_skill_create 等工具配置，用户确认后生效；',
@@ -98,7 +98,7 @@ export const PERSONA = personaOf(['identity', 'recall', 'ask', 'remember', 'conf
 export const ROUTING_PERSONA = personaOf(['identity', 'route', 'recall', 'history', 'routeAnswer', 'routeTasks', 'routeApp', 'remember', 'config', 'schedule', 'ownership', 'reports', 'taskQuery', 'taskTruth'])
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: 1, trace: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1, mcp: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: MEMORY_CONTRACT, trace: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1, mcp: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */
@@ -127,7 +127,7 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-tasks', dir: 'plugins/tasks', contract: 'tasks', config: () => ({}) },
   { name: 'viva-history', dir: 'plugins/history', contract: 'history', config: () => ({}) },
   { name: 'viva-routing', dir: 'plugins/routing', contract: 'stream', config: () => ({ ...ROUTING_PERSONA }) },
-  { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData }) => ({ file: path.join(userData, 'memory.db') }) },
+  { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: () => ({ host: true }) },
   { name: 'viva-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
   {
     name: 'viva-questions', dir: 'plugins/questions', contract: 'questions', config: () => ({}),

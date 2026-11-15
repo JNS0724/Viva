@@ -11,14 +11,14 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "a4dae6961dd6ad25ad50e6e9b8aa2d11fb3d6d7870e0de22e84cbf6da7872745",
-      "zhHash": "d30f565a7f0222492393a3891955614ab574dac04a5ce8a989d06a5509f396b4"
+      "enHash": "a2fb92b7e2d658dbbc6f8bd4d06da50bfa993be7b747c088b876c961a19339b7",
+      "zhHash": "f16281fad258fbd16d7340224bed4ac2483731bbc5192c2be6e5054e21725a81"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "c074186d4233b7fb7e6dd54983b30d680f8190568d7e90fb5ac9edea2bcb9747",
-      "zhHash": "2a10fe4e236782f9576c050ff764f8928b011767bbcc34cdfe8927577494fc87"
+      "enHash": "2c229d1a1c9d9d36c02d3c77cb63fd5e2b77314bd932bf82ef9a1badd2241516",
+      "zhHash": "6aebf68e69e4ef130637780c8a49fe68c501d8be18ea913986eaddf27b7503e1"
     },
     {
       "en": "docs/live-check.md",
@@ -65,14 +65,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "7bb1ce73d35c652c964b4cd26cf69f02f40aa975679db9c8d0e336e913898a7f",
-      "zhHash": "df169084311e585613abddce08dde6d9c6a1a7450d360710dc69e734c200bde1"
+      "enHash": "2faabefab103a27e4d16deaa7091f446e72f6ac3041ed636e374f6d050521089",
+      "zhHash": "0717bbc5c85cb13ba2fcfffa322038ebac83253169d2f3332276e01d39085ca1"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "a640aff4f64ded856678332f54cdd0c784c36afda096ba324fc9ee8566205fe6",
-      "zhHash": "3c375dec66591fbf4ad20f7808db86d7356a77f93f8faa255fe4cfdfedc30bbf"
+      "enHash": "cba704de155a5a6403d1fcb6330fdc94d60d50ded1e9061734596a017814c45a",
+      "zhHash": "7e9d0d5257d751861d5bdadb462da703b60a74b47fbb8e713e5023a9f76a6a24"
     },
     {
       "en": "docs/architecture-health.md",
@@ -83,14 +83,20 @@
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "41f46cffc5107b5697b55c6f4d4765b6b60dcc0f240404cc3bd6892b52a07663",
-      "zhHash": "7cbef944b75cb8773d96a06ca57d70910909b79e67f41730e082afad557638d1"
+      "enHash": "e0d47f83db34cfe5d7ff807a540a88f7c2f849a1582209fdc324b6449c925dd4",
+      "zhHash": "387740a148e9b9d57c87bfbdcff7889cde60ac6d60feb6a717cca8d5cc17e966"
     },
     {
       "en": "docs/agent-routing-feasibility.md",
       "zh": "docs/agent-routing-feasibility.zh-CN.md",
       "enHash": "33f622f960b23b457214d323f7255406754915b8609b0f30459782996f0af47b",
       "zhHash": "98700dc2147e522f687ed82ec8c733ddf6c9731a4e06f59fcdea2b85a4579c7d"
+    },
+    {
+      "en": "docs/memory-design.md",
+      "zh": "docs/memory-design.zh-CN.md",
+      "enHash": "14316dd51f4f355750ed8680fd682b15b4557241467bd25073069fca0a9d63da",
+      "zhHash": "9c26d734c273a33a36d633a4631f1518aa9e72f178d6e49abf195f8292934fce"
     }
   ],
   "bilingual": [

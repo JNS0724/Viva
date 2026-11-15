@@ -6,6 +6,8 @@ export interface StreamText { id: string, text: string, open?: boolean, at?: num
 export interface TurnReceipt { ms: number, stopReason?: string, tools?: number, thoughts?: number }
 export interface ConversationMessage extends StreamText {
   role: string
+  sourceId?: string
+  pending?: boolean
   shown?: number
   receipt?: TurnReceipt | null
   restored?: boolean
@@ -82,8 +84,9 @@ export interface ForegroundWaits {
 
 /** Only conversation payloads. Task identity and stream order belong to separate task actions. */
 export interface ConversationPayloads {
-  user_prompt: { text: string, at: number, via?: string | null, images?: readonly { id: string }[] }
-  user_steer: { text: string, via?: string | null }
+  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean }
+  prompt_admitted: { sourceId: string, accepted: boolean }
+  user_steer: { text: string, sourceId?: string, via?: string | null }
   steer_failed: { id: string | undefined }
   steer_resent: { at: number }
   agent_turn_started: { at: number, by?: string | null }
@@ -93,7 +96,7 @@ export interface ConversationPayloads {
   permission_closed: { requestId: string, at?: number }
   question_request: { questionId: string, questions: readonly QuestionItem[], at: number }
   question_pick: { id: string, label: string }
-  question_answered: { questionId: string, answers: readonly QuestionAnswer[], at: number }
+  question_answered: { questionId: string, sourceId?: string, answers: readonly QuestionAnswer[], at: number }
   question_closed: { questionId: string, at: number }
   secret_request: AskedSecret & { at: number }
   secret_resolved: { requestId: string, provided: boolean, at: number }

@@ -1,3 +1,4 @@
+import type { HistoryHit } from './history-channel.ts'
 import type { openHistoryDb } from './history-db.ts'
 
 /**
@@ -16,18 +17,31 @@ export type Recalled =
   | { status: 'found' | 'missing', title: string, messages: RecallMessage[] }
   | { status: 'deleted' }
 
-export function historyRecall(db: HistoryDb) {
+export interface HistoryEvidence {
+  segmentId: string
+  role: string
+  text: string
+  sourceId?: string | null
+  sessionId?: string | null
+}
+
+export function historyRecall(db: HistoryDb, allowed?: (message: HistoryEvidence) => boolean, used?: (message: HistoryEvidence) => void) {
   const titleOf = (segmentId: string) => {
     const reader = db.readerOf(segmentId)
     return reader?.topicId ? db.reviewTopic(reader.topicId)?.title ?? '' : ''
   }
 
   /** Search hits, newest first, each with the title of its topic. */
-  function search(query: string, range: RecallRange = {}) {
+  function search(query: string, range: RecallRange = {}): HistoryHit[] {
     const titles = new Map<string, string>()
-    return db.searchMessages(query, range).map((hit) => {
+    return db.searchMessages(query, range).flatMap<HistoryHit>((hit) => {
+      if (allowed) {
+        const original = read(hit, 1, true)
+        if (original.status !== 'found' || !original.messages.some(message => message.target)) return []
+        return [{ ...hit, before: undefined, after: undefined, title: original.title }]
+      }
       if (!titles.has(hit.segmentId)) titles.set(hit.segmentId, titleOf(hit.segmentId))
-      return { ...hit, title: titles.get(hit.segmentId) ?? '' }
+      return [{ ...hit, title: titles.get(hit.segmentId) ?? '' }]
     })
   }
 
@@ -35,7 +49,7 @@ export function historyRecall(db: HistoryDb) {
    * The messages around one (a link from a search): `around` on either side, in its topic or its task. Not there any
    * more: the ones near where it was ('missing'); its record deleted: 'deleted'.
    */
-  function read(ref: { segmentId: string, seq: number, messageId?: number }, around = DEFAULT_AROUND): Recalled {
+  function read(ref: { segmentId: string, seq: number, messageId?: number }, around = DEFAULT_AROUND, targetOnly = false): Recalled {
     const located = db.locate(ref)
     if (located.status === 'deleted' || located.seq === null) return { status: 'deleted' }
     const reader = db.readerOf(located.segmentId)
@@ -43,11 +57,13 @@ export function historyRecall(db: HistoryDb) {
     const side = Math.min(Math.max(1, Math.trunc(around) || DEFAULT_AROUND), MAX_AROUND)
     const part = db.read(reader.key, { around: { segmentId: located.segmentId, seq: located.seq }, count: side * 2 + 1 })
     if (!part) return { status: 'deleted' }
-    const title = part.topic?.title ?? titleOf(located.segmentId)
-    const messages = part.messages.map((message) => ({
-      messageId: message.id, segmentId: message.segmentId, seq: message.seq, role: message.role, text: message.text, at: message.at,
-      target: located.status === 'found' && message.segmentId === located.segmentId && message.seq === located.seq,
-    }))
+    const title = allowed ? '' : part.topic?.title ?? titleOf(located.segmentId)
+    const messages = part.messages.filter(message => !allowed || allowed(message)).map(message => {
+      const target = located.status === 'found' && message.segmentId === located.segmentId && message.seq === located.seq
+      if (target || !targetOnly) used?.(message)
+      return { messageId: message.id, segmentId: message.segmentId, seq: message.seq, role: message.role, text: message.text, at: message.at, target }
+    })
+    if (allowed && located.status === 'found' && !messages.some(message => message.target)) return { status: 'deleted' }
     return { status: located.status, title, messages }
   }
 

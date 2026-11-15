@@ -83,7 +83,7 @@ function renderConfirm(root: HTMLElement, state: State, handlers: Handlers) {
       h('div', { class: 'workdir-sheet-title', text: t("workdir.work.in.this.folder") }),
       h('div', { class: 'workdir-sheet-path mono', text: dir }),
       h('p', { class: 'workdir-sheet-text', text: t("workdir.viva.will.read.files.and.run.commands") }),
-      h('p', { class: 'workdir-sheet-text', text: t("workdir.your.conversation.continues.viva.remembers.what.you") }),
+      h('p', { class: 'workdir-sheet-text', text: t("workdir.project.switch.new.conversation") }),
       h('div', { class: 'workdir-sheet-actions' },
         h('button', { class: 'btn btn-secondary', type: 'button', text: t("extensions.cancel"), onClick: () => handlers.cancelWorkDir() }),
         h('button', { class: 'btn btn-accent', type: 'button', text: t("workdir.work.here"), onClick: () => handlers.confirmWorkDir() }))))

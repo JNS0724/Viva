@@ -6,6 +6,7 @@ import { exportFileName, toMarkdown } from './history-export.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import { assertId } from './history-schema.ts'
 import { CARRY_TURNS, carriedRecords } from './history-carry.ts'
+import type { HistoryEvidence } from './history-recall.ts'
 import { ResumeError } from './resume-failure.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
@@ -53,6 +54,11 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   workDir?: () => string | null,
   /** Records to go with the first question of a conversation (main.ts agent:prompt). */
   carryNext?: (conversationId: string, text: string) => void,
+  staleSession?: (id: string | null) => boolean,
+  filteredCarry?: (conversationId: string, userOnly?: boolean, targetCwd?: string) => { text: string, turns: number, evidence: HistoryEvidence[] },
+  onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void,
+  recordSession?: (id: string | null) => void,
+  deleteHistory?: (id: string) => Promise<void>,
 }) {
   const { db, dshHome, traceDb, current, setCurrent, agentInfo, chooseExportPath } = deps
   const selectSession = deps.selectSession
@@ -122,12 +128,19 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (!sessionId) return { ok: false as const, reason: 'gone' as const, message: GONE, cwd, info: null }
     try {
       return await selectSession(async ({ switchAgent, select }) => {
-        const started = await switchAgent(sessionId, cwd, { exactly: true })
+        const stale = deps.staleSession?.(sessionId) ?? false
+        const carried = stale ? deps.filteredCarry?.(found.conversation.id, true) : null
+        const started = await switchAgent(stale ? null : sessionId, cwd, { exactly: true })
         const { mode, model } = agentInfo()
         const topicId = found.conversation.topicId ?? found.conversation.id
         const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id, topicId })
         select(next)
-        return { ok: true as const, info: { ...started, remembersHistory: true, conversationId: next.id, topicId }, parentId: found.conversation.id }
+        if (stale) deps.recordSession?.(started.sessionId)
+        if (carried?.turns) {
+          deps.onCarry?.(started.sessionId, carried.evidence)
+          carryNext(next.id, carried.text)
+        }
+        return { ok: true as const, info: { ...started, remembersHistory: !stale, conversationId: next.id, topicId }, parentId: found.conversation.id }
       })
     } catch (err) {
       if (!(err instanceof ResumeError)) throw err
@@ -146,13 +159,18 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("workspace.missing.choose"))
     const topicId = db.topicOf(found.conversation.id)
     const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
-    const carried = carriedRecords(part?.messages ?? found.messages)
+    const filtered = deps.filteredCarry?.(found.conversation.id, false, dir)
+    const carried = filtered ?? carriedRecords(part?.messages ?? found.messages)
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(null, dir)
       const { mode, model } = agentInfo()
       const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id, topicId: topicId ?? found.conversation.id })
       select(next)
-      if (carried.turns) carryNext(next.id, carried.text)
+      deps.recordSession?.(started.sessionId)
+      if (carried.turns) {
+        if (filtered) deps.onCarry?.(started.sessionId, filtered.evidence)
+        carryNext(next.id, carried.text)
+      }
       return { info: { ...started, remembersHistory: false, conversationId: next.id, topicId: next.topicId ?? next.id }, parentId: found.conversation.id, turns: carried.turns }
     })
   })
@@ -167,8 +185,10 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:rename', (id, title) => db.rename(id, title))
   handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))
   handle('history:delete', (id) => {
+    const purge = () => { schedule(() => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS }), UNDO_WINDOW_MS + PURGE_SLACK_MS) }
+    if (deps.deleteHistory) return deps.deleteHistory(assertId(id)).then(purge)
     db.softDelete(id)
-    schedule(() => db.purgeDeleted({ olderThanMs: UNDO_WINDOW_MS }), UNDO_WINDOW_MS + PURGE_SLACK_MS)
+    purge()
   })
   handle('history:restore', (id) => db.restore(id))
 

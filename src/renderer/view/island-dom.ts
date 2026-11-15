@@ -39,8 +39,8 @@ export function deskLayoutFor(view: IslandShown, open: boolean, _tools = false):
 
 /** The second line of the peek: what the state is about, said once (the label says the state). */
 function peekDetail(view: IslandShown): string | undefined {
-  if (view.form === 'waiting' && view.permission) return [view.permission.title, view.task && t('desk-card.from.task', { task: view.task })].filter(Boolean).join(' · ')
-  if (view.form === 'asking' && view.question) return view.task ?? view.question.header ?? view.question.text
+  if (view.form === 'waiting' && view.permission) return view.permission.title
+  if (view.form === 'asking' && view.question) return view.question.header ?? view.question.text
   return view.action ?? view.task ?? view.detail
 }
 
@@ -270,6 +270,8 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   const peekOpen = h('button', { type: 'button', class: 'isl-peek-open', onClick: () => act({ kind: 'toggle' }) })
   const card = createDeskCardParts(act, shortcut)
   const strips = createInputStrips(act, card.tools)
+  const switching = h('span', { role: 'status' })
+  const switchingIndicator = h('i', { class: 'isl-bg-ring', 'aria-hidden': 'true' })
   let inputKey = '', inputParts: View[] = []
   let signature = ''
   /** The clocks shown (the peek's, the working strip's) tick every second without a redraw. */
@@ -279,7 +281,7 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
   /** The input and files dragged over it: no head, the field first; ↗ and × sit on the strip above it, or in the corner. */
   function inputSurface(view: IslandShown, now: number): HTMLElement[] {
     if (!input) return []
-    const key = JSON.stringify([localeRevision(), view.form, view.count, view.files, view.images, view.busy, view.error, view.steering, view.targetLabel])
+    const key = JSON.stringify([localeRevision(), view.form, view.count, view.files, view.images, view.error, view.steering, view.targetLabel])
     if (key !== inputKey) { inputKey = key; inputParts = input.panel(view) }
     const parts = inputParts.filter((node): node is HTMLElement => node instanceof HTMLElement)
     if (view.form === 'drop') return parts
@@ -321,8 +323,10 @@ function createDesktopIsland(act: IslandAct, input: ReturnType<typeof createIsla
     card.name()
     // The 后台 list is the panel the user opened, whatever the conversation's own form is meanwhile.
     const cardView = view.desktopPanel === 'background' ? { ...view, form: 'background' } : view
-    const shown = wide || view.form === 'drop' ? null : deskCard(cardView, { shortcut })
-    const content = shown ? card.draw(shown, view, now) : inputSurface(view, now)
+    const shown = deskCard(cardView, { shortcut })
+    if (view.form === 'switching') switching.textContent = view.label
+    const content = view.form === 'switching' ? [switchingIndicator, switching, card.dismissButton]
+      : shown ? card.draw(shown, view, now) : inputSurface(view, now)
     if (wide && input) input.sync(view)
     // Detaching a focused textarea ends native IME composition, even if its value and caret are restored.
     reconcileChildren(surface, content)
@@ -348,6 +352,7 @@ function createDeskCardParts(act: IslandAct, shortcut: string) {
   let key = '', parts: Array<HTMLElement | null> = [], buttons: HTMLElement[] = []
   return {
     tools,
+    get dismissButton() { close = { kind: 'dismiss' }; return fold },
     closeWith(next: DeskAction) { close = next; reconcileChildren(tools, [open, fold]) },
     /** Names the icons and the body in the language now shown. */
     name() {
@@ -383,7 +388,9 @@ function createDeskCardParts(act: IslandAct, shortcut: string) {
  */
 function createInputStrips(act: IslandAct, tools: HTMLElement) {
   const noticeLabel = h('span', { class: 'isl-strip-text' }), noticeButton = button('', ROLE.text, () => act({ kind: 'panel', panel: 'request' }))
-  const notice = h('div', { class: 'isl-notice', role: 'status' }, noticeLabel, noticeButton)
+  const noticeDot = h('i', { class: 'isl-dot', 'aria-hidden': 'true' })
+  const notice = h('div', { class: 'isl-notice' }, noticeDot, noticeLabel, noticeButton)
+  noticeLabel.setAttribute('role', 'status')
   const pulse = h('span', { class: 'isl-pulse', 'aria-hidden': 'true' })
   const runningLabel = h('span', { class: 'isl-strip-text' }), runningTime = h('span', { class: 'isl-time' })
   const runningStop = button('', ROLE.text, () => act({ kind: 'cancel' }))
@@ -405,11 +412,11 @@ function createInputStrips(act: IslandAct, tools: HTMLElement) {
         runningTime.textContent = ''
       }
       runningStop.textContent = t('desk.interaction.stop.current')
-      const shown = [waiting ? notice : null, view.steering ? running : null].filter((strip): strip is HTMLDivElement => Boolean(strip))
-      reconcileChildren(notice, [noticeLabel, noticeButton, ...(shown[0] === notice ? [tools] : [])])
-      reconcileChildren(running, [pulse, runningLabel, runningTime, runningStop, ...(shown[0] === running ? [tools] : [])])
-      tools.dataset.place = shown.length ? 'strip' : 'corner'
-      return shown.length ? shown : [tools]
+      const shown = waiting ? notice : view.steering ? running : null
+      reconcileChildren(notice, [noticeDot, noticeLabel, noticeButton, ...(shown === notice ? [tools] : [])])
+      reconcileChildren(running, [pulse, runningLabel, runningTime, runningStop, ...(shown === running ? [tools] : [])])
+      tools.dataset.place = shown ? 'strip' : 'corner'
+      return [shown ?? tools]
     },
   }
 }

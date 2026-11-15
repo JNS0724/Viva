@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
+import { createServer } from 'node:http'
 import { modelValue, piAiProviders, providerEnv, type Provider } from '../src/backend/model-providers.ts'
 import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.js'
 import { OPENAI_REPLY, startFakeOpenAi } from './fixtures/fake-openai.js'
@@ -22,7 +24,7 @@ test('without a DeepSeek key the added provider is the only model, sessions star
     models: (fake: object) => ({ providers: piAiProviders([gateway(fake as { url: string })]), deepseek: false, defaultModel: { provider: 'custom-gateway', model: 'gw-model' } }),
     env: { DEEPSEEK_API_KEY: '', ...providerEnv([gateway({ url: '' })]) },
   })
-  const agent = bridge()
+  const agent = bridge({ memoryRequest: request => request.op === 'context' ? '<about-user>\n【今天】\n</about-user>' : '' })
 
   const info: AgentInfo = await agent.start()
   assert.deepEqual(info.models.map(({ group, name }) => [group, name]), [['公司网关', 'gw-model']], 'DeepSeek is not offered without a key')
@@ -60,4 +62,37 @@ test('an OpenAI-compatible provider sits beside DeepSeek and answers once picked
   assert.deepEqual(openai.requests.map(({ path, authorization, body }) => [path, authorization, (body as { model?: string }).model]),
     [call, call], 'the route, then the answer')
   assert.equal(llm.requests.length, before, 'nothing went to DeepSeek')
+})
+
+test('the OpenAI Responses transport obtains a new memory grant before retrying', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const paths: string[] = []
+  const server = createServer((request, response) => {
+    request.on('end', () => {
+      paths.push(request.url ?? '')
+      response.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Fixture asks the SDK to retry' } }))
+    })
+    request.resume()
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  t.after(() => { server.closeAllConnections(); server.close() })
+  const provider: Provider = { id: 'custom-responses', name: 'Responses API', api: 'openai-responses',
+    baseURL: `http://127.0.0.1:${address.port}/v1`, models: [{ id: 'oa-model' }], key: GATEWAY_KEY }
+  const { bridge } = await startHarness(t, {
+    models: () => ({ providers: piAiProviders([provider]), deepseek: false, defaultModel: { provider: provider.id, model: 'oa-model' } }),
+    env: { DEEPSEEK_API_KEY: '', ...providerEnv([provider]) },
+  })
+  let requests = 0
+  let sent = false
+  const agent = bridge({
+    memoryRequest: () => '',
+    beginMemoryDispatch: () => { requests++; return !sent },
+    endMemoryDispatch: () => { sent = true },
+  })
+  await agent.start()
+  await agent.prompt('Request using recalled memory')
+  assert.ok(requests >= 2)
+  assert.deepEqual(paths, ['/v1/responses'])
 })

@@ -4,6 +4,7 @@ import { createConversationIngress } from '../src/renderer/conversation-ingress.
 import { createEventActions, type EventEnvelope } from '../src/renderer/agent-event-actions.ts'
 import { createNewTopicAction } from '../src/renderer/new-topic-actions.ts'
 import { createRewindActions } from '../src/renderer/rewind-actions.ts'
+import { createConversationActions } from '../src/renderer/conversation-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import type { ConversationContext } from '../src/shared/conversation-context.ts'
 
@@ -178,17 +179,27 @@ test('rewind observes a queued report turn before choosing how to send the rewri
   const h = harness(), gate = deferred<unknown>()
   h.dispatch({ type: 'user_prompt', text: 'old words', at: 1 })
   h.dispatch({ type: 'turn_end', stopReason: 'end_turn', at: 2 })
-  let askedPhase = ''
+  const steered: Array<{ text: string, sourceId: string | undefined }> = []
+  const sourceId = 'af72d069-b720-41dd-ac02-82ed35cb56d4'
+  const { ask } = createConversationActions({
+    getState: h.state, dispatch: h.dispatch, showToast: assert.fail, errorMessage: String,
+    beforePrompt: () => assert.fail('a report is already running'), keepPicture: () => {},
+    api: {
+      prompt: async () => assert.fail('no parallel prompt'),
+      steer: async (text, id) => { steered.push({ text, sourceId: id }); return { ok: true } },
+      answerQuestion: async () => true, provideSecrets: async () => true,
+    },
+  })
   const actions = createRewindActions({
     getState: h.state, dispatch: h.dispatch, showToast: () => {}, errorMessage: String,
-    ask: () => { askedPhase = h.state().phase; return true },
+    ask,
     api: { rewind: () => gate.promise, rewindEffects: async () => ({ files: [], commands: [] }), foldedPath: async () => ({}), switchPath: async () => ({}) },
   })
-  const pending = actions.redoFrom('m0'); await flush()
+  const pending = actions.submitEdit('m0', 'rewritten words'); await flush()
   h.ingress.receive({ type: 'turn_started', by: 'task', context: next })
-  gate.resolve({ ok: true, conversation: { id: next.conversationId, messages: [] }, info: info(next), folds: [] })
+  gate.resolve({ ok: true, conversation: { id: next.conversationId, messages: [] }, info: info(next), folds: [], sourceId, newSource: true })
   await pending; await flush()
-  assert.equal(askedPhase, 'working', 'an already-running report must receive a steer, never a parallel prompt')
+  assert.deepEqual(steered, [{ text: 'rewritten words', sourceId }])
 })
 
 test('buffering keeps original receive timestamps rather than making the whole replay one instant', async () => {

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import type { MemoryProvenance } from './memory-dispatch.ts'
 
 /**
  * 动态's items (system-design §12.2): what the app brings on its own, whichever source brought it, in one shape.
@@ -21,7 +22,7 @@ export interface FeedItem {
   seenAt: number | null
 }
 
-export type NewFeedItem = Omit<FeedItem, 'id' | 'createdAt' | 'seenAt'>
+export type NewFeedItem = Omit<FeedItem, 'id' | 'createdAt' | 'seenAt'> & { memory?: MemoryProvenance }
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS feed_items (
@@ -33,6 +34,7 @@ const SCHEMA = `
     origin TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     seen_at INTEGER,
+    memory TEXT,
     UNIQUE (source, key)
   );
   CREATE INDEX IF NOT EXISTS feed_items_created ON feed_items (created_at DESC);
@@ -54,16 +56,18 @@ const itemOf = (row: Row): FeedItem => ({
 
 export function openFeedStore({ db, now = Date.now, newId = () => crypto.randomUUID() }: { db: DatabaseSync, now?: () => number, newId?: () => string }) {
   db.exec(SCHEMA)
+  if (!db.prepare('PRAGMA table_info(feed_items)').all().some(row => row.name === 'memory')) db.exec('ALTER TABLE feed_items ADD COLUMN memory TEXT')
+  const byId = db.prepare('SELECT * FROM feed_items WHERE id = ?')
 
   /** The item for `source` and `key`: made now, or the one made before (`made` false). */
   function add(input: NewFeedItem): { item: FeedItem, made: boolean } {
     const found = db.prepare('SELECT * FROM feed_items WHERE source = ? AND key = ?').get(input.source, input.key) as Row | undefined
     if (found) return { item: itemOf(found), made: false }
     const id = newId()
-    db.prepare('INSERT INTO feed_items (id, source, key, title, body, origin, created_at, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)')
-      .run(id, input.source, input.key, input.title, input.body, JSON.stringify(input.origin), now())
+    db.prepare('INSERT INTO feed_items (id, source, key, title, body, origin, created_at, seen_at, memory) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)')
+      .run(id, input.source, input.key, input.title, input.body, JSON.stringify(input.origin), now(), input.memory ? JSON.stringify(input.memory) : null)
     db.prepare(`DELETE FROM feed_items WHERE id IN (SELECT id FROM feed_items ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ${MAX_FEED_ITEMS})`).run()
-    return { item: itemOf(db.prepare('SELECT * FROM feed_items WHERE id = ?').get(id) as Row), made: true }
+    return { item: itemOf(byId.get(id) as Row), made: true }
   }
 
   /** The latest first. */
@@ -75,7 +79,12 @@ export function openFeedStore({ db, now = Date.now, newId = () => crypto.randomU
 
   const remove = (id: string): boolean => Number(db.prepare('DELETE FROM feed_items WHERE id = ?').run(id).changes) > 0
 
-  return { add, list, markSeen, remove }
+  function continuation(id: string) {
+    const row = byId.get(id) as Row | undefined
+    return row ? { item: itemOf(row), memory: typeof row.memory === 'string' ? JSON.parse(row.memory) as MemoryProvenance : null } : null
+  }
+
+  return { add, list, continuation, markSeen, remove }
 }
 
 /** Its writes, each an event when it changed something (journal.ts). */

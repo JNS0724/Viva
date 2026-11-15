@@ -8,6 +8,7 @@ import { placeDesktopIsland } from './view/desktop-layout.ts'
 import { createComposerDraftActions } from './composer-draft-actions.ts'
 import { escapeAction, nextRequest, requestFor, showsCoach } from './island-desk-card.ts'
 import type { DraftContent } from '../shared/composer-draft.ts'
+import type { DeskPreviewSurface } from '../shared/desk-preview.ts'
 
 /**
  * The page of the desktop island's window (src/shell/desk-island.ts): the same island as in the title bar,
@@ -36,7 +37,8 @@ await initializeLanguage(api, () => { if (languageReady) show() })
  */
 type Payload = { view?: IslandShown, form?: string, align?: string, dir?: string, dragging?: boolean, hover?: boolean, coach?: boolean, layoutVersion?: number,
   viewport?: { top: number, bottom: number },
-  expanded?: boolean, panel?: 'input' | 'request' | 'background' | 'status', anchor?: { x: number, y: number }, side?: 'left' | 'right', panelWidth?: number }
+  preview?: DeskPreviewSurface,
+  expanded?: boolean, panel?: 'input' | 'request' | 'background' | 'status', requestId?: string, anchor?: { x: number, y: number }, side?: 'left' | 'right', panelWidth?: number }
 let payload: Payload | null = null
 /**
  * The input's own state: files dropped so far, pictures pasted (kept in the pictures folder), the last refusal,
@@ -49,7 +51,8 @@ let dropping = 0
 let sending = false
 let draftActions: ReturnType<typeof createComposerDraftActions> | undefined
 let activeRequest: IslandShown | null = null
-const saveDraft = () => draftActions?.changed()
+let focusedPreviewRevision = 0
+const saveDraft = () => { if (!payload?.preview) draftActions?.changed() }
 
 const messageOf = (err: unknown) => String((err as Error | null)?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
@@ -78,7 +81,6 @@ async function addImages(pasted: readonly File[]) {
 const input = createIslandInput({
   send: (text) => ask(text),
   dismiss: () => api.act({ kind: 'dismiss' }),
-  configure: () => api.act({ kind: 'settings' }),
   removeFile: (path) => {
     files = files.filter((file) => file.path !== path)
     saveDraft()
@@ -96,7 +98,7 @@ const input = createIslandInput({
     event.preventDefault()
     insertText(input.field, parts.text)
     saveDraft()
-    if (parts.images.length) addImages(parts.images)
+    if (parts.images.length && !payload?.preview) addImages(parts.images)
   },
 })
 const island = createIsland('desk', (action: Args<'island:act'>[0]) => api.act(action), { input, shortcut: api.shortcut })
@@ -115,21 +117,17 @@ draftActions = createComposerDraftActions({ api, host: 'desk',
   },
 })
 
-/** Why the input cannot take a question now, if it cannot. */
-function busyOf(view: { form: string }) {
-  if (payload?.view?.target?.blocked) return { text: t('session.switching') }
-  return view.form === 'pending' ? { text: t("desk.not.connected.yet.open.the.window.to") } : null
-}
-
 /** What the island shows now, from what the main process said and what happens on this page. */
 function shownView(): IslandShown {
   const view = payload?.view ?? IDLE_VIEW
   const context = { desktopOpen: Boolean(payload?.expanded) || Boolean(dropping), desktopPanel: payload?.panel, targetLabel: view.target?.label }
   if (dropping) return { ...context, desktopOpen: true, form: 'drop', tone: 'done', mood: 'idle', label: t("desk.give.to.viva"), recent: [], count: dropping }
-  // While dragged only the portrait remains; the canvas and local anchor may stay fixed on Windows.
+  // While dragged only the portrait remains.
   if (payload?.dragging) return { ...view, ...context, desktopOpen: false, form: 'mini', dragging: true, background: null }
   if (payload?.expanded && payload.panel === 'input') {
-    return { ...context, form: 'input', tone: 'done', mood: view.mood, label: t("desk.ask.viva"), recent: [], busy: busyOf(view), steering: view.target?.working ?? view.form === 'working',
+    if (view.target?.blocked) return { ...IDLE_VIEW, ...context, form: 'switching', label: t('session.switching') }
+    if (view.form === 'pending') return { ...view, ...context }
+    return { ...context, form: 'input', tone: 'done', mood: view.mood, label: t("desk.ask.viva"), recent: [], steering: view.target?.working ?? view.form === 'working',
       action: view.action, startedAt: view.startedAt,
       waitingNotice: view.form === 'waiting' || view.form === 'asking' ? view : null, files, images, error, sending }
   }
@@ -160,8 +158,8 @@ const resolvedNote = (view: IslandShown, context: object) => ({ ...context, ...I
  * waits, or, with none left, asks the main process to fold it and says for a moment that it was handled.
  */
 function followRequest(next: Payload) {
-  if (!next.expanded || next.panel !== 'request' || !activeRequest || !next.view) return
-  const following = nextRequest(next.view, requestId(activeRequest))
+  if (!next.expanded || next.panel !== 'request' || !next.view) return
+  const following = nextRequest(next.view, activeRequest ? requestId(activeRequest) : null)
   if (following === null) return
   if (following) { activeRequest = following; return }
   activeRequest = null
@@ -174,14 +172,27 @@ function followRequest(next: Payload) {
 function show() {
   if (!payload && !dropping) return
   const view = shownView()
-  input.field.readOnly = !draftActions?.ready()
+  input.field.readOnly = !payload?.preview && !draftActions?.ready()
   island.update(view, { now: Date.now() })
-  if (view.form === 'input' && !view.busy && !island.el.contains(document.activeElement) && document.hasFocus()) input.field.focus()
+  focusPanelInput(view)
   placeSurface()
 }
 
+function focusPanelInput(view: IslandShown) {
+  if (!document.hasFocus()) return
+  const preview = payload?.preview
+  if (preview && preview.revision !== focusedPreviewRevision) {
+    focusedPreviewRevision = preview.revision
+    if (preview.focusBody) {
+      island.el.querySelector<HTMLElement>('.isl-surface:not([hidden]) > .isl-body')?.focus({ preventScroll: true })
+      return
+    }
+  }
+  if (view.form === 'input' && !island.el.contains(document.activeElement)) input.field.focus()
+}
+
 async function ask(text: string) {
-  if (sending || !draftActions?.ready()) return
+  if (payload?.preview || sending || !draftActions?.ready()) return
   sending = true
   error = null
   saveDraft()
@@ -200,7 +211,17 @@ let paintedVersion = -1
 let acknowledgingVersion = -1
 let readyVersion = -1
 const takeView = (next: Payload) => {
-  if (next.expanded && next.panel === 'request' && (!payload?.expanded || payload.panel !== 'request')) activeRequest = next.view ?? null
+  const openingRequest = next.expanded && next.panel === 'request'
+    && (!payload?.expanded || payload.panel !== 'request' || payload.requestId !== next.requestId)
+  if (openingRequest) {
+    const view = next.view
+    activeRequest = (view && next.requestId ? requestFor(view, next.requestId) : null) ?? null
+  }
+  if (next.preview && next.preview.revision !== payload?.preview?.revision) {
+    input.field.value = next.preview.draft.text
+    files = [...next.preview.draft.files]
+    input.ready()
+  }
   payload = next
   followRequest(next)
   if (next.view?.target?.key) draftActions?.expect(next.view.target.key)
@@ -208,6 +229,7 @@ const takeView = (next: Payload) => {
   island.el.dataset.dir = next.dir
   island.setPointer(Boolean(next.hover))
   show()
+  if (openingRequest && document.hasFocus()) island.el.querySelector<HTMLElement>('.isl-surface:not([hidden]) > .isl-body')?.focus({ preventScroll: true })
 }
 api.onView(takeView)
 stopEarly()
@@ -252,47 +274,78 @@ observer.observe(stage)
 island.el.querySelectorAll('.isl-surface, .isl-peek').forEach(element => observer.observe(element))
 new MutationObserver(() => reportRect()).observe(stage, { attributes: true, attributeFilter: ['data-align', 'data-dir', 'data-dragging'] })
 
-// Holding the island and moving it drags it; the main process moves the window with the pointer, and the
-// island shrinks to its cat meanwhile. It moves at this page's frames, so in step with the screen at any
-// refresh rate, and not at all while the pointer rests. The click that ends a drag is not a click on the island.
-let press: { x: number, y: number, id: number, canceled?: boolean } | null = null
-let dragged = false
+// The shell follows the pointer at this page's frames. A pointer click can arrive after the gesture ended.
+let press: { x: number, y: number, id: number, target: HTMLElement, dragging: boolean } | null = null
+let suppressClickFor: number | null = null
 let frame = 0
-/** What a pointer or click on the island landed on: always an element of the island's page. */
-const targetOf = (event: Event) => event.target as Element
 
 function dragFrame() {
   api.act({ kind: 'drag', phase: 'move' })
   frame = requestAnimationFrame(dragFrame)
 }
-island.el.addEventListener('pointerdown', (event) => {
-  const target = targetOf(event).closest<HTMLElement>('.isl-anchor')
-  if (event.button !== 0 || !target) return
-  press = { x: event.screenX, y: event.screenY, id: event.pointerId }
-  target.setPointerCapture(event.pointerId)
-  dragged = false
-})
-island.el.addEventListener('pointermove', (event) => {
-  if (!press || press.canceled || dragged || event.pointerId !== press.id) return
+
+function startDrag(event: PointerEvent) {
+  if (!press || press.dragging) return
   if (Math.hypot(event.screenX - press.x, event.screenY - press.y) < DRAG_START_PX) return
-  dragged = true
+  press.dragging = true
+  suppressClickFor = press.id
+  if (document.activeElement === press.target) press.target.blur()
   api.act({ kind: 'drag', phase: 'start', x: press.x, y: press.y })
   frame = requestAnimationFrame(dragFrame)
-})
-const endPress = (event: Event) => {
-  cancelAnimationFrame(frame)
-  if (dragged && !press?.canceled) api.act({ kind: 'drag', phase: event.type === 'pointerup' ? 'end' : 'cancel' })
-  if (event.type !== 'pointerup') dragged = false
-  press = null
 }
-island.el.addEventListener('pointerup', endPress)
-island.el.addEventListener('pointercancel', endPress)
-island.el.addEventListener('lostpointercapture', event => { if (press) endPress(event) })
-window.addEventListener('blur', event => { if (press) endPress(event) })
-window.addEventListener('focus', () => { if (payload?.expanded && payload.panel === 'input' && !input.field.disabled) input.field.focus() })
+
+function endPress(cancel = false) {
+  if (!press) return
+  const { id, dragging } = press
+  press = null
+  cancelAnimationFrame(frame)
+  if (cancel) suppressClickFor = id
+  if (dragging) api.act({ kind: 'drag', phase: cancel ? 'cancel' : 'end' })
+}
+
+window.addEventListener('pointerdown', event => {
+  if (!event.isPrimary || event.button !== 0 || press && press.id !== event.pointerId) return
+  endPress()
+  suppressClickFor = null
+  const target = event.target instanceof Element && event.target.closest<HTMLElement>('.isl-anchor')
+  if (!target || !island.el.contains(target)) return
+  // The portrait takes keyboard focus through Tab. Starting a pointer gesture only needs capture.
+  event.preventDefault()
+  press = { x: event.screenX, y: event.screenY, id: event.pointerId, target, dragging: false }
+  target.setPointerCapture(event.pointerId)
+})
+window.addEventListener('pointermove', event => {
+  if (event.pointerId !== press?.id) return
+  startDrag(event)
+  if (!(event.buttons & 1)) endPress()
+})
+window.addEventListener('pointerup', event => {
+  if (event.pointerId !== press?.id) return
+  // A quick release can carry the first coordinates past the drag threshold.
+  startDrag(event)
+  endPress()
+})
+window.addEventListener('pointercancel', event => {
+  if (event.pointerId === press?.id) endPress(true)
+})
+window.addEventListener('lostpointercapture', event => {
+  if (!press || event.pointerId !== press.id || event.target !== press.target) return
+  if (event.buttons & 1) {
+    // A focus change may drop capture before Chromium delivers the matching pointerup.
+    try {
+      press.target.setPointerCapture(event.pointerId)
+      if (press.target.hasPointerCapture(event.pointerId)) return
+    } catch { /* Chromium has already retired the pointer. */ }
+  }
+  endPress()
+})
+window.addEventListener('focus', () => {
+  if (payload?.preview) focusPanelInput(shownView())
+  else if (shownView().form === 'input') input.field.focus()
+})
 island.el.addEventListener('click', (event) => {
-  if (!dragged) return
-  dragged = false
+  if (event.detail === 0 || suppressClickFor === null || 'pointerId' in event && event.pointerId !== suppressClickFor) return
+  suppressClickFor = null
   event.stopPropagation()
   event.preventDefault()
 }, true)
@@ -340,6 +393,7 @@ island.el.addEventListener('drop', async (event) => {
   event.preventDefault()
   clearTimeout(dropTimer)
   dropping = 0
+  if (payload?.preview) { show(); return }
   const origin = draftActions?.snapshot()?.key
   if (!origin) return
   const appended = api.appendDroppedFiles(origin, [...event.dataTransfer.files])
@@ -351,10 +405,9 @@ document.addEventListener('keydown', (event) => {
   if (event.isComposing || event.keyCode === 229) return
   if (event.key === 'Escape') {
     event.preventDefault(); event.stopPropagation()
-    if (press && dragged) {
-      cancelAnimationFrame(frame); press.canceled = true
-      api.act({ kind: 'drag', phase: 'cancel' })
-    } else api.act(escapeAction(shownView()))
+    if (event.repeat) return
+    if (press?.dragging) endPress(true)
+    else api.act(escapeAction(shownView()))
   }
   if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) { event.preventDefault(); api.act({ kind: 'menu' }) }
 })

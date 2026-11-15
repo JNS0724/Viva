@@ -23,6 +23,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'task_question_closed': return { type: 'task_question_closed', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, questionId: event.questionId, at }
       case 'task_steered': return { type: 'task_steer', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, text: event.text, at }
       case 'question': return { type: 'question_request', questionId: event.questionId, questions: event.questions, at }
+      case 'question_answered': return { type: 'question_answered', questionId: event.questionId, answers: event.answers, sourceId: event.sourceId, at }
       case 'question_closed': return { type: 'question_closed', questionId: event.questionId, at }
       case 'waits': return { type: 'waits_restored', permissions: event.permissions, questions: event.questions, secrets: event.secrets, at }
       case 'secret_request': return { type: 'secret_request', requestId: event.requestId, server: event.server, names: event.names, at }

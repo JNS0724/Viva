@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { checkDeskSignals, checkIslandLayouts } from './island-layout.ts'
-import { checkDesktopHost } from './desktop-host.ts'
+import { checkDesktopDragRelease, checkDesktopHost } from './desktop-host.ts'
+import { checkDesktopRedesign } from './desktop-states.ts'
 import { checkStreamingDrawer } from './drawer-interaction.ts'
 import { checkStreamingNavigation } from './ui-retention.ts'
 
@@ -84,6 +85,8 @@ test('desktop drafts retain text, real images and files through collapse and win
     let desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
     await expect(desktop.locator('.isl-field')).toHaveValue(text)
     const before = await desktop.locator('.isl-anchor').boundingBox()
+    const surface = desktop.locator('.isl-surface')
+    const textOnlyHeight = await surface.evaluate(el => el.getBoundingClientRect().height)
     await desktop.evaluate(async () => {
       const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 16
       canvas.getContext('2d')!.fillRect(0, 0, 16, 16)
@@ -92,11 +95,13 @@ test('desktop drafts retain text, real images and files through collapse and win
       document.querySelector('.isl-field')!.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
     })
     await expect(desktop.locator('.isl-image')).toHaveCount(1)
+    expect(await surface.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(textOnlyHeight)
     await desktop.evaluate(async file => {
       const draft = await window.desk.getDraft()
       window.desk.updateDraft({ ...draft, sequence: draft.sequence + 1, files: [file] })
     }, file)
     await expect(desktop.locator('.isl-file')).toHaveCount(2)
+    expect(await surface.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(textOnlyHeight)
     await desktop.locator('.isl-field').press('Escape')
     await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'false')
     const folded = await desktop.locator('.isl-anchor').boundingBox()
@@ -149,6 +154,7 @@ test('desktop drafts retain text, real images and files through collapse and win
   try {
     const mainWindow = await session.application.browserWindow(page)
     await mainWindow.evaluate(window => window.close())
+    await expect.poll(() => mainWindow.evaluate(window => window.isVisible())).toBe(false)
     await desk.openInput()
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const readingDesktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
@@ -172,6 +178,7 @@ test('desktop drafts retain text, real images and files through collapse and win
     await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).images.map(image => image.size))).toEqual([20 * 1024 * 1024 - 1, 20 * 1024 * 1024])
     await expect(page.locator('#composer-input')).toHaveValue(topicDraft)
     await expect(page.locator('.draft-pic')).toHaveCount(2)
+    await expect.poll(() => mainWindow.evaluate(window => window.isVisible())).toBe(true)
     await expect.poll(() => readingDesktop.isClosed()).toBe(true)
     const draft = await page.evaluate(() => window.agent.getDraft())
     expect(draft.key).toBe(originalKey)
@@ -204,6 +211,27 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
     await desktop.getByRole('button', { name: '去设置', exact: true }).click()
     await expect(page.locator('#settings-root')).toBeVisible()
     await expect.poll(() => desk.inputOpen()).toBe(false)
+  } finally { await desk.force(false) }
+})
+
+test('desktop island preserves draft and focus while showing requests and compact states', async ({ scenario }, info) => {
+  const run = await scenario({ phase: 'setup', bridge: 'real' })
+  const session = await run.start('desktop-redesign')
+  const file = { path: path.join(run.profile.workspace, '会议纪要.txt'), name: '会议纪要.txt', size: 4 }
+  fs.writeFileSync(file.path, 'demo')
+  await checkDesktopRedesign(session, info, file)
+})
+
+test('desktop portrait releases without undoing the drag or opening the panel', async ({ scenario }) => {
+  test.skip(process.platform !== 'darwin' && process.platform !== 'win32', 'Uses the fixed desktop host')
+  const run = await scenario({ phase: 'setup', bridge: 'real' })
+  const session = await run.start('desktop-gesture')
+  const desk = session.hooks.desk()
+  await desk.force(true)
+  try {
+    await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
+    const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    await checkDesktopDragRelease(session.application, desktop)
   } finally { await desk.force(false) }
 })
 

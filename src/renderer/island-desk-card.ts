@@ -55,10 +55,11 @@ function questionCard(view: IslandShown): DeskCard {
   const { question } = view
   const skip: DeskButton[] = question.skippable ? [{ text: t('island-dom.skip'), role: 'text', act: { kind: 'skip', questionId: question.questionId }, push: true }] : []
   const meta = fromTask(view) || question.header || ''
+  const open = view.taskId ? { kind: 'task', taskId: view.taskId } : OPEN
   if (!question.options.length) {
     // Nothing to tap here (a secret, several questions, several choices): the window is the one way on.
     const text = t(question.id === 'secret' ? 'desk-card.fill.in.viva' : 'desk-card.answer.in.viva')
-    return card(view.label, { meta, body: [{ kind: 'title', text: question.text }], actions: [{ text, role: 'primary', act: OPEN }, ...skip] })
+    return card(view.label, { meta, body: [{ kind: 'title', text: question.text }], actions: [{ text, role: 'primary', act: open }, ...skip] })
   }
   return card(view.label, {
     meta,
@@ -67,7 +68,7 @@ function questionCard(view: IslandShown): DeskCard {
       { kind: 'hint', text: t('desk.interaction.immediate.answer') },
       { kind: 'choices', options: question.options.map((label: string) => ({ text: label, act: { kind: 'answer', questionId: question.questionId, id: question.id, label } })) },
     ],
-    actions: [{ text: t('desk.interaction.other.answer'), role: 'text', act: OPEN, external: true }, ...skip],
+    actions: [{ text: t('desk.interaction.other.answer'), role: 'text', act: open, external: true }, ...skip],
   })
 }
 
@@ -90,7 +91,7 @@ function errorCard(view: IslandShown): DeskCard {
 /** Not connected: what is missing, and the way to it. Connecting: only that it is. */
 function pendingCard(view: IslandShown): DeskCard {
   return card(view.label, {
-    meta: view.detail ?? '', openIcon: true,
+    meta: view.detail ?? '', openIcon: !view.detail,
     actions: view.detail ? [{ text: t('selectors.open.settings'), role: 'blue', act: { kind: 'settings' } }] : [],
   })
 }
@@ -125,6 +126,7 @@ export function deskCard(view: IslandShown, { shortcut }: { shortcut: string }):
     case 'background': return backgroundCard(view)
     case 'coach': return coachCard(view, shortcut)
     case 'input':
+    case 'switching':
     case 'drop': return null
     default: return card(view.label, { openIcon: true })
   }
@@ -144,8 +146,8 @@ const requestIdOf = (view: IslandShown): string | null => view.permission?.reque
  */
 function requestsOf(view: IslandShown): IslandShown[] {
   const tasks = (view.background?.items ?? []).filter((item: IslandShown) => item.permission || item.question).map((item: IslandShown) => item.permission
-    ? { ...view, form: 'waiting', tone: 'waiting', mood: 'confirm', label: PROMPT_HEADS.permission, task: item.title, permission: item.permission, question: null }
-    : { ...view, form: 'asking', tone: 'waiting', mood: 'ask', label: PROMPT_HEADS.question, task: item.title, permission: null, question: item.question })
+    ? { ...view, form: 'waiting', tone: 'waiting', mood: 'confirm', label: PROMPT_HEADS.permission, task: item.title, taskId: item.id, permission: item.permission, question: null }
+    : { ...view, form: 'asking', tone: 'waiting', mood: 'ask', label: PROMPT_HEADS.question, task: item.title, taskId: item.id, permission: null, question: item.question })
   return [...(requestIdOf(view) ? [view] : []), ...tasks]
 }
 

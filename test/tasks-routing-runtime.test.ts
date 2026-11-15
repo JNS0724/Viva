@@ -16,7 +16,7 @@ const where = { sessionId: 's1', conversationId: 'c1', cwd: '/work' }
 function tasksDoing(log: string[]): RequestTasks {
   return {
     start: async ({ title, brief }, place) => { log.push(`start:${title}|${brief}:${place.conversationId}`); return { taskId: 't-new' } },
-    message: async (taskId, text, cwd) => { log.push(`message:${taskId}:${text}:${cwd}`); return {} },
+    message: async (taskId, text, place) => { log.push(`message:${taskId}:${text}:${place.cwd}`); return {} },
     stop: async (taskId) => { log.push(`stop:${taskId}`); throw new Error('任务不存在') },
   }
 }

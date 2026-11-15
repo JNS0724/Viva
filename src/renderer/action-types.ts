@@ -6,7 +6,7 @@ import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
 import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from './capability-types.ts'
 
 type Info = AgentInfo
-type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images'> & { key?: string }
+type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' | 'sourceId'> & { key?: string }
 type ReadConversation = { id: string, messages: readonly SavedMessage[], records?: readonly unknown[], updatedAt?: number, parentId?: string | null, createdAt?: number | null }
 type Settings = Partial<State['settings']>
 type Review = State['review']
@@ -93,15 +93,24 @@ export interface ActionPayloads extends ConversationPayloads {
   memory_open: { view?: string }
   memory_close: {}
   memory_edit: { key: string | null }
+  memory_edit_entry: { target: { id: number, revision: number } | null }
   memory_busy: {}
   memory_failed: { message: string }
   memory_profile_saved: { profile: State['memory']['profile'] }
+  memory_summaries_stale: {}
   memory_query: { query: string }
   memory_listed: { query: string, items: State['memory']['items'], total: number }
   memory_added: { memory: State['memory']['items'][number] }
   memory_removed: { id: string | number }
+  memory_invalid_opened: {}
   memory_invalid_listed: { items: State['memory']['invalidItems'] }
   memory_invalid_closed: {}
+  memory_conflict_edit: { key: string | null }
+  memory_change_busy: { busy: boolean }
+  memory_index_rebuild: { busy: boolean }
+  memory_changes_opened: {}
+  memory_changes_listed: { changes: State['memory']['changes'] }
+  memory_changes_closed: {}
   memory_revived: { memory: State['memory']['items'][number] }
   memory_onboarding: { status: State['memory']['onboarding'] }
   memory_docs_added: { docs: State['memory']['docs'] }

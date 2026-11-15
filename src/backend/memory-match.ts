@@ -1,8 +1,6 @@
 /**
- * Layer 3 of retrieval: what `recall` finds for the keywords the model chose. Chinese has no spaces and
- * most words are two characters, so text is compared by character pairs (bigrams); Latin words and
- * numbers count whole. The store holds at most a few thousand short lines, so scoring them all takes
- * milliseconds.
+ * Keyword retrieval uses Han bigrams and whole words elsewhere. The caller supplies records
+ * that have already passed the scope and validity checks.
  */
 
 /** Pairs that appear in almost any request and say nothing about its topic. */
@@ -56,8 +54,8 @@ const queryWords = (query: string) => String(query).toLowerCase().split(/[\s,，
 /** A keyword the memory was saved with appears in the query, or a query word is part of one. */
 function hitsKeyword(memory: { keywords?: readonly string[] }, words: readonly string[]) {
   return (memory.keywords ?? []).some((keyword) => {
-    const key = keyword.toLowerCase()
-    return words.some((word) => word.includes(key) || key.includes(word))
+    const key = keyword.trim().toLowerCase()
+    return Boolean(key) && words.some((word) => word.includes(key) || key.includes(word))
   })
 }
 

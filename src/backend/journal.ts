@@ -1,7 +1,7 @@
 /**
  * A store whose writes go through the event core (event-core.ts apply): each write and its event in one transaction
  * on the app database, numbered. Reads go straight through. Used for the follow-ups and the history; the background
- * tasks write their own changes (task-runtime.ts); memory, whose file is the memory plugin's, gets its event right
+ * tasks write their own changes (task-runtime.ts); memory, kept in memory.db, gets its event right
  * after its own write commits.
  */
 

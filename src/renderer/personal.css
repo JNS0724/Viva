@@ -30,7 +30,7 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
 .profile-value { margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .profile-field[data-filled="false"] .profile-value { color: var(--mute); font-size: 13px; }
 .profile-edit { display: flex; flex-direction: column; gap: 8px; }
-.profile-edit-actions { display: flex; gap: 8px; }
+.profile-edit-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .profile-synthesis {
   margin: 0; padding: 14px 16px; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--line);
   font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;

@@ -36,7 +36,7 @@ flowchart TB
     b4["<b>dsh and ACP</b><br/>dsh-lifecycle starts and restarts dsh<br/>acp-bridge, acp-operations, acp-task-sessions"]
   end
   subgraph dsh["dsh process (child of the backend)"]
-    d1["<b>Viva's own plugins</b><br/>12 viva-* plugins, by contract<br/>memory and trace keep their own files"]
+    d1["<b>Viva's own plugins</b><br/>12 viva-* plugins, by contract<br/>the backend owns memory.db and trace owns trace.db"]
     d2["<b>User plugins</b><br/>installed by the plugin manager<br/>switched on and off while running"]
     d3["<b>Tools and sandbox</b><br/>dsh's level and sandbox<br/>the user's approval when needed"]
   end
@@ -89,7 +89,7 @@ Every input to the backend is a signal, and every state change goes through `app
 | --- | --- | --- |
 | `chat.said` | The user said something in the conversation (`agent:prompt`) | Straight into the dsh session, with no model classification |
 | `user.command` | Any page action that is not a query (`src/backend/commands.ts`) | That channel's own handler |
-| `agent.turn_ended` | A foreground turn ended | Reporting the memories saved in the turn; results of tasks held back |
+| `agent.turn_ended` | A foreground turn ended | Release task results waiting for the conversation |
 | `agent.task_ended`, `agent.task_waits` | A background task's turn ended; it began or stopped waiting on the user | TaskRuntime (`task-runtime.ts`), which keeps how it ended; its result back to the conversation |
 | `system.woke` | The computer woke or was unlocked | Schedules due meanwhile run (`schedule-runs.ts`) |
 | `window.foreground` | The window came to the front | Nothing for now (too frequent to record) |
@@ -108,17 +108,19 @@ Every input to the backend is a signal, and every state change goes through `app
 
 ## 5. Data storage
 
-The backend's own data is in one `app.db`. Data written by plugins inside dsh's process stays in the plugins' own files. All files live in the app data folder (on macOS, `~/Library/Application Support/Viva`). SQLite is Electron's built-in `node:sqlite`, with WAL and `secure_delete` on.
+The backend keeps its main application data in `app.db` and memory in `memory.db`. Data written by plugins inside dsh's process stays in the plugins' own files. All files live in the app data folder (on macOS, `~/Library/Application Support/Viva`). SQLite is Electron's built-in `node:sqlite`, with WAL and `secure_delete` on.
 
 | File | Contents | Written by | Events |
 | --- | --- | --- | --- |
 | `app.db` | `app_events`, `meta`; schedules (`schedules`, the runs not finished `schedule_runs`) and 动态's items (`feed_items`); history (`conversations`, `messages` with its full-text index, `stars`); background tasks kept for the next launch (`background_tasks`); what is still to be done outside (`effects`, §11.4); result records in conversations (`report_records`, §11.5); the main conversation's requests, decisions, and actions (`routing_requests`, `routing_decisions`, `routing_actions`, see section 12 of the [routing design](agent-routing-design.md)) | Backend | In the same transaction as the write |
-| `memory.db` | Profile, memories, synthesized profile, the context sent with each turn | The memory plugin (dsh's process) and the backend | The user's edits right after they are written; what the model saved, as `memory.learned` after the turn |
+| `memory.db` | Manual profile, memory entries and evidence, source receipts, change history, exclusions, and extraction jobs | Backend memory runtime | A committed change publishes `memory.changed` with its revision |
 | `trace.db` | Each turn's tool calls and thinking | The trace plugin (dsh's process) | None |
 | `settings.json`, `models.json`, `mcp-servers.json`, `preferences.json` | Key, model providers, MCP servers, preferences | Backend | None |
 | `data-key.bin` | The data key that encrypts keys, itself encrypted by the system keychain | Shell | None |
 
-**Why memory stays out of `app.db`.** Memory is mainly written by the memory plugin inside dsh's process, which does not go through the backend's `apply`. Merging it would mean letting the plugin open the whole app database, and the two `meta` tables would clash. The split's design decided so: plugin-written data enters the events as observed changes, not through `apply`.
+The backend persists user sources with their extraction jobs, or saves an explicit Remember request at receipt. DSH proposes open-predicate facts and separately reviews proposed changes to old facts. The backend validates source spans, scope, time, and revisions, then commits admitted facts and the exact job generation together. Verified corrections, replacements, and endings retain evidence and change history. Undo recomputes validity from the remaining evidence and changes. A chat deletion queues its withdrawal in `app.db`, and the backend applies pending withdrawals before opening model sessions. [Memory design](memory-design.md)
+
+The backend records which source and memory revisions a DSH session received. Task follow-ups and persisted schedules carry those dependencies into their destination sessions. Each model attempt checks them before dispatch, including Auto approval, compaction, and model-generated titles. The supported model transports hold the dispatch grant through request-body submission and apply time bounds during that window. A write waits only for requests whose dependencies it invalidates. A stale conversation can continue from filtered history in a replacement session. Clarification cards require a current foreground recall reference and are scoped to that turn.
 
 **Key encryption.** The system keychain (Electron `safeStorage`: Keychain on macOS, DPAPI on Windows) is available only in the shell. The shell uses it to protect a random 32-byte data key and hands that key to the backend over the IPC channel at start. The backend encrypts with AES-256-GCM under it (`src/backend/envelope.ts`). If the keychain can no longer open the key file, the file is set aside and a new key made; keys encrypted under the old one must be entered again. Without a keychain, saving a key is refused rather than falling back to plain text.
 
@@ -134,7 +136,7 @@ Viva does not modify dsh; it customizes it only through plugins and configuratio
 
 | Contract | What the plugin does |
 | --- | --- |
-| `memory` | Memory tools, the context sent with each turn, profile synthesis |
+| `memory` | Memory tools, context injection and model computation for backend extraction jobs |
 | `trace` | Records each turn's tool calls and thinking in `trace.db` |
 | `tasks` | Query tools for background tasks (`list_background_tasks`, `get_background_task`) and tools for schedules (`schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete`); the backend does what they ask and sets their scope by working folder and session, never the tool's arguments. Starting, stopping and messaging a task are not tools: the main conversation's routing decisions hand them to the backend (§11.1) |
 | `history` | Lets the model search earlier conversations |
@@ -155,16 +157,16 @@ Plugins and the app talk over the IPC channel opened when dsh starts; each contr
 
 **What becomes a plugin.** Viva makes a capability one of its own plugins only when it needs the agent's internals: injection before each step, state bound to a session, native tools without approvals, reusing the model, or interception before execution. The rest stays in ACP or the app. dsh is still a 0.2.x release candidate and plugins use its own APIs, so every plugin raises the cost of switching ACP agents. This rule covers the app's own plugins; the plugins users install tie the app to dsh's ecosystem on purpose.
 
-**Contract checks.** `APP_PLUGINS` lists each plugin's name, folder, contract and configuration; a plugin declares its contract in `package.json`, for example `"viva": { "contract": { "memory": 1 } }`. Before launch, `resolvePlugins` checks that the plugin exists, its `package.json` reads, the name matches, and the contract and dsh versions match exactly. A plugin that fails is left out of the profile, with the reason shown on the Capabilities page. Plugin databases record `meta.contract_version`; data written by a newer contract is refused rather than misread.
+**Contract checks.** `APP_PLUGINS` lists each plugin's name, folder, contract and configuration; a plugin declares its contract in `package.json`, for example `"viva": { "contract": { "memory": 6 } }`. Before launch, `resolvePlugins` checks that the plugin exists, its `package.json` reads, the name matches, and the contract and dsh versions match exactly. A plugin that fails is left out of the profile, with the reason shown on the Capabilities page. The trace database records `meta.contract_version`. The memory runtime checks its SQLite `user_version` before opening the store.
 
-**The dsh interfaces each plugin uses.** `memory`: agent/pre-step, sessionProjections, tools.register, agent/turn-stopping, llm.stream; `trace`: agent/turn-stopping, session.eventAt; `stream` (`viva-routing`): agent/created, agent.ctx.tools.restrict, agent.ctx.plugin (dsh-persona), tools/pre-execute (before approval), tools.register, agent/pre-step, agent/turn-stopping, agent/status, agent/assistant-stream, session/event, agent/disposed, llm.stream; `plugins`: ctx.pluginManager; `mcp`: ctx.mcpManager (register, list, restart), mcp-manager/status. Plugin failures degrade: failed injection omits memories, failed recording omits the activity, and the conversation goes on.
+**The dsh interfaces each plugin uses.** `memory`: agent/pre-step, tools.register, llm/stream, llm.stream; `trace`: agent/turn-stopping, session.eventAt; `stream` (`viva-routing`): agent/created, agent.ctx.tools.restrict, agent.ctx.plugin (dsh-persona), tools/pre-execute (before approval), tools.register, agent/pre-step, agent/turn-stopping, agent/status, agent/assistant-stream, session/event, agent/disposed, llm.stream; `plugins`: ctx.pluginManager; `mcp`: ctx.mcpManager (register, list, restart), mcp-manager/status. Plugin failures degrade: failed injection omits memories, failed recording omits the activity, and the conversation goes on.
 
 **Session preparation.** A new topic shows an empty input at once; typing is allowed while it prepares, sending waits. At most one independent empty session is prepared ahead, and it expires after 120 seconds unused. Sessions have no MCP servers of their own: `viva-mcp` gives the user's servers to dsh's MCP manager, which connects them once for the whole dsh and shares them with every session (a singleton server runs one process). Connecting happens in the background, up to 30 seconds per attempt, with automatic reconnects on backoff; a server that hangs or fails only lacks its own tools for a while and never holds up a session, so it no longer slows commit_route handing work to a background task. Timing: set `VIVA_SESSION_TIMING=1` for the backend and `localStorage.setItem('viva:session-timing', '1')` for the page; only stages, durations and outcomes are recorded, never prompts or MCP configuration.
 
 **Recheck when upgrading dsh.**
 
 - `viva-routing` depends on dsh's internal events, not a general ACP extension. dsh is pinned to `0.2.2-rc.2`, whose ACP adapter forwards only whole blocks. After an upgrade, rerun `test/stream-runtime.test.js` with real dsh and delayed SSE: the first text must arrive before the answer completes, and cancelling must keep the committed part. Then rerun `test/tasks-routing-dsh.test.ts`: the main session must be narrowed before its first step is assembled. If the streaming channel fails mid-call, that call's provisional content is withdrawn and the call ends in an error; ACP's text is never shown directly, or the routing steps' text would leak.
-- rc.2 has no plugin API for custom notifications, so after a turn the app reads `memory.db` every 2 seconds for 30 seconds. Once dsh offers ACP extension notifications, the polling can go.
+- Recheck the memory channel after upgrading DSH. Memory and history exclusions must take effect before a replacement session opens. Verify this by capturing the first model request after forgetting and after resuming a saved path.
 
 **Settled choices.**
 
@@ -258,7 +260,7 @@ The boundaries are drawn so that the backend could later run elsewhere, but the 
 **Not done yet:**
 
 - The 4 JSON settings files are not in `app.db`, and their writes carry no events. Merging them needs a design for the encrypted fields and file permissions.
-- Memory events are not in the same transaction as the memory write, because the file belongs to the plugin.
+- Memory change events in `app.db` follow the commit in `memory.db`. The renderer also reloads the memory snapshot when it reconnects.
 - B2 replays pushes after a same-generation disconnect; a changed generation or a real replay gap still reloads the page. Reloading loses the foreground stream tail not yet persisted and unsent drafts, so this is not complete recovery. A notification shown before the restart is only logged when clicked after it.
 - Events serve recording and replay after a drop; nothing else consumes them yet.
 - Interface string keys are still named after the old file paths (such as `main.history-db.*`). It only affects how the names read, so they were left as they are.

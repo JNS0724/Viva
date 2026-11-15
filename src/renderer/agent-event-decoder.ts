@@ -33,7 +33,7 @@ function decodeMcp(value: unknown): NonNullable<AgentInfo['mcp']> | null {
 export function decodeInfo(value: unknown): AgentInfo | null {
   const item = objectOf(value)
   if (!item || !string(item.mode) || !string(item.model) || !string(item.cwd)) return null
-  if (!optional(item.sessionId, nullableText) || !optional(item.conversationId, string) || !optional(item.reason, string)
+  if (!optional(item.sessionId, nullableText) || !optional(item.conversationId, string) || !optional(item.topicId, string) || !optional(item.reason, string)
     || !optional(item.problem, string) || !optional(item.modelValue, string) || !optional(item.effort, string)
     || !optional(item.remembersHistory, (value): value is boolean => typeof value === 'boolean')) return null
   const models = item.models === undefined ? undefined : list(item.models, choice)
@@ -44,6 +44,7 @@ export function decodeInfo(value: unknown): AgentInfo | null {
   return { mode: item.mode, model: item.model, cwd: item.cwd,
     ...(item.sessionId === undefined ? {} : { sessionId: item.sessionId }),
     ...(item.conversationId === undefined ? {} : { conversationId: item.conversationId }),
+    ...(item.topicId === undefined ? {} : { topicId: item.topicId }),
     ...(item.reason === undefined ? {} : { reason: item.reason }),
     ...(item.problem === undefined ? {} : { problem: item.problem }),
     ...(item.modelValue === undefined ? {} : { modelValue: item.modelValue }),
@@ -58,6 +59,13 @@ export function decodeQuestions(value: unknown): QuestionItem[] | null {
     if (!item || !string(item.id) || !string(item.question) || !optional(item.header, string) || !optional(item.multiSelect, (value): value is boolean => typeof value === 'boolean')) return null
     const options = list(item.options, value => { const row = objectOf(value); return row && string(row.label) && optional(row.description, string) ? { label: row.label, description: row.description } : null })
     return options ? { id: item.id, question: item.question, header: item.header, multiSelect: item.multiSelect, options } : null
+  })
+}
+function decodeAnswers(value: unknown) {
+  return list(value, value => {
+    const item = objectOf(value), selected = texts(item?.selected)
+    if (!item || !string(item.id) || !selected || !optional(item.custom, string)) return null
+    return { id: item.id, selected, ...(item.custom === undefined ? {} : { custom: item.custom }) }
   })
 }
 export function decodePermission(value: unknown): PermissionRequest | null {
@@ -165,7 +173,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
   if (type === 'memory_changed') {
     const memories = item.memories === undefined ? undefined : texts(item.memories), invalidated = item.invalidated === undefined ? undefined : texts(item.invalidated)
-    return memories !== null && invalidated !== null ? { type, memories, invalidated } : null
+    return memories !== null && invalidated !== null ? { type, memories, invalidated, ...(string(item.failure) ? { failure: item.failure } : {}) } : null
   }
   if (type === 'files_changed') return string(item.path) ? { type, path: item.path } : null
   if (type === 'feed_changed' || type === 'schedules_changed') return { type }
@@ -189,6 +197,11 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'turn_end') return optional(item.stopReason, string) && (item.finalReply === undefined || typeof item.finalReply === 'boolean')
     ? { type, context, stopReason: item.stopReason, ...(item.finalReply === undefined ? {} : { finalReply: item.finalReply }) } : null
   if (type === 'question') { const questions = decodeQuestions(item.questions); return string(item.questionId) && questions ? { type, context, questionId: item.questionId, questions } : null }
+  if (type === 'question_answered') {
+    const answers = decodeAnswers(item.answers)
+    return string(item.questionId) && answers && optional(item.sourceId, string)
+      ? { type, context, questionId: item.questionId, answers, sourceId: item.sourceId } : null
+  }
   if (type === 'question_closed') return string(item.questionId) ? { type, context, questionId: item.questionId } : null
   if (type === 'secret_request') { const parsed = secret(item); return parsed ? { type, context, ...parsed } : null }
   if (type === 'secret_closed') return string(item.requestId) ? { type, context, requestId: item.requestId } : null
@@ -202,7 +215,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

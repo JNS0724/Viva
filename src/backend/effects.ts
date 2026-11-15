@@ -29,6 +29,8 @@ const SCHEMA = `
 
 /** Waits after a failed try, the last repeated. */
 export const RETRY_MS: readonly number[] = Object.freeze([5_000, 30_000, 120_000, 600_000])
+/** Node treats larger delays as 1 ms. Wake and check the clock again for longer deadlines. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 export type Outcome = 'done' | 'wait' | 'retry'
 export interface Effect<P = unknown> { kind: string, key: string, payload: P, generation: number, attempts: number }
@@ -65,8 +67,9 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const rewrite = db.prepare('UPDATE effects SET payload = ? WHERE kind = ? AND key = ? AND generation = ?')
   const runners = new Map<string, Runner>()
   let timer: unknown = null
-  let running = false
+  let running: Promise<void> | null = null
   let again = false
+  let closed = false
   /** Passes in a row the queue could not finish: how long until the next try. */
   let failedPasses = 0
 
@@ -109,6 +112,11 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     apply('effect.done', { kind, key }, () => dropOne.run(kind, key))
   }
 
+  /** Complete the observed generation inside the caller's business transaction. */
+  function finishGeneration(effect: Pick<Effect, 'kind' | 'key' | 'generation'>) {
+    return Number(dropDone.run(effect.kind, effect.key, effect.generation).changes) > 0
+  }
+
   /** Every effect of `kind` whose key starts so (all the reports of one task, `taskId:`): none to be done any more. */
   function cancelStarting(kind: string, prefix: string) {
     dropStarting.run(kind, prefix, prefix)
@@ -120,8 +128,9 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const list = (): Effect[] => (all.all() as Row[]).map(effectOf)
 
   /** One pass: every effect due, kind by kind; then the next wake for the soonest one put off. */
-  async function pass() {
-    const rows = due.all(now()) as Row[]
+  async function pass(at: number) {
+    if (closed) return
+    const rows = due.all(at) as Row[]
     const byKind = new Map<string, Effect[]>()
     for (const row of rows) {
       try {
@@ -133,15 +142,18 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
       }
     }
     for (const [kind, effects] of byKind) {
+      if (closed) return
       const run = runners.get(kind)
       if (!run) continue
       let outcomes: ReadonlyMap<string, Outcome>
       try {
         outcomes = await run(effects)
       } catch (err) {
+        if (closed) return
         onError(err)
         outcomes = new Map(effects.map((effect) => [effect.key, 'retry' as const]))
       }
+      if (closed) return
       for (const effect of effects) settle(effect, outcomes.get(effect.key) ?? 'wait')
     }
   }
@@ -158,15 +170,18 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
 
   function wakeIn(ms: number) {
     if (timer !== null) cancelTimer(timer)
-    timer = later(() => { timer = null; void wake() }, ms)
+    timer = later(() => { timer = null; void wake() }, Math.min(ms, MAX_TIMER_DELAY_MS))
   }
 
   /** The next wake: after a pass that failed, a growing wait; else when the soonest effect put off is due. */
-  function schedule() {
+  function schedule(lastPassAt: number) {
+    if (closed) return
     if (failedPasses > 0) return wakeIn(RETRY_MS[Math.min(failedPasses - 1, RETRY_MS.length - 1)])
     let at: number | null
     try {
-      at = (next.get(now()) as { at: number | null }).at
+      // A deadline may have passed while an asynchronous runner was working.
+      // Leave effects already offered in that pass waiting for their external wake.
+      at = (next.get(lastPassAt) as { at: number | null }).at
     } catch (err) {
       onError(err)
       failedPasses = 1
@@ -181,22 +196,29 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
    * Runs what is due: after a change that queued an effect commits, and whenever what an effect waits on may have
    * come (the conversation free again, dsh back). One pass at a time; woken meanwhile, another follows.
    */
-  async function wake(): Promise<void> {
-    if (running) { again = true; return }
-    running = true
+  function wake(): Promise<void> {
+    if (closed) return Promise.resolve()
+    if (running) { again = true; return running }
+    running = Promise.resolve().then(drain)
+    return running
+  }
+
+  async function drain() {
+    let lastPassAt = now()
     try {
       do {
         again = false
-        await pass()
-      } while (again)
+        lastPassAt = now()
+        await pass(lastPassAt)
+      } while (again && !closed)
       failedPasses = 0
     } catch (err) {
       // The queue's own database refused it (busy, full): what was due is still due, run again after a wait.
       failedPasses += 1
       onError(err)
     } finally {
-      running = false
-      schedule()
+      running = null
+      schedule(lastPassAt)
     }
   }
 
@@ -204,12 +226,14 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     queue,
     cancel,
     finish,
+    finishGeneration,
     holds,
     get,
     amend,
     cancelStarting,
     list,
     wake,
+    close() { closed = true; if (timer !== null) cancelTimer(timer); timer = null },
     /** How the effects of `kind` are done. */
     runs: (kind: string, run: Runner) => { runners.set(kind, run) },
   }

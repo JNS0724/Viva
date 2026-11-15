@@ -72,6 +72,7 @@ test('not connected offers the settings; connecting offers nothing to do', () =>
   const setup = deskCard({ ...base, form: 'pending', tone: 'pending', label: '未连接', detail: '需要配置模型' }, { shortcut: '' })!
   assert.equal(setup.meta, '需要配置模型')
   assert.deepEqual(setup.actions.map(button => [button.text, button.act.kind]), [['去设置', 'settings']])
+  assert.equal(setup.openIcon, false)
   const connecting = deskCard({ ...base, form: 'pending', tone: 'pending', label: '连接中' }, { shortcut: '' })!
   assert.deepEqual([connecting.body, connecting.actions], [[], []])
 })
@@ -120,6 +121,7 @@ test('a task\'s request keeps its own head and face whatever the conversation on
   const asks = { ...task, permission: undefined, question: { ...question.question, questionId: 'q9' } }
   const asked = requestFor({ ...permission, task: undefined, mood: 'confirm', background: { count: 1, waiting: 1, items: [asks] } }, 'q9')!
   assert.deepEqual([asked.form, asked.label, asked.mood], ['asking', '需要你回答', 'ask'])
+  assert.deepEqual(deskCard(asked, { shortcut: '' })!.actions[0].act, { kind: 'task', taskId: 't' })
 })
 
 test('Esc does what × does: the first-time card counts as seen, anything else folds', () => {
@@ -140,4 +142,3 @@ test('the first-time card shows only on the resting island', () => {
   assert.equal(showsCoach({ ...resting, dropping: true }), false)
   assert.equal(showsCoach({ ...resting, form: 'waiting' }), false)
 })
-

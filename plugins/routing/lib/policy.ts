@@ -14,7 +14,7 @@
 import { APP_OPERATIONS, parsePlan, type AppOperation } from '../../../src/shared/request-routing/protocol.ts'
 
 export const ROUTE_TOOL = 'commit_route'
-export const CONTEXT_TOOLS = Object.freeze(['search_conversations', 'read_conversation', 'memory_recall', 'list_background_tasks', 'get_background_task', 'read', 'glob', 'grep', 'read_image'] as const)
+export const CONTEXT_TOOLS = Object.freeze(['search_conversations', 'read_conversation', 'memory_recall', 'memory_clarify', 'list_background_tasks', 'get_background_task', 'read', 'glob', 'grep', 'read_image'] as const)
 export const APP_QUERY_TOOLS = Object.freeze(['schedule_list', 'viva_mcp_list', 'viva_skill_list'] as const)
 
 export type ToolLayer = 'route' | 'context' | 'app-query' | 'app-change' | 'execution'

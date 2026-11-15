@@ -13,6 +13,7 @@
 //    beside it, where the OS can load and run them.
 const fs = require('node:fs')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
 const asar = require('@electron/asar')
 const { shippedPackages } = require('./dsh-closure.cjs')
 const { noticesText } = require('./third-party-notices.cjs')
@@ -92,6 +93,20 @@ function hasNative(dir) {
 const countFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true })
   .reduce((n, entry) => n + (entry.isDirectory() ? countFiles(path.join(dir, entry.name)) : 1), 0)
 
+function embeddingResources(projectDir, resources, platform, arch) {
+  const cache = path.join(projectDir, 'build', 'memory-embedding', 'prepared')
+  const output = platform === process.platform && arch === process.arch ? cache : path.join(cache, `${platform}-${arch}`)
+  execFileSync(process.execPath, [path.join(projectDir, 'scripts', 'prepare-memory-embedding.ts'),
+    '--platform', platform, '--arch', arch, '--output', output], { cwd: projectDir, stdio: 'inherit' })
+  const target = path.join(resources, 'memory-embedding')
+  fs.rmSync(target, { recursive: true, force: true })
+  fs.mkdirSync(target, { recursive: true })
+  for (const entry of ['runtime', 'model', 'manifest.json', 'THIRD_PARTY_NOTICES.txt']) {
+    fs.cpSync(path.join(output, entry), path.join(target, entry), { recursive: true })
+  }
+  return fs.readFileSync(path.join(target, 'THIRD_PARTY_NOTICES.txt'), 'utf8')
+}
+
 exports.default = async function afterPack(context) {
   const projectDir = context.packager.projectDir
   const resources = resourcesDir(context)
@@ -109,8 +124,10 @@ exports.default = async function afterPack(context) {
   const pruned = pruneFiles(path.join(target, 'node_modules'))
   console.log(`  • after-pack       packages: ${keep.length} shipped (${synced.added} added, ${synced.removed} left out); ${pruned} unused files removed`)
 
-  const platform = `${context.electronPlatformName}-${context.arch === 1 ? 'x64' : context.arch === 3 ? 'arm64' : context.arch}`
-  const notices = noticesText({ projectDir, platform, packages: keep })
+  const arch = context.arch === 1 ? 'x64' : context.arch === 3 ? 'arm64' : String(context.arch)
+  const platform = `${context.electronPlatformName}-${arch}`
+  const embeddingNotices = embeddingResources(projectDir, resources, context.electronPlatformName, arch)
+  const notices = `${noticesText({ projectDir, platform, packages: keep })}\n${embeddingNotices}`
   fs.writeFileSync(path.join(resources, 'THIRD_PARTY_NOTICES.txt'), notices)
   fs.copyFileSync(path.join(projectDir, 'LICENSE'), path.join(resources, 'LICENSE'))
   fs.writeFileSync(path.join(context.outDir, `THIRD_PARTY_NOTICES-${context.electronPlatformName}.txt`), notices)

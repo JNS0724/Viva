@@ -1,4 +1,5 @@
 import type { ActionHandlers } from './action-types.ts'
+import type { MemoryChangeRecord, MemorySummaryView } from '../shared/ipc-results.ts'
 /**
  * The "关于你" page (profile, memories, intro) and the 扩展 section of settings (MCP servers, skills).
  * Pure and immutable like the rest of `state.js`, which merges these handlers into its reducer.
@@ -11,17 +12,25 @@ export const initialMemory = Object.freeze({
   profile: {},
   items: [],
   total: 0,
+  cleanupPending: 0,
   /** How many memories stopped counting (replaced or forgotten), and the list once opened. */
   invalid: 0,
   invalidOpen: false,
+  invalidLoaded: false,
   invalidItems: [],
-  /** The profile the agent last synthesised from the memories: { text, createdAt }, or null. */
-  synthesis: null,
+  conflictEditor: null as string | null,
+  changesOpen: false,
+  changesLoaded: false,
+  changes: [] as MemoryChangeRecord[],
+  changeBusy: false,
+  rebuildingIndexes: false,
+  summaries: null as { user: MemorySummaryView, project: MemorySummaryView | null } | null,
   onboarding: 'pending',
   habits: { text: '', samples: 0 },
   query: '',
   /** Profile field being edited in place, or null. */
   editing: null,
+  editingMemory: null as { id: number, revision: number } | null,
   /** Documents picked in the intro, already copied into the workspace. */
   docs: [],
   /** Id of the memory added last from the page, so its input starts empty again. */
@@ -74,21 +83,27 @@ export const PERSONAL_ACTIONS= {
     profile: data.profile,
     items: state.memory.query.trim() ? state.memory.items : data.items,
     total: data.total,
+    cleanupPending: data.cleanupPending ?? 0,
     invalid: data.invalid ?? 0,
-    synthesis: data.synthesis ?? null,
+    summaries: data.summaries ?? null,
     onboarding: data.onboarding,
     habits: data.habits,
     busy: false,
   }),
   memory_open: (state, { view = 'profile' }) => withMemory(
     { ...state, island: false, picker: false, history: { ...state.history, open: false } },
-    { open: true, view, editing: null, error: null, query: '', docs: view === 'intro' ? [] : state.memory.docs },
+    { open: true, view, summaries: null, editing: null, editingMemory: null, error: null, query: '', docs: view === 'intro' ? [] : state.memory.docs },
   ),
-  memory_close: (state) => withMemory(state, { open: false, editing: null, error: null, busy: false }),
+  memory_close: (state) => withMemory(state, {
+    open: false, summaries: null, editing: null, editingMemory: null, invalidOpen: false, invalidLoaded: false, invalidItems: [], conflictEditor: null,
+    changesOpen: false, changesLoaded: false, changes: [], error: null, busy: false,
+  }),
   memory_edit: (state, { key }) => withMemory(state, { editing: key, error: null }),
+  memory_edit_entry: (state, { target }) => withMemory(state, { editingMemory: target, error: null }),
   memory_busy: (state) => withMemory(state, { busy: true, error: null }),
   memory_failed: (state, { message }) => withMemory(state, { busy: false, error: message }),
-  memory_profile_saved: (state, { profile }) => withMemory(state, { profile, editing: null, busy: false, error: null }),
+  memory_profile_saved: (state, { profile }) => withMemory(state, { profile, summaries: null, editing: null, busy: false, error: null }),
+  memory_summaries_stale: (state) => state.memory.summaries ? withMemory(state, { summaries: null }) : state,
   memory_query: (state, { query }) => withMemory(state, { query }),
   /** Answers to an older search arrive late sometimes; only the one still typed counts. */
   memory_listed: (state, { query, items, total }) => (query === state.memory.query
@@ -103,10 +118,20 @@ export const PERSONAL_ACTIONS= {
   }),
   memory_removed: (state, { id }) => withMemory(state, {
     items: state.memory.items.filter((item) => item.id !== id),
-    total: Math.max(0, state.memory.total - 1),
+    total: Math.max(0, state.memory.total - Number(state.memory.items.some(item => item.id === id))),
+    invalidItems: state.memory.invalidItems.filter(item => item.id !== id),
+    changes: [], summaries: null,
+    editingMemory: state.memory.editingMemory?.id === id ? null : state.memory.editingMemory,
   }),
-  memory_invalid_listed: (state, { items }) => withMemory(state, { invalidOpen: true, invalidItems: items, invalid: items.length }),
-  memory_invalid_closed: (state) => withMemory(state, { invalidOpen: false, invalidItems: [] }),
+  memory_invalid_opened: (state) => withMemory(state, { invalidOpen: true, invalidLoaded: false, invalidItems: [], error: null }),
+  memory_invalid_listed: (state, { items }) => state.memory.invalidOpen ? withMemory(state, { invalidLoaded: true, invalidItems: items, invalid: items.length }) : state,
+  memory_invalid_closed: (state) => withMemory(state, { invalidOpen: false, invalidLoaded: false, invalidItems: [], conflictEditor: null }),
+  memory_conflict_edit: (state, { key }) => withMemory(state, { conflictEditor: key, error: null }),
+  memory_change_busy: (state, { busy }) => withMemory(state, busy ? { changeBusy: true, error: null } : { changeBusy: false }),
+  memory_index_rebuild: (state, { busy }) => withMemory(state, { rebuildingIndexes: busy }),
+  memory_changes_opened: (state) => withMemory(state, { changesOpen: true, changesLoaded: false, changes: [], error: null }),
+  memory_changes_listed: (state, { changes }) => state.memory.changesOpen ? withMemory(state, { changesLoaded: true, changes }) : state,
+  memory_changes_closed: (state) => withMemory(state, { changesOpen: false, changesLoaded: false, changes: [] }),
   memory_revived: (state, { memory }) => withMemory(state, {
     invalidItems: state.memory.invalidItems.filter((item) => item.id !== memory.id),
     invalid: Math.max(0, state.memory.invalid - 1),

@@ -18,6 +18,13 @@ const INPUT_STATE = `(() => {
     hint: island.querySelector('.isl-hint')?.textContent ?? '',
   }
 })()`
+const PANEL_HEIGHT = `document.querySelector('.isl-surface:not([hidden])')?.offsetHeight ?? 0`
+
+const heightWithDraft = (text: string) => `(() => {
+  const field = document.querySelector('.isl-field')
+  field.value = ${JSON.stringify(text)}
+  return ${PANEL_HEIGHT}
+})()`
 
 // Files dragged over the island: the page hears dragover again and again while they are there.
 const DRAG_OVER = `(() => {
@@ -72,7 +79,11 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: Smoke
       throw new Error(`${err.message}; input open: ${(await desk.inputOpen())}, island showing ${shown}, logged ${JSON.stringify(logged)}`)
     })
     await wait(UI_WAIT_MS)
+    const emptyHeight: number = await run(page, PANEL_HEIGHT)
     await capture(page, outDir, 'desk-input')
+    const singleLineHeight: number = await run(page, heightWithDraft('整理会议纪要'))
+    const multilineHeight: number = await run(page, heightWithDraft('整理会议纪要\n把待办事项单独列出来'))
+    const clearedHeight: number = await run(page, heightWithDraft(''))
 
     // The field and the document both hear the key. Neither may submit/dismiss an IME candidate.
     const composition: Array<{ key: string, legacy: boolean, kept: boolean }> = []
@@ -92,6 +103,7 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: Smoke
     await run(page, DRAG_OVER)
     const drop = await until(page, `document.querySelector('.isl')?.dataset.form === 'drop' && document.querySelector('.isl-drop')?.textContent`, 'the island opening for dropped files')
     await wait(UI_WAIT_MS)
+    const dropHeight: number = await run(page, PANEL_HEIGHT)
     await capture(page, outDir, 'desk-drop')
     await run(page, DROP)
     const refused = await until(page, `document.querySelector('.isl-error')?.textContent`, 'the island refusing a file it has no path for')
@@ -108,9 +120,12 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: Smoke
     await desk.closeInput()
     await finishTurn(win)
     await capture(win, outDir, 'desk-asked')
-    report(`desk input: ${JSON.stringify({ opened, composition, drop, refused, steering })}`)
+    const heights = { emptyHeight, singleLineHeight, multilineHeight, clearedHeight, dropHeight }
+    report(`desk input: ${JSON.stringify({ opened, heights, composition, drop, refused, steering })}`)
 
     const failures: string[] = []
+    if (emptyHeight !== 112 || singleLineHeight !== emptyHeight || clearedHeight !== emptyHeight) failures.push(`the empty and single-line desktop input should stay at 112px: ${JSON.stringify(heights)}`)
+    if (multilineHeight <= emptyHeight || dropHeight <= emptyHeight) failures.push(`the desktop input should expand for multiple lines and files dragged over it: ${JSON.stringify(heights)}`)
     if (composition.some(item => !item.kept)) failures.push(`IME confirmation must keep the desktop island input: ${JSON.stringify(composition)}`)
     if (!opened.focused) failures.push('the island input should take the keyboard')
     if (!opened.hint.includes('发到当前对话')) failures.push(`the island input should say where the question goes: ${opened.hint}`)

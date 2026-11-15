@@ -128,8 +128,15 @@ const isRevealingMessage = (m: ThreadMessage): m is ThreadMessage & { shown: num
 /** Whether some assistant text is still being typed out. */
 export const isRevealing = (state: State): boolean => state.messages.some(isRevealingMessage)
 
+const topicChanged = (state: State, info: AgentInfo) =>
+  info.topicId !== undefined && state.info.topicId !== undefined && info.topicId !== state.info.topicId
+
+// The saved segment can load before the renderer gets its first topic identity.
+const readyStartsNewTopic = (state: State, info: AgentInfo) => topicChanged(state, info)
+  || (info.remembersHistory === false && Boolean(info.conversationId && state.conversationId && info.conversationId !== state.conversationId))
+
 const ACTION_HANDLERS: ActionHandlers = {
-  ready: (state, { info }) => ({
+  ready: (state, { info }) => !state.newTopicPending && readyStartsNewTopic(state, info) ? ACTION_HANDLERS.new_session!(state, { info }) : ({
     ...state,
     info,
     phase: !state.newTopicPending && state.phase === 'error' ? 'idle' : state.phase,
@@ -170,8 +177,9 @@ const ACTION_HANDLERS: ActionHandlers = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: messages.length ? 'loading' : null,
-      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string }, i: number) => ({
-        id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true, ...(m.images ? { images: m.images } : {}),
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string, sourceId?: string }, i: number) => ({
+        id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
+        ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
       })),
       records: recordsFrom(records),
       restored: messages.length ? { count: messages.length, savedAt } : null,
@@ -221,11 +229,14 @@ const ACTION_HANDLERS: ActionHandlers = {
     toast: state.toast,
   }),
 
-  /** The conversation goes on in another working directory, with everything said so far (a fork): the same topic. */
-  workdir_switched: (state, { info }) => ({
-    ...ACTION_HANDLERS.new_session!(state, { info }),
-    topic: { ...initialTopic, parentId: state.conversationId, startedAt: state.topic.startedAt },
-  }),
+  /** A different project opens a fresh topic. A switch within the same project keeps the previous segment. */
+  workdir_switched: (state, { info }) => {
+    const next = ACTION_HANDLERS.new_session!(state, { info })
+    return topicChanged(state, info) ? next : {
+      ...next,
+      topic: { ...initialTopic, parentId: state.conversationId, startedAt: state.topic.startedAt },
+    }
+  },
 
   /** 回到这个话题 (or 撤销 a new one): the agent goes on from that segment; what is said next follows below. */
   /** `carried`: how many turns of its saved records the topic goes on from, its own session gone (null: it is the session). */

@@ -97,3 +97,24 @@ test('changed on the card with its time untouched: the proposal\'s own rule is k
   const kept = schedules.accept('p1', { title: '报销', prompt: '交报销单' })
   assert.deepEqual([kept.title, kept.nextAt], ['报销', '2026-11-06T02:00:30.000Z'], 'due within the minute, not refused as past')
 })
+
+test('editing a schedule card preserves its memory dependency and refuses a stale proposal', t => {
+  const db = new DatabaseSync(':memory:')
+  t.after(() => db.close())
+  let revision = 1
+  const schedules = createSchedules({
+    db, emit: () => {}, newId: () => 'p1', now: () => Date.parse('2026-11-06T10:00:00+08:00'),
+    memoryCurrent: evidence => evidence.epoch === revision,
+  })
+  const memory = { epoch: 1, turnOnly: false, dependencies: [{ id: 4, revision: 1 }], sources: [] }
+  const edits = { title: '月报', prompt: '起草新版月报' }
+  schedules.act({ op: 'schedule_create', title: '周报', prompt: '按模板起草周报', rule: weekly }, 'c1', '/work', memory)
+  revision = 2
+  assert.throws(() => schedules.accept('p1', edits))
+  assert.deepEqual(schedules.list(), [])
+
+  revision = 1
+  const kept = schedules.accept('p1', edits)
+  assert.deepEqual([kept.title, kept.prompt], [edits.title, edits.prompt])
+  assert.deepEqual(schedules.store.get(kept.id)?.memory, memory)
+})

@@ -20,7 +20,7 @@ import type { RequestKind, RequestStore, StoredRequest } from './request-store.t
 export type RequestFailure = 'unrouted' | 'turn_error' | 'cancelled' | 'undelivered' | 'interrupted'
 
 /** Where a request was said: its conversation and working folder, as kept when it arrived. */
-export interface RequestPlace { conversationId: string | null, cwd: string | null }
+export interface RequestPlace { sessionId: string, conversationId: string | null, cwd: string | null }
 
 /**
  * The task runtime as the decisions use it (compose.ts): a task starts from the request's conversation, and only tasks
@@ -28,8 +28,8 @@ export interface RequestPlace { conversationId: string | null, cwd: string | nul
  */
 export interface RequestTasks {
   start: (task: { title: string, brief: string }, place: RequestPlace) => Promise<{ taskId: string }>
-  message: (taskId: string, text: string, cwd: string | null) => Promise<unknown>
-  stop: (taskId: string, cwd: string | null) => Promise<unknown>
+  message: (taskId: string, text: string, place: RequestPlace) => Promise<unknown>
+  stop: (taskId: string, place: RequestPlace) => Promise<unknown>
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -65,10 +65,12 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
   }
 
   async function perform(request: StoredRequest, action: TaskAction, title: string): Promise<Receipt> {
+    const { sessionId, conversationId, cwd } = request
+    const place = { sessionId, conversationId, cwd }
     try {
-      if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start({ title, brief: action.brief }, { conversationId: request.conversationId, cwd: request.cwd })).taskId }
-      if (action.kind === 'message') await tasks.message(action.taskId, action.text, request.cwd)
-      else await tasks.stop(action.taskId, request.cwd)
+      if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start({ title, brief: action.brief }, place)).taskId }
+      if (action.kind === 'message') await tasks.message(action.taskId, action.text, place)
+      else await tasks.stop(action.taskId, place)
       return { kind: action.kind, ok: true, taskId: action.taskId }
     } catch (error) {
       return { kind: action.kind, ok: false, error: errorText(error) }

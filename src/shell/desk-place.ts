@@ -4,11 +4,11 @@
  * display's work area. Near the top centre it snaps home. In the lower half it unfolds upwards, and near a
  * side it keeps to that side, so whatever it unfolds into stays on the screen.
  *
- * On Windows one fixed canvas reserves space on both sides of the head, including while dragged. Changing
+ * On macOS and Windows one fixed canvas reserves space on both sides of the head, including while dragged. Changing
  * its native bounds and the head's local anchor separately can display an old frame at the wrong position.
  * Other platforms keep their compact drag host and screen-contained expanded host.
  */
-export const FIXED_DESK_HOST = process.platform === 'win32'
+export const FIXED_DESK_HOST = process.platform === 'darwin' || process.platform === 'win32'
 export const DESK_SIZE = Object.freeze(FIXED_DESK_HOST ? { width: 1008, height: 704 } : { width: 600, height: 352 })
 /** The island's head (island-dom.js SIZES.desk.head) and the room around it in the window. */
 const HEAD = 80
@@ -17,7 +17,7 @@ export const STAGE_PAD = Object.freeze({ side: 20, end: 10 })
 const TOP_GAP = 6
 /** Dropped this close to home, the island goes home. */
 const SNAP_PX = 1
-/** Windows retains its canvas; other platforms use a small host for the dragged portrait. */
+/** On fixed hosts the canvas retains its size throughout the drag. */
 export const DRAG_SIZE = FIXED_DESK_HOST ? DESK_SIZE : Object.freeze({ width: 104, height: 104 })
 
 export interface Area { x: number, y: number, width: number, height: number }

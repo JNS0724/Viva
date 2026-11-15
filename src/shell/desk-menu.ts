@@ -8,10 +8,11 @@ import type { MenuItemConstructorOptions } from 'electron'
  * shortcut: the ask shortcut, shown beside 提问… (it is registered elsewhere, as a global shortcut);
  * hide: until the window is next closed to the tray; switchOff: for good, as the switch in settings.
  */
-export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlace, hide, switchOff, placeAt }: {
+export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlace, hide, switchOff, placeAt, preview }: {
   working: boolean, shortcut: string,
   ask: () => void, open: () => void, stop: () => void, resetPlace: () => void, hide: () => void, switchOff: () => void,
   placeAt?: (corner: string) => void,
+  preview?: MenuItemConstructorOptions,
 }): MenuItemConstructorOptions[] {
   return [
     { label: t('native.ask'), accelerator: shortcut, registerAccelerator: false, click: ask },
@@ -25,5 +26,6 @@ export function deskMenuTemplate({ working, shortcut, ask, open, stop, resetPlac
     ] as const).map(([corner, label]) => ({ label: t(label), click: () => placeAt(corner) })) }] : []),
     { label: t('native.hideIsland'), click: hide },
     { label: t('native.disableIsland'), click: switchOff },
+    ...(preview ? [{ type: 'separator' } as const, preview] : []),
   ]
 }

@@ -26,8 +26,8 @@ export const DSH_TIMEOUT_MS = 60_000
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {{ memoryFile?: string, mcpServers?: object[], prewarmSessions?: boolean, allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object, imagesDir?: string, permission?: string, decideFirst?: ((request: never) => object | null) | null, tasks?: import('../../src/backend/request-runtime.ts').RequestTasks }} [options]
- *   memoryFile: where the memory plugin's store goes; mcpServers: declared on every session;
+ * @param {{ mcpServers?: object[], prewarmSessions?: boolean, allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object, imagesDir?: string, permission?: string, decideFirst?: ((request: never) => object | null) | null, tasks?: import('../../src/backend/request-runtime.ts').RequestTasks }} [options]
+ *   mcpServers: declared on every session;
  *   allow: answer every approval request with "allow once" (otherwise they stay pending);
  *   imagesDir: Viva's pictures folder (dsh-profile.js), given the temporary directory; permission: the level picked (viva-permission);
  *   models: the profile's model section (see dsh-profile.js), given the fake Messages endpoint; env: added to dsh's
@@ -36,7 +36,7 @@ export const DSH_TIMEOUT_MS = 60_000
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  * `requests` is the app's request runtime every bridge of the harness routes through (request-runtime.ts).
  */
-export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks } = {}) {
+export async function startHarness(t, { mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
@@ -44,18 +44,16 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
   const userData = path.join(dir, 'userData')
   const { plugins, problems } = resolvePlugins({ codeRoot: ROOT, userData, dshVersion: installedDshVersion(ROOT), permission })
   assert.deepEqual(problems, [], 'every app plugin passes the compatibility check')
-  const file = memoryFile ?? path.join(userData, 'memory.db')
-  const withFile = plugins.map((plugin) => (plugin.name === 'viva-memory' ? { ...plugin, config: { file } } : plugin))
   const llm = await startFakeLlm({ decideFirst })
   const requests = testRequests({ tasks })
   // As the app does at every launch (main.ts prepareProfile), with the pnpm the app ships for the plugin manager.
   const pnpmCommand = pnpmLauncher({ dir: path.join(dir, 'bin'), appRoot: ROOT, runtime: RUNTIME })
-  const writeProfile = () => ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins: withFile, persona: PERSONA, models: models?.(llm), imagesDir: imagesDir?.(dir), pnpmCommand })
+  const writeProfile = () => ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: models?.(llm), imagesDir: imagesDir?.(dir), pnpmCommand })
   writeProfile()
   const bridges = []
   const closers = []
   t.after(async () => {
-    // dsh runs in the workspace and holds memory.db: on Windows neither can go until it has exited.
+    // dsh runs in the workspace: on Windows it cannot go until the process has exited.
     try {
       await Promise.all(bridges.map((bridge) => bridge.dispose()))
       for (const close of [...closers].reverse()) close()
@@ -66,8 +64,11 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
   })
   const defer = (close) => { closers.push(close) }
   const events = []
-  function bridge() {
-    const created = createAcpBridge({ routing: requests,
+  /** @param {Partial<Parameters<typeof createAcpBridge>[0]>} [options] */
+  function bridge(options = {}) {
+    const created = createAcpBridge({
+      routing: requests,
+      memoryRequest: () => '',
       dshBin: DSH_BIN,
       nodeBin: RUNTIME.nodeBin,
       overlay: vivaLayerFile(dshHome),
@@ -80,13 +81,14 @@ export async function startHarness(t, { memoryFile, mcpServers = [], prewarmSess
         events.push(event)
         if (allow && event.type === 'permission') setImmediate(() => created.respondPermission(event.requestId, 'allow-once'))
       },
+      ...options,
     })
     bridges.push(created)
     return created
   }
   /** The profile written again, as the app's next launch does. */
   const relaunch = writeProfile
-  return { dir, dshHome, userData, workspace, file, llm, events, requests, bridge, defer, relaunch, profileDir: path.join(dshHome, 'profiles', DSH_PROFILE) }
+  return { dir, dshHome, userData, workspace, llm, events, requests, bridge, defer, relaunch, profileDir: path.join(dshHome, 'profiles', DSH_PROFILE) }
 }
 
 /** On Windows what dsh started (an image worker, or a virus scanner looking at what it wrote) may hold the folder a while after it exits. */

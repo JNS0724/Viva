@@ -106,12 +106,14 @@ export interface TaskReportsDeps {
   holds?: (effect: Effect) => boolean
   /** The main conversation now: free for a turn, running one (a report goes into it), or not to be reached. */
   conversation: () => 'idle' | 'busy' | 'away'
+  /** Whether a report's context can be used in the receiving session. */
+  eligible?: (taskId: string, session: string) => boolean
   /** How a report stands in a session (acp-bridge.ts reportStatus). */
   status: (session: string, reportId: string, token: string) => Promise<ReportState>
   /** A report into that session's running turn, unless it is there already (acp-bridge.ts deliverReport). */
-  deliver: (session: string, reportId: string, token: string, text: string) => Promise<ReportState>
+  deliver: (session: string, reportId: string, token: string, text: string, taskId: string) => Promise<ReportState>
   /** Opens a turn with the note in the main conversation; false when it could not be opened now. */
-  report: (note: string) => boolean
+  report: (note: string, taskIds: readonly string[]) => boolean
   /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
   /**
@@ -137,7 +139,7 @@ const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
  * again, to the main conversation as it is now. A report queued before tokens (#84) has one made and kept before it
  * is first sent, so every later try knows it by the same token.
  */
-export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
+export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, eligible = () => true, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
   return async (effects: readonly Effect[]) => {
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
@@ -191,18 +193,21 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     }
     const forTurn: Array<Effect<ReportPayload>> = []
     for (const effect of unsent) {
+      if (!still(effect) || !eligible(effect.payload.taskId, bound)) { outcomes.set(effect.key, 'wait'); continue }
       if (state !== 'busy') { forTurn.push(effect); continue }
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
       const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
-      const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string, noteFor([endedOf(sending)], { inTurn: true })) : 'unavailable'
+      const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string,
+        noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId) : 'unavailable'
       if (sent === 'read') outcomes.set(effect.key, readOutcome(sending ?? effect))
       else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
     }
     // A turn of its own, once nothing runs, for those still theirs right now: done when their reading is confirmed.
     if (conversation() === 'idle') {
-      const opening = forTurn.filter(still).flatMap((effect) => kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn' }) ?? [])
-      if (opening.length) report(noteFor(opening.map(endedOf)))
+      const opening = forTurn.filter(effect => still(effect) && eligible(effect.payload.taskId, bound))
+        .flatMap(effect => kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn' }) ?? [])
+      if (opening.length) report(noteFor(opening.map(endedOf)), opening.map(effect => effect.payload.taskId))
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     return outcomes

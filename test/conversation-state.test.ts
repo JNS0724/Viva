@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialConversation, reduceConversation } from '../src/renderer/conversation-state.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
+import { decodeAgentEvent } from '../src/renderer/agent-event-decoder.ts'
+import { topicCount } from '../src/renderer/topics.ts'
 import { threadState } from '../src/renderer/view/tasks-page.ts'
 
 /**
@@ -70,6 +72,33 @@ test('the conversation on screen goes by the same reducer, the window\'s own sta
   assert.equal(asked.island, false, 'asking closes the island (the window\'s, beside the conversation\'s)')
   assert.deepEqual(asked.records, open.records, 'the rest of the window as it was')
   assert.deepEqual(turn.slice(1).reduce(reduce, asked).messages.map((m) => m.text), ['查一下', '好的，', '查完了。'])
+})
+
+test('project switches and reconnects keep old messages in history outside the new topic', () => {
+  const info = { mode: 'live', model: 'model', cwd: '/project-a', sessionId: 'session-a', conversationId: 'segment-a', topicId: 'topic-a' }
+  const started = reduce(reduce(initialState, { type: 'ready', info }), turn[0])
+  const before = reduce(started, { type: 'conversation_saved', id: info.conversationId })
+  const within = reduce(before, {
+    type: 'workdir_switched', info: { ...info, cwd: '/project-a/nested', sessionId: 'session-a-2', conversationId: 'segment-a-2' },
+  })
+  assert.equal(within.topic.parentId, 'segment-a')
+  assert.equal(topicCount(within), 1)
+  const moved = { ...info, cwd: '/project-b', sessionId: 'session-b', conversationId: 'segment-b', topicId: 'topic-b' }
+  const push = decodeAgentEvent({ type: 'workdir', info: moved })
+  assert.equal(push?.type, 'workdir')
+  if (push?.type !== 'workdir') return assert.fail('working-directory update omitted')
+  for (const action of [{ type: 'workdir_switched', info: push.info }, { type: 'ready', info: push.info }] as const) {
+    const next = reduce(before, action)
+    assert.equal(next.conversationId, 'segment-b')
+    assert.equal(next.topic.parentId, null)
+    assert.deepEqual(next.messages, [])
+    assert.equal(topicCount(next), 0)
+    assert.deepEqual(next.earlier.segments.map(segment => segment.id), ['segment-a'])
+  }
+  const loaded = reduce(initialState, { type: 'history_loaded', conversationId: 'segment-a', messages: [{ role: 'user', text: '查一下' }] })
+  const restarted = reduce(loaded, { type: 'ready', info: { ...moved, remembersHistory: false } })
+  assert.deepEqual(restarted.messages, [])
+  assert.deepEqual(restarted.earlier.segments.map(segment => segment.id), ['segment-a'])
 })
 
 test('a task\'s thread is drawn from its own conversation only: not the records, follow-ups or tasks of the one on screen', () => {

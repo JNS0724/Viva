@@ -12,7 +12,10 @@ export async function electronWindow(application: ElectronApplication, page: Pag
       const buffer = Buffer.from(data, 'base64')
       return { toPNG: () => buffer }
     },
-    sendInputEvent: event => window.evaluate((window, event) => window.webContents.sendInputEvent(event), event),
+    // Native input requires an OS-focused window. Use the page pointer for hover assertions in background runs.
+    sendInputEvent: event => event.type === 'mouseMove'
+      ? page.mouse.move(event.x, event.y)
+      : window.evaluate((window, event) => window.webContents.sendInputEvent(event), event),
     getZoomFactor: () => window.evaluate(window => window.webContents.getZoomFactor()),
     setZoomFactor: factor => window.evaluate((window, factor) => { window.webContents.setZoomFactor(factor) }, factor),
     on(_event, listener) {

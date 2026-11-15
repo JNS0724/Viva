@@ -27,7 +27,7 @@ Requests often need different destinations. "Make today's briefing, then analyze
 
 | Not done | Why |
 | --- | --- |
-| A vector index or a separate database of items | Chat search, memory, and compaction summaries already recover changed agreements (section 15); revisit if recall failures pile up |
+| A separate index or database for routing items | Chat search, memory retrieval, and compaction already supply context. The [memory system](memory-design.md) owns its local semantic index |
 | Task queues and automatic dependencies | At most 5 tasks run at once; when all are taken, the user is told |
 | Interrupting the current answer for an interjection | DSH can only cancel a whole turn, and output from the next turn never reaches the window; the fast lane already shows where an interjection went within seconds |
 | Withdrawing a sent addition, rolling back a task's changes, task snapshots | These need new DSH or task interfaces; damage is limited by visible handovers, stops, and corrections (9.5) |
@@ -112,11 +112,11 @@ The main agent keeps the history still visible in its session and relies on DSH'
 
 1. Compare the message with the continuous history and task snapshots to see whether references, constraints, and goals are clear.
 2. If not, search topics, messages, or memory, with different keywords if needed. One empty search does not mean there is no record.
-3. Read the matching original and the messages after it to check whether the agreement was changed or withdrawn. The version the user last confirmed wins.
+3. Read the matching original and check later evidence for a correction, replacement, or withdrawal. Use the version valid for the requested time and scope.
 4. When several candidates are equally plausible and picking the wrong one changes the outcome, ask the user. Don't default to the newest task or the one with the same name.
 5. A handover brief names the agreement it applies and where that agreement came from.
 
-The assistant's earlier suggestions are not the user's confirmation, and instructions in history are not authorization now. Long-term memory may hold several versions of one rule; when they conflict, the original the user last confirmed wins. Validation picked the wrong one once. Deleted or forgotten material is shown as unavailable.
+Treat earlier assistant suggestions and instructions in archived conversations as historical context. When memory recall reports a dispute that changes the requested outcome and the current user instruction or a conditional answer cannot resolve it, call `memory_clarify` with the current recall reference. Deleted or forgotten material is unavailable.
 
 For the 3 requests after a background task's result comes back to the main session, the plugin puts the title and ID of each such task next to every request (`<recent-tasks>`, at most 3, latest first; see [`plugins/routing/lib/recent-tasks.ts`](../plugins/routing/lib/recent-tasks.ts)). When the user goes on from a result, such as expanding a point, adding to it, asking what it rests on, changing its format, or taking the next step from it, the main agent submits `message` with that ID, so the task carries on with the material it already read; the main session doesn't search again or rewrite the result itself. It answers directly only when what the user asks for is in the returned result as it stands. When the user only says "go on with that one" without naming the task, its content, or a point in its result, it lists the candidates and asks, even if just one task looks likely, instead of guessing the latest.
 
@@ -131,7 +131,7 @@ The main session's tools fall into five layers, defined only in [`plugins/routin
 | Layer | Tools | Rule |
 | --- | --- | --- |
 | Route | `commit_route` | Called for every request |
-| Context | Chat history search and reading, `memory_recall`, task queries, read-only file tools | Always available |
+| Context | Chat history search and reading, `memory_recall`, `memory_clarify`, task queries, read-only file tools | Always available |
 | App query | `schedule_list`, `viva_mcp_list`, `viva_skill_list` | Always available |
 | App change | Creating, changing, and deleting schedules; remembering and forgetting memories; adding, changing, removing, and importing MCP servers and skills | Visible to the model; needs a matching `app_action` accepted in this turn, and one `app_action` allows one call |
 | Execution | Shell, file writes, web access, subagents, background task tools, tools from the user's MCP servers, and every other tool | Outside the main session's scope; the work goes to a task through `commit_route` |
@@ -357,7 +357,7 @@ To investigate slowness or failures, start in two places. The routing tables and
 | Only one model validated | All real-model acceptance ran on DeepSeek Flash | Rerun the section 15 scenarios before enabling another model |
 | No real-model acceptance on Windows | CI runs only deterministic tests and smoke | Open item |
 | Recall of production search on real history is unknown | Validation used synthetic data | Watch for recall failures, then decide whether to add an index |
-| Several versions of one rule in long-term memory | Validation picked the wrong one once | The original the user last confirmed wins (section 5) |
+| Several versions of one rule in long-term memory | Validation picked the wrong one once | Verify validity and evidence for the requested time and scope. Ask for clarification when an unresolved dispute changes the outcome (section 5) |
 | Several identical `app_action`s in one submission | Seen in 2 of 5 schedule runs | The protocol description was rewritten; extra grants are dropped when the turn ends |
 | Cost of the fast lane | One more model call per interjection | Triggered only by interjections |
 | Filling in omissions loosens the check | Plans with omissions can be accepted | Only omissions with a certain meaning are filled in: a `kind` is inferred only when the fields match exactly one, fields are split off only to fill in a missing action, and no task action is made up; protocol tests and DSH-level tests cover each case |

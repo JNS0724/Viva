@@ -8,7 +8,6 @@ import { h } from './dom.ts'
  * another way.
  */
 
-/** Over a message of the user's, on hover: say it again from here, or change it first. */
 /** A part of the timeline folded away (rewind-state.ts): its id, how many messages, and whether a task took it. */
 type Fold = { id: string, count: number, kind?: string | null }
 type FoldOptions = {
@@ -21,7 +20,6 @@ type EditorFocus = { start: number | null, end: number | null }
 
 export function rewindBar(message: ThreadMessage, handlers: Handlers) {
   return h('div', { class: 'rewind-bar', role: 'toolbar', 'aria-label': t("rewind.return.to.this.message") },
-    h('button', { class: 'rewind-act', type: 'button', title: t("rewind.return.before.this.message.and.ask.again"), text: t("rewind.start.again.here"), onClick: () => handlers.redoFrom(message.id) }),
     h('button', { class: 'rewind-act', type: 'button', title: t("rewind.edit.and.resend.later.messages.will.be"), text: t("rewind.edit.and.resend"), onClick: () => handlers.editFrom(message.id) }))
 }
 

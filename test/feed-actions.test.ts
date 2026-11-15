@@ -13,9 +13,15 @@ function setup({ failing = '' } = {}) {
   let schedules = [{ id: 's1', title: '日报', prompt: '写日报', kind: 'daily', nextAt: '2026-11-07T10:00:00.000Z', status: 'active' }]
   const calls: string[] = []
   const filled: string[] = []
+  const sources: string[] = []
   const api = {
     listFeed: async () => items,
     listSchedules: async () => schedules,
+    continueFeed: async (id: string) => {
+      const found = items.find(item => item.id === id)
+      if (failing || !found) throw new Error(failing || '结果已失效')
+      return `来自动态的「${found.title}」\n\n${found.body}`
+    },
     markFeedSeen: async (id: string) => {
       calls.push(`seen ${id}`)
       if (failing) throw new Error(failing)
@@ -32,9 +38,10 @@ function setup({ failing = '' } = {}) {
   }
   const actions = createFeedActions({
     api: api as unknown as AgentApi, getState: () => state, dispatch: (action) => { state = reduce(state, action) },
-    errorMessage: (err) => (err instanceof Error ? err.message : String(err)), fillComposer: (text) => { filled.push(text) },
+    errorMessage: (err) => (err instanceof Error ? err.message : String(err)), fillComposer: (text, id) => { filled.push(text); sources.push(id) },
   })
-  return { actions, calls, filled, state: () => state }
+  state = reduce(state, { type: 'feed_open' })
+  return { actions, calls, filled, sources, state: () => state }
 }
 
 test('loaded: the items and the schedules together', async () => {
@@ -44,7 +51,7 @@ test('loaded: the items and the schedules together', async () => {
 })
 
 test('在对话里继续: the item into the input, and no longer new; one seen already goes in as it is', async () => {
-  const { actions, calls, filled, state } = setup()
+  const { actions, calls, filled, sources, state } = setup()
   await actions.loadFeed()
   await actions.continueItem('i1')
   assert.equal(filled.length, 1)
@@ -53,6 +60,14 @@ test('在对话里继续: the item into the input, and no longer new; one seen a
   assert.notEqual(state().feed.items.find((one: { id: string }) => one.id === 'i1')?.seenAt, null)
   await actions.continueItem('i2')
   assert.deepEqual([filled.length, calls], [2, ['seen i1']])
+  assert.deepEqual(sources, ['i1', 'i2'])
+})
+
+test('a refused continuation does not copy an outdated result to the composer', async () => {
+  const { actions, calls, filled, state } = setup({ failing: '结果已失效' })
+  await actions.loadFeed()
+  await actions.continueItem('i1')
+  assert.deepEqual([calls, filled, state().feed.error], [[], [], '结果已失效'])
 })
 
 test('不用了 lets it go; pause, resume and delete a schedule; a failure is said, and nothing goes twice at once', async () => {

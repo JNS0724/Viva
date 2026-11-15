@@ -26,7 +26,8 @@ const t3 = effect(payload('t3', '别处的任务', 'c9', '做完了'))
 type State = 'idle' | 'busy' | 'away'
 
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
-  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true } = {}) {
+  steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true,
+  eligible = (_taskId: string, _session: string): boolean => true } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
   const asked: Array<[string, string, string]> = []
@@ -39,6 +40,7 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     session: () => world.session,
     superseded: (taskId) => world.atWork.has(taskId),
     holds: (effect) => !world.released.has(effect.key),
+    eligible,
     status: async (session, reportId, token) => { asked.push([session, reportId, token]); whileAsking(reportId); return known[`${session} ${reportId}`] ?? known[reportId] ?? 'none' },
     deliver: async (session, reportId, _token, text) => { delivered.push([session, reportId, text]); return steered },
     report: (note) => { turns.push(note); return true },
@@ -62,6 +64,23 @@ test('idle: reports due together for the conversation on screen share one turn, 
   assert.deepEqual(await later.outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'wait' }, 'read: nothing sent again, done once its record is kept')
   assert.deepEqual(later.reads, [['t1:run-1', 's1'], ['t2:run-1', 's1']], 'its record kept where it was read')
   assert.equal(later.turns.length, 0)
+})
+
+test('a report held outside its project does not prevent other reports or lose its next retry', async () => {
+  const { outcomes, turns, world, kept } = setup({ eligible: (id, session) => session === 's1' ? id === 't2' : id === 't1' })
+  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'wait' })
+  assert.equal(turns.length, 1)
+  assert.match(turns[0], /核对发票/u)
+  assert.doesNotMatch(turns[0], /整理发布说明/u)
+  assert.deepEqual(kept.filter(item => item.deliveredTo).map(item => item.taskId), ['t2'])
+
+  world.session = 's2'
+  await outcomes([t1])
+  assert.match(turns[1], /整理发布说明/u)
+
+  const busy = setup({ state: 'busy', eligible: id => id === 't2' })
+  await busy.outcomes([t1, t2])
+  assert.deepEqual(busy.delivered.map(([, key]) => key), ['t2:run-1'])
 })
 
 test('a turn running: each report goes into it, as not the user\'s words; read, it is done', async () => {

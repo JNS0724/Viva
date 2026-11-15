@@ -94,8 +94,11 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   } })
   const tasks = createTasksChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, TASK_LIST_WAIT_MS)
   const onSteer = (raw: unknown) => {
-    const message = raw as { type?: string, sessionId?: unknown, text?: unknown } | null
-    if (message?.type === 'steer' && typeof message.sessionId === 'string' && typeof message.text === 'string') fastLane(message.sessionId, message.text)
+    const message = raw as { type?: string, sessionId?: unknown, text?: unknown, fast?: unknown } | null
+    // The host opts in only after the memory transport guard is ready; ordinary steering still runs either way.
+    if (message?.type === 'steer' && message.fast === true && typeof message.sessionId === 'string' && typeof message.text === 'string') {
+      fastLane(message.sessionId, message.text)
+    }
   }
   port.on('message', onSteer)
   port.channel?.unref?.()
@@ -202,7 +205,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   function fastLane(sessionId: string, text: string) {
     const request = requestsIn(text)[0]
     const agent = ctx.agents.get(SessionId(sessionId))
-    if (!mains.has(sessionId) || !request || !agent) return
+    if (!mains.has(sessionId) || !request || !agent || agent.status !== 'running') return
     const began = Date.now()
     const report = (outcome: FastOutcome, reason: string | null) => host.reportFast(sessionId, request.id, outcome, reason, Date.now() - began)
     const claimed = claimFast(ledgerOf(sessionId), request.id)
@@ -228,11 +231,13 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     const stillOn = () => turnOf(sessionId) === turn && agent.status === 'running'
     const signal = AbortSignal.timeout(FAST_WAIT_MS)
     const listed = fastTasks(await tasks.request({ op: 'list', limit: 30 }, sessionId, signal))
+    if (!stillOn()) return { decided: null, reason: 'turn ended' }
     const recent: FastTurn[] = agent.session.snapshotEvents().filter(event => event.type === 'user/message' || event.type === 'assistant/message').map(event => {
       const data = event.data as { content?: unknown, message?: { content?: unknown } }
       return { role: event.type === 'user/message' ? 'user' as const : 'assistant' as const, text: withoutHeaders(textOf(data.message?.content ?? data.content)) }
     }).filter(turn => turn.text.trim())
     const decision = parseFastDecision(await complete(ctx, agent, fastInput({ recent, tasks: listed, words }), signal), listed)
+    if (!stillOn()) return { decided: null, reason: 'turn ended' }
     if (decision.decision === 'defer') return { decided: null, reason: deferCode(decision) }
     // The deadline is for deciding: a plan sent is the host's, and its answer is waited for as for the agent's own commit.
     const decided = await host.decide(sessionId, requestId, fastPlan(words, decision))

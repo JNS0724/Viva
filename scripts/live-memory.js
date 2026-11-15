@@ -13,7 +13,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openMemoryDb } from '../plugins/memory/lib/store.ts'
+import { openMemoryStore } from '../src/backend/memory-store.ts'
+import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
+import { DEEPSEEK_DEFAULT, parseModelValue } from '../src/backend/model-providers.ts'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
 import { DSH_PROFILE } from '../src/backend/config.ts'
@@ -32,7 +34,8 @@ const TURN_TIMEOUT_MS = 180_000
 /** Each session is a fresh dsh conversation over the same memory.db. */
 const SESSIONS = [
   [
-    '我是支付平台部的后端负责人，直属上级是张三。记住：周报每周五下班前交给张三。',
+    '我是支付平台部的后端负责人，直属上级是张三。',
+    '记住：周报每周五下班前交给张三。',
     '以后回答我，先给结论再展开。',
   ],
   [
@@ -44,8 +47,6 @@ const SESSIONS = [
     '我现在的直属上级是谁？周报交给谁？',
   ],
 ]
-/** The background pass writes after a turn; give it time before the next session or the final read. */
-const SETTLE_MS = 20_000
 
 /** The key from the environment (e.g. exported from the Keychain by the shell), else from ENV_FILE. */
 function readKey() {
@@ -62,10 +63,17 @@ function readKey() {
   return key
 }
 
-const withTimeout = (promise, ms, what) => Promise.race([
-  promise,
-  new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} 超过 ${ms / 1000} 秒没有结束`)), ms)),
-])
+async function withTimeout(promise, ms, what) {
+  let timer
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} 超过 ${ms / 1000} 秒没有结束`)), ms) }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /** One turn: the answer, the tool calls with their arguments, and the permissions refused. */
 async function ask(bridge, events, question) {
@@ -89,11 +97,22 @@ async function ask(bridge, events, question) {
 
 /** Runs one dsh session over the shared memory.db; every permission request is refused. */
 async function runSession({ questions, key, env, dshHome, workspace, memoryFile }) {
-  const events = []
-  const bridge = createAcpBridge({ routing: testRequests(),
+  const events = [], injected = []
+  let route = DEEPSEEK_DEFAULT
+  const origin = { conversation: null, session: null }
+  const memory = createMemoryRuntime({
+    store: openMemoryStore(memoryFile), route: () => route, compute: (job, signal) => bridge.memory.compute(job, signal),
+    quiesce: async () => {}, changed: () => {}, injected: (session, turn, pushed) => injected.push({ session, turn, pushed }),
+  })
+  const bridge = createAcpBridge({
+    routing: testRequests(),
     dshBin: path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
     nodeBin: RUNTIME.nodeBin,
     cwd: workspace,
+    memoryRequest: request => memory.handle(request, origin),
+    beginMemoryJobDispatch: (_id, jobId) => memory.computeCurrent(jobId),
+    readyMemory: () => { void memory.wake() },
+    onSessionCreated: memory.recordSession,
     env: dshEnv({ base: env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: key } }),
     emit: (event) => {
       events.push(event)
@@ -101,21 +120,24 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
     },
   })
   try {
-    const { sessionId, model } = await withTimeout(bridge.start(), TURN_TIMEOUT_MS, 'dsh 启动')
+    const { sessionId, model, modelValue } = await withTimeout(bridge.start(), TURN_TIMEOUT_MS, 'dsh 启动')
+    route = parseModelValue(modelValue) ?? route
+    origin.conversation = sessionId
+    origin.session = sessionId
     const turns = []
     for (const question of questions) {
+      const receipt = memory.accept(question, origin)
+      memory.bindSource(receipt.sourceId, sessionId)
       const turn = await ask(bridge, events, question)
+      memory.finishTurn(sessionId)
       turns.push(turn)
       process.stdout.write(`\n▶ ${question}\n  工具：${turn.tools.map((t) => t.name).join('、') || '无'}\n  回答：${turn.answer.slice(0, 160).replace(/\n/g, ' ')}\n`)
     }
-    // The background pass runs inside this dsh: let it finish before the process goes.
-    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS))
-    const db = openMemoryDb({ file: memoryFile })
-    const injected = db.injectionsAfter(0, sessionId)
-    db.close()
+    await withTimeout(memory.wake(), TURN_TIMEOUT_MS, '记忆提取')
     return { sessionId, model, turns, injected }
   } finally {
     await bridge.dispose()
+    memory.close()
   }
 }
 
@@ -135,18 +157,17 @@ async function main() {
     for (const questions of SESSIONS) {
       report.sessions.push(await runSession({ questions, key, env, dshHome, workspace, memoryFile }))
     }
-    const db = openMemoryDb({ file: memoryFile })
-    report.memories = db.listMemories().items.map(({ text, kind, keywords, source }) => ({ text, kind, keywords, source }))
-    report.invalid = db.listInvalid().map(({ text, supersededBy, invalidatedBy }) => ({ text, supersededBy, invalidatedBy }))
-    report.synthesis = db.latestSynthesis()
-    report.profile = Object.fromEntries(Object.entries(db.getProfile()).map(([field, entry]) => [field, entry.value]))
-    db.close()
+    const store = openMemoryStore(memoryFile)
+    report.memories = store.list().map(({ id, text, kind, keywords, source, revision, evidence }) => ({ id, text, kind, keywords, source, revision, evidence }))
+    report.candidates = store.db.prepare('SELECT source,start,end,reason FROM memory_candidates').all()
+    report.profile = Object.fromEntries(Object.entries(store.profile()).map(([field, entry]) => [field, entry.value]))
+    store.close()
   } finally {
     fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true })
     fs.writeFileSync(OUT_FILE, `${JSON.stringify(report, null, 2)}\n`)
     removeTree(dir)
   }
-  process.stdout.write(`\n记下的记忆：${JSON.stringify(report.memories)}\n已失效：${JSON.stringify(report.invalid)}\n你填写的画像：${JSON.stringify(report.profile)}\n助手整理的画像（${report.synthesis ? new Date(report.synthesis.createdAt).toLocaleString() : '无'}）：\n${report.synthesis?.text ?? ''}\n完整记录：${OUT_FILE}\n`)
+  process.stdout.write(`\n记下的记忆：${JSON.stringify(report.memories)}\n候选：${JSON.stringify(report.candidates)}\n完整记录：${OUT_FILE}\n`)
 }
 
 main().catch((err) => {

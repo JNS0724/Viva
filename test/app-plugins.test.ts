@@ -5,8 +5,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openMemoryDb } from '../plugins/memory/lib/store.ts'
 import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins, ROUTING_PERSONA } from '../src/backend/app-plugins.ts'
+import { openMemoryStore } from '../src/backend/memory-store.ts'
+import { MEMORY_CONTRACT } from '../src/shared/memory-contract.ts'
 import { ROOT } from './fixtures/dsh-harness.js'
 
 /** The app's plugin list: what it puts in the profile, and what it leaves out and why. */
@@ -32,7 +33,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-tasks', {}],
     ['viva-history', {}],
     ['viva-routing', { ...ROUTING_PERSONA }],
-    ['viva-memory', { file: path.join('/data', 'memory.db') }],
+    ['viva-memory', { host: true }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
     ['viva-questions', {}],
     ['viva-config', {}],
@@ -77,19 +78,20 @@ test('a plugin with another contract version, another dsh, or no manifest is lef
 
   assert.match(resolve(null).problems[0].problem, /找不到插件/)
   assert.deepEqual(resolve(ok).problems, [])
-  assert.match(resolve({ ...ok, viva: { contract: { memory: 2 } } }).problems[0].problem, /约定 memory 的版本是 2，应用需要 1/)
+  assert.match(resolve({ ...ok, viva: { contract: { memory: 1 } } }).problems[0].problem, new RegExp(`约定 memory 的版本是 1，应用需要 ${CONTRACTS.memory}`))
   assert.match(resolve({ ...ok, viva: undefined }).problems[0].problem, /未声明/)
   assert.match(resolve({ ...ok, peerDependencies: { '@deepseek-ai/dsh-llm': '0.3.0' } }).problems[0].problem, /需要 dsh 0\.3\.0，当前是 0\.2\.0-rc\.2/)
   assert.deepEqual(resolve({ ...ok, peerDependencies: { '@deepseek-ai/cordis': '~4.0.4' } }).problems, [], 'ranges are left to dsh')
   assert.match(resolve({ ...ok, name: 'other' }).problems[0].problem, /插件名是 other/)
 })
 
-test('memory.db records its contract version and refuses one written by a newer contract', (t) => {
+test('memory.db records its contract version and refuses incompatible databases', (t) => {
   const file = path.join(tempDir(t), 'memory.db')
-  openMemoryDb({ file }).close()
+  openMemoryStore(file).close()
   const raw = new DatabaseSync(file)
-  assert.equal(raw.prepare("SELECT value FROM meta WHERE key = 'contract_version'").get()!.value, '1')
-  raw.prepare("UPDATE meta SET value = '2' WHERE key = 'contract_version'").run()
-  raw.close()
-  assert.throws(() => openMemoryDb({ file }), /更新的版本（约定 2）/)
+  try {
+    assert.equal(raw.prepare('PRAGMA user_version').get()?.user_version, MEMORY_CONTRACT)
+    raw.exec(`PRAGMA user_version = ${MEMORY_CONTRACT + 1}`)
+  } finally { raw.close() }
+  assert.throws(() => openMemoryStore(file), /incompatible contract version/)
 })

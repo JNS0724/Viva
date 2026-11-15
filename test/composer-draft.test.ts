@@ -26,6 +26,18 @@ test('drafts survive host handoff with files, images and errors; old hosts canno
   assert.equal(store.select('topic-a').text, 'continued')
 })
 
+test('an Updates draft keeps its result ID across edits and both composer hosts until cleared', () => {
+  const store = createComposerDraftStore()
+  store.update('main', { ...edit(store.select('topic-a'), '原结果'), feedItemId: 'feed-1' })
+  const island = store.own('desk')
+  assert.equal(island.feedItemId, 'feed-1')
+  store.update('desk', { ...edit(island, '原结果\n\n请继续'), feedItemId: undefined })
+  const main = store.own('main')
+  assert.equal(main.feedItemId, 'feed-1')
+  store.update('main', edit(main, ''))
+  assert.equal(store.snapshot().feedItemId, undefined)
+})
+
 test('an accepted send receipt cannot clear new typing, another topic, or caller-owned arrays', () => {
   const store = createComposerDraftStore()
   store.update('main', { ...edit(store.snapshot(), 'sent'), files: [file] })

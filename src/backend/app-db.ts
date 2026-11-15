@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
  * event core writes (`app_events`, event-core.ts) and the business tables that moved in with it, so a state change
  * and its event are written in one transaction: the schedules and 动态's items (schedule-store.ts, schedule-runs.ts, feed-store.ts), the history (history-db.ts,
  * history-review.ts) and the background tasks kept for the next launch (task-store.ts), each opened on this database.
- * Memory and the trace stay in their plugins' own files: dsh's process writes them (app-plugins.ts).
+ * The backend writes memory.db. The DSH trace plugin writes trace.db.
  */
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS app_events (

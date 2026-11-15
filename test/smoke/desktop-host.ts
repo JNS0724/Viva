@@ -1,10 +1,11 @@
 import { expect, type ElectronApplication, type Page, type TestInfo } from '@playwright/test'
-import { DESK_SIZE, FIXED_DESK_HOST } from '../../src/shell/desk-place.ts'
+import { DESK_SIZE, pointOf, readPlaces } from '../../src/shell/desk-place.ts'
 import fs from 'node:fs'
+import path from 'node:path'
 
-/** Reuse the startup instance to cover the native Windows host, real IPC and queued renderer placement. */
+/** Reuse the startup instance to cover the native fixed host, real IPC and queued renderer placement. */
 export async function checkDesktopHost(application: ElectronApplication, desktop: Page, info: TestInfo): Promise<void> {
-  if (!FIXED_DESK_HOST) return
+  if (process.platform !== 'darwin' && process.platform !== 'win32') return
   const result = await application.evaluate(async ({ BrowserWindow, screen }, size) => {
     const desk = globalThis.vivaAutomation!.desk()!
     const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/desk.html'))!
@@ -95,8 +96,11 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
         beforeVersion = version()
         desk.startDrag(from)
         await settled(beforeVersion)
+        const area = screen.getDisplayNearestPoint(from).workArea
+        const fraction = cancel ? .24 : .76
+        const target = { x: area.x + Math.round(area.width * fraction), y: area.y + Math.round(area.height * fraction) }
         for (let step = 1; step <= 10; step++) {
-          pointer = { x: from.x + 9 * step, y: from.y + 8 * step }
+          pointer = { x: from.x + Math.round((target.x - from.x) * step / 10), y: from.y + Math.round((target.y - from.y) * step / 10) }
           desk.dragMove()
           await wait(16)
         }
@@ -118,9 +122,9 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
       desk.resetPlace()
     }
   }, DESK_SIZE)
-  const resultFile = info.outputPath('windows-desktop-host.json')
+  const resultFile = info.outputPath('fixed-desktop-host.json')
   fs.writeFileSync(resultFile, JSON.stringify(result, null, 2))
-  await info.attach('windows-desktop-host', { path: resultFile, contentType: 'application/json' })
+  await info.attach('fixed-desktop-host', { path: resultFile, contentType: 'application/json' })
   for (const corner of result.corners) expect(corner.contained, corner.corner).toBe(true)
   expect(result.updates).toBeGreaterThan(5)
   expect(result.bounds.length).toBeGreaterThan(10)
@@ -130,9 +134,14 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
   }
   // Windows rounds each native edge separately at fractional DPI, including negative host origins.
   const edgeRounding = Math.ceil(2 / result.scaleFactor)
-  for (const bounds of result.bounds) {
+  for (const [index, bounds] of result.bounds.entries()) {
     expect(Math.abs(bounds.width - DESK_SIZE.width)).toBeLessThanOrEqual(edgeRounding)
     expect(Math.abs(bounds.height - DESK_SIZE.height)).toBeLessThanOrEqual(edgeRounding)
+    if (process.platform === 'darwin') {
+      const requested = result.requested[index]
+      expect(bounds.x).toBe(requested.x)
+      expect(bounds.y).toBe(requested.y)
+    }
   }
   for (const report of result.reports) {
     expect(Math.abs(report.x - (DESK_SIZE.width / 2 - 40)), JSON.stringify(report)).toBeLessThanOrEqual(1)
@@ -140,10 +149,141 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
   }
   for (const drag of result.drags) {
     const expected = drag.cancel ? drag.origin : drag.beforeRelease
+    expect(Math.abs(drag.beforeRelease.x - drag.origin.x)).toBeGreaterThan(20)
+    expect(Math.abs(drag.beforeRelease.y - drag.origin.y)).toBeGreaterThan(20)
     expect(Math.abs(drag.after.x - expected.x)).toBeLessThanOrEqual(1)
     expect(Math.abs(drag.after.y - expected.y)).toBeLessThanOrEqual(1)
     expect(drag.expandedBefore).toBe(true)
     expect(drag.expandedAfter).toBe(drag.cancel)
   }
-  await desktop.screenshot({ path: info.outputPath('windows-fixed-desktop-host.png') })
+  await desktop.screenshot({ path: info.outputPath('fixed-desktop-host.png') })
+}
+
+/** CDP sends trusted Chromium pointer events. Supply their screen coordinates to the native mover as well. */
+export async function checkDesktopDragRelease(application: ElectronApplication, desktop: Page): Promise<void> {
+  const avatar = desktop.locator('.isl-anchor')
+  const stage = desktop.locator('#desk')
+  await expect(avatar).toBeVisible()
+  const cdp = await desktop.context().newCDPSession(desktop)
+  const audit = await application.evaluateHandle(({ app, BrowserWindow, screen }) => {
+    const desk = globalThis.vivaAutomation!.desk()!
+    const host = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/desk.html'))!
+    const cursor = screen.getCursorScreenPoint.bind(screen)
+    let point = cursor()
+    const actions: string[] = []
+    const record = (_event: unknown, channel: string, action: { kind?: string, phase?: string }) => {
+      if (channel !== 'island:act') return
+      if (action.kind === 'drag' && action.phase !== 'move') actions.push(String(action.phase))
+      if (action.kind === 'toggle') actions.push('toggle')
+    }
+    screen.getCursorScreenPoint = () => point
+    host.webContents.on('ipc-message', record)
+    desk.markCoached()
+    desk.closeInput()
+    desk.resetPlace()
+    return {
+      move: (next: { x: number, y: number }) => { point = next },
+      read: () => ({ bounds: host.getBounds(), actions: [...actions], expanded: desk.inputOpen() }),
+      display: () => screen.getDisplayNearestPoint(point),
+      userData: app.getPath('userData'),
+      clear: () => { actions.length = 0 },
+      restore: () => {
+        host.webContents.removeListener('ipc-message', record)
+        screen.getCursorScreenPoint = cursor
+      },
+    }
+  })
+  try {
+    await expect(avatar).toHaveAttribute('aria-expanded', 'false')
+    await expect(stage).toHaveAttribute('data-dragging', 'false')
+    const box = await avatar.boundingBox()
+    if (!box) throw new Error('Desktop portrait has no bounds')
+    const mouse = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) }
+    const preferences = path.join(await audit.evaluate(audit => audit.userData), 'preferences.json')
+    const mousePointer = 1 // Chromium's CDP mouse uses pointer id 1.
+    await desktop.keyboard.press('Tab')
+    await expect(avatar).toBeFocused()
+    await expect(avatar).toHaveCSS('outline-style', 'solid')
+    for (const outcome of ['blur', 'released-capture', 'held-capture', 'escape', 'quick-release'] as const) {
+      const origin = (await audit.evaluate(audit => audit.read())).bounds
+      const delta = outcome === 'released-capture' ? -112 : 112
+      const point = { x: origin.x + mouse.x + delta, y: origin.y + mouse.y + 96 }
+      await audit.evaluate((audit, cursor) => audit.move(cursor), { x: origin.x + mouse.x, y: origin.y + mouse.y })
+      await audit.evaluate(audit => audit.clear())
+      if (outcome === 'quick-release') {
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, ...mouse, clickCount: 1 })
+        await audit.evaluate((audit, cursor) => audit.move(cursor), point)
+        // Change the coordinates of mouseup without ever sending a pressed mousemove.
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, x: mouse.x + 20, y: mouse.y + 12, clickCount: 1 })
+      } else {
+        await desktop.mouse.move(mouse.x, mouse.y)
+        await desktop.mouse.down()
+        try {
+          await audit.evaluate((audit, cursor) => audit.move(cursor), point)
+          await desktop.mouse.move(mouse.x + 20, mouse.y + 12)
+          await expect(stage).toHaveAttribute('data-dragging', 'true')
+          await expect.poll(async () => {
+            const { bounds } = await audit.evaluate(audit => audit.read())
+            return Math.max(Math.abs(bounds.x - origin.x - delta), Math.abs(bounds.y - origin.y - 96))
+          }, { message: `${outcome} follows the pointer before release` }).toBeLessThanOrEqual(2)
+
+          if (outcome === 'blur') {
+            await desktop.evaluate(() => window.dispatchEvent(new FocusEvent('blur')))
+          } else if (outcome === 'released-capture') {
+            // The browser may report lost capture before delivering a mouseup after a native interruption.
+            await avatar.evaluate((node, pointerId) => {
+              node.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, pointerId, buttons: 0 }))
+            }, mousePointer)
+          } else if (outcome === 'held-capture') {
+            const captured = await avatar.evaluateHandle((node, pointerId) => {
+              const events: number[] = []
+              node.addEventListener('lostpointercapture', event => {
+                if (event instanceof PointerEvent) events.push(event.buttons)
+              }, { once: true })
+              node.releasePointerCapture(pointerId)
+              return events
+            }, mousePointer)
+            try {
+              await desktop.mouse.move(mouse.x + 15, mouse.y + 8)
+              await expect.poll(() => captured.evaluate(events => [...events])).toEqual([1])
+              expect(await avatar.evaluate((node, id) => node.hasPointerCapture(id), mousePointer)).toBe(true)
+            } finally { await captured.dispose() }
+          } else {
+            await desktop.keyboard.press('Escape')
+          }
+          // Deliver the trailing trusted click over the portrait, even if its native host has already moved.
+          await desktop.mouse.move(mouse.x, mouse.y)
+        } finally { await desktop.mouse.up() }
+      }
+
+      await expect(stage).toHaveAttribute('data-dragging', 'false')
+      await expect(avatar, outcome).not.toBeFocused()
+      // This request is processed after the earlier synchronous input messages from the same renderer.
+      await desktop.evaluate(async () => { await window.desk.getDraft() })
+      const released = await audit.evaluate(audit => audit.read())
+      expect(released.actions, outcome).toEqual(['start', outcome === 'escape' ? 'cancel' : 'end'])
+      expect(released.expanded, outcome).toBe(false)
+      expect(Math.abs(released.bounds.x - origin.x - (outcome === 'escape' ? 0 : delta)), outcome).toBeLessThanOrEqual(2)
+      expect(Math.abs(released.bounds.y - origin.y - (outcome === 'escape' ? 0 : 96)), outcome).toBeLessThanOrEqual(2)
+      const display = await audit.evaluate(audit => audit.display())
+      await expect.poll(() => {
+        if (!fs.existsSync(preferences)) return Infinity
+        const { last, places } = readPlaces(JSON.parse(fs.readFileSync(preferences, 'utf8')).deskPlaces)
+        if (last !== String(display.id)) return Infinity
+        const saved = pointOf(places[last], display.workArea)
+        return Math.max(Math.abs(saved.x - released.bounds.x - mouse.x), Math.abs(saved.y - released.bounds.y - mouse.y))
+      }, { message: `${outcome} leaves the island at its persisted position` }).toBeLessThanOrEqual(2)
+    }
+
+    // A new short press still opens the panel after any trailing drag click has been discarded.
+    await desktop.mouse.click(mouse.x, mouse.y)
+    await expect(avatar).toHaveAttribute('aria-expanded', 'true')
+    await expect(avatar).not.toBeFocused()
+    await avatar.press('Enter')
+    await expect(avatar).toHaveAttribute('aria-expanded', 'false')
+  } finally {
+    await audit.evaluate(audit => audit.restore())
+    await audit.dispose()
+    await cdp.detach()
+  }
 }

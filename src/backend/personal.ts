@@ -1,25 +1,14 @@
 import { activeHours } from './habits.ts'
 import { EXTRA_COMMAND_DIRS, resolveCommand, toManagerServers } from './mcp-config.ts'
+import type { AgentInfo } from '../shared/agent-info.ts'
 import type { McpServerEntry } from '../shared/mcp-channel.ts'
 
-type MemoryDb = ReturnType<typeof import('../../plugins/memory/lib/store.ts').openMemoryDb>
 type HistoryDb = ReturnType<typeof import('./history-db.ts').openHistoryDb>
-type McpStore = ReturnType<typeof import('./mcp-config.ts').createMcpConfigStore>
+type McpStore = Pick<ReturnType<typeof import('./mcp-config.ts').createMcpConfigStore>, 'list'>
 
-/**
- * The app's side of what makes the agent personal. Memory itself lives in the dsh plugin
- * (plugins/memory); the app shares its memory.db, so here it only feeds in the habits read from the
- * history, reports after each turn what the plugin saved and what it put in front of the model, and
- * attaches the user's own MCP servers.
- */
-export function createPersonal({ memoryDb, historyDb, mcpStore, now = Date.now }: {
-  memoryDb: MemoryDb, historyDb: HistoryDb, mcpStore: McpStore, now?: () => number,
-}) {
-  /** User servers left out because their command was not found; refreshed with every session. */
+/** Personal context computed from history and the user's MCP configuration. */
+export function createPersonal({ historyDb, mcpStore }: { historyDb: HistoryDb, mcpStore: McpStore }) {
   let missing: Array<{ name: string, reason: string }> = []
-  /** Changes before this have been reported; the plugin's background pass keeps writing after a turn ends. */
-  let reportedUntil = now()
-  let lastInjection = memoryDb.lastInjectionId()
 
   /** The servers for viva-mcp (dsh's MCP manager); one whose command cannot be found is left out and said so. */
   function mcpServers(): McpServerEntry[] {
@@ -29,41 +18,16 @@ export function createPersonal({ memoryDb, historyDb, mcpStore, now = Date.now }
     return servers
   }
 
-  /** Reads the habits from the history and hands their text to the plugin's fixed layer. */
   function habits(): { text: string, samples: number } {
     const { text, samples } = activeHours(historyDb.questionTimes())
-    memoryDb.setHabits(text)
     return { text, samples }
   }
 
-  /**
-   * What changed since the last call, or null when nothing did: memories the agent saved (claimed for
-   * `conversationId`), memories it marked as no longer true, and what the plugin sent
-   * with the questions of `sessionId`. Called when a turn ends and again while the background pass may
-   * still be writing.
-   */
-  function collect({ conversationId, sessionId }: { conversationId: string, sessionId: string | null }) {
-    const since = reportedUntil
-    reportedUntil = now()
-    const { memories } = memoryDb.claimChanges(since, conversationId)
-    const invalidated = memoryDb.invalidatedSince(since)
-    const injected = sessionId ? memoryDb.injectionsAfter(lastInjection, sessionId) : []
-    lastInjection = injected.reduce((last, entry) => Math.max(last, entry.id), lastInjection)
-    if (memories.length === 0 && invalidated.length === 0 && injected.length === 0) return null
-    return { memories: memories.map((memory) => memory.text), invalidated: invalidated.map((memory) => memory.text), injected }
-  }
-
-  /**
-   * How the servers stand for the settings page (viva-mcp, mcp-desk.ts): connected, still trying, or stopped trying,
-   * with those whose command was not found among the last. Memory counts as working when the plugin started inside
-   * the dsh launched at `launchedAt`.
-   */
-  const mcpStatus = (info: any, launchedAt: number) => ({
-    active: info?.mcp?.active ?? [],
-    connecting: info?.mcp?.connecting ?? [],
-    memory: launchedAt > 0 && memoryDb.pluginStartedAt() >= launchedAt,
-    dropped: [...(info?.mcp?.dropped ?? []), ...missing],
+  /** The manager reports connection and startup errors. Also show commands Viva could not find. */
+  const mcpStatus = (info: Pick<AgentInfo, 'mcp'>) => ({
+    active: [...(info.mcp?.active ?? [])],
+    connecting: [...(info.mcp?.connecting ?? [])],
+    dropped: [...(info.mcp?.dropped ?? []), ...missing],
   })
-
-  return { mcpServers, habits, collect, mcpStatus }
+  return { mcpServers, habits, mcpStatus }
 }
