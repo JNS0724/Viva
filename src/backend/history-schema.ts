@@ -1,4 +1,4 @@
-import { operationId } from '../shared/memory-contract.ts'
+import { operationId } from '../memory/contracts/memory-contract.ts'
 import { t } from '../shared/i18n/translate.ts'
 /** Validation shared by the history database and the IPC boundary. */
 import { checkImages, type ImageRef } from '../shared/images.ts'

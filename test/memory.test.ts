@@ -4,11 +4,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { activeHours, MIN_SAMPLES } from '../src/backend/habits.ts'
-import { packContext, MAX_CONTEXT_CHARS } from '../src/backend/memory-context.ts'
-import { recallMatches, termsOf } from '../src/backend/memory-match.ts'
-import { looksSecret } from '../src/backend/memory-sensitive.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
+import { packContext, MAX_CONTEXT_CHARS } from '../src/memory/core/memory-context.ts'
+import { recallMatches, termsOf } from '../src/memory/core/memory-match.ts'
+import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
+import { createVivaMemoryClient } from '../src/backend/memory-client.ts'
 import { copyIntoWorkspace, DOCS_DIR_NAME, registerRuntimeMemoryIpc } from '../src/backend/memory-ipc.ts'
 import { scratch } from './fixtures/scratch.js'
 import { checkedIpc } from '../src/shared/ipc-contract.ts'
@@ -172,7 +173,7 @@ test('memory IPC adds as the user and reports the page in one call', async t => 
     onRefused: (_channel, problem) => { throw new Error(problem) },
   })
   registerRuntimeMemoryIpc(registry, {
-    runtime, changingMemory: work => Promise.resolve(work()), habits: () => ({ text: '', samples: 3 }), cwd: () => dir, chooseDocs: async () => null,
+    client: createVivaMemoryClient(runtime, work => Promise.resolve(work())), habits: () => ({ text: '', samples: 3 }), cwd: () => dir, chooseDocs: async () => null,
   })
   const call = async (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
 
@@ -197,7 +198,7 @@ test('memory IPC rebuilds derived indexes without modifying the canonical record
     onRefused: (_channel, problem) => { throw new Error(problem) },
   })
   registerRuntimeMemoryIpc(registry, {
-    runtime, changingMemory: () => assert.fail('derived index reset should not quiesce the model'),
+    client: createVivaMemoryClient(runtime, () => assert.fail('derived index reset should not quiesce the model')),
     habits: () => ({ text: '', samples: 0 }), cwd: () => dir, chooseDocs: async () => null,
   })
   assert.deepEqual(await handlers.get('memory:rebuild-indexes')!({}), { fullText: true, semantic: true })

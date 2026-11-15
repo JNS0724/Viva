@@ -86,6 +86,10 @@ export const testLevels = {
     'markdown',
     'mcp-import-ipc',
     'mcp-import',
+    'memory-coordination',
+    'memory-node-runtime',
+    'memory-service',
+    'memory-client',
     'memory-clarification',
     'memory-daily-search',
     'memory-files',
@@ -197,6 +201,7 @@ export const testLevels = {
     'workspace-files',
   ],
   integration: [
+    'memory-boundaries',
     'app-plugins',
     'asar-integrity',
     'backend-keeper',

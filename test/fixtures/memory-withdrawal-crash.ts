@@ -3,7 +3,7 @@ import { openAppDb, transaction } from '../../src/backend/app-db.ts'
 import { createEffects } from '../../src/backend/effects.ts'
 import { openHistoryDb } from '../../src/backend/history-db.ts'
 import { createMemoryRuntime } from '../../src/backend/memory-runtime.ts'
-import { openMemoryStore } from '../../src/backend/memory-store.ts'
+import { openMemoryStore } from '../../src/memory/node/memory-store.ts'
 import { createMemoryWithdrawal } from '../../src/backend/memory-withdrawal.ts'
 import { crashAt } from './memory-crash-process.ts'
 

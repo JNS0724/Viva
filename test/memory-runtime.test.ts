@@ -6,14 +6,14 @@ import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
 import { createEffects } from '../src/backend/effects.ts'
-import { openMemoryNotes } from '../src/backend/memory-note-store.ts'
+import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { historyRecall } from '../src/backend/history-recall.ts'
-import { localDay, resolveMemoryTime } from '../src/backend/memory-facts.ts'
-import { memoryCompute } from '../src/shared/memory-contract.ts'
-import type { MemoryCompute, MemoryProposal, MemoryTemporal } from '../src/shared/memory-contract.ts'
+import { localDay, resolveMemoryTime } from '../src/memory/core/memory-facts.ts'
+import { memoryCompute } from '../src/memory/contracts/memory-contract.ts'
+import type { MemoryCompute, MemoryProposal, MemoryTemporal } from '../src/memory/contracts/memory-contract.ts'
 import { scratch } from './fixtures/scratch.js'
 
 function deferred<T>() {
@@ -1720,7 +1720,7 @@ test('profile excerpts are scoped, versioned, and fall back to safe canonical ev
   const b = '另一项目使用 NEBULA-301'
   const u = '我用剪纸做周末手工'
   type ProfileInput = { ref: { kind: 'memory', id: number, revision: number }, text: string }
-  let recorded: import('../src/backend/memory-store.ts').MemoryDependency[] = []
+  let recorded: import('../src/memory/node/memory-store.ts').MemoryDependency[] = []
   let observedNow = Date.now()
   const memory = createMemoryRuntime({
     store, now: () => observedNow, profilesEnabled: true, profileDelayMs: 0,

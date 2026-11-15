@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createMemoryChannel, MemoryComputeError } from '../src/backend/memory-channel.ts'
-import { createMemoryDispatch, MemoryDispatchConflict } from '../src/backend/memory-dispatch.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
-import { MEMORY_CONTRACT } from '../src/shared/memory-contract.ts'
-import type { MemoryCompute } from '../src/shared/memory-contract.ts'
+import { createMemoryDispatch, MemoryDispatchConflict } from '../src/memory/core/memory-dispatch.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { MEMORY_CONTRACT } from '../src/memory/contracts/memory-contract.ts'
+import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
 
 test('fact versions and raw sources invalidate just the sessions that used them, including forks', () => {
   const store = openMemoryStore(':memory:')

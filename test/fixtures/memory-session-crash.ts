@@ -1,6 +1,6 @@
 import { join } from 'node:path'
-import { openMemoryStore } from '../../src/backend/memory-store.ts'
-import { openMemoryNotes } from '../../src/backend/memory-note-store.ts'
+import { openMemoryStore } from '../../src/memory/node/memory-store.ts'
+import { openMemoryNotes } from '../../src/memory/node/memory-note-store.ts'
 import { crashAt } from './memory-crash-process.ts'
 
 const [point, directory, id] = process.argv.slice(2) as [string, string, string]

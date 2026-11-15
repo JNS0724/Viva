@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, realpathSync, statSync, type BigIntStats } from 'node:fs'
 import path from 'node:path'
-import type { MemoryProfileScope } from './memory-profile.ts'
+import type { MemoryProfileScope } from '../memory/core/memory-profile.ts'
 import { projectRoot } from './skills.ts'
 
 const POINTER_LIMIT = 8192

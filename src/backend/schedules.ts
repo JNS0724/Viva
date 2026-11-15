@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
-import { combineMemoryProvenance, type MemoryProvenance } from './memory-dispatch.ts'
+import { combineMemoryProvenance, type MemoryProvenance } from '../memory/core/memory-dispatch.ts'
 import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
 
 /**

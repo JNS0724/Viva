@@ -1,11 +1,11 @@
 /** Offline Viva retrieval benchmark. Usage: node scripts/memory-embedding-check.ts <model-dir> [runtime-dir] */
 import { performance } from 'node:perf_hooks'
 import assert from 'node:assert/strict'
-import { createMemoryEmbedder, MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_DIMENSIONS } from '../src/backend/memory-embedder.ts'
-import type { MemoryEmbedder, MemoryEmbeddingKind } from '../src/backend/memory-embedder.ts'
+import { createMemoryEmbedder, MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
+import type { MemoryEmbedder, MemoryEmbeddingKind } from '../src/memory/node/memory-embedder.ts'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
-import type { MemoryRequest, MemoryScope } from '../src/shared/memory-contract.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
+import type { MemoryRequest, MemoryScope } from '../src/memory/contracts/memory-contract.ts'
 
 const facts = [
   { id: 'report', text: '每周的工作汇报材料须发送给财务小组。' },

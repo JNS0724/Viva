@@ -1,16 +1,17 @@
+import { randomUUID, createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createEffects } from '../src/backend/effects.ts'
-import { createMemoryProfileJobs, MEMORY_PROFILE_EFFECT } from '../src/backend/memory-profile-jobs.ts'
+import { createMemoryProfileJobs, MEMORY_PROFILE_EFFECT } from '../src/memory/core/memory-profile-jobs.ts'
 import { MEMORY_PROFILE_GENERATOR, MEMORY_PROFILE_INPUT_LIMIT, memoryProfileRequest, parseMemoryProfileReply,
-  prepareMemoryProfileInput } from '../src/backend/memory-profile.ts'
-import type { MemoryProfileInput, MemoryProfileRef } from '../src/backend/memory-profile.ts'
-import { openMemoryProfileStore } from '../src/backend/memory-profile-store.ts'
-import type { MemoryProfileProjection } from '../src/backend/memory-profile-store.ts'
+  prepareMemoryProfileInput } from '../src/memory/core/memory-profile.ts'
+import type { MemoryProfileInput, MemoryProfileRef } from '../src/memory/core/memory-profile.ts'
+import { openMemoryProfileStore } from '../src/memory/node/memory-profile-store.ts'
+import type { MemoryProfileProjection } from '../src/memory/node/memory-profile-store.ts'
 import { memoryProjectScope } from '../src/backend/memory-project.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { scratch } from './fixtures/scratch.js'
 
 const user = { kind: 'user' } as const
@@ -155,7 +156,7 @@ test('profile jobs discard old generation results and wake again at an input val
   const capture: Array<{ input: string, signal: AbortSignal, finish: (reply: string) => void }> = []
   let received: (() => void) | undefined
   const next = () => new Promise<void>(resolve => { received = resolve })
-  const jobs = createMemoryProfileJobs({
+  const jobs = createMemoryProfileJobs({ identity: { newId: randomUUID, hash: text => createHash('sha256').update(text).digest('hex') },
     effects, store: projectionStore, tx: store.tx, revision: store.revision, now: () => at,
     route: () => ({ provider: 'local', model: 'fixture' }), ready: () => true, delayMs: 0,
     makeSnapshot: () => ({ inputs: [{ ref: { ...field, revision: store.revision() }, text }], validUntil: at === now ? now + 1 : null }),
@@ -206,7 +207,7 @@ test('a profile computation that crosses a validity boundary resamples in a new 
   let expiredReply: ((reply: string) => void) | undefined
   const requests: Array<{ generation: number, signal: AbortSignal }> = []
   const effects = createEffects({ db: store.db, now: () => at, later: () => null, cancel: () => {} })
-  const jobs = createMemoryProfileJobs({
+  const jobs = createMemoryProfileJobs({ identity: { newId: randomUUID, hash: text => createHash('sha256').update(text).digest('hex') },
     effects, store: effectStore, tx: store.tx, revision: store.revision, now: () => at,
     route: () => ({ provider: 'local', model: 'fixture' }), ready: () => true, delayMs: 0,
     makeSnapshot: () => ({
@@ -244,7 +245,7 @@ test('an observed profile expires in the view even when model work is busy', asy
   const effects = createEffects({ db: store.db, later: () => null, cancel: () => {} })
   let busy = false
   const changed: unknown[] = []
-  const jobs = createMemoryProfileJobs({
+  const jobs = createMemoryProfileJobs({ identity: { newId: randomUUID, hash: text => createHash('sha256').update(text).digest('hex') },
     effects, store: openMemoryProfileStore(store.db), tx: store.tx, revision: store.revision, busy: () => busy,
     route: () => ({ provider: 'local', model: 'fixture' }), ready: () => true, delayMs: 0,
     makeSnapshot: () => ({ inputs: [], validUntil: Date.now() === now ? now + 1000 : null }),
@@ -274,7 +275,7 @@ test('cancelling profile computation leaves its durable generation available aft
   let store = openMemoryStore(path)
   function runtime(dispatch: Parameters<typeof createMemoryProfileJobs>[0]['dispatch']) {
     const effects = createEffects({ db: store.db, now: () => now, later: () => null, cancel: () => {} })
-    const jobs = createMemoryProfileJobs({
+    const jobs = createMemoryProfileJobs({ identity: { newId: randomUUID, hash: text => createHash('sha256').update(text).digest('hex') },
       effects, store: openMemoryProfileStore(store.db), tx: store.tx, revision: store.revision, now: () => now,
       route: () => ({ provider: 'local', model: 'fixture' }), ready: () => true, delayMs: 0,
       makeSnapshot: () => ({ inputs: [{ ref: { ...field, revision: store.revision() }, text: '经核验的偏好' }], validUntil: null }),

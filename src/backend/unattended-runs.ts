@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import { ended, updated, type Transcript } from './task-transcript.ts'
-import type { MemoryProvenance } from './memory-dispatch.ts'
+import type { MemoryProvenance } from '../memory/core/memory-dispatch.ts'
 
 /**
  * One prompt run where nobody watches (a schedule's, system-design §12.2): in a fresh session of its own, at the level

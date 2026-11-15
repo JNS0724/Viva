@@ -1,18 +1,12 @@
-import { DAILY_MEMORY_DEFAULTS } from '../shared/memory-daily-defaults.ts'
-import { MEMORY_CONTRACT, isDailyMemoryStage, memoryComputeFailure, memoryComputeUsage, memoryRequest } from '../shared/memory-contract.ts'
-import type { MemoryCompute, MemoryComputeFailure, MemoryComputeUsage, MemoryRequest } from '../shared/memory-contract.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
+import { MEMORY_CONTRACT, isDailyMemoryStage, memoryComputeFailure, memoryComputeUsage, memoryRequest } from '../memory/contracts/memory-contract.ts'
+import type { MemoryCompute, MemoryComputeFailure, MemoryComputeUsage, MemoryRequest } from '../memory/contracts/memory-contract.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
 export type MemoryDispatchAdmission = boolean | { allowed: boolean, deadline?: number | null }
 
-export class MemoryComputeError extends Error {
-  readonly reason: MemoryComputeFailure | 'oversize-reply' | 'missing-reply'
-
-  constructor(reason: MemoryComputeError['reason']) {
-    super('memory model computation did not finish')
-    this.reason = reason
-  }
-}
+import { MemoryComputeError } from '../memory/contracts/compute.ts'
+export { MemoryComputeError } from '../memory/contracts/compute.ts'
 
 type ComputationResult = ({ text: string } | { failure: MemoryComputeError['reason'] }) & { usage?: MemoryComputeUsage }
 

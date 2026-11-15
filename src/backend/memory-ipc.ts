@@ -1,7 +1,8 @@
+import type { VivaMemoryClient } from './memory-client.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
-import { MAX_MEMORY_CHARS } from './memory-sensitive.ts'
+import { MAX_MEMORY_CHARS } from '../memory/core/memory-sensitive.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { IpcResults, MemorySummaryView } from '../shared/ipc-results.ts'
 
@@ -44,9 +45,8 @@ function assertMemoryText(value: unknown) {
   return value
 }
 
-export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { runtime, changingMemory, habits, cwd, chooseDocs, sourceLink, projectScope }: {
-  runtime: import('./memory-runtime.ts').MemoryRuntime,
-  changingMemory: <T>(work: () => T | Promise<T>) => Promise<T>,
+export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope }: {
+  client: VivaMemoryClient,
   habits: () => { text: string, samples: number },
   cwd: () => string,
   chooseDocs: () => Promise<string[] | null>,
@@ -56,16 +56,16 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   const handle = handlerOf(ipcMain)
   const linkFor = (edge: { sourceId: string, conversationId: string | null }) =>
     edge.conversationId ? sourceLink?.(edge.sourceId, edge.conversationId) ?? null : null
-  const withLinks = (item: import('./memory-store.ts').MemoryEntry) => ({
+  const withLinks = (item: ReturnType<VivaMemoryClient['listMemories']>['items'][number]) => ({
     ...item, evidence: item.evidence.map(edge => ({
       ...edge, link: linkFor(edge),
     })),
   })
   const list = (query = '') => {
-    const result = runtime.listMemories(query)
+    const result = client.listMemories(query)
     return { ...result, items: result.items.map(withLinks) }
   }
-  const summary = ({ generated, items }: ReturnType<typeof runtime.profileView>): MemorySummaryView => ({
+  const summary = ({ generated, items }: ReturnType<typeof client.profileView>): MemorySummaryView => ({
     generated,
     items: items.map(({ text, dependency, evidence }) => ({
       id: dependency.id, text, source: evidence ? { text: evidence.text, link: linkFor(evidence) } : null,
@@ -74,30 +74,29 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   handle('memory:get', () => {
     const project = projectScope?.()
     return {
-      profile: runtime.profile(), ...list(), onboarding: runtime.onboarding(),
-      cleanupPending: runtime.cleanupPending(),
-      revision: runtime.revision(), habits: habits(),
-      summaries: { user: summary(runtime.profileView({ kind: 'user' })), project: project ? summary(runtime.profileView(project)) : null },
+      profile: client.profile(), ...list(), onboarding: client.onboarding(),
+      cleanupPending: client.cleanupPending(),
+      revision: client.revision(), habits: habits(),
+      summaries: { user: summary(client.profileView({ kind: 'user' })), project: project ? summary(client.profileView(project)) : null },
     }
   })
   handle('memory:list', list)
-  handle('memory:set-profile', (changes, operation) => changingMemory(() => runtime.setProfile(changes, operation)))
-  handle('memory:add', (text, kind = 'fact', operation) => changingMemory(() => runtime.addMemory(assertMemoryText(text), kind, operation)))
-  handle('memory:update', (id, text, revision, operation) => changingMemory(() => runtime.editMemory(id, assertMemoryText(text), revision, operation)))
-  handle('memory:delete', (id, revision, operation) => changingMemory(() => runtime.deleteMemory(id, revision, operation)))
-  handle('memory:forget', (id, revision, operation) => changingMemory(() => runtime.forget(id, revision, 'forget', operation)))
-  handle('memory:restore', (id, revision, operation) => changingMemory(() => runtime.restore(id, revision, operation)))
-  handle('memory:resolve-conflict-pair', (first, second, resolution, operation, conflictId, interval) => changingMemory(() =>
-    runtime.resolveConflictPair(first, second, resolution.kind === 'replace' ? { ...resolution, text: assertMemoryText(resolution.text) } : resolution,
-      operation, conflictId, interval)))
-  handle('memory:list-invalid', () => runtime.listInvalid().map(withLinks))
-  handle('memory:list-changes', (): IpcResults['memory:list-changes'] => runtime.listChanges().map(change => ({
+  handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
+  handle('memory:add', (text, kind = 'fact', operation) => client.addMemory(assertMemoryText(text), kind, operation))
+  handle('memory:update', (id, text, revision, operation) => client.editMemory(id, assertMemoryText(text), revision, operation))
+  handle('memory:delete', (id, revision, operation) => client.deleteMemory(id, revision, operation))
+  handle('memory:forget', (id, revision, operation) => client.stopMemory(id, revision, operation))
+  handle('memory:restore', (id, revision, operation) => client.restoreMemory(id, revision, operation))
+  handle('memory:resolve-conflict-pair', (first, second, resolution, operation, conflictId, interval) => client.resolveConflictPair(first, second, resolution.kind === 'replace' ? { ...resolution, text: assertMemoryText(resolution.text) } : resolution,
+      operation, conflictId, interval))
+  handle('memory:list-invalid', () => client.listInvalid().map(withLinks))
+  handle('memory:list-changes', (): IpcResults['memory:list-changes'] => client.listChanges().map(change => ({
     ...change, evidence: change.evidence.map(edge => ({ text: edge.text, link: linkFor(edge) })),
   })))
   handle('memory:undo-change', (id, revision, operation, expectedRevisions): Promise<IpcResults['memory:undo-change']> =>
-    changingMemory(() => runtime.undoChange(id, revision, operation, expectedRevisions)))
-  handle('memory:rebuild-indexes', () => runtime.rebuildIndexes())
-  handle('memory:onboarding', runtime.setOnboarding)
+    client.undoChange(id, revision, operation, expectedRevisions))
+  handle('memory:rebuild-indexes', () => client.rebuildIndexes())
+  handle('memory:onboarding', client.setOnboarding)
   handle('memory:add-docs', async () => {
     const files = await chooseDocs()
     return files?.length ? copyIntoWorkspace(files, cwd()) : []

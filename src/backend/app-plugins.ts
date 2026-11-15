@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { MEMORY_CONTRACT } from '../shared/memory-contract.ts'
+import { MEMORY_CONTRACT } from '../memory/contracts/memory-contract.ts'
 import fs from 'node:fs'
 import path from 'node:path'
 

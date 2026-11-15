@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { MEMORY_QUESTION_PREFIX } from '../shared/memory-contract.ts'
+import { MEMORY_QUESTION_PREFIX } from '../memory/contracts/memory-contract.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 /**
  * Questions the model asks the user, on the app's side of the questions contract (version 1, see

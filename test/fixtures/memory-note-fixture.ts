@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { memoryHash } from '../../src/backend/memory-store.ts'
-import type { MemorySource, MemoryStore } from '../../src/backend/memory-store.ts'
+import { memoryHash } from '../../src/memory/node/memory-store.ts'
+import type { MemorySource, MemoryStore } from '../../src/memory/node/memory-store.ts'
 
 export function noteSource(store: MemoryStore, overrides: Partial<MemorySource> = {}): MemorySource {
   const id = randomUUID()

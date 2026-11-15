@@ -3,12 +3,12 @@ import { test } from 'node:test'
 import { randomUUID } from 'node:crypto'
 import type { TestContext } from 'node:test'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
-import { openMemorySemanticIndex } from '../src/backend/memory-semantic.ts'
-import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/backend/memory-embedder.ts'
-import type { MemoryEmbeddingInput, MemoryEmbeddingResult } from '../src/backend/memory-embedder.ts'
-import type { MemoryScope } from '../src/shared/memory-contract.ts'
-import type { MemoryInterval } from '../src/backend/memory-intervals.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { openMemorySemanticIndex } from '../src/memory/node/memory-semantic.ts'
+import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
+import type { MemoryEmbeddingInput, MemoryEmbeddingResult } from '../src/memory/node/memory-embedder.ts'
+import type { MemoryScope } from '../src/memory/contracts/memory-contract.ts'
+import type { MemoryInterval } from '../src/memory/core/memory-intervals.ts'
 
 function fixture(t: TestContext) {
   const store = openMemoryStore(':memory:')

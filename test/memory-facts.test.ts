@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { compatibleTransitionTime, groundedChange, groundedFact, localDay, proposalSpans, resolveMemoryTime, sourceText } from '../src/backend/memory-facts.ts'
-import { memoryProposals } from '../src/shared/memory-contract.ts'
-import type { MemoryChangeProposal, MemoryProposal, MemorySpan, MemoryTemporal } from '../src/shared/memory-contract.ts'
+import { compatibleTransitionTime, groundedChange, groundedFact, localDay, proposalSpans, resolveMemoryTime, sourceText } from '../src/memory/core/memory-facts.ts'
+import { memoryProposals } from '../src/memory/contracts/memory-contract.ts'
+import type { MemoryChangeProposal, MemoryProposal, MemorySpan, MemoryTemporal } from '../src/memory/contracts/memory-contract.ts'
 
 const at = Date.parse('2026-11-14T12:00:00Z')
 const zone = 'Asia/Shanghai'

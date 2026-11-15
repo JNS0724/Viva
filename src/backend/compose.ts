@@ -15,14 +15,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { createHash, randomUUID } from 'node:crypto'
-import { openMemoryStore } from './memory-store.ts'
-import type { MemoryScope } from '../shared/memory-contract.ts'
+import { openMemoryStore } from '../memory/node/memory-store.ts'
+import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
 import { createMemoryRuntime } from './memory-runtime.ts'
 import { memoryConversationScope, memoryProjectScope } from './memory-project.ts'
-import { createMemoryEmbedder } from './memory-embedder.ts'
+import { createMemoryEmbedder } from '../memory/node/memory-embedder.ts'
 import { createMemoryWithdrawal } from './memory-withdrawal.ts'
-import { createMemoryDispatch, MemoryDispatchConflict, needsMemoryTransport, type MemoryProvenance } from './memory-dispatch.ts'
+import { createMemoryDispatch, needsMemoryTransport, type MemoryProvenance } from '../memory/core/memory-dispatch.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
+import { createVivaMemoryClient } from './memory-client.ts'
+import { createMemoryCoordination, MemoryCoordinationError } from '../memory/core/coordination.ts'
 import { carriedRecords } from './history-carry.ts'
 import { activeHours } from './habits.ts'
 import { openTraceDb } from '../../plugins/trace/lib/store.ts'
@@ -148,8 +150,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** An MCP server was added or removed from the conversation: reattach the session once the turn is over. */
   let memory!: ReturnType<typeof createMemoryRuntime>
   let memoryDispatch: ReturnType<typeof createMemoryDispatch> | undefined
-  let memoryTransition = false
-  const blockedMemoryDispatch = new Set<string>()
+  const memoryCoordination = createMemoryCoordination({ runtime: () => memory, dispatch: () => memoryDispatch })
   /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
   let traceDb: ReturnType<typeof openTraceDb> | null = null
   /** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
@@ -251,17 +252,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       ? currentMemoryProject()
       : session ? memoryProjectScope(unattended.workspaceOf(session) ?? historyDb?.bySession(session)?.cwd) : undefined
   }
-  function bindSessionProject(session: string, project: ReturnType<typeof memoryProjectScope>) {
-    const saved = memory.sessionProject(session)
-    const key = project?.id ?? ''
-    if (saved !== undefined && saved !== key) return false
-    if (saved === undefined) memory.recordSessionProject(session, key)
-    return true
-  }
-  function sessionProjectChanged(session: string | null | undefined, project: ReturnType<typeof memoryProjectScope>) {
-    const saved = session ? memory?.sessionProject(session) : undefined
-    return saved !== undefined && saved !== (project?.id ?? '')
-  }
+  const bindSessionProject = memoryCoordination.bindProject
+  const sessionProjectChanged = memoryCoordination.projectChanged
   let displayedProject: string | undefined
   function syncProjectView() {
     if (!memory || sessions.isChanging()) return
@@ -271,8 +263,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       emitToRenderer({ type: 'memory_changed' })
     }
   }
-  const mayUseProjectEvidence = (evidence: MemoryProvenance | null | undefined, project: ReturnType<typeof memoryProjectScope>) =>
-    !evidence || memory.projectAllows(evidence, project)
+  const mayUseProjectEvidence = memoryCoordination.allowsEvidence
 
   type DshContext = { config: Config, cwd: string, resumeSessionId: string | null }
   const dsh = createDshLifecycle({
@@ -348,16 +339,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
 
   const conversationMemoryScope = (): MemoryScope => memoryConversationScope(sessions.topicId(), currentMemoryProject())
-  const memoryBusy = () => memoryTransition || Boolean(memory?.busy())
-  const staleMemorySession = (id: string | null | undefined, cwd?: string) =>
-    Boolean(id && (memory?.staleSession(id) || sessionProjectChanged(id, cwd === undefined ? projectOfSession(id) : memoryProjectScope(cwd))
-      || memoryDispatch?.stale(id) || !memory?.provisionalReadsCurrent(id)))
-  const allowMemorySession = (id: string, cwd?: string) => !memoryBusy() && !staleMemorySession(id, cwd)
-    && mayUseProjectEvidence(memoryDispatch?.snapshot(id), cwd === undefined ? projectOfSession(id) : memoryProjectScope(cwd))
-  const canTransferMemoryToModel = (id: string): boolean => Boolean(dsh.current?.memory.ready()) || !needsMemoryTransport(memoryDispatch?.snapshot(id))
-  const allowedModelHistory = (row: HistoryEvidence) =>
-    memory.allowedHistory(row) && (!row.sourceId || memory.sourceCurrent(row.sourceId))
-    && ((row.role === 'user' && Boolean(row.sourceId)) || !staleMemorySession(row.sessionId))
+  const memoryBusy = memoryCoordination.busy
+  const memoryProjectFor = (id: string | null | undefined, cwd?: string) => cwd === undefined ? projectOfSession(id ?? undefined) : memoryProjectScope(cwd)
+  const staleMemorySession = (id: string | null | undefined, cwd?: string) => memoryCoordination.stale(id, memoryProjectFor(id, cwd))
+  const allowMemorySession = (id: string, cwd?: string) => memoryCoordination.allowsSession(id, memoryProjectFor(id, cwd))
+  const canTransferMemoryToModel = (id: string) => memoryCoordination.canTransferToModel(id, Boolean(dsh.current?.memory.ready()))
   function historyForProject(project: ReturnType<typeof memoryProjectScope>) {
     const bySegment = new Map<string, string | undefined>()
     return (row: HistoryEvidence) => {
@@ -366,16 +352,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         const saved = location?.sessionId ? memory.sessionProject(location.sessionId) : undefined
         bySegment.set(row.segmentId, saved === undefined ? memoryProjectScope(location?.cwd)?.id : saved || undefined)
       }
-      if (bySegment.get(row.segmentId) !== project?.id || !allowedModelHistory(row)) return false
-      if (row.sourceId && !memory.projectAllows({ dependencies: [], sources: [row.sourceId] }, project)) return false
-      return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId || mayUseProjectEvidence(memoryDispatch?.snapshot(row.sessionId), project)
+      const sourceProject = bySegment.get(row.segmentId)
+      return memoryCoordination.allowsProjectHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined, project, projectOfSession(row.sessionId ?? undefined))
     }
   }
-  function usedHistory(session: string | undefined, row: HistoryEvidence) {
-    if (!session || !memoryDispatch) return
-    if (row.sourceId) memoryDispatch.recordSource(session, row.sourceId)
-    if (row.sessionId && (row.role !== 'user' || !row.sourceId)) memoryDispatch.inherit(row.sessionId, session)
-  }
+  const usedHistory = memoryCoordination.useHistory
   function trackCarry(session: string | null, evidence: readonly HistoryEvidence[]) {
     if (session) for (const row of evidence) usedHistory(session, row)
   }
@@ -407,26 +388,18 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   async function changingMemory<T>(work: () => T | Promise<T>, { duringSelection = false } = {}): Promise<T> {
     if (memoryBusy() || (!duringSelection && sessions.isChanging())) throw new Error(t('main.memory.change.pending'))
     const connected = Boolean(dsh.current)
-    memoryTransition = true
     try {
-      // The stock profile can run without the adapter. Settle that process before a write can retire its history.
-      if (dsh.current && !dsh.current.memory.ready()) {
-        if (duringSelection) throw new Error(t('main.memory.context.stale'))
-        await dsh.stop()
-      }
-      for (;;) {
-        try { return await work() }
-        catch (error) {
-          if (!(error instanceof MemoryDispatchConflict)) throw error
-          // A rolled-back write names the in-flight requests that used its affected facts.
-          for (const session of memoryDispatch?.sessionsOf(error.requests) ?? []) blockedMemoryDispatch.add(session)
-          await memoryDispatch?.whenIdle(error.requests)
+      return await memoryCoordination.mutate(work, async () => {
+        // Process shutdown belongs to the host; mutation exclusion and lease waiting belong to memory-core.
+        if (dsh.current && !dsh.current.memory.ready()) {
+          if (duringSelection) throw new Error(t('main.memory.context.stale'))
+          await dsh.stop()
         }
-      }
-    }
-    finally {
-      blockedMemoryDispatch.clear()
-      memoryTransition = false
+      })
+    } catch (error) {
+      if (error instanceof MemoryCoordinationError) throw new Error(t('main.memory.change.pending'))
+      throw error
+    } finally {
       dsh.current?.refreshMemoryQuestions()
       void memory.wake()
       scheduleRuns?.wake()
@@ -556,14 +529,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       env: dshEnv({ base: process.env, dshHome: dshHomeOf(config), runtime: config.runtime, settings: dshSettings(config) }),
       mcpServers: () => personal.mcpServers(),
       configActions: configActions(config),
-      allowSession: (id, transportReady, isTask, targetCwd) => {
-        if (!allowMemorySession(id, targetCwd)) return false
-        if (transportReady) return true
-        const evidence = memoryDispatch?.snapshot(id)
-        if (isTask) return !needsMemoryTransport(evidence)
-        const admission = memoryDispatch?.admission(id)
-        return !evidence?.turnOnly && !evidence?.dependencies.length && (!admission || admission.allowed && admission.deadline === null)
-      },
+      allowSession: (id, transportReady, isTask, targetCwd) =>
+        memoryCoordination.allowsTransport(id, memoryProjectFor(id, targetCwd), transportReady, isTask),
       onSessionCreated: (id, targetCwd, parent) => {
         memory.recordSession(id)
         if (parent) {
@@ -574,26 +541,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         bindSessionProject(id, memoryProjectScope(targetCwd))
       },
       readyMemory: () => { memory.refreshProfiles(); void memory.wake(); scheduleRuns?.wake() },
-      beginMemoryDispatch: async (id, session) => {
-        const at = Date.now()
-        if (blockedMemoryDispatch.has(session) || memory.staleSession(session) || !memory.provisionalReadsCurrent(session, at)) return false
-        const admission = memoryDispatch?.admission(session)
-        const project = projectOfSession(session)
-        if (!admission?.allowed || !mayUseProjectEvidence(admission.evidence, project) || !bindSessionProject(session, project)) return false
-        const provisional = memory.provisionalDeadline(session, at)
-        memoryDispatch?.acquireSession(id, session, admission, () => !memory.staleSession(session) && memory.provisionalReadsCurrent(session, at)
-          && mayUseProjectEvidence(admission.evidence, projectOfSession(session)))
-        return { allowed: true, deadline: provisional === undefined ? admission.deadline : Math.min(provisional, admission.deadline ?? Infinity) }
-      },
-      beginMemoryJobDispatch: async (id, jobId) => {
-        if (memoryBusy()) return false
-        const job = memory.computeAdmission(jobId)
-        if (!job) return false
-        memoryDispatch?.acquire(id, job.current)
-        return { allowed: true, deadline: job.deadline }
-      },
+      beginMemoryDispatch: async (id, session) => memoryCoordination.beginSession(id, session, projectOfSession(session), () => projectOfSession(session)),
+      beginMemoryJobDispatch: async (id, jobId) => memoryCoordination.beginJob(id, jobId),
       endMemoryDispatch: id => {
-        memoryDispatch?.release(id)
+        memoryCoordination.endDispatch(id)
         void memory.wake()
       },
       memoryRequest: (request, foregroundTurn, operation, stillCurrent, signal) => memory.handleModelRequest(request, {
@@ -640,12 +591,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (memoryBusy() || (request.op === 'get' && staleMemorySession(request.taskId))) throw new Error(t('main.memory.context.stale'))
         const result = requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId })
         if (request.op === 'get' && request.taskId) {
-          if (!mayUseProjectEvidence(memoryDispatch?.snapshot(request.taskId), projectOfSession(sessionId)) || !canTransferMemoryToModel(request.taskId)) throw new Error(t('main.memory.context.stale'))
-          memoryDispatch?.inherit(request.taskId, sessionId)
+          if (!memoryCoordination.inherit(request.taskId, sessionId, projectOfSession(request.taskId), projectOfSession(sessionId), Boolean(dsh.current?.memory.ready()))) throw new Error(t('main.memory.context.stale'))
         }
         if ('tasks' in result && result.tasks) {
-          const tasks = result.tasks.filter(task => !staleMemorySession(task.taskId) && (!task.taskId || (canTransferMemoryToModel(task.taskId) && mayUseProjectEvidence(memoryDispatch?.snapshot(task.taskId), projectOfSession(sessionId)))))
-          for (const task of tasks) if (task.taskId) memoryDispatch?.inherit(task.taskId, sessionId)
+          const tasks = result.tasks.filter(task => !task.taskId || memoryCoordination.inherit(task.taskId, sessionId, projectOfSession(task.taskId), projectOfSession(sessionId), Boolean(dsh.current?.memory.ready())))
           return { ...result, tasks }
         }
         return result
@@ -719,9 +668,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const sameWorkspace = (schedule: { cwd: string, memory: MemoryProvenance | null }) =>
       memoryProjectScope(schedule.cwd)?.id === project?.id && mayUseProjectEvidence(schedule.memory, project)
     if (request.op === 'schedule_list') {
-      const modelSchedules = schedules.store.list().filter(schedule => sameWorkspace(schedule) && (!schedule.memory
-        || (!needsMemoryTransport(schedule.memory) || memoryReady) && memoryDispatch?.transferable(schedule.memory)))
-      if (memoryDispatch) for (const schedule of modelSchedules) if (schedule.memory) memoryDispatch.attach(sessionId, schedule.memory)
+      const modelSchedules = schedules.store.list().filter(schedule => sameWorkspace(schedule)
+        && memoryCoordination.transfer(sessionId, schedule.memory, project, Boolean(memoryReady)))
       const visible = new Set(modelSchedules.map(schedule => schedule.id))
       return schedules.list().filter(schedule => visible.has(schedule.id))
     }
@@ -733,8 +681,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (schedule && !sameWorkspace(schedule)) throw new Error(t('main.schedule-runs.memory.stale'))
       const old = schedule?.memory
       if (request.op === 'schedule_update' && old) {
-        if (memoryDispatch?.transferable(old)) memoryDispatch.attach(sessionId, old)
-        else if (request.prompt === undefined || request.title === undefined) throw new Error(t('main.schedule-runs.memory.stale'))
+        if (!memoryCoordination.transfer(sessionId, old, project, Boolean(memoryReady))
+          && (request.prompt === undefined || request.title === undefined)) throw new Error(t('main.schedule-runs.memory.stale'))
       }
     }
     return schedules.act(request, sessions.current().id, workDirNow() ?? '', evidence)
@@ -775,8 +723,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
    * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
    * it: no words of the user's.
    */
-  const eligibleTaskReport = (taskId: string, session: string) => !staleMemorySession(taskId) && canTransferMemoryToModel(taskId)
-    && mayUseProjectEvidence(memoryDispatch?.snapshot(taskId), projectOfSession(session))
+  const eligibleTaskReport = (taskId: string, session: string) =>
+    memoryCoordination.canInherit(taskId, projectOfSession(taskId), projectOfSession(session), Boolean(dsh.current?.memory.ready()))
   const taskReports = createTaskReports({
     eligible: eligibleTaskReport,
     conversation: () => (!dsh.current || memoryBusy() || staleMemorySession(dsh.current.currentSession())
@@ -786,7 +734,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
     deliver: (session, reportId, token, text, taskId) => {
       if (!allowMemorySession(session) || !eligibleTaskReport(taskId, session)) return Promise.resolve('unavailable')
-      memoryDispatch?.inherit(taskId, session)
+      if (!memoryCoordination.inherit(taskId, session, projectOfSession(taskId), projectOfSession(session), Boolean(dsh.current?.memory.ready()))) return Promise.resolve('unavailable')
       return dsh.current?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable')
     },
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
@@ -807,7 +755,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const context = sessions.context()
       const session = context.sessionId
       if (!session || !allowMemorySession(session) || taskIds.some(id => !eligibleTaskReport(id, session))) return false
-      for (const taskId of taskIds) memoryDispatch?.inherit(taskId, session)
+      for (const taskId of taskIds) {
+        if (!memoryCoordination.inherit(taskId, session, projectOfSession(taskId), projectOfSession(session), agent.memory.ready())) return false
+      }
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task', context })
       agent.prompt(note, [], { request: false }).catch((err: Error) => {
@@ -1046,9 +996,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const { item, memory: evidence } = feedContinuation(feedItemId)
       if (!matchesFeedContinuation(item, question)) throw new Error(t('main.feed.edit.continuation'))
       const origin = sessions.context()
-      if (!origin.sessionId || (needsMemoryTransport(evidence) && !agent.memory.ready())) throw new Error(t('main.feed.memory.unavailable'))
+      if (!origin.sessionId || !memoryCoordination.transfer(origin.sessionId, evidence, currentMemoryProject(), agent.memory.ready())) throw new Error(t('main.feed.memory.unavailable'))
       recordDeliveredSource(operation, origin, { derived: true })
-      if (evidence) memoryDispatch?.attach(origin.sessionId, evidence)
     } else if (!replay) {
       const source = acceptMemory(question, operation)
       const session = agent.currentSession()
@@ -1177,8 +1126,7 @@ ${question}` : question
 
   function feedContinuation(id: string) {
     const continuation = requireFeed().continuation(id)
-    if (!continuation || !mayUseProjectEvidence(continuation.memory, currentMemoryProject())
-      || (continuation.memory && !memoryDispatch?.transferable(continuation.memory))) {
+    if (!continuation || memoryCoordination.transferStatus(continuation.memory, currentMemoryProject(), true) !== 'ready') {
       throw new Error(t('main.feed.memory.stale'))
     }
     return continuation
@@ -1200,17 +1148,17 @@ ${question}` : question
       return Promise.resolve({ ok: false, unavailable: true, memoryUnavailable: true, problem: t('main.feed.memory.unavailable') })
     }
     return unattended.run(prompt, cwd, (session, bridge) => {
-      if (bridge !== dsh.current || (needsMemoryTransport(evidence) && !ready())) return 'memory-unavailable'
-      if (evidence && !memoryDispatch?.transferable(evidence)) return 'stale'
+      if (bridge !== dsh.current) return 'memory-unavailable'
       const project = memoryProjectScope(cwd)
-      if (!mayUseProjectEvidence(evidence, project) || !bindSessionProject(session, project)) return 'stale'
-      if (evidence) memoryDispatch?.attach(session, evidence)
+      const status = memoryCoordination.transferStatus(evidence, project, ready())
+      if (status !== 'ready') return status
+      if (!bindSessionProject(session, project) || !memoryCoordination.transfer(session, evidence, project, ready())) return 'stale'
     })
   }
 
   function registerPersonalIpc(config: Config) {
     registerRuntimeMemoryIpc(ipcMain, {
-      runtime: memory, changingMemory, projectScope: currentMemoryProject,
+      client: createVivaMemoryClient(memory, changingMemory), projectScope: currentMemoryProject,
       sourceLink: historyDb.sourceLink,
       habits: () => activeHours(historyDb.questionTimes()),
       cwd: () => config.cwd,
@@ -1304,7 +1252,7 @@ ${question}` : question
     personal = createPersonal({ historyDb, mcpStore })
     registerPersonalIpc(config)
     const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
-    const scheduleMemoryCurrent = (evidence: MemoryProvenance) => Boolean(memoryDispatch?.transferable(evidence))
+    const scheduleMemoryCurrent = memoryCoordination.transferable
     schedules = createSchedules({ db: appDb.db, apply: applyChange, emit: event => emitToRenderer({ ...event, context: sessions.context() }),
       changed: () => { scheduleRuns?.wake(); schedulesChanged() }, memoryCurrent: scheduleMemoryCurrent })
     // A schedule's run adds its item inside its own change (schedule.ran); the window's writes are events of their own.
@@ -1456,10 +1404,7 @@ ${question}` : question
         if (sessions.current().sessionId !== place.sessionId || !allowMemorySession(place.sessionId, place.cwd ?? undefined)
           || !allowMemorySession(taskId, targetCwd) || !canTransferMemoryToModel(taskId)) return false
         const project = targetCwd === undefined ? projectOfSession(taskId) : memoryProjectScope(targetCwd)
-        if (!mayUseProjectEvidence(evidence, project) || (evidence && !memoryDispatch?.transferable(evidence))
-          || (needsMemoryTransport(evidence) && !dsh.current?.memory.ready())) return false
-        if (evidence) memoryDispatch?.attach(taskId, evidence)
-        return true
+        return memoryCoordination.transfer(taskId, evidence, project, Boolean(dsh.current?.memory.ready()))
       }
     }
     requests = createRequestRuntime({

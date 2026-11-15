@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 
 type NoteInput = {
   existing: { title: string, markdown: string } | null

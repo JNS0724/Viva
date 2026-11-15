@@ -33,7 +33,7 @@
     "smoke:timeline": "playwright test -c test/smoke/playwright.config.ts --project=integration --grep @timeline",
     "smoke:perf": "playwright test -c test/smoke/playwright.config.ts --project=performance",
     "smoke:package": "playwright test -c test/smoke/playwright.config.ts --project=package",
-    "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.js",
+    "live:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/live-memory.ts",
     "memory:prepare-embedding": "node scripts/prepare-memory-embedding.ts",
     "prelive": "npm run build",
     "live": "node scripts/live.ts",

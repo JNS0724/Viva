@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createDailySemanticSearch, markdownSearchChunks, rankDailyMemory } from '../src/backend/memory-daily-search.ts'
+import { createDailySemanticSearch, markdownSearchChunks, rankDailyMemory } from '../src/memory/core/memory-daily-search.ts'
 import { createMemoryChannel } from '../src/backend/memory-channel.ts'
-import { MEMORY_CONTRACT } from '../src/shared/memory-contract.ts'
-import { randomUUID } from 'node:crypto'
+import { MEMORY_CONTRACT } from '../src/memory/contracts/memory-contract.ts'
+import { randomUUID, createHash } from 'node:crypto'
 
 test('daily Markdown chunks cover the full document and keep the original line boundaries', () => {
   const intro = ['# 前言', ...Array.from({ length: 16 }, () => '汉字'.repeat(100)), ''].join('\n')
@@ -28,7 +28,7 @@ test('semantic search embeds the tail, reuses current vectors and fuses over BM2
       seen.push(...inputs.map(input => input.text))
       return inputs.map(({ text }) => Float32Array.from(text.includes('synonym') || text === 'original' ? [1, 0] : [0, 1]))
     },
-  })
+  }, text => createHash('sha256').update(text).digest('hex'))
   const lexical = { key: 'lexical', text: 'original' }
   const semantic = { key: 'semantic', text: 'preface '.repeat(400) + 'synonym' }
   const combined = { key: 'combined', text: 'original synonym' }

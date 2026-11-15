@@ -65,7 +65,7 @@ export interface MemoryChangeRecord {
   status: 'applied' | 'undone' | 'withdrawn' | 'pending'
   before: string | null
   after: string | null
-  scope: import('./memory-contract.ts').MemoryScope | null
+  scope: import('../memory/contracts/memory-contract.ts').MemoryScope | null
   from: number | null
   to: number | null
   effectiveAt: number | null

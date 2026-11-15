@@ -6,7 +6,7 @@ import type { Apply } from './journal.ts'
 import type { FeedItem, FeedStore } from './feed-store.ts'
 import type { Occurrence, ScheduleStore } from './schedule-store.ts'
 import type { RunResult } from './unattended-runs.ts'
-import { combineMemoryProvenance, type MemoryProvenance } from './memory-dispatch.ts'
+import { combineMemoryProvenance, type MemoryProvenance } from '../memory/core/memory-dispatch.ts'
 
 /**
  * Schedules run when due (system-design §12.2). One timer, set for the soonest thing to do; when it fires, what is

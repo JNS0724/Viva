@@ -1,4 +1,4 @@
-import { operationId } from './memory-contract.ts'
+import { operationId } from '../memory/contracts/memory-contract.ts'
 import { z } from 'zod'
 
 /**

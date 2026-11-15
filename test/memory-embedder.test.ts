@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
-import { createMemoryEmbedder, MEMORY_EMBEDDING_DIMENSIONS } from '../src/backend/memory-embedder.ts'
+import { createMemoryEmbedder, MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(path.join(tmpdir(), 'viva-memory-embedding-'))

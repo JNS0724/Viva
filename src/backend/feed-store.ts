@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { MemoryProvenance } from './memory-dispatch.ts'
+import type { MemoryProvenance } from '../memory/core/memory-dispatch.ts'
 
 /**
  * 动态's items (system-design §12.2): what the app brings on its own, whichever source brought it, in one shape.
